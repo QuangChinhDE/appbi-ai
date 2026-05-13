@@ -57,9 +57,7 @@ from app.services.dataset_calendar_service import (
 from app.services.dataset_table_sql_service import (
     build_live_proxy_table_for_dataset_table,
     DatasetTableSqlError,
-    build_dataset_table_sql_alias,
     collect_derived_dependency_table_ids,
-    get_dataset_table_reference_options,
     is_derived_table,
     validate_and_clean_derived_query,
 )
@@ -2119,20 +2117,18 @@ def remove_table_from_dataset(
                     t.source_query,
                     exclude_table_id=t.id,
                 )
-            except DatasetTableSqlError:
-                fallback_aliases = {
-                    build_dataset_table_sql_alias(table_id).lower(),
-                }
-                for option in get_dataset_table_reference_options(
-                    db,
-                    dataset_id,
-                    exclude_table_id=t.id,
-                    include_disabled=True,
-                ):
-                    if option.table_id == table_id:
-                        fallback_aliases.add(option.alias.lower())
-                        break
-                depends_on_table = any(alias in str(t.source_query).lower() for alias in fallback_aliases)
+            except DatasetTableSqlError as exc:
+                # Parsing failed — the other derived table's SQL is itself broken.
+                # Treating an unparseable SQL as a dependency via substring match
+                # caused false-positive 409s when an alias happened to appear in a
+                # comment or unrelated identifier. Skip this candidate instead.
+                logger.warning(
+                    "Skipping derived-table dependency check for table %s while deleting %s: %s",
+                    t.id,
+                    table_id,
+                    exc,
+                )
+                depends_on_table = False
 
             if depends_on_table:
                 calculated_name = t.display_name or t.source_table_name or f"Table {t.id}"
@@ -2281,6 +2277,77 @@ def remove_table_from_dataset(
                     ))
                     break
 
+    # ------------------------------------------------------------------
+    # Check 4: semantic measures defined on this table, and measures on
+    # other tables that depend on them. Without this check, the silent
+    # cascade in _cleanup_semantic_view_for_table would delete every
+    # measure for the table and break any cross-view depends_on links.
+    # ------------------------------------------------------------------
+    from app.models.semantic import SemanticView
+
+    blocking_measures: List[Dict[str, Any]] = []
+    this_view = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id == table_id)
+        .first()
+    )
+    this_measure_names: set[str] = set()
+    if this_view is not None and isinstance(this_view.measures, list):
+        own_measure_names = [
+            str(m.get("name") or "").strip()
+            for m in this_view.measures
+            if isinstance(m, dict) and str(m.get("name") or "").strip()
+        ]
+        this_measure_names = {n for n in own_measure_names if n}
+        if own_measure_names:
+            preview = ", ".join(own_measure_names[:5])
+            if len(own_measure_names) > 5:
+                preview += f", … (+{len(own_measure_names) - 5})"
+            blocking_measures.append(_build_delete_constraint(
+                "semantic_measure",
+                count=len(own_measure_names),
+                names=own_measure_names,
+                object_label=f'Bảng có {len(own_measure_names)} measure đang định nghĩa',
+                detail=f"Xóa các measure trước hoặc giữ lại bảng. Measures: {preview}.",
+            ))
+
+    if this_measure_names and dataset_table_ids:
+        other_views = (
+            db.query(SemanticView)
+            .filter(
+                SemanticView.dataset_table_id.in_(dataset_table_ids),
+                SemanticView.dataset_table_id != table_id,
+            )
+            .all()
+        )
+        for view in other_views:
+            measures_list = view.measures if isinstance(view.measures, list) else []
+            for measure in measures_list:
+                if not isinstance(measure, dict):
+                    continue
+                depends_on = measure.get("depends_on") or []
+                if not isinstance(depends_on, list):
+                    continue
+                referenced = {
+                    str(name).strip()
+                    for name in depends_on
+                    if str(name or "").strip()
+                } & this_measure_names
+                if not referenced:
+                    continue
+                measure_name = str(measure.get("name") or "").strip() or "(unnamed)"
+                blocking_measures.append(_build_delete_constraint(
+                    "measure_dependency",
+                    view_id=view.id,
+                    view_name=view.name,
+                    measure=measure_name,
+                    references=sorted(referenced),
+                    object_label=f'Measure "{measure_name}" in view "{view.name}"',
+                    detail=(
+                        f"Phụ thuộc vào measure: {', '.join(sorted(referenced))} của bảng này."
+                    ),
+                ))
+
     constraints = []
     for ch in blocking_charts:
         chart_name = ch.name or f"Chart {ch.id}"
@@ -2294,6 +2361,7 @@ def remove_table_from_dataset(
     constraints.extend(blocking_calculated_tables)
     constraints.extend(blocking_lookups)
     constraints.extend(blocking_semantic_refs)
+    constraints.extend(blocking_measures)
     constraints = _dedupe_delete_constraints(constraints)
 
     if constraints:

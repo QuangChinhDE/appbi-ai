@@ -68,7 +68,7 @@ export interface AppShellNav {
 
 export interface AppShellScreenStub {
   id: string;
-  kind: 'form' | 'list' | 'doc' | 'dashboard';
+  kind: 'form' | 'list' | 'doc' | 'dashboard' | 'grid';
   title: string;
   icon?: string | null;
   description?: string | null;
@@ -127,6 +127,48 @@ export interface ListScreenResponse {
   column_labels?: Record<string, string>;
 }
 
+export interface GridScreenResponse {
+  screen_id: string;
+  kind: 'grid';
+  title: string;
+  icon?: string | null;
+  description?: string | null;
+  columns: string[];
+  primary_key_columns: string[];
+  rows: Array<Record<string, unknown>>;
+  page: number;
+  page_size: number;
+  grid_view?: {
+    columns?: string[];
+    editable_columns?: string[];
+    filters?: Array<Record<string, unknown>>;
+    page_size?: number;
+    allow_add_row?: boolean;
+    allow_delete_row?: boolean;
+    required_columns?: string[];
+    default_values?: Record<string, unknown>;
+    computed_columns?: Array<{
+      name: string;
+      label?: string | null;
+      formula: string;
+      format?: string | null;
+    }>;
+    lookup_columns?: Array<{
+      name: string;
+      label?: string | null;
+      from_table_id: number;
+      match_column_local: string;
+      match_column_remote: string;
+      return_column: string;
+      format?: string | null;
+    }>;
+    totals?: Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
+    empty_state_message?: string | null;
+  };
+  totals_row?: Record<string, unknown> | null;
+  column_labels?: Record<string, string>;
+}
+
 export interface DocScreenResponse {
   screen_id: string;
   kind: 'doc';
@@ -152,6 +194,7 @@ export interface DashboardScreenResponse {
 export type ScreenResponse =
   | FormScreenResponse
   | ListScreenResponse
+  | GridScreenResponse
   | DocScreenResponse
   | DashboardScreenResponse;
 
@@ -245,6 +288,34 @@ export const workspaceApi = {
     const r = await client.patch(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       { pk, values },
+    );
+    return r.data;
+  },
+  async deleteScreenRow(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    pk: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const r = await client.delete(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
+      { data: { pk } },
+    );
+    return r.data;
+  },
+  async gridScreenRows(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    body: {
+      page?: number;
+      page_size?: number;
+      filters?: Array<Record<string, unknown>>;
+    } = {},
+  ): Promise<GridScreenResponse> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/grid`,
+      body,
     );
     return r.data;
   },

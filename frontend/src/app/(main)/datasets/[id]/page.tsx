@@ -325,6 +325,31 @@ function getDeleteConstraintMeta(constraint: any): {
       description: constraint?.detail || 'Its SQL still depends on this table.',
     };
   }
+  if (constraint?.type === 'semantic_measure') {
+    const count = typeof constraint?.count === 'number' ? constraint.count : null;
+    return {
+      badge: 'Measure',
+      className: 'text-brand bg-brand/15',
+      title: constraint?.object_label || (
+        count !== null
+          ? `Bảng có ${count} measure đang định nghĩa`
+          : 'Measures defined on this table'
+      ),
+      description: constraint?.detail || 'Xóa các measure trước hoặc giữ lại bảng.',
+    };
+  }
+  if (constraint?.type === 'measure_dependency') {
+    return {
+      badge: 'Measure',
+      className: 'text-warning bg-warning/15',
+      title: constraint?.object_label || (
+        constraint?.measure
+          ? `Measure "${constraint.measure}"${constraint?.view_name ? ` in view "${constraint.view_name}"` : ''}`
+          : 'Cross-measure dependency'
+      ),
+      description: constraint?.detail || 'Another measure depends on a measure of this table.',
+    };
+  }
   return {
     badge: 'Lookup',
     className: 'text-warning bg-warning/15',

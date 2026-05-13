@@ -40,6 +40,7 @@ import {
   MoreHorizontal,
   Phone,
   PieChart,
+  Plus,
   PlusCircle,
   RefreshCw,
   Search,
@@ -50,6 +51,7 @@ import {
   Star,
   Table2,
   Tablet,
+  Trash2,
   Truck,
   Users,
   XCircle,
@@ -61,6 +63,7 @@ import {
   DashboardScreenResponse,
   DocScreenResponse,
   FormScreenResponse,
+  GridScreenResponse,
   ListScreenResponse,
   ScreenResponse,
   workspaceApi,
@@ -71,6 +74,10 @@ import {
   savePublicSession,
 } from '@/lib/api/public';
 import { evaluateTruthy } from '@/lib/wb-expr';
+import {
+  compileFormula as compileGridFormula,
+  buildFormulaOrder as buildGridFormulaOrder,
+} from '@/lib/wb-formula';
 
 const ICON_MAP: Record<string, React.ElementType> = {
   // Original set
@@ -760,6 +767,16 @@ function ScreenContainer({
       />
     );
   }
+  if (data.kind === 'grid') {
+    return (
+      <GridScreen
+        spec={data}
+        token={token}
+        workboardId={workboardId}
+        accent={accent}
+      />
+    );
+  }
   if (data.kind === 'doc') {
     return <DocScreen spec={data} token={token} workboardId={workboardId} />;
   }
@@ -1352,6 +1369,54 @@ function CellDisplay({ value }: { value: unknown }) {
   return <>{s}</>;
 }
 
+// Formatted cell for grid screens. Renders a cell value with a specific
+// number/currency/percent/date format hint coming from the builder's
+// computed/lookup column spec. Falls back to ``CellDisplay`` when no
+// format is set, or when the value is a server-side error sentinel.
+function FormattedCell({
+  value,
+  format,
+}: {
+  value: unknown;
+  format: string | null;
+}) {
+  if (value === null || value === undefined || value === '') {
+    return <span className="text-slate-300">—</span>;
+  }
+  if (typeof value === 'string' && value.startsWith('#ERR')) {
+    return (
+      <span
+        className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-600"
+        title={value}
+      >
+        #ERR
+      </span>
+    );
+  }
+  if (!format) return <CellDisplay value={value} />;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (format === 'currency' && Number.isFinite(numeric)) {
+    return (
+      <>
+        {numeric.toLocaleString('vi-VN', { style: 'currency', currency: 'VND' })}
+      </>
+    );
+  }
+  if (format === 'percent' && Number.isFinite(numeric)) {
+    return <>{(numeric * 100).toFixed(2)}%</>;
+  }
+  if (format === 'integer' && Number.isFinite(numeric)) {
+    return <>{Math.round(numeric).toLocaleString('vi-VN')}</>;
+  }
+  if (format === 'number' && Number.isFinite(numeric)) {
+    return <>{numeric.toLocaleString('vi-VN', { maximumFractionDigits: 4 })}</>;
+  }
+  if (format === 'date' || format === 'datetime') {
+    return <CellDisplay value={value} />;
+  }
+  return <CellDisplay value={value} />;
+}
+
 // ── List screen ──────────────────────────────────────────────────────────
 
 function ListScreen({
@@ -1595,6 +1660,762 @@ function ListScreen({
         </div>
       )}
     </div>
+  );
+}
+
+// ── Grid screen ─────────────────────────────────────────────────────────
+//
+// Spreadsheet-style data entry. Cells are read-only by default; columns
+// listed in `grid_view.editable_columns` switch to inputs on focus and
+// PATCH the row 800ms after the last keystroke. A trailing "ghost row"
+// at the bottom commits to the server (INSERT) the moment the user blurs
+// out of any of its required cells. Each row carries a trash button if
+// `allow_delete_row` is on.
+//
+// RLS still rules the wire — backend re-checks can_update / can_delete /
+// can_create on every request so a viewer can't bypass by editing the
+// JSON or hand-crafting a PATCH.
+
+interface GridCellPatch {
+  rowKey: string;
+  patch: Record<string, unknown>;
+}
+
+function gridRowKey(row: Record<string, unknown>, pkCols: string[]): string {
+  if (pkCols.length === 0) return '__no_pk__';
+  return pkCols.map((c) => JSON.stringify(row[c] ?? null)).join('|');
+}
+
+function GridScreen({
+  spec,
+  token,
+  workboardId,
+  accent,
+}: {
+  spec: GridScreenResponse;
+  token: string;
+  workboardId: number;
+  accent: string;
+}) {
+  type Row = Record<string, unknown>;
+  type RuntimeFilter = {
+    column: string;
+    kind: 'text' | 'select' | 'date_range' | 'number_range';
+    label?: string | null;
+  };
+
+  const [current, setCurrent] = useState<GridScreenResponse>(spec);
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const [filterLoading, setFilterLoading] = useState(false);
+  // Per-row error message + sync status, keyed by gridRowKey.
+  const [rowStatus, setRowStatus] = useState<
+    Record<string, { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }>
+  >({});
+  // Ghost row state (the new row at the bottom). Tracks user-entered values
+  // until they meet the required-columns bar and we promote it to a real row.
+  const [ghost, setGhost] = useState<Row>({});
+  const [ghostError, setGhostError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    setCurrent(spec);
+    setFilterValues({});
+    setRowStatus({});
+    setGhost({});
+    setGhostError(null);
+  }, [spec]);
+
+  const gv = (current.grid_view as GridScreenResponse['grid_view']) || {};
+  const cols = current.columns ?? [];
+  const rows = current.rows ?? [];
+  const pkCols = current.primary_key_columns ?? [];
+  const editableCols = new Set(gv.editable_columns || []);
+  const requiredCols = new Set(gv.required_columns || []);
+  const computedSpecs = gv.computed_columns || [];
+  const lookupSpecs = gv.lookup_columns || [];
+  const totalsSpec = (gv.totals || {}) as Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
+  const derivedCols = useMemo(
+    () => new Set([...computedSpecs.map((c) => c.name), ...lookupSpecs.map((l) => l.name)]),
+    [computedSpecs, lookupSpecs],
+  );
+  const formatByCol = useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const c of computedSpecs) out[c.name] = c.format ?? null;
+    for (const l of lookupSpecs) out[l.name] = l.format ?? null;
+    return out;
+  }, [computedSpecs, lookupSpecs]);
+  // Compile every computed formula once per render. Errors are kept so the
+  // affected cell can show ``#ERR`` without crashing the surrounding row.
+  const compiledFormulas = useMemo(() => {
+    const externals = new Set([
+      ...cols.filter((c) => !derivedCols.has(c)),
+      ...lookupSpecs.map((l) => l.name),
+    ]);
+    const out: Record<string, ReturnType<typeof compileGridFormula> | { error: string }> = {};
+    for (const spec of computedSpecs) {
+      try {
+        out[spec.name] = compileGridFormula(spec.formula, {
+          allowedColumns: [
+            ...externals,
+            ...computedSpecs.filter((c) => c.name !== spec.name).map((c) => c.name),
+          ],
+        });
+      } catch (err) {
+        out[spec.name] = { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return out;
+  }, [computedSpecs, cols, lookupSpecs, derivedCols]);
+  // Resolve formula evaluation order so a formula can reference another
+  // formula. Cycles fall back to declaration order (which still renders,
+  // just without the transitive value).
+  const formulaOrder = useMemo<string[]>(() => {
+    const compiled: Record<string, ReturnType<typeof compileGridFormula>> = {};
+    for (const [name, value] of Object.entries(compiledFormulas)) {
+      if ('error' in value) continue;
+      compiled[name] = value;
+    }
+    if (!Object.keys(compiled).length) return [];
+    try {
+      return buildGridFormulaOrder(compiled, [
+        ...cols.filter((c) => !derivedCols.has(c)),
+        ...lookupSpecs.map((l) => l.name),
+      ]);
+    } catch {
+      return computedSpecs.map((c) => c.name);
+    }
+  }, [compiledFormulas, cols, computedSpecs, derivedCols, lookupSpecs]);
+
+  const allowAdd = gv.allow_add_row !== false;
+  const allowDelete = gv.allow_delete_row !== false;
+  const colLabels = (current.column_labels as Record<string, string>) || {};
+  const configuredFilters = ((gv.filters as RuntimeFilter[] | undefined) || []).filter(
+    (f) => f?.column,
+  );
+  const empty = gv.empty_state_message || 'No matching rows.';
+
+  // Re-evaluate computed cells against a row that may have been edited
+  // locally before the next reload. Lookup cells are left alone — they
+  // depend on the linked table which the client doesn't have.
+  const evalRow = (row: Record<string, unknown>): Record<string, unknown> => {
+    if (formulaOrder.length === 0) return row;
+    const next = { ...row };
+    for (const name of formulaOrder) {
+      const compiled = compiledFormulas[name];
+      if (!compiled || 'error' in compiled) {
+        next[name] = compiled && 'error' in compiled ? `#ERR: ${compiled.error}` : null;
+        continue;
+      }
+      try {
+        next[name] = compiled.evaluate(next);
+      } catch (err) {
+        next[name] = `#ERR: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    return next;
+  };
+
+  // Footer row: server-computed totals override; if absent (older API), we
+  // compute on the client to keep the visual contract.
+  const totalsRow = useMemo(() => {
+    if (current.totals_row && typeof current.totals_row === 'object') {
+      return current.totals_row as Record<string, unknown>;
+    }
+    if (!Object.keys(totalsSpec).length || rows.length === 0) return null;
+    const out: Record<string, unknown> = {};
+    for (const [col, kind] of Object.entries(totalsSpec)) {
+      if (kind === 'count') {
+        out[col] = rows.filter(
+          (r) => r[col] !== null && r[col] !== undefined && r[col] !== '',
+        ).length;
+        continue;
+      }
+      const nums: number[] = [];
+      for (const r of rows) {
+        const v = r[col];
+        if (v === null || v === undefined || v === '') continue;
+        const n = Number(v);
+        if (!Number.isNaN(n)) nums.push(n);
+      }
+      if (!nums.length) {
+        out[col] = null;
+        continue;
+      }
+      if (kind === 'sum') out[col] = nums.reduce((s, n) => s + n, 0);
+      else if (kind === 'avg') out[col] = nums.reduce((s, n) => s + n, 0) / nums.length;
+      else if (kind === 'min') out[col] = Math.min(...nums);
+      else if (kind === 'max') out[col] = Math.max(...nums);
+    }
+    return out;
+  }, [current.totals_row, totalsSpec, rows]);
+
+  // ── Filters ───────────────────────────────────────────────────────────
+  const buildApiFilters = (values: Record<string, string>) => {
+    const out: Array<Record<string, unknown>> = [];
+    configuredFilters.forEach((filter, idx) => {
+      const key = String(idx);
+      if (filter.kind === 'date_range' || filter.kind === 'number_range') {
+        const from = values[`${key}:from`];
+        const to = values[`${key}:to`];
+        if (from || to) {
+          out.push({
+            field: filter.column,
+            operator: 'between',
+            value: [from || null, to || null],
+          });
+        }
+        return;
+      }
+      const value = values[key];
+      if (!value) return;
+      out.push({
+        field: filter.column,
+        operator: filter.kind === 'text' ? 'contains' : 'eq',
+        value,
+      });
+    });
+    return out;
+  };
+
+  const reloadRows = async (values: Record<string, string>) => {
+    setFilterLoading(true);
+    try {
+      const next = await workspaceApi.gridScreenRows(
+        token,
+        workboardId,
+        current.screen_id,
+        {
+          page: 1,
+          page_size: Number(gv.page_size || current.page_size || 100),
+          filters: buildApiFilters(values),
+        },
+      );
+      setCurrent((prev) => ({ ...prev, ...next }));
+      setFilterValues(values);
+      setRowStatus({});
+    } finally {
+      setFilterLoading(false);
+    }
+  };
+
+  // ── Autosave per cell ─────────────────────────────────────────────────
+  //
+  // Debounce 800ms per row. Multiple cell edits on the same row inside the
+  // window coalesce into one PATCH. We keep timers + pending payloads in
+  // refs so re-renders don't reset them.
+  const pendingRef = useRef<Map<string, GridCellPatch>>(new Map());
+  const timerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const flushRow = async (rowKey: string) => {
+    const pending = pendingRef.current.get(rowKey);
+    if (!pending) return;
+    pendingRef.current.delete(rowKey);
+    timerRef.current.delete(rowKey);
+    const row = rows.find((r) => gridRowKey(r, pkCols) === rowKey);
+    if (!row) return;
+    const pk: Record<string, unknown> = {};
+    for (const c of pkCols) pk[c] = row[c];
+    setRowStatus((prev) => ({ ...prev, [rowKey]: { status: 'saving' } }));
+    try {
+      await workspaceApi.updateScreenRow(
+        token,
+        workboardId,
+        current.screen_id,
+        pk,
+        pending.patch,
+      );
+      setRowStatus((prev) => ({ ...prev, [rowKey]: { status: 'saved' } }));
+      // Quietly fade the "saved" badge after 1.5s.
+      setTimeout(() => {
+        setRowStatus((prev) => {
+          if (prev[rowKey]?.status !== 'saved') return prev;
+          const next = { ...prev };
+          delete next[rowKey];
+          return next;
+        });
+      }, 1500);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail || 'Save failed';
+      setRowStatus((prev) => ({
+        ...prev,
+        [rowKey]: { status: 'error', error: String(msg) },
+      }));
+      // Revert the optimistic edit so the cell shows server truth on the
+      // next user attempt.
+      void reloadRows(filterValues);
+    }
+  };
+
+  const queueCellEdit = (
+    rowKey: string,
+    column: string,
+    value: unknown,
+  ) => {
+    const existing = pendingRef.current.get(rowKey) || { rowKey, patch: {} };
+    existing.patch[column] = value;
+    pendingRef.current.set(rowKey, existing);
+    const prevTimer = timerRef.current.get(rowKey);
+    if (prevTimer) clearTimeout(prevTimer);
+    const timer = setTimeout(() => {
+      void flushRow(rowKey);
+    }, 800);
+    timerRef.current.set(rowKey, timer);
+  };
+
+  // Optimistic cell update. Also re-runs computed formulas so the user sees
+  // dependent cells refresh immediately (no waiting for the server roundtrip).
+  const updateRowCell = (rowKey: string, column: string, value: unknown) => {
+    setCurrent((prev) => ({
+      ...prev,
+      rows: (prev.rows || []).map((r) => {
+        if (gridRowKey(r, pkCols) !== rowKey) return r;
+        return evalRow({ ...r, [column]: value });
+      }),
+    }));
+    queueCellEdit(rowKey, column, value);
+  };
+
+  // ── Delete ────────────────────────────────────────────────────────────
+  const deleteRow = async (row: Row) => {
+    if (!allowDelete) return;
+    if (!confirm('Delete this row?')) return;
+    const rowKey = gridRowKey(row, pkCols);
+    const pk: Record<string, unknown> = {};
+    for (const c of pkCols) pk[c] = row[c];
+    setRowStatus((prev) => ({ ...prev, [rowKey]: { status: 'saving' } }));
+    try {
+      await workspaceApi.deleteScreenRow(token, workboardId, current.screen_id, pk);
+      setCurrent((prev) => ({
+        ...prev,
+        rows: (prev.rows || []).filter((r) => gridRowKey(r, pkCols) !== rowKey),
+      }));
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail || 'Delete failed';
+      setRowStatus((prev) => ({
+        ...prev,
+        [rowKey]: { status: 'error', error: String(msg) },
+      }));
+    }
+  };
+
+  // ── Add ───────────────────────────────────────────────────────────────
+  const ghostMissingRequired = useMemo(
+    () =>
+      Array.from(requiredCols).filter(
+        (c) => ghost[c] === undefined || ghost[c] === '' || ghost[c] === null,
+      ),
+    [ghost, requiredCols],
+  );
+
+  const submitGhost = async () => {
+    if (!allowAdd) return;
+    if (ghostMissingRequired.length > 0) {
+      setGhostError(`Required: ${ghostMissingRequired.join(', ')}`);
+      return;
+    }
+    setAdding(true);
+    setGhostError(null);
+    try {
+      await workspaceApi.insertScreenRow(
+        token,
+        workboardId,
+        current.screen_id,
+        ghost,
+      );
+      setGhost({});
+      await reloadRows(filterValues);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string | { message?: string } } } })
+          ?.response?.data?.detail;
+      const detail =
+        typeof msg === 'string' ? msg : msg?.message || 'Add row failed';
+      setGhostError(detail);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="w-full rounded-xl bg-white shadow-sm">
+      {spec.description && (
+        <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-500">
+          {spec.description}
+        </div>
+      )}
+
+      {configuredFilters.length > 0 && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void reloadRows(filterValues);
+          }}
+          className="border-b border-slate-100 bg-slate-50/70 px-4 py-3"
+        >
+          <div className="grid gap-2 md:grid-cols-3">
+            {configuredFilters.map((filter, idx) => {
+              const key = String(idx);
+              const label = filter.label || filter.column;
+              if (filter.kind === 'date_range' || filter.kind === 'number_range') {
+                const type = filter.kind === 'date_range' ? 'date' : 'number';
+                return (
+                  <div key={key} className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">
+                        {label} from
+                      </span>
+                      <input
+                        type={type}
+                        value={filterValues[`${key}:from`] || ''}
+                        onChange={(event) =>
+                          setFilterValues((prev) => ({
+                            ...prev,
+                            [`${key}:from`]: event.target.value,
+                          }))
+                        }
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">
+                        {label} to
+                      </span>
+                      <input
+                        type={type}
+                        value={filterValues[`${key}:to`] || ''}
+                        onChange={(event) =>
+                          setFilterValues((prev) => ({
+                            ...prev,
+                            [`${key}:to`]: event.target.value,
+                          }))
+                        }
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                      />
+                    </label>
+                  </div>
+                );
+              }
+              return (
+                <label key={key} className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">
+                    {label}
+                  </span>
+                  <input
+                    value={filterValues[key] || ''}
+                    onChange={(event) =>
+                      setFilterValues((prev) => ({
+                        ...prev,
+                        [key]: event.target.value,
+                      }))
+                    }
+                    placeholder={filter.kind === 'select' ? 'Exact value' : 'Search'}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={filterLoading}
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              style={{ backgroundColor: accent }}
+            >
+              {filterLoading ? 'Loading...' : 'Apply filters'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void reloadRows({})}
+              disabled={filterLoading || Object.keys(filterValues).length === 0}
+              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 disabled:opacity-50"
+            >
+              Clear
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50">
+              {cols.map((c) => {
+                const isComputed = computedSpecs.some((cc) => cc.name === c);
+                const isLookup = lookupSpecs.some((ll) => ll.name === c);
+                const headerLabel =
+                  computedSpecs.find((cc) => cc.name === c)?.label ||
+                  lookupSpecs.find((ll) => ll.name === c)?.label ||
+                  colLabels[c] ||
+                  c;
+                return (
+                  <th
+                    key={c}
+                    className="px-3 py-2 text-left text-xs font-semibold text-slate-600"
+                  >
+                    {headerLabel}
+                    {requiredCols.has(c) ? (
+                      <span className="ml-0.5 text-red-500">*</span>
+                    ) : null}
+                    {isComputed ? (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-indigo-500"
+                        title="Computed (formula)"
+                      >
+                        ƒ
+                      </span>
+                    ) : isLookup ? (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-emerald-600"
+                        title="Lookup from another table"
+                      >
+                        ↗
+                      </span>
+                    ) : editableCols.has(c) ? (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-slate-400"
+                        title="Editable"
+                      >
+                        ✎
+                      </span>
+                    ) : null}
+                  </th>
+                );
+              })}
+              <th className="w-24 px-3 py-2 text-right text-xs font-semibold text-slate-600">
+                {allowDelete ? '' : ''}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && !allowAdd ? (
+              <tr>
+                <td
+                  colSpan={cols.length + 1}
+                  className="p-10 text-center text-sm text-slate-500"
+                >
+                  {empty}
+                </td>
+              </tr>
+            ) : null}
+            {rows.map((row, idx) => {
+              const rowKey = gridRowKey(row, pkCols);
+              const status = rowStatus[rowKey];
+              return (
+                <tr
+                  key={rowKey + ':' + idx}
+                  className={`border-b border-slate-100 ${
+                    status?.status === 'error' ? 'bg-red-50/40' : 'hover:bg-slate-50'
+                  }`}
+                >
+                  {cols.map((c) => {
+                    const derived = derivedCols.has(c);
+                    const editable = editableCols.has(c) && !derived;
+                    const cellValue = row[c];
+                    const format = formatByCol[c] ?? null;
+                    return (
+                      <td
+                        key={c}
+                        className={`px-3 py-1.5 align-top ${
+                          editable
+                            ? 'text-slate-900'
+                            : derived
+                              ? 'bg-indigo-50/30 text-slate-700'
+                              : 'bg-slate-50/40 text-slate-700'
+                        }`}
+                      >
+                        {editable ? (
+                          <GridCellInput
+                            value={cellValue}
+                            onCommit={(next) => updateRowCell(rowKey, c, next)}
+                          />
+                        ) : (
+                          <FormattedCell value={cellValue} format={format} />
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="px-2 py-1.5 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      {status?.status === 'saving' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                      ) : status?.status === 'saved' ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      ) : status?.status === 'error' ? (
+                        <span
+                          title={status.error}
+                          className="text-xs font-medium text-red-600"
+                        >
+                          !
+                        </span>
+                      ) : null}
+                      {allowDelete && pkCols.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => void deleteRow(row)}
+                          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                          title="Delete row"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {allowAdd ? (
+              (() => {
+                // Compute derived preview values for the ghost row so the
+                // user can see what their formula will evaluate to before
+                // committing. Lookup values are left blank — they need
+                // the server to resolve against the linked table.
+                const ghostPreview = evalRow({ ...ghost });
+                return (
+                  <tr className="border-b border-slate-100 bg-slate-50/40">
+                    {cols.map((c) => {
+                      const derived = derivedCols.has(c);
+                      const editable =
+                        !derived && (editableCols.has(c) || requiredCols.has(c));
+                      const format = formatByCol[c] ?? null;
+                      return (
+                        <td key={c} className="px-3 py-1.5 align-top">
+                          {editable ? (
+                            <GridCellInput
+                              value={ghost[c]}
+                              placeholder={requiredCols.has(c) ? 'Required' : ''}
+                              onCommit={(next) =>
+                                setGhost((prev) => ({ ...prev, [c]: next }))
+                              }
+                            />
+                          ) : derived ? (
+                            <span className="text-xs text-slate-500">
+                              <FormattedCell value={ghostPreview[c]} format={format} />
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="px-2 py-1.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void submitGhost()}
+                        disabled={adding || ghostMissingRequired.length > 0}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                        style={{ backgroundColor: accent }}
+                        title={
+                          ghostMissingRequired.length > 0
+                            ? `Required: ${ghostMissingRequired.join(', ')}`
+                            : 'Add row'
+                        }
+                      >
+                        {adding ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Plus className="h-3 w-3" />
+                        )}
+                        Add
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })()
+            ) : null}
+            {totalsRow && Object.keys(totalsRow).length > 0 ? (
+              <tr className="border-t-2 border-slate-300 bg-slate-100/80 font-medium">
+                {cols.map((c) => {
+                  const total = totalsRow[c];
+                  const kind = totalsSpec[c];
+                  const format = formatByCol[c] ?? null;
+                  return (
+                    <td key={c} className="px-3 py-2 text-slate-700">
+                      {total !== undefined && total !== null ? (
+                        <span className="flex items-baseline gap-1.5">
+                          {kind ? (
+                            <span className="text-[10px] font-normal uppercase tracking-wider text-slate-400">
+                              {kind}
+                            </span>
+                          ) : null}
+                          <FormattedCell value={total} format={format ?? 'number'} />
+                        </span>
+                      ) : kind ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : null}
+                    </td>
+                  );
+                })}
+                <td />
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+
+      {ghostError ? (
+        <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
+          {ghostError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Per-cell editable input. Renders a generic text input that commits on
+// blur / Enter. We keep a local draft so the user can type freely before
+// firing the autosave; if the parent updates the value externally (e.g.
+// after a reload) the draft is rehydrated.
+function GridCellInput({
+  value,
+  onCommit,
+  placeholder,
+}: {
+  value: unknown;
+  onCommit: (next: unknown) => void;
+  placeholder?: string;
+}) {
+  const initial = value == null ? '' : String(value);
+  const [draft, setDraft] = useState(initial);
+  const lastValueRef = useRef(initial);
+
+  useEffect(() => {
+    const incoming = value == null ? '' : String(value);
+    if (incoming !== lastValueRef.current) {
+      lastValueRef.current = incoming;
+      setDraft(incoming);
+    }
+  }, [value]);
+
+  const commit = () => {
+    if (draft === lastValueRef.current) return;
+    lastValueRef.current = draft;
+    // Empty string → null so the backend writes NULL rather than ''.
+    onCommit(draft === '' ? null : draft);
+  };
+
+  return (
+    <input
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          (event.target as HTMLInputElement).blur();
+        }
+        if (event.key === 'Escape') {
+          setDraft(lastValueRef.current);
+          (event.target as HTMLInputElement).blur();
+        }
+      }}
+      placeholder={placeholder}
+      className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+    />
   );
 }
 

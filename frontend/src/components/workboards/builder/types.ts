@@ -7,7 +7,7 @@
  * ``backend/app/modules/workboards/schemas.py``.
  */
 
-export type ScreenKind = 'form' | 'list' | 'doc' | 'dashboard';
+export type ScreenKind = 'form' | 'list' | 'doc' | 'dashboard' | 'grid';
 
 export interface ScreenAction {
   id: string;
@@ -84,6 +84,51 @@ export interface ListScreenSpecBuilt {
   default_sort_column?: string | null;
   default_sort_direction?: 'asc' | 'desc';
   row_actions?: ScreenAction[];
+  empty_state_message?: string | null;
+}
+
+export type CellFormat =
+  | 'text'
+  | 'number'
+  | 'integer'
+  | 'currency'
+  | 'percent'
+  | 'date'
+  | 'datetime';
+
+export interface GridComputedColumnSpec {
+  name: string;
+  label?: string | null;
+  formula: string;
+  format?: CellFormat | null;
+}
+
+export interface GridLookupColumnSpec {
+  name: string;
+  label?: string | null;
+  from_table_id: number;
+  match_column_local: string;
+  match_column_remote: string;
+  return_column: string;
+  format?: CellFormat | null;
+}
+
+export type GridTotalsKind = 'sum' | 'avg' | 'min' | 'max' | 'count';
+
+export interface GridScreenSpecBuilt {
+  columns: string[];
+  editable_columns?: string[];
+  filters?: ListFilterSpec[];
+  page_size?: number;
+  default_sort_column?: string | null;
+  default_sort_direction?: 'asc' | 'desc';
+  allow_add_row?: boolean;
+  allow_delete_row?: boolean;
+  required_columns?: string[];
+  default_values?: Record<string, unknown>;
+  computed_columns?: GridComputedColumnSpec[];
+  lookup_columns?: GridLookupColumnSpec[];
+  totals?: Record<string, GridTotalsKind>;
   empty_state_message?: string | null;
 }
 
@@ -188,6 +233,7 @@ export interface ScreenSpec {
   list?: ListScreenSpecBuilt | null;
   doc?: DocScreenSpecBuilt | null;
   dashboard?: DashboardScreenSpecBuilt | null;
+  grid?: GridScreenSpecBuilt | null;
   rls?: ScreenRlsRuleSpec[];
   rls_default?: ScreenRlsRuleSpec | null;
 }

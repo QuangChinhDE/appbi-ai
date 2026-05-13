@@ -23,6 +23,7 @@ import {
   ClipboardEdit,
   Eye,
   FileText,
+  Grid3x3,
   HelpCircle,
   LayoutDashboard,
   ListChecks,
@@ -117,6 +118,11 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
     const hasManual = !!(s.dashboard?.share_token || '').trim();
     if (!hasManaged && !hasManual) return 'missing';
   }
+  if (s.kind === 'grid') {
+    if (!s.table_id) return 'missing';
+    const cols = s.grid?.columns || [];
+    if (cols.length === 0) return 'warn';
+  }
   return 'ok';
 }
 
@@ -125,12 +131,14 @@ const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   list: ListChecks,
   doc: FileText,
   dashboard: LayoutDashboard,
+  grid: Grid3x3,
 };
 const KIND_LABEL: Record<ScreenKind, string> = {
   form: 'Form',
   list: 'List',
   doc: 'Document',
   dashboard: 'Dashboard',
+  grid: 'Grid',
 };
 
 
@@ -289,12 +297,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
       list: 'List',
       doc: 'Document',
       dashboard: 'Dashboard',
+      grid: 'Grid',
     };
     const iconByKind: Record<ScreenKind, string> = {
       form: 'ClipboardEdit',
       list: 'ListChecks',
       doc: 'FileText',
       dashboard: 'LayoutDashboard',
+      grid: 'Grid3x3',
     };
     const base: ScreenSpec = {
       id,
@@ -316,6 +326,18 @@ export default function WorkboardBuilder({ workboard }: Props) {
       // table binding either way.
       base.dashboard = {};
       base.table_id = null;
+    }
+    if (kind === 'grid') {
+      base.grid = {
+        columns: [],
+        editable_columns: [],
+        filters: [],
+        page_size: 100,
+        allow_add_row: true,
+        allow_delete_row: true,
+        required_columns: [],
+        default_values: {},
+      };
     }
     setLayout((curr) => ({
       ...curr,
@@ -400,6 +422,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
             <div className="grid grid-cols-2 gap-1">
               <AddBtn icon={ClipboardEdit} label="Form" onClick={() => addScreen('form')} />
               <AddBtn icon={ListChecks} label="List" onClick={() => addScreen('list')} />
+              <AddBtn icon={Grid3x3} label="Grid" onClick={() => addScreen('grid')} />
               <AddBtn icon={FileText} label="Document" onClick={() => addScreen('doc')} />
               <AddBtn
                 icon={LayoutDashboard}

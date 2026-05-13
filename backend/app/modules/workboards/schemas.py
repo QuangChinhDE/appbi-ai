@@ -458,6 +458,114 @@ class ListScreenSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class GridComputedColumn(BaseModel):
+    """A read-only column whose value is evaluated from a formula at render
+    time. Formulas use a small Sheets-style language with row-local
+    references (other column names) and ~25 whitelisted functions
+    (IF / SUM / CONCAT / TODAY / DATEDIF / ROUND / …).
+
+    Per-row only — references resolve against the current row's values
+    (including upstream computed/lookup columns). Cross-row aggregation
+    belongs in the grid ``totals`` map, not here.
+    """
+
+    name: str = Field(..., min_length=1, max_length=120)
+    """Identifier exposed in the grid + the formula scope of later
+    computed columns. Must be unique across visible/computed/lookup
+    columns; the runtime rejects collisions to avoid ambiguity."""
+
+    label: Optional[str] = Field(default=None, max_length=200)
+    formula: str = Field(..., min_length=1, max_length=2000)
+    format: Optional[Literal[
+        "text", "number", "integer", "currency", "percent", "date", "datetime"
+    ]] = None
+    """Cell formatter hint; the runtime/exporter applies it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GridLookupColumn(BaseModel):
+    """A read-only column populated by joining one cell value against
+    another dataset table — a "VLOOKUP done relationally".
+
+    Implemented as a batched ``SELECT match_column_remote, return_column
+    FROM <linked table> WHERE match_column_remote IN (...)`` on the page's
+    rows, then mapped back so each row gets the resolved value.
+    """
+
+    name: str = Field(..., min_length=1, max_length=120)
+    label: Optional[str] = Field(default=None, max_length=200)
+    from_table_id: int = Field(..., ge=1)
+    match_column_local: str = Field(..., min_length=1, max_length=120)
+    match_column_remote: str = Field(..., min_length=1, max_length=120)
+    return_column: str = Field(..., min_length=1, max_length=120)
+    format: Optional[Literal[
+        "text", "number", "integer", "currency", "percent", "date", "datetime"
+    ]] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GridScreenSpec(BaseModel):
+    """A spreadsheet-style screen bound to one dataset table.
+
+    Like a list screen, but cells are editable inline. Used when end users
+    want bulk data-entry / quick correction over a row set narrowed by the
+    builder's pre-configured filters (e.g. ``assigned_to = {{app_user.username}}``).
+    Read filtering + per-cell write permission both flow through the same
+    ``rls`` rules the form/list screens use — ``can_update`` / ``can_delete``
+    / ``can_create`` gate inline edit, add-row, and delete respectively, and
+    ``writable_columns`` restricts which columns a given role may modify.
+
+    Three forms of derived data are supported:
+
+    * ``computed_columns`` — per-row formula columns (Sheets-style).
+    * ``lookup_columns``   — pull values from a related dataset table.
+    * ``totals``           — footer aggregations (sum / avg / min / max / count)
+      computed over the current page's filtered rows.
+
+    All three are **read-only** server-side: PATCH requests that try to
+    write to a computed or lookup column are stripped before the SQL UPDATE,
+    so a malicious client can't bypass the formula by sending a raw value.
+    """
+
+    columns: List[str] = Field(default_factory=list)
+    """Columns surfaced on the grid, in display order. May include the
+    names of computed/lookup columns — they're rendered in the same row
+    as regular columns but marked read-only."""
+
+    editable_columns: List[str] = Field(default_factory=list)
+    """Columns the end user may edit. Must be a subset of ``columns`` and
+    must NOT include any computed/lookup column name. Empty = read-only."""
+
+    filters: List[ListFilter] = Field(default_factory=list)
+
+    page_size: int = Field(default=100, ge=10, le=500)
+    default_sort_column: Optional[str] = None
+    default_sort_direction: Literal["asc", "desc"] = "desc"
+
+    allow_add_row: bool = True
+    allow_delete_row: bool = True
+
+    required_columns: List[str] = Field(default_factory=list)
+    default_values: Dict[str, Any] = Field(default_factory=dict)
+
+    computed_columns: List[GridComputedColumn] = Field(default_factory=list)
+    lookup_columns: List[GridLookupColumn] = Field(default_factory=list)
+    totals: Dict[str, Literal["sum", "avg", "min", "max", "count"]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-column footer aggregation applied to the current page's "
+            "rows. Keys are column names (regular, computed, or lookup); "
+            "values are aggregation kinds."
+        ),
+    )
+
+    empty_state_message: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DocScreenSpec(BaseModel):
     """A document-view screen (printable A4 layout: header, kv_grid, data_table, signature)."""
 
@@ -576,7 +684,7 @@ class Screen(BaseModel):
     """
 
     id: str = Field(..., min_length=1, max_length=64)
-    kind: Literal["form", "list", "doc", "dashboard"] = "form"
+    kind: Literal["form", "list", "doc", "dashboard", "grid"] = "form"
     title: str = Field(..., min_length=1, max_length=120)
     icon: Optional[str] = None
     description: Optional[str] = None
@@ -589,6 +697,7 @@ class Screen(BaseModel):
     list: Optional[ListScreenSpec] = None
     doc: Optional[DocScreenSpec] = None
     dashboard: Optional[DashboardScreenSpec] = None
+    grid: Optional[GridScreenSpec] = None
 
     # Central column label map: {db_column_name: display_label}.
     # Used by list/doc screens to show friendly column headers instead of raw

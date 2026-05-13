@@ -1207,6 +1207,17 @@ if settings.WORKBOARDS_ENABLED:
                 "icon": screen.icon,
                 "description": screen.description,
             }
+        if screen.kind == "grid":
+            return {
+                **screen_runtime.render_grid_screen(
+                    db, wb, screen, identity=identity
+                ),
+                "screen_id": screen.id,
+                "kind": "grid",
+                "title": screen.title,
+                "icon": screen.icon,
+                "description": screen.description,
+            }
         if screen.kind == "doc":
             return screen_runtime.render_doc_screen(
                 db, wb, screen, identity=identity, app_user_payload=app_user
@@ -1627,6 +1638,87 @@ if settings.WORKBOARDS_ENABLED:
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return {"action": "update", **result}
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/grid")
+    def workspace_screen_grid_rows(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict | None,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Paginated rows for a grid screen — includes PK columns + grid spec."""
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        body = body or {}
+        return {
+            **screen_runtime.render_grid_screen(
+                db,
+                wb,
+                screen,
+                identity=identity,
+                page=int(body.get("page") or 1),
+                page_size=int(body["page_size"]) if body.get("page_size") else None,
+                extra_filters=body.get("filters") or [],
+            ),
+            "screen_id": screen.id,
+            "kind": "grid",
+            "title": screen.title,
+            "icon": screen.icon,
+            "description": screen.description,
+        }
+
+
+    @router.delete("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
+    def workspace_screen_delete(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Delete one row via a grid screen.
+
+        Payload: ``{"pk": {pk_col: value, ...}}``. RLS ``can_delete`` is
+        enforced server-side; the row is also confirmed against the read
+        filters before the DELETE is issued.
+        """
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        pk = body.get("pk") if isinstance(body, dict) else None
+        if not isinstance(pk, dict) or not pk:
+            raise HTTPException(status_code=400, detail="pk is required.")
+        try:
+            result = screen_runtime.delete_screen_row(
+                db, wb, screen, pk, identity=identity
+            )
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"action": "delete", **result}
 
 
 @router.get("/dashboards/{token}/filters/distinct-values")

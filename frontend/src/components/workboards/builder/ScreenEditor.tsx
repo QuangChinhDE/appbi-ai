@@ -19,6 +19,7 @@ import FormScreenEditor from './FormScreenEditor';
 import ListScreenEditor from './ListScreenEditor';
 import DocScreenEditor from './DocScreenEditor';
 import DashboardScreenEditor from './DashboardScreenEditor';
+import GridScreenEditor from './GridScreenEditor';
 import RlsEditor from './RlsEditor';
 
 interface DatasetTableInfo {
@@ -46,6 +47,7 @@ const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   list: 'List',
   doc: 'Document',
   dashboard: 'Dashboard',
+  grid: 'Grid',
 };
 
 export default function ScreenEditor({
@@ -68,13 +70,14 @@ export default function ScreenEditor({
   const fieldCount = screen.kind === 'form' ? (screen.form?.fields?.length ?? 0) : undefined;
   const columnCount = screen.kind === 'list' ? (screen.list?.columns?.length ?? 0) : undefined;
   const blockCount = screen.kind === 'doc' ? (screen.doc?.blocks?.length ?? 0) : undefined;
+  const gridColCount = screen.kind === 'grid' ? (screen.grid?.columns?.length ?? 0) : undefined;
   const ruleCount = (screen.rls || []).length;
 
   const items: TabItem<TabId>[] = [
     {
       key: 'form',
       label: screenLabel,
-      badge: badge(fieldCount ?? columnCount ?? blockCount),
+      badge: badge(fieldCount ?? columnCount ?? blockCount ?? gridColCount),
     },
     { key: 'permission', label: 'Permissions', badge: badge(ruleCount) },
     { key: 'advanced', label: 'Advanced' },
@@ -118,6 +121,9 @@ export default function ScreenEditor({
           )}
           {screen.kind === 'dashboard' && (
             <DashboardScreenEditor screen={screen} onChange={onChange} />
+          )}
+          {screen.kind === 'grid' && (
+            <GridScreenEditor screen={screen} tables={tables} onChange={onChange} />
           )}
         </>
       )}
