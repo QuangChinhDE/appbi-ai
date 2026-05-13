@@ -958,6 +958,7 @@ export function AdvancedExploreChart({
           columnWidths={style.tableColumnWidths}
           onColumnWidthsChange={onStyleConfigChange ? tableWidthsChange : undefined}
           columnAlignments={style.tableColumnAlignments}
+          hyperlinkRules={style.tableHyperlinkRules}
         />
       </ChartFrame>
     );

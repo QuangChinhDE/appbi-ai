@@ -810,6 +810,7 @@ export function ChartPreview({
             columnWidths={style.tableColumnWidths}
             onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
             columnAlignments={style.tableColumnAlignments}
+            hyperlinkRules={style.tableHyperlinkRules}
           />
         </div>
       </div>

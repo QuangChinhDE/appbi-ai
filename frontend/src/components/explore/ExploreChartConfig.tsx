@@ -45,6 +45,7 @@ import type {
   KpiValueColorRule,
   TableColumnAlignment,
   TableHeatmapRule,
+  TableHyperlinkRule,
   TableSummaryCalculation,
   TableSummaryRowConfig,
   TimeGranularity,
@@ -144,6 +145,7 @@ export interface ChartStyleConfig {
   tableSummaryRows?: TableSummaryRowConfig[];
   tableColumnWidths?: Record<string, number>;
   tableColumnAlignments?: Record<string, TableColumnAlignment>;
+  tableHyperlinkRules?: TableHyperlinkRule[];
   // Chart title (shown above the chart)
   chartTitle?: string;
   // PIE: donut inner radius (0 = full pie, >0 = donut, percentage of outer radius 0-80)
@@ -208,6 +210,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   tableSummaryLabel: 'Total',
   tableColumnWidths: undefined,
   tableColumnAlignments: undefined,
+  tableHyperlinkRules: undefined,
   // New features
   chartTitle: '',
   pieInnerRadius: 0,
@@ -276,6 +279,21 @@ export function normalizeChartStyleConfig(
         && ['left', 'center', 'right'].includes(String(entry[1]))
       ));
     normalized.tableColumnAlignments = validAlignments.length > 0 ? Object.fromEntries(validAlignments) : undefined;
+  }
+
+  if (Array.isArray(normalized.tableHyperlinkRules)) {
+    const validRules = normalized.tableHyperlinkRules
+      .map((rule) => ({
+        ...rule,
+        id: rule.id?.trim() || undefined,
+        targetColumn: rule.targetColumn?.trim() || '',
+        urlColumn: rule.urlColumn?.trim() || '',
+        openInNewTab: rule.openInNewTab !== false,
+      }))
+      .filter((rule) => rule.targetColumn && rule.urlColumn);
+    normalized.tableHyperlinkRules = validRules.length > 0 ? validRules : undefined;
+  } else {
+    normalized.tableHyperlinkRules = undefined;
   }
 
   if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'tableEnableConditionalFormatting')) {
@@ -817,6 +835,32 @@ function createDefaultTableSummaryRow(
   };
 }
 
+function createTableHyperlinkRuleId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDefaultTableHyperlinkRule(displayedColumns: Col[], availableColumns: Col[]): TableHyperlinkRule {
+  const targetColumn = displayedColumns[0]?.name ?? availableColumns[0]?.name ?? '';
+  const urlCandidate = availableColumns.find((column) => {
+    const name = column.name.toLowerCase();
+    return name.includes('url') || name.includes('link') || name.includes('href');
+  });
+  const urlColumn = urlCandidate?.name
+    ?? availableColumns.find((column) => column.name !== targetColumn)?.name
+    ?? targetColumn;
+
+  return {
+    id: createTableHyperlinkRuleId(),
+    targetColumn,
+    urlColumn,
+    openInNewTab: true,
+  };
+}
+
 function createDefaultKpiColorRule(index = 0): KpiValueColorRule {
   const presets = [
     { value: 0, color: '#16a34a', label: 'Positive' },
@@ -847,6 +891,18 @@ function pruneTableColumnAlignments(
       && ['left', 'center', 'right'].includes(entry[1])
     ));
   return validAlignments.length > 0 ? Object.fromEntries(validAlignments) : undefined;
+}
+
+function pruneTableHyperlinkRules(rules: TableHyperlinkRule[]): TableHyperlinkRule[] | undefined {
+  const validRules = rules
+    .map((rule) => ({
+      id: rule.id?.trim() || createTableHyperlinkRuleId(),
+      targetColumn: rule.targetColumn?.trim() || '',
+      urlColumn: rule.urlColumn?.trim() || '',
+      openInNewTab: rule.openInNewTab !== false,
+    }))
+    .filter((rule) => rule.targetColumn && rule.urlColumn);
+  return validRules.length > 0 ? validRules : undefined;
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Column helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -1360,6 +1416,7 @@ export function ExploreChartConfig({
   const tableSummaryRows = normalizedStyleConfig.tableSummaryRows ?? [];
   const tableColumnWidths = normalizedStyleConfig.tableColumnWidths ?? {};
   const tableColumnAlignments = normalizedStyleConfig.tableColumnAlignments ?? {};
+  const tableHyperlinkRules = normalizedStyleConfig.tableHyperlinkRules ?? [];
   const isPivotEnabled = tableMode === 'pivot';
   const isSummaryRowEnabled = normalizedStyleConfig.tableShowSummaryRow ?? false;
   const isHeatmapEnabled = normalizedStyleConfig.tableEnableHeatmap ?? false;
@@ -1449,6 +1506,10 @@ export function ExploreChartConfig({
 
   const setTableColumnAlignments = (alignments: Record<string, TableColumnAlignment>) => {
     updStyle({ tableColumnAlignments: pruneTableColumnAlignments(alignments) });
+  };
+
+  const setTableHyperlinkRules = (rules: TableHyperlinkRule[]) => {
+    updStyle({ tableHyperlinkRules: pruneTableHyperlinkRules(rules) });
   };
 
   const toggleTablePivot = (enabled: boolean) => {
@@ -1587,6 +1648,27 @@ export function ExploreChartConfig({
       ...tableColumnAlignments,
       [columnName]: alignment,
     });
+  };
+
+  const updateTableHyperlinkRule = (index: number, patch: Partial<TableHyperlinkRule>) => {
+    setTableHyperlinkRules(
+      tableHyperlinkRules.map((rule, ruleIndex) => (
+        ruleIndex === index ? { ...rule, ...patch } : rule
+      )),
+    );
+  };
+
+  const addTableHyperlinkRule = () => {
+    setTableHyperlinkRules([
+      ...tableHyperlinkRules,
+      createDefaultTableHyperlinkRule(tableFormattingColumns, availableColumns),
+    ]);
+  };
+
+  const removeTableHyperlinkRule = (index: number) => {
+    setTableHyperlinkRules(
+      tableHyperlinkRules.filter((_, ruleIndex) => ruleIndex !== index),
+    );
   };
 
   const resetTableColumnWidth = (columnName: string) => {
@@ -1817,6 +1899,76 @@ export function ExploreChartConfig({
             />
           )}
 
+        </Disclosure>
+      )}
+
+      {isTableLike && !isPivotEnabled && tableFormattingColumns.length > 0 && availableColumns.length > 0 && (
+        <Disclosure
+          title="Cell Links"
+          hint="Map a displayed text column to a URL column. The URL column can stay hidden from the visible table columns."
+          defaultOpen={tableHyperlinkRules.length > 0}
+        >
+          {tableHyperlinkRules.length > 0 && (
+            <div className="space-y-3">
+              {tableHyperlinkRules.map((rule, index) => (
+                <div
+                  key={rule.id || `${rule.targetColumn}-${rule.urlColumn}-${index}`}
+                  className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+                      Link {index + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeTableHyperlinkRule(index)}
+                      className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger"
+                      title="Remove link"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <SelectSlot
+                      label="Text Column"
+                      required
+                      value={rule.targetColumn}
+                      options={tableFormattingColumns}
+                      placeholder="select text column"
+                      onChange={(value) => updateTableHyperlinkRule(index, { targetColumn: value })}
+                    />
+                    <SelectSlot
+                      label="URL Column"
+                      required
+                      value={rule.urlColumn}
+                      options={availableColumns}
+                      placeholder="select URL column"
+                      onChange={(value) => updateTableHyperlinkRule(index, { urlColumn: value })}
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={rule.openInNewTab !== false}
+                      onChange={(event) => updateTableHyperlinkRule(index, { openInNewTab: event.target.checked })}
+                      className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
+                    />
+                    Open in new tab
+                  </label>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={addTableHyperlinkRule}
+            className="w-full rounded-md border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-2"
+          >
+            + Add link rule
+          </button>
         </Disclosure>
       )}
 

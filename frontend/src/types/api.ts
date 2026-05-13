@@ -44,6 +44,13 @@ export interface TableHeatmapRule {
 
 export type TableColumnAlignment = 'left' | 'center' | 'right';
 
+export interface TableHyperlinkRule {
+  id?: string;
+  targetColumn: string;
+  urlColumn: string;
+  openInNewTab?: boolean;
+}
+
 export type TableSummaryCalculation =
   | 'sum'
   | 'avg'

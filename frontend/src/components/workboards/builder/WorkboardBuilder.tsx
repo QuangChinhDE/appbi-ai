@@ -8,7 +8,13 @@
  */
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from 'react-resizable-panels';
 import {
   AlertCircle,
   ArrowDown,
@@ -143,12 +149,40 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
+  const previewPanelRef = useRef<ImperativePanelHandle>(null);
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
   }, [workboard.id, workboard.dataset_id]);
 
-  const togglePreview = () => setPreviewCollapsed((prev) => !prev);
+  // Split-ratio persistence (per user, not per workboard — same screen real-
+  // estate regardless of which workboard the user is editing).
+  const SPLIT_STORAGE_KEY = 'wb-builder-split-v1';
+  const PREVIEW_COLLAPSED_KEY = 'wb-builder-preview-collapsed-v1';
+
+  // Restore "preview collapsed" preference once on mount. The Panel itself
+  // restores its size via `autoSaveId`, but the collapsed/expanded state
+  // needs its own flag because a collapsed Panel has size 0.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const wasCollapsed = window.localStorage.getItem(PREVIEW_COLLAPSED_KEY) === '1';
+    if (wasCollapsed) {
+      setPreviewCollapsed(true);
+      // Defer until the Panel is mounted.
+      queueMicrotask(() => previewPanelRef.current?.collapse());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const togglePreview = () => {
+    const panel = previewPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) {
+      panel.expand();
+    } else {
+      panel.collapse();
+    }
+  };
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the
@@ -352,7 +386,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
               ))}
             </div>
           ) : (
-            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-6 text-center text-tiny text-text-tertiary">
+            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-6 text-center text-caption text-text-tertiary">
               No screens yet.
               <br />
               Add the first screen below.
@@ -386,59 +420,91 @@ export default function WorkboardBuilder({ workboard }: Props) {
         </div>
       </aside>
 
-      {/* ── Workspace = editor + preview, splits 50/50 when preview is open.
-          Sidebar (w-56) sits outside this so the split ignores its width. */}
-      <div className="flex min-w-0 flex-1">
-      <main
-        className={`wb-editor-pane relative min-w-0 overflow-y-auto bg-surface-0 ${
-          previewCollapsed ? 'flex-1' : 'w-1/2 shrink-0'
-        }`}
+      {/* ── Workspace = editor + preview, resizable split.
+          Sidebar (w-56) sits outside this so the split ignores its width.
+          `autoSaveId` persists the editor/preview ratio to localStorage; the
+          preview Panel is `collapsible` so togglePreview() can hide it
+          entirely (size 0) and the editor expands to fill the row. */}
+      <PanelGroup
+        direction="horizontal"
+        autoSaveId={SPLIT_STORAGE_KEY}
+        className="flex min-w-0 flex-1"
       >
-        {previewCollapsed && (
-          <button
-            type="button"
-            onClick={togglePreview}
-            title="Open Live Preview"
-            className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-tiny text-text-secondary shadow-sm hover:bg-surface-2 hover:text-text-primary"
-          >
-            <Eye className="h-3.5 w-3.5" />
-            Live Preview
-          </button>
-        )}
-        {!hasScreens ? (
-          <WelcomeEmptyState
-            onAdd={addScreen}
-            onOpenSettings={() => setShowAppSettings(true)}
+        <Panel id="editor" order={1} minSize={30} defaultSize={55}>
+          <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
+            {previewCollapsed && (
+              <button
+                type="button"
+                onClick={togglePreview}
+                title="Open Live Preview"
+                className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption text-text-secondary shadow-sm hover:bg-surface-2 hover:text-text-primary"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                Live Preview
+              </button>
+            )}
+            {!hasScreens ? (
+              <WelcomeEmptyState
+                onAdd={addScreen}
+                onOpenSettings={() => setShowAppSettings(true)}
+              />
+            ) : !activeScreen ? (
+              <PickAScreenHint screens={layout.screens} onPick={setActiveScreenId} />
+            ) : (
+              <div className="mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 lg:px-8 xl:px-10">
+                <ScreenEditor
+                  screen={activeScreen}
+                  allScreens={layout.screens}
+                  tables={tables}
+                  tablesLoading={tablesLoading}
+                  workboardId={workboard.id}
+                  onChange={updateScreen}
+                  focusFieldColumn={focusFieldColumn}
+                  onFocusFieldHandled={() => setFocusFieldColumn(null)}
+                />
+              </div>
+            )}
+          </main>
+        </Panel>
+        <PanelResizeHandle
+          className="group relative w-px shrink-0 bg-[rgb(var(--border-line))] data-[panel-group-direction=horizontal]:cursor-col-resize data-[resize-handle-state=hover]:bg-brand/60 data-[resize-handle-state=drag]:bg-brand"
+          hidden={previewCollapsed}
+        >
+          {/* Wider invisible hit-area so the 1px line is still easy to grab. */}
+          <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
+        </PanelResizeHandle>
+        <Panel
+          id="preview"
+          order={2}
+          ref={previewPanelRef}
+          minSize={25}
+          defaultSize={45}
+          collapsible
+          collapsedSize={0}
+          onCollapse={() => {
+            setPreviewCollapsed(true);
+            if (typeof window !== 'undefined') {
+              window.localStorage.setItem(PREVIEW_COLLAPSED_KEY, '1');
+            }
+          }}
+          onExpand={() => {
+            setPreviewCollapsed(false);
+            if (typeof window !== 'undefined') {
+              window.localStorage.setItem(PREVIEW_COLLAPSED_KEY, '0');
+            }
+          }}
+        >
+          <BuilderLivePreview
+            workboard={workboard}
+            saveStatus={autosave.status}
+            savedAt={autosave.savedAt}
+            saveError={autosave.errorMessage}
+            activeScreenId={activeScreenId}
+            collapsed={previewCollapsed}
+            onToggle={togglePreview}
           />
-        ) : !activeScreen ? (
-          <PickAScreenHint screens={layout.screens} onPick={setActiveScreenId} />
-        ) : (
-          <div className="mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 lg:px-8 xl:px-10">
-            <ScreenEditor
-              screen={activeScreen}
-              allScreens={layout.screens}
-              tables={tables}
-              tablesLoading={tablesLoading}
-              workboardId={workboard.id}
-              onChange={updateScreen}
-              focusFieldColumn={focusFieldColumn}
-              onFocusFieldHandled={() => setFocusFieldColumn(null)}
-            />
-          </div>
-        )}
-      </main>
-
-      {/* ── Live Preview iframe ──────────────────────────────────── */}
-      <BuilderLivePreview
-        workboard={workboard}
-        saveStatus={autosave.status}
-        savedAt={autosave.savedAt}
-        saveError={autosave.errorMessage}
-        activeScreenId={activeScreenId}
-        collapsed={previewCollapsed}
-        onToggle={togglePreview}
-      />
-      </div>
+        </Panel>
+      </PanelGroup>
 
       {showAppSettings && (
         <AppSettingsEditor
@@ -467,7 +533,7 @@ function AutosaveFooter({
 }) {
   if (status === 'saving') {
     return (
-      <div className="flex items-center gap-1.5 text-tiny text-info">
+      <div className="flex items-center gap-1.5 text-caption text-info">
         <Loader2 className="h-3 w-3 animate-spin" />
         Saving...
       </div>
@@ -475,7 +541,7 @@ function AutosaveFooter({
   }
   if (status === 'pending') {
     return (
-      <div className="flex items-center gap-1.5 text-tiny text-warning">
+      <div className="flex items-center gap-1.5 text-caption text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
         Editing - saves in ~1s
       </div>
@@ -483,7 +549,7 @@ function AutosaveFooter({
   }
   if (status === 'error') {
     return (
-      <div className="flex items-start gap-1 text-tiny text-danger" title={error || ''}>
+      <div className="flex items-start gap-1 text-caption text-danger" title={error || ''}>
         <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
         Save failed - edit again to retry
       </div>
@@ -491,14 +557,14 @@ function AutosaveFooter({
   }
   if (status === 'saved' && savedAt) {
     return (
-      <div className="flex items-center gap-1.5 text-tiny text-success">
+      <div className="flex items-center gap-1.5 text-caption text-success">
         <CheckCircle2 className="h-3 w-3" />
         Synced {savedAt.toLocaleTimeString()}
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-1.5 text-tiny text-text-tertiary">
+    <div className="flex items-center gap-1.5 text-caption text-text-tertiary">
       <Save className="h-3 w-3" />
       Auto-saves as you edit
     </div>
@@ -593,9 +659,9 @@ function StarterCard({
       </div>
       <div>
         <h4 className="text-caption font-emphasis text-text-primary">{title}</h4>
-        <p className="mt-1 text-tiny text-text-tertiary">{description}</p>
+        <p className="mt-1 text-caption text-text-tertiary">{description}</p>
       </div>
-      <span className="mt-auto flex items-center gap-1 text-tiny font-emphasis text-brand opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="mt-auto flex items-center gap-1 text-caption font-emphasis text-brand opacity-0 transition-opacity group-hover:opacity-100">
         <Plus className="h-3 w-3" /> Add this screen
       </span>
     </button>
@@ -633,7 +699,7 @@ function PickAScreenHint({
                   <div className="truncate text-caption font-emphasis text-text-primary">
                     {s.title}
                   </div>
-                  <div className="text-tiny text-text-quaternary">
+                  <div className="text-micro text-text-quaternary">
                     {KIND_LABEL[s.kind]}
                   </div>
                 </div>
@@ -705,7 +771,7 @@ function ScreenListItem({
             </span>
             <StatusDot status={status} />
           </div>
-          <div className="truncate text-tiny text-text-quaternary">
+          <div className="truncate text-micro text-text-quaternary">
             {KIND_LABEL[screen.kind]}
           </div>
         </div>
@@ -839,7 +905,7 @@ function ScreenSettingsPopover({
       </div>
       <div className="space-y-2">
         <label className="block">
-          <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+          <span className="mb-1 block text-label font-emphasis text-text-secondary">
             Screen name
           </span>
           <input
@@ -849,7 +915,7 @@ function ScreenSettingsPopover({
           />
         </label>
         <label className="block">
-          <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+          <span className="mb-1 block text-label font-emphasis text-text-secondary">
             Short description
           </span>
           <textarea
@@ -859,7 +925,7 @@ function ScreenSettingsPopover({
             className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
           />
         </label>
-        <label className="flex items-center gap-2 text-tiny text-text-secondary">
+        <label className="flex items-center gap-2 text-caption text-text-secondary">
           <input
             type="checkbox"
             checked={screen.show_in_nav !== false}

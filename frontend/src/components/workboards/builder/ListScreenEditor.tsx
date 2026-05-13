@@ -408,7 +408,7 @@ function ColumnsInspector({
         onChange={onChange}
         placeholder="Click to pick columns to display..."
       />
-      <p className="text-tiny text-text-tertiary">
+      <p className="text-caption text-text-tertiary">
         The selected order controls the table order in the public list.
       </p>
     </div>

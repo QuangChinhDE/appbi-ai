@@ -78,7 +78,7 @@ export default function AppSettingsEditor({
               </button>
             </div>
             {datasetChanged && (
-              <p className="mt-2 text-tiny text-warning">
+              <p className="mt-2 text-caption text-warning">
                 Screens currently pointing to tables outside the new dataset will be cleared so you can map them again.
               </p>
             )}

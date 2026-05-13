@@ -242,6 +242,7 @@ function createDefaultTableStyleConfig(styleConfig: ChartStyleConfig): ChartStyl
     tableSummaryRows: undefined,
     tableColumnWidths: undefined,
     tableColumnAlignments: undefined,
+    tableHyperlinkRules: undefined,
   };
 }
 
@@ -844,20 +845,22 @@ export function ExploreEditor({
     () => buildExploreExecuteRequest({
       chartType,
       roleConfig: normalizedGeneratedRoleConfig,
+      styleConfig: chartStyleConfig,
       filters,
       limit: effectiveQueryLimit,
     }),
-    [chartType, normalizedGeneratedRoleConfig, filters, effectiveQueryLimit],
+    [chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit],
   );
   const generatedSql = useMemo(
     () => buildExploreSqlPreview({
       table: selectedTable,
       chartType,
       roleConfig: normalizedGeneratedRoleConfig,
+      styleConfig: chartStyleConfig,
       filters,
       limit: effectiveQueryLimit,
     }),
-    [selectedTable, chartType, normalizedGeneratedRoleConfig, filters, effectiveQueryLimit],
+    [selectedTable, chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit],
   );
   const currentQuerySignature = useMemo(
     () => buildQuerySignature({
@@ -867,6 +870,7 @@ export function ExploreEditor({
       sqlMode,
       chartType,
       roleConfig: normalizedRoleConfig,
+      styleConfig: chartStyleConfig,
       filters,
       request: executeRequest,
       customSql: customSqlDraft,
@@ -878,6 +882,7 @@ export function ExploreEditor({
       sqlMode,
       chartType,
       normalizedRoleConfig,
+      chartStyleConfig,
       filters,
       executeRequest,
       customSqlDraft,
@@ -1209,6 +1214,7 @@ export function ExploreEditor({
           limit: effectiveQueryLimit,
           roleConfig,
           customRoleConfig: roleConfig,
+          styleConfig: chartStyleConfig,
           filters,
           baseFilters: filters,
         });
@@ -1256,6 +1262,7 @@ export function ExploreEditor({
           sqlMode: 'custom',
           chartType,
           roleConfig: nextCustomRoleConfig,
+          styleConfig: chartStyleConfig,
           filters,
           request: executeRequest,
           customSql: sql,

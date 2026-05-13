@@ -460,7 +460,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@container wb-editor (min-width: 860px) {
+@container wb-editor (min-width: 720px) {
   .wb-grid-3 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -488,12 +488,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@container wb-editor (min-width: 860px) {
+@container wb-editor (min-width: 720px) {
   .wb-grid-4 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@container wb-editor (min-width: 1100px) {
+@container wb-editor (min-width: 960px) {
   .wb-grid-4 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -537,9 +537,9 @@
   gap: 1rem;
   grid-template-columns: minmax(0, 1fr);
 }
-@container wb-editor (min-width: 860px) {
+@container wb-editor (min-width: 720px) {
   .wb-inspector {
-    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+    grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
   }
 }
 
@@ -626,7 +626,7 @@
     flex: initial;
   }
 }
-@container wb-editor (min-width: 860px) {
+@container wb-editor (min-width: 720px) {
   .wb-row-doc-col {
     grid-template-columns: minmax(0, 1fr) minmax(0, 180px) minmax(0, 180px) auto;
   }

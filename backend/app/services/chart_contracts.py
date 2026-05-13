@@ -288,3 +288,81 @@ def normalize_chart_role_config(chart_type: str, role_config: dict | None) -> di
         normalized.pop("tablePivotMetric", None)
 
     return normalized
+
+
+def get_table_hyperlink_url_columns(
+    config: dict[str, Any] | None,
+    selected_columns: list[str] | None = None,
+) -> list[str]:
+    """Return URL source columns used by table hyperlink rules.
+
+    Rules are stored as optional presentation config. Invalid entries are
+    ignored so older or partially edited chart configs keep working.
+    """
+    if not isinstance(config, dict):
+        return []
+
+    style_config = config.get("styleConfig")
+    if not isinstance(style_config, dict):
+        return []
+
+    rules = style_config.get("tableHyperlinkRules")
+    if not isinstance(rules, list):
+        return []
+
+    target_columns = set(selected_columns or [])
+    seen: set[str] = set()
+    columns: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        target_column = str(rule.get("targetColumn") or "").strip()
+        url_column = str(rule.get("urlColumn") or "").strip()
+        if not target_column or not url_column or url_column in seen:
+            continue
+        if target_columns and target_column not in target_columns:
+            continue
+        seen.add(url_column)
+        columns.append(url_column)
+    return columns
+
+
+def with_table_hyperlink_query_columns(
+    chart_type: str,
+    role_config: dict | None,
+    chart_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Add hidden URL columns to TABLE runtime role config.
+
+    This only affects query execution. The saved role_config remains unchanged
+    so URL source columns do not become visible table columns.
+    """
+    original = role_config if isinstance(role_config, dict) else {}
+    normalized = normalize_chart_role_config(chart_type, role_config)
+    ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
+    if ctype != "TABLE" or normalized.get("tableMode") == "pivot":
+        return original
+
+    selected_columns = normalized.get("selectedColumns")
+    if not isinstance(selected_columns, list) or not selected_columns:
+        return original
+
+    next_columns = [
+        str(column).strip()
+        for column in selected_columns
+        if str(column or "").strip()
+    ]
+    seen = set(next_columns)
+    appended = False
+    for url_column in get_table_hyperlink_url_columns(chart_config, next_columns):
+        if url_column not in seen:
+            seen.add(url_column)
+            next_columns.append(url_column)
+            appended = True
+
+    if not appended:
+        return original
+
+    next_config = dict(normalized)
+    next_config["selectedColumns"] = next_columns
+    return next_config

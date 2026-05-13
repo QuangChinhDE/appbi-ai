@@ -8,8 +8,10 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies. `npm ci` honors package-lock.json strictly and is
+# reproducible — `npm install` could re-resolve caret ranges and pull a
+# different minor/major across builds.
+RUN npm ci
 
 # Stage 2: Builder
 # Stage 2: Builder

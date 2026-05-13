@@ -161,13 +161,13 @@ export default function WorkboardPreview({ workboard }: Props) {
               placeholder="Username preview"
               className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
             />
-            <p className="mt-1 text-tiny text-text-tertiary">
+            <p className="mt-1 text-caption text-text-tertiary">
               Enter a real username from the workspace app_users table, or leave
               it blank so the backend picks the first active user.
             </p>
           </>
         ) : (
-          <p className="mt-4 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-tiny text-text-tertiary">
+          <p className="mt-4 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-caption text-text-tertiary">
             Internal workspace - preview runs as your AppBI account, so no user
             selection is needed.
           </p>
@@ -189,7 +189,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         {sessionReady && (
           <button
             onClick={() => setIframeKey((k) => k + 1)}
-            className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
+            className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
           >
             <RefreshCw className="h-3 w-3" />
             Refresh iframe
@@ -201,7 +201,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             href={previewUrl}
             target="_blank"
             rel="noreferrer"
-            className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
+            className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
           >
             <ExternalLink className="h-3 w-3" />
             Open in a new tab
@@ -209,12 +209,12 @@ export default function WorkboardPreview({ workboard }: Props) {
         )}
 
         {error && (
-          <p className="mt-2 rounded-md border border-danger/30 bg-danger/10 px-2 py-1.5 text-tiny text-danger">
+          <p className="mt-2 rounded-md border border-danger/30 bg-danger/10 px-2 py-1.5 text-caption text-danger">
             {error}
           </p>
         )}
 
-        <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-tiny text-text-tertiary">
+        <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-caption text-text-tertiary">
           Preview uses the selected workspace app users table, so it does not depend on a fixed sample username.
         </div>
       </aside>

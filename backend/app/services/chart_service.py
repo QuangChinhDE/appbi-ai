@@ -20,6 +20,7 @@ from app.services.chart_contracts import (
     normalize_chart_role_config,
     normalize_filter_conditions,
     resolve_chart_query_filters,
+    with_table_hyperlink_query_columns,
 )
 from app.services.chart_semantic_service import (
     resolve_chart_semantic_binding,
@@ -1144,7 +1145,14 @@ def _execute_semantic_chart_runtime(
             f"Semantic chart needs an Explore '{explore_name}'"
         )
 
-    role_config = normalize_chart_role_config(chart_type, get_chart_active_role_config(chart_config))
+    role_config = normalize_chart_role_config(
+        chart_type,
+        with_table_hyperlink_query_columns(
+            chart_type,
+            get_chart_active_role_config(chart_config),
+            chart_config,
+        ),
+    )
 
     def qualify(field: str | None) -> str:
         raw = str(field or "").strip()
@@ -1375,7 +1383,11 @@ def _execute_chart_runtime_for_table(
 
     filter_context = normalize_chart_filter_context(filter_context)
     chart_config = chart_config or {}
-    role_config = get_chart_active_role_config(chart_config)
+    role_config = with_table_hyperlink_query_columns(
+        chart_type,
+        get_chart_active_role_config(chart_config),
+        chart_config,
+    )
     filters = resolve_chart_query_filters(chart_config, filter_context)
     custom_sql = get_chart_custom_sql(chart_config)
     raw_extra_filters = list(extra_filters or [])

@@ -300,7 +300,7 @@ function Outline({
 
       <div className="space-y-1">
         <div
-          className={`group flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-tiny transition-colors ${
+          className={`group flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-caption transition-colors ${
             activeItem === 'page'
               ? 'border-brand/40 bg-brand/10 text-text-primary'
               : 'border-transparent hover:bg-surface-2'
@@ -313,7 +313,7 @@ function Outline({
             className="flex min-w-0 flex-1 flex-col text-left"
           >
             <span className="truncate font-medium text-text-primary">Page setup</span>
-            <span className="truncate text-tiny text-text-tertiary">
+            <span className="truncate text-caption text-text-tertiary">
               {page?.size || 'A4'} - {page?.orientation || 'portrait'} - {page?.margin_mm ?? 15} mm
             </span>
           </button>
@@ -330,7 +330,7 @@ function Outline({
           return (
             <div
               key={idx}
-              className={`group flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-tiny transition-colors ${
+              className={`group flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-caption transition-colors ${
                 isActive
                   ? 'border-brand/40 bg-brand/10 text-text-primary'
                   : 'border-transparent hover:bg-surface-2'
@@ -348,7 +348,7 @@ function Outline({
                     {meta.label}
                   </span>
                   {subtitle && (
-                    <span className="block truncate text-tiny text-text-tertiary">{subtitle}</span>
+                    <span className="block truncate text-caption text-text-tertiary">{subtitle}</span>
                   )}
                 </span>
               </button>
@@ -386,7 +386,7 @@ function Outline({
           );
         })}
         {blocks.length === 0 && (
-          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
+          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-caption text-text-tertiary">
             No blocks yet. Add one below.
           </p>
         )}
@@ -439,7 +439,7 @@ function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] py-1.5 text-tiny font-medium text-text-secondary hover:border-brand/40 hover:bg-brand/5 hover:text-text-primary"
+        className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] py-1.5 text-caption font-medium text-text-secondary hover:border-brand/40 hover:bg-brand/5 hover:text-text-primary"
       >
         <Plus className="h-3.5 w-3.5" />
         Add block
@@ -466,7 +466,7 @@ function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
                       onAdd(kind);
                       setOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-tiny text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-caption text-text-secondary hover:bg-surface-2 hover:text-text-primary"
                   >
                     <Icon className="h-3.5 w-3.5 text-text-tertiary" />
                     {meta.label}
@@ -720,7 +720,7 @@ function KvGridEditor({
           <Plus className="h-3.5 w-3.5" />
           Add cell
         </BuilderActionButton>
-        <label className="flex items-center gap-1.5 text-tiny text-text-secondary">
+        <label className="flex items-center gap-1.5 text-caption text-text-secondary">
           Columns per row
           <input
             type="number"
@@ -860,7 +860,7 @@ function DataTableEditor({
       <BuilderSubsection
         title="Columns"
         action={
-          <span className="rounded bg-surface-2 px-2 py-1 text-tiny font-medium text-text-tertiary">
+          <span className="rounded bg-surface-2 px-2 py-1 text-caption font-medium text-text-tertiary">
             {selectedColumns.length} selected
           </span>
         }
@@ -1039,7 +1039,7 @@ function ColumnTypeWarnings({
   const missing = selected.filter((col) => !typesByName.has(col));
   if (missing.length === 0) return null;
   return (
-    <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-tiny text-text-secondary">
+    <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-text-secondary">
       <b>Warning:</b> these selected columns don&apos;t exist on the current source:{' '}
       <code className="font-mono">{missing.join(', ')}</code>. Remove them or switch source.
     </div>
@@ -1211,10 +1211,10 @@ function ColumnObjectsEditor({
       <div className="grid gap-3 xl:grid-cols-[minmax(220px,0.9fr)_minmax(0,1.25fr)]">
         <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-2">
         <div className="mb-2 flex items-center justify-between gap-2 px-1">
-          <span className="text-tiny font-emphasis text-text-secondary">
+          <span className="text-caption font-emphasis text-text-secondary">
             Selected columns
           </span>
-          <span className="text-tiny text-text-tertiary">{selected.length}</span>
+          <span className="text-caption text-text-tertiary">{selected.length}</span>
         </div>
         <div className="max-h-[480px] overflow-y-auto p-1">
           {selected.length === 0 ? (
@@ -1247,14 +1247,14 @@ function ColumnObjectsEditor({
                       onClick={() => setActiveName(name)}
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
-                      <span className="flex h-5 w-6 shrink-0 items-center justify-center rounded bg-surface-2 text-tiny text-text-tertiary">
+                      <span className="flex h-5 w-6 shrink-0 items-center justify-center rounded bg-surface-2 text-caption text-text-tertiary">
                         {idx + 1}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-caption font-medium text-text-primary">
                           {meta.label || name}
                         </span>
-                        <span className="flex min-w-0 flex-wrap items-center gap-1 text-tiny text-text-tertiary">
+                        <span className="flex min-w-0 flex-wrap items-center gap-1 text-caption text-text-tertiary">
                           {meta.label && meta.label !== name ? (
                             <span className="truncate">{name}</span>
                           ) : null}
@@ -1343,7 +1343,7 @@ function ColumnSettingsPanel({
           <h4 className="truncate text-caption font-emphasis text-text-primary">
             {meta.label || name}
           </h4>
-          <p className="mt-0.5 truncate text-tiny text-text-tertiary">
+          <p className="mt-0.5 truncate text-caption text-text-tertiary">
             {name}
             {type ? ` - ${type}` : ''}
           </p>
@@ -1627,7 +1627,7 @@ function TransformEditor({
             )}
           </Lbl>
           <Lbl label="Header columns">
-            <p className="mb-1 text-tiny text-text-tertiary">
+            <p className="mb-1 text-caption text-text-tertiary">
               Pick 1 column for a flat pivot, or 2+ to build a two-level grouped header.
             </p>
             {sourceColumns.length > 0 ? (
@@ -1702,7 +1702,7 @@ function TransformEditor({
               />
             </Lbl>
           </div>
-          <p className="text-tiny text-text-tertiary">
+          <p className="text-caption text-text-tertiary">
             Pivot runs in memory over at most <b>max_rows</b> fetched rows. Distinct values
             in the header column above <b>max pivot columns</b> will return error 422.
           </p>
@@ -1850,7 +1850,7 @@ function ColumnGroupsEditor({
       }
     >
       {groups.length === 0 ? (
-        <p className="text-tiny text-text-tertiary">
+        <p className="text-caption text-text-tertiary">
           No groups yet. Pick at least 2 display columns to create a grouped header.
         </p>
       ) : (
@@ -1908,7 +1908,7 @@ function ColumnGroupsEditor({
                 >
                   <Trash2 className="h-3.5 w-3.5 text-danger" />
                 </BuilderIconButton>
-                <div className="col-span-4 text-tiny text-text-tertiary">
+                <div className="col-span-4 text-caption text-text-tertiary">
                   Covers: {preview || '(invalid range)'}
                 </div>
               </div>

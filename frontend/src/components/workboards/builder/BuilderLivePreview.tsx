@@ -266,12 +266,13 @@ export default function BuilderLivePreview({
 
   // ── Collapsed: hide entirely so the editor fills the whole row.
   // The toggle that re-opens it lives in WorkboardBuilder's center panel.
+  // (The outer Panel uses `collapsedSize={0}` so its slot also disappears.)
   if (collapsed) {
     return null;
   }
 
   return (
-    <aside className="flex w-1/2 shrink-0 flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
+    <aside className="flex h-full w-full flex-col bg-surface-1">
       {/* Header — sync indicator + toggle */}
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -302,7 +303,7 @@ export default function BuilderLivePreview({
                   setSessionReady(false);
                 }}
                 disabled={loadingUsers || activePreviewUsers.length === 0}
-                className="max-w-[128px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny disabled:opacity-60"
+                className="max-w-[140px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption disabled:opacity-60"
                 title="Role preview"
               >
                 <option value="">{loadingUsers ? 'Loading roles...' : 'Auto role'}</option>
@@ -319,7 +320,7 @@ export default function BuilderLivePreview({
                   setSessionReady(false);
                 }}
                 disabled={loadingUsers || filteredPreviewUsers.length === 0}
-                className="max-w-[190px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny disabled:opacity-60"
+                className="max-w-[200px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption disabled:opacity-60"
                 title="App user preview"
               >
                 <option value="">
@@ -340,7 +341,7 @@ export default function BuilderLivePreview({
           )}
           {isInternal && (
             <span
-              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-tertiary"
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption text-text-tertiary"
               title="Internal workspace - preview runs as the AppBI staff account"
             >
               Internal · AppBI staff
@@ -395,7 +396,7 @@ export default function BuilderLivePreview({
           </Centered>
         ) : workspaces.length === 0 ? (
           <Centered>
-            <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-tiny text-warning">
+            <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-caption text-warning">
               No workspace is available for live preview. Create one in
               Settings → Workspaces. The default <code>public_app_users</code>{' '}
               mode needs a user table selected for the mini-app.
@@ -403,7 +404,7 @@ export default function BuilderLivePreview({
           </Centered>
         ) : sessionError ? (
           <Centered>
-            <div className="max-w-xs rounded-md border border-danger/30 bg-danger/10 p-3 text-tiny text-danger">
+            <div className="max-w-xs rounded-md border border-danger/30 bg-danger/10 p-3 text-caption text-danger">
               <div className="mb-2 flex items-center gap-1">
                 <AlertCircle className="h-3 w-3" />
                 Error
@@ -411,7 +412,7 @@ export default function BuilderLivePreview({
               {sessionError}
               <button
                 onClick={startSession}
-                className="mt-2 text-tiny text-brand hover:underline"
+                className="mt-2 text-caption text-brand hover:underline"
               >
                 Try again
               </button>
@@ -421,7 +422,7 @@ export default function BuilderLivePreview({
           <Centered>
             <div className="text-center">
               <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-text-tertiary" />
-              <p className="text-tiny text-text-tertiary">Creating preview session...</p>
+              <p className="text-caption text-text-tertiary">Creating preview session...</p>
             </div>
           </Centered>
         ) : previewUrl ? (
@@ -465,7 +466,7 @@ function SyncBadge({
 }) {
   if (status === 'pending') {
     return (
-      <span className="flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-tiny text-warning">
+      <span className="flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-micro text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
         Editing...
       </span>
@@ -473,7 +474,7 @@ function SyncBadge({
   }
   if (status === 'saving') {
     return (
-      <span className="flex items-center gap-1 rounded-full bg-info/10 px-2 py-0.5 text-tiny text-info">
+      <span className="flex items-center gap-1 rounded-full bg-info/10 px-2 py-0.5 text-micro text-info">
         <Loader2 className="h-2.5 w-2.5 animate-spin" />
         Saving...
       </span>
@@ -482,7 +483,7 @@ function SyncBadge({
   if (status === 'saved' && savedAt) {
     return (
       <span
-        className="flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-tiny text-success"
+        className="flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-micro text-success"
         title={`Saved at ${savedAt.toLocaleTimeString()}`}
       >
         <CheckCircle2 className="h-2.5 w-2.5" />
@@ -493,7 +494,7 @@ function SyncBadge({
   if (status === 'error') {
     return (
       <span
-        className="flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-tiny text-danger"
+        className="flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-micro text-danger"
         title={error || ''}
       >
         <AlertCircle className="h-2.5 w-2.5" />

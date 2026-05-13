@@ -102,7 +102,7 @@ export function CheckboxMultiSelect({
   const selected = new Set(selectedValues);
   if (options.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-tiny text-text-tertiary">
+      <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-caption text-text-tertiary">
         {emptyMessage}
       </div>
     );

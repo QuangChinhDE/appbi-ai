@@ -46,7 +46,7 @@ export function BuilderSection({
             {title}
           </h2>
           {description ? (
-            <p className="mt-0.5 max-w-3xl text-tiny text-text-tertiary">{description}</p>
+            <p className="mt-0.5 max-w-3xl text-caption text-text-tertiary">{description}</p>
           ) : null}
         </div>
         {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
@@ -75,7 +75,7 @@ export function BuilderSubsection({
         <div className="min-w-0">
           <h3 className="text-caption font-medium text-text-secondary">{title}</h3>
           {description ? (
-            <p className="mt-1 max-w-2xl text-tiny text-text-tertiary">{description}</p>
+            <p className="mt-1 max-w-2xl text-caption text-text-tertiary">{description}</p>
           ) : null}
         </div>
         {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
@@ -154,7 +154,7 @@ export function BuilderCollapsibleAdvanced({
         </span>
       </summary>
       <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
-        {description && <p className="mb-3 text-tiny text-text-tertiary">{description}</p>}
+        {description && <p className="mb-3 text-caption text-text-tertiary">{description}</p>}
         {children}
       </div>
     </details>
@@ -195,7 +195,7 @@ export function BuilderNavigator({
     <aside className={cx(BUILDER_PANEL, 'p-3', className)}>
       <div className="mb-3">
         <h2 className="text-caption font-emphasis text-text-primary">{title}</h2>
-        {description ? <p className="mt-0.5 text-tiny text-text-tertiary">{description}</p> : null}
+        {description ? <p className="mt-0.5 text-caption text-text-tertiary">{description}</p> : null}
       </div>
       <div className="space-y-4">{children}</div>
     </aside>
@@ -262,7 +262,7 @@ export function BuilderNavigatorItem({
             {badge ? <span className="shrink-0">{badge}</span> : null}
           </span>
           {subtitle ? (
-            <span className="block truncate text-tiny text-text-tertiary">{subtitle}</span>
+            <span className="block truncate text-caption text-text-tertiary">{subtitle}</span>
           ) : null}
         </span>
       </button>
@@ -293,7 +293,7 @@ export function BuilderInspectorPanel({
           {icon ? <span className="mt-0.5 shrink-0 text-text-tertiary">{icon}</span> : null}
           <div className="min-w-0">
             <h2 className="truncate text-body font-emphasis text-text-primary">{title}</h2>
-            {subtitle ? <p className="mt-0.5 text-tiny text-text-tertiary">{subtitle}</p> : null}
+            {subtitle ? <p className="mt-0.5 text-caption text-text-tertiary">{subtitle}</p> : null}
           </div>
         </div>
         {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
@@ -313,7 +313,7 @@ export function BuilderEmptyHint({
   return (
     <div
       className={cx(
-        'rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-4 py-5 text-center text-tiny text-text-tertiary',
+        'rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-4 py-5 text-center text-caption text-text-tertiary',
         className,
       )}
     >

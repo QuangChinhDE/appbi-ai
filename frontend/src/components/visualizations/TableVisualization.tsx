@@ -3,7 +3,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
-import type { TableColumnAlignment } from '@/types/api';
+import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
   SortConfig,
   ConditionalFormatRule,
@@ -36,6 +36,7 @@ export interface TableVisualizationProps {
   columnWidths?: Record<string, number>;
   onColumnWidthsChange?: (columnWidths: Record<string, number>) => void;
   columnAlignments?: Record<string, TableColumnAlignment>;
+  hyperlinkRules?: TableHyperlinkRule[];
   enableColumnResize?: boolean;
 }
 
@@ -73,6 +74,56 @@ function getHeaderJustifyClass(alignment: TableColumnAlignment): string {
   }
 }
 
+function resolveSafeHref(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return null;
+  }
+
+  const candidate = raw.startsWith('www.') ? `https://${raw}` : raw;
+  const isRootRelative = candidate.startsWith('/');
+  const hasAllowedPrefix = /^(https?:|mailto:|tel:)/i.test(candidate);
+  if (!isRootRelative && !hasAllowedPrefix) {
+    return null;
+  }
+
+  try {
+    const baseOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+    const url = new URL(candidate, baseOrigin);
+    if (['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)) {
+      return url.href;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function buildHyperlinkRuleMap(
+  rules: TableHyperlinkRule[] | null | undefined,
+): Record<string, TableHyperlinkRule> {
+  const map: Record<string, TableHyperlinkRule> = {};
+  for (const rule of rules ?? []) {
+    const targetColumn = rule.targetColumn?.trim();
+    const urlColumn = rule.urlColumn?.trim();
+    if (!targetColumn || !urlColumn || map[targetColumn]) {
+      continue;
+    }
+    map[targetColumn] = {
+      ...rule,
+      targetColumn,
+      urlColumn,
+      openInNewTab: rule.openInNewTab !== false,
+    };
+  }
+  return map;
+}
+
 export function TableVisualization({
   data,
   columns,
@@ -91,12 +142,14 @@ export function TableVisualization({
   columnWidths,
   onColumnWidthsChange,
   columnAlignments,
+  hyperlinkRules,
   enableColumnResize = true,
 }: TableVisualizationProps) {
   const rows = data ?? [];
   const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0]) : []);
   const colsKey = useMemo(() => cols.join('\u0000'), [cols]);
   const sanitizedColumnWidths = useMemo(() => sanitizeColumnWidths(columnWidths), [columnWidths]);
+  const hyperlinkRuleByColumn = useMemo(() => buildHyperlinkRuleMap(hyperlinkRules), [hyperlinkRules]);
   const hasExternalColumnWidthControl = onColumnWidthsChange !== undefined || columnWidths !== undefined;
   const [liveColumnWidths, setLiveColumnWidths] = useState<Record<string, number>>(sanitizedColumnWidths);
   const [activeResizeColumn, setActiveResizeColumn] = useState<string | null>(null);
@@ -436,6 +489,9 @@ export function TableVisualization({
                   const heatmapStyle = getHeatmapCellStyle(cellValue, col, heatmapRules, heatmapStats);
                   const conditionalStyle = getCellStyle(cellValue, col, conditionalFormatting, row);
                   const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
+                  const hyperlinkRule = hyperlinkRuleByColumn[col];
+                  const safeHref = hyperlinkRule ? resolveSafeHref(row?.[hyperlinkRule.urlColumn]) : null;
+                  const displayValue = formatCellValue(cellValue);
                   
                   return (
                     <td
@@ -446,7 +502,21 @@ export function TableVisualization({
                         textAlign: alignment,
                       }}
                     >
-                      <div className="break-words">{formatCellValue(cellValue)}</div>
+                      <div className="break-words">
+                        {safeHref ? (
+                          <a
+                            href={safeHref}
+                            target={hyperlinkRule?.openInNewTab === false ? undefined : '_blank'}
+                            rel={hyperlinkRule?.openInNewTab === false ? undefined : 'noopener noreferrer'}
+                            className="font-medium text-brand underline decoration-brand/40 underline-offset-2 hover:text-brand-hover hover:decoration-brand"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {displayValue || safeHref}
+                          </a>
+                        ) : (
+                          displayValue
+                        )}
+                      </div>
                     </td>
                   );
                 })}

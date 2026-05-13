@@ -275,16 +275,16 @@ export default function DashboardScreenEditor({
       </BuilderTopBar>
 
       {listError && (
-        <p className="text-tiny text-danger">{listError}</p>
+        <p className="text-caption text-danger">{listError}</p>
       )}
       {!listError && !listLoading && accessible.length === 0 && (
-        <p className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-tiny text-text-secondary">
+        <p className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-caption text-text-secondary">
           You have no shared dashboards. Create one first or use paste-token mode below.
         </p>
       )}
 
       {selectedDashboard && (
-        <div className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-tiny text-text-secondary">
+        <div className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-caption text-text-secondary">
           <div className="font-emphasis text-text-primary">{selectedDashboard.name}</div>
           {selectedDashboard.description && (
             <div className="mt-0.5">{selectedDashboard.description}</div>
@@ -324,7 +324,7 @@ export default function DashboardScreenEditor({
             }
           >
             {mapping.length === 0 && (
-              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-tiny text-text-tertiary">
+              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-caption text-text-tertiary">
                 No mappings yet — every role sees the same data. Add a mapping so each role only sees its own slice.
               </p>
             )}
@@ -403,7 +403,7 @@ export default function DashboardScreenEditor({
             }
           >
             {staticFilters.length === 0 && (
-              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-tiny text-text-tertiary">
+              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-caption text-text-tertiary">
                 No static filters yet. Add one when you want to pin a value across every role.
               </p>
             )}
@@ -495,7 +495,7 @@ export default function DashboardScreenEditor({
               title={`Generated public links (${managedRoles.length + (managedTokensByRole['__default__'] ? 1 : 0)})`}
               description="Auto-refreshed whenever you save the workboard or add/remove an app_user."
             >
-              <ul className="space-y-0.5 text-tiny text-text-tertiary">
+              <ul className="space-y-0.5 text-caption text-text-tertiary">
                 {managedRoles.map((role) => (
                   <li key={role}>
                     <code className="rounded bg-surface-2 px-1 text-text-secondary">{role}</code>
@@ -552,7 +552,7 @@ export default function DashboardScreenEditor({
               href={`/embed/${dashboard.share_token}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-tiny font-emphasis text-brand hover:underline"
+              className="inline-flex items-center gap-1 text-caption font-emphasis text-brand hover:underline"
             >
               <ExternalLink className="h-3 w-3" />
               Open /embed/{dashboard.share_token} in a new tab
@@ -579,7 +579,7 @@ export default function DashboardScreenEditor({
               />
               <Lock className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
             </div>
-            <p className="mt-1 text-tiny text-text-tertiary">
+            <p className="mt-1 text-caption text-text-tertiary">
               Applied to ALL managed links generated. Mini-app auto-authenticates on the user&apos;s behalf.
             </p>
           </Lbl>

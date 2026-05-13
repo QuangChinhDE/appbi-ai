@@ -177,7 +177,7 @@ function ExportPanel({
               <div className="font-medium text-text-primary">
                 Include credentials (PIN hashes) for {bundle.app_users?.length ?? 0} app users
               </div>
-              <div className="mt-0.5 text-tiny text-text-tertiary">
+              <div className="mt-0.5 text-caption text-text-tertiary">
                 Default OFF to keep shared files safer. Turn this on only when the
                 bundle must work immediately after import, such as demos or seed data.
                 When off, an admin must reset each user PIN after import.
@@ -207,7 +207,7 @@ function ExportPanel({
                     <div className="truncate font-emphasis text-text-primary">
                       {m.display_name || m.source_table_name || `Table ${id}`}
                     </div>
-                    <div className="truncate text-tiny text-text-quaternary">
+                    <div className="truncate text-caption text-text-quaternary">
                       {m.source_table_name} · {m.columns?.length || 0} columns ·
                       dataset: {m.dataset_name || '?'}
                     </div>
@@ -227,7 +227,7 @@ function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2 text-center">
       <div className="text-h3 font-emphasis text-text-primary">{value}</div>
-      <div className="text-tiny text-text-tertiary">{label}</div>
+      <div className="text-caption text-text-tertiary">{label}</div>
     </div>
   );
 }

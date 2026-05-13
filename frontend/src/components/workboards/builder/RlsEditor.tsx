@@ -73,7 +73,7 @@ export default function RlsEditor({
 
   return (
     <div>
-      <div className="mb-3 rounded-md border border-info/20 bg-info/5 p-2.5 text-tiny text-text-secondary">
+      <div className="mb-3 rounded-md border border-info/20 bg-info/5 p-2.5 text-caption text-text-secondary">
         <p className="font-emphasis text-text-primary">Role-based data access rules</p>
         <p className="mt-0.5">
           Each rule tells one <em>role</em> (user / admin / ...) which rows it can
@@ -99,7 +99,7 @@ export default function RlsEditor({
           />
         ))}
         {rules.length === 0 && (
-          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
+          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-caption text-text-tertiary">
             No rules yet. Default: only Owner / Admin can see every row; User sees
             nothing until you add a rule.
           </p>
@@ -170,11 +170,11 @@ function RuleCard({
       </div>
 
       {isAdmin ? (
-        <p className="mb-2 rounded-md border border-info/20 bg-info/5 px-2 py-1.5 text-tiny text-text-secondary">
+        <p className="mb-2 rounded-md border border-info/20 bg-info/5 px-2 py-1.5 text-caption text-text-secondary">
           Admin sees every row by default - no filter column is needed.
         </p>
       ) : (
-        <label className="mb-2 flex items-center gap-1.5 text-tiny text-text-secondary">
+        <label className="mb-2 flex items-center gap-1.5 text-caption text-text-secondary">
           <input
             type="checkbox"
             checked={effectiveUnrestricted}
@@ -232,7 +232,7 @@ function RuleCard({
         <div className="mb-1 text-[11px] font-emphasis text-text-tertiary">
           What can this role do with visible rows?
         </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-tiny text-text-secondary">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-caption text-text-secondary">
           <label className="flex items-center gap-1" title="Allow creating new rows">
             <input
               type="checkbox"

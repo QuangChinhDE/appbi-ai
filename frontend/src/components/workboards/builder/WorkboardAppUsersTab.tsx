@@ -461,10 +461,10 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
       <div className="flex items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
         <UserCircle2 className="h-4 w-4 text-text-tertiary" />
         <h2 className="text-sm font-medium text-text-primary">App users</h2>
-        <span className="text-tiny text-text-tertiary">
+        <span className="text-caption text-text-tertiary">
           {users.length} {users.length === 1 ? 'user' : 'users'} can sign in to this mini-app
         </span>
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
+        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-text-secondary">
           Standard roles: user / admin / owner
         </span>
         <div className="flex-1" />
@@ -474,7 +474,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search username, name, role..."
-            className="h-7 w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-7 pr-2 text-tiny"
+            className="h-7 w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-7 pr-2 text-caption"
           />
         </div>
         <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setEditing('new')}>
@@ -518,7 +518,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
         ) : (
           <div className="overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
             <table className="w-full text-caption">
-              <thead className="border-b border-[rgb(var(--border-line))] bg-surface-2 text-tiny text-text-tertiary">
+              <thead className="border-b border-[rgb(var(--border-line))] bg-surface-2 text-caption text-text-tertiary">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Username</th>
                   <th className="px-3 py-2 text-left font-medium">Full name</th>
@@ -550,26 +550,26 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                     <td className="px-3 py-2 text-text-secondary">{user.full_name || '—'}</td>
                     <td className="px-3 py-2 text-text-secondary">
                       {user.role ? (
-                        <span className="inline-flex items-center rounded bg-surface-2 px-1.5 py-0.5 text-tiny">
+                        <span className="inline-flex items-center rounded bg-surface-2 px-1.5 py-0.5 text-caption">
                           {formatAppUserRoleLabel(user.role)}
                         </span>
                       ) : (
                         '—'
                       )}
                     </td>
-                    <td className="max-w-[320px] px-3 py-2 text-tiny text-text-tertiary">
+                    <td className="max-w-[320px] px-3 py-2 text-caption text-text-tertiary">
                       {renderContextSummary(user.context || {}, accessFields)}
                     </td>
                     <td className="px-3 py-2">
                       {user.active ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                       ) : (
-                        <span className="text-tiny text-text-tertiary">off</span>
+                        <span className="text-caption text-text-tertiary">off</span>
                       )}
                       {!user.has_pin && (
                         <span
                           title="No PIN yet; an admin must reset it before this user can sign in"
-                          className="ml-1.5 inline-flex rounded bg-warning/10 px-1.5 py-0.5 text-tiny text-warning"
+                          className="ml-1.5 inline-flex rounded bg-warning/10 px-1.5 py-0.5 text-caption text-warning"
                         >
                           no PIN
                         </span>
@@ -838,7 +838,7 @@ function AppUserEditModal({
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="mb-1 block text-tiny font-medium text-text-secondary">Username *</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">Username *</span>
             <Input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
@@ -847,7 +847,7 @@ function AppUserEditModal({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-tiny font-medium text-text-secondary">
+            <span className="mb-1 block text-caption font-medium text-text-secondary">
               {isCreate ? 'PIN *' : 'PIN (blank = keep current)'}
             </span>
             <Input
@@ -858,7 +858,7 @@ function AppUserEditModal({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-tiny font-medium text-text-secondary">Full name</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">Full name</span>
             <Input
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
@@ -866,7 +866,7 @@ function AppUserEditModal({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-tiny font-medium text-text-secondary">Role</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">Role</span>
             <select
               value={role}
               onChange={(event) => setRole(event.target.value)}
@@ -878,7 +878,7 @@ function AppUserEditModal({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-tiny text-text-tertiary">{selectedRoleInfo.description}</p>
+            <p className="mt-1 text-caption text-text-tertiary">{selectedRoleInfo.description}</p>
           </label>
         </div>
 
@@ -894,24 +894,24 @@ function AppUserEditModal({
 
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="mb-2">
-            <h3 className="text-tiny font-medium text-text-secondary">Dataset access</h3>
-            <p className="text-tiny text-text-tertiary">
+            <h3 className="text-caption font-medium text-text-secondary">Dataset access</h3>
+            <p className="text-caption text-text-tertiary">
               The fields below come from the current workboard RLS config. Pick values directly from data instead of typing them by hand.
             </p>
             {isOwnerAppUserRole(role) && (
-              <p className="mt-1 text-tiny text-success">
+              <p className="mt-1 text-caption text-success">
                 Owner has full access in the mini-app. The fields below are optional context only.
               </p>
             )}
           </div>
 
           {loadingAccess ? (
-            <div className="flex items-center gap-2 text-tiny text-text-tertiary">
+            <div className="flex items-center gap-2 text-caption text-text-tertiary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Loading access options from the dataset...
             </div>
           ) : effectiveAccessFields.length === 0 ? (
-            <p className="text-tiny text-text-tertiary">
+            <p className="text-caption text-text-tertiary">
               No access fields were detected from RLS. You can still use additional context below.
             </p>
           ) : (
@@ -924,7 +924,7 @@ function AppUserEditModal({
                     : optionKeyForValue(currentValue);
                 return (
                   <label key={field.key} className="block">
-                    <span className="mb-1 block text-tiny font-medium text-text-secondary">
+                    <span className="mb-1 block text-caption font-medium text-text-secondary">
                       {field.label}
                     </span>
                     {field.options.length > 0 ? (
@@ -958,10 +958,10 @@ function AppUserEditModal({
                         placeholder={`Enter ${field.label.toLowerCase()}`}
                       />
                     )}
-                    <p className="mt-1 text-tiny text-text-tertiary">
+                    <p className="mt-1 text-caption text-text-tertiary">
                       Used by role: {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
                     </p>
-                    <p className="text-tiny text-text-quaternary">
+                    <p className="text-caption text-text-quaternary">
                       Source: {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
                     </p>
                   </label>
@@ -973,19 +973,19 @@ function AppUserEditModal({
 
         <div>
           <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-tiny font-medium text-text-secondary">
+            <span className="text-caption font-medium text-text-secondary">
               Additional context (advanced)
             </span>
             <button
               type="button"
               onClick={addRow}
-              className="inline-flex items-center gap-1 text-tiny text-brand hover:underline"
+              className="inline-flex items-center gap-1 text-caption text-brand hover:underline"
             >
               <Plus className="h-3 w-3" /> Add key
             </button>
           </div>
           {contextRows.length === 0 ? (
-            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 p-2 text-tiny text-text-tertiary">
+            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 p-2 text-caption text-text-tertiary">
               No additional context.
             </p>
           ) : (
@@ -1016,7 +1016,7 @@ function AppUserEditModal({
             </div>
           )}
           {advancedSuggestions.length > 0 && (
-            <p className="mt-1 text-tiny text-text-tertiary">
+            <p className="mt-1 text-caption text-text-tertiary">
               Suggested from layout: {advancedSuggestions.map((key) => (
                 <code key={key} className="mx-0.5 rounded bg-surface-2 px-1">{key}</code>
               ))}

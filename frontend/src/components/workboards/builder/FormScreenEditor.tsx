@@ -104,7 +104,7 @@ function ToggleChip({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-tiny text-text-secondary">
+    <label className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-caption text-text-secondary">
       <input
         type="checkbox"
         checked={checked}
@@ -131,7 +131,7 @@ function CollapsibleGroup({
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center gap-1.5 text-tiny font-medium text-text-primary hover:text-brand"
+        className="flex w-full items-center gap-1.5 text-caption font-medium text-text-primary hover:text-brand"
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         {title}
@@ -414,7 +414,7 @@ export default function FormScreenEditor({
             }
           >
             {tablesLoading ? (
-              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2 text-tiny text-text-tertiary">
+              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-tertiary">
                 Loading source columns...
               </p>
             ) : fields.length === 0 ? (
@@ -474,7 +474,7 @@ function FormFieldNavigatorItem({
       onClick={onSelect}
       badge={
         field.readonly ? (
-          <span className="rounded bg-surface-2 px-1 text-tiny text-text-tertiary">readonly</span>
+          <span className="rounded bg-surface-2 px-1 text-caption text-text-tertiary">readonly</span>
         ) : null
       }
       action={
@@ -582,7 +582,7 @@ function FormLayoutInspector({
                 key={page.id}
                 className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2 sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_auto]"
               >
-                <span className="self-center rounded bg-surface-2 px-2 py-1 text-tiny text-text-secondary">
+                <span className="self-center rounded bg-surface-2 px-2 py-1 text-caption text-text-secondary">
                   {page.id}
                 </span>
                 <input
@@ -734,7 +734,7 @@ function InitialValuesInspector({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-tiny text-text-tertiary">
+        <p className="text-caption text-text-tertiary">
           One row per field to pre-fill with a fixed value or expression.
         </p>
         <BuilderActionButton
@@ -1157,16 +1157,16 @@ function RelationshipPathEditor({
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
       <div className="mb-2">
-        <div className="text-tiny font-emphasis text-text-secondary">
+        <div className="text-caption font-emphasis text-text-secondary">
           Nested relationships
         </div>
-        <p className="mt-0.5 text-tiny text-text-tertiary">
+        <p className="mt-0.5 text-caption text-text-tertiary">
           Optional chain for resolving display labels through related tables.
         </p>
       </div>
 
       {loading ? (
-        <p className="mb-3 text-tiny text-text-tertiary">Loading relationship suggestions...</p>
+        <p className="mb-3 text-caption text-text-tertiary">Loading relationship suggestions...</p>
       ) : suggestions.length > 0 ? (
         <div className="mb-3 space-y-1.5">
           {suggestions.map((suggestion, index) => {
@@ -1187,7 +1187,7 @@ function RelationshipPathEditor({
                     },
                   ])
                 }
-                className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-tiny hover:border-brand"
+                className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-caption hover:border-brand"
               >
                 <span className="font-emphasis text-text-primary">Use {targetDisplay}</span>
                 <span className="block text-text-tertiary">
@@ -1216,7 +1216,7 @@ function RelationshipPathEditor({
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5"
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="rounded bg-brand/10 px-2 py-0.5 text-tiny font-emphasis text-brand">
+                  <span className="rounded bg-brand/10 px-2 py-0.5 text-caption font-emphasis text-brand">
                     Step {index + 1}
                   </span>
                   <BuilderIconButton
@@ -1315,7 +1315,7 @@ function StaticValuesEditor({
 
   return (
     <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="text-tiny font-emphasis text-text-secondary">Choices</div>
+      <div className="text-caption font-emphasis text-text-secondary">Choices</div>
       {values.length > 0 ? (
         <div className="space-y-2">
           {values.map((value, index) => (

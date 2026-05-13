@@ -136,7 +136,7 @@ export default function ScreenEditor({
 function badge(count?: number): React.ReactNode {
   if (!count) return undefined;
   return (
-    <span className="ml-1 rounded-full bg-surface-2 px-1.5 text-tiny text-text-tertiary">
+    <span className="ml-1 rounded-full bg-surface-2 px-1.5 text-micro text-text-tertiary">
       {count}
     </span>
   );
@@ -166,7 +166,7 @@ function PermissionTab({
   return (
     <div className="space-y-4">
       {/* Behaviour banner — what each role gets by default */}
-      <div className="rounded-lg border border-info/20 bg-info/5 px-3 py-2.5 text-tiny text-text-secondary">
+      <div className="rounded-lg border border-info/20 bg-info/5 px-3 py-2.5 text-caption text-text-secondary">
         <div className="font-medium text-text-primary">Defaults by role</div>
         <ul className="mt-1 space-y-0.5">
           <li>
@@ -186,7 +186,7 @@ function PermissionTab({
           title="Role rules"
           description="Embedded dashboards use the Dashboard module's own filter / permission pipeline — no row-level RLS here. Restrict who can open the screen below."
         >
-          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-tiny text-text-tertiary">
+          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-caption text-text-tertiary">
             RLS is not used for Dashboard screens.
           </p>
         </BuilderSection>

@@ -15,6 +15,7 @@ import type {
   ExecuteQueryResponse,
   FilterCondition as ExecuteFilterCondition,
 } from '@/hooks/use-datasets';
+import type { TableHyperlinkRule } from '@/types/api';
 
 type QuerySource = 'generated' | 'custom';
 
@@ -83,6 +84,60 @@ const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ExploreChartType>([
   'SUNBURST',
   'RIBBON',
 ]);
+
+function getTableHyperlinkUrlColumns(
+  styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null,
+  selectedColumns?: readonly string[] | null,
+): string[] {
+  const targetSet = selectedColumns && selectedColumns.length > 0
+    ? new Set(selectedColumns)
+    : null;
+  const seen = new Set<string>();
+  const columns: string[] = [];
+
+  for (const rule of styleConfig?.tableHyperlinkRules ?? []) {
+    const targetColumn = rule.targetColumn?.trim();
+    const urlColumn = rule.urlColumn?.trim();
+    if (!targetColumn || !urlColumn || seen.has(urlColumn)) {
+      continue;
+    }
+    if (targetSet && !targetSet.has(targetColumn)) {
+      continue;
+    }
+    seen.add(urlColumn);
+    columns.push(urlColumn);
+  }
+
+  return columns;
+}
+
+function withTableHyperlinkQueryColumns(
+  chartType: ExploreChartType,
+  roleConfig: ChartRoleConfig,
+  styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null,
+): ChartRoleConfig {
+  if (chartType !== 'TABLE' || roleConfig.tableMode === 'pivot') {
+    return roleConfig;
+  }
+
+  const selectedColumns = roleConfig.selectedColumns;
+  if (!selectedColumns || selectedColumns.length === 0) {
+    return roleConfig;
+  }
+
+  const nextColumns = [...selectedColumns];
+  const selectedSet = new Set(nextColumns);
+  for (const urlColumn of getTableHyperlinkUrlColumns(styleConfig, selectedColumns)) {
+    if (!selectedSet.has(urlColumn)) {
+      selectedSet.add(urlColumn);
+      nextColumns.push(urlColumn);
+    }
+  }
+
+  return nextColumns.length === selectedColumns.length
+    ? roleConfig
+    : { ...roleConfig, selectedColumns: nextColumns };
+}
 
 function datasetMetricAlias(metric: MetricConfig): string {
   return `${metric.field}_${metric.agg}`;
@@ -789,11 +844,16 @@ function inferColumnType(name: string, rows: Record<string, any>[], fallback = '
 export function buildExploreExecuteRequest(args: {
   chartType: ExploreChartType;
   roleConfig: ChartRoleConfig;
+  styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null;
   filters: Filter[];
   limit: number;
 }): ExecuteQueryRequest {
-  const { chartType, roleConfig, filters, limit } = args;
-  const normalized = normalizeRoleConfig(chartType, roleConfig);
+  const { chartType, roleConfig, styleConfig, filters, limit } = args;
+  const normalized = withTableHyperlinkQueryColumns(
+    chartType,
+    normalizeRoleConfig(chartType, roleConfig),
+    styleConfig,
+  );
   const xField = chartType === 'TIME_SERIES' || chartType === 'RIBBON'
     ? (normalized.timeField || normalized.dimension)
     : normalized.dimension;
@@ -937,15 +997,16 @@ export function buildExploreSqlPreview(args: {
   table: DatasetTable | null | undefined;
   chartType: ExploreChartType;
   roleConfig: ChartRoleConfig;
+  styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null;
   filters: Filter[];
   limit: number;
 }): string {
-  const { table, chartType, roleConfig, filters, limit } = args;
+  const { table, chartType, roleConfig, styleConfig, filters, limit } = args;
   if (!table) {
     return '-- Select a table to see SQL';
   }
 
-  const request = buildExploreExecuteRequest({ chartType, roleConfig, filters, limit });
+  const request = buildExploreExecuteRequest({ chartType, roleConfig, styleConfig, filters, limit });
   const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
   const sourceSql = (table.source_kind === 'sql_query' || table.source_kind === 'derived_table') && table.source_query
     ? `(\n${table.source_query.trim()}\n) AS source_table`
@@ -1173,12 +1234,16 @@ export function buildQuerySignature(args: {
   sqlMode: QuerySource;
   chartType: ExploreChartType;
   roleConfig: ChartRoleConfig;
+  styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null;
   filters: Filter[];
   request: ExecuteQueryRequest;
   customSql: string;
 }): string {
-  const { datasetId, tableId, limit, sqlMode, chartType, roleConfig, filters, request, customSql } = args;
+  const { datasetId, tableId, limit, sqlMode, chartType, roleConfig, styleConfig, filters, request, customSql } = args;
   const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
+  const tableHyperlinkUrlColumns = chartType === 'TABLE' && normalizedRoleConfig.tableMode !== 'pivot'
+    ? getTableHyperlinkUrlColumns(styleConfig, normalizedRoleConfig.selectedColumns)
+    : [];
   const normalizedFilters = filters
     .filter((filter) => filter.field?.trim())
     .map((filter) => ({
@@ -1195,6 +1260,7 @@ export function buildQuerySignature(args: {
     limit,
     request: sqlMode === 'generated' ? request : null,
     roleConfig: sqlMode === 'custom' ? normalizedRoleConfig : null,
+    tableHyperlinkUrlColumns,
     filters: sqlMode === 'custom' ? normalizedFilters : null,
     customSql: sqlMode === 'custom' ? customSql.trim() : '',
   });
