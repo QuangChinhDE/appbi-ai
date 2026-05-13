@@ -20,16 +20,16 @@ _BLUEPRINT_TEMPLATE = {
         "optimistic_lock_column": None,
     },
     "layout_json": {
-        # branding: customise the mini-app login screen and chrome.
-        # app_name/logo_url/primary_color appear on the login page.
-        # welcome_text (string | null) is shown below the app name on login.
-        # accent_color (hex | null) is a secondary brand colour for buttons/links.
+        # branding: customise the mini-app chrome.
+        # NOTE: workboard.branding ONLY supports app_name / logo_url /
+        # primary_color / accent_color / theme. `welcome_text` lives on the
+        # WORKSPACE branding (set it via create_workspace / PATCH /workspaces),
+        # NOT on layout_json.branding — unknown fields here are silently dropped.
         # theme: "auto" | "light" | "dark" — controls the mini-app colour scheme.
         "branding": {
             "app_name": None,
             "logo_url": None,
             "primary_color": None,
-            "welcome_text": None,
             "accent_color": None,
             "theme": "auto",
         },
@@ -209,6 +209,12 @@ _BLUEPRINT_TEMPLATE = {
                             "title": "<<table_title>>",
                             "columns": ["<<col1>>", "<<col2>>"],
                             "column_groups": [],          # 2-row header groups; see examples
+                            # column_metadata: optional per-column presentation overrides keyed by
+                            # db column name. Each value: {label?, width_px?:1-2000, format?:str,
+                            # align?:"left"|"center"|"right", total?:"sum"|"avg"|"count"|"min"|"max",
+                            # merge?:bool}. Use this for finer control than the screen-level
+                            # column_labels map (e.g. align numbers right, hint width).
+                            "column_metadata": {},
                             "filters_from_view": True,
                             "totals": [],                 # subset of columns to SUM at the bottom
                             "group_by": [],               # subset of columns to merge equal-value rows
@@ -683,9 +689,21 @@ def _validate_data_table_block(
                 errors.append(
                     f"{path}.transform.index must be a non-empty list[string]"
                 )
-            if not isinstance(cols_field, str) or not cols_field:
+            # backend DataTablePivot.columns accepts Union[str, List[str]]
+            # (multi-level pivot uses a list of keys).
+            if isinstance(cols_field, str):
+                if not cols_field:
+                    errors.append(
+                        f"{path}.transform.columns must be a non-empty string"
+                    )
+            elif isinstance(cols_field, list):
+                if not cols_field or not all(isinstance(c, str) and c for c in cols_field):
+                    errors.append(
+                        f"{path}.transform.columns must be a non-empty list[string] when using a list"
+                    )
+            else:
                 errors.append(
-                    f"{path}.transform.columns must be a non-empty string"
+                    f"{path}.transform.columns must be a non-empty string OR list[string]"
                 )
             if not isinstance(vals_field, str) or not vals_field:
                 errors.append(
@@ -705,6 +723,8 @@ def _validate_data_table_block(
                 refs = [*index]
                 if isinstance(cols_field, str):
                     refs.append(cols_field)
+                elif isinstance(cols_field, list):
+                    refs.extend(c for c in cols_field if isinstance(c, str))
                 if isinstance(vals_field, str):
                     refs.append(vals_field)
                 missing = [c for c in refs if c not in table_cols]
@@ -712,6 +732,43 @@ def _validate_data_table_block(
                     errors.append(
                         f"{path}.transform references unknown columns: {missing}"
                     )
+
+    # column_metadata: optional per-column overrides keyed by db column name.
+    # Schema: {col: {label?, width_px?:1-2000, format?:str, align?:left|center|right,
+    #               total?:sum|avg|count|min|max, merge?:bool}}.
+    meta = block.get("column_metadata")
+    if meta is not None:
+        if not isinstance(meta, dict):
+            errors.append(f"{path}.column_metadata must be an object keyed by column name")
+        else:
+            allowed_meta_keys = {"label", "width_px", "format", "align", "total", "merge"}
+            allowed_align = {"left", "center", "right"}
+            allowed_total = {"sum", "avg", "count", "min", "max"}
+            for col, entry in meta.items():
+                mpath = f"{path}.column_metadata[{col!r}]"
+                if check_cols and col not in table_cols:
+                    errors.append(f"{mpath} references unknown column")
+                    continue
+                if cols_list and col not in cols_list:
+                    warnings.append(
+                        f"{mpath} is set but column is not in {path}.columns — it will be ignored at render time."
+                    )
+                if not isinstance(entry, dict):
+                    errors.append(f"{mpath} must be an object")
+                    continue
+                extras = sorted(set(entry.keys()) - allowed_meta_keys)
+                if extras:
+                    errors.append(f"{mpath} has unsupported keys: {extras}")
+                if "width_px" in entry:
+                    width = entry["width_px"]
+                    if not isinstance(width, int) or not (1 <= width <= 2000):
+                        errors.append(f"{mpath}.width_px must be int in [1, 2000]")
+                if "align" in entry and entry["align"] not in allowed_align:
+                    errors.append(f"{mpath}.align must be one of {sorted(allowed_align)}")
+                if "total" in entry and entry["total"] not in allowed_total:
+                    errors.append(f"{mpath}.total must be one of {sorted(allowed_total)}")
+                if "merge" in entry and not isinstance(entry["merge"], bool):
+                    errors.append(f"{mpath}.merge must be a boolean")
 
     # allow_export_excel must be bool
     if "allow_export_excel" in block and not isinstance(block["allow_export_excel"], bool):
@@ -1224,7 +1281,7 @@ async def propose_workboard_blueprint(
                 "mini_app_nav.items: list of screen ids (strings), not screen objects.",
                 "mini_app_nav.mobile_kind: 'bottom_nav' (up to 5 tabs at bottom) | 'drawer' (hamburger sidebar). Default 'bottom_nav'.",
                 "mini_app_nav.desktop_kind: 'sidebar' (left panel) | 'top_tabs' (horizontal tabs at top). Default 'sidebar'.",
-                "branding: {app_name?:str, logo_url?:str, primary_color?:str (hex), welcome_text?:str, accent_color?:str (hex), theme:'auto'|'light'|'dark'}. All fields optional/nullable. Shown on the mini-app login screen and chrome.",
+                "branding (workboard): {app_name?:str, logo_url?:str, primary_color?:str (hex), accent_color?:str (hex), theme:'auto'|'light'|'dark'}. NOTE: `welcome_text` is a WORKSPACE-level field (set via create_workspace.branding or PATCH /workspaces/{id}); putting it on layout_json.branding is silently ignored.",
                 "audit: {created_by_column?, created_at_column?, updated_by_column?, updated_at_column?} — column names auto-filled by the write service. Set to null if the table doesn't have the column.",
                 "column_labels at the SCREEN level maps {db_column: 'Nhãn'} for friendly headers in list tables AND doc blocks. Add to EVERY screen that displays columns (form, list, doc, dashboard).",
                 "CALL validate_workboard_blueprint(blueprint_json=...) BEFORE commit_workboard_blueprint to catch errors early.",
@@ -1245,7 +1302,8 @@ async def propose_workboard_blueprint(
                 "data_table.columns / column_groups[*].columns / totals / group_by: must all be real columns of the bound table.",
                 "column_groups create a 2-row header (e.g. NHẬP HÀNG / XUẤT BÁN / TỒN KHO grouping monthly metric columns).",
                 "data_table.transform=null by default. Use {kind:'unpivot', id_columns, value_columns, var_name, value_name} to flatten a wide Google Sheet (e.g. t1..t12 → one row per month).",
-                "data_table.transform={kind:'pivot', index:[...], columns:'col', values:'col', agg:'sum'|'avg'|'min'|'max'|'count'|'first', max_columns:1..200} to build a matrix from long data.",
+                "data_table.transform={kind:'pivot', index:[...], columns:'col' OR ['col_a','col_b'], values:'col', agg:'sum'|'avg'|'min'|'max'|'count'|'first', max_columns:1..200} to build a matrix from long data. Pass `columns` as a list for multi-level pivots (e.g. ['year','quarter']).",
+                "data_table.column_metadata: optional per-column overrides keyed by db column name. Each value: {label?:str, width_px?:1-2000, format?:str (e.g. '#,##0', '0.00%'), align?:'left'|'center'|'right', total?:'sum'|'avg'|'count'|'min'|'max', merge?:bool}. Use this for finer control than the screen-level column_labels map (right-align numbers, hint width, format percentages, etc.). Keys must be real columns of the bound table; entries that aren't also in data_table.columns are ignored at render time.",
                 "data_table.allow_export_excel=true exposes a 'Xuất Excel' download button on the mini-app block. Off by default.",
                 "totals SUMs the listed columns in a footer row; group_by merges equal-value rows into spanned cells (good for hierarchical reports).",
                 "CALL get_doc_screen_examples() to see annotated, copy-pasteable snippets for common document patterns.",

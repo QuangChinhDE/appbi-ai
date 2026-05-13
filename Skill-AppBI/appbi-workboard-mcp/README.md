@@ -43,6 +43,19 @@ dashboard orchestration MCP.
 - Google Sheets write helpers now preflight the connected OAuth write scope before calling mutating endpoints.
 - Blueprint commit/update now validate dataset table bindings and normalize `layout_json.audit.updated_at_column` for Google Sheets.
 - A new `update_workboard_blueprint` tool gives Claude a safer update path than raw PATCH.
+- Doc `data_table` blocks now accept `column_metadata` for per-column overrides (label / width_px / format / align / total / merge).
+- Pivot transforms now accept `columns` as either a string or a list of strings (multi-level pivot).
+- Workboard `branding` no longer includes `welcome_text` — that field belongs to workspace branding and is silently dropped when placed on layout_json.
+
+## Webhook sync (not exposed through MCP)
+
+The backend supports per-doc-screen outbound webhooks and tracked sync runs
+(see `WorkboardWebhookConfig`, `DataTableSyncTrigger`, `WorkboardSyncRun`). MCP
+intentionally does **not** create or manage webhooks — they are case-by-case
+business integrations the workboard owner configures by hand in the
+"Webhooks" tab of the Builder UI. Claude can still describe a `data_table`
+block's `sync_triggers` in a blueprint if the user explicitly asks, but should
+not invent webhook ids on its own.
 
 ## Tool catalogue
 

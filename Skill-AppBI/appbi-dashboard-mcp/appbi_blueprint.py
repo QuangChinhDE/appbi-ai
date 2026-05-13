@@ -465,6 +465,23 @@ async def commit_semantic_model(
     _NO_VALUE_OPS = {"is_null", "is_not_null"}
     _ALLOWED_FORMAT_KINDS = {"number", "currency", "percent", "duration", "custom"}
 
+    # Pre-pass: collect measure names per view name so cross-view depends_on
+    # (`other_view.some_measure`) can be validated against the full plan.
+    # Mirrors backend `_validate_measure_dependencies` (datasets.py) which
+    # accepts both bare (same-view) and qualified (`view.measure`) refs.
+    measure_names_by_view: dict[str, set[str]] = {}
+    for _v in views_plan:
+        if not isinstance(_v, dict):
+            continue
+        _vname = str(_v.get("name") or "").strip()
+        if not _vname:
+            continue
+        measure_names_by_view[_vname] = {
+            str(_m.get("name") or "").strip()
+            for _m in (_v.get("measures") or [])
+            if isinstance(_m, dict) and str(_m.get("name") or "").strip()
+        }
+
     for index, view in enumerate(views_plan):
         if not isinstance(view, dict):
             validation_errors.append(f"views[{index}] is not an object.")
@@ -529,16 +546,35 @@ async def commit_semantic_model(
                         f"{loc}.filters[{f_idx}].value is required for operator '{op}'."
                     )
 
-            # depends_on — names must exist on the same view and never self-ref
+            # depends_on — bare names refer to same view; "view.measure"
+            # refers to a measure on another view in this plan. Self-ref
+            # forbidden in either form. Mirrors backend qualify_dep().
             for dep in m.get("depends_on") or []:
-                if dep == m_name:
+                dep_raw = str(dep or "").strip()
+                if not dep_raw:
+                    continue
+                if "." in dep_raw:
+                    dep_view, dep_name = dep_raw.split(".", 1)
+                    dep_view = dep_view.strip()
+                    dep_name = dep_name.strip()
+                else:
+                    dep_view, dep_name = view_name, dep_raw
+                if dep_view == view_name and dep_name == m_name:
                     validation_errors.append(
-                        f"{loc}.depends_on includes self-reference '{dep}'."
+                        f"{loc}.depends_on includes self-reference '{dep_raw}'."
                     )
-                elif dep not in measure_names:
+                    continue
+                known_in_view = measure_names_by_view.get(dep_view)
+                if known_in_view is None:
                     validation_errors.append(
-                        f"{loc}.depends_on '{dep}' is not a measure on this view. "
-                        f"Available: {sorted(measure_names)}."
+                        f"{loc}.depends_on '{dep_raw}' references view '{dep_view}' "
+                        f"which is not in this plan. Known views: "
+                        f"{sorted(measure_names_by_view)}."
+                    )
+                elif dep_name not in known_in_view:
+                    validation_errors.append(
+                        f"{loc}.depends_on '{dep_raw}' is not a measure on view "
+                        f"'{dep_view}'. Available there: {sorted(known_in_view)}."
                     )
             # depends_on without expression is almost certainly a mistake
             if (m.get("depends_on") or []) and not m.get("expression"):
@@ -571,37 +607,63 @@ async def commit_semantic_model(
                             f"{loc}.format.decimals must be int 0..10."
                         )
 
-        # Cycle detection across measures within the view (depends_on graph).
-        if not validation_errors:
-            graph = {
-                str(m.get("name")): list(m.get("depends_on") or [])
-                for m in measures if isinstance(m, dict) and m.get("name")
-            }
-            visiting: set[str] = set()
-            visited: set[str] = set()
+    # Cycle detection across the whole plan using qualified node names
+    # (view.measure). Mirrors backend cycle check so two measures with the
+    # same bare name on different views are treated as distinct nodes and
+    # cross-view dependency cycles are caught.
+    if not validation_errors:
+        graph: dict[str, list[str]] = {}
+        for _v in views_plan:
+            if not isinstance(_v, dict):
+                continue
+            _vname = str(_v.get("name") or "").strip()
+            if not _vname:
+                continue
+            for _m in _v.get("measures") or []:
+                if not isinstance(_m, dict):
+                    continue
+                _mname = str(_m.get("name") or "").strip()
+                if not _mname:
+                    continue
+                node = f"{_vname}.{_mname}"
+                deps_q: list[str] = []
+                for dep in _m.get("depends_on") or []:
+                    dep_raw = str(dep or "").strip()
+                    if not dep_raw:
+                        continue
+                    if "." in dep_raw:
+                        dv, dn = dep_raw.split(".", 1)
+                        deps_q.append(f"{dv.strip()}.{dn.strip()}")
+                    else:
+                        deps_q.append(f"{_vname}.{dep_raw}")
+                graph[node] = deps_q
 
-            def _walk(node: str, path: list[str]) -> str | None:
-                if node in visiting:
-                    return " -> ".join(path + [node])
-                if node in visited:
-                    return None
-                visiting.add(node)
-                for dep in graph.get(node, []):
-                    cycle = _walk(dep, path + [node])
-                    if cycle:
-                        return cycle
-                visiting.discard(node)
-                visited.add(node)
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def _walk(node: str, path: list[str]) -> str | None:
+            if node in visiting:
+                return " -> ".join(path + [node])
+            if node in visited:
                 return None
-
-            for start in graph:
-                cycle = _walk(start, [])
+            visiting.add(node)
+            for dep in graph.get(node, []):
+                cycle = _walk(dep, path + [node])
                 if cycle:
-                    validation_errors.append(
-                        f"views[{index}] '{view_name}' has a measure dependency "
-                        f"cycle: {cycle}. Break the cycle before committing."
-                    )
-                    break
+                    return cycle
+            visiting.discard(node)
+            visited.add(node)
+            return None
+
+        for start in list(graph):
+            cycle = _walk(start, [])
+            if cycle:
+                validation_errors.append(
+                    f"Measure dependency cycle detected: {cycle}. "
+                    "Break the cycle before committing."
+                )
+                break
+
     if validation_errors:
         return {
             "status": "validation_failed",

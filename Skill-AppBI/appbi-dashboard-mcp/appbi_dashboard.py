@@ -48,15 +48,53 @@ async def get_dashboard(
 
 
 @mcp.tool()
+async def get_dashboard_filter_fields(
+    dashboard_id: int, ctx: Context | None = None
+) -> dict[str, Any]:
+    """Return the slicer-style filter slots exposed by a dashboard.
+
+    Mirrors what the public link runtime exposes: each entry is
+    ``{datasetId, semanticField:'view.col', label, type, ...}``. When the
+    DA has pinned Access filters via the share dialog, those slots are
+    returned verbatim; otherwise the backend scans chart semantic
+    bindings.
+
+    Use this when:
+      - designing dashboard public-link filter presets (``create_public_link``
+        filters_config slots must reference one of these),
+      - configuring a workboard ``dashboard`` screen's
+        ``role_filter_mapping`` / ``static_filters`` — copy ``datasetId``
+        and ``semanticField`` straight from this response (the workboard
+        runtime silently drops slots that don't match).
+    """
+    return await _request(
+        "GET", f"/dashboards/{int(dashboard_id)}/filter-fields"
+    )
+
+
+@mcp.tool()
 async def list_public_links(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
     """List public links created on a dashboard (each link has its own
-    filters preset and access stats)."""
+    filters preset and access stats).
+
+    Note: workboard-managed links (``source='workboard'``) are filtered out
+    by the backend and never appear here. Those links are owned by a
+    workboard dashboard screen and re-created automatically on every
+    workboard save / app-user change — manage them through the workboard
+    builder, not this endpoint.
+    """
     items = await _request(
         "GET", f"/dashboards/{int(dashboard_id)}/public-links"
     )
-    return {"items": items}
+    return {
+        "items": items,
+        "note": (
+            "Backend only returns links with source='user'. Workboard-managed "
+            "links are hidden here on purpose."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -495,17 +533,40 @@ async def delete_public_link(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Delete a public link (revokes the URL permanently)."""
+    """Delete a public link (revokes the URL permanently).
+
+    Backend rejects deletion of workboard-managed links with HTTP 403
+    ("This link is managed by a workboard..."). Those links are tied to a
+    workboard dashboard screen's lifecycle — remove the screen or the
+    workboard itself to garbage-collect them. This tool surfaces the
+    backend message verbatim when that happens so the caller knows where
+    to act.
+    """
     if not user_confirmed:
         return _confirmation_required_for_destructive(
             "delete_public_link",
             {"dashboard_id": int(dashboard_id), "link_id": int(link_id)},
             reversible=False,
         )
-    return await _request(
-        "DELETE",
-        f"/dashboards/{int(dashboard_id)}/public-links/{int(link_id)}",
-    )
+    try:
+        return await _request(
+            "DELETE",
+            f"/dashboards/{int(dashboard_id)}/public-links/{int(link_id)}",
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "managed by a workboard" in msg or "403" in msg:
+            return {
+                "ok": False,
+                "error": "workboard_managed_link",
+                "message": (
+                    "This public link is managed by a workboard dashboard "
+                    "screen and cannot be deleted directly. Edit or remove "
+                    "the dashboard screen in the workboard builder instead."
+                ),
+                "backend_error": msg,
+            }
+        raise
 
 
 __all__: list[str] = []

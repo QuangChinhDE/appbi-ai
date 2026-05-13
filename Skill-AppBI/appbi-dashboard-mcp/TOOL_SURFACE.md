@@ -125,7 +125,7 @@ Mục tiêu: dựng layer ngữ nghĩa (views, joins, measures, dimensions) đ�
 | `expression` | SQL expression aggregate by `type`, override `sql` | Khi cần arithmetic giữa nhiều cột (vd. `${TABLE}.amount - ${TABLE}.cost`) |
 | `filters` | List `{field, operator, value}` → CASE WHEN wrapper (Looker filtered measure) | Khi measure chỉ tính trên 1 slice cố định (vd. `paid_revenue`). Operator: `eq, ne, gt, gte, lt, lte, in, not_in, between, contains, starts_with, ends_with, is_null, is_not_null` |
 | `where_sql` | Raw SQL boolean fragment, AND với `filters` | Dự phòng cho predicate phức tạp UI builder không expr (date math, regex, multi-column) |
-| `depends_on` | Tên các measure khác cùng view mà `expression` tham chiếu | Bắt buộc khai báo để cycle-check; vi phạm bị reject ở `commit_semantic_model` |
+| `depends_on` | Tên measure khác mà `expression` tham chiếu. **Same view**: bare name `"gross_revenue"`. **Cross view**: qualified `"sales.gross_revenue"` (view name của measure đích). | Bắt buộc khai báo để cycle-check; vi phạm bị reject ở `commit_semantic_model`. Cycle detection chạy global theo qualified node name (`view.measure`) nên 2 measure trùng tên ở 2 view khác nhau là 2 node riêng biệt. |
 | `format` | `{kind, decimals, currency, prefix, suffix, pattern}` | Hint hiển thị cho chart/KPI; không ảnh hưởng SQL |
 | `folder` | Nhãn group trong UI Explore | Cosmetics |
 
@@ -218,11 +218,12 @@ Nên dùng khi:
 | Tool | Type | Mục đích | Endpoint |
 |---|---|---|---|
 | `get_dashboard` | 🟢 | Chi tiết dashboard | `GET /dashboards/{id}` |
+| `get_dashboard_filter_fields` | 🟢 | List filter slots (datasetId + semanticField + label + type) — dùng khi cấu hình public-link filters_config hoặc workboard `role_filter_mapping` / `static_filters` | `GET /dashboards/{id}/filter-fields` |
 | `list_dashboard_charts` | 🟢 | List chart trong dashboard | `GET /dashboards/{id}/charts` |
 | `get_dashboard_layout` | 🟢 | Layout grid hiện tại | `GET /dashboards/{id}/layout` |
 | `get_dashboard_filters` | 🟢 | List filter | `GET /dashboards/{id}/filters` |
 | `list_dashboard_pages` | 🟢 | List pages của dashboard | `GET /dashboards/{id}/pages` |
-| `list_public_links` | 🟢 | List public link đã tạo | `GET /dashboards/{id}/public-links` |
+| `list_public_links` | 🟢 | List public link đã tạo. **Backend ẩn link có `source='workboard'`** — managed link của workboard không xuất hiện ở đây và không xoá được qua MCP này. | `GET /dashboards/{id}/public-links` |
 
 #### Ghi
 
@@ -239,7 +240,7 @@ Nên dùng khi:
 | `remove_dashboard_filter` | 🔴 | Gỡ filter | `PUT /dashboards/{id}` (filters_config) |
 | `create_public_link` | 🟡 | Tạo public link share-able | `POST /dashboards/{id}/public-links` |
 | `update_public_link` | 🟡 | Update link config | `PATCH /dashboards/{id}/public-links/{lid}` |
-| `delete_public_link` | 🔴 | Xoá link | `DELETE /dashboards/{id}/public-links/{lid}` |
+| `delete_public_link` | 🔴 | Xoá link. Backend reject 403 nếu link có `source='workboard'` (managed bởi workboard screen) — MCP trả về error envelope rõ ràng để Claude relay cho user. | `DELETE /dashboards/{id}/public-links/{lid}` |
 
 ---
 
@@ -278,7 +279,7 @@ Nên dùng khi:
 | 2 — Dataset | 16 |
 | 3 — Semantic Model | 24 |
 | 4 — Charts | 10 |
-| 5 — Dashboard | 20 |
+| 5 — Dashboard | 21 |
 | Quality | 6 |
 | Sharing | 4 |
 | **Total** | **~90** |
@@ -300,6 +301,12 @@ Hơi vượt target 60-70 nhưng phần lớn là `list_*`/`get_*` đọc thuầ
 5. **Preview errors trả về `root_cause` + `resolution_options`** thay vì raw exception. Pattern-matched cho `UNRECOGNIZED_FIELD`, `BIGQUERY_UNQUALIFIED_TABLE`, `COLUMN_NOT_IN_BOUND_VIEW`, `PREVIEW_TIMEOUT`.
 
 6. **Heavy reads support `summary=True`** trên `get_dataset`, `get_dataset_model`, `list_charts` — dùng cho discovery, dùng default form chỉ khi cần payload đầy đủ.
+
+7. **Measure `depends_on` accepts cross-view qualified refs.** Bare `"net_revenue"` = same view; `"sales.net_revenue"` = measure trên view khác trong cùng model. MCP validator + cycle detection làm việc trên qualified node `view.measure`. Mirror backend `_validate_measure_dependencies` từ commit `c60feb7` (2026-05-13). Sai cũ: MCP từng reject mọi qualified dep — đã fix.
+
+8. **Join reachability is bidirectional.** Backend `semantic_join_resolver` (sau commit `ce86f76`) coi quan hệ join cả 2 chiều khi tính `available_measures` / `available_dimensions` cho `propose_dashboard_blueprint`. Nghĩa là measure ở view B đang được join vào view A *vẫn* xuất hiện khi current explore base là B. Claude nên tin tưởng danh sách `available_measures` thay vì tự suy luận khả năng reach.
+
+9. **Workboard-managed public links bị ẩn ở list, bị chặn ở delete.** Bất kỳ `DashboardPublicLink` nào có `source='workboard'` thuộc về workboard dashboard screen — workboard tự tạo/đồng bộ/GC chúng. Không truy xuất, không xoá qua dashboard MCP; sửa workboard layout thay vào đó.
 
 ## Backend endpoint mới cần thêm
 
