@@ -75,7 +75,7 @@ def build_dataset_table_sql_alias(table_id: int) -> str:
 
 
 def normalize_dataset_table_sql_alias(value: str | None, *, fallback: str = "table") -> str:
-    """Normalize a dataset-level SQL alias. Delegates to identifier_utils for consistency."""
+    """Normalize the user-facing dataset SQL alias shown by the UI."""
     from app.services.identifier_utils import normalize_table_alias
     return normalize_table_alias(value, fallback=fallback)
 
@@ -126,11 +126,6 @@ def build_dataset_table_alias_base_from_values(
 ) -> str:
     fallback = f"table_{table_id}" if table_id is not None else "table"
     normalized_source_name = normalize_physical_table_source_name(source_table_name)
-    kind = str(source_kind or "").strip().lower()
-
-    if kind == "physical_table" and normalized_source_name:
-        return normalize_physical_table_sql_alias(normalized_source_name, fallback=fallback)
-
     raw_label = display_name or normalized_source_name or fallback
     return normalize_dataset_table_sql_alias(str(raw_label), fallback=fallback)
 
@@ -167,6 +162,126 @@ def build_dataset_table_reference_alias_map(
             table_id = int(getattr(table, "id"))
             alias_map[table_id] = f"{base_alias}_{table_id}"
     return alias_map
+
+
+def build_dataset_table_accepted_sql_aliases(
+    table: DatasetTable | Any,
+    *,
+    canonical_alias: str | None = None,
+) -> List[str]:
+    """Return SQL aliases accepted for a dataset table reference.
+
+    The canonical alias is the user-facing alias shown in the calculated-table
+    editor and is derived from ``display_name``. Legacy/source aliases remain
+    accepted for old saved SQL, but they are not advertised as the primary name.
+    """
+    table_id = getattr(table, "id", None)
+    aliases: List[str] = []
+
+    def add(alias: str | None) -> None:
+        value = str(alias or "").strip()
+        if not value:
+            return
+        lowered = value.lower()
+        if lowered not in {item.lower() for item in aliases}:
+            aliases.append(value)
+
+    add(canonical_alias or build_dataset_table_sql_alias_base(table))
+    if table_id is not None:
+        add(build_dataset_table_sql_alias(int(table_id)))
+
+    source_kind = str(getattr(table, "source_kind", "") or "").strip().lower()
+    source_table_name = getattr(table, "source_table_name", None)
+    if source_kind == "physical_table" and source_table_name:
+        fallback = f"table_{table_id}" if table_id is not None else "table"
+        add(normalize_physical_table_sql_alias(source_table_name, fallback=fallback))
+
+    return aliases
+
+
+def build_dataset_table_reference_alias_lookup(
+    tables: Iterable[DatasetTable | Any],
+) -> Dict[str, int]:
+    """Build a case-insensitive accepted-alias -> table-id lookup.
+
+    Canonical display aliases win over technical aliases, and both win over
+    legacy source aliases. That keeps the UI-inserted name authoritative while
+    still allowing old saved SQL when it is unambiguous.
+    """
+    table_list = [
+        table
+        for table in (tables or [])
+        if getattr(table, "id", None) is not None
+    ]
+    canonical_map = build_dataset_table_reference_alias_map(table_list)
+    alias_to_table: Dict[str, int] = {}
+
+    for table in table_list:
+        table_id = int(getattr(table, "id"))
+        canonical_alias = canonical_map.get(table_id)
+        if canonical_alias:
+            alias_to_table[canonical_alias.lower()] = table_id
+
+    for table in table_list:
+        table_id = int(getattr(table, "id"))
+        alias_to_table.setdefault(build_dataset_table_sql_alias(table_id).lower(), table_id)
+
+    for table in table_list:
+        table_id = int(getattr(table, "id"))
+        canonical_alias = canonical_map.get(table_id)
+        for alias in build_dataset_table_accepted_sql_aliases(
+            table,
+            canonical_alias=canonical_alias,
+        ):
+            alias_to_table.setdefault(alias.lower(), table_id)
+
+    return alias_to_table
+
+
+def build_dataset_table_alias_replacement_map(
+    tables: Iterable[DatasetTable | Any],
+    *,
+    table_ids: Iterable[int] | None = None,
+) -> Dict[str, str]:
+    """Map every accepted user-facing alias to the stable technical CTE alias."""
+    table_list = [
+        table
+        for table in (tables or [])
+        if getattr(table, "id", None) is not None
+    ]
+    canonical_map = build_dataset_table_reference_alias_map(table_list)
+    wanted_ids = {int(item) for item in table_ids} if table_ids is not None else None
+    replacements: Dict[str, str] = {}
+
+    for table in table_list:
+        table_id = int(getattr(table, "id"))
+        if wanted_ids is not None and table_id not in wanted_ids:
+            continue
+        technical_alias = build_dataset_table_sql_alias(table_id)
+        canonical_alias = canonical_map.get(table_id)
+        if canonical_alias and canonical_alias.lower() != technical_alias.lower():
+            replacements[canonical_alias] = technical_alias
+
+    for table in table_list:
+        table_id = int(getattr(table, "id"))
+        if wanted_ids is not None and table_id not in wanted_ids:
+            continue
+        technical_alias = build_dataset_table_sql_alias(table_id)
+        canonical_alias = canonical_map.get(table_id)
+        reserved_aliases = {
+            alias.lower()
+            for alias in (canonical_alias, technical_alias)
+            if alias
+        }
+        for alias in build_dataset_table_accepted_sql_aliases(
+            table,
+            canonical_alias=canonical_alias,
+        ):
+            if alias.lower() in reserved_aliases:
+                continue
+            replacements.setdefault(alias, technical_alias)
+
+    return replacements
 
 
 def get_dataset_table_reference_options(
@@ -266,15 +381,19 @@ def collect_derived_dependency_table_ids(
     *,
     exclude_table_id: int | None = None,
 ) -> List[int]:
-    alias_to_table: Dict[str, int] = {}
-    for option in get_dataset_table_reference_options(
-        db,
-        dataset_id,
-        exclude_table_id=exclude_table_id,
-        include_disabled=False,
-    ):
-        alias_to_table[option.alias.lower()] = option.table_id
-        alias_to_table[build_dataset_table_sql_alias(option.table_id).lower()] = option.table_id
+    candidate_tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .order_by(DatasetTable.created_at, DatasetTable.id)
+        .all()
+    )
+    reference_tables = [
+        table
+        for table in candidate_tables
+        if bool(getattr(table, "enabled", True))
+        and (exclude_table_id is None or int(getattr(table, "id")) != int(exclude_table_id))
+    ]
+    alias_to_table = build_dataset_table_reference_alias_lookup(reference_tables)
 
     aliases = extract_dataset_table_aliases_from_sql(query)
     if not aliases:
@@ -301,6 +420,8 @@ def collect_derived_dependency_table_ids(
 def rewrite_dataset_table_aliases_in_sql(
     sql: str,
     replacements: Dict[str, str],
+    *,
+    output_dialect: str = "duckdb",
 ) -> str:
     cleaned = validate_and_clean_derived_query(sql)
     normalized_replacements = {
@@ -336,7 +457,7 @@ def rewrite_dataset_table_aliases_in_sql(
         table.set("this", exp.Identifier(this=replacement, quoted=False))
         changed = True
 
-    return statement.sql(dialect="duckdb") if changed else cleaned
+    return statement.sql(dialect=output_dialect) if changed else cleaned
 
 
 def _source_columns_for_transformations(table: DatasetTable | Any) -> list[str] | None:
@@ -499,8 +620,11 @@ def build_dataset_table_live_query(
             .all()
         )
     }
-    dataset_alias_map = build_dataset_table_reference_alias_map(
-        db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
+    all_dataset_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
+    dataset_alias_map = build_dataset_table_reference_alias_map(all_dataset_tables)
+    alias_to_technical = build_dataset_table_alias_replacement_map(
+        all_dataset_tables,
+        table_ids=dependency_ids,
     )
 
     resolved_datasource: DataSource | None = None
@@ -551,7 +675,11 @@ def build_dataset_table_live_query(
 
         ds_type = dependency_datasource.type if isinstance(dependency_datasource.type, str) else dependency_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        alias = dataset_alias_map.get(int(dependency_id), build_dataset_table_sql_alias(int(dependency_id))).replace('"', "")
+        # Always use the technical alias for the CTE name. A user-facing
+        # display alias can collide with the upstream physical source table
+        # under case-insensitive identifier matching (DuckDB), which turns
+        # the CTE body into a circular self-reference.
+        alias = build_dataset_table_sql_alias(int(dependency_id))
         quoted_alias = _quote_identifier(alias, dialect)
         ctes.append(f"{quoted_alias} AS (\n{_indent_sql(dependency_sql)}\n)")
 
@@ -563,6 +691,12 @@ def build_dataset_table_live_query(
 
     ds_type = resolved_datasource.type if isinstance(resolved_datasource.type, str) else resolved_datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
+    if alias_to_technical:
+        cleaned_query = rewrite_dataset_table_aliases_in_sql(
+            cleaned_query,
+            alias_to_technical,
+            output_dialect=dialect,
+        )
     derived_alias = _quote_identifier("_derived_table", dialect)
     base_query = f"SELECT * FROM (\n{_indent_sql(cleaned_query)}\n) AS {derived_alias}"
     if ctes:

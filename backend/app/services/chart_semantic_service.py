@@ -201,13 +201,37 @@ def resolve_chart_semantic_binding(
         # Direct 1-hop joins from the explore (legacy semantic for
         # dimensionFields / measureFields callers).
         join_targets: dict[str, SemanticView] = {}
+        dataset_table_ids = {
+            int(row.id)
+            for row in db.query(DatasetTable.id)
+            .filter(DatasetTable.dataset_id == db_table.dataset_id)
+            .all()
+        }
         if explore is not None:
             for join in explore.joins or []:
                 join_view_name = str(join.get("view") or "").strip()
                 join_node_name = str(join.get("alias") or "").strip() or join_view_name
                 if not join_view_name or not join_node_name or join_node_name in join_targets:
                     continue
-                join_view = db.query(SemanticView).filter(SemanticView.name == join_view_name).first()
+                join_view = (
+                    db.query(SemanticView)
+                    .filter(
+                        SemanticView.name == join_view_name,
+                        SemanticView.dataset_table_id.in_(dataset_table_ids),
+                    )
+                    .first()
+                    if dataset_table_ids
+                    else None
+                )
+                if join_view is None:
+                    join_view = (
+                        db.query(SemanticView)
+                        .filter(
+                            SemanticView.name == join_view_name,
+                            SemanticView.dataset_table_id.is_(None),
+                        )
+                        .first()
+                    )
                 if join_view is not None:
                     join_targets[join_node_name] = join_view
 

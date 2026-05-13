@@ -20,7 +20,8 @@ class FilterUtils:
     def field_exists_in_explore(
         db: Session,
         explore_name: str,
-        field: str
+        field: str,
+        model_id: int | None = None,
     ) -> bool:
         """
         Check if a field exists in an explore's views
@@ -41,12 +42,27 @@ class FilterUtils:
             view_name, field_name = field.split('.', 1)
             
             # Get explore
-            explore = db.query(SemanticExplore).filter(
+            explore_query = db.query(SemanticExplore).filter(
                 SemanticExplore.name == explore_name
-            ).first()
+            )
+            if model_id is not None:
+                explore_query = explore_query.filter(SemanticExplore.model_id == model_id)
+            explore = explore_query.first()
             
             if not explore:
                 return False
+
+            dataset_table_ids: set[int] = set()
+            dataset_id = getattr(getattr(explore, "model", None), "dataset_id", None)
+            if dataset_id is not None:
+                from app.models.dataset import DatasetTable
+
+                dataset_table_ids = {
+                    int(row.id)
+                    for row in db.query(DatasetTable.id)
+                    .filter(DatasetTable.dataset_id == dataset_id)
+                    .all()
+                }
             
             # Check base view
             base_view = db.query(SemanticView).filter(
@@ -67,9 +83,21 @@ class FilterUtils:
             for join_def in explore.joins:
                 if join_def.get('view') == view_name:
                     # Get joined view
-                    joined_view = db.query(SemanticView).filter(
-                        SemanticView.name == view_name
-                    ).first()
+                    joined_view = (
+                        db.query(SemanticView)
+                        .filter(
+                            SemanticView.name == view_name,
+                            SemanticView.dataset_table_id.in_(dataset_table_ids),
+                        )
+                        .first()
+                        if dataset_table_ids
+                        else None
+                    )
+                    if joined_view is None:
+                        joined_view = db.query(SemanticView).filter(
+                            SemanticView.name == view_name,
+                            SemanticView.dataset_table_id.is_(None),
+                        ).first()
                     
                     if joined_view:
                         # Check dimensions
@@ -230,7 +258,12 @@ class FilterUtils:
 
             explore_name = binding.get("exploreName")
             if isinstance(explore_name, str) and explore_name:
-                return FilterUtils.field_exists_in_explore(db, explore_name, filter_field)
+                return FilterUtils.field_exists_in_explore(
+                    db,
+                    explore_name,
+                    filter_field,
+                    model_id=binding.get("modelId"),
+                )
 
             return False
 

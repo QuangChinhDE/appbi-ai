@@ -21,7 +21,6 @@ from app.services.dataset_calendar_service import (
     remove_calendar_table,
 )
 from app.services.dataset_table_sql_service import (
-    build_dataset_table_alias_base_from_values,
     build_physical_table_default_display_name,
     build_dataset_table_reference_alias_map,
     rewrite_dataset_table_aliases_in_sql,
@@ -117,11 +116,6 @@ def _validate_unique_table_display_name(
     if not normalized_name:
         raise ValueError("Table name cannot be empty.")
 
-    candidate_alias = build_dataset_table_alias_base_from_values(
-        display_name=normalized_name,
-        source_kind=source_kind,
-        source_table_name=source_table_name,
-    )
     sibling_tables = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
@@ -137,18 +131,6 @@ def _validate_unique_table_display_name(
         )
         if sibling_name.casefold() == normalized_name.casefold():
             raise ValueError(f"Table name '{normalized_name}' already exists in this dataset.")
-
-        sibling_alias = build_dataset_table_alias_base_from_values(
-            display_name=sibling_name,
-            source_kind=getattr(sibling, "source_kind", None),
-            source_table_name=getattr(sibling, "source_table_name", None),
-            table_id=getattr(sibling, "id", None),
-        )
-        if sibling_alias == candidate_alias:
-            raise ValueError(
-                f"Table name '{normalized_name}' conflicts with existing table '{sibling_name}' after SQL normalization. "
-                "Please choose a different name."
-            )
 
     return normalized_name
 

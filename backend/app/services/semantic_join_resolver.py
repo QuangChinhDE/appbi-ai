@@ -242,11 +242,25 @@ def reachable_fields_for_model(
     view_by_name: dict[str, SemanticView] = {}
     target_view_names = {resolver.view_for_node(n) for n in nodes if resolver.view_for_node(n)}
     if target_view_names:
-        rows = (
-            db.query(SemanticView)
-            .filter(SemanticView.name.in_(list(target_view_names)))
-            .all()
-        )
+        query = db.query(SemanticView).filter(SemanticView.name.in_(list(target_view_names)))
+        dataset_id = getattr(model, "dataset_id", None)
+        if dataset_id is not None:
+            from sqlalchemy import or_
+            from app.models.dataset import DatasetTable
+
+            dataset_table_ids = [
+                row.id
+                for row in db.query(DatasetTable.id)
+                .filter(DatasetTable.dataset_id == dataset_id)
+                .all()
+            ]
+            query = query.filter(
+                or_(
+                    SemanticView.dataset_table_id.in_(dataset_table_ids),
+                    SemanticView.dataset_table_id.is_(None),
+                )
+            )
+        rows = query.all()
         view_by_name = {v.name: v for v in rows}
 
     dimension_fields: list[str] = []

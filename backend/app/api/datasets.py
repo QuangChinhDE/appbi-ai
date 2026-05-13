@@ -61,7 +61,11 @@ from app.services.dataset_table_sql_service import (
     is_derived_table,
     validate_and_clean_derived_query,
 )
-from app.services.dataset_model_service import generate_dataset_model, sync_dataset_model_structure
+from app.services.dataset_model_service import (
+    generate_dataset_model,
+    measure_dependencies_referencing_view,
+    sync_dataset_model_structure,
+)
 from app.services.dataset_dictionary_service import (
     build_dictionary_context,
     build_dictionary_stats,
@@ -142,11 +146,19 @@ def _validate_measure_dependencies(
                         referenced_view_names.add(value)
         if referenced_view_names:
             existing_ids = {view.id for view in views}
-            extra_views = (
-                db.query(SemanticView)
-                .filter(SemanticView.name.in_(list(referenced_view_names)))
-                .all()
+            extra_query = db.query(SemanticView).filter(
+                SemanticView.name.in_(list(referenced_view_names))
             )
+            if table_ids:
+                extra_query = extra_query.filter(
+                    or_(
+                        SemanticView.dataset_table_id.in_(table_ids),
+                        SemanticView.dataset_table_id.is_(None),
+                    )
+                )
+            else:
+                extra_query = extra_query.filter(SemanticView.dataset_table_id.is_(None))
+            extra_views = extra_query.all()
             views.extend(view for view in extra_views if view.id not in existing_ids)
 
     measure_names_by_view: dict[str, set[str]] = {
@@ -401,6 +413,8 @@ def _execute_semantic_dataset_query(
         sorts=sorts,
         limit=execute_request.limit or 500,
         measure_agg_overrides=measure_agg_overrides or None,
+        model_id=model.id,
+        explore_id=explore.id,
     )
 
     datasource: Optional[DataSource] = None
@@ -565,7 +579,13 @@ def _config_references_semantic_prefix(value: Any, prefixes: set[str]) -> bool:
     return False
 
 
-def _filter_references_semantic_prefix(filter_obj: Any, dataset_id: int, prefixes: set[str]) -> bool:
+def _filter_references_semantic_prefix(
+    filter_obj: Any,
+    dataset_id: int,
+    prefixes: set[str],
+    *,
+    allow_unscoped: bool = True,
+) -> bool:
     if not isinstance(filter_obj, dict):
         return False
 
@@ -576,6 +596,8 @@ def _filter_references_semantic_prefix(filter_obj: Any, dataset_id: int, prefixe
                 return False
         except (TypeError, ValueError):
             pass
+    elif not allow_unscoped:
+        return False
 
     for key in ("semanticField", "fieldKey", "field"):
         value = filter_obj.get(key)
@@ -957,15 +979,22 @@ def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
     """Delete the SemanticView linked to a DatasetTable and remove every
     explore join that references it.  Must be called BEFORE the DatasetTable
     row is deleted so the FK-backed dataset_table_id is still resolvable."""
-    from app.models.semantic import SemanticExplore, SemanticView
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
 
     view = db.query(SemanticView).filter(SemanticView.dataset_table_id == table_id).first()
     if view is None:
         return
 
+    table = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+    model = (
+        db.query(SemanticModel).filter(SemanticModel.dataset_id == table.dataset_id).first()
+        if table is not None
+        else None
+    )
+
     view_name = view.name
-    if view_name:
-        for explore in db.query(SemanticExplore).all():
+    if view_name and model is not None:
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
             old_joins = explore.joins or []
             new_joins = [j for j in old_joins if j.get("view") != view_name]
             if len(new_joins) != len(old_joins):
@@ -1632,6 +1661,18 @@ def add_table_to_dataset(
                 raise HTTPException(status_code=status_code, detail=detail)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # Surface the actual engine/datasource error (e.g. DuckDB
+                # "Table dataset_table_X does not exist") instead of a generic
+                # 500 — the user needs to know what to fix in their SQL.
+                logger.exception("Calculated table preview failed for dataset %s", dataset_id)
+                message = _normalize_preview_error_message(exc) or "Calculated table preview failed."
+                raise HTTPException(
+                    status_code=400 if _is_fixable_preview_error(exc) else 422,
+                    detail=f"Calculated table preview failed: {message}",
+                ) from exc
         else:
             # Validate datasource exists
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
@@ -2211,6 +2252,20 @@ def remove_table_from_dataset(
             if dashboard_ids
             else []
         )
+        dashboard_dataset_ids: dict[int, set[int]] = {dashboard_id: set() for dashboard_id in dashboard_ids}
+        if dashboard_ids:
+            dashboard_dataset_rows = (
+                db.query(Dashboard.id, DatasetTable.dataset_id)
+                .join(Dashboard.dashboard_charts)
+                .join(DashboardChart.chart)
+                .join(DatasetTable, Chart.dataset_table_id == DatasetTable.id)
+                .filter(Dashboard.id.in_(dashboard_ids))
+                .distinct()
+                .all()
+            )
+            for dashboard_id, linked_dataset_id in dashboard_dataset_rows:
+                if linked_dataset_id is not None:
+                    dashboard_dataset_ids.setdefault(int(dashboard_id), set()).add(int(linked_dataset_id))
         public_links = (
             db.query(DashboardPublicLink)
             .filter(DashboardPublicLink.dashboard_id.in_(dashboard_ids))
@@ -2220,8 +2275,14 @@ def remove_table_from_dataset(
         )
 
         for dashboard in dashboards:
+            allow_unscoped_filters = dashboard_dataset_ids.get(int(dashboard.id), set()) == {int(dataset_id)}
             for filter_obj in dashboard.filters_config or []:
-                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                if _filter_references_semantic_prefix(
+                    filter_obj,
+                    dataset_id,
+                    semantic_prefixes,
+                    allow_unscoped=allow_unscoped_filters,
+                ):
                     field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
                     dashboard_name = dashboard.name or f"Dashboard {dashboard.id}"
                     blocking_semantic_refs.append(_build_delete_constraint(
@@ -2238,7 +2299,12 @@ def remove_table_from_dataset(
                     ))
                     break
             for filter_obj in dashboard.public_filters_config or []:
-                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                if _filter_references_semantic_prefix(
+                    filter_obj,
+                    dataset_id,
+                    semantic_prefixes,
+                    allow_unscoped=allow_unscoped_filters,
+                ):
                     field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
                     dashboard_name = dashboard.name or f"Dashboard {dashboard.id}"
                     blocking_semantic_refs.append(_build_delete_constraint(
@@ -2257,8 +2323,14 @@ def remove_table_from_dataset(
                     break
 
         for link in public_links:
+            allow_unscoped_filters = dashboard_dataset_ids.get(int(link.dashboard_id), set()) == {int(dataset_id)}
             for filter_obj in link.filters_config or []:
-                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                if _filter_references_semantic_prefix(
+                    filter_obj,
+                    dataset_id,
+                    semantic_prefixes,
+                    allow_unscoped=allow_unscoped_filters,
+                ):
                     field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
                     link_name = link.name or f"Public link {link.id}"
                     blocking_semantic_refs.append(_build_delete_constraint(
@@ -2326,13 +2398,12 @@ def remove_table_from_dataset(
                 if not isinstance(measure, dict):
                     continue
                 depends_on = measure.get("depends_on") or []
-                if not isinstance(depends_on, list):
-                    continue
-                referenced = {
-                    str(name).strip()
-                    for name in depends_on
-                    if str(name or "").strip()
-                } & this_measure_names
+                referenced = measure_dependencies_referencing_view(
+                    depends_on,
+                    owner_view_name=view.name,
+                    target_view_name=this_view.name,
+                    target_measure_names=this_measure_names,
+                )
                 if not referenced:
                     continue
                 measure_name = str(measure.get("name") or "").strip() or "(unnamed)"

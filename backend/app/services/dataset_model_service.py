@@ -7,6 +7,7 @@ from collections import deque
 import hashlib
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
 from app.models.dataset import Dataset, DatasetTable
@@ -76,11 +77,19 @@ def _default_field_label(column_name: str) -> str:
     return str(column_name or "")
 
 
-def _classify_columns(columns_cache) -> Tuple[list, list]:
+def _classify_columns(
+    columns_cache,
+    *,
+    auto_generate_measures: bool = False,
+) -> Tuple[list, list]:
     """
     Classify cached columns into dimensions and measures.
     columns_cache can be a dict {"columns": [...]} or a list of dicts.
     Returns: (dimensions_list, measures_list) as dicts ready for JSON storage.
+
+    Measures are only emitted when ``auto_generate_measures`` is True. The
+    default is False — users now add measures explicitly from the Measures
+    panel. Numeric columns always become dimensions (visible) regardless.
     """
     dimensions = []
     measures = []
@@ -113,29 +122,31 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
                 "hidden": False,
             })
         elif col_type in _NUMERIC_MEASURE_TYPES:
-            # Decimal / floating point numeric → measure (default SUM)
-            measures.append({
-                "name": col_name,
-                "type": "sum",
-                "sql": col_name,
-                "expression": None,
-                "filters": [],
-                "where_sql": None,
-                "depends_on": [],
-                "format": None,
-                "folder": None,
-                "label": _default_field_label(col_name),
-                "description": None,
-                "hidden": False,
-            })
-            # Also add as dimension for GROUP BY flexibility
+            if auto_generate_measures:
+                measures.append({
+                    "name": col_name,
+                    "type": "sum",
+                    "sql": col_name,
+                    "expression": None,
+                    "filters": [],
+                    "where_sql": None,
+                    "depends_on": [],
+                    "format": None,
+                    "folder": None,
+                    "label": _default_field_label(col_name),
+                    "description": None,
+                    "hidden": False,
+                })
             dimensions.append({
                 "name": col_name,
                 "type": "number",
                 "sql": col_name,
                 "label": _default_field_label(col_name),
                 "description": None,
-                "hidden": True,  # Hidden by default since it's primarily a measure
+                # When the auto-measure pair is generated, keep the dimension
+                # hidden so the UI shows the measure first. Otherwise expose
+                # it as a regular numeric dimension.
+                "hidden": bool(auto_generate_measures),
             })
         elif col_type in _TYPE_MAP_DIMENSION:
             dim_type = _TYPE_MAP_DIMENSION[col_type]
@@ -158,23 +169,23 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
                 "hidden": False,
             })
 
-    # Always add a COUNT measure
-    has_count = any(m["type"] == "count" for m in measures)
-    if not has_count:
-        measures.insert(0, {
-            "name": "count",
-            "type": "count",
-            "sql": "*",
-            "expression": None,
-            "filters": [],
-            "where_sql": None,
-            "depends_on": [],
-            "format": None,
-            "folder": None,
-            "label": "Count",
-            "description": "Total number of records",
-            "hidden": False,
-        })
+    if auto_generate_measures:
+        has_count = any(m["type"] == "count" for m in measures)
+        if not has_count:
+            measures.insert(0, {
+                "name": "count",
+                "type": "count",
+                "sql": "*",
+                "expression": None,
+                "filters": [],
+                "where_sql": None,
+                "depends_on": [],
+                "format": None,
+                "folder": None,
+                "label": "Count",
+                "description": "Total number of records",
+                "hidden": False,
+            })
 
     return dimensions, measures
 
@@ -563,10 +574,26 @@ def _qualified_table_reference(
         return raw
 
 
+def _auto_measures_enabled(dataset_obj: Dataset | Any) -> bool:
+    """Read dataset.settings.auto_generate_measures (default False).
+
+    Historically AppBI auto-inserted a COUNT measure and a SUM measure for
+    every numeric column on first generate. Users found this noisy; the
+    behavior is now opt-in via dataset settings.
+    """
+    settings = getattr(dataset_obj, "settings", None)
+    if not isinstance(settings, dict):
+        return False
+    return bool(settings.get("auto_generate_measures", False))
+
+
 def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tuple[list[dict], list[dict]]:
     if is_generated_calendar_table(table):
         return [dict(item) for item in CALENDAR_DIMENSIONS], [dict(item) for item in CALENDAR_MEASURES]
-    dimensions, measures = _classify_columns(table.columns_cache or [])
+    dimensions, measures = _classify_columns(
+        table.columns_cache or [],
+        auto_generate_measures=_auto_measures_enabled(dataset_obj),
+    )
 
     from app.services.transformation_compiler import TransformationCompiler
 
@@ -612,6 +639,39 @@ def _field_names_for_view(view: SemanticView) -> set[str]:
         if isinstance(item, dict) and item.get("name"):
             field_names.add(str(item.get("name")))
     return field_names
+
+
+def measure_dependencies_referencing_view(
+    depends_on: Any,
+    *,
+    owner_view_name: str,
+    target_view_name: str,
+    target_measure_names: set[str],
+) -> set[str]:
+    """Return measure names in ``target_view_name`` referenced by depends_on.
+
+    Bare dependency names are same-view only. Qualified ``view.measure`` refs
+    can point across views.
+    """
+    refs: set[str] = set()
+    if not isinstance(depends_on, list):
+        return refs
+
+    for raw_dep in depends_on:
+        dep = str(raw_dep or "").strip()
+        if not dep:
+            continue
+        if "." in dep:
+            dep_view, dep_name = dep.split(".", 1)
+            dep_view = dep_view.strip()
+            dep_name = dep_name.strip()
+        else:
+            dep_view = owner_view_name
+            dep_name = dep
+        if dep_view == target_view_name and dep_name in target_measure_names:
+            refs.add(dep_name)
+
+    return refs
 
 
 def _sanitize_join_definitions(
@@ -1187,6 +1247,7 @@ def _sync_dataset_model_structure(
 
     auto_fk_joins: Dict[str, List[dict]] = {}
     auto_calendar_joins: Dict[str, List[dict]] = {}
+    role_view_names: Set[str] = set()
     if refresh_auto_joins:
         auto_fk_joins = _detect_fk_joins(tables, table_views)
         auto_calendar_joins, role_views, role_views_created, role_views_updated, role_view_names = _build_calendar_role_views(
@@ -1214,9 +1275,17 @@ def _sync_dataset_model_structure(
     db.flush()
     valid_target_view_names = {
         str(view.name)
-        for view in db.query(SemanticView).all()
+        for view in table_views.values()
         if str(view.name or "").strip()
     }
+    valid_target_view_names.update(
+        name for name in role_view_names if str(name or "").strip()
+    )
+    for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
+        for join in explore.joins or []:
+            target_view_name = str(join.get("view") or "").strip()
+            if target_view_name and join.get("origin") == "auto_calendar":
+                valid_target_view_names.add(target_view_name)
 
     existing_explores = {
         explore.base_view_id: explore
@@ -1338,6 +1407,12 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
         extra_views = (
             db.query(SemanticView)
             .filter(SemanticView.name.in_(list(referenced_view_names)))
+            .filter(
+                or_(
+                    SemanticView.dataset_table_id.in_(table_ids),
+                    SemanticView.dataset_table_id.is_(None),
+                )
+            )
             .all()
         )
         existing_ids = {view.id for view in views}
@@ -1900,7 +1975,31 @@ def get_distinct_field_values(
     view_name, field_name = field.split(".", 1)
     limit = max(1, min(int(limit), 500))
 
-    view = db.query(SemanticView).filter(SemanticView.name == view_name).first()
+    dataset_table_ids = [
+        row.id
+        for row in db.query(DatasetTable.id)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    ]
+    view = (
+        db.query(SemanticView)
+        .filter(
+            SemanticView.name == view_name,
+            SemanticView.dataset_table_id.in_(dataset_table_ids),
+        )
+        .first()
+        if dataset_table_ids
+        else None
+    )
+    if view is None:
+        view = (
+            db.query(SemanticView)
+            .filter(
+                SemanticView.name == view_name,
+                SemanticView.dataset_table_id.is_(None),
+            )
+            .first()
+        )
     if not view:
         raise ValueError(f"View '{view_name}' not found")
 
@@ -2079,7 +2178,25 @@ def get_distinct_field_values(
             actual_view = resolver.view_for_node(node_or_view) or node_or_view
             if actual_view in view_cache:
                 return view_cache[actual_view]
-            result = db.query(SemanticView).filter(SemanticView.name == actual_view).first()
+            result = (
+                db.query(SemanticView)
+                .filter(
+                    SemanticView.name == actual_view,
+                    SemanticView.dataset_table_id.in_(dataset_table_ids),
+                )
+                .first()
+                if dataset_table_ids
+                else None
+            )
+            if result is None:
+                result = (
+                    db.query(SemanticView)
+                    .filter(
+                        SemanticView.name == actual_view,
+                        SemanticView.dataset_table_id.is_(None),
+                    )
+                    .first()
+                )
             view_cache[actual_view] = result
             return result
 

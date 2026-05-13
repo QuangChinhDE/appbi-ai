@@ -96,14 +96,18 @@ def _build_base_table_ref(
         from app.core.crypto import decrypt_config
         decrypted = decrypt_config(config)
         project_id = decrypted.get("project_id", "")
-        if "." in stn:
-            # Already qualified: schema.table → project.schema.table
-            parts = stn.split(".", 1)
+        parts = [
+            part.strip().strip("`").strip('"').strip("'")
+            for part in stn.split(".")
+            if part and str(part).strip()
+        ]
+        if len(parts) >= 3:
+            return f"`{parts[-3]}.{parts[-2]}.{parts[-1]}`"
+        if len(parts) == 2:
             return f"`{project_id}.{parts[0]}.{parts[1]}`"
-        else:
-            # Bare table name — need dataset
-            dataset = decrypted.get("dataset", "")
-            return f"`{project_id}.{dataset}.{stn}`"
+
+        dataset = decrypted.get("dataset", "")
+        return f"`{project_id}.{dataset}.{stn}`"
 
     # DuckDB-backed snapshot connectors treat the full source table name as a
     # logical table identifier. Filenames commonly contain dots (for example

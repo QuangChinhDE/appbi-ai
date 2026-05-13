@@ -28,6 +28,8 @@ class SemanticQueryEngineV2:
         self.views_cache: Dict[str, SemanticView] = {}
         self.warnings: List[str] = []
         self._resolver: Optional[SemanticJoinResolver] = None
+        self._model: Optional[SemanticModel] = None
+        self._model_dataset_table_ids: Set[int] = set()
     
     def generate_sql(
         self,
@@ -43,6 +45,8 @@ class SemanticQueryEngineV2:
         time_grains: Dict[str, str] = None,
         top_n: Optional[Dict[str, Any]] = None,
         measure_agg_overrides: Optional[Dict[str, str]] = None,
+        model_id: Optional[int] = None,
+        explore_id: Optional[int] = None,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -53,6 +57,8 @@ class SemanticQueryEngineV2:
         self.warnings = []
         self.views_cache = {}
         self._resolver = None
+        self._model = None
+        self._model_dataset_table_ids = set()
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -64,9 +70,14 @@ class SemanticQueryEngineV2:
             raise ValueError("Only one pivot dimension is supported in v2")
         
         # Load explore definition
-        explore = self.db.query(SemanticExplore).filter(
-            SemanticExplore.name == explore_name
-        ).first()
+        explore_query = self.db.query(SemanticExplore)
+        if explore_id is not None:
+            explore_query = explore_query.filter(SemanticExplore.id == explore_id)
+        else:
+            explore_query = explore_query.filter(SemanticExplore.name == explore_name)
+        if model_id is not None:
+            explore_query = explore_query.filter(SemanticExplore.model_id == model_id)
+        explore = explore_query.first()
         
         if not explore:
             raise ValueError(f"Explore '{explore_name}' not found")
@@ -74,6 +85,7 @@ class SemanticQueryEngineV2:
         model = self.db.query(SemanticModel).filter(
             SemanticModel.id == explore.model_id
         ).first()
+        self._set_model_scope(model)
         self._resolver = SemanticJoinResolver(
             self.db,
             model,
@@ -85,9 +97,7 @@ class SemanticQueryEngineV2:
             SemanticView.id == explore.base_view_id
         ).first()
         if not base_view:
-            base_view = self.db.query(SemanticView).filter(
-                SemanticView.name == explore.base_view_name
-            ).first()
+            base_view = self._find_view_by_name(explore.base_view_name)
         if not base_view:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
         self.views_cache[explore.base_view_name] = base_view
@@ -179,6 +189,50 @@ class SemanticQueryEngineV2:
         sql = "\n".join(sql_parts)
         
         return sql, column_names, pivot_metadata
+
+    def _set_model_scope(self, model: Optional[SemanticModel]) -> None:
+        self._model = model
+        self._model_dataset_table_ids = set()
+        dataset_id = getattr(model, "dataset_id", None)
+        if dataset_id is None:
+            return
+        try:
+            from app.models.dataset import DatasetTable
+
+            self._model_dataset_table_ids = {
+                int(row.id)
+                for row in self.db.query(DatasetTable.id)
+                .filter(DatasetTable.dataset_id == dataset_id)
+                .all()
+            }
+        except Exception:
+            self._model_dataset_table_ids = set()
+
+    def _find_view_by_name(self, view_name: str) -> Optional[SemanticView]:
+        name = str(view_name or "").strip()
+        if not name:
+            return None
+        if self._model is None:
+            return self.db.query(SemanticView).filter(SemanticView.name == name).first()
+        if self._model_dataset_table_ids:
+            view = (
+                self.db.query(SemanticView)
+                .filter(
+                    SemanticView.name == name,
+                    SemanticView.dataset_table_id.in_(self._model_dataset_table_ids),
+                )
+                .first()
+            )
+            if view is not None:
+                return view
+        return (
+            self.db.query(SemanticView)
+            .filter(
+                SemanticView.name == name,
+                SemanticView.dataset_table_id.is_(None),
+            )
+            .first()
+        )
     
     def _load_views(self, field_refs: List[str]):
         """Load all views referenced in field names"""
@@ -202,9 +256,7 @@ class SemanticQueryEngineV2:
 
         view_name = self._resolver.view_for_node(node_id) if self._resolver else None
         view_name = view_name or node_id
-        view = self.db.query(SemanticView).filter(
-            SemanticView.name == view_name
-        ).first()
+        view = self._find_view_by_name(view_name)
         if not view:
             raise ValueError(f"View '{node_id}' not found")
         self.views_cache[node_id] = view

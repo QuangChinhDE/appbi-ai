@@ -689,11 +689,42 @@ def _adapt_live_sql_for_semantic_filters(
 
     # cache SemanticView lookups
     view_cache: dict[str, SemanticView | None] = {}
+    dataset_table_ids: set[int] = set()
+    if getattr(model, "dataset_id", None) is not None:
+        try:
+            from app.models.dataset import DatasetTable
+
+            dataset_table_ids = {
+                int(row.id)
+                for row in db.query(DatasetTable.id)
+                .filter(DatasetTable.dataset_id == model.dataset_id)
+                .all()
+            }
+        except Exception:
+            dataset_table_ids = set()
 
     def _get_view(view_name: str) -> SemanticView | None:
         if view_name in view_cache:
             return view_cache[view_name]
-        result = db.query(SemanticView).filter(SemanticView.name == view_name).first()
+        result = (
+            db.query(SemanticView)
+            .filter(
+                SemanticView.name == view_name,
+                SemanticView.dataset_table_id.in_(dataset_table_ids),
+            )
+            .first()
+            if dataset_table_ids
+            else None
+        )
+        if result is None:
+            result = (
+                db.query(SemanticView)
+                .filter(
+                    SemanticView.name == view_name,
+                    SemanticView.dataset_table_id.is_(None),
+                )
+                .first()
+            )
         view_cache[view_name] = result
         return result
 
@@ -1002,8 +1033,13 @@ def _build_filtered_live_sql_for_dataset_table(
             .all()
         )
     }
+    all_dataset_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
     dataset_alias_map = dataset_table_sql_service.build_dataset_table_reference_alias_map(
-        db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
+        all_dataset_tables
+    )
+    alias_to_technical = dataset_table_sql_service.build_dataset_table_alias_replacement_map(
+        all_dataset_tables,
+        table_ids=dependency_ids,
     )
 
     resolved_datasource = None
@@ -1055,10 +1091,7 @@ def _build_filtered_live_sql_for_dataset_table(
 
         ds_type = dependency_datasource.type if isinstance(dependency_datasource.type, str) else dependency_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        alias = dataset_alias_map.get(
-            int(dependency_id),
-            dataset_table_sql_service.build_dataset_table_sql_alias(int(dependency_id)),
-        ).replace('"', "")
+        alias = dataset_table_sql_service.build_dataset_table_sql_alias(int(dependency_id))
         quoted_alias = _quote_identifier(alias, dialect)
         ctes.append(f"{quoted_alias} AS (\n{dataset_table_sql_service._indent_sql(dependency_sql)}\n)")
 
@@ -1070,6 +1103,12 @@ def _build_filtered_live_sql_for_dataset_table(
 
     ds_type = resolved_datasource.type if isinstance(resolved_datasource.type, str) else resolved_datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
+    if alias_to_technical:
+        cleaned_query = dataset_table_sql_service.rewrite_dataset_table_aliases_in_sql(
+            cleaned_query,
+            alias_to_technical,
+            output_dialect=dialect,
+        )
     derived_alias = _quote_identifier("_derived_table", dialect)
     base_query = f"SELECT * FROM (\n{dataset_table_sql_service._indent_sql(cleaned_query)}\n) AS {derived_alias}"
     if ctes:
@@ -1135,12 +1174,21 @@ def _execute_semantic_chart_runtime(
 
     base_view_name = str(binding.get("baseViewName") or "").strip()
     explore_name = str(binding.get("exploreName") or base_view_name).strip()
+    model_id = binding.get("modelId") or None
+    explore_id = binding.get("exploreId") or None
     if not base_view_name:
         raise ValueError("Semantic chart requires a resolved semantic binding")
 
     # Sanity-check the explore exists; without it the engine cannot resolve
     # joins and the caller would get a confusing engine-level error.
-    if not db.query(SemanticExplore).filter(SemanticExplore.name == explore_name).first():
+    explore_query = db.query(SemanticExplore)
+    if explore_id:
+        explore_query = explore_query.filter(SemanticExplore.id == explore_id)
+    else:
+        explore_query = explore_query.filter(SemanticExplore.name == explore_name)
+    if model_id:
+        explore_query = explore_query.filter(SemanticExplore.model_id == model_id)
+    if not explore_query.first():
         raise ValueError(
             f"Semantic chart needs an Explore '{explore_name}'"
         )
@@ -1285,6 +1333,8 @@ def _execute_semantic_chart_runtime(
         sorts=[],
         limit=effective_limit,
         measure_agg_overrides=agg_overrides or None,
+        model_id=model_id,
+        explore_id=explore_id,
     )
 
     # Cache: namespace under a stable identifier derived from the explore +
@@ -1298,7 +1348,7 @@ def _execute_semantic_chart_runtime(
         "_agg_overrides": agg_overrides,
         "_limit": effective_limit,
     }
-    cache_identifier = f"semantic_chart::{explore_name}"
+    cache_identifier = f"semantic_chart::{model_id or 'model'}::{explore_id or explore_name}"
     cache_filters = sorted(engine_filters.items())
 
     if cache_enabled:

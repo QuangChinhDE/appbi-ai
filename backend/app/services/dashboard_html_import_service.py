@@ -2199,6 +2199,8 @@ def _build_source_key_alias_map(
     table_id_map: Dict[str, int],
 ) -> Dict[str, str]:
     """Build a source-key -> SQL alias lookup for derived-table resolution."""
+    from app.services.dataset_table_sql_service import build_dataset_table_sql_alias
+
     alias_by_table_id: Dict[int, str] = {}
     alias_by_key: Dict[str, str] = {}
 
@@ -2209,6 +2211,7 @@ def _build_source_key_alias_map(
         if not alias:
             continue
         if isinstance(table_id, int):
+            alias = build_dataset_table_sql_alias(table_id)
             alias_by_table_id[table_id] = alias
         if display_name:
             alias_by_key[display_name] = alias
@@ -2233,7 +2236,7 @@ def _materialize_v1_derived_tables(
     """Rewrite chart plans bound to v1 derived tables to use ``queryMode=custom``.
 
     For each ``derived_table`` op, the SQL template is compiled against the
-    physical-table alias namespace (``{{source:KEY}}`` → normalized alias) and
+    dataset-table CTE namespace (``{{source:KEY}}`` -> ``dataset_table_<id>``) and
     every chart whose ``source_key`` matches the derived key is converted to a
     custom-SQL binding that produces the columns referenced in its role_config.
     """
