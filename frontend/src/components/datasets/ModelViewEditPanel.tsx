@@ -572,6 +572,7 @@ function MeasureRow({
   canEdit,
   columnOptions,
   measureNames,
+  viewName,
   rowKey,
   defaultOpen,
   onChange,
@@ -581,6 +582,7 @@ function MeasureRow({
   canEdit: boolean;
   columnOptions: string[];
   measureNames: string[];
+  viewName?: string;
   rowKey: string;
   defaultOpen?: boolean;
   onChange: (updated: MeasureDefinition) => void;
@@ -601,6 +603,10 @@ function MeasureRow({
 
   const colsListId = `__cols_${rowKey}`;
   const measuresListId = `__measures_${rowKey}`;
+  const selfMeasureRefs = new Set([
+    measure.name,
+    viewName ? `${viewName}.${measure.name}` : '',
+  ].filter(Boolean));
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -669,7 +675,7 @@ function MeasureRow({
             {columnOptions.map((c) => <option key={c} value={c} />)}
           </datalist>
           <datalist id={measuresListId}>
-            {measureNames.filter((n) => n !== measure.name).map((n) => <option key={n} value={n} />)}
+            {measureNames.filter((n) => !selfMeasureRefs.has(n)).map((n) => <option key={n} value={n} />)}
           </datalist>
 
           {/* Identity — Label first (primary), Aggregation alongside */}
@@ -868,7 +874,7 @@ function MeasureRow({
                     })
                   }
                   className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                  placeholder="e.g. revenue, orders"
+                  placeholder="e.g. revenue, calendar.days"
                 />
               </div>
             </div>
@@ -884,6 +890,7 @@ function MeasureRow({
 export interface ModelViewEditPanelProps {
   datasetId: number;
   view: DatasetModelView | null;           // null = no table selected
+  modelViews?: DatasetModelView[];
   tables: DatasetTable[];
   canEdit: boolean;
   onClose?: () => void;
@@ -900,6 +907,7 @@ export interface ModelViewEditPanelProps {
 export function ModelViewEditPanel({
   datasetId,
   view,
+  modelViews,
   tables,
   canEdit,
   onClose,
@@ -1037,7 +1045,24 @@ export function ModelViewEditPanel({
     return Array.from(set).sort();
   }, [dimensions]);
 
-  const measureNames = useMemo(() => measures.map((m) => m.name), [measures]);
+  const measureDependencyRefs = useMemo(() => {
+    const refs = new Set<string>();
+    const currentViewName = view?.name;
+    for (const m of measures) {
+      const name = (m.name || '').trim();
+      if (!name) continue;
+      refs.add(name);
+      if (currentViewName) refs.add(`${currentViewName}.${name}`);
+    }
+    for (const modelView of modelViews ?? []) {
+      for (const measure of modelView.measures ?? []) {
+        const name = (measure.name || '').trim();
+        if (!name) continue;
+        refs.add(modelView.name === currentViewName ? name : `${modelView.name}.${name}`);
+      }
+    }
+    return Array.from(refs).sort();
+  }, [measures, modelViews, view?.name]);
 
   const makeClientRowKey = useCallback((kind: 'dimension' | 'measure') => {
     const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -1094,6 +1119,21 @@ export function ModelViewEditPanel({
 
     const errors: string[] = [];
     const seen = new Map<string, number>();
+    const currentViewName = view.name;
+    const localMeasureNames = new Set(
+      measures.map((m) => (m.name || '').trim()).filter(Boolean),
+    );
+    const modelMeasureRefs = new Set<string>();
+    for (const modelView of modelViews ?? []) {
+      for (const measure of modelView.measures ?? []) {
+        const name = (measure.name || '').trim();
+        if (name) modelMeasureRefs.add(`${modelView.name}.${name}`);
+      }
+    }
+    for (const name of localMeasureNames) {
+      modelMeasureRefs.add(`${currentViewName}.${name}`);
+    }
+
     measures.forEach((m, i) => {
       const trimmedName = (m.name || '').trim();
       if (!trimmedName) {
@@ -1117,13 +1157,21 @@ export function ModelViewEditPanel({
       if (hasForbiddenSql(m.where_sql)) {
         errors.push(`Measure "${trimmedName}": WHERE SQL contains a forbidden token`);
       }
-      // depends_on must reference an existing measure in this view
+      // depends_on may reference a same-view measure by bare name, or another
+      // semantic view by qualified view.measure name.
       for (const dep of m.depends_on || []) {
-        if (dep && !measures.some((mm) => mm.name === dep)) {
-          errors.push(`Measure "${trimmedName}": depends_on "${dep}" doesn't match any measure in this view`);
-        }
-        if (dep === trimmedName) {
+        const normalizedDep = String(dep || '').trim();
+        if (!normalizedDep) continue;
+        if (normalizedDep === trimmedName || normalizedDep === `${currentViewName}.${trimmedName}`) {
           errors.push(`Measure "${trimmedName}": cannot depend on itself`);
+          continue;
+        }
+        if (normalizedDep.includes('.')) {
+          if (!modelMeasureRefs.has(normalizedDep)) {
+            errors.push(`Measure "${trimmedName}": depends_on "${normalizedDep}" doesn't match any measure in this model`);
+          }
+        } else if (!localMeasureNames.has(normalizedDep)) {
+          errors.push(`Measure "${trimmedName}": depends_on "${normalizedDep}" doesn't match any measure in this view`);
         }
       }
       // Filters must have a field
@@ -1373,7 +1421,8 @@ export function ModelViewEditPanel({
                             measure={m}
                             canEdit={canEdit}
                             columnOptions={columnOptions}
-                            measureNames={measureNames}
+                            measureNames={measureDependencyRefs}
+                            viewName={view.name}
                             defaultOpen={singleMeasureMode || Boolean(focusMeasureName && m.name === focusMeasureName)}
                             onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
                             onRemove={() => {

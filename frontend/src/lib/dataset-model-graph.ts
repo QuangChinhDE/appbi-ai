@@ -19,10 +19,10 @@ export function findExploreForBaseView(
 }
 
 /**
- * BFS over `explore.joins` starting from `baseViewName`.
- * Returns the set of view names reachable through declared joins, including
- * the base view itself. Each join contributes both `from_view` (anchor) and
- * `view` (target) so multi-hop chains naturally propagate.
+ * BFS over all model joins starting from `baseViewName`.
+ * Returns the set of semantic node ids reachable through declared joins,
+ * including the base view itself. When a join has an alias, that alias is the
+ * node id used in field refs.
  */
 export function computeReachableViews(
   model: DatasetModelResponse | null | undefined,
@@ -31,23 +31,23 @@ export function computeReachableViews(
   const reachable = new Set<string>();
   if (!model || !baseViewName) return reachable;
 
-  const explore = findExploreForBaseView(model, baseViewName);
   reachable.add(baseViewName);
-  if (!explore) return reachable;
 
-  // Build adjacency from joins: from_view -> view (and view -> from_view, since
-  // user can pivot in either direction in the chart builder).
+  // Build adjacency from every explore so multi-hop chains can cross the
+  // explore that originally owns each relationship.
   const adjacency = new Map<string, Set<string>>();
   const addEdge = (a: string, b: string) => {
     if (!a || !b) return;
     if (!adjacency.has(a)) adjacency.set(a, new Set());
     adjacency.get(a)!.add(b);
   };
-  for (const join of explore.joins ?? []) {
-    const from = join.from_view ?? explore.base_view_name;
-    const to = join.view;
-    addEdge(from, to);
-    addEdge(to, from);
+  for (const explore of model.explores ?? []) {
+    for (const join of explore.joins ?? []) {
+      const from = join.from_view ?? explore.base_view_name;
+      const to = join.alias || join.view;
+      addEdge(from, to);
+      addEdge(to, from);
+    }
   }
 
   const queue: string[] = [baseViewName];
@@ -75,5 +75,40 @@ export function getReachableViews(
 ): DatasetModelView[] {
   if (!model) return [];
   const reachable = computeReachableViews(model, baseViewName);
-  return model.views.filter((v) => reachable.has(v.name));
+  const viewsByName = new Map(model.views.map((view) => [view.name, view]));
+  const nodeToViewName = new Map<string, string>(
+    model.views.map((view) => [view.name, view.name]),
+  );
+
+  for (const explore of model.explores ?? []) {
+    for (const join of explore.joins ?? []) {
+      const viewName = join.view;
+      const nodeName = join.alias || join.view;
+      if (viewName && nodeName) {
+        nodeToViewName.set(nodeName, viewName);
+      }
+    }
+  }
+
+  const out: DatasetModelView[] = [];
+  const seen = new Set<string>();
+  for (const nodeName of reachable) {
+    if (seen.has(nodeName)) continue;
+    const viewName = nodeToViewName.get(nodeName) ?? nodeName;
+    const view = viewsByName.get(viewName);
+    if (!view) continue;
+    seen.add(nodeName);
+    out.push(
+      nodeName === view.name
+        ? view
+        : {
+            ...view,
+            name: nodeName,
+            table_display_name: view.table_display_name
+              ? `${view.table_display_name} (${nodeName})`
+              : `${view.name} (${nodeName})`,
+          },
+    );
+  }
+  return out;
 }

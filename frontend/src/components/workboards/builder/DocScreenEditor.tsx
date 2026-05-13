@@ -4,7 +4,11 @@
  */
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  workboardWebhookApi,
+  type WebhookConfig,
+} from '@/lib/api/workboard-webhooks';
 import {
   ArrowDown,
   ArrowUp,
@@ -77,17 +81,16 @@ const DOC_EXPRESSION_OPTIONS: SelectOption[] = [
   { value: '{{now}}', label: 'System > Now' },
 ];
 
-import type { BuilderMode } from './useBuilderMode';
-
 export default function DocScreenEditor({
   screen,
   tables,
+  workboardId,
   onChange,
 }: {
   screen: ScreenSpec;
   tables: DatasetTableInfo[];
+  workboardId?: number;
   onChange: (next: ScreenSpec) => void;
-  mode?: BuilderMode;
 }) {
   const doc = screen.doc || { blocks: [] };
   const blocks = doc.blocks || [];
@@ -170,6 +173,8 @@ export default function DocScreenEditor({
             block={activeBlock}
             tables={tables}
             screenTableId={screen.table_id ?? null}
+            workboardId={workboardId}
+            screenId={screen.id}
             onChange={(patch) => safeIdx >= 0 && updateBlock(safeIdx, patch)}
             onRemove={() => safeIdx >= 0 && removeBlock(safeIdx)}
           />
@@ -482,12 +487,16 @@ function Inspector({
   block,
   tables,
   screenTableId,
+  workboardId,
+  screenId,
   onChange,
   onRemove,
 }: {
   block: DocBlockSpec | null;
   tables: DatasetTableInfo[];
   screenTableId: number | null;
+  workboardId?: number;
+  screenId: string;
   onChange: (patch: Partial<DocBlockSpec>) => void;
   onRemove: () => void;
 }) {
@@ -526,6 +535,8 @@ function Inspector({
           block={block}
           tables={tables}
           screenTableId={screenTableId}
+          workboardId={workboardId}
+          screenId={screenId}
           onChange={onChange}
         />
       )}
@@ -777,11 +788,15 @@ function DataTableEditor({
   block,
   tables,
   screenTableId,
+  workboardId,
+  screenId,
   onChange,
 }: {
   block: DocBlockSpec;
   tables: DatasetTableInfo[];
   screenTableId: number | null;
+  workboardId?: number;
+  screenId: string;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
   const source = String(block.source || 'primary');
@@ -902,6 +917,20 @@ function DataTableEditor({
             <option value="yes">Yes - show download button</option>
           </select>
         </Lbl>
+      </BuilderCollapsibleAdvanced>
+
+      {/* Sync triggers — buttons that POST the rendered table to webhooks. */}
+      <BuilderCollapsibleAdvanced
+        title="Sync triggers"
+        description='Nút "Đồng bộ" trên block, gửi dữ liệu sang webhook đã cấu hình ở tab Webhook.'
+        defaultOpen={Array.isArray(block.sync_triggers) && (block.sync_triggers as unknown[]).length > 0}
+      >
+        <SyncTriggersEditor
+          triggers={(block.sync_triggers as Array<Record<string, unknown>> | undefined) || []}
+          workboardId={workboardId}
+          screenId={screenId}
+          onChange={(next) => onChange({ sync_triggers: next })}
+        />
       </BuilderCollapsibleAdvanced>
 
       {/* Hidden column type hints only used to pre-fill defaults above. */}
@@ -1888,5 +1917,261 @@ function ColumnGroupsEditor({
         </div>
       )}
     </BuilderSubsection>
+  );
+}
+
+// ─── Sync triggers editor ────────────────────────────────────────────────
+
+type SyncTrigger = {
+  id: string;
+  label?: string;
+  confirm_message?: string | null;
+  webhook_ids?: string[];
+  run_mode?: 'parallel' | 'sequential';
+  stop_chain_on_error?: boolean;
+};
+
+/**
+ * UX goals (per user feedback):
+ *  - Hide ``trigger.id`` from the UI — auto-generated under the hood.
+ *  - Replace the comma-separated ``webhook_ids`` input with a checkbox list
+ *    of the webhooks bound to THIS doc screen (fetched from the API).
+ *  - Hide ``run_mode`` / ``stop_chain_on_error`` until the user has selected
+ *    at least 2 webhooks.
+ *  - Hide ``stop_chain_on_error`` unless the user picked ``sequential``.
+ *  - Collapse the remaining knobs (confirm message, etc.) under "Advanced".
+ */
+function SyncTriggersEditor({
+  triggers,
+  workboardId,
+  screenId,
+  onChange,
+}: {
+  triggers: Array<Record<string, unknown>>;
+  workboardId?: number;
+  screenId: string;
+  onChange: (next: SyncTrigger[]) => void;
+}) {
+  const list: SyncTrigger[] = useMemo(
+    () =>
+      (triggers || []).map((t) => ({
+        id: String(t.id ?? ''),
+        label: typeof t.label === 'string' ? t.label : 'Đồng bộ',
+        confirm_message:
+          typeof t.confirm_message === 'string' ? t.confirm_message : '',
+        webhook_ids: Array.isArray(t.webhook_ids) ? (t.webhook_ids as string[]) : [],
+        run_mode: t.run_mode === 'sequential' ? 'sequential' : 'parallel',
+        stop_chain_on_error: t.stop_chain_on_error !== false,
+      })),
+    [triggers],
+  );
+
+  const [scopedWebhooks, setScopedWebhooks] = useState<WebhookConfig[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [openAdvanced, setOpenAdvanced] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    if (!workboardId || !screenId) return;
+    setLoading(true);
+    workboardWebhookApi
+      .list(workboardId, { screen_id: screenId })
+      .then((data) => setScopedWebhooks(data))
+      .catch(() => setScopedWebhooks([]))
+      .finally(() => setLoading(false));
+  }, [workboardId, screenId]);
+
+  const update = (idx: number, patch: Partial<SyncTrigger>) => {
+    onChange(list.map((t, i) => (i === idx ? { ...t, ...patch } : t)));
+  };
+
+  const add = () => {
+    // Auto-generate a stable id; user never sees it.
+    const taken = new Set(list.map((t) => t.id));
+    let n = list.length + 1;
+    let id = `sync-${n}`;
+    while (taken.has(id)) {
+      n += 1;
+      id = `sync-${n}`;
+    }
+    onChange([
+      ...list,
+      {
+        id,
+        label: 'Đồng bộ',
+        webhook_ids: [],
+        run_mode: 'parallel',
+        stop_chain_on_error: true,
+      },
+    ]);
+  };
+
+  const remove = (idx: number) => {
+    onChange(list.filter((_, i) => i !== idx));
+  };
+
+  const toggleWebhook = (idx: number, webhookId: string) => {
+    const current = list[idx].webhook_ids || [];
+    const has = current.includes(webhookId);
+    const next = has
+      ? current.filter((w) => w !== webhookId)
+      : [...current, webhookId];
+    update(idx, { webhook_ids: next });
+  };
+
+  // Empty state when there are no triggers yet.
+  if (list.length === 0) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-text-tertiary">
+          Khi user xem doc này, nút <span className="font-medium">Đồng bộ</span>{' '}
+          sẽ gửi dữ liệu tới các webhook bạn chọn ở dưới.
+        </p>
+        <button
+          type="button"
+          onClick={add}
+          className="inline-flex items-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-tertiary hover:bg-surface-2"
+        >
+          + Thêm nút đồng bộ
+        </button>
+        {scopedWebhooks && scopedWebhooks.length === 0 && (
+          <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+            Doc này chưa có webhook nào. Tạo webhook ở tab{' '}
+            <span className="font-medium">Webhook</span> và gán cho doc này
+            trước, sau đó quay lại đây để chọn.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {list.map((t, idx) => {
+        const selected = t.webhook_ids || [];
+        const multi = selected.length >= 2;
+        const isSequential = (t.run_mode || 'parallel') === 'sequential';
+        const advancedOpen = openAdvanced[idx] || false;
+        return (
+          <div
+            key={t.id || idx}
+            className="space-y-2 rounded border border-[rgb(var(--border-line))] p-2.5"
+          >
+            <Lbl label="Tên nút">
+              <input
+                value={t.label ?? ''}
+                onChange={(e) => update(idx, { label: e.target.value })}
+                placeholder="Đồng bộ"
+                className={INPUT}
+              />
+            </Lbl>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-text-secondary">
+                Webhook nào sẽ chạy
+              </label>
+              {loading && scopedWebhooks === null ? (
+                <p className="text-[11px] text-text-tertiary">Đang tải…</p>
+              ) : !scopedWebhooks || scopedWebhooks.length === 0 ? (
+                <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+                  Doc này chưa có webhook nào. Tạo trong tab{' '}
+                  <span className="font-medium">Webhook</span> trước.
+                </p>
+              ) : (
+                <div className="space-y-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                  {scopedWebhooks.map((w) => (
+                    <label
+                      key={w.id}
+                      className="flex items-center gap-2 text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(w.id)}
+                        onChange={() => toggleWebhook(idx, w.id)}
+                      />
+                      <span className="font-medium text-text-primary">{w.name}</span>
+                      {!w.is_active && (
+                        <span className="rounded bg-slate-100 px-1 py-px text-[10px] text-slate-600">
+                          tắt
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Multi-webhook execution mode — only shown when ≥2 selected. */}
+            {multi && (
+              <Lbl label="Chạy các webhook">
+                <select
+                  value={t.run_mode ?? 'parallel'}
+                  onChange={(e) =>
+                    update(idx, {
+                      run_mode: e.target.value as 'parallel' | 'sequential',
+                    })
+                  }
+                  className={INPUT}
+                >
+                  <option value="parallel">Cùng lúc (nhanh hơn)</option>
+                  <option value="sequential">Lần lượt</option>
+                </select>
+                {isSequential && (
+                  <label className="mt-1.5 flex items-center gap-2 text-[11px] text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={t.stop_chain_on_error !== false}
+                      onChange={(e) =>
+                        update(idx, { stop_chain_on_error: e.target.checked })
+                      }
+                    />
+                    Dừng nếu 1 webhook thất bại
+                  </label>
+                )}
+              </Lbl>
+            )}
+
+            {/* Advanced toggle. */}
+            <button
+              type="button"
+              onClick={() =>
+                setOpenAdvanced((s) => ({ ...s, [idx]: !advancedOpen }))
+              }
+              className="text-[11px] text-text-tertiary hover:text-text-secondary"
+            >
+              {advancedOpen ? '▾' : '▸'} Tuỳ chọn nâng cao
+            </button>
+            {advancedOpen && (
+              <Lbl label="Xác nhận trước khi chạy (tuỳ chọn)">
+                <input
+                  value={t.confirm_message ?? ''}
+                  onChange={(e) =>
+                    update(idx, { confirm_message: e.target.value })
+                  }
+                  placeholder="vd: Đẩy ca này lên ERP?"
+                  className={INPUT}
+                />
+              </Lbl>
+            )}
+
+            <div className="text-right">
+              <button
+                type="button"
+                onClick={() => remove(idx)}
+                className="text-xs text-rose-600 hover:underline"
+              >
+                Xoá
+              </button>
+            </div>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={add}
+        className="rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-tertiary hover:bg-surface-2"
+      >
+        + Thêm nút đồng bộ
+      </button>
+    </div>
   );
 }

@@ -419,6 +419,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
               allScreens={layout.screens}
               tables={tables}
               tablesLoading={tablesLoading}
+              workboardId={workboard.id}
               onChange={updateScreen}
               focusFieldColumn={focusFieldColumn}
               onFocusFieldHandled={() => setFocusFieldColumn(null)}

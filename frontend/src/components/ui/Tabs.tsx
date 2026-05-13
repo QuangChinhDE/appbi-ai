@@ -70,7 +70,7 @@ export function Tabs<T extends string = string>({
     <div
       role="tablist"
       className={cn(
-        'inline-flex items-center gap-1 border-b border-[rgb(var(--border-line))]',
+        'inline-flex items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5',
         className,
       )}
     >
@@ -84,23 +84,17 @@ export function Tabs<T extends string = string>({
             disabled={item.disabled}
             onClick={() => onChange(item.key)}
             className={cn(
-              'inline-flex items-center gap-1.5 relative transition-colors font-emphasis',
-              size === 'sm' ? 'h-8 px-2.5 text-label' : 'h-9 px-3 text-caption',
+              'relative inline-flex items-center gap-1.5 rounded-md transition-colors font-emphasis',
+              size === 'sm' ? 'h-7 px-2.5 text-label' : 'h-8 px-3 text-caption',
               active
-                ? 'text-text-primary'
-                : 'text-text-tertiary hover:text-text-primary',
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1 hover:text-text-primary',
               item.disabled && 'opacity-50 cursor-not-allowed',
             )}
           >
             {item.icon}
             {item.label}
             {item.badge}
-            <span
-              className={cn(
-                'absolute left-0 right-0 -bottom-px h-0.5 bg-brand transition-opacity',
-                active ? 'opacity-100' : 'opacity-0',
-              )}
-            />
           </button>
         );
       })}

@@ -4,7 +4,8 @@ Advanced SQL generation with pivots, window functions, calculated fields, and mo
 """
 from typing import List, Tuple, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
-from app.models.semantic import SemanticView, SemanticExplore
+from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
+from app.services.semantic_join_resolver import SemanticJoinResolver
 from app.schemas.semantic import (
     WindowFunctionDefinition,
     CalculatedFieldDefinition,
@@ -26,6 +27,7 @@ class SemanticQueryEngineV2:
         self.database_type = database_type.lower()
         self.views_cache: Dict[str, SemanticView] = {}
         self.warnings: List[str] = []
+        self._resolver: Optional[SemanticJoinResolver] = None
     
     def generate_sql(
         self,
@@ -49,6 +51,8 @@ class SemanticQueryEngineV2:
             Tuple of (sql, columns, pivoted_columns)
         """
         self.warnings = []
+        self.views_cache = {}
+        self._resolver = None
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -66,9 +70,51 @@ class SemanticQueryEngineV2:
         
         if not explore:
             raise ValueError(f"Explore '{explore_name}' not found")
-        
-        # Load all referenced views
-        self._load_views(dimensions + measures + pivots)
+
+        model = self.db.query(SemanticModel).filter(
+            SemanticModel.id == explore.model_id
+        ).first()
+        self._resolver = SemanticJoinResolver(
+            self.db,
+            model,
+            explore.base_view_name,
+            bidirectional=True,
+        )
+
+        base_view = self.db.query(SemanticView).filter(
+            SemanticView.id == explore.base_view_id
+        ).first()
+        if not base_view:
+            base_view = self.db.query(SemanticView).filter(
+                SemanticView.name == explore.base_view_name
+            ).first()
+        if not base_view:
+            raise ValueError(f"Base view '{explore.base_view_name}' not found")
+        self.views_cache[explore.base_view_name] = base_view
+
+        # Load every semantic view referenced by field roles, filters, sorts,
+        # windows, and calculated-field placeholders before rendering SQL.
+        field_refs = list(dimensions) + list(measures) + list(pivots) + list((filters or {}).keys())
+        field_refs.extend(
+            str(sort.get("field") or "")
+            for sort in sorts
+            if sort.get("field")
+        )
+        for wf in window_functions:
+            base_measure = str(wf.get("base_measure") or "").strip()
+            if base_measure:
+                field_refs.append(base_measure)
+            field_refs.extend(str(item or "").strip() for item in (wf.get("partition_by") or []) if str(item or "").strip())
+            field_refs.extend(str(item or "").strip() for item in (wf.get("order_by") or []) if str(item or "").strip())
+        for cf in calculated_fields:
+            sql_template = str(cf.get("sql") or "")
+            field_refs.extend(
+                re.findall(
+                    r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}",
+                    sql_template,
+                )
+            )
+        self._load_views(field_refs)
         
         # Fetch pivot values if pivoting
         pivot_values = []
@@ -136,20 +182,33 @@ class SemanticQueryEngineV2:
     
     def _load_views(self, field_refs: List[str]):
         """Load all views referenced in field names"""
-        view_names = set()
+        node_ids = set()
         for field_ref in field_refs:
             if '.' in field_ref:
-                view_name, _ = self._parse_field_ref(field_ref)
-                view_names.add(view_name)
-        
-        for view_name in view_names:
-            if view_name not in self.views_cache:
-                view = self.db.query(SemanticView).filter(
-                    SemanticView.name == view_name
-                ).first()
-                if not view:
-                    raise ValueError(f"View '{view_name}' not found")
-                self.views_cache[view_name] = view
+                node_id, _ = self._parse_field_ref(field_ref)
+                node_ids.add(node_id)
+
+        for node_id in node_ids:
+            self._get_view_for_node(node_id)
+
+    def _get_view_for_node(self, node_id: str) -> SemanticView:
+        """Return the SemanticView for a field node id.
+
+        Node ids normally equal view names, but role-playing joins may expose
+        an alias. The resolver maps alias node -> actual SemanticView.name.
+        """
+        if node_id in self.views_cache:
+            return self.views_cache[node_id]
+
+        view_name = self._resolver.view_for_node(node_id) if self._resolver else None
+        view_name = view_name or node_id
+        view = self.db.query(SemanticView).filter(
+            SemanticView.name == view_name
+        ).first()
+        if not view:
+            raise ValueError(f"View '{node_id}' not found")
+        self.views_cache[node_id] = view
+        return view
     
     def _fetch_pivot_values(
         self, 
@@ -263,10 +322,7 @@ class SemanticQueryEngineV2:
     def _render_dimension(self, field_ref: str, view_alias: str) -> str:
         """Render dimension SQL"""
         view_name, field_name = self._parse_field_ref(field_ref)
-        view = self.views_cache.get(view_name)
-        
-        if not view:
-            raise ValueError(f"View '{view_name}' not found")
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
         
         dim_def = next((d for d in view.dimensions if d['name'] == field_name), None)
         if not dim_def:
@@ -324,16 +380,15 @@ class SemanticQueryEngineV2:
         stack.add(field_ref)
 
         view_name, field_name = self._parse_field_ref(field_ref)
-        view = self.views_cache.get(view_name)
-
-        if not view:
-            raise ValueError(f"View '{view_name}' not found")
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
 
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
         if not measure_def:
             raise ValueError(f"Measure '{field_name}' not found in view '{view_name}'")
 
-        measure_type = (agg_override or measure_def.get('type', 'count')).lower().strip()
+        stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
+        override_type = str(agg_override or "").lower().strip()
+        measure_type = override_type or stored_measure_type
         expression_template = (measure_def.get('expression') or "").strip()
         depends_on = [
             str(item).strip()
@@ -344,7 +399,7 @@ class SemanticQueryEngineV2:
         # Ratio / aggregate-level measures. When a measure declares
         # `depends_on`, treat `expression` as a formula over already-aggregated
         # measures instead of aggregating the expression again.
-        if expression_template and depends_on and agg_override is None:
+        if expression_template and depends_on and (not override_type or override_type == stored_measure_type):
             return self._render_measure_formula(
                 expression_template,
                 view_name,
@@ -435,14 +490,7 @@ class SemanticQueryEngineV2:
             ref = match.group(1)
             qualified = ref if "." in ref else f"{view_name}.{ref}"
             ref_view_name, ref_field_name = self._parse_field_ref(qualified)
-            ref_view = self.views_cache.get(ref_view_name)
-            if not ref_view:
-                ref_view = self.db.query(SemanticView).filter(
-                    SemanticView.name == ref_view_name
-                ).first()
-                if not ref_view:
-                    raise ValueError(f"View '{ref_view_name}' not found")
-                self.views_cache[ref_view_name] = ref_view
+            ref_view = self.views_cache.get(ref_view_name) or self._get_view_for_node(ref_view_name)
 
             is_measure = any(
                 m.get("name") == ref_field_name
@@ -534,7 +582,7 @@ class SemanticQueryEngineV2:
     ) -> str:
         """Render measure with CASE for pivot"""
         view_name, field_name = self._parse_field_ref(measure_field)
-        view = self.views_cache.get(view_name)
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
         
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
         if not measure_def:
@@ -679,68 +727,65 @@ class SemanticQueryEngineV2:
         base_table = base_view.sql_table_name or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
         
-        # Add joins
-        for join_def in explore.joins:
-            join_type = join_def.get('type', 'left').upper()
-            join_view_name = join_def['view']
-            join_condition = join_def['sql_on']
+        resolver = self._resolver
+        if resolver is None:
+            return from_clause
 
-            # Get joined view table name
-            join_view = self.views_cache.get(join_view_name)
-            if join_view:
-                join_table = join_view.sql_table_name or join_view_name
-            else:
-                join_table = join_view_name
+        joined_nodes: set[str] = {explore.base_view_name}
+        target_nodes = sorted(set(self.views_cache.keys()) - joined_nodes)
+        for target_node in target_nodes:
+            path = resolver.resolve_path(target_node)
+            if path is None:
+                raise ValueError(
+                    f"View '{target_node}' is not reachable from base view '{explore.base_view_name}'"
+                )
 
-            # Render join condition. sql_on may use:
-            #   ${TABLE}             → base (left) view alias
-            #   ${join_view_name}    → joined (right) view alias
-            #   ${view.field}        → view.field
-            join_condition_rendered = self._render_join_condition(
-                join_condition,
-                base_alias=explore.base_view_name,
-                join_alias=join_view_name,
-            )
-
-            from_clause += f"\n{join_type} JOIN {join_table} AS {join_view_name} ON {join_condition_rendered}"
+            for step in path.steps:
+                edge = step.edge
+                if edge.to_node in joined_nodes:
+                    continue
+                join_view = self._get_view_for_node(edge.to_node)
+                join_table = join_view.sql_table_name or edge.to_view
+                join_condition_rendered = self._render_edge_join_condition(edge)
+                if not join_condition_rendered:
+                    raise ValueError(
+                        f"Join from '{edge.from_node}' to '{edge.to_node}' is missing a SQL condition"
+                    )
+                join_type = (edge.type or "left").upper()
+                from_clause += (
+                    f"\n{join_type} JOIN {join_table} AS {edge.to_node} "
+                    f"ON {join_condition_rendered}"
+                )
+                joined_nodes.add(edge.to_node)
 
         return from_clause
 
-    def _render_join_condition(
-        self,
-        condition: str,
-        *,
-        base_alias: str | None = None,
-        join_alias: str | None = None,
-    ) -> str:
-        """Render join condition with placeholder substitution.
+    def _render_edge_join_condition(self, edge) -> str:
+        """Render a JOIN ON condition for a resolved join edge."""
+        condition = str(edge.sql_on or "").strip()
+        if not condition:
+            if edge.from_column and edge.to_column:
+                return f"{edge.from_node}.{edge.from_column} = {edge.to_node}.{edge.to_column}"
+            return ""
 
-        Handles three placeholder forms found in stored sql_on templates:
-          - ``${TABLE}``           → the base (left-hand) view alias
-          - ``${some_view}``       → the alias of the joined view (or any
-                                     other referenced view alias)
-          - ``${view.field}``      → ``view.field``
-        """
-        rendered = condition
+        rendered = condition.replace("${TABLE}", edge.from_node)
+        if edge.to_node and edge.to_node != edge.to_view:
+            rendered = rendered.replace(f"${{{edge.to_node}}}", edge.to_node)
+        rendered = rendered.replace(f"${{{edge.to_view}}}", edge.to_node)
 
-        if base_alias:
-            rendered = rendered.replace("${TABLE}", base_alias)
-
-        if join_alias:
-            rendered = rendered.replace(f"${{{join_alias}}}", join_alias)
-
-        # ${view.field} → view.field
         dotted_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\}'
 
         def replace_field(match):
             field_ref = match.group(1)
-            view_name, field_name = self._parse_field_ref(field_ref)
-            return f"{view_name}.{field_name}"
+            node_name, field_name = self._parse_field_ref(field_ref)
+            if node_name in {edge.to_node, edge.to_view}:
+                return f"{edge.to_node}.{field_name}"
+            if node_name == edge.from_node:
+                return f"{edge.from_node}.{field_name}"
+            return f"{node_name}.{field_name}"
 
         rendered = re.sub(dotted_pattern, replace_field, rendered)
 
-        # Bare ${view_alias} placeholders (any remaining views referenced
-        # in the condition, e.g. self-joins or multi-hop joins) → view_alias.
         bare_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}'
         rendered = re.sub(bare_pattern, lambda m: m.group(1), rendered)
 

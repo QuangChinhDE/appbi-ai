@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-# ── Cross-table semantic chart routing ──────────────────────────────────────
+# ── Semantic chart routing ─────────────────────────────────────────────────
 #
 # Background:
 #   The Explore chart builder lets the user pick dimensions / measures from
@@ -56,9 +56,9 @@ _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #   The dataset-execute endpoint already handles this by routing to
 #   `SemanticQueryEngineV2`, which knows how to materialise the JOIN chain
 #   from `SemanticExplore.joins`. We extend the same routing into the chart
-#   runtime, but only when the chart actually uses cross-view refs — single-
-#   table charts continue to flow through the existing path (cheaper,
-#   smaller-blast-radius change).
+#   runtime when a chart uses joined fields or declared semantic fields
+#   (formulas, filtered measures, aliases). Pure physical-table charts
+#   continue to flow through the existing path.
 
 
 def _collect_role_config_field_refs(role_config: dict) -> list[str]:
@@ -93,22 +93,131 @@ def _collect_role_config_field_refs(role_config: dict) -> list[str]:
     return refs
 
 
-def _role_config_has_cross_view_refs(
+def _binding_semantic_fields(binding: dict[str, Any]) -> set[str]:
+    fields = {
+        str(value).strip()
+        for value in [
+            *(binding.get("dimensionFields") or []),
+            *(binding.get("measureFields") or []),
+            *(binding.get("reachableDimensionFields") or []),
+            *(binding.get("reachableMeasureFields") or []),
+            *(binding.get("reachableFields") or []),
+            *((binding.get("fieldMap") or {}).values()),
+            *[
+                mapping.get("semanticField")
+                for mapping in (binding.get("calendarFieldMappings") or [])
+                if isinstance(mapping, dict)
+            ],
+        ]
+        if str(value or "").strip()
+    }
+    return fields
+
+
+def _binding_semantic_measure_fields(binding: dict[str, Any]) -> set[str]:
+    return {
+        str(value).strip()
+        for value in [
+            *(binding.get("measureFields") or []),
+            *(binding.get("reachableMeasureFields") or []),
+        ]
+        if str(value or "").strip()
+    }
+
+
+def _role_config_needs_semantic_runtime(
     role_config: dict,
+    binding: dict[str, Any],
     base_view_name: str,
 ) -> bool:
-    """True iff role_config references any field whose view-part is NOT the
-    chart's base view (e.g. a JOINed view's column)."""
+    """Route to semantic runtime when role_config uses joined fields or any
+    declared semantic field in qualified form.
+
+    Cross-view fields require JOIN resolution. Same-view qualified semantic
+    measures/dimensions also need the semantic engine because they may be
+    formulas, filtered measures, or aliases rather than physical columns.
+    """
     base = (base_view_name or "").strip()
     if not base:
         return False
+
+    semantic_fields = _binding_semantic_fields(binding)
     for ref in _collect_role_config_field_refs(role_config):
         if "." not in ref:
             continue
         view_part, _ = ref.split(".", 1)
         if view_part.strip() and view_part.strip() != base:
             return True
+        if ref in semantic_fields:
+            return True
     return False
+
+
+def _strip_nonsemantic_base_view_refs_from_role_config(
+    role_config: dict,
+    binding: dict[str, Any],
+    base_view_name: str,
+) -> dict:
+    """Keep the live-query fallback compatible with old qualified field ids.
+
+    Semantic fields are routed before this helper. If a non-semantic field is
+    still stored as `base.field`, the legacy live builder must see `field`
+    because it queries a single wrapped table and would otherwise quote
+    `"base.field"` as a physical column name.
+    """
+    base = str(base_view_name or "").strip()
+    if not base:
+        return role_config
+
+    semantic_fields = _binding_semantic_fields(binding)
+    prefix = f"{base}."
+    changed = False
+
+    def strip_field(value: Any) -> Any:
+        nonlocal changed
+        if not isinstance(value, str):
+            return value
+        field = value.strip()
+        if field.startswith(prefix) and field not in semantic_fields:
+            changed = True
+            return field[len(prefix):]
+        return value
+
+    def strip_metric(metric: Any) -> Any:
+        if not isinstance(metric, dict):
+            return metric
+        field = metric.get("field")
+        next_field = strip_field(field)
+        if next_field == field:
+            return metric
+        return {**metric, "field": next_field}
+
+    next_config = dict(role_config or {})
+    for key in (
+        "dimension", "breakdown", "timeField",
+        "scatterX", "scatterY",
+        "tableRowDimension", "tableColumnDimension",
+    ):
+        if key in next_config:
+            next_config[key] = strip_field(next_config.get(key))
+
+    if isinstance(next_config.get("selectedColumns"), list):
+        next_config["selectedColumns"] = [
+            strip_field(item)
+            for item in next_config.get("selectedColumns") or []
+        ]
+
+    if isinstance(next_config.get("metrics"), list):
+        next_config["metrics"] = [
+            strip_metric(metric)
+            for metric in next_config.get("metrics") or []
+        ]
+
+    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+        if key in next_config:
+            next_config[key] = strip_metric(next_config.get(key))
+
+    return next_config if changed else role_config
 
 
 def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
@@ -1002,9 +1111,10 @@ def _execute_semantic_chart_runtime(
     filter_context: str | None,
     limit_override: int | None,
 ) -> Dict[str, Any]:
-    """Execute a chart whose role_config touches multiple JOINed semantic
-    views. Uses `SemanticQueryEngineV2` so the generated SQL contains the
-    explore's join chain. The returned rows are remapped so their keys match
+    """Execute a chart whose role_config needs semantic SQL rendering.
+
+    Uses `SemanticQueryEngineV2` so the generated SQL contains the explore's
+    join chain and measure formulas. Returned row keys are remapped to match
     the requested `view.field` refs (rather than the engine's `view_field`
     SQL aliases) — preserves the chart-runtime contract."""
     import hashlib
@@ -1025,13 +1135,13 @@ def _execute_semantic_chart_runtime(
     base_view_name = str(binding.get("baseViewName") or "").strip()
     explore_name = str(binding.get("exploreName") or base_view_name).strip()
     if not base_view_name:
-        raise ValueError("Cross-view chart requires a resolved semantic binding")
+        raise ValueError("Semantic chart requires a resolved semantic binding")
 
     # Sanity-check the explore exists; without it the engine cannot resolve
     # joins and the caller would get a confusing engine-level error.
     if not db.query(SemanticExplore).filter(SemanticExplore.name == explore_name).first():
         raise ValueError(
-            f"Cross-view chart needs an Explore '{explore_name}' with declared joins"
+            f"Semantic chart needs an Explore '{explore_name}'"
         )
 
     role_config = normalize_chart_role_config(chart_type, get_chart_active_role_config(chart_config))
@@ -1041,6 +1151,9 @@ def _execute_semantic_chart_runtime(
         if not raw:
             return raw
         return raw if "." in raw else f"{base_view_name}.{raw}"
+
+    semantic_measure_fields = _binding_semantic_measure_fields(binding)
+    legacy_selected_measure_refs: list[str] = []
 
     # Collect dimension-like refs (skip duplicates while preserving order).
     dimension_refs: list[str] = []
@@ -1057,7 +1170,21 @@ def _execute_semantic_chart_runtime(
         "tableRowDimension", "tableColumnDimension",
     ):
         push_dim(role_config.get(key))
+    selected_metric_fields = {
+        str(metric.get("field") or "").strip()
+        for metric in (role_config.get("metrics") or [])
+        if isinstance(metric, dict) and str(metric.get("field") or "").strip()
+    }
+    selected_metric_refs = {qualify(field) for field in selected_metric_fields if qualify(field)}
     for col in role_config.get("selectedColumns") or []:
+        raw_col = str(col or "").strip()
+        qualified_col = qualify(raw_col)
+        if raw_col in selected_metric_fields or qualified_col in selected_metric_refs:
+            continue
+        if qualified_col in semantic_measure_fields:
+            if qualified_col not in legacy_selected_measure_refs:
+                legacy_selected_measure_refs.append(qualified_col)
+            continue
         push_dim(col)
     # scatter X/Y are typically continuous columns that the user wants to
     # plot raw. The engine treats anything in the `dimensions` list as a
@@ -1086,6 +1213,9 @@ def _execute_semantic_chart_runtime(
         push_metric(metric)
     for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
         push_metric(role_config.get(key))
+    for ref in legacy_selected_measure_refs:
+        if ref not in measure_refs:
+            measure_refs.append(ref)
 
     # Build filters: combine base + dashboard runtime; only forward filters
     # whose target is supported by the binding (base or reachable view) and
@@ -1250,6 +1380,22 @@ def _execute_chart_runtime_for_table(
     custom_sql = get_chart_custom_sql(chart_config)
     raw_extra_filters = list(extra_filters or [])
     normalized_extra_filters = _normalize_runtime_filters_for_chart(chart_config, extra_filters)
+    binding = (
+        chart_config.get("semanticBinding")
+        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
+        else {}
+    )
+    base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
+    needs_semantic_runtime = _role_config_needs_semantic_runtime(
+        role_config,
+        binding,
+        base_view_name_for_routing,
+    )
+    live_role_config = _strip_nonsemantic_base_view_refs_from_role_config(
+        role_config,
+        binding,
+        base_view_name_for_routing,
+    )
 
     # ── Calendar table: generate SQL in source dialect, execute on dataset's datasource ──
     if is_generated_calendar_table(db_table):
@@ -1259,6 +1405,17 @@ def _execute_chart_runtime_for_table(
         cal_datasource = datasource or _find_dataset_datasource(db, dataset_obj)
         if cal_datasource is None:
             raise ValueError("No datasource available for calendar table execution")
+        if needs_semantic_runtime:
+            return _execute_semantic_chart_runtime(
+                db,
+                cal_datasource,
+                chart_type,
+                chart_config,
+                binding=binding,
+                raw_extra_filters=raw_extra_filters,
+                filter_context=filter_context,
+                limit_override=limit_override,
+            )
         ds_type = cal_datasource.type if isinstance(cal_datasource.type, str) else cal_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
         cal_sql = build_calendar_live_sql(
@@ -1273,7 +1430,7 @@ def _execute_chart_runtime_for_table(
         return LiveQueryService.execute_chart_query_from_sql(
             cal_datasource,
             chart_type,
-            role_config,
+            live_role_config,
             all_filters,
             cal_sql,
             extra_filters=[],
@@ -1286,6 +1443,21 @@ def _execute_chart_runtime_for_table(
         if dataset_obj is None:
             raise ValueError("Dataset not found")
         try:
+            if needs_semantic_runtime:
+                live_datasource, _live_proxy_table = build_live_proxy_table_for_dataset_table(
+                    db, dataset_obj, db_table,
+                )
+                return _execute_semantic_chart_runtime(
+                    db,
+                    live_datasource,
+                    chart_type,
+                    chart_config,
+                    binding=binding,
+                    raw_extra_filters=raw_extra_filters,
+                    filter_context=filter_context,
+                    limit_override=limit_override,
+                )
+
             combined_runtime_filters = merge_chart_query_filters(
                 chart_config,
                 extra_filters=raw_extra_filters,
@@ -1301,7 +1473,7 @@ def _execute_chart_runtime_for_table(
                 return LiveQueryService.execute_chart_query_from_sql(
                     live_datasource,
                     chart_type,
-                    role_config,
+                    live_role_config,
                     [],
                     filtered_live_sql,
                     extra_filters=[],
@@ -1316,12 +1488,12 @@ def _execute_chart_runtime_for_table(
             )
             if live_sql:
                 return LiveQueryService.execute_chart_query_from_sql(
-                    live_datasource, chart_type, role_config, filters, live_sql,
+                    live_datasource, chart_type, live_role_config, filters, live_sql,
                     extra_filters=live_filters,
                     limit_override=limit_override,
                 )
             return LiveQueryService.execute_chart_query(
-                live_datasource, live_proxy_table, chart_type, role_config, filters,
+                live_datasource, live_proxy_table, chart_type, live_role_config, filters,
                 extra_filters=normalized_extra_filters,
                 limit_override=limit_override,
             )
@@ -1345,21 +1517,10 @@ def _execute_chart_runtime_for_table(
     if datasource is None:
         raise ValueError("Chart requires a datasource-backed table")
 
-    # ── Cross-view semantic chart: role_config touches joined views ──
+    # Semantic chart: joined refs or declared semantic fields.
     # The chart anchor table still owns the binding (`baseViewName`); the
-    # engine resolves the join chain from `SemanticExplore.joins`. We only
-    # divert here when there's at least one cross-view ref because the
-    # single-table path below is cheaper and already battle-tested.
-    binding = (
-        chart_config.get("semanticBinding")
-        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
-        else {}
-    )
-    base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
-    if (
-        base_view_name_for_routing
-        and _role_config_has_cross_view_refs(role_config, base_view_name_for_routing)
-    ):
+    # engine resolves joins and renders formulas / filtered measures.
+    if needs_semantic_runtime:
         return _execute_semantic_chart_runtime(
             db,
             datasource,
@@ -1377,12 +1538,12 @@ def _execute_chart_runtime_for_table(
     )
     if live_sql:
         return LiveQueryService.execute_chart_query_from_sql(
-            datasource, chart_type, role_config, filters, live_sql,
+            datasource, chart_type, live_role_config, filters, live_sql,
             extra_filters=live_filters,
             limit_override=limit_override,
         )
     return LiveQueryService.execute_chart_query(
-        datasource, db_table, chart_type, role_config, filters,
+        datasource, db_table, chart_type, live_role_config, filters,
         extra_filters=normalized_extra_filters,
         limit_override=limit_override,
     )

@@ -273,4 +273,63 @@ export const workspaceApi = {
     }
     return { blob: r.data as Blob, filename };
   },
+
+  async triggerBlockSync(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    blockIndex: number,
+    triggerId: string,
+  ): Promise<{
+    group_id: string;
+    runs: Array<{
+      run_id: string;
+      status: string;
+      webhook_id: string;
+      webhook_name?: string | null;
+    }>;
+  }> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/sync`,
+      { trigger_id: triggerId },
+    );
+    return r.data;
+  },
+
+  async getSyncGroup(
+    token: string,
+    workboardId: number,
+    groupId: string,
+  ): Promise<{
+    group_id: string;
+    status: 'pending' | 'running' | 'success' | 'failed' | 'partial' | 'cancelled';
+    runs: Array<{
+      run_id: string;
+      status: string;
+      webhook_id: string;
+      webhook_name?: string | null;
+      total_rows: number;
+      total_batches: number;
+      completed_batches: number;
+      failed_batches: number;
+      last_response_status?: number | null;
+      last_error?: string | null;
+    }>;
+  }> {
+    const r = await client.get(
+      `/public/workspaces/${token}/workboards/${workboardId}/sync-groups/${groupId}`,
+    );
+    return r.data;
+  },
+
+  async cancelSyncGroup(
+    token: string,
+    workboardId: number,
+    groupId: string,
+  ): Promise<unknown> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/sync-groups/${groupId}/cancel`,
+    );
+    return r.data;
+  },
 };

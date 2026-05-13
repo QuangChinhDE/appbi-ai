@@ -204,19 +204,20 @@ def resolve_chart_semantic_binding(
         if explore is not None:
             for join in explore.joins or []:
                 join_view_name = str(join.get("view") or "").strip()
-                if not join_view_name or join_view_name in join_targets:
+                join_node_name = str(join.get("alias") or "").strip() or join_view_name
+                if not join_view_name or not join_node_name or join_node_name in join_targets:
                     continue
                 join_view = db.query(SemanticView).filter(SemanticView.name == join_view_name).first()
                 if join_view is not None:
-                    join_targets[join_view_name] = join_view
+                    join_targets[join_node_name] = join_view
 
-        for join_view_name, join_view in join_targets.items():
+        for join_node_name, join_view in join_targets.items():
             dimension_fields.extend(
-                f"{join_view_name}.{field}"
+                f"{join_node_name}.{field}"
                 for field in _field_names(join_view.dimensions)
             )
             measure_fields.extend(
-                f"{join_view_name}.{field}"
+                f"{join_node_name}.{field}"
                 for field in _field_names(join_view.measures)
             )
 
@@ -268,6 +269,8 @@ def resolve_chart_semantic_binding(
         "dimensionFields": sorted(set(dimension_fields)),
         "measureFields": sorted(set(measure_fields)),
         "reachableViews": reachable_views,
+        "reachableDimensionFields": sorted(set(reachable_dimension_fields)),
+        "reachableMeasureFields": sorted(set(reachable_measure_fields)),
         "reachableFields": sorted(
             set(reachable_dimension_fields) | set(reachable_measure_fields)
         ),

@@ -230,6 +230,29 @@ class DataTableColumnMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DataTableSyncTrigger(BaseModel):
+    """A "Sync" button rendered on a doc ``data_table`` block.
+
+    The trigger references one or more workboard-level webhook configs
+    (see ``WorkboardWebhookConfig``) by id and fans the resolved table
+    out to each of them. Multiple webhooks per trigger run either in
+    parallel (default) or one-after-the-other.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(default="Đồng bộ", min_length=1, max_length=120)
+    icon: Optional[str] = None
+    confirm_message: Optional[str] = None
+    webhook_ids: List[str] = Field(default_factory=list, min_length=1)
+    run_mode: Literal["parallel", "sequential"] = "parallel"
+    # When sequential, by default stop the chain on the first failure.
+    # Has no effect when run_mode == "parallel".
+    stop_chain_on_error: bool = True
+    visible_for_roles: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
@@ -258,6 +281,8 @@ class DataTableBlock(BaseModel):
     # Off by default so reports don't leak data unless the builder
     # opted in.
     allow_export_excel: bool = False
+    # Optional "Sync" buttons that POST the rendered table to webhooks.
+    sync_triggers: List[DataTableSyncTrigger] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -852,3 +877,160 @@ class WorkboardPublicPayload(BaseModel):
     mode: Literal["form", "view"] = "form"
     form: Optional[Dict[str, Any]] = None
     rendered_view: Optional[Dict[str, Any]] = None
+
+
+# ---------------------------------------------------------------------------
+# Webhook integrations
+# ---------------------------------------------------------------------------
+
+class WorkboardWebhookHeader(BaseModel):
+    """One static header sent with every webhook POST."""
+
+    key: str = Field(..., min_length=1, max_length=120)
+    value: str = Field(..., max_length=2048)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkboardWebhookConfig(BaseModel):
+    """A reusable outbound webhook configuration.
+
+    Stored as part of ``workboard.settings.webhooks`` so it travels with
+    the workboard on import/export. URL validation is intentionally
+    permissive (any http/https URL is accepted) — the integration layer
+    on the receiving side handles auth and mapping.
+
+    Each webhook is scoped to a single doc screen via ``screen_id`` —
+    a webhook is built for the row shape of one specific doc, so reusing
+    it across docs would mix incompatible payloads. The field is
+    ``Optional`` only to accommodate webhooks created before this binding
+    existed; the UI nudges users to fill it.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(..., min_length=1, max_length=160)
+    url: str = Field(..., min_length=1, max_length=2048)
+    # The doc screen this webhook serves. Empty = orphaned (legacy data
+    # or screen was deleted) — surfaced as a warning in the admin UI.
+    screen_id: Optional[str] = Field(default=None, max_length=64)
+    headers: List[WorkboardWebhookHeader] = Field(default_factory=list)
+
+    batch_size: int = Field(default=500, ge=1, le=500)
+    delay_between_batches_ms: int = Field(default=0, ge=0, le=60000)
+    timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+    # When True, a non-2xx response on any batch stops the run and marks
+    # it as ``failed``. When False the run keeps going and ends as
+    # ``partial`` if any batch failed.
+    stop_on_error: bool = True
+    is_active: bool = True
+    description: Optional[str] = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkboardWebhookCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    url: str = Field(..., min_length=1, max_length=2048)
+    screen_id: str = Field(..., min_length=1, max_length=64)
+    headers: List[WorkboardWebhookHeader] = Field(default_factory=list)
+    batch_size: int = Field(default=500, ge=1, le=500)
+    delay_between_batches_ms: int = Field(default=0, ge=0, le=60000)
+    timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+    stop_on_error: bool = True
+    is_active: bool = True
+    description: Optional[str] = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkboardWebhookUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    url: Optional[str] = Field(default=None, min_length=1, max_length=2048)
+    screen_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    headers: Optional[List[WorkboardWebhookHeader]] = None
+    batch_size: Optional[int] = Field(default=None, ge=1, le=500)
+    delay_between_batches_ms: Optional[int] = Field(default=None, ge=0, le=60000)
+    timeout_ms: Optional[int] = Field(default=None, ge=1000, le=120000)
+    stop_on_error: Optional[bool] = None
+    is_active: Optional[bool] = None
+    description: Optional[str] = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkboardWebhookTestRequest(BaseModel):
+    """Test a webhook with a small synthetic sample."""
+
+    sample_rows: int = Field(default=3, ge=1, le=20)
+    sample_columns: List[str] = Field(default_factory=lambda: ["col_a", "col_b"])
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# ---------------------------------------------------------------------------
+# Sync runs
+# ---------------------------------------------------------------------------
+
+SyncRunStatus = Literal[
+    "pending", "running", "success", "failed", "partial", "cancelled"
+]
+
+
+class WorkboardSyncRunResponse(BaseModel):
+    """Status payload returned by both admin and public endpoints.
+
+    Public callers only get a subset (no per-batch URL/response detail) —
+    this same model is reused with selective field population.
+    """
+
+    run_id: str
+    status: SyncRunStatus
+    workboard_id: int
+    screen_id: str
+    block_index: int
+    trigger_id: str
+    webhook_id: str
+    webhook_name: Optional[str] = None
+
+    total_rows: int = 0
+    total_batches: int = 0
+    completed_batches: int = 0
+    failed_batches: int = 0
+
+    last_response_status: Optional[int] = None
+    last_error: Optional[str] = None
+
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    created_at: datetime
+
+    triggered_by_app_user_username: Optional[str] = None
+    triggered_by_user_email: Optional[str] = None
+
+
+class WorkboardSyncRunDetailResponse(WorkboardSyncRunResponse):
+    """Admin detail view — adds the snapshot URL and response excerpt."""
+
+    webhook_url: Optional[str] = None
+    response_excerpt: Optional[Dict[str, Any]] = None
+
+
+class WorkboardSyncTriggerResponse(BaseModel):
+    """Response from POST .../sync.
+
+    A trigger may fan out to multiple webhooks; the response groups all
+    resulting run_ids under a single ``group_id`` so the frontend can
+    poll/cancel them together.
+    """
+
+    group_id: str
+    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)
+
+
+class WorkboardSyncGroupResponse(BaseModel):
+    """Polled status for a fan-out group (1+ webhook runs)."""
+
+    group_id: str
+    status: SyncRunStatus      # aggregate
+    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)

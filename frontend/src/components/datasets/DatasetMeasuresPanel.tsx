@@ -71,6 +71,15 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
     [selectedViewId, views],
   );
 
+  const singleMeasureMode = Boolean(focusMeasureName);
+
+  // Find the focused measure's label for the breadcrumb.
+  const focusedMeasureLabel = useMemo(() => {
+    if (!focusMeasureName || !selectedView) return focusMeasureName ?? '';
+    const m = selectedView.measures.find((m) => m.name === focusMeasureName);
+    return m?.label || m?.name || focusMeasureName;
+  }, [focusMeasureName, selectedView]);
+
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center text-text-tertiary">
@@ -109,15 +118,6 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
       </div>
     );
   }
-
-  const singleMeasureMode = Boolean(focusMeasureName);
-
-  // Find the focused measure's label for the breadcrumb
-  const focusedMeasureLabel = useMemo(() => {
-    if (!focusMeasureName || !selectedView) return focusMeasureName ?? '';
-    const m = selectedView.measures.find((m) => m.name === focusMeasureName);
-    return m?.label || m?.name || focusMeasureName;
-  }, [focusMeasureName, selectedView]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -167,6 +167,7 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
           <ModelViewEditPanel
             datasetId={datasetId}
             view={selectedView}
+            modelViews={views}
             tables={tables}
             canEdit={canEdit}
             showDictionaryTab={false}

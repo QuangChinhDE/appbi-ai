@@ -28,7 +28,6 @@ import {
 import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
 import type { ListFilterSpec, ScreenAction, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
-import type { BuilderMode } from './useBuilderMode';
 
 interface DatasetTableInfo {
   id: number;
@@ -42,7 +41,6 @@ interface Props {
   allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
-  mode: BuilderMode;
 }
 
 type ListSpec = NonNullable<ScreenSpec['list']>;
@@ -62,7 +60,6 @@ export default function ListScreenEditor({
   allScreens,
   tables,
   onChange,
-  mode,
 }: Props) {
   const list = screen.list || EMPTY_LIST;
   const filters = list.filters || [];
@@ -293,15 +290,13 @@ export default function ListScreenEditor({
               active={activeItem === 'settings'}
               onClick={() => setActiveItem('settings')}
             />
-            {(mode === 'advanced' || list.empty_state_message) && (
-              <BuilderNavigatorItem
-                icon={<ListFilter className="h-3.5 w-3.5" />}
-                label="Empty state"
-                subtitle={list.empty_state_message ? 'Custom message' : 'Default message'}
-                active={activeItem === 'empty'}
-                onClick={() => setActiveItem('empty')}
-              />
-            )}
+            <BuilderNavigatorItem
+              icon={<ListFilter className="h-3.5 w-3.5" />}
+              label="Empty state"
+              subtitle={list.empty_state_message ? 'Custom message' : 'Default message'}
+              active={activeItem === 'empty'}
+              onClick={() => setActiveItem('empty')}
+            />
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup

@@ -834,8 +834,28 @@ export function buildExploreExecuteRequest(args: {
       return request;
     }
 
+    const queryMetrics = buildChartQueryMetrics(chartType, normalized);
+    const selectedMetricFields = new Set(queryMetrics.map((metric) => metric.field));
+
     if (normalized.selectedColumns && normalized.selectedColumns.length > 0) {
-      request.dimensions = normalized.selectedColumns;
+      const selectedColumnSet = new Set(normalized.selectedColumns);
+      const tableDimensions = normalized.selectedColumns.filter((field) => !selectedMetricFields.has(field));
+      const tableMeasures = queryMetrics.filter((metric) => selectedColumnSet.has(metric.field));
+
+      if (tableDimensions.length > 0) {
+        request.dimensions = tableDimensions;
+      }
+      if (tableMeasures.length > 0) {
+        request.measures = tableMeasures.map((metric) => ({
+          field: metric.field,
+          function: metric.agg,
+        }));
+      }
+    } else if (queryMetrics.length > 0) {
+      request.measures = queryMetrics.map((metric) => ({
+        field: metric.field,
+        function: metric.agg,
+      }));
     }
     return request;
   }
@@ -1040,6 +1060,55 @@ export function buildExploreChartResult(args: {
       rows: chartRows,
       columns: chartColumns,
       preAggregated: source === 'generated' || rowKeys.has(metricKey(pivotMetric)),
+    };
+  }
+
+  if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
+    const selectedColumns = normalized.selectedColumns ?? [];
+    const metrics = buildChartQueryMetrics(chartType, normalized);
+    const aliasMap = new Map<string, string>();
+
+    for (const metric of metrics) {
+      for (const sourceKey of metricOutputKeys(metric)) {
+        aliasMap.set(sourceKey, metric.field);
+      }
+    }
+    for (const column of selectedColumns) {
+      if (!column.includes('.')) continue;
+      const [, rawColumn] = column.split('.', 2);
+      if (rawColumn) {
+        aliasMap.set(rawColumn, column);
+      }
+    }
+
+    if (aliasMap.size === 0) {
+      return { rows, columns, preAggregated: false };
+    }
+
+    const chartRows = rows.map((row) => {
+      const nextRow = { ...row };
+      for (const [sourceKey, targetKey] of aliasMap.entries()) {
+        if (sourceKey in nextRow && !(targetKey in nextRow)) {
+          nextRow[targetKey] = nextRow[sourceKey];
+        }
+      }
+      return nextRow;
+    });
+
+    const chartColumns = columns.map((column) => {
+      const normalizedName = aliasMap.get(column.name);
+      if (!normalizedName || columns.some((item) => item.name === normalizedName)) return column;
+      return {
+        ...column,
+        name: normalizedName,
+        type: metrics.some((metric) => metric.field === normalizedName) ? 'number' : column.type,
+      };
+    });
+
+    return {
+      rows: chartRows,
+      columns: chartColumns,
+      preAggregated: source === 'generated' && metrics.length > 0,
     };
   }
 

@@ -234,7 +234,7 @@ def reachable_fields_for_model(
     if base_view is None:
         return [], [], []
     base_node = base_view.name
-    resolver = SemanticJoinResolver(db, model, base_node)
+    resolver = SemanticJoinResolver(db, model, base_node, bidirectional=True)
 
     nodes = resolver.reachable_nodes()
 

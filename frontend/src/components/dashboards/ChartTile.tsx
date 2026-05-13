@@ -707,7 +707,7 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
-            {skippedGlobalFilters.length > 0 && (
+            {canEdit && skippedGlobalFilters.length > 0 && (
               <span
                 className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
                 title={

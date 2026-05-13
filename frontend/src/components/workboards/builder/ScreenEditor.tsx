@@ -20,7 +20,6 @@ import ListScreenEditor from './ListScreenEditor';
 import DocScreenEditor from './DocScreenEditor';
 import DashboardScreenEditor from './DashboardScreenEditor';
 import RlsEditor from './RlsEditor';
-import { useBuilderMode, type BuilderMode } from './useBuilderMode';
 
 interface DatasetTableInfo {
   id: number;
@@ -34,6 +33,7 @@ interface Props {
   allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
   tablesLoading: boolean;
+  workboardId?: number;
   onChange: (next: ScreenSpec) => void;
   focusFieldColumn?: string | null;
   onFocusFieldHandled?: () => void;
@@ -53,12 +53,12 @@ export default function ScreenEditor({
   allScreens,
   tables,
   tablesLoading,
+  workboardId,
   onChange,
   focusFieldColumn,
   onFocusFieldHandled,
 }: Props) {
   const [tab, setTab] = useState<TabId>('form');
-  const [mode, setMode] = useBuilderMode();
 
   React.useEffect(() => {
     if (focusFieldColumn) setTab('form');
@@ -85,12 +85,7 @@ export default function ScreenEditor({
     // sensible centering with max-w-screen-2xl so this layout fills the
     // available pane width when the Live Preview is collapsed.
     <div className="w-full space-y-4">
-      {/* items-center vertically centers the toggle pill against the tabs
-          row. Tabs already render their own bottom border. */}
-      <div className="flex items-center justify-between gap-3">
-        <Tabs<TabId> items={items} value={tab} onChange={setTab} variant="underline" />
-        <ModeToggle mode={mode} onChange={setMode} />
-      </div>
+      <Tabs<TabId> items={items} value={tab} onChange={setTab} variant="underline" />
 
       {tab === 'form' && (
         <>
@@ -101,7 +96,6 @@ export default function ScreenEditor({
               tables={tables}
               tablesLoading={tablesLoading}
               onChange={onChange}
-              mode={mode}
               focusFieldColumn={focusFieldColumn}
               onFocusFieldHandled={onFocusFieldHandled}
             />
@@ -112,15 +106,14 @@ export default function ScreenEditor({
               allScreens={allScreens}
               tables={tables}
               onChange={onChange}
-              mode={mode}
             />
           )}
           {screen.kind === 'doc' && (
             <DocScreenEditor
               screen={screen}
               tables={tables}
+              workboardId={workboardId}
               onChange={onChange}
-              mode={mode}
             />
           )}
           {screen.kind === 'dashboard' && (
@@ -130,7 +123,7 @@ export default function ScreenEditor({
       )}
 
       {tab === 'permission' && (
-        <PermissionTab screen={screen} tables={tables} mode={mode} onChange={onChange} />
+        <PermissionTab screen={screen} tables={tables} onChange={onChange} />
       )}
 
       {tab === 'advanced' && (
@@ -149,34 +142,16 @@ function badge(count?: number): React.ReactNode {
   );
 }
 
-function ModeToggle({
-  mode,
-  onChange,
-}: {
-  mode: BuilderMode;
-  onChange: (next: BuilderMode) => void;
-}) {
-  // Reuses the shared Tabs pill so this lives in the same design vocab as
-  // the surrounding underline tabs — same active treatment (surface-1 chip
-  // with linear shadow) and same hover, no ad-hoc styling.
-  const items: TabItem<BuilderMode>[] = [
-    { key: 'basic', label: 'Basic' },
-    { key: 'advanced', label: 'Advanced' },
-  ];
-  return <Tabs<BuilderMode> items={items} value={mode} onChange={onChange} variant="pill" size="sm" />;
-}
 
 // ── Permission tab ────────────────────────────────────────────────────────
 
 function PermissionTab({
   screen,
   tables,
-  mode,
   onChange,
 }: {
   screen: ScreenSpec;
   tables: DatasetTableInfo[];
-  mode: BuilderMode;
   onChange: (next: ScreenSpec) => void;
 }) {
   const roleOptions = buildAppUserRoleOptions(screen.visible_for_roles).filter(
@@ -224,19 +199,17 @@ function PermissionTab({
         </BuilderSection>
       )}
 
-      {mode === 'advanced' && (
-        <BuilderSection
-          title="Roles allowed to open this screen (advanced)"
-          description="Empty = every signed-in user can open it (subject to the rules above). Pick specific roles to gate at the menu level."
-        >
-          <CheckboxMultiSelect
-            options={roleOptions}
-            selectedValues={Array.from(selectedRoles)}
-            onChange={(values) => onChange({ ...screen, visible_for_roles: values })}
-            columns={3}
-          />
-        </BuilderSection>
-      )}
+      <BuilderSection
+        title="Roles allowed to open this screen"
+        description="Empty = every signed-in user can open it (subject to the rules above). Pick specific roles to gate at the menu level."
+      >
+        <CheckboxMultiSelect
+          options={roleOptions}
+          selectedValues={Array.from(selectedRoles)}
+          onChange={(values) => onChange({ ...screen, visible_for_roles: values })}
+          columns={3}
+        />
+      </BuilderSection>
     </div>
   );
 }

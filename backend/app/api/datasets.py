@@ -39,6 +39,7 @@ from app.schemas import (
     DatasourceTable,
     DatasetColumnMetadata,
 )
+from app.schemas.dataset import AggregationSpec, FilterCondition, OrderBySpec
 from app.services import (
     DatasetCRUDService,
     DataSourceConnectionService,
@@ -93,29 +94,109 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _validate_measure_dependencies(measures: list[Any]) -> None:
-    """Reject unknown or cyclic semantic measure dependencies."""
-    names = {
-        str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
-        for measure in measures
-        if str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
-    }
-    graph: dict[str, list[str]] = {}
-    for measure in measures:
-        name = str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
+def _validate_measure_dependencies(
+    db: Session,
+    dataset_id: int,
+    current_view_name: str,
+    measures: list[Any],
+) -> None:
+    """Reject unknown or cyclic semantic measure dependencies.
+
+    Same-view dependencies can still be written as bare names for backward
+    compatibility. Cross-view dependencies must be qualified as view.measure.
+    """
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
+    def measure_name(measure: Any) -> str:
+        return str(
+            measure.name if hasattr(measure, "name") else measure.get("name", "")
+        ).strip()
+
+    def measure_deps(measure: Any) -> list[str]:
         raw_deps = measure.depends_on if hasattr(measure, "depends_on") else measure.get("depends_on", [])
-        deps: list[str] = []
-        for raw_dep in raw_deps or []:
-            dep = str(raw_dep or "").strip()
-            dep_name = dep.split(".", 1)[1] if "." in dep else dep
-            if dep_name and dep_name not in names:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Measure '{name}' depends on unknown measure '{dep}'.",
-                )
-            if dep_name:
-                deps.append(dep_name)
-        graph[name] = deps
+        return [str(item or "").strip() for item in (raw_deps or []) if str(item or "").strip()]
+
+    table_ids = [
+        row.id
+        for row in db.query(DatasetTable.id)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    ]
+    views = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id.in_(table_ids))
+        .all()
+        if table_ids
+        else []
+    )
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model:
+        referenced_view_names: set[str] = set()
+        explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+        for explore in explores:
+            if explore.base_view_name:
+                referenced_view_names.add(str(explore.base_view_name))
+            for join in explore.joins or []:
+                for key in ("view", "alias", "presentation_view"):
+                    value = str(join.get(key) or "").strip()
+                    if value:
+                        referenced_view_names.add(value)
+        if referenced_view_names:
+            existing_ids = {view.id for view in views}
+            extra_views = (
+                db.query(SemanticView)
+                .filter(SemanticView.name.in_(list(referenced_view_names)))
+                .all()
+            )
+            views.extend(view for view in extra_views if view.id not in existing_ids)
+
+    measure_names_by_view: dict[str, set[str]] = {
+        view.name: {
+            str((measure or {}).get("name") or "").strip()
+            for measure in (view.measures or [])
+            if isinstance(measure, dict) and str((measure or {}).get("name") or "").strip()
+        }
+        for view in views
+    }
+    current_names = {measure_name(measure) for measure in measures if measure_name(measure)}
+    measure_names_by_view[current_view_name] = current_names
+
+    measures_by_view: dict[str, list[Any]] = {
+        view.name: list(view.measures or [])
+        for view in views
+    }
+    measures_by_view[current_view_name] = measures
+
+    def qualify_dep(owner_view: str, dep: str) -> str:
+        if "." in dep:
+            dep_view, dep_name = dep.split(".", 1)
+        else:
+            dep_view, dep_name = owner_view, dep
+        dep_view = dep_view.strip()
+        dep_name = dep_name.strip()
+        if not dep_view or not dep_name:
+            return ""
+        if dep_name not in measure_names_by_view.get(dep_view, set()):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Measure dependency '{dep}' does not match any measure in this model.",
+            )
+        return f"{dep_view}.{dep_name}"
+
+    graph: dict[str, list[str]] = {}
+    for view_name, view_measures in measures_by_view.items():
+        for measure in view_measures:
+            name = measure_name(measure)
+            if not name:
+                continue
+            node = f"{view_name}.{name}"
+            deps = [
+                qualified
+                for dep in measure_deps(measure)
+                if (qualified := qualify_dep(view_name, dep))
+            ]
+            graph[node] = deps
 
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -153,6 +234,97 @@ def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
     if any(has_ref(getattr(item, "field", None)) for item in (execute_request.order_by or [])):
         return True
     return False
+
+
+def _strip_base_view_qualifiers(
+    db: Session,
+    db_table: DatasetTable,
+    execute_request: ExecuteQueryRequest,
+) -> ExecuteQueryRequest:
+    """Strip view qualifiers that match the table's own semantic base view.
+
+    MCP-created charts (and old charts created before the unqualify fix) may
+    persist field names as ``"view.field"`` in their ``generatedRoleConfig``
+    even when the field lives on the table's own (base) view.
+
+    The live-query execution path (``execute_dataset_query``) accepts bare
+    column names and works correctly for these cases.  The semantic-query
+    path (``_execute_semantic_dataset_query``) routes all dot-qualified refs
+    through ``SemanticQueryEngineV2`` which requires every referenced field
+    to be an *explicitly declared* semantic measure or dimension — a
+    requirement that plain raw columns don't meet, causing HTTP 500.
+
+    By stripping same-view qualifiers only for fields that are not declared
+    semantic dimensions/measures, we keep real semantic measures on the
+    semantic engine while still rescuing old raw ``baseView.column`` refs.
+    Genuine cross-view refs (e.g. ``calendar.date`` when base view is
+    ``orders``) remain intact.
+    """
+    from app.models.semantic import SemanticView
+
+    view = db.query(SemanticView).filter(
+        SemanticView.dataset_table_id == db_table.id,
+    ).first()
+    if not view:
+        return execute_request  # no semantic view – nothing to strip
+
+    base_prefix = f"{view.name}."
+    semantic_dimensions = {
+        str((item or {}).get("name") or "").strip()
+        for item in (view.dimensions or [])
+        if isinstance(item, dict) and str((item or {}).get("name") or "").strip()
+    }
+    semantic_measures = {
+        str((item or {}).get("name") or "").strip()
+        for item in (view.measures or [])
+        if isinstance(item, dict) and str((item or {}).get("name") or "").strip()
+    }
+
+    def _strip(field: str | None, declared_names: set[str]) -> str | None:
+        if not field:
+            return field
+        if not field.startswith(base_prefix):
+            return field
+        bare = field[len(base_prefix):]
+        return field if bare in declared_names else bare
+
+    next_dimensions = [
+        _strip(d, semantic_dimensions)
+        for d in (execute_request.dimensions or [])
+    ]
+    next_measures = [
+        AggregationSpec(field=_strip(m.field, semantic_measures) or m.field, function=m.function)
+        for m in (execute_request.measures or [])
+    ]
+    next_filters = [
+        FilterCondition(
+            field=_strip(f.field, semantic_dimensions) or f.field,
+            operator=f.operator,
+            value=f.value,
+        )
+        for f in (execute_request.filters or [])
+    ]
+    next_order_by = [
+        OrderBySpec(field=_strip(ob.field, semantic_dimensions) or ob.field, direction=ob.direction)
+        for ob in (execute_request.order_by or [])
+    ]
+
+    needs_change = (
+        next_dimensions != (execute_request.dimensions or [])
+        or [item.model_dump() for item in next_measures] != [item.model_dump() for item in (execute_request.measures or [])]
+        or [item.model_dump() for item in next_filters] != [item.model_dump() for item in (execute_request.filters or [])]
+        or [item.model_dump() for item in next_order_by] != [item.model_dump() for item in (execute_request.order_by or [])]
+    )
+    if not needs_change:
+        return execute_request
+
+    return ExecuteQueryRequest(
+        dimensions=next_dimensions,
+        measures=next_measures,
+        filters=next_filters,
+        order_by=next_order_by,
+        limit=execute_request.limit,
+    )
 
 
 def _execute_semantic_dataset_query(
@@ -193,6 +365,11 @@ def _execute_semantic_dataset_query(
         for item in (execute_request.measures or [])
         if item.field
     ]
+    measure_agg_overrides = {
+        qualify(item.field): str(item.function or "").strip().lower()
+        for item in (execute_request.measures or [])
+        if item.field and item.function
+    }
 
     # Operator normalisation: external callers (chart contracts, AI tools) may
     # use legacy names — canonicalise to the semantic schema's Literal values.
@@ -225,6 +402,7 @@ def _execute_semantic_dataset_query(
         filters=filters,
         sorts=sorts,
         limit=execute_request.limit or 500,
+        measure_agg_overrides=measure_agg_overrides or None,
     )
 
     datasource: Optional[DataSource] = None
@@ -2407,6 +2585,12 @@ def execute_dataset_table_query(
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
+    # Normalise field names: strip "baseView.field" -> "field" only when that
+    # field is not a declared semantic dimension/measure. Real semantic fields
+    # must stay qualified so formulas, filtered measures, and joins still run
+    # through the semantic engine.
+    execute_request = _strip_base_view_qualifiers(db, db_table, execute_request)
+
     if _contains_semantic_field_refs(execute_request):
         return _execute_semantic_dataset_query(db, dataset_obj, db_table, execute_request)
 
@@ -2894,7 +3078,7 @@ def update_dataset_view(
     if "dimensions" in update_payload and update_payload["dimensions"] is not None:
         update_payload["dimensions"] = [dim.model_dump() for dim in validated.dimensions or []]
     if "measures" in update_payload and update_payload["measures"] is not None:
-        _validate_measure_dependencies(update_payload["measures"])
+        _validate_measure_dependencies(db, dataset_id, view.name, update_payload["measures"])
         update_payload["measures"] = [measure.model_dump() for measure in validated.measures or []]
 
     for key, value in update_payload.items():

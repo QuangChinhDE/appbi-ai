@@ -48,7 +48,7 @@ export interface MeasureDefinition {
   filters?: MeasureFilter[];
   /** Raw WHERE fragment for power users; AND-combined with `filters`. */
   where_sql?: string;
-  /** Names of measures (same view) this one references — for cycle checks. */
+  /** Measures referenced by this formula. Same-view names may be bare; cross-view refs use view.measure. */
   depends_on?: string[];
   /** Display format hint (does not affect SQL). */
   format?: MeasureFormat;
@@ -62,6 +62,7 @@ export interface MeasureDefinition {
 export interface JoinDefinition {
   name: string;
   view: string;
+  alias?: string;
   type: 'left' | 'inner' | 'right' | 'full';
   sql_on: string;
   relationship?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';

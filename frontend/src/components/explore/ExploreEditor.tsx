@@ -49,7 +49,7 @@ import {
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DimensionDefinition, type MeasureDefinition, type DatasetModelView } from '@/hooks/use-dataset-model';
-import { computeReachableViews } from '@/lib/dataset-model-graph';
+import { getReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
 
@@ -748,14 +748,14 @@ export function ExploreEditor({
    * so cross-table fields can flow through to the backend semantic engine,
    * which already knows how to JOIN them via SemanticExplore.joins.
    */
-  const reachableViewNames = useMemo<Set<string>>(() => {
-    if (!datasetModel || !selectedSemanticView) return new Set();
-    return computeReachableViews(datasetModel, selectedSemanticView.name);
-  }, [datasetModel, selectedSemanticView]);
   const reachableSemanticViews = useMemo<DatasetModelView[]>(() => {
-    if (!datasetModel?.views || reachableViewNames.size === 0) return [];
-    return datasetModel.views.filter((view) => reachableViewNames.has(view.name));
-  }, [datasetModel?.views, reachableViewNames]);
+    if (!datasetModel || !selectedSemanticView) return [];
+    return getReachableViews(datasetModel, selectedSemanticView.name);
+  }, [datasetModel, selectedSemanticView]);
+  const reachableViewNames = useMemo<Set<string>>(
+    () => new Set(reachableSemanticViews.map((view) => view.name)),
+    [reachableSemanticViews],
+  );
   const semanticColumns = useMemo<ColumnMetadata[]>(() => {
     if (reachableSemanticViews.length === 0) return [];
     const out: ColumnMetadata[] = [];
@@ -1104,9 +1104,11 @@ export function ExploreEditor({
       const existing = current.metrics.some((item) => item.field === field);
       const metrics = existing ? current.metrics : [...current.metrics, metric];
       if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
+        const selected = current.selectedColumns ?? [];
         return {
           ...current,
           metrics,
+          selectedColumns: selected.includes(field) ? selected : [...selected, field],
         };
       }
       if (SINGLE_METRIC_CHART_TYPES.has(chartType)) {

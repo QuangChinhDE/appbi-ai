@@ -309,6 +309,79 @@ class WorkboardAppUser(Base):
     )
 
 
+class WorkboardSyncRun(Base):
+    """One outbound webhook execution kicked off from a doc data_table block.
+
+    A single trigger on the frontend may fan out to multiple webhooks; we
+    write one row per (run, webhook) so each webhook has its own status,
+    progress counters and response excerpt. All rows from the same fan-out
+    share ``group_id`` so the public runtime can poll them as one unit.
+
+    ``cancel_requested`` is the cooperative cancellation flag — the
+    executor reads it between batches and stops if set. Stuck runs (still
+    ``running`` long after process start) are reclaimed at startup by
+    :func:`reap_stuck_sync_runs`.
+    """
+
+    __tablename__ = "workboard_sync_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(32), nullable=False, unique=True, index=True)
+    group_id = Column(String(32), nullable=False, index=True)
+
+    workboard_id = Column(
+        Integer,
+        ForeignKey("workboards.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    screen_id = Column(String(64), nullable=False)
+    block_index = Column(Integer, nullable=False)
+    trigger_id = Column(String(64), nullable=False)
+    webhook_id = Column(String(64), nullable=False)
+    # Snapshot of the webhook URL at run time; the config may be edited later.
+    webhook_url = Column(String(2048), nullable=False)
+    webhook_name = Column(String(160), nullable=True)
+
+    # pending | running | success | failed | partial | cancelled
+    status = Column(String(20), nullable=False, server_default="pending", index=True)
+    cancel_requested = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    total_rows = Column(Integer, nullable=False, default=0, server_default="0")
+    total_batches = Column(Integer, nullable=False, default=0, server_default="0")
+    completed_batches = Column(Integer, nullable=False, default=0, server_default="0")
+    failed_batches = Column(Integer, nullable=False, default=0, server_default="0")
+
+    last_response_status = Column(Integer, nullable=True)
+    last_error = Column(Text, nullable=True)
+    # Last response body excerpt (truncated to ~2KB) for debugging.
+    response_excerpt = Column(JSONB, nullable=True)
+
+    triggered_by_app_user_id = Column(
+        Integer,
+        ForeignKey("workboard_app_users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    triggered_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+
 class WorkboardAppLoginAttempt(Base):
     """Rate-limit tracker for workspace app-user login attempts.
 

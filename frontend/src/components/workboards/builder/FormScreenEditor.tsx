@@ -40,7 +40,6 @@ import {
 } from './BuilderChrome';
 import type { FormFieldSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
-import type { BuilderMode } from './useBuilderMode';
 
 interface DatasetTableInfo {
   id: number;
@@ -55,7 +54,6 @@ interface Props {
   tables: DatasetTableInfo[];
   tablesLoading: boolean;
   onChange: (next: ScreenSpec) => void;
-  mode: BuilderMode;
   focusFieldColumn?: string | null;
   onFocusFieldHandled?: () => void;
 }
@@ -149,7 +147,6 @@ export default function FormScreenEditor({
   tables,
   tablesLoading,
   onChange,
-  mode,
   focusFieldColumn,
   onFocusFieldHandled,
 }: Props) {
@@ -338,7 +335,6 @@ export default function FormScreenEditor({
             tables={tables}
             pageOptions={pages}
             sectionOptions={sections}
-            mode={mode}
             onChange={(patch) => updateField(activeFieldIndex, patch)}
           />
         </BuilderInspectorPanel>
@@ -395,15 +391,13 @@ export default function FormScreenEditor({
               active={activeItem === 'submit'}
               onClick={() => setActiveItem('submit')}
             />
-            {(mode === 'advanced' || initialEntries.length > 0) && (
-              <BuilderNavigatorItem
-                icon={<FileInput className="h-3.5 w-3.5" />}
-                label="Initial values"
-                subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
-                active={activeItem === 'initial'}
-                onClick={() => setActiveItem('initial')}
-              />
-            )}
+            <BuilderNavigatorItem
+              icon={<FileInput className="h-3.5 w-3.5" />}
+              label="Initial values"
+              subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
+              active={activeItem === 'initial'}
+              onClick={() => setActiveItem('initial')}
+            />
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup
@@ -834,7 +828,6 @@ function FieldInspector({
   tables,
   pageOptions,
   sectionOptions,
-  mode,
   onChange,
 }: {
   field: FormFieldSpec;
@@ -842,7 +835,6 @@ function FieldInspector({
   tables: DatasetTableInfo[];
   pageOptions: FormPage[];
   sectionOptions: string[];
-  mode: BuilderMode;
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
   const sectionValue = field.section || '';
@@ -979,48 +971,46 @@ function FieldInspector({
 
       {(field.widget === 'select' || field.widget === 'lookup') && (
         <CollapsibleGroup title="Options">
-          <LookupEditor field={field} tables={tables} mode={mode} onChange={onChange} />
+          <LookupEditor field={field} tables={tables} onChange={onChange} />
         </CollapsibleGroup>
       )}
 
-      {mode === 'advanced' && (
-        <CollapsibleGroup title="Advanced" defaultOpen={false}>
-          <div className={BUILDER_GRID_4}>
-            <Lbl label="Show when (show_if)">
-              <input
-                value={field.show_if || ''}
-                onChange={(event) => onChange({ show_if: event.target.value || null })}
-                className={INPUT}
-                placeholder="[status] == 'open'"
-              />
-            </Lbl>
-            <Lbl label="Required when (required_if)">
-              <input
-                value={field.required_if || ''}
-                onChange={(event) => onChange({ required_if: event.target.value || null })}
-                className={INPUT}
-                placeholder="[defect_qty] > 0"
-              />
-            </Lbl>
-            <Lbl label="Readonly when (readonly_if)">
-              <input
-                value={field.readonly_if || ''}
-                onChange={(event) => onChange({ readonly_if: event.target.value || null })}
-                className={INPUT}
-                placeholder="[submitted] == true"
-              />
-            </Lbl>
-            <Lbl label="Auto-compute from dataset" className="wb-col-span-2">
-              <SingleColumnPicker
-                sourceColumns={tableCols.map((column) => column.name)}
-                value={computedValue || null}
-                onChange={(next) => onChange({ computed_from_dataset: next })}
-                placeholder="Not used"
-              />
-            </Lbl>
-          </div>
-        </CollapsibleGroup>
-      )}
+      <CollapsibleGroup title="Advanced" defaultOpen={false}>
+        <div className={BUILDER_GRID_4}>
+          <Lbl label="Show when (show_if)">
+            <input
+              value={field.show_if || ''}
+              onChange={(event) => onChange({ show_if: event.target.value || null })}
+              className={INPUT}
+              placeholder="[status] == 'open'"
+            />
+          </Lbl>
+          <Lbl label="Required when (required_if)">
+            <input
+              value={field.required_if || ''}
+              onChange={(event) => onChange({ required_if: event.target.value || null })}
+              className={INPUT}
+              placeholder="[defect_qty] > 0"
+            />
+          </Lbl>
+          <Lbl label="Readonly when (readonly_if)">
+            <input
+              value={field.readonly_if || ''}
+              onChange={(event) => onChange({ readonly_if: event.target.value || null })}
+              className={INPUT}
+              placeholder="[submitted] == true"
+            />
+          </Lbl>
+          <Lbl label="Auto-compute from dataset" className="wb-col-span-2">
+            <SingleColumnPicker
+              sourceColumns={tableCols.map((column) => column.name)}
+              value={computedValue || null}
+              onChange={(next) => onChange({ computed_from_dataset: next })}
+              placeholder="Not used"
+            />
+          </Lbl>
+        </div>
+      </CollapsibleGroup>
     </div>
   );
 }
@@ -1028,12 +1018,10 @@ function FieldInspector({
 function LookupEditor({
   field,
   tables,
-  mode,
   onChange,
 }: {
   field: FormFieldSpec;
   tables: DatasetTableInfo[];
-  mode: BuilderMode;
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
   const lookup: LookupRuntime = field.lookup || { kind: 'static', values: [] };
@@ -1109,7 +1097,7 @@ function LookupEditor({
           values={lookup.values || []}
           onChange={(values) => onChange({ lookup: { ...lookup, values } })}
         />
-      ) : mode === 'advanced' ? (
+      ) : (
         <RelationshipPathEditor
           tableId={lookup.table_id ?? null}
           tables={tables}
@@ -1123,7 +1111,7 @@ function LookupEditor({
             })
           }
         />
-      ) : null}
+      )}
     </div>
   );
 }

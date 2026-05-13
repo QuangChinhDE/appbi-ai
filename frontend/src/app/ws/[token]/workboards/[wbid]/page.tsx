@@ -41,7 +41,9 @@ import {
   Phone,
   PieChart,
   PlusCircle,
+  RefreshCw,
   Search,
+  Send,
   Settings,
   Smartphone,
   Sparkles,
@@ -50,6 +52,7 @@ import {
   Tablet,
   Truck,
   Users,
+  XCircle,
 } from 'lucide-react';
 
 import {
@@ -1819,6 +1822,237 @@ function buildHeaderRows(
   return rows;
 }
 
+type SyncTriggerSpec = {
+  id: string;
+  label?: string;
+  confirm_message?: string | null;
+  webhook_ids?: string[];
+  visible_for_roles?: string[];
+};
+
+type GroupRun = {
+  run_id: string;
+  status: string;
+  webhook_id: string;
+  webhook_name?: string | null;
+  total_rows?: number;
+  total_batches?: number;
+  completed_batches?: number;
+  failed_batches?: number;
+  last_response_status?: number | null;
+  last_error?: string | null;
+};
+
+function BlockSyncControls({
+  triggers,
+  token,
+  workboardId,
+  screenId,
+  blockIndex,
+}: {
+  triggers: SyncTriggerSpec[];
+  token: string;
+  workboardId: number;
+  screenId: string;
+  blockIndex: number;
+}) {
+  const [busyTriggerId, setBusyTriggerId] = useState<string | null>(null);
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [runs, setRuns] = useState<GroupRun[]>([]);
+  const [aggStatus, setAggStatus] = useState<string>('idle');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successFlash, setSuccessFlash] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearTimeout(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopPolling(), []);
+
+  const poll = useCallback(
+    async (gid: string) => {
+      try {
+        const result = await workspaceApi.getSyncGroup(token, workboardId, gid);
+        setRuns(result.runs);
+        setAggStatus(result.status);
+        if (['success', 'failed', 'partial', 'cancelled'].includes(result.status)) {
+          stopPolling();
+          setBusyTriggerId(null);
+          if (result.status === 'success') {
+            setSuccessFlash('Đã đồng bộ xong.');
+            setTimeout(() => setSuccessFlash(null), 4000);
+          }
+        } else {
+          pollRef.current = setTimeout(() => poll(gid), 1000);
+        }
+      } catch (err) {
+        const apiError = err as ApiErrorLike;
+        setErrorMsg(
+          typeof apiError.response?.data?.detail === 'string'
+            ? apiError.response.data.detail
+            : 'Không lấy được trạng thái đồng bộ.',
+        );
+        stopPolling();
+        setBusyTriggerId(null);
+      }
+    },
+    [token, workboardId],
+  );
+
+  const onTrigger = async (trigger: SyncTriggerSpec) => {
+    if (busyTriggerId) return;
+    if (trigger.confirm_message) {
+      // eslint-disable-next-line no-alert
+      if (!window.confirm(trigger.confirm_message)) return;
+    }
+    setErrorMsg(null);
+    setSuccessFlash(null);
+    setBusyTriggerId(trigger.id);
+    setAggStatus('running');
+    try {
+      const result = await workspaceApi.triggerBlockSync(
+        token,
+        workboardId,
+        screenId,
+        blockIndex,
+        trigger.id,
+      );
+      setGroupId(result.group_id);
+      setRuns(
+        result.runs.map((r) => ({
+          ...r,
+          total_rows: 0,
+          total_batches: 0,
+          completed_batches: 0,
+          failed_batches: 0,
+        })),
+      );
+      poll(result.group_id);
+    } catch (err) {
+      const apiError = err as ApiErrorLike;
+      setErrorMsg(
+        typeof apiError.response?.data?.detail === 'string'
+          ? apiError.response.data.detail
+          : 'Không khởi chạy được đồng bộ.',
+      );
+      setAggStatus('idle');
+      setBusyTriggerId(null);
+    }
+  };
+
+  const onCancel = async () => {
+    if (!groupId) return;
+    try {
+      await workspaceApi.cancelSyncGroup(token, workboardId, groupId);
+    } catch {
+      // best-effort — worker will still poll status
+    }
+  };
+
+  if (!triggers.length) return null;
+
+  const inFlight =
+    aggStatus === 'running' || aggStatus === 'pending';
+  const totalBatches = runs.reduce((s, r) => s + (r.total_batches || 0), 0);
+  const doneBatches = runs.reduce(
+    (s, r) => s + (r.completed_batches || 0) + (r.failed_batches || 0),
+    0,
+  );
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        {triggers.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onTrigger(t)}
+            disabled={inFlight && busyTriggerId !== t.id ? true : busyTriggerId === t.id}
+            className="flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+            title={t.label || 'Đồng bộ'}
+          >
+            {busyTriggerId === t.id ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {busyTriggerId === t.id ? 'Đang đồng bộ…' : t.label || 'Đồng bộ'}
+            </span>
+          </button>
+        ))}
+        {inFlight && groupId && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
+            title="Huỷ đồng bộ"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            <span>Huỷ</span>
+          </button>
+        )}
+      </div>
+      {inFlight && runs.length > 0 && (
+        <p className="text-[11px] text-slate-500">
+          {doneBatches}/{totalBatches || '?'} batch · {runs.length} webhook
+        </p>
+      )}
+      {!inFlight && aggStatus !== 'idle' && runs.length > 0 && (
+        <p
+          className={`text-[11px] ${
+            aggStatus === 'success'
+              ? 'text-emerald-600'
+              : aggStatus === 'cancelled'
+                ? 'text-slate-500'
+                : 'text-rose-600'
+          }`}
+        >
+          {aggStatus === 'success' && (
+            <>
+              <CheckCircle2 className="mr-1 inline h-3 w-3" />
+              Đã đồng bộ xong ({doneBatches} batch)
+            </>
+          )}
+          {aggStatus === 'cancelled' && 'Đã huỷ'}
+          {aggStatus === 'failed' && (
+            <>
+              <AlertTriangle className="mr-1 inline h-3 w-3" />
+              Đồng bộ thất bại
+            </>
+          )}
+          {aggStatus === 'partial' && (
+            <>
+              <AlertTriangle className="mr-1 inline h-3 w-3" />
+              Một số webhook thất bại
+            </>
+          )}
+        </p>
+      )}
+      {successFlash && !inFlight && (
+        <p className="text-[11px] text-emerald-600">{successFlash}</p>
+      )}
+      {errorMsg && <p className="text-[11px] text-rose-600">{errorMsg}</p>}
+      {!inFlight && runs.some((r) => r.last_error) && (
+        <ul className="mt-1 space-y-0.5 text-[11px] text-rose-600">
+          {runs
+            .filter((r) => r.last_error)
+            .map((r) => (
+              <li key={r.run_id}>
+                <span className="font-medium">{r.webhook_name || r.webhook_id}:</span>{' '}
+                {r.last_error}
+              </li>
+            ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function DocDataTable({
   block,
   token,
@@ -1848,6 +2082,10 @@ function DocDataTable({
   );
   const title = block.title ? String(block.title) : null;
   const allowExport = Boolean(block.allow_export_excel);
+  const syncTriggers = (Array.isArray(block.sync_triggers)
+    ? (block.sync_triggers as SyncTriggerSpec[])
+    : []
+  ).filter((t) => t && t.id && (t.webhook_ids?.length ?? 0) > 0);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -1895,25 +2133,38 @@ function DocDataTable({
 
   return (
     <div>
-      {(title || allowExport) && (
-        <div className="mb-1 flex items-center justify-between gap-2">
+      {(title || allowExport || syncTriggers.length > 0) && (
+        <div className="mb-1 flex items-start justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-800">{title || ''}</h3>
-          {allowExport && (
-            <button
-              type="button"
-              onClick={onExport}
-              disabled={exporting}
-              className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              title="Tải Excel"
-            >
-              {exporting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Download className="h-3.5 w-3.5" />
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              {allowExport && (
+                <button
+                  type="button"
+                  onClick={onExport}
+                  disabled={exporting}
+                  className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Tải Excel"
+                >
+                  {exporting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
+                </button>
               )}
-              <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
-            </button>
-          )}
+            </div>
+            {syncTriggers.length > 0 && (
+              <BlockSyncControls
+                triggers={syncTriggers}
+                token={token}
+                workboardId={workboardId}
+                screenId={screenId}
+                blockIndex={blockIndex}
+              />
+            )}
+          </div>
         </div>
       )}
       {exportError && (

@@ -27,11 +27,13 @@ api_router.include_router(dashboards.router)
 # (see backend/app/modules/workboards/ and docker-compose.workboard.yml).
 if settings.WORKBOARDS_ENABLED:
     from app.modules.workboards.api import router as workboards_router
+    from app.modules.workboards.webhook_api import router as workboards_webhook_router
     from app.modules.workboards.workspace_admin_api import (
         router as workspaces_admin_router,
         _relationships_router as workboard_relationships_router,
     )
     api_router.include_router(workboards_router)
+    api_router.include_router(workboards_webhook_router)
     api_router.include_router(workspaces_admin_router)
     api_router.include_router(workboard_relationships_router)
 

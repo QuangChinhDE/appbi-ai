@@ -18,6 +18,7 @@ import {
   Eye,
   Loader2,
   UserCircle2,
+  Webhook,
   Wrench,
 } from 'lucide-react';
 
@@ -72,7 +73,8 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const baseHref = `/workboards/${id}`;
   const isPreview = pathname.startsWith(`${baseHref}/preview`);
   const isUsers = pathname.startsWith(`${baseHref}/users`);
-  const isBuilder = !isUsers && !isPreview;
+  const isWebhooks = pathname.startsWith(`${baseHref}/webhooks`);
+  const isBuilder = !isUsers && !isPreview && !isWebhooks;
 
   return (
     <div className="flex h-full flex-col">
@@ -103,6 +105,10 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           <SegmentLink active={isPreview} href={`${baseHref}/preview`}>
             <Eye className="h-3.5 w-3.5" />
             Preview
+          </SegmentLink>
+          <SegmentLink active={isWebhooks} href={`${baseHref}/webhooks`}>
+            <Webhook className="h-3.5 w-3.5" />
+            Webhook
           </SegmentLink>
         </div>
 

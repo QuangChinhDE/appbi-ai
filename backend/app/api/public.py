@@ -1273,6 +1273,235 @@ if settings.WORKBOARDS_ENABLED:
         )
 
 
+    @router.post(
+        "/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/blocks/{block_index}/sync"
+    )
+    def workspace_block_sync(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        block_index: int,
+        body: dict | None,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Kick off webhook sync for one data_table block trigger.
+
+        Returns ``{group_id, runs:[…]}`` immediately; the actual HTTP work
+        runs in background asyncio tasks. The frontend polls
+        ``GET .../sync-runs/{run_id}`` (or group) for progress.
+        """
+        from app.modules.workboards.services import (
+            webhook_sync_service as _sync_svc,
+        )
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(
+                status_code=403, detail="You don't have access to that screen."
+            )
+        trigger_id = (body or {}).get("trigger_id")
+        if not isinstance(trigger_id, str) or not trigger_id:
+            raise HTTPException(status_code=400, detail="trigger_id is required")
+
+        try:
+            group_id, runs = _sync_svc.trigger_sync(
+                db,
+                wb,
+                screen_id,
+                block_index,
+                trigger_id,
+                identity=identity,
+                app_user_payload=app_user,
+            )
+        except _sync_svc.WebhookSyncError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        return {
+            "group_id": group_id,
+            "runs": [
+                {
+                    "run_id": r.run_id,
+                    "status": r.status,
+                    "webhook_id": r.webhook_id,
+                    "webhook_name": r.webhook_name,
+                }
+                for r in runs
+            ],
+        }
+
+
+    @router.get(
+        "/workspaces/{token}/workboards/{workboard_id}/sync-runs/{run_id}"
+    )
+    def workspace_get_sync_run(
+        token: str,
+        workboard_id: int,
+        run_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.models import WorkboardSyncRun
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        run = (
+            db.query(WorkboardSyncRun)
+            .filter(
+                WorkboardSyncRun.run_id == run_id,
+                WorkboardSyncRun.workboard_id == wb.id,
+            )
+            .one_or_none()
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="Sync run not found")
+        # Public payload omits the snapshot URL.
+        return {
+            "run_id": run.run_id,
+            "group_id": run.group_id,
+            "status": run.status,
+            "webhook_id": run.webhook_id,
+            "webhook_name": run.webhook_name,
+            "total_rows": run.total_rows,
+            "total_batches": run.total_batches,
+            "completed_batches": run.completed_batches,
+            "failed_batches": run.failed_batches,
+            "last_response_status": run.last_response_status,
+            "last_error": run.last_error,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "duration_ms": run.duration_ms,
+        }
+
+
+    @router.get(
+        "/workspaces/{token}/workboards/{workboard_id}/sync-groups/{group_id}"
+    )
+    def workspace_get_sync_group(
+        token: str,
+        workboard_id: int,
+        group_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.models import WorkboardSyncRun
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        runs = (
+            db.query(WorkboardSyncRun)
+            .filter(
+                WorkboardSyncRun.group_id == group_id,
+                WorkboardSyncRun.workboard_id == wb.id,
+            )
+            .all()
+        )
+        if not runs:
+            raise HTTPException(status_code=404, detail="Sync group not found")
+        # Aggregate: still running if any pending/running, success if all
+        # success, failed if all failed, otherwise partial.
+        statuses = {r.status for r in runs}
+        if statuses & {"pending", "running"}:
+            agg = "running"
+        elif statuses == {"success"}:
+            agg = "success"
+        elif statuses == {"cancelled"} or statuses <= {"cancelled", "failed"} and "cancelled" in statuses:
+            agg = "cancelled" if statuses == {"cancelled"} else "failed"
+        elif statuses == {"failed"}:
+            agg = "failed"
+        else:
+            agg = "partial"
+        return {
+            "group_id": group_id,
+            "status": agg,
+            "runs": [
+                {
+                    "run_id": r.run_id,
+                    "status": r.status,
+                    "webhook_id": r.webhook_id,
+                    "webhook_name": r.webhook_name,
+                    "total_rows": r.total_rows,
+                    "total_batches": r.total_batches,
+                    "completed_batches": r.completed_batches,
+                    "failed_batches": r.failed_batches,
+                    "last_response_status": r.last_response_status,
+                    "last_error": r.last_error,
+                }
+                for r in runs
+            ],
+        }
+
+
+    @router.post(
+        "/workspaces/{token}/workboards/{workboard_id}/sync-runs/{run_id}/cancel"
+    )
+    def workspace_cancel_sync_run(
+        token: str,
+        workboard_id: int,
+        run_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import (
+            webhook_sync_service as _sync_svc,
+        )
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        run = _sync_svc.request_cancel(db, run_id)
+        if run is None or run.workboard_id != wb.id:
+            raise HTTPException(status_code=404, detail="Sync run not found")
+        return {"run_id": run.run_id, "status": run.status, "cancel_requested": True}
+
+
+    @router.post(
+        "/workspaces/{token}/workboards/{workboard_id}/sync-groups/{group_id}/cancel"
+    )
+    def workspace_cancel_sync_group(
+        token: str,
+        workboard_id: int,
+        group_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import (
+            webhook_sync_service as _sync_svc,
+        )
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        runs = _sync_svc.request_cancel_group(db, group_id)
+        scoped = [r for r in runs if r.workboard_id == wb.id]
+        if not scoped:
+            raise HTTPException(status_code=404, detail="Sync group not found")
+        return {
+            "group_id": group_id,
+            "runs": [
+                {"run_id": r.run_id, "status": r.status, "cancel_requested": r.cancel_requested}
+                for r in scoped
+            ],
+        }
+
+
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/list")
     def workspace_screen_list_rows(
         token: str,
