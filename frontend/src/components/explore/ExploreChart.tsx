@@ -120,6 +120,52 @@ function getBenchmarkValue(style?: ChartStyleConfig): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function parseDateAxisValue(value: unknown): number | null {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !/(\d{4}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|T\d{2}:|\d{4})/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isDateLikeAxis(data: Record<string, any>[], field?: string, label?: string): boolean {
+  if (!field) return false;
+  const axisText = `${field} ${label ?? ''}`.toLowerCase();
+  const fieldLooksDateLike = /(date|time|timestamp|_at|created|updated|day|month|year|start|end|deadline)/.test(axisText);
+  const samples = data
+    .map((row) => row?.[field])
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+    .slice(0, 25);
+
+  if (samples.length === 0) return false;
+  const parseable = samples.filter((value) => parseDateAxisValue(value) !== null).length;
+  return parseable / samples.length >= 0.6 && (fieldLooksDateLike || parseable === samples.length);
+}
+
+function formatDateAxisValue(value: unknown): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d{4}$/.test(trimmed) || /^\d{4}[-/]\d{1,2}$/.test(trimmed)) return trimmed;
+  }
+
+  const parsed = parseDateAxisValue(value);
+  if (parsed === null) return String(value ?? '');
+  return new Date(parsed).toLocaleDateString();
+}
+
+function sortRowsByDateAxis(data: Record<string, any>[], field: string | undefined, enabled: boolean): Record<string, any>[] {
+  if (!enabled || !field) return data;
+  return [...data].sort((a, b) => (parseDateAxisValue(a?.[field]) ?? 0) - (parseDateAxisValue(b?.[field]) ?? 0));
+}
+
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Client-side group-by + aggregation (like PowerBI) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function applyGroupByAgg(
   data: Record<string, any>[],
@@ -332,6 +378,12 @@ function ExploreChartInner({
     [style.seriesColors, PALETTE],
   );
   const fontSize = style.fontSize || 12;
+  const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
+  const hasExplicitFontSize = Boolean(
+    _style && Object.prototype.hasOwnProperty.call(_style, 'fontSize') && style.fontSize !== 12,
+  );
+  const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
+  const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
   const model = useMemo(
     () => buildExploreChartModel({ type, data, roleConfig, havingFilters, preAggregated }),
     [type, data, roleConfig, havingFilters, preAggregated],
@@ -453,10 +505,10 @@ function ExploreChartInner({
   const yAxisLabel = style.yAxisLabel || undefined;
 
   const ChartTitleEl = chartTitle ? (
-    <div className="text-center text-sm font-semibold text-text-secondary mb-1">{chartTitle}</div>
+    <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
   ) : null;
 
-  const renderXAxis = (dataKey: string, count: number = categoricalData.length) => {
+  const renderXAxis = (dataKey: string, count: number = categoricalData.length, dateLike = false) => {
     const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel);
     return (
       <XAxis
@@ -464,6 +516,7 @@ function ExploreChartInner({
         tick={{ fontSize, angle, textAnchor } as any}
         height={height}
         interval={interval as any}
+        tickFormatter={dateLike ? formatDateAxisValue : undefined}
         label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset, fontSize } : undefined}
       />
     );
@@ -551,6 +604,7 @@ function ExploreChartInner({
               iconColor={style.kpiIconColor}
               accentBorder={style.kpiAccentBorder}
               gradientBg={style.kpiGradientBg}
+              valueFontSize={kpiValueFontSize}
             />
           </div>
         </div>
@@ -713,6 +767,9 @@ function ExploreChartInner({
             onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
             columnAlignments={style.tableColumnAlignments}
             hyperlinkRules={style.tableHyperlinkRules}
+            numberFormat={tableNumberFormat}
+            decimalPlaces={style.decimalPlaces}
+            currencySymbol={style.currencySymbol}
           />
         </div>
       </div>
@@ -838,7 +895,8 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ AREA ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'AREA') {
-    const displayData = sortedCategoricalData;
+    const dateLikeXAxis = isDateLikeAxis(sortedCategoricalData, xField, xAxisLabel || normalizedRoleConfig.timeField);
+    const displayData = sortRowsByDateAxis(sortedCategoricalData, xField, dateLikeXAxis && sortRules.length === 0);
     const displaySeries = categoricalSeries;
     return (
       <div className="h-full flex flex-col">
@@ -848,9 +906,9 @@ function ExploreChartInner({
           {wrapScrollable(
             <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              {renderXAxis(xField, displayData.length)}
+              {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
-              <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
+              <Tooltip formatter={tooltipFormatter(displaySeries, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (
@@ -874,7 +932,8 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ LINE / TIME_SERIES ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'LINE' || type === 'TIME_SERIES') {
-    const displayData = timeSeriesData;
+    const dateLikeXAxis = type === 'TIME_SERIES' || isDateLikeAxis(timeSeriesData, xField, xAxisLabel || normalizedRoleConfig.timeField);
+    const displayData = sortRowsByDateAxis(timeSeriesData, xField, dateLikeXAxis && sortRules.length === 0);
     const displaySeries = categoricalSeries;
     return (
       <div className="h-full flex flex-col">
@@ -884,9 +943,9 @@ function ExploreChartInner({
           {wrapScrollable(
             <LineChart data={displayData} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              {renderXAxis(xField, displayData.length)}
+              {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
-              <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
+              <Tooltip formatter={tooltipFormatter(displaySeries, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (

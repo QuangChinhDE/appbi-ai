@@ -292,10 +292,10 @@ function EmptyAdvanced({ message }: { message: string }) {
   );
 }
 
-function ChartFrame({ title, children }: { title?: string; children: React.ReactNode }) {
+function ChartFrame({ title, titleFontSize, children }: { title?: string; titleFontSize?: number; children: React.ReactNode }) {
   return (
     <div className="h-full min-h-0 flex flex-col">
-      {title ? <div className="text-center text-sm font-semibold text-text-secondary mb-1">{title}</div> : null}
+      {title ? <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: titleFontSize }}>{title}</div> : null}
       <div className="flex-1 min-h-0">{children}</div>
     </div>
   );
@@ -895,6 +895,8 @@ export function AdvancedExploreChart({
   onSelectDataPoint,
 }: AdvancedExploreChartProps) {
   const title = style.chartTitle?.trim() || undefined;
+  const titleFontSize = Math.max(style.chartTitleFontSize ?? style.fontSize ?? 12, 14);
+  const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
   const roleConfig = model.roleConfig;
   const primaryMetric = roleConfig.metrics[0];
   const benchmarkMetric = roleConfig.benchmarkMetric;
@@ -945,7 +947,7 @@ export function AdvancedExploreChart({
 
   if (type === 'MATRIX') {
     return (
-      <ChartFrame title={title}>
+      <ChartFrame title={title} titleFontSize={titleFontSize}>
         <TableVisualization
           data={model.tableData}
           columns={model.tableColumns}
@@ -959,13 +961,16 @@ export function AdvancedExploreChart({
           onColumnWidthsChange={onStyleConfigChange ? tableWidthsChange : undefined}
           columnAlignments={style.tableColumnAlignments}
           hyperlinkRules={style.tableHyperlinkRules}
+          numberFormat={tableNumberFormat}
+          decimalPlaces={style.decimalPlaces}
+          currencySymbol={style.currencySymbol}
         />
       </ChartFrame>
     );
   }
 
   return (
-    <ChartFrame title={title}>
+    <ChartFrame title={title} titleFontSize={titleFontSize}>
       {type === 'DONUT' || type === 'POLAR_AREA' ? (
         <DonutOrPolarChart type={type} items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'RADAR' ? (

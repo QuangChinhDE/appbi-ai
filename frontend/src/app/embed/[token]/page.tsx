@@ -15,6 +15,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
+import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { Button } from '@/components/ui/Button';
@@ -706,7 +707,8 @@ export default function EmbedDashboardPage() {
   });
 
   return (
-    <div
+    <DashboardThemeProvider
+      theme={dashboard?.theme_config}
       className="bg-surface-0 px-3 py-3 text-text-primary sm:px-4"
       style={{ ...publicTheme.pageStyle, minHeight: '220px' }}
     >
@@ -854,6 +856,7 @@ export default function EmbedDashboardPage() {
                   breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
                   cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
                   rowHeight={80}
+                  margin={getDashboardGridMargin(dashboard?.theme_config)}
                   isDraggable={false}
                   isResizable={false}
                   compactType="vertical"
@@ -915,6 +918,6 @@ export default function EmbedDashboardPage() {
           <Download className="h-3.5 w-3.5" />
         )}
       </button>
-    </div>
+    </DashboardThemeProvider>
   );
 }

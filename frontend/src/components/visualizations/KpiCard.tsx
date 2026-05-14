@@ -27,6 +27,7 @@ type KpiCardProps = {
   iconColor?: string;
   accentBorder?: boolean;
   gradientBg?: boolean;
+  valueFontSize?: number;
 };
 
 const DEFAULT_ACCENT_COLOR = '#2563eb';
@@ -192,6 +193,7 @@ export function KpiCard({
   iconColor,
   accentBorder = false,
   gradientBg = false,
+  valueFontSize,
 }: KpiCardProps) {
   const IconComponent: React.ComponentType<{ className?: string; style?: React.CSSProperties }> | null =
     iconName && (LucideIcons as any)[iconName] ? (LucideIcons as any)[iconName] : null;
@@ -228,6 +230,9 @@ export function KpiCard({
   const legacyComparisonTone = legacyComparison !== null ? getLegacyComparisonTone(legacyComparison) : null;
   const DeltaIcon = deltaAppearance?.icon;
   const ComparisonIcon = legacyComparisonTone?.icon;
+  const resolvedValueFontSize = typeof valueFontSize === 'number' && Number.isFinite(valueFontSize)
+    ? Math.min(Math.max(Math.round(valueFontSize), 16), 80)
+    : undefined;
 
   return (
     <div
@@ -264,7 +269,10 @@ export function KpiCard({
 
             <div
               className="mt-3 break-words text-4xl font-semibold tracking-tight text-text-primary tabular-nums sm:text-5xl"
-              style={{ color: valueColor || FALLBACK_VALUE_COLOR }}
+              style={{
+                color: valueColor || FALLBACK_VALUE_COLOR,
+                ...(resolvedValueFontSize ? { fontSize: resolvedValueFontSize, lineHeight: 1.08 } : {}),
+              }}
             >
               {formattedValue}
             </div>

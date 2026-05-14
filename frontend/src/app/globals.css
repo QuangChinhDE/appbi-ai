@@ -416,6 +416,37 @@
   box-shadow: none !important;
 }
 
+[data-dashboard-card] .dashboard-tile {
+  border-radius: var(--dashboard-card-radius, 24px) !important;
+  padding: var(--dashboard-card-padding, 16px) !important;
+}
+
+[data-dashboard-card='flat'] .dashboard-tile {
+  box-shadow: none !important;
+}
+
+[data-dashboard-card='elevated'] .dashboard-tile {
+  box-shadow: var(--dashboard-card-shadow, 0 28px 64px -40px rgba(15, 23, 42, 0.52)) !important;
+}
+
+[data-dashboard-hover='lift'] .dashboard-tile,
+[data-dashboard-hover='scale'] .dashboard-tile,
+[data-dashboard-hover='glow'] .dashboard-tile {
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+[data-dashboard-hover='lift'] .dashboard-tile:hover {
+  transform: translateY(-2px);
+}
+
+[data-dashboard-hover='scale'] .dashboard-tile:hover {
+  transform: scale(1.01);
+}
+
+[data-dashboard-hover='glow'] .dashboard-tile:hover {
+  box-shadow: 0 0 0 1px var(--dashboard-accent, #2563eb), var(--dashboard-card-shadow, 0 28px 64px -40px rgba(37, 99, 235, 0.45)) !important;
+}
+
 /*
  * ── Workboard builder — container-query grids ────────────────────────
  *

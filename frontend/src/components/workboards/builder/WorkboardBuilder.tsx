@@ -17,23 +17,13 @@ import {
 } from 'react-resizable-panels';
 import {
   AlertCircle,
-  ArrowDown,
-  ArrowUp,
   CheckCircle2,
-  ClipboardEdit,
+  ChevronDown,
   Eye,
-  FileText,
-  Grid3x3,
-  HelpCircle,
-  LayoutDashboard,
-  ListChecks,
+  EyeOff,
+  LayoutGrid,
   Loader2,
-  MoreVertical,
-  Plus,
   Save,
-  Settings,
-  Sparkles,
-  Trash2,
 } from 'lucide-react';
 
 import type { Workboard } from '@/lib/api/workboards';
@@ -50,6 +40,8 @@ import {
 import ScreenEditor from './ScreenEditor';
 import AppSettingsEditor from './AppSettingsEditor';
 import BuilderLivePreview from './BuilderLivePreview';
+import CanvasOverview from './CanvasOverview';
+import ScreenSwitcherModal from './ScreenSwitcherModal';
 import { useDebouncedAutosave } from './useDebouncedAutosave';
 
 interface DatasetTableInfo {
@@ -126,22 +118,6 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
   return 'ok';
 }
 
-const KIND_ICON: Record<ScreenKind, React.ElementType> = {
-  form: ClipboardEdit,
-  list: ListChecks,
-  doc: FileText,
-  dashboard: LayoutDashboard,
-  grid: Grid3x3,
-};
-const KIND_LABEL: Record<ScreenKind, string> = {
-  form: 'Form',
-  list: 'List',
-  doc: 'Document',
-  dashboard: 'Dashboard',
-  grid: 'Grid',
-};
-
-
 export default function WorkboardBuilder({ workboard }: Props) {
   const { data: datasets = [] } = useDatasets();
   const updateWorkboard = useUpdateWorkboard();
@@ -155,28 +131,41 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [tables, setTables] = useState<DatasetTableInfo[]>([]);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [showAppSettings, setShowAppSettings] = useState(false);
+  // The redesign separates the builder into two modes:
+  //   - canvas  : list of screen cards (Mức 1)
+  //   - editor  : full-page editor of a single screen (Mức 2)
+  // The transition is driven by ``activeScreenId``: null = canvas, set =
+  // editor. We keep both on the same URL so refresh + back/forward stay
+  // simple; if a user wants a deep link to a specific screen we can add
+  // it later as a search param.
+  const [mode, setMode] = useState<'canvas' | 'editor'>('canvas');
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
   }, [workboard.id, workboard.dataset_id]);
 
-  // Split-ratio persistence (per user, not per workboard — same screen real-
-  // estate regardless of which workboard the user is editing).
+  // Persistence keys for the resizable preview pane. The Panel itself
+  // remembers its size via ``autoSaveId``; ``PREVIEW_COLLAPSED_KEY``
+  // stores the collapsed/expanded flag separately because a collapsed
+  // Panel has size 0 and would otherwise look like "remembered tiny".
   const SPLIT_STORAGE_KEY = 'wb-builder-split-v1';
   const PREVIEW_COLLAPSED_KEY = 'wb-builder-preview-collapsed-v1';
 
-  // Restore "preview collapsed" preference once on mount. The Panel itself
-  // restores its size via `autoSaveId`, but the collapsed/expanded state
-  // needs its own flag because a collapsed Panel has size 0.
+  // Restore the collapsed preference on mount. We default to STARTING
+  // COLLAPSED so the editor gets the full width on first paint; the
+  // user re-opens preview from the topbar button when they want it.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const wasCollapsed = window.localStorage.getItem(PREVIEW_COLLAPSED_KEY) === '1';
+    const stored = window.localStorage.getItem(PREVIEW_COLLAPSED_KEY);
+    // First-time visitor (no stored value) → start collapsed.
+    // Returning visitor → honour what they last had.
+    const wasCollapsed = stored === null ? true : stored === '1';
     if (wasCollapsed) {
       setPreviewCollapsed(true);
-      // Defer until the Panel is mounted.
       queueMicrotask(() => previewPanelRef.current?.collapse());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -185,11 +174,18 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const togglePreview = () => {
     const panel = previewPanelRef.current;
     if (!panel) return;
-    if (panel.isCollapsed()) {
-      panel.expand();
-    } else {
-      panel.collapse();
-    }
+    if (panel.isCollapsed()) panel.expand();
+    else panel.collapse();
+  };
+
+  const openScreen = (id: string) => {
+    setActiveScreenId(id);
+    setMode('editor');
+  };
+
+  const backToCanvas = () => {
+    setMode('canvas');
+    setFocusFieldColumn(null);
   };
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
@@ -266,6 +262,9 @@ export default function WorkboardBuilder({ workboard }: Props) {
       if (screenId && screenId !== activeScreenId) {
         setActiveScreenId(screenId);
       }
+      // Field-click from the preview iframe always wants the user inside
+      // the editor — never the canvas.
+      setMode('editor');
       setFocusFieldColumn(column);
     }
     window.addEventListener('message', onMessage);
@@ -344,7 +343,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
       screens: [...curr.screens, base],
       mini_app_nav: { ...curr.mini_app_nav, items: [...(curr.mini_app_nav.items || []), id] },
     }));
+    // Jump straight into the new screen's editor — the user just signaled
+    // "I want a new X", and the next thing they want is to configure it.
     setActiveScreenId(id);
+    setMode('editor');
   };
 
   const deleteScreen = (id: string) => {
@@ -360,121 +362,105 @@ export default function WorkboardBuilder({ workboard }: Props) {
     if (activeScreenId === id) setActiveScreenId(null);
   };
 
+  // ``mode`` reflects whether the user is browsing the screens list
+  // (canvas) or configuring a specific one (editor). The two-mode shell
+  // replaces the old fixed three-pane workspace — see the redesign notes
+  // in ``wordboard_redesign/README.md``.
+  const isEditor = mode === 'editor' && activeScreen !== null;
+  const boundDataset = useMemo(
+    () => datasets.find((d) => d.id === boundDatasetId) ?? null,
+    [datasets, boundDatasetId],
+  );
   const totalScreens = layout.screens.length;
-  const hasScreens = totalScreens > 0;
-  const screensWithIssues = layout.screens.filter((s) => screenStatus(s) !== 'ok').length;
+  const screensWithIssues = layout.screens.filter(
+    (s) => screenStatus(s) !== 'ok',
+  ).length;
 
   return (
-    <div className="flex h-full">
-      {/* ── Left rail — screens list ─────────────────────────────── */}
-      <aside className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-[rgb(var(--border-line))] bg-surface-1">
-        <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                Mini-app
-              </h3>
-              <p className="mt-0.5 text-caption text-text-secondary">
-                {totalScreens} screens
-                {screensWithIssues > 0 && (
-                  <span className="ml-1 text-warning">• {screensWithIssues} need attention</span>
-                )}
-              </p>
-            </div>
+    <div className="relative flex h-full flex-col bg-surface-0">
+      {/* ── Builder sub-topbar: breadcrumb + save pill + preview ──
+          Editor mode breadcrumb: ``[All screens] / [current screen ▾]``.
+          The screen-name button opens ScreenSwitcherModal so users can
+          hop between screens without round-tripping through Canvas.
+          Canvas mode keeps the summary "N screens · K need attention". */}
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+        {isEditor ? (
+          <>
             <button
-              onClick={() => setShowAppSettings(true)}
-              className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-              title="App settings (branding, navigation)"
+              type="button"
+              onClick={backToCanvas}
+              className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+              title="Back to all screens"
             >
-              <Settings className="h-3.5 w-3.5" />
+              <LayoutGrid className="h-3.5 w-3.5" />
+              All screens
             </button>
-          </div>
-        </div>
+            <span className="text-text-quaternary">/</span>
+            {activeScreen && (
+              <button
+                type="button"
+                onClick={() => setSwitcherOpen(true)}
+                aria-haspopup="dialog"
+                aria-expanded={switcherOpen}
+                className="group inline-flex max-w-[320px] items-center gap-1 rounded-md px-1.5 py-1 text-caption font-emphasis text-text-primary transition-colors hover:bg-surface-2"
+                title="Switch to another screen (or press to search)"
+              >
+                <span className="truncate">{activeScreen.title}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform group-hover:text-text-primary" />
+              </button>
+            )}
+          </>
+        ) : (
+          <span className="text-caption font-emphasis text-text-secondary">
+            {totalScreens} {totalScreens === 1 ? 'screen' : 'screens'}
+            {screensWithIssues > 0 && (
+              <span className="ml-1 text-warning">
+                · {screensWithIssues} need attention
+              </span>
+            )}
+          </span>
+        )}
 
-        <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-2">
-          {hasScreens ? (
-            <div className="space-y-0.5">
-              {layout.screens.map((s, i) => (
-                <ScreenListItem
-                  key={s.id}
-                  screen={s}
-                  active={s.id === activeScreenId}
-                  onClick={() => setActiveScreenId(s.id)}
-                  onChange={updateScreen}
-                  onMoveUp={i > 0 ? () => moveScreen(i, -1) : undefined}
-                  onMoveDown={i < layout.screens.length - 1 ? () => moveScreen(i, 1) : undefined}
-                  onDelete={() => deleteScreen(s.id)}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-6 text-center text-caption text-text-tertiary">
-              No screens yet.
-              <br />
-              Add the first screen below.
-            </p>
-          )}
+        <div className="flex-1" />
 
-          <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
-            <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              + Add screen
-            </p>
-            <div className="grid grid-cols-2 gap-1">
-              <AddBtn icon={ClipboardEdit} label="Form" onClick={() => addScreen('form')} />
-              <AddBtn icon={ListChecks} label="List" onClick={() => addScreen('list')} />
-              <AddBtn icon={Grid3x3} label="Grid" onClick={() => addScreen('grid')} />
-              <AddBtn icon={FileText} label="Document" onClick={() => addScreen('doc')} />
-              <AddBtn
-                icon={LayoutDashboard}
-                label="Dashboard"
-                onClick={() => addScreen('dashboard')}
-              />
-            </div>
-          </div>
-        </div>
+        <SavePill
+          status={autosave.status}
+          savedAt={autosave.savedAt}
+          error={autosave.errorMessage}
+        />
 
-        {/* Auto-save status footer */}
-        <div className="border-t border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-          <AutosaveFooter
-            status={autosave.status}
-            savedAt={autosave.savedAt}
-            error={autosave.errorMessage}
-          />
-        </div>
-      </aside>
+        <button
+          type="button"
+          onClick={togglePreview}
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption transition-colors ${
+            !previewCollapsed
+              ? 'bg-brand/10 text-brand'
+              : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+          }`}
+          title={previewCollapsed ? 'Open live preview' : 'Hide live preview'}
+        >
+          {previewCollapsed ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          {previewCollapsed ? 'Live preview' : 'Hide preview'}
+        </button>
+      </div>
 
-      {/* ── Workspace = editor + preview, resizable split.
-          Sidebar (w-56) sits outside this so the split ignores its width.
-          `autoSaveId` persists the editor/preview ratio to localStorage; the
-          preview Panel is `collapsible` so togglePreview() can hide it
-          entirely (size 0) and the editor expands to fill the row. */}
+      {/* ── Body: side-by-side editor + live preview, resizable.
+          Both Canvas and Editor modes share the same split layout so
+          the user can keep Live Preview open while browsing screens;
+          the preview just shows the last active screen until they pick
+          a new one. ``autoSaveId`` persists the editor/preview ratio
+          to localStorage; the preview ``Panel`` is ``collapsible`` so
+          ``togglePreview()`` can hide it entirely (size 0) and the
+          editor expands to fill the row. ── */}
       <PanelGroup
         direction="horizontal"
         autoSaveId={SPLIT_STORAGE_KEY}
-        className="flex min-w-0 flex-1"
+        className="flex flex-1 min-h-0"
       >
         <Panel id="editor" order={1} minSize={30} defaultSize={55}>
-          <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
-            {previewCollapsed && (
-              <button
-                type="button"
-                onClick={togglePreview}
-                title="Open Live Preview"
-                className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption text-text-secondary shadow-sm hover:bg-surface-2 hover:text-text-primary"
-              >
-                <Eye className="h-3.5 w-3.5" />
-                Live Preview
-              </button>
-            )}
-            {!hasScreens ? (
-              <WelcomeEmptyState
-                onAdd={addScreen}
-                onOpenSettings={() => setShowAppSettings(true)}
-              />
-            ) : !activeScreen ? (
-              <PickAScreenHint screens={layout.screens} onPick={setActiveScreenId} />
-            ) : (
-              <div className="mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 lg:px-8 xl:px-10">
+          <main className="relative h-full min-w-0 overflow-y-auto bg-surface-0">
+            {isEditor && activeScreen ? (
+              <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
                 <ScreenEditor
                   screen={activeScreen}
                   allScreens={layout.screens}
@@ -484,8 +470,23 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   onChange={updateScreen}
                   focusFieldColumn={focusFieldColumn}
                   onFocusFieldHandled={() => setFocusFieldColumn(null)}
+                  onDeleteScreen={() => {
+                    deleteScreen(activeScreen.id);
+                    backToCanvas();
+                  }}
                 />
               </div>
+            ) : (
+              <CanvasOverview
+                screens={layout.screens}
+                tables={tables}
+                boundDataset={boundDataset}
+                onPickScreen={openScreen}
+                onAddScreen={addScreen}
+                onOpenAppSettings={() => setShowAppSettings(true)}
+                onMoveScreen={moveScreen}
+                onDeleteScreen={deleteScreen}
+              />
             )}
           </main>
         </Panel>
@@ -529,6 +530,20 @@ export default function WorkboardBuilder({ workboard }: Props) {
         </Panel>
       </PanelGroup>
 
+      {switcherOpen && (
+        <ScreenSwitcherModal
+          screens={layout.screens}
+          currentScreenId={activeScreenId}
+          onPick={(id) => {
+            setActiveScreenId(id);
+            setMode('editor');
+            setFocusFieldColumn(null);
+          }}
+          onAllScreens={backToCanvas}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
+
       {showAppSettings && (
         <AppSettingsEditor
           layout={layout}
@@ -545,7 +560,8 @@ export default function WorkboardBuilder({ workboard }: Props) {
 }
 
 
-function AutosaveFooter({
+
+function SavePill({
   status,
   savedAt,
   error,
@@ -556,456 +572,43 @@ function AutosaveFooter({
 }) {
   if (status === 'saving') {
     return (
-      <div className="flex items-center gap-1.5 text-caption text-info">
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-info/10 px-2.5 text-tiny font-emphasis text-info">
         <Loader2 className="h-3 w-3 animate-spin" />
-        Saving...
-      </div>
+        Saving
+      </span>
     );
   }
   if (status === 'pending') {
     return (
-      <div className="flex items-center gap-1.5 text-caption text-warning">
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-warning/10 px-2.5 text-tiny font-emphasis text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
-        Editing - saves in ~1s
-      </div>
+        Editing
+      </span>
     );
   }
   if (status === 'error') {
     return (
-      <div className="flex items-start gap-1 text-caption text-danger" title={error || ''}>
-        <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-        <span className="max-w-xs truncate">
-          Save failed{error ? ` - ${error}` : ' - edit again to retry'}
-        </span>
-      </div>
+      <span
+        className="inline-flex h-6 max-w-[260px] items-center gap-1.5 rounded-full bg-danger/10 px-2.5 text-tiny font-emphasis text-danger"
+        title={error || 'Save failed - edit again to retry'}
+      >
+        <AlertCircle className="h-3 w-3 shrink-0" />
+        <span className="truncate">Save failed</span>
+      </span>
     );
   }
   if (status === 'saved' && savedAt) {
     return (
-      <div className="flex items-center gap-1.5 text-caption text-success">
+      <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-success/10 px-2.5 text-tiny font-emphasis text-success">
         <CheckCircle2 className="h-3 w-3" />
         Synced {savedAt.toLocaleTimeString()}
-      </div>
+      </span>
     );
   }
   return (
-    <div className="flex items-center gap-1.5 text-caption text-text-tertiary">
+    <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-surface-2 px-2.5 text-tiny font-emphasis text-text-tertiary">
       <Save className="h-3 w-3" />
-      Auto-saves as you edit
-    </div>
-  );
-}
-
-
-// ── Welcome / empty state ─────────────────────────────────────────────────
-
-function WelcomeEmptyState({
-  onAdd,
-  onOpenSettings,
-}: {
-  onAdd: (kind: ScreenKind) => void;
-  onOpenSettings: () => void;
-}) {
-  return (
-    <div className="mx-auto max-w-3xl px-6 py-10 lg:py-14">
-      <div className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-7">
-        <div className="mb-2 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <h2 className="text-h4 font-emphasis text-text-primary">
-            Start building the mini-app
-          </h2>
-        </div>
-        <p className="mb-5 text-caption text-text-secondary">
-          A mini-app is made of connected <strong>screens</strong> (data-entry forms, lists, documents, and dashboards).
-          Start with one of the screen types below, then use <strong>Live Preview</strong> to try it.
-        </p>
-
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-          <StarterCard
-            icon={ClipboardEdit}
-            title="Data-entry form"
-            description="A table-backed form for creating or editing daily operational records."
-            onClick={() => onAdd('form')}
-          />
-          <StarterCard
-            icon={ListChecks}
-            title="List"
-            description="Show entered rows with filters and row actions such as open, edit, or delete."
-            onClick={() => onAdd('list')}
-          />
-          <StarterCard
-            icon={FileText}
-            title="Document"
-            description="Printable pages with headers, KPI blocks, data tables, signatures, and footers."
-            onClick={() => onAdd('doc')}
-          />
-        </div>
-
-        <div className="mt-5 flex items-start gap-2 rounded-lg border border-info/20 bg-info/5 p-3">
-          <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
-          <div className="text-caption text-text-secondary">
-            <strong>Tip:</strong> Set branding (logo, color, app name) first in{' '}
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="underline hover:text-info"
-            >
-              App settings
-            </button>
-            . The mini-app uses it on the login screen and runtime header.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StarterCard({
-  icon: Icon,
-  title,
-  description,
-  onClick,
-}: {
-  icon: React.ElementType;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex flex-col items-start gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-0 p-4 text-left transition-all hover:-translate-y-0.5 hover:border-brand hover:shadow-sm"
-    >
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-        <Icon className="h-4 w-4" />
-      </div>
-      <div>
-        <h4 className="text-caption font-emphasis text-text-primary">{title}</h4>
-        <p className="mt-1 text-caption text-text-tertiary">{description}</p>
-      </div>
-      <span className="mt-auto flex items-center gap-1 text-caption font-emphasis text-brand opacity-0 transition-opacity group-hover:opacity-100">
-        <Plus className="h-3 w-3" /> Add this screen
-      </span>
-    </button>
-  );
-}
-
-function PickAScreenHint({
-  screens,
-  onPick,
-}: {
-  screens: ScreenSpec[];
-  onPick: (id: string) => void;
-}) {
-  return (
-    <div className="mx-auto max-w-2xl px-6 py-10">
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5">
-        <h3 className="mb-1 text-body font-emphasis text-text-primary">
-          Pick a screen to edit
-        </h3>
-        <p className="mb-3 text-caption text-text-secondary">
-          This mini-app has {screens.length} screens. Click a card below to open its editor.
-        </p>
-        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-          {screens.map((s) => {
-            const Icon = KIND_ICON[s.kind];
-            const status = screenStatus(s);
-            return (
-              <button
-                key={s.id}
-                onClick={() => onPick(s.id)}
-                className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-3 text-left hover:border-brand"
-              >
-                <Icon className="h-4 w-4 text-text-tertiary" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-caption font-emphasis text-text-primary">
-                    {s.title}
-                  </div>
-                  <div className="text-micro text-text-quaternary">
-                    {KIND_LABEL[s.kind]}
-                  </div>
-                </div>
-                <StatusDot status={status} />
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-// ── Screen list item with status + gear popover for screen meta ───────────
-
-function ScreenListItem({
-  screen,
-  active,
-  onClick,
-  onChange,
-  onMoveUp,
-  onMoveDown,
-  onDelete,
-}: {
-  screen: ScreenSpec;
-  active: boolean;
-  onClick: () => void;
-  onChange: (next: ScreenSpec) => void;
-  onMoveUp?: () => void;
-  onMoveDown?: () => void;
-  onDelete: () => void;
-}) {
-  const Icon = KIND_ICON[screen.kind];
-  const status = screenStatus(screen);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const wrapperRef = React.useRef<HTMLDivElement | null>(null);
-
-  // Close menu/popover on outside click.
-  useEffect(() => {
-    if (!menuOpen && !settingsOpen) return;
-    function onDocClick(event: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-        setSettingsOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [menuOpen, settingsOpen]);
-
-  const showMenuButton = active || menuOpen || settingsOpen;
-
-  return (
-    <div
-      ref={wrapperRef}
-      className={`group relative flex items-center gap-1 rounded-md px-2 py-1.5 ${
-        active ? 'bg-brand/10' : 'hover:bg-surface-2'
-      }`}
-    >
-      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate text-caption font-emphasis text-text-primary">
-              {screen.title}
-            </span>
-            <StatusDot status={status} />
-          </div>
-          <div className="truncate text-micro text-text-quaternary">
-            {KIND_LABEL[screen.kind]}
-          </div>
-        </div>
-      </button>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          setMenuOpen((prev) => !prev);
-        }}
-        className={`shrink-0 rounded p-0.5 transition-opacity ${
-          showMenuButton ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        } ${
-          menuOpen ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
-        }`}
-        title="Actions"
-      >
-        <MoreVertical className="h-3.5 w-3.5" />
-      </button>
-
-      {menuOpen && (
-        <div
-          className="absolute right-1 top-full z-20 mt-1 w-44 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-lg"
-          role="menu"
-        >
-          <MenuItem
-            icon={<Settings className="h-3.5 w-3.5" />}
-            label="Screen settings"
-            onClick={() => {
-              setMenuOpen(false);
-              setSettingsOpen(true);
-            }}
-          />
-          {onMoveUp && (
-            <MenuItem
-              icon={<ArrowUp className="h-3.5 w-3.5" />}
-              label="Move up"
-              onClick={() => {
-                setMenuOpen(false);
-                onMoveUp();
-              }}
-            />
-          )}
-          {onMoveDown && (
-            <MenuItem
-              icon={<ArrowDown className="h-3.5 w-3.5" />}
-              label="Move down"
-              onClick={() => {
-                setMenuOpen(false);
-                onMoveDown();
-              }}
-            />
-          )}
-          <div className="my-1 border-t border-[rgb(var(--border-line))]" />
-          <MenuItem
-            icon={<Trash2 className="h-3.5 w-3.5" />}
-            label="Delete screen"
-            danger
-            onClick={() => {
-              setMenuOpen(false);
-              onDelete();
-            }}
-          />
-        </div>
-      )}
-
-      {settingsOpen && (
-        <ScreenSettingsPopover
-          screen={screen}
-          onChange={onChange}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function MenuItem({
-  icon,
-  label,
-  onClick,
-  danger,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption ${
-        danger
-          ? 'text-danger hover:bg-danger/10'
-          : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-      }`}
-      role="menuitem"
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
-
-function ScreenSettingsPopover({
-  screen,
-  onChange,
-  onClose,
-}: {
-  screen: ScreenSpec;
-  onChange: (next: ScreenSpec) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="absolute left-1 right-1 top-full z-30 mt-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-lg"
-      role="dialog"
-    >
-      <div className="mb-2 flex items-center justify-between">
-        <h4 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Screen settings
-        </h4>
-        <button
-          onClick={onClose}
-          className="rounded p-0.5 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-          title="Close"
-        >
-          X
-        </button>
-      </div>
-      <div className="space-y-2">
-        <label className="block">
-          <span className="mb-1 block text-label font-emphasis text-text-secondary">
-            Screen name
-          </span>
-          <input
-            value={screen.title}
-            onChange={(event) => onChange({ ...screen, title: event.target.value })}
-            className="min-h-8 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-label font-emphasis text-text-secondary">
-            Short description
-          </span>
-          <textarea
-            value={screen.description || ''}
-            onChange={(event) => onChange({ ...screen, description: event.target.value })}
-            rows={2}
-            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
-          />
-        </label>
-        <label className="flex items-center gap-2 text-caption text-text-secondary">
-          <input
-            type="checkbox"
-            checked={screen.show_in_nav !== false}
-            onChange={(event) =>
-              onChange({ ...screen, show_in_nav: event.target.checked })
-            }
-            className="h-3.5 w-3.5"
-          />
-          Show in navigation
-        </label>
-      </div>
-    </div>
-  );
-}
-
-function StatusDot({ status }: { status: ScreenStatus }) {
-  const cls =
-    status === 'ok' ? 'bg-success' : status === 'warn' ? 'bg-warning' : 'bg-danger';
-  const label =
-    status === 'ok'
-      ? 'Configured'
-      : status === 'warn'
-      ? 'Missing fields, columns, or blocks'
-      : 'Data source not selected';
-  return (
-    <span
-      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${cls}`}
-      title={label}
-    />
-  );
-}
-
-
-function AddBtn({
-  icon: Icon,
-  label,
-  onClick,
-  disabled,
-  title,
-}: {
-  icon: React.ElementType;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title || label}
-      className="flex flex-col items-center gap-1 rounded-md border border-[rgb(var(--border-line))] py-2 text-caption text-text-secondary hover:border-brand hover:text-brand disabled:opacity-50"
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </button>
+      Auto-saves
+    </span>
   );
 }

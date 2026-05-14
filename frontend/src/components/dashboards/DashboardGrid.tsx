@@ -7,10 +7,11 @@ import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
 import { DashboardWidget } from './DashboardWidget';
-import { DashboardChart, DashboardPageConfig } from '@/types/api';
+import { DashboardChart, DashboardPageConfig, DashboardThemeConfig } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2 } from 'lucide-react';
+import { getDashboardGridMargin } from './DashboardThemeProvider';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -71,6 +72,7 @@ interface DashboardGridProps {
   emptyMessage?: string;
   canEdit?: boolean;
   allowAppearanceEdit?: boolean;
+  themeConfig?: DashboardThemeConfig | null;
   /** When true, skip IntersectionObserver lazy loading — render all charts immediately. */
   disableLazy?: boolean;
 }
@@ -93,6 +95,7 @@ export function DashboardGrid({
   emptyMessage,
   canEdit = false,
   allowAppearanceEdit = false,
+  themeConfig = null,
   disableLazy = false,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
@@ -156,6 +159,7 @@ export function DashboardGrid({
       layout={layouts}
       cols={12}
       rowHeight={80}
+      margin={getDashboardGridMargin(themeConfig)}
       onLayoutChange={handleLayoutChange}
       onDragStart={markUserGesture}
       onResizeStart={markUserGesture}

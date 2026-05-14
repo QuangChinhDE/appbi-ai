@@ -31,7 +31,11 @@ from app.models.user import User
 from app.schemas.dataset import DatasetCreate, TableCreate
 from app.schemas.schemas import DataSourceCreate
 from app.services.chart_semantic_service import with_chart_semantic_binding
-from app.services.dashboard_service import DEFAULT_DASHBOARD_PAGE
+from app.services.dashboard_service import (
+    DEFAULT_DASHBOARD_PAGE,
+    normalize_dashboard_theme_config,
+    normalize_dashboard_widget_config,
+)
 from app.services.dataset_crud import DatasetCRUDService
 from app.services.datasource_crud_service import DataSourceCRUDService
 from app.services.llm_client import LLMClient
@@ -3621,6 +3625,48 @@ def build_dashboard_from_import(
         wt = str(plan.get("widget_type") or "chart").strip().lower()
         return wt if wt in {"chart", "text", "image", "countdown", "shape", "parameter_switcher"} else "chart"
 
+    def _layout_number(layout: Dict[str, Any], key: str) -> float | None:
+        value = layout.get(key)
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _materialize_dashboard_layout(
+        raw_layout: Dict[str, Any],
+        *,
+        page_id: str,
+        default_w: int,
+        default_h: int,
+        custom_title: str | None = None,
+    ) -> Dict[str, Any]:
+        layout = dict(raw_layout or {})
+        materialized: Dict[str, Any] = {
+            "x": int(_layout_number(layout, "x") or 0),
+            "y": int(_layout_number(layout, "y") or 0),
+            "w": int(_layout_number(layout, "w") or default_w),
+            "h": int(_layout_number(layout, "h") or default_h),
+            "pageId": page_id,
+        }
+        if custom_title:
+            materialized["custom_title"] = custom_title
+
+        # Preserve canvas-mode geometry from MCP/HTML plans. Earlier builds only
+        # persisted x/y/w/h, so a pixel-perfect canvas prompt silently fell back
+        # to grid-like placement.
+        for key in ("xPx", "yPx", "wPx", "hPx"):
+            value = _layout_number(layout, key)
+            if value is not None:
+                materialized[key] = value
+        z_value = _layout_number(layout, "z")
+        if z_value is not None:
+            materialized["z"] = int(z_value)
+        if isinstance(layout.get("styleConfigOverride"), dict):
+            materialized["styleConfigOverride"] = layout["styleConfigOverride"]
+        return materialized
+
     chart_plans_only = [p for p in chart_plans if _plan_widget_type(p) == "chart"]
     widget_plans = [p for p in chart_plans if _plan_widget_type(p) != "chart"]
 
@@ -3743,7 +3789,9 @@ def build_dashboard_from_import(
         if plan_layout_mode not in {"grid", "canvas"}:
             plan_layout_mode = "grid"
         plan_canvas_config = analysis.get("canvas_config") if isinstance(analysis.get("canvas_config"), dict) else None
-        plan_theme_config = analysis.get("theme_config") if isinstance(analysis.get("theme_config"), dict) else None
+        plan_theme_config = normalize_dashboard_theme_config(
+            analysis.get("theme_config") if isinstance(analysis.get("theme_config"), dict) else None
+        )
         dashboard_kwargs: Dict[str, Any] = {
             "name": resolved_dashboard_name,
             "description": "Imported from HTML dashboard layout",
@@ -3765,20 +3813,23 @@ def build_dashboard_from_import(
     for chart_obj, plan in zip(created_charts, chart_plans_only):
         layout = dict(plan.get("layout") or {})
         widget_type = _plan_widget_type(plan)  # "chart"
-        widget_config = plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else None
+        widget_config = normalize_dashboard_widget_config(
+            widget_type,
+            plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else None,
+        )
+        custom_title = _normalize_text(plan.get("title"), max_len=160) or chart_obj.name
         dashboard_chart = DashboardChart(
             dashboard_id=dashboard_obj.id,
             chart_id=chart_obj.id,
             widget_type=widget_type,
             widget_config=widget_config,
-            layout={
-                "x": int(layout.get("x", 0)),
-                "y": int(layout.get("y", 0)),
-                "w": int(layout.get("w", 6)),
-                "h": int(layout.get("h", 4)),
-                "pageId": page_id,
-                "custom_title": _normalize_text(plan.get("title"), max_len=160) or chart_obj.name,
-            },
+            layout=_materialize_dashboard_layout(
+                layout,
+                page_id=page_id,
+                default_w=6,
+                default_h=4,
+                custom_title=custom_title,
+            ),
             parameters={},
         )
         db.add(dashboard_chart)
@@ -3788,21 +3839,23 @@ def build_dashboard_from_import(
     for plan in widget_plans:
         layout = dict(plan.get("layout") or {})
         widget_type = _plan_widget_type(plan)
-        widget_config = plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else {}
+        widget_config = normalize_dashboard_widget_config(
+            widget_type,
+            plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else {},
+        )
         widget_title = _normalize_text(plan.get("title"), max_len=160) or widget_type.title()
         dashboard_chart = DashboardChart(
             dashboard_id=dashboard_obj.id,
             chart_id=None,
             widget_type=widget_type,
             widget_config=widget_config,
-            layout={
-                "x": int(layout.get("x", 0)),
-                "y": int(layout.get("y", 0)),
-                "w": int(layout.get("w", 6)),
-                "h": int(layout.get("h", 4)),
-                "pageId": page_id,
-                "custom_title": widget_title,
-            },
+            layout=_materialize_dashboard_layout(
+                layout,
+                page_id=page_id,
+                default_w=6,
+                default_h=4,
+                custom_title=widget_title,
+            ),
             parameters={},
         )
         db.add(dashboard_chart)

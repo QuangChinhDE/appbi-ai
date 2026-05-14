@@ -203,6 +203,52 @@ function applyTimeGranularity(
     });
 }
 
+function parseDateAxisValue(value: unknown): number | null {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !/(\d{4}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|T\d{2}:|\d{4})/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isDateLikeAxis(data: Record<string, any>[], field?: string, label?: string): boolean {
+  if (!field) return false;
+  const axisText = `${field} ${label ?? ''}`.toLowerCase();
+  const fieldLooksDateLike = /(date|time|timestamp|_at|created|updated|day|month|year|start|end|deadline)/.test(axisText);
+  const samples = data
+    .map((row) => row?.[field])
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+    .slice(0, 25);
+
+  if (samples.length === 0) return false;
+  const parseable = samples.filter((value) => parseDateAxisValue(value) !== null).length;
+  return parseable / samples.length >= 0.6 && (fieldLooksDateLike || parseable === samples.length);
+}
+
+function formatDateAxisValue(value: unknown): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d{4}$/.test(trimmed) || /^\d{4}[-/]\d{1,2}$/.test(trimmed)) return trimmed;
+  }
+
+  const parsed = parseDateAxisValue(value);
+  if (parsed === null) return String(value ?? '');
+  return new Date(parsed).toLocaleDateString();
+}
+
+function sortRowsByDateAxis(data: Record<string, any>[], field: string | undefined, enabled: boolean): Record<string, any>[] {
+  if (!enabled || !field) return data;
+  return [...data].sort((a, b) => (parseDateAxisValue(a?.[field]) ?? 0) - (parseDateAxisValue(b?.[field]) ?? 0));
+}
+
 export function ChartPreview({
   chartType,
   data,
@@ -276,6 +322,12 @@ export function ChartPreview({
   const lineDash = style.lineStyle === 'dashed' ? '5 5' : undefined;
   const timeSeriesGranularity = (style.timeGranularity as TimeGranularity) ?? 'raw';
   const timeSeriesValueFields = config.yFields?.length ? config.yFields : (config.valueField ? [config.valueField] : []);
+  const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
+  const hasExplicitFontSize = Boolean(
+    styleConfig && Object.prototype.hasOwnProperty.call(styleConfig, 'fontSize') && style.fontSize !== 12,
+  );
+  const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
+  const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
 
   const chartOutputData = useMemo(() => {
     if (chartType !== ChartType.TIME_SERIES || !config.timeField || timeSeriesValueFields.length === 0) {
@@ -295,7 +347,7 @@ export function ChartPreview({
   }, [chartOutputData, sortRules, dataLimit, dataLimitDir]);
 
   const ChartTitleEl = chartTitle ? (
-    <div className="text-center text-sm font-semibold text-text-secondary mb-1">{chartTitle}</div>
+    <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
   ) : null;
 
   const yDomain: [number | 'auto', number | 'auto'] = [
@@ -405,17 +457,19 @@ export function ChartPreview({
     );
   }
   if (chartType === ChartType.LINE && config.xField && config.yFields) {
-    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(sortedData.length, fontSize, xAxisLabel);
+    const dateLikeXAxis = isDateLikeAxis(sortedData, config.xField, xAxisLabel);
+    const displayData = sortRowsByDateAxis(sortedData, config.xField, dateLikeXAxis && sortRules.length === 0);
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(displayData.length, fontSize, xAxisLabel);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           {wrapScrollable(
-            <LineChart data={sortedData} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
+            <LineChart data={displayData} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+              <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} tickFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
               <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
-              <Tooltip formatter={(v: any) => formatNumber(v, style)} />
+              <Tooltip formatter={(v: any) => formatNumber(v, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {config.yFields.map((field, index) => (
                 <Line key={field} type="monotone" dataKey={field}
@@ -428,7 +482,7 @@ export function ChartPreview({
               ))}
               {renderBenchmarkLine('y')}
             </LineChart>,
-            sortedData.length,
+            displayData.length,
           )}
         </div>
       </div>
@@ -437,17 +491,19 @@ export function ChartPreview({
 
   // Render Area Chart
   if (chartType === ChartType.AREA && config.xField && config.yFields) {
-    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(sortedData.length, fontSize, xAxisLabel);
+    const dateLikeXAxis = isDateLikeAxis(sortedData, config.xField, xAxisLabel);
+    const displayData = sortRowsByDateAxis(sortedData, config.xField, dateLikeXAxis && sortRules.length === 0);
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(displayData.length, fontSize, xAxisLabel);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           {wrapScrollable(
-            <AreaChart data={sortedData} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
+            <AreaChart data={displayData} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+              <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} tickFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
               <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
-              <Tooltip formatter={(v: any) => formatNumber(v, style)} />
+              <Tooltip formatter={(v: any) => formatNumber(v, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {config.yFields.map((field, index) => (
                 <Area key={field} type="monotone" dataKey={field}
@@ -462,7 +518,7 @@ export function ChartPreview({
               ))}
               {renderBenchmarkLine('y')}
             </AreaChart>,
-            sortedData.length,
+            displayData.length,
           )}
         </div>
       </div>
@@ -678,7 +734,7 @@ export function ChartPreview({
   if (chartType === ChartType.TIME_SERIES && config.timeField && config.valueField) {
     const gran = timeSeriesGranularity;
     const tsValueFields = timeSeriesValueFields;
-    const tsData = sortedData;
+    const tsData = sortRowsByDateAxis(sortedData, config.timeField, gran === 'raw' && sortRules.length === 0);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -687,11 +743,11 @@ export function ChartPreview({
             <LineChart data={tsData} onClick={(event) => handleCategoricalChartClick(event, config.timeField)}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
               <XAxis dataKey={config.timeField} tick={{ fontSize }}
-                tickFormatter={(value) => gran === 'raw' ? new Date(value).toLocaleDateString() : String(value)}
+                tickFormatter={(value) => gran === 'raw' ? formatDateAxisValue(value) : String(value)}
                 label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
               <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
               <Tooltip
-                labelFormatter={(value) => gran === 'raw' ? new Date(value).toLocaleString() : String(value)}
+                labelFormatter={(value) => gran === 'raw' ? formatDateAxisValue(value) : String(value)}
                 formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {tsValueFields.map((field, index) => (
@@ -811,6 +867,9 @@ export function ChartPreview({
             onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
             columnAlignments={style.tableColumnAlignments}
             hyperlinkRules={style.tableHyperlinkRules}
+            numberFormat={tableNumberFormat}
+            decimalPlaces={style.decimalPlaces}
+            currencySymbol={style.currencySymbol}
           />
         </div>
       </div>
@@ -855,6 +914,7 @@ export function ChartPreview({
               iconColor={style.kpiIconColor}
               accentBorder={style.kpiAccentBorder}
               gradientBg={style.kpiGradientBg}
+              valueFontSize={kpiValueFontSize}
             />
           </div>
         </div>

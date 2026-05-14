@@ -11,10 +11,12 @@ type Props = {
 };
 
 const PRESETS: Array<{ label: string; value: DashboardThemeConfig }> = [
-  { label: 'Default', value: { mode: 'light', cardStyle: 'soft' } },
+  { label: 'Default', value: { mode: 'light', cardStyle: 'soft', density: 'normal' } },
   { label: 'Dark · Amber', value: { mode: 'dark', accent: '#facc15', cardStyle: 'soft' } },
   { label: 'Dark · Emerald', value: { mode: 'dark', accent: '#10b981', cardStyle: 'soft' } },
   { label: 'Light · Sapphire', value: { mode: 'light', accent: '#2563eb', cardStyle: 'soft' } },
+  { label: 'Elevated', value: { mode: 'light', cardStyle: 'elevated', density: 'normal' } },
+  { label: 'Compact', value: { mode: 'light', cardStyle: 'flat', density: 'compact' } },
   { label: 'Sharp', value: { mode: 'light', cardStyle: 'sharp' } },
   { label: 'Flat', value: { mode: 'light', cardStyle: 'flat' } },
 ];
@@ -23,9 +25,12 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
   const [theme, setTheme] = useState<DashboardThemeConfig>({
     mode: initial?.mode ?? 'light',
     accent: initial?.accent ?? '',
-    fontFamily: initial?.fontFamily ?? '',
+    fontFamily: initial?.fontFamily ?? initial?.font ?? '',
     cardStyle: initial?.cardStyle ?? 'soft',
-    background: initial?.background ?? '',
+    background: initial?.background ?? initial?.backgroundColor ?? '',
+    density: initial?.density ?? 'normal',
+    cardRadius: initial?.cardRadius ?? '',
+    hoverAnimation: initial?.hoverAnimation ?? 'none',
   });
   const [saving, setSaving] = useState(false);
 
@@ -39,9 +44,12 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
       const cleaned: DashboardThemeConfig = {
         mode: theme.mode,
         cardStyle: theme.cardStyle,
+        density: theme.density,
         ...(theme.accent ? { accent: theme.accent } : {}),
         ...(theme.fontFamily ? { fontFamily: theme.fontFamily } : {}),
         ...(theme.background ? { background: theme.background } : {}),
+        ...(theme.cardRadius ? { cardRadius: theme.cardRadius } : {}),
+        ...(theme.hoverAnimation && theme.hoverAnimation !== 'none' ? { hoverAnimation: theme.hoverAnimation } : {}),
       };
       await onSave(cleaned);
       onClose();
@@ -93,10 +101,11 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
               <span className="text-text-tertiary">Card style</span>
               <select
                 value={theme.cardStyle}
-                onChange={(e) => update('cardStyle', e.target.value as 'soft' | 'sharp' | 'flat')}
+                onChange={(e) => update('cardStyle', e.target.value as 'soft' | 'sharp' | 'flat' | 'elevated')}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5"
               >
                 <option value="soft">Soft</option>
+                <option value="elevated">Elevated</option>
                 <option value="sharp">Sharp</option>
                 <option value="flat">Flat</option>
               </select>
@@ -136,6 +145,41 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 value={theme.fontFamily || ''}
                 placeholder='(optional, e.g. "Inter, sans-serif")'
                 onChange={(e) => update('fontFamily', e.target.value)}
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-sm"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-text-tertiary">Density</span>
+              <select
+                value={theme.density ?? 'normal'}
+                onChange={(e) => update('density', e.target.value as 'compact' | 'normal' | 'spacious')}
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5"
+              >
+                <option value="compact">Compact</option>
+                <option value="normal">Normal</option>
+                <option value="spacious">Spacious</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-text-tertiary">Hover</span>
+              <select
+                value={theme.hoverAnimation ?? 'none'}
+                onChange={(e) => update('hoverAnimation', e.target.value)}
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5"
+              >
+                <option value="none">None</option>
+                <option value="lift">Lift</option>
+                <option value="scale">Scale</option>
+                <option value="glow">Glow</option>
+              </select>
+            </label>
+            <label className="col-span-2 flex flex-col gap-1 text-sm">
+              <span className="text-text-tertiary">Card radius</span>
+              <input
+                type="text"
+                value={theme.cardRadius ?? ''}
+                placeholder="Optional, e.g. 8px or 16"
+                onChange={(e) => update('cardRadius', e.target.value)}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-sm"
               />
             </label>

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
+import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
@@ -740,7 +741,11 @@ export default function PublicDashboardPage() {
   });
 
   return (
-    <div className="flex h-screen overflow-hidden bg-surface-0 text-text-primary" style={publicTheme.pageStyle}>
+    <DashboardThemeProvider
+      theme={dashboard?.theme_config}
+      className="flex h-screen overflow-hidden bg-surface-0 text-text-primary"
+      style={publicTheme.pageStyle}
+    >
       {pageState === 'reauth' && (
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
@@ -901,6 +906,7 @@ export default function PublicDashboardPage() {
                 breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
                 cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
                 rowHeight={80}
+                margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
                 isResizable={false}
                 compactType="vertical"
@@ -967,6 +973,6 @@ export default function PublicDashboardPage() {
           keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
         />
       )}
-    </div>
+    </DashboardThemeProvider>
   );
 }

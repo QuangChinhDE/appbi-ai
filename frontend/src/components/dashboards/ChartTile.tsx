@@ -608,7 +608,7 @@ export function ChartTile({
   );
 
   const renderStatusCard = (content: React.ReactNode, tone: 'neutral' | 'danger' = 'neutral') => (
-    <div className={`relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
+    <div className={`dashboard-tile relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
       {onRemove && (
         <button
           type="button"
@@ -635,7 +635,7 @@ export function ChartTile({
     return (
       <div
         ref={visibilityRef}
-        className="relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
+        className="dashboard-tile relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
         aria-hidden="true"
       />
     );
@@ -659,7 +659,7 @@ export function ChartTile({
   }
 
   return (
-    <div className={`relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
+    <div className={`dashboard-tile relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
       isCrossFilterSource
         ? 'border-warning/40 ring-1 ring-warning'
         : 'border-[rgb(var(--border-line))]'

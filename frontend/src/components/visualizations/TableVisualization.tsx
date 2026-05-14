@@ -3,6 +3,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
   SortConfig,
@@ -38,6 +39,9 @@ export interface TableVisualizationProps {
   columnAlignments?: Record<string, TableColumnAlignment>;
   hyperlinkRules?: TableHyperlinkRule[];
   enableColumnResize?: boolean;
+  numberFormat?: NumberFormat;
+  decimalPlaces?: number;
+  currencySymbol?: string;
 }
 
 const MIN_COLUMN_WIDTH = 96;
@@ -144,6 +148,9 @@ export function TableVisualization({
   columnAlignments,
   hyperlinkRules,
   enableColumnResize = true,
+  numberFormat = 'auto',
+  decimalPlaces = 1,
+  currencySymbol = '$',
 }: TableVisualizationProps) {
   const rows = data ?? [];
   const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0]) : []);
@@ -491,7 +498,7 @@ export function TableVisualization({
                   const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
                   const hyperlinkRule = hyperlinkRuleByColumn[col];
                   const safeHref = hyperlinkRule ? resolveSafeHref(row?.[hyperlinkRule.urlColumn]) : null;
-                  const displayValue = formatCellValue(cellValue);
+                  const displayValue = formatCellValue(cellValue, { numberFormat, decimalPlaces, currencySymbol });
                   
                   return (
                     <td
@@ -546,7 +553,7 @@ export function TableVisualization({
                         )}
                         style={{ textAlign: alignment }}
                       >
-                        <div className="break-words">{formatCellValue(summaryRow[col])}</div>
+                        <div className="break-words">{formatCellValue(summaryRow[col], { numberFormat, decimalPlaces, currencySymbol })}</div>
                       </td>
                     );
                   })}
@@ -619,19 +626,68 @@ function calculateSummaryValue(
   }
 }
 
-function formatCellValue(value: any): string {
+function formatNumericCellValue(
+  value: number,
+  options: {
+    numberFormat?: NumberFormat;
+    decimalPlaces?: number;
+    currencySymbol?: string;
+  },
+): string {
+  const format = options.numberFormat ?? 'auto';
+  const decimalPlaces = options.decimalPlaces ?? 1;
+  const currencySymbol = options.currencySymbol || '$';
+  const abs = Math.abs(value);
+
+  if (format === 'compact') {
+    if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(decimalPlaces)}B`;
+    if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(decimalPlaces)}M`;
+    if (abs >= 1_000) return `${(value / 1_000).toFixed(decimalPlaces)}K`;
+  }
+
+  if (format === 'percent') {
+    return `${(value * 100).toFixed(decimalPlaces)}%`;
+  }
+
+  if (format === 'currency') {
+    return `${currencySymbol}${value.toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: decimalPlaces,
+    })}`;
+  }
+
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: format === 'auto' ? undefined : decimalPlaces,
+  });
+}
+
+function formatCellValue(
+  value: any,
+  options: {
+    numberFormat?: NumberFormat;
+    decimalPlaces?: number;
+    currencySymbol?: string;
+  } = {},
+): string {
   if (value === null || value === undefined) {
     return '';
   }
-  
-  if (typeof value === 'number') {
-    // Format numbers with thousands separator
-    return value.toLocaleString();
-  }
-  
+
   if (typeof value === 'boolean') {
     return value ? 'Yes' : 'No';
   }
-  
+
+  const numericValue = parseNumericCellValue(value);
+  const shouldApplyExplicitNumberFormat = options.numberFormat && options.numberFormat !== 'auto';
+
+  if (typeof value === 'number') {
+    return formatNumericCellValue(value, options);
+  }
+
+  if (shouldApplyExplicitNumberFormat && numericValue !== null) {
+    return formatNumericCellValue(numericValue, options);
+  }
+
   return String(value);
 }

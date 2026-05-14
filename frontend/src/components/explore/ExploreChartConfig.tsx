@@ -100,6 +100,7 @@ export interface ChartStyleConfig {
   seriesColors?: Record<string, string>;
   // Font
   fontSize?: number;
+  chartTitleFontSize?: number;
   // Bar
   barRadius?: number;
   // Line
@@ -127,6 +128,7 @@ export interface ChartStyleConfig {
   kpiIconColor?: string;
   kpiAccentBorder?: boolean;
   kpiGradientBg?: boolean;
+  kpiValueFontSize?: number;
   // PODIUM: top-N visualization with medal styling
   podiumTop?: number;        // default 3, max 5
   podiumNameField?: string;  // dimension column for the rank name
@@ -186,6 +188,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   showGrid: true,
   palette: 'default',
   fontSize: 12,
+  chartTitleFontSize: undefined,
   barRadius: 4,
   showDots: true,
   lineStyle: 'solid',
@@ -204,6 +207,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   kpiAccentColor: '#2563eb',
   kpiEnableColorRules: false,
   kpiColorRules: [],
+  kpiValueFontSize: undefined,
   tableEnableConditionalFormatting: false,
   tableEnableHeatmap: false,
   tableShowSummaryRow: false,
@@ -226,6 +230,13 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   barSize: '',
   scatterLabelField: '',
 };
+
+function normalizePixelSize(value: unknown, fallback?: number, min = 8, max = 72): number | undefined {
+  if (value === '' || value === null || value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), min), max);
+}
 
 export function normalizeChartStyleConfig(
   styleConfig: ChartStyleConfig | null | undefined,
@@ -311,6 +322,10 @@ export function normalizeChartStyleConfig(
   if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'showBenchmarkLine')) {
     normalized.showBenchmarkLine = rawStyleConfig?.benchmarkValue !== undefined && rawStyleConfig?.benchmarkValue !== '';
   }
+
+  normalized.fontSize = normalizePixelSize(normalized.fontSize, DEFAULT_STYLE_CONFIG.fontSize, 8, 48);
+  normalized.chartTitleFontSize = normalizePixelSize(normalized.chartTitleFontSize, undefined, 10, 48);
+  normalized.kpiValueFontSize = normalizePixelSize(normalized.kpiValueFontSize, undefined, 16, 80);
 
   if (normalized.kpiColorRules?.length) {
     normalized.kpiColorRules = normalized.kpiColorRules.map((rule) => ({

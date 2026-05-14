@@ -46,23 +46,57 @@ export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
 }
 
 function TextWidget({ config, params }: { config: any; params: Record<string, any> }) {
-  const rendered = renderTemplate(String(config.template ?? ''), params);
+  const source = String(config.template ?? config.markdown ?? config.text ?? '');
+  const rendered = renderTemplate(source, params);
   const align = (config.align ?? 'left') as 'left' | 'center' | 'right';
   const fontSize = Number(config.fontSize ?? 14);
   const color = config.color || undefined;
   const fontWeight = config.bold ? 600 : 400;
   return (
     <div
-      className="h-full w-full overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4"
+      className="dashboard-tile h-full w-full overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
-      <div className="whitespace-pre-wrap break-words">{rendered}</div>
+      <MarkdownText text={rendered} />
     </div>
   );
 }
 
+function MarkdownText({ text }: { text: string }) {
+  const lines = text.split('\n');
+  return (
+    <div className="space-y-1 break-words">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={index} className="h-2" />;
+        const heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
+        if (heading) {
+          const level = heading[1].length;
+          const cls = level === 1
+            ? 'text-xl font-semibold leading-tight'
+            : level === 2
+              ? 'text-lg font-semibold leading-tight'
+              : 'text-sm font-semibold leading-snug';
+          return <div key={index} className={cls}>{renderInlineMarkdown(heading[2])}</div>;
+        }
+        return <div key={index} className="whitespace-pre-wrap leading-snug">{renderInlineMarkdown(line)}</div>;
+      })}
+    </div>
+  );
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+}
+
 function CountdownWidget({ config }: { config: any }) {
-  const target = String(config.target ?? '');
+  const target = String(config.target ?? config.target_date ?? config.targetDate ?? '');
   const label = String(config.label ?? '');
   const accent = config.accent || '#facc15';
   const [tick, setTick] = useState(0);
@@ -84,7 +118,7 @@ function CountdownWidget({ config }: { config: any }) {
   const pad = (n: number) => String(n).padStart(2, '0');
   return (
     <div
-      className="flex h-full w-full items-center justify-center rounded-xl border bg-surface-1 p-4"
+      className="dashboard-tile flex h-full w-full items-center justify-center rounded-xl border bg-surface-1 p-4"
       style={{ borderColor: accent, borderWidth: 2 }}
     >
       <div className="text-center">
@@ -120,13 +154,13 @@ function ImageWidget({ config }: { config: any }) {
   const alt = String(config.alt ?? '');
   if (!url) {
     return (
-      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
+      <div className="dashboard-tile flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
         Image URL not set
       </div>
     );
   }
   return (
-    <div className="h-full w-full overflow-hidden rounded-xl bg-surface-1">
+    <div className="dashboard-tile h-full w-full overflow-hidden rounded-xl bg-surface-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={url} alt={alt} className="h-full w-full" style={{ objectFit: fit }} />
     </div>
@@ -134,7 +168,8 @@ function ImageWidget({ config }: { config: any }) {
 }
 
 function ShapeWidget({ config }: { config: any }) {
-  const kind = (config.kind ?? 'rect') as 'rect' | 'line' | 'divider';
+  const rawKind = String(config.kind ?? config.shape ?? 'rect').toLowerCase();
+  const kind = (rawKind === 'rectangle' ? 'rect' : rawKind) as 'rect' | 'circle' | 'line' | 'divider';
   const color = config.color || '#94a3b8';
   const radius = Number(config.radius ?? 8);
   if (kind === 'line' || kind === 'divider') {
@@ -146,8 +181,8 @@ function ShapeWidget({ config }: { config: any }) {
   }
   return (
     <div
-      className="h-full w-full"
-      style={{ background: color, borderRadius: radius, opacity: config.opacity ?? 0.85 }}
+      className="dashboard-tile h-full w-full"
+      style={{ background: color, borderRadius: kind === 'circle' ? '9999px' : radius, opacity: config.opacity ?? 0.85 }}
     />
   );
 }
@@ -167,7 +202,7 @@ function ParameterSwitcherWidget({
     : [];
   const layout = (config.layout ?? 'tabs') as 'tabs' | 'dropdown';
   return (
-    <div className="flex h-full w-full flex-col gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+    <div className="dashboard-tile flex h-full w-full flex-col gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
       {label && (
         <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-text-tertiary">
           {label}

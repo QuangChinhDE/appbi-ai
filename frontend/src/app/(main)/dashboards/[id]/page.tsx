@@ -1611,6 +1611,7 @@ export default function DashboardDetailPage() {
             dashboardCharts={visibleDashboardCharts}
             canEdit={canEditResource}
             allowAppearanceEdit={canEditResource}
+            themeConfig={dashboard?.theme_config}
             onLayoutChange={canEditResource ? handleLayoutChange : undefined}
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}

@@ -16,6 +16,107 @@ DEFAULT_DASHBOARD_PAGE = {"id": "page-1", "name": "Page 1"}
 DEFAULT_DASHBOARD_PAGE_ID = DEFAULT_DASHBOARD_PAGE["id"]
 
 
+_NAMED_ACCENT_COLORS = {
+    "blue": "#2563eb",
+    "green": "#10b981",
+    "emerald": "#10b981",
+    "amber": "#f59e0b",
+    "orange": "#f97316",
+    "red": "#ef4444",
+    "rose": "#e11d48",
+    "purple": "#7c3aed",
+    "slate": "#475569",
+}
+
+
+_FONT_PRESETS = {
+    "inter": 'var(--font-inter), Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    "dm-sans": 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "dm sans": 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "roboto": 'var(--font-roboto), Roboto, var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+}
+
+
+def normalize_dashboard_theme_config(theme_config: Optional[dict]) -> Optional[dict]:
+    """Accept MCP-friendly aliases while storing the frontend runtime shape.
+
+    The MCP guide historically used keys such as ``font``, ``backgroundColor``,
+    ``density`` and ``cardStyle='elevated'``.  Keeping those aliases here lets
+    older prompts and new guided prompts produce the same dashboard rendering.
+    """
+    if not isinstance(theme_config, dict):
+        return theme_config
+
+    normalized = dict(theme_config)
+
+    font = normalized.get("fontFamily") or normalized.get("font")
+    if isinstance(font, str) and font.strip():
+        normalized["fontFamily"] = _FONT_PRESETS.get(font.strip().lower(), font.strip())
+
+    background = normalized.get("background")
+    if background is None:
+        background = normalized.get("backgroundColor")
+    if isinstance(background, str) and background.strip():
+        normalized["background"] = background.strip()
+
+    accent = normalized.get("accent")
+    if isinstance(accent, str) and accent.strip():
+        normalized["accent"] = _NAMED_ACCENT_COLORS.get(accent.strip().lower(), accent.strip())
+
+    density = normalized.get("density")
+    if isinstance(density, str):
+        density_value = density.strip().lower()
+        if density_value == "comfortable":
+            density_value = "normal"
+        if density_value in {"compact", "normal", "spacious"}:
+            normalized["density"] = density_value
+
+    card_style = normalized.get("cardStyle")
+    if isinstance(card_style, str):
+        card_style_value = card_style.strip().lower()
+        if card_style_value in {"soft", "sharp", "flat", "elevated"}:
+            normalized["cardStyle"] = card_style_value
+
+    return normalized
+
+
+def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Optional[dict]) -> dict:
+    """Normalize MCP/spec widget aliases to the runtime config keys."""
+    config = dict(widget_config or {})
+    wt = str(widget_type or "chart").strip().lower()
+
+    if wt == "text":
+        text_value = config.get("template")
+        if text_value is None:
+            text_value = config.get("markdown")
+        if text_value is None:
+            text_value = config.get("text")
+        if text_value is not None:
+            config["template"] = str(text_value)
+
+    elif wt == "countdown":
+        target_value = config.get("target")
+        if target_value is None:
+            target_value = config.get("target_date")
+        if target_value is None:
+            target_value = config.get("targetDate")
+        if target_value is not None:
+            config["target"] = str(target_value)
+
+    elif wt == "shape":
+        kind_value = config.get("kind")
+        if kind_value is None:
+            kind_value = config.get("shape")
+        if isinstance(kind_value, str) and kind_value.strip():
+            normalized_kind = kind_value.strip().lower()
+            if normalized_kind == "rectangle":
+                normalized_kind = "rect"
+            if normalized_kind in {"rect", "circle", "line", "divider"}:
+                config["kind"] = normalized_kind
+
+    return config
+
+
 def _resolve_dashboard_chart_page_id(layout: DashboardChartLayout | dict | None) -> str:
     if isinstance(layout, DashboardChartLayout):
         page_id = layout.pageId
@@ -64,12 +165,32 @@ class DashboardService:
                 filters_config=dashboard.filters_config or [],
                 public_filters_config=dashboard.public_filters_config or [],
                 pages_config=dashboard.pages_config or [DEFAULT_DASHBOARD_PAGE],
+                layout_mode=dashboard.layout_mode or "grid",
+                theme_config=normalize_dashboard_theme_config(dashboard.theme_config),
+                canvas_config=dashboard.canvas_config,
             )
             db.add(db_dashboard)
             db.flush()  # Get the ID without committing
             
             # Add charts if provided
             for chart_item in dashboard.charts:
+                widget_type = str(chart_item.widget_type or "chart").strip().lower()
+                if widget_type and widget_type != "chart":
+                    db_dashboard_chart = DashboardChart(
+                        dashboard_id=db_dashboard.id,
+                        chart_id=None,
+                        widget_type=widget_type,
+                        widget_config=normalize_dashboard_widget_config(widget_type, chart_item.widget_config),
+                        layout=chart_item.layout.model_dump(),
+                        parameters=chart_item.parameters or {},
+                    )
+                    db.add(db_dashboard_chart)
+                    continue
+
+                if chart_item.chart_id is None:
+                    db.rollback()
+                    raise ValueError("chart_id is required for chart widgets")
+
                 # Verify chart exists
                 chart = ChartService.get_by_id(db, chart_item.chart_id)
                 if not chart:
@@ -105,6 +226,8 @@ class DashboardService:
         
         try:
             update_data = dashboard_update.model_dump(exclude_unset=True)
+            if "theme_config" in update_data:
+                update_data["theme_config"] = normalize_dashboard_theme_config(update_data.get("theme_config"))
             for field, value in update_data.items():
                 setattr(db_dashboard, field, value)
             
@@ -187,7 +310,7 @@ class DashboardService:
             dashboard_id=dashboard_id,
             chart_id=None,
             widget_type=widget_type,
-            widget_config=widget_config or {},
+            widget_config=normalize_dashboard_widget_config(widget_type, widget_config),
             layout=layout.model_dump(),
             parameters={},
         )

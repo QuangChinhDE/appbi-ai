@@ -150,8 +150,20 @@ An AppBI Import Plan v1 HTML is a self-contained `.html` file that both:
   "authoring_mode": "skill",
 
   // Optional: dashboard layout mode. Defaults to "grid".
-  // "canvas" enables free-placement canvas (use canvas_config on individual chart plans).
+  // "canvas" enables free-placement canvas. Use xPx/yPx/wPx/hPx/z in chart layout.
   "layout_mode": "grid",
+
+  // Optional: dashboard visual tokens. Runtime accepts these aliases:
+  // font or fontFamily, background or backgroundColor, density compact|normal|spacious,
+  // cardStyle soft|sharp|flat|elevated, cardRadius, cardShadow, hoverAnimation.
+  "theme_config": {
+    "mode": "light",
+    "accent": "blue",
+    "font": "inter",
+    "backgroundColor": "#ffffff",
+    "density": "normal",
+    "cardStyle": "soft"
+  },
 
   "dashboard": {
     "title": "Dashboard Title (≤ 80 chars)",
@@ -260,7 +272,9 @@ An AppBI Import Plan v1 HTML is a self-contained `.html` file that both:
   - `y` : 0+, row start (rows stack automatically; higher y = lower on page)
   - `w` : 1–12, width in columns (x + w ≤ 12)
   - `h` : height in row units (~50px per unit; KPI ≈ 2, chart ≈ 4–6, table ≈ 6–8)
-- **canvas** (layout_mode = "canvas"): same x/y/w/h but treated as absolute pixel positions
+- **canvas** (layout_mode = "canvas"):
+  - prefer `xPx`, `yPx`, `wPx`, `hPx`, `z` for pixel-perfect placement
+  - keep `x`, `y`, `w`, `h` too as a grid fallback when possible
 
 ## Supported chart_type values
 TABLE, MATRIX, KPI, GAUGE, BULLET, PODIUM,
@@ -289,10 +303,19 @@ MAP_POINT, MAP_REGION
 | widget_type | widget_config keys |
 |---|---|
 | "chart"     | (none — use chart_type + role_config) |
-| "text"      | {"markdown": "..."} |
+| "text"      | {"markdown": "..."} (runtime also accepts {"template": "..."}) |
 | "image"     | {"url": "...", "alt": "..."} |
-| "countdown" | {"target_date": "2026-12-31T00:00:00"} |
-| "shape"     | {"shape": "rectangle|circle|line", "color": "#hex"} |
+| "countdown" | {"target_date": "2026-12-31T00:00:00"} (runtime also accepts {"target": "..."}) |
+| "shape"     | {"shape": "rectangle|circle|line", "color": "#hex"} (runtime also accepts {"kind": "rect|circle|line|divider"}) |
+
+## style_config keys covered by the dashboard runtime
+- General chart style: `palette`, `fontSize`, `showDataLabels`, `numberFormat`, `currencySymbol`.
+- Axes/legend/grid: `xAxisLabel`, `yAxisLabel`, `legendPosition`, `showGrid`.
+- Bar/line: `barRadius`, `barSize`, `lineStyle`, `lineWidth`, `showDots`.
+- Benchmark: `showBenchmarkLine`, `benchmarkValue`, `benchmarkLabel`, `benchmarkColor`.
+- Tables: `tableConditionalFormatting`, `tableHeatmapRules`.
+- KPI: `kpiIconName`, `kpiGradientBg`.
+- Interaction: hover tooltip is automatic; click-to-filter is runtime-driven. Do not promise custom zoom/pan unless the frontend feature is explicitly enabled.
 
 ## source_mode options (for analyze/build calls)
 - "existing_dataset" — source data is already in an AppBI dataset; pass dataset_id

@@ -78,9 +78,12 @@ export function DashboardCanvas({
     return () => ro.disconnect();
   }, []);
 
+  const designWidth = canvasConfig?.width ?? Math.max(containerWidth || 0, 1440);
+  const scale = containerWidth > 0 && designWidth > containerWidth ? containerWidth / designWidth : 1;
+
   const hydrated = useMemo(
-    () => ensureCanvasCoords(dashboardCharts, containerWidth || canvasConfig?.width || 1440),
-    [dashboardCharts, containerWidth, canvasConfig?.width],
+    () => ensureCanvasCoords(dashboardCharts, designWidth),
+    [dashboardCharts, designWidth],
   );
 
   const snap = canvasConfig?.snap ?? 8;
@@ -120,8 +123,8 @@ export function DashboardCanvas({
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
+      const dx = (e.clientX - drag.startX) / scale;
+      const dy = (e.clientY - drag.startY) / scale;
       if (drag.mode === 'move') {
         const xPx = Math.max(0, snapVal(drag.origX + dx));
         const yPx = Math.max(0, snapVal(drag.origY + dy));
@@ -138,7 +141,7 @@ export function DashboardCanvas({
         }));
       }
     },
-    [drag, snap],
+    [drag, snap, scale],
   );
 
   const onPointerUp = useCallback(() => {
@@ -165,12 +168,23 @@ export function DashboardCanvas({
     <div
       ref={containerRef}
       className="relative w-full overflow-x-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-2"
-      style={{ minHeight: requiredHeight }}
+      style={{
+        minHeight: requiredHeight * scale,
+        background: canvasConfig?.background,
+      }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      <div className="relative" style={{ height: requiredHeight }}>
+      <div
+        className="relative"
+        style={{
+          width: designWidth,
+          height: requiredHeight,
+          transform: `scale(${scale})`,
+          transformOrigin: 'top left',
+        }}
+      >
         {hydrated.map((dc) => {
           const o = localOverrides[dc.id];
           const x = o?.xPx ?? dc.layout.xPx ?? 0;

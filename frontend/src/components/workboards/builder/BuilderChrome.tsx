@@ -161,6 +161,15 @@ export function BuilderCollapsibleAdvanced({
   );
 }
 
+/**
+ * Master-detail container — rail on the left (220px), detail panel on
+ * the right. Adopted across every screen-kind editor so the user only
+ * learns one layout instead of one per kind.
+ *
+ * 220px matches the redesign storyboard width and gives the detail
+ * inspector room for a comfortable 2-column grid even on a 1280px
+ * laptop screen.
+ */
 export function BuilderObjectEditor({
   children,
   className,
@@ -171,7 +180,7 @@ export function BuilderObjectEditor({
   return (
     <div
       className={cx(
-        'grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]',
+        'grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]',
         className,
       )}
     >

@@ -9,6 +9,14 @@
 'use client';
 
 import React, { useState } from 'react';
+import {
+  ClipboardEdit,
+  FileText,
+  Grid3x3,
+  LayoutDashboard,
+  ListChecks,
+  Trash2,
+} from 'lucide-react';
 
 import { Tabs, type TabItem } from '@/components/ui/Tabs';
 import { BUILDER_GRID_2, BuilderSection } from './BuilderChrome';
@@ -38,9 +46,19 @@ interface Props {
   onChange: (next: ScreenSpec) => void;
   focusFieldColumn?: string | null;
   onFocusFieldHandled?: () => void;
+  /** Called when the user clicks "Delete screen" from inside the editor.
+   * The parent is responsible for the confirm + state update; we just
+   * surface it on the topbar of the editor so the user doesn't have to
+   * go back to the canvas to remove a screen. */
+  onDeleteScreen?: () => void;
 }
 
-type TabId = 'form' | 'permission' | 'advanced';
+// Tabs use FIXED labels regardless of screen kind. The old design
+// renamed the first tab (Form/List/Document/Dashboard) per kind, which
+// forced the user to re-acquire "which tab is the content one" every
+// time they switched screens. Fixed labels keep the mental model stable;
+// the screen kind is communicated via the breadcrumb eyebrow instead.
+type TabId = 'content' | 'permission' | 'settings';
 
 const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   form: 'Form',
@@ -48,6 +66,14 @@ const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   doc: 'Document',
   dashboard: 'Dashboard',
   grid: 'Grid',
+};
+
+const KIND_ICONS: Record<ScreenSpec['kind'], React.ElementType> = {
+  form: ClipboardEdit,
+  list: ListChecks,
+  doc: FileText,
+  dashboard: LayoutDashboard,
+  grid: Grid3x3,
 };
 
 export default function ScreenEditor({
@@ -59,38 +85,63 @@ export default function ScreenEditor({
   onChange,
   focusFieldColumn,
   onFocusFieldHandled,
+  onDeleteScreen,
 }: Props) {
-  const [tab, setTab] = useState<TabId>('form');
+  const [tab, setTab] = useState<TabId>('content');
 
   React.useEffect(() => {
-    if (focusFieldColumn) setTab('form');
+    // Any incoming field-focus request always wants the user on the
+    // Content tab — that's where every kind's fields/columns/blocks live.
+    if (focusFieldColumn) setTab('content');
   }, [focusFieldColumn]);
 
-  const screenLabel = KIND_LABELS[screen.kind];
   const fieldCount = screen.kind === 'form' ? (screen.form?.fields?.length ?? 0) : undefined;
   const columnCount = screen.kind === 'list' ? (screen.list?.columns?.length ?? 0) : undefined;
   const blockCount = screen.kind === 'doc' ? (screen.doc?.blocks?.length ?? 0) : undefined;
   const gridColCount = screen.kind === 'grid' ? (screen.grid?.columns?.length ?? 0) : undefined;
+  const contentCount = fieldCount ?? columnCount ?? blockCount ?? gridColCount;
   const ruleCount = (screen.rls || []).length;
+  const KindIcon = KIND_ICONS[screen.kind];
 
   const items: TabItem<TabId>[] = [
-    {
-      key: 'form',
-      label: screenLabel,
-      badge: badge(fieldCount ?? columnCount ?? blockCount ?? gridColCount),
-    },
+    { key: 'content', label: 'Content', badge: badge(contentCount) },
     { key: 'permission', label: 'Permissions', badge: badge(ruleCount) },
-    { key: 'advanced', label: 'Advanced' },
+    { key: 'settings', label: 'Settings' },
   ];
 
   return (
-    // No max-width here — the outer pane (WorkboardBuilder) handles
-    // sensible centering with max-w-screen-2xl so this layout fills the
-    // available pane width when the Live Preview is collapsed.
     <div className="w-full space-y-4">
+      {/* Screen header — kind eyebrow + title + delete affordance. Lets
+          the user identify what they're configuring without ambiguity. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            <KindIcon className="h-3 w-3" />
+            {KIND_LABELS[screen.kind]} · screen
+          </div>
+          <h2 className="mt-1 truncate text-h3 font-strong text-text-primary">
+            {screen.title || 'Untitled screen'}
+          </h2>
+          {screen.description ? (
+            <p className="mt-1 text-caption text-text-tertiary">{screen.description}</p>
+          ) : null}
+        </div>
+        {onDeleteScreen && (
+          <button
+            type="button"
+            onClick={onDeleteScreen}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption text-text-tertiary hover:border-danger/40 hover:bg-danger/5 hover:text-danger"
+            title="Delete this screen"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+        )}
+      </div>
+
       <Tabs<TabId> items={items} value={tab} onChange={setTab} variant="underline" />
 
-      {tab === 'form' && (
+      {tab === 'content' && (
         <>
           {screen.kind === 'form' && (
             <FormScreenEditor
@@ -132,8 +183,8 @@ export default function ScreenEditor({
         <PermissionTab screen={screen} tables={tables} onChange={onChange} />
       )}
 
-      {tab === 'advanced' && (
-        <AdvancedTab screen={screen} tables={tables} onChange={onChange} />
+      {tab === 'settings' && (
+        <SettingsTab screen={screen} tables={tables} onChange={onChange} />
       )}
     </div>
   );
@@ -220,9 +271,14 @@ function PermissionTab({
   );
 }
 
-// ── Advanced tab ──────────────────────────────────────────────────────────
+// ── Settings tab ──────────────────────────────────────────────────────────
+//
+// The Settings tab consolidates everything that used to live in the
+// per-row gear popover (title, description, show-in-nav) plus the older
+// "Advanced" tab content (slug, icon, primary key). One place for every
+// screen-level meta property, so the user knows where to look.
 
-function AdvancedTab({
+function SettingsTab({
   screen,
   tables,
   onChange,
@@ -235,6 +291,43 @@ function AdvancedTab({
 
   return (
     <div className="space-y-4">
+      <BuilderSection
+        title="Display"
+        description="What the user sees when navigating to this screen."
+      >
+        <div className={BUILDER_GRID_2}>
+          <Field label="Screen title">
+            <input
+              value={screen.title}
+              onChange={(event) => onChange({ ...screen, title: event.target.value })}
+              className={INPUT}
+              placeholder="e.g. Ca làm việc"
+            />
+          </Field>
+          <Field label="Short description">
+            <input
+              value={screen.description || ''}
+              onChange={(event) =>
+                onChange({ ...screen, description: event.target.value })
+              }
+              className={INPUT}
+              placeholder="Optional hint shown to end users"
+            />
+          </Field>
+        </div>
+        <label className="mt-3 flex items-center gap-2 text-caption text-text-secondary">
+          <input
+            type="checkbox"
+            checked={screen.show_in_nav !== false}
+            onChange={(event) =>
+              onChange({ ...screen, show_in_nav: event.target.checked })
+            }
+            className="h-3.5 w-3.5"
+          />
+          Show in mini-app navigation
+        </label>
+      </BuilderSection>
+
       <BuilderSection
         title="Identifier & icon"
         description="Technical attributes. Only touch these if you know what you're doing."

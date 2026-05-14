@@ -191,7 +191,7 @@ export function ReadonlyChartTile({
     return (
       <div
         ref={visibilityRef}
-        className="h-full rounded-[24px] border border-[rgb(var(--border-line))]/80 bg-surface-1"
+        className="dashboard-tile h-full rounded-[24px] border border-[rgb(var(--border-line))]/80 bg-surface-1"
         aria-hidden="true"
       />
     );
@@ -199,7 +199,7 @@ export function ReadonlyChartTile({
 
   return (
     <div
-      className={`group h-full overflow-hidden rounded-[24px] border bg-surface-1 p-4 shadow-[0_28px_60px_-42px_rgba(15,23,42,0.45)] backdrop-blur transition-[border-color,box-shadow] ${
+      className={`dashboard-tile group h-full overflow-hidden rounded-[24px] border bg-surface-1 p-4 shadow-[0_28px_60px_-42px_rgba(15,23,42,0.45)] backdrop-blur transition-[border-color,box-shadow] ${
         isCrossFilterSource
           ? 'border-sky-300 ring-4 ring-sky-100/80 shadow-[0_32px_72px_-42px_rgba(14,165,233,0.4)]'
           : 'border-[rgb(var(--border-line))]/80 hover:border-[rgb(var(--border-strong))]/90 hover:shadow-[0_32px_72px_-48px_rgba(15,23,42,0.42)]'

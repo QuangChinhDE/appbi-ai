@@ -110,6 +110,7 @@ async def create_dashboard(
     filters_config: list[dict[str, Any]] | None = None,
     layout_mode: str = "grid",
     theme_config: dict[str, Any] | None = None,
+    canvas_config: dict[str, Any] | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -120,9 +121,14 @@ async def create_dashboard(
     data, prefer **Path A** (HTML Import):
       get_html_dashboard_spec → write HTML → analyze_html_import → build_dashboard_from_html
 
-    `charts` items: {chart_id, layout: {x, y, w, h}, parameters?, widget_type?}.
+    `charts` items:
+      - chart: {chart_id, layout: {x, y, w, h}, parameters?, widget_type?}
+      - widget: {widget_type, widget_config, layout}; chart_id may be omitted.
     `filters_config` items: dashboard filter configs (text/number/date/dropdown).
     `layout_mode`: 'grid' (default) or 'canvas'.
+    `theme_config`: supports mode, accent, font/fontFamily, background/backgroundColor,
+    density compact|normal|spacious, cardStyle soft|sharp|flat|elevated,
+    cardRadius, cardShadow, hoverAnimation.
 
     Workflow: prefer creating empty + adding charts one-by-one when you
     want individual confirmations. Use the bundled form for fast bulk
@@ -136,6 +142,7 @@ async def create_dashboard(
             "filters_config": filters_config,
             "layout_mode": layout_mode,
             "theme_config": theme_config,
+            "canvas_config": canvas_config,
         }
     )
     if not user_confirmed:
@@ -273,7 +280,8 @@ async def add_widget_to_dashboard(
 
     `widget_type` ∈ {'text', 'countdown', 'image', 'shape',
     'parameter_switcher'}. `widget_config` shape depends on the type
-    (text: {markdown}, image: {url, alt}, countdown: {target_date}, etc.).
+    (text: {markdown} or {template}, image: {url, alt},
+    countdown: {target_date} or {target}, shape: {shape} or {kind}, etc.).
     """
     if widget_type == "chart":
         raise ValueError("Use add_chart_to_dashboard for chart widgets.")

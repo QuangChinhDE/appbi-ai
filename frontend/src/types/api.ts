@@ -147,9 +147,17 @@ export type DashboardWidgetType =
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';
   accent?: string;
+  font?: string;
   fontFamily?: string;
-  cardStyle?: 'soft' | 'sharp' | 'flat';
+  cardStyle?: 'soft' | 'sharp' | 'flat' | 'elevated';
   background?: string;
+  backgroundColor?: string;
+  density?: 'compact' | 'normal' | 'comfortable' | 'spacious';
+  cardRadius?: number | string;
+  radius?: number | string;
+  cardShadow?: string | boolean;
+  hoverAnimation?: 'none' | 'lift' | 'scale' | 'glow' | string;
+  hoverEffect?: string;
   [k: string]: any;
 }
 

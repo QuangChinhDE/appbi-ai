@@ -48,6 +48,7 @@ from app.schemas import (
 # )
 # from app.models.dashboard_filter import DashboardFilter
 from app.services import DashboardService
+from app.services.dashboard_service import normalize_dashboard_widget_config
 from app.services.dashboard_html_import_service import (
     _build_ai_fix_source_profiles,
     _load_existing_source_profile,
@@ -1418,7 +1419,11 @@ def create_dashboard(
     """Create a new dashboard."""
     try:
         for chart_item in dashboard.charts:
-            _require_chart_visibility(db, current_user, chart_item.chart_id)
+            widget_type = str(chart_item.widget_type or "chart").strip().lower()
+            if widget_type == "chart":
+                if chart_item.chart_id is None:
+                    raise ValueError("chart_id is required for chart widgets")
+                _require_chart_visibility(db, current_user, chart_item.chart_id)
         return DashboardService.create(db, dashboard, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -1536,7 +1541,7 @@ def update_widget_config(
     if not item.widget_type or item.widget_type == "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is not a widget")
 
-    item.widget_config = request.widget_config or {}
+    item.widget_config = normalize_dashboard_widget_config(item.widget_type, request.widget_config)
     db.commit()
     return DashboardService.get_by_id(db, dashboard_id)
 
