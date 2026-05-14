@@ -289,6 +289,20 @@ export default function WorkboardBuilder({ workboard }: Props) {
     });
   };
 
+  /** Drag-and-drop reorder. Splice from `fromIdx`, insert at `toIdx`. */
+  const reorderScreens = (fromIdx: number, toIdx: number) => {
+    setLayout((curr) => {
+      if (fromIdx === toIdx) return curr;
+      if (fromIdx < 0 || fromIdx >= curr.screens.length) return curr;
+      if (toIdx < 0 || toIdx >= curr.screens.length) return curr;
+      const arr = [...curr.screens];
+      const [moved] = arr.splice(fromIdx, 1);
+      arr.splice(toIdx, 0, moved);
+      const navItems = arr.filter((s) => s.show_in_nav !== false).map((s) => s.id);
+      return { ...curr, screens: arr, mini_app_nav: { ...curr.mini_app_nav, items: navItems } };
+    });
+  };
+
   const addScreen = (kind: ScreenKind) => {
     const id = `screen-${Date.now().toString(36)}`;
     const titleByKind: Record<ScreenKind, string> = {
@@ -485,6 +499,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 onAddScreen={addScreen}
                 onOpenAppSettings={() => setShowAppSettings(true)}
                 onMoveScreen={moveScreen}
+                onReorderScreens={reorderScreens}
                 onDeleteScreen={deleteScreen}
               />
             )}

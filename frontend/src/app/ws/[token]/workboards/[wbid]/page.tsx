@@ -16,44 +16,21 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   ArrowLeft,
-  BarChart3,
-  Bell,
-  Calendar,
   CheckCircle2,
-  ClipboardEdit,
   ClipboardList,
   Download,
-  Eye,
   Factory,
-  FileText,
-  Folder,
-  Grid3x3,
-  Home,
-  Image as ImageIcon,
-  LayoutDashboard,
   Laptop,
-  ListChecks,
   Loader2,
   LogOut,
-  Mail,
-  MapPin,
   MoreHorizontal,
-  Phone,
-  PieChart,
   Plus,
-  PlusCircle,
   RefreshCw,
-  Search,
   Send,
-  Settings,
   Smartphone,
   Sparkles,
-  Star,
-  Table2,
   Tablet,
   Trash2,
-  Truck,
-  Users,
   XCircle,
 } from 'lucide-react';
 
@@ -79,44 +56,13 @@ import {
   buildFormulaOrder as buildGridFormulaOrder,
 } from '@/lib/wb-formula';
 
-const ICON_MAP: Record<string, React.ElementType> = {
-  // Original set
-  AlertTriangle,
-  BarChart3,
-  CheckCircle2,
-  ClipboardList,
-  Factory,
-  FileText,
-  ListChecks,
-  PlusCircle,
-  // Extended set for builder icon picker
-  Bell,
-  Calendar,
-  ClipboardEdit,
-  Eye,
-  Folder,
-  Grid3x3,
-  Home,
-  Image: ImageIcon,
-  ImageIcon,
-  LayoutDashboard,
-  Mail,
-  Map: MapPin,
-  MapPin,
-  MoreHorizontal,
-  Phone,
-  PieChart,
-  Search,
-  Settings,
-  Star,
-  Table: Table2,
-  Table2,
-  Truck,
-  Users,
-};
+// Icon mapping is centralised in ScreenIconRegistry so the builder
+// picker and the runtime can't drift. Anything not in the registry
+// falls back to ClipboardList — the same default the legacy code used.
+import { SCREEN_ICON_MAP } from '@/components/workboards/builder/ScreenIconRegistry';
 
 function pickIcon(name?: string | null): React.ElementType {
-  if (name && ICON_MAP[name]) return ICON_MAP[name];
+  if (name && SCREEN_ICON_MAP[name]) return SCREEN_ICON_MAP[name];
   return ClipboardList;
 }
 

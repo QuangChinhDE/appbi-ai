@@ -14,7 +14,7 @@
  */
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -22,6 +22,7 @@ import {
   Database,
   FileText,
   Grid3x3,
+  GripVertical,
   LayoutDashboard,
   ListChecks,
   Plus,
@@ -31,6 +32,7 @@ import {
 
 import type { Dataset } from '@/hooks/use-datasets';
 import type { ScreenKind, ScreenSpec } from './types';
+import { resolveScreenIcon } from './ScreenIconRegistry';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   form: ClipboardEdit,
@@ -68,6 +70,9 @@ interface Props {
   onAddScreen: (kind: ScreenKind) => void;
   onOpenAppSettings: () => void;
   onMoveScreen: (idx: number, dir: -1 | 1) => void;
+  /** Drag-and-drop reorder: moves the screen at ``fromIdx`` to
+   * ``toIdx`` (positions are pre-drop indices in the current array). */
+  onReorderScreens: (fromIdx: number, toIdx: number) => void;
   onDeleteScreen: (id: string) => void;
 }
 
@@ -172,8 +177,15 @@ export default function CanvasOverview({
   onAddScreen,
   onOpenAppSettings,
   onMoveScreen,
+  onReorderScreens,
   onDeleteScreen,
 }: Props) {
+  // Native HTML5 drag-and-drop state. We only need to know which index
+  // is being dragged and which index the cursor is currently hovering
+  // over — the actual reorder is delegated to the parent so it can
+  // mutate the layout + navigation in one go.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
   return (
     <div className="w-full px-6 py-6 lg:px-8">
       {/* Data-strip — bound dataset (replaces the gear-icon flow). */}
@@ -245,16 +257,51 @@ export default function CanvasOverview({
       ) : (
         <div className="flex flex-col gap-2">
           {screens.map((s, idx) => {
-            const Icon = KIND_ICON[s.kind];
+            // Prefer the user-picked icon (matched against the icon
+            // registry); fall back to the screen-kind default so newly
+            // added screens still render before the user opens Settings.
+            const PickedIcon = resolveScreenIcon(s.icon);
+            const Icon = PickedIcon ?? KIND_ICON[s.kind];
             const status = screenStatus(s);
             const table = tables.find((t) => t.id === s.table_id);
             const canUp = idx > 0;
             const canDown = idx < screens.length - 1;
+            const isDragging = dragIdx === idx;
+            const isDropTarget = dropIdx === idx && dragIdx !== null && dragIdx !== idx;
             return (
               <div
                 key={s.id}
                 role="button"
                 tabIndex={0}
+                draggable
+                onDragStart={(event) => {
+                  setDragIdx(idx);
+                  event.dataTransfer.effectAllowed = 'move';
+                  // Some browsers require a payload to allow drop; the
+                  // content itself is unused — we track state by index.
+                  event.dataTransfer.setData('text/plain', String(idx));
+                }}
+                onDragOver={(event) => {
+                  if (dragIdx === null || dragIdx === idx) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                  if (dropIdx !== idx) setDropIdx(idx);
+                }}
+                onDragLeave={() => {
+                  if (dropIdx === idx) setDropIdx(null);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (dragIdx !== null && dragIdx !== idx) {
+                    onReorderScreens(dragIdx, idx);
+                  }
+                  setDragIdx(null);
+                  setDropIdx(null);
+                }}
+                onDragEnd={() => {
+                  setDragIdx(null);
+                  setDropIdx(null);
+                }}
                 onClick={() => onPickScreen(s.id)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -262,8 +309,22 @@ export default function CanvasOverview({
                     onPickScreen(s.id);
                   }
                 }}
-                className="group grid cursor-pointer grid-cols-[44px_minmax(0,1fr)_auto_auto_auto] items-center gap-4 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3 text-left transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear-sm"
+                className={`group grid cursor-pointer grid-cols-[20px_44px_minmax(0,1fr)_auto_auto_auto] items-center gap-3 rounded-xl border bg-surface-1 px-3 py-3 text-left transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear-sm ${
+                  isDragging
+                    ? 'border-brand/40 opacity-50'
+                    : isDropTarget
+                      ? 'border-brand'
+                      : 'border-[rgb(var(--border-line))]'
+                }`}
               >
+                {/* Drag handle — cursor-grab signals the card is draggable. */}
+                <span
+                  className="flex h-8 w-5 cursor-grab items-center justify-center text-text-quaternary group-hover:text-text-tertiary active:cursor-grabbing"
+                  title="Drag to reorder"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <GripVertical className="h-4 w-4" />
+                </span>
                 <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-surface-2 text-text-secondary group-hover:text-text-primary">
                   <Icon className="h-[18px] w-[18px]" />
                 </div>
@@ -295,10 +356,10 @@ export default function CanvasOverview({
                   <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status.kind]}`} />
                   {status.label}
                 </span>
-                {/* Row actions — invisible until hover so the card stays
-                    visually clean. ``stopPropagation`` keeps the click
-                    from also opening the screen. */}
-                <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                {/* Row actions — kept always-visible (previously hover
+                    only, which made reorder feel hidden). Delete stays
+                    slightly de-emphasised to discourage accidents. */}
+                <div className="flex items-center gap-0.5">
                   <button
                     type="button"
                     onClick={(event) => {
@@ -329,7 +390,7 @@ export default function CanvasOverview({
                       event.stopPropagation();
                       onDeleteScreen(s.id);
                     }}
-                    className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
+                    className="rounded p-1 text-text-quaternary opacity-60 hover:bg-danger/10 hover:text-danger hover:opacity-100"
                     title="Delete screen"
                   >
                     <Trash2 className="h-3.5 w-3.5" />

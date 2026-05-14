@@ -28,6 +28,7 @@ import ListScreenEditor from './ListScreenEditor';
 import DocScreenEditor from './DocScreenEditor';
 import DashboardScreenEditor from './DashboardScreenEditor';
 import GridScreenEditor from './GridScreenEditor';
+import IconPicker from './IconPicker';
 import RlsEditor from './RlsEditor';
 
 interface DatasetTableInfo {
@@ -342,12 +343,11 @@ function SettingsTab({
               className={INPUT}
             />
           </Field>
-          <Field label="Icon name (Lucide)">
-            <input
-              value={screen.icon || ''}
-              onChange={(event) => onChange({ ...screen, icon: event.target.value })}
-              className={INPUT}
-              placeholder="ClipboardEdit, ListChecks, FileText…"
+          <Field label="Icon">
+            <IconPicker
+              value={screen.icon}
+              onChange={(next) => onChange({ ...screen, icon: next })}
+              placeholder="Pick an icon"
             />
           </Field>
         </div>
