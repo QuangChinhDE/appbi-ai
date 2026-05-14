@@ -31,7 +31,23 @@ const DEBOUNCE_MS = 1200;
 
 function getErrorMessage(error: unknown, fallback: string): string {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-  return typeof detail === 'string' ? detail : fallback;
+  if (typeof detail === 'string') return detail;
+  // FastAPI/Pydantic 422 returns a list of {loc, msg, type, ...} entries.
+  // Surface the first 1-2 so the builder badge tooltip is actually useful
+  // instead of the generic fallback.
+  if (Array.isArray(detail)) {
+    const parts = detail.slice(0, 2).map((entry) => {
+      const loc = Array.isArray((entry as { loc?: unknown }).loc)
+        ? ((entry as { loc: unknown[] }).loc as unknown[])
+            .filter((segment) => typeof segment === 'string' || typeof segment === 'number')
+            .join('.')
+        : '';
+      const msg = (entry as { msg?: unknown }).msg;
+      return loc && typeof msg === 'string' ? `${loc}: ${msg}` : typeof msg === 'string' ? msg : '';
+    }).filter(Boolean);
+    if (parts.length) return parts.join('; ');
+  }
+  return fallback;
 }
 
 export function useDebouncedAutosave(

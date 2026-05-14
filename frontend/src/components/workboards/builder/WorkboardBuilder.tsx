@@ -574,7 +574,9 @@ function AutosaveFooter({
     return (
       <div className="flex items-start gap-1 text-caption text-danger" title={error || ''}>
         <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-        Save failed - edit again to retry
+        <span className="max-w-xs truncate">
+          Save failed{error ? ` - ${error}` : ' - edit again to retry'}
+        </span>
       </div>
     );
   }

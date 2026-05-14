@@ -994,11 +994,14 @@ def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
 
     view_name = view.name
     if view_name and model is not None:
-        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all():
+        model_explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+        for explore in model_explores:
             old_joins = explore.joins or []
             new_joins = [j for j in old_joins if j.get("view") != view_name]
             if len(new_joins) != len(old_joins):
                 explore.joins = new_joins
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.base_view_id == view.id).all():
+            db.delete(explore)
 
     db.delete(view)
     db.flush()

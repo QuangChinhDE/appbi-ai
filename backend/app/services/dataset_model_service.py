@@ -1204,12 +1204,24 @@ def _sync_dataset_model_structure(
         ).all()
     }
 
+    stale_dataset_views: list[SemanticView] = []
     for stale_view in existing_views:
         if (
             stale_view.dataset_table_id is not None
             and stale_view.dataset_table_id in all_dataset_table_ids
             and stale_view.dataset_table_id not in desired_table_ids
         ):
+            stale_dataset_views.append(stale_view)
+
+    if stale_dataset_views:
+        stale_view_ids = {view.id for view in stale_dataset_views}
+        for stale_explore in (
+            db.query(SemanticExplore)
+            .filter(SemanticExplore.base_view_id.in_(stale_view_ids))
+            .all()
+        ):
+            db.delete(stale_explore)
+        for stale_view in stale_dataset_views:
             db.delete(stale_view)
 
     for table in tables:

@@ -211,7 +211,12 @@ export default function GridScreenEditor({ screen, tables, onChange }: Props) {
       ...computed,
       { name, label: '', formula: '', format: null },
     ];
-    updateGrid({ computed_columns: next });
+    // Auto-add the new column to the visible list so the user sees what
+    // they're configuring without an extra "Show this column" click.
+    const nextVisible = grid.columns.includes(name)
+      ? grid.columns
+      : [...grid.columns, name];
+    updateGrid({ computed_columns: next, columns: nextVisible });
     setActiveItem(`computed:${next.length - 1}`);
   };
 
@@ -282,7 +287,12 @@ export default function GridScreenEditor({ screen, tables, onChange }: Props) {
         format: null,
       },
     ];
-    updateGrid({ lookup_columns: next });
+    // Auto-add the new column to the visible list, same as computed columns —
+    // the user just declared it, so showing it by default matches intent.
+    const nextVisible = grid.columns.includes(name)
+      ? grid.columns
+      : [...grid.columns, name];
+    updateGrid({ lookup_columns: next, columns: nextVisible });
     setActiveItem(`lookup:${next.length - 1}`);
   };
 

@@ -1751,8 +1751,14 @@ function GridScreen({
       ...cols.filter((c) => !derivedCols.has(c)),
       ...lookupSpecs.map((l) => l.name),
     ]);
-    const out: Record<string, ReturnType<typeof compileGridFormula> | { error: string }> = {};
+    const out: Record<string, ReturnType<typeof compileGridFormula> | { error: string } | { draft: true }> = {};
     for (const spec of computedSpecs) {
+      // Empty formula = builder draft. Render the column as blank instead
+      // of throwing on the user mid-edit.
+      if (!(spec.formula || '').trim()) {
+        out[spec.name] = { draft: true };
+        continue;
+      }
       try {
         out[spec.name] = compileGridFormula(spec.formula, {
           allowedColumns: [
@@ -1772,7 +1778,7 @@ function GridScreen({
   const formulaOrder = useMemo<string[]>(() => {
     const compiled: Record<string, ReturnType<typeof compileGridFormula>> = {};
     for (const [name, value] of Object.entries(compiledFormulas)) {
-      if ('error' in value) continue;
+      if ('error' in value || 'draft' in value) continue;
       compiled[name] = value;
     }
     if (!Object.keys(compiled).length) return [];
@@ -1802,7 +1808,7 @@ function GridScreen({
     const next = { ...row };
     for (const name of formulaOrder) {
       const compiled = compiledFormulas[name];
-      if (!compiled || 'error' in compiled) {
+      if (!compiled || 'error' in compiled || 'draft' in compiled) {
         next[name] = compiled && 'error' in compiled ? `#ERR: ${compiled.error}` : null;
         continue;
       }

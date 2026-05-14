@@ -475,7 +475,11 @@ class GridComputedColumn(BaseModel):
     columns; the runtime rejects collisions to avoid ambiguity."""
 
     label: Optional[str] = Field(default=None, max_length=200)
-    formula: str = Field(..., min_length=1, max_length=2000)
+    formula: str = Field(default="", max_length=2000)
+    """Empty formula = draft state. The builder creates a column shell
+    before the user types a formula; the runtime renders ``None`` for
+    such columns instead of failing the screen, so autosave never
+    rejects an in-progress edit."""
     format: Optional[Literal[
         "text", "number", "integer", "currency", "percent", "date", "datetime"
     ]] = None
@@ -491,14 +495,19 @@ class GridLookupColumn(BaseModel):
     Implemented as a batched ``SELECT match_column_remote, return_column
     FROM <linked table> WHERE match_column_remote IN (...)`` on the page's
     rows, then mapped back so each row gets the resolved value.
+
+    Empty ``from_table_id`` / ``match_column_*`` / ``return_column`` mean
+    the lookup is still being configured in the builder — the runtime
+    skips evaluation for incomplete lookups instead of erroring, so
+    autosave never rejects an in-progress edit.
     """
 
     name: str = Field(..., min_length=1, max_length=120)
     label: Optional[str] = Field(default=None, max_length=200)
-    from_table_id: int = Field(..., ge=1)
-    match_column_local: str = Field(..., min_length=1, max_length=120)
-    match_column_remote: str = Field(..., min_length=1, max_length=120)
-    return_column: str = Field(..., min_length=1, max_length=120)
+    from_table_id: int = Field(default=0, ge=0)
+    match_column_local: str = Field(default="", max_length=120)
+    match_column_remote: str = Field(default="", max_length=120)
+    return_column: str = Field(default="", max_length=120)
     format: Optional[Literal[
         "text", "number", "integer", "currency", "percent", "date", "datetime"
     ]] = None

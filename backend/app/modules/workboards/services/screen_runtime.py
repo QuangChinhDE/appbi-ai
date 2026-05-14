@@ -878,6 +878,18 @@ def _resolve_grid_lookups(
         return out
 
     for lookup in lookups:
+        # Skip incomplete lookups (builder draft state). The schema allows
+        # empty match/remote/return columns and from_table_id=0 so autosave
+        # doesn't reject an in-progress edit; the runtime simply leaves the
+        # cell empty until the builder finishes wiring it up.
+        if (
+            not lookup.from_table_id
+            or not lookup.match_column_local
+            or not lookup.match_column_remote
+            or not lookup.return_column
+        ):
+            out[lookup.name] = {}
+            continue
         local_col = lookup.match_column_local
         match_values = [
             row.get(local_col)
@@ -1088,7 +1100,14 @@ def render_grid_screen(
         external = set(all_db_columns) | lookup_names
         compiled: Dict[str, Formula] = {}
         compile_errors: Dict[str, str] = {}
+        # Columns whose formula is still blank (builder draft state) — render
+        # as ``None`` instead of a compile-error string so the user sees the
+        # column shell while they type.
+        draft_names: set[str] = set()
         for col in grid_spec.computed_columns:
+            if not (col.formula or "").strip():
+                draft_names.add(col.name)
+                continue
             try:
                 compiled[col.name] = compile_formula(
                     col.formula, allowed_columns=external | computed_names
@@ -1116,6 +1135,9 @@ def render_grid_screen(
             for failed_name, msg in compile_errors.items():
                 if failed_name not in row:
                     row[failed_name] = f"#ERR: {msg}"
+            for draft_name in draft_names:
+                if draft_name not in row:
+                    row[draft_name] = None
 
     # ── Footer totals ────────────────────────────────────────────────
     totals_row = _compute_grid_totals(grid_spec, base_rows) or None
