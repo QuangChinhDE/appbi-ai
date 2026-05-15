@@ -110,16 +110,35 @@ const FILTER_OPERATORS: {
 
 const FORMAT_KINDS: MeasureFormat['kind'][] = ['number', 'currency', 'percent', 'duration', 'custom'];
 
-type MeasureTemplate = { key: string; label: string; build: (n: number) => MeasureDefinition };
+type MeasureTemplate = {
+  key: string;
+  label: string;
+  group: 'basic' | 'time';
+  hint?: string;
+  build: (n: number) => MeasureDefinition;
+};
 
+/**
+ * Time-intelligence templates pre-fill the Advanced `expression` field with
+ * dialect-friendly SQL. DuckDB syntax is the default since synced datasets
+ * land in DuckDB; the comment inside each expression flags the column user
+ * must point at (e.g. `${TABLE}.order_date`) so the SQL stays human-editable.
+ *
+ * Aggregating column placeholder is `<value_col>` — the template builder
+ * inserts the user-friendly hint into the description so it's obvious what
+ * to replace before saving. We do NOT auto-pick a column because measures
+ * span many tables and the right choice depends on intent.
+ */
 const MEASURE_TEMPLATES: MeasureTemplate[] = [
-  { key: 'count', label: 'Count rows', build: (n) => ({ name: `count_${n}`, label: 'Count', type: 'count', sql: '*', hidden: false }) },
-  { key: 'sum', label: 'Sum of column', build: (n) => ({ name: `sum_${n}`, label: 'Sum', type: 'sum', sql: '', hidden: false }) },
-  { key: 'avg', label: 'Average of column', build: (n) => ({ name: `avg_${n}`, label: 'Average', type: 'avg', sql: '', hidden: false }) },
-  { key: 'distinct', label: 'Count distinct', build: (n) => ({ name: `distinct_${n}`, label: 'Unique count', type: 'count_distinct', sql: '', hidden: false }) },
+  // ── Basic aggregations ────────────────────────────────────────────────
+  { key: 'count', label: 'Count rows', group: 'basic', build: (n) => ({ name: `count_${n}`, label: 'Count', type: 'count', sql: '*', hidden: false }) },
+  { key: 'sum', label: 'Sum of column', group: 'basic', build: (n) => ({ name: `sum_${n}`, label: 'Sum', type: 'sum', sql: '', hidden: false }) },
+  { key: 'avg', label: 'Average of column', group: 'basic', build: (n) => ({ name: `avg_${n}`, label: 'Average', type: 'avg', sql: '', hidden: false }) },
+  { key: 'distinct', label: 'Count distinct', group: 'basic', build: (n) => ({ name: `distinct_${n}`, label: 'Unique count', type: 'count_distinct', sql: '', hidden: false }) },
   {
     key: 'filtered',
     label: 'Filtered count (e.g. paid orders)',
+    group: 'basic',
     build: (n) => ({
       name: `filtered_count_${n}`,
       label: 'Filtered count',
@@ -129,7 +148,101 @@ const MEASURE_TEMPLATES: MeasureTemplate[] = [
       hidden: false,
     }),
   },
-  { key: 'pct', label: '% of total', build: (n) => ({ name: `pct_${n}`, label: '% of total', type: 'percent_of_total', sql: '', hidden: false }) },
+  { key: 'pct', label: '% of total', group: 'basic', build: (n) => ({ name: `pct_${n}`, label: '% of total', type: 'percent_of_total', sql: '', hidden: false }) },
+
+  // ── Time intelligence ─────────────────────────────────────────────────
+  // Phase-5: templates dùng dialect-agnostic macros (resolved bởi engine).
+  //   ${TODAY}             → hôm nay
+  //   ${MONTH_START}       → đầu tháng hiện tại
+  //   ${YEAR_START}        → đầu năm hiện tại
+  //   ${PREV_MONTH_START}  → đầu tháng trước
+  //   ${DAYS_AGO:N}        → ngày cách hôm nay N ngày
+  // Engine tự dịch sang DuckDB / PostgreSQL / BigQuery / MySQL — user
+  // không cần viết SQL riêng cho từng dialect.
+  {
+    key: 'mtd',
+    label: 'Month-to-date (MTD)',
+    group: 'time',
+    hint: 'Tổng từ đầu tháng đến hôm nay — thay <value_col> và <date_col>',
+    build: (n) => ({
+      name: `mtd_${n}`,
+      label: 'MTD',
+      type: 'sum',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${MONTH_START} AND ${TABLE}.<date_col> <= ${TODAY} THEN ${TABLE}.<value_col> ELSE 0 END',
+      hidden: false,
+    }),
+  },
+  {
+    key: 'ytd',
+    label: 'Year-to-date (YTD)',
+    group: 'time',
+    hint: 'Tổng từ đầu năm đến hôm nay',
+    build: (n) => ({
+      name: `ytd_${n}`,
+      label: 'YTD',
+      type: 'sum',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${YEAR_START} AND ${TABLE}.<date_col> <= ${TODAY} THEN ${TABLE}.<value_col> ELSE 0 END',
+      hidden: false,
+    }),
+  },
+  {
+    key: 'yoy',
+    label: 'Same period last year (YoY)',
+    group: 'time',
+    hint: 'Tổng cùng kỳ năm trước — kết hợp với MTD/YTD để so sánh',
+    build: (n) => ({
+      name: `yoy_${n}`,
+      label: 'Last year same period',
+      type: 'sum',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${PREV_YEAR_START} AND ${TABLE}.<date_col> < ${YEAR_START} THEN ${TABLE}.<value_col> ELSE 0 END',
+      hidden: false,
+    }),
+  },
+  {
+    key: 'mom',
+    label: 'Previous month',
+    group: 'time',
+    hint: 'Tổng cả tháng trước',
+    build: (n) => ({
+      name: `prev_month_${n}`,
+      label: 'Previous month',
+      type: 'sum',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${PREV_MONTH_START} AND ${TABLE}.<date_col> < ${MONTH_START} THEN ${TABLE}.<value_col> ELSE 0 END',
+      hidden: false,
+    }),
+  },
+  {
+    key: 'last_n_days',
+    label: 'Last 30 days',
+    group: 'time',
+    hint: 'Tổng 30 ngày gần nhất (sửa số 30 trong ${DAYS_AGO:30})',
+    build: (n) => ({
+      name: `last_30d_${n}`,
+      label: 'Last 30 days',
+      type: 'sum',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${DAYS_AGO:30} AND ${TABLE}.<date_col> <= ${TODAY} THEN ${TABLE}.<value_col> ELSE 0 END',
+      hidden: false,
+    }),
+  },
+  {
+    key: 'rolling_avg_7',
+    label: 'Rolling 7-day average',
+    group: 'time',
+    hint: 'Trung bình 7 ngày — nên kết hợp với time_grain=day khi consume',
+    build: (n) => ({
+      name: `rolling_7d_avg_${n}`,
+      label: 'Rolling 7d avg',
+      type: 'avg',
+      sql: '<value_col>',
+      expression: 'CASE WHEN ${TABLE}.<date_col> >= ${DAYS_AGO:7} AND ${TABLE}.<date_col> <= ${TODAY} THEN ${TABLE}.<value_col> END',
+      hidden: false,
+    }),
+  },
 ];
 
 // ─── Measure name helpers ───────────────────────────────────────────────────
@@ -437,15 +550,26 @@ function DictionaryColumnGrid({
 function DimensionRow({
   dim,
   canEdit,
+  columnOptions,
+  rowKey,
   onChange,
   onRemove,
 }: {
   dim: DimensionDefinition;
   canEdit: boolean;
+  columnOptions: string[];
+  rowKey: string;
   onChange: (updated: DimensionDefinition) => void;
   onRemove: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const colsListId = `__dim_cols_${rowKey}`;
+
+  // Dimension = pure column mapping. Editing `name` IS editing which column
+  // this dimension points to; keep `sql` in lock-step so the backend
+  // validator (sql must equal name) is always satisfied.
+  const updateColumn = (next: string) =>
+    onChange({ ...dim, name: next, sql: next || undefined });
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -475,10 +599,20 @@ function DimensionRow({
       </div>
       {isExpanded && canEdit && (
         <div className="px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5">
+          <datalist id={colsListId}>
+            {columnOptions.map((c) => <option key={c} value={c} />)}
+          </datalist>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Name</label>
-              <input value={dim.name} onChange={(e) => onChange({ ...dim, name: e.target.value })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" />
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Column</label>
+              <input
+                list={colsListId}
+                value={dim.name}
+                onChange={(e) => updateColumn(e.target.value)}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="Pick a column"
+                title="Dimension trỏ đến 1 cột. Nếu cần tính toán, tạo Calculated Column ở bảng nguồn rồi chọn cột đó ở đây."
+              />
             </div>
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Type</label>
@@ -491,10 +625,9 @@ function DimensionRow({
             <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
             <input value={dim.label || ''} onChange={(e) => onChange({ ...dim, label: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" placeholder="Display label" />
           </div>
-          <div>
-            <label className="text-[10px] text-text-tertiary uppercase font-medium">SQL / Column</label>
-            <input value={dim.sql || ''} onChange={(e) => onChange({ ...dim, sql: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand" placeholder="column_name or expression" />
-          </div>
+          <p className="text-[10px] italic text-text-quaternary leading-4">
+            Dimension chỉ là mapping cột — không phải nơi tính toán. Để tạo cột tính toán mới, hãy dùng <span className="font-medium text-text-tertiary">Add Calculated Column</span> ở bảng nguồn.
+          </p>
         </div>
       )}
     </div>
@@ -902,6 +1035,8 @@ export interface ModelViewEditPanelProps {
   triggerAddMeasure?: number;
   /** When true, only the measure matching focusMeasureName is rendered (single-measure editing mode) */
   singleMeasureMode?: boolean;
+  /** Ask the parent page to open the AddColumnModal targeting the underlying table. */
+  onRequestAddColumn?: (tableId: number) => void;
 }
 
 export function ModelViewEditPanel({
@@ -918,6 +1053,7 @@ export function ModelViewEditPanel({
   focusMeasureName,
   triggerAddMeasure,
   singleMeasureMode = false,
+  onRequestAddColumn,
 }: ModelViewEditPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
 
@@ -1033,17 +1169,27 @@ export function ModelViewEditPanel({
     if (triggerAddMeasure && triggerAddMeasure > 0) setShowMeasureTemplates(true);
   }, [triggerAddMeasure]);
 
-  // Pick-list for the form-first measure editor: pull from existing dimensions
-  // (their `sql` resolves to the underlying column) so users without SQL can
-  // pick a column from a dropdown.
+  // Pick-list for the form-first measure editor. Source = the table's
+  // `columns_cache` (which reflects any Calculated Column added via
+  // Transformation), so a freshly added column shows up immediately without
+  // first having to declare a dimension for it.
+  const sourceColumnsMeta = useMemo(() => tableColumnsMeta(sourceTable), [sourceTable]);
+
   const columnOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const d of dimensions) {
-      if (d.sql) set.add(d.sql);
-      if (d.name) set.add(d.name);
+    for (const col of sourceColumnsMeta) {
+      if (col.name) set.add(col.name);
+    }
+    // Fall back to dimension names if the table has no cached columns yet
+    // (e.g. brand-new dataset still importing). Better to show something than
+    // an empty datalist.
+    if (set.size === 0) {
+      for (const d of dimensions) {
+        if (d.name) set.add(d.name);
+      }
     }
     return Array.from(set).sort();
-  }, [dimensions]);
+  }, [sourceColumnsMeta, dimensions]);
 
   const measureDependencyRefs = useMemo(() => {
     const refs = new Set<string>();
@@ -1139,26 +1285,22 @@ export function ModelViewEditPanel({
       if (!trimmedName) {
         errors.push(`Measure #${i + 1}: name is required`);
       } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)) {
-        errors.push(`Measure "${trimmedName}": name must start with a letter/underscore and contain only letters, digits, or underscores`);
+        errors.push(`Measure "${trimmedName}": name must start with a letter or underscore and contain only letters, digits, or underscores`);
       } else if (seen.has(trimmedName)) {
         errors.push(`Duplicate measure name "${trimmedName}"`);
       } else {
         seen.set(trimmedName, i);
       }
-      // Aggregation needs an input column unless it is COUNT(*) or has an expression
       const needsColumn = m.type !== 'count' && !m.expression;
       if (needsColumn && !(m.sql || '').trim()) {
-        errors.push(`Measure "${trimmedName || `#${i + 1}`}": "${m.type}" needs a column to aggregate (or set an SQL expression in Advanced)`);
+        errors.push(`Measure "${trimmedName || `#${i + 1}`}": choose a column to aggregate (or write an SQL expression under Advanced)`);
       }
-      // SQL fragments must not contain dangerous tokens (mirrors backend validator)
       if (hasForbiddenSql(m.expression)) {
         errors.push(`Measure "${trimmedName}": SQL expression contains a forbidden token`);
       }
       if (hasForbiddenSql(m.where_sql)) {
         errors.push(`Measure "${trimmedName}": WHERE SQL contains a forbidden token`);
       }
-      // depends_on may reference a same-view measure by bare name, or another
-      // semantic view by qualified view.measure name.
       for (const dep of m.depends_on || []) {
         const normalizedDep = String(dep || '').trim();
         if (!normalizedDep) continue;
@@ -1174,22 +1316,101 @@ export function ModelViewEditPanel({
           errors.push(`Measure "${trimmedName}": depends_on "${normalizedDep}" doesn't match any measure in this view`);
         }
       }
-      // Filters must have a field
       (m.filters || []).forEach((f, fi) => {
         if (!(f.field || '').trim()) {
-          errors.push(`Measure "${trimmedName}": filter #${fi + 1} is missing a field`);
+          errors.push(`Measure "${trimmedName}": filter #${fi + 1} chưa chọn trường — bấm vào ô Field để chọn cột trước khi lưu`);
         }
       });
     });
+
     if (errors.length) {
       toast.error(errors[0]);
       return;
     }
+    // Phase-6: detect renames so the BE can auto-rewrite chart configs
+    // and depends_on references instead of dropping into the cascade
+    // dialog. Each row carries `measureRowKeys[idx]` like
+    // `${view.id}:measure:${origIndex}:${originalName}`. New rows use
+    // `new-measure-${uuid}` and are skipped.
+    const renameMap: Record<string, string> = {};
+    measures.forEach((m, idx) => {
+      const rowKey = measureRowKeys[idx];
+      if (!rowKey || rowKey.startsWith('new-measure')) return;
+      const parts = rowKey.split(':');
+      // Format: "${viewId}:measure:${origIndex}:${origName}". Anything else
+      // we treat as unknown and skip — better to no-op than mis-map.
+      if (parts.length < 4 || parts[1] !== 'measure') return;
+      const originalName = parts.slice(3).join(':'); // measure name might contain ':' (rare)
+      const newName = (m.name || '').trim();
+      if (originalName && newName && originalName !== newName) {
+        renameMap[originalName] = newName;
+      }
+    });
+
+    // Phase-3: handle 409 cascade conflict. When BE detects deleted/renamed
+    // measures still used by charts, it returns 409 with a structured detail
+    // payload. We surface a confirm dialog so the user can choose to force-save
+    // (charts will then show "field not found" until rebound) or cancel.
+    const trySave = async (force: boolean) => {
+      await updateView.mutateAsync({
+        datasetId,
+        viewId: view.id,
+        data: {
+          dimensions,
+          measures,
+          description: viewDescription,
+          // Phase-6: only attach rename_map when something actually changed
+          // so the BE rewrite path is a no-op for normal saves.
+          ...(Object.keys(renameMap).length > 0 ? { rename_map: renameMap } : {}),
+        },
+        force,
+      });
+    };
+
     try {
-      await updateView.mutateAsync({ datasetId, viewId: view.id, data: { dimensions, measures, description: viewDescription } });
-      toast.success(contentMode === 'measures' ? 'Measures saved' : 'Fields saved');
+      const result = (await trySave(false)) as unknown as { renamed?: Record<string, number> } | undefined;
+      // Phase-6: BE returns a `renamed` summary like {charts: 3, depends_on: 1}
+      // when rename_map was applied. Surface it so the user knows how many
+      // consumers got auto-rewritten.
+      const renamedTotal = result && result.renamed
+        ? Object.values(result.renamed).reduce((a, b) => a + b, 0)
+        : 0;
+      if (Object.keys(renameMap).length > 0 && renamedTotal > 0) {
+        toast.success(
+          `Đã đổi tên ${Object.keys(renameMap).length} measure và cập nhật ${renamedTotal} tham chiếu (chart / depends_on / expression).`,
+        );
+      } else {
+        toast.success(contentMode === 'measures' ? 'Measures saved' : 'Fields saved');
+      }
     } catch (error: unknown) {
-      const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
+      const detail = response?.data?.detail;
+      // Structured cascade payload from the BE → prompt for confirmation.
+      const isCascade =
+        response?.status === 409 &&
+        typeof detail === 'object' &&
+        detail !== null &&
+        (detail as { code?: string }).code === 'MEASURE_CASCADE';
+      if (isCascade) {
+        const payload = detail as { message: string; affected_charts: string[]; dropped: string[] };
+        const lines = payload.affected_charts.slice(0, 6).join('\n');
+        const extra = payload.affected_charts.length > 6
+          ? `\n…và ${payload.affected_charts.length - 6} chart khác.`
+          : '';
+        const proceed = window.confirm(
+          `${payload.message}\n\nChart bị ảnh hưởng:\n${lines}${extra}\n\nXác nhận để vẫn lưu?`
+        );
+        if (proceed) {
+          try {
+            await trySave(true);
+            toast.success('Đã lưu (cần sửa lại chart đang dùng).');
+          } catch (force_error: unknown) {
+            const fd = (force_error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+            toast.error(typeof fd === 'string' ? fd : 'Force save failed');
+          }
+        }
+        return;
+      }
       toast.error(typeof detail === 'string' ? detail : contentMode === 'measures' ? 'Failed to save measures' : 'Failed to save fields');
     }
   };
@@ -1351,8 +1572,10 @@ export function ModelViewEditPanel({
                     return (
                       <DimensionRow
                         key={rowKey}
+                        rowKey={rowKey}
                         dim={dim}
                         canEdit={canEdit}
+                        columnOptions={columnOptions}
                         onChange={(u) => setDimensions((prev) => prev.map((d, i) => (i === idx ? u : d)))}
                         onRemove={() => {
                           setDimensions((prev) => prev.filter((_, i) => i !== idx));
@@ -1388,14 +1611,33 @@ export function ModelViewEditPanel({
                         <ChevronDown className="w-3 h-3" />
                       </button>
                       {showMeasureTemplates && (
-                        <div className="absolute right-0 top-6 z-20 w-60 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1">
-                          {MEASURE_TEMPLATES.map((tpl) => (
+                        <div className="absolute right-0 top-6 z-20 w-72 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1 max-h-96 overflow-y-auto">
+                          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
+                            Basic
+                          </div>
+                          {MEASURE_TEMPLATES.filter((t) => t.group === 'basic').map((tpl) => (
                             <button
                               key={tpl.key}
                               onClick={() => handleAddMeasureFromTemplate(tpl)}
                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
                             >
                               {tpl.label}
+                            </button>
+                          ))}
+                          <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary border-t border-[rgb(var(--border-line))]">
+                            Time intelligence
+                          </div>
+                          {MEASURE_TEMPLATES.filter((t) => t.group === 'time').map((tpl) => (
+                            <button
+                              key={tpl.key}
+                              onClick={() => handleAddMeasureFromTemplate(tpl)}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
+                              title={tpl.hint}
+                            >
+                              <div>{tpl.label}</div>
+                              {tpl.hint && (
+                                <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">{tpl.hint}</div>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -1434,6 +1676,21 @@ export function ModelViewEditPanel({
                       })
                   )}
                 </div>
+                {/* Bridge to the data layer: per-row calculations belong in
+                    a Calculated Column on the source table, not inside a
+                    measure. Surface the path back to the AddColumnModal so
+                    users don't have to navigate away. */}
+                {canEdit && !singleMeasureMode && onRequestAddColumn && tableId != null && (
+                  <button
+                    type="button"
+                    onClick={() => onRequestAddColumn(tableId)}
+                    className="mt-2 inline-flex items-center gap-1 text-[11px] text-text-tertiary hover:text-brand"
+                    title="Tạo cột tính toán mới trên bảng nguồn — cột sẽ dùng được cho mọi measure & dimension trên bảng này"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Không thấy cột cần thiết? Thêm Calculated Column vào bảng này →
+                  </button>
+                )}
               </div>
             </div>
           </div>

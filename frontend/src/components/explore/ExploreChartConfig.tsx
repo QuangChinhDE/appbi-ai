@@ -63,7 +63,7 @@ export type ExploreChartType =
   | 'BULLET' | 'SANKEY' | 'SUNBURST' | 'RIBBON' | 'TIMELINE' | 'WORD_CLOUD'
   | 'KPI' | 'PODIUM';
 
-export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
+export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'auto';
 export type TableLayoutMode = 'standard' | 'pivot';
 
 export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
@@ -389,10 +389,53 @@ const BREAKDOWN_SUPPORTED_CHART_TYPES = new Set<string>([
 ]);
 const RAW_DISTRIBUTION_TYPES = new Set<string>(['BOXPLOT']);
 
-/** Display label e.g. "SUM of revenue" */
-export function metricLabel(m: MetricConfig): string {
+/**
+ * Optional registry mapping qualified field refs (`view.field`) or bare field
+ * names to the human-friendly label declared on the semantic measure /
+ * dimension. Callers that know the semantic model build this map once and
+ * pass it into {@link metricLabel}.
+ */
+export type SemanticLabelMap = Map<string, string> | Record<string, string>;
+
+function lookupSemanticLabel(field: string, map?: SemanticLabelMap): string | undefined {
+  if (!map) return undefined;
+  // Narrow once into a callable getter so TS doesn't choke on the union.
+  const isMap = map instanceof Map;
+  const get = isMap
+    ? (k: string): string | undefined => (map as Map<string, string>).get(k)
+    : (k: string): string | undefined => (map as Record<string, string>)[k];
+  // Try qualified ref first, then bare field, then last-segment of qualified.
+  const direct = get(field);
+  if (direct) return direct;
+  if (field.includes('.')) {
+    const last = field.split('.').slice(-1)[0];
+    const byLast = get(last);
+    if (byLast) return byLast;
+  }
+  return undefined;
+}
+
+/** Display label, e.g. "SUM of revenue".
+ *
+ * Two special cases:
+ *
+ * 1. ``agg === 'auto'``: the metric is referencing a measure whose
+ *    aggregation is part of the measure definition. We must not prepend
+ *    "AUTO of " — that reads like a bug. We fall back to the semantic label
+ *    (if a ``labelMap`` is provided) or to the bare field segment.
+ *
+ * 2. Otherwise we strip the ``view.`` qualifier so the label is short.
+ *
+ * Pass ``labelMap`` to render user-friendly Vietnamese / business labels
+ * stored on measures (e.g. ``"Unique users"`` instead of
+ * ``"task_user_distinct"``).
+ */
+export function metricLabel(m: MetricConfig, labelMap?: SemanticLabelMap): string {
+  const fieldDisplay = m.field.includes('.') ? m.field.split('.').slice(-1)[0] : m.field;
+  const semanticLabel = lookupSemanticLabel(m.field, labelMap);
+  if (m.agg === 'auto') return semanticLabel || fieldDisplay;
   const aggName = m.agg === 'count_distinct' ? 'COUNT DISTINCT' : m.agg.toUpperCase();
-  return `${aggName} of ${m.field}`;
+  return `${aggName} of ${semanticLabel || fieldDisplay}`;
 }
 
 /** recharts dataKey for a MetricConfig */

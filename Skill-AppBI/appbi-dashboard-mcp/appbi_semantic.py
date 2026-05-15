@@ -609,7 +609,7 @@ async def execute_semantic_query(
     explore: str,
     dimensions: list[str] | None = None,
     measures: list[str] | None = None,
-    filters: dict[str, Any] | None = None,
+    filters: dict[str, dict[str, Any]] | None = None,
     pivots: list[str] | None = None,
     sorts: list[dict[str, Any]] | None = None,
     limit: int = 500,
@@ -617,6 +617,7 @@ async def execute_semantic_query(
     top_n: dict[str, Any] | None = None,
     calculated_fields: list[dict[str, Any]] | None = None,
     measure_agg_overrides: dict[str, str] | None = None,
+    window_functions: list[dict[str, Any]] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Execute a semantic query and return data + the SQL that was run.
@@ -626,8 +627,20 @@ async def execute_semantic_query(
     BEFORE creating a chart to verify the query produces the data shape
     you expect (correct cardinality, no fan-out, sane numbers).
 
-    `dimensions`/`measures` use qualified names like 'orders.country',
-    'orders.total_revenue'. `filters` keyed by qualified field name.
+    `dimensions` / `measures`: qualified names like 'orders.country',
+    'orders.total_revenue'.
+    `filters`: dict keyed by qualified field name; each value is a
+    `FilterCondition` object — `{"operator": "<op>", "value": <any>}` —
+    where `operator` is one of eq|ne|gt|gte|lt|lte|in|not_in|contains|
+    starts_with|ends_with. Plain field-to-value dicts will be rejected
+    with HTTP 422.
+    Example:
+        filters={"orders.country": {"operator": "eq", "value": "VN"}}
+    `sorts`: list of `{field, direction}` where direction is 'asc'|'desc'.
+    `time_grains`: {qualified_field: 'day'|'week'|'month'|'quarter'|'year'}.
+    `window_functions`: list of `{name, base_measure, partition_by,
+    order_by, type}` where type ∈ running_sum|running_avg|rank|
+    dense_rank|row_number. The output column lives under `name`.
     """
     body = _drop_none(
         {
@@ -642,6 +655,7 @@ async def execute_semantic_query(
             "top_n": top_n,
             "calculated_fields": calculated_fields or [],
             "measure_agg_overrides": measure_agg_overrides or {},
+            "window_functions": window_functions or [],
         }
     )
     return await _request("POST", "/semantic/query", json_body=body)

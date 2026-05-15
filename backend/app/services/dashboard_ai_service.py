@@ -71,10 +71,35 @@ def build_ai_context(db: Session, dash: Dashboard, public_filters: list[dict]) -
                 extra_filters=combined_filters or None,
                 filter_context="dashboard",
             )
-            data = result.get("data") or {}
-            columns: list[str] = data.get("columns") or []
-            rows: list[list] = (data.get("rows") or [])[:MAX_ROWS_PER_CHART]
+            # ChartService.get_chart_data returns {"data": list[dict]}. Earlier
+            # versions assumed a {"columns", "rows"} envelope and silently
+            # produced empty context for every chart — the BYOK AI bot answered
+            # "I don't have data on that" no matter the question.
+            raw = result.get("data")
+            columns, rows = [], []
+            if isinstance(raw, list):
+                seen: list[str] = []
+                seen_set: set[str] = set()
+                for item in raw:
+                    if isinstance(item, dict):
+                        for k in item.keys():
+                            if k not in seen_set:
+                                seen_set.add(k)
+                                seen.append(str(k))
+                columns = seen
+                for item in raw[:MAX_ROWS_PER_CHART]:
+                    if isinstance(item, dict):
+                        rows.append([item.get(c) for c in columns])
+                    elif isinstance(item, (list, tuple)):
+                        rows.append(list(item))
+            elif isinstance(raw, dict):
+                columns = [str(c) for c in (raw.get("columns") or [])]
+                rows = [
+                    list(r) if isinstance(r, (list, tuple)) else [r]
+                    for r in (raw.get("rows") or [])
+                ][:MAX_ROWS_PER_CHART]
         except Exception:
+            logger.exception("AI context: failed to fetch data for chart_id=%s", chart_id)
             columns = []
             rows = []
 

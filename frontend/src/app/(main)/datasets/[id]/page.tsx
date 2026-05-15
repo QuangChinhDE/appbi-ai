@@ -45,7 +45,7 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
-import { useDatasetModel, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
+import { useDatasetModel, fetchColumnLineage, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
 import { HelpTooltipRich } from '@/components/ui/HelpTooltip';
 import type { Transformation } from '@/hooks/use-datasets';
 import { toast } from '@/lib/toast';
@@ -857,6 +857,29 @@ export default function DatasetDetailPage() {
   // Handle deleting a computed column directly from the grid format popover
   const handleDeleteColumn = async (colName: string) => {
     if (!datasetId || !selectedTableId || !selectedTable) return;
+
+    // Phase-5: proactive lineage probe — show the user what will break
+    // BEFORE they confirm. The BE save would also block via the cascade
+    // guard, but warning up front is the user-friendly path.
+    try {
+      const lineage = await fetchColumnLineage(datasetId, selectedTableId, colName);
+      if (lineage.semantic_refs && lineage.semantic_refs.length > 0) {
+        const lines = lineage.semantic_refs.slice(0, 6).join('\n');
+        const extra =
+          lineage.semantic_refs.length > 6
+            ? `\n… và ${lineage.semantic_refs.length - 6} tham chiếu khác.`
+            : '';
+        const proceed = window.confirm(
+          `Cột "${colName}" đang được semantic layer sử dụng:\n\n${lines}${extra}\n\n` +
+            `Xoá cột sẽ làm hỏng các dimension/measure trên. Vẫn tiếp tục?`,
+        );
+        if (!proceed) return;
+      }
+    } catch {
+      // Probe failure is non-fatal — fall back to the BE cascade guard at
+      // save time. We don't want the delete UX to depend on the probe.
+    }
+
     const existing: Transformation[] = selectedTable.transformations || [];
     const updated = existing.filter(
       (t) =>
@@ -1323,15 +1346,6 @@ export default function DatasetDetailPage() {
                 Columns
               </button>
             )}
-            {resPerms.canEdit && !selectedTableIsGenerated && (
-              <button
-                onClick={() => setIsAddColumnModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-white bg-brand hover:bg-brand-hover rounded transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Add Column
-              </button>
-            )}
             <div className="w-px h-4 bg-surface-3 mx-1" />
             <label className="flex items-center gap-1.5 text-xs text-text-tertiary">
               Rows:
@@ -1726,6 +1740,14 @@ export default function DatasetDetailPage() {
               focusMeasureName={measuresFocusMeasureName}
               triggerAddMeasure={measuresTriggerAdd}
               onClearMeasureFocus={() => setMeasuresFocusMeasureName(null)}
+              onRequestAddColumn={(tableId) => {
+                // Switch the page-level "selected table" to the measure's
+                // underlying table so AddColumnModal opens against the
+                // correct schema, then open the modal.
+                setSelectedTableId(tableId);
+                setEditingColumnStep(null);
+                setIsAddColumnModalOpen(true);
+              }}
             />
           ) : dataset.tables.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">

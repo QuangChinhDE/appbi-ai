@@ -21,6 +21,7 @@ from appbi_core import (
     Context,
     _confirmation_required_for_destructive,
     _drop_none,
+    _query_path,
     _request,
     _requires_confirmation,
     tool,
@@ -33,9 +34,21 @@ from appbi_core import (
 
 
 @tool("report")
-async def list_dashboards(ctx: Context | None = None) -> dict[str, Any]:
-    """List every dashboard the authenticated user can view."""
-    items = await _request("GET", "/dashboards/")
+async def list_dashboards(
+    skip: int = 0,
+    limit: int = 50,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """List every dashboard the authenticated user can view.
+
+    `skip` / `limit` pagination defaults match the backend (limit=50).
+    Bump `limit` (no documented BE cap on this endpoint) when scanning
+    a large workspace.
+    """
+    items = await _request(
+        "GET",
+        _query_path("/dashboards/", {"skip": skip, "limit": limit}),
+    )
     return {"items": items}
 
 

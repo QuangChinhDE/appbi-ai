@@ -551,6 +551,7 @@ export async function* streamAiAgentChat(
   state?: AiConversationState | null,
   costCapUsd?: number,
   mode?: 'normal' | 'thinking',
+  viewerFilters?: unknown[],
 ): AsyncGenerator<AiAgentEvent, void, unknown> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -573,6 +574,9 @@ export async function* streamAiAgentChat(
   const body: Record<string, unknown> = { messages };
   if (briefing) body.briefing = briefing;
   if (state) body.state = state;
+  if (Array.isArray(viewerFilters) && viewerFilters.length > 0) {
+    body.viewer_filters = viewerFilters;
+  }
 
   const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/chat`, {
     method: 'POST',

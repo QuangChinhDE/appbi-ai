@@ -9,13 +9,49 @@ from datetime import datetime
 
 # Dimension & Measure Definitions
 class DimensionDefinition(BaseModel):
-    """LookML-style dimension definition"""
+    """Dimension = friendly mapping over a single column.
+
+    Dimensions are intentionally NOT a place to compute new values. For any
+    per-row calculation, create a Calculated Column (Transformation.add_column)
+    on the underlying DatasetTable; the column then becomes available to every
+    measure and dimension on that table. See backend/app/api/DATASETS_README.md.
+
+    Enforcement: ``sql`` MUST be empty or equal to ``name`` (qualified forms like
+    ``${TABLE}.col`` are also accepted when ``col`` matches ``name``). Anything
+    that looks like an expression is rejected so the data layer stays the single
+    place where calculation lives.
+    """
     name: str
     type: Literal["string", "number", "date", "datetime", "yesno"] = "string"
-    sql: Optional[str] = None  # SQL template, can use ${TABLE} placeholder
+    sql: Optional[str] = None
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+
+    @field_validator("sql")
+    @classmethod
+    def _enforce_bare_column(cls, value: Optional[str], info) -> Optional[str]:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        name = (info.data.get("name") or "").strip()
+        # Accept bare identifier, qualified `table.col`, or `${TABLE}.col`
+        # forms — as long as the final segment matches the dimension's `name`.
+        stripped = text
+        if stripped.startswith("${") and "}" in stripped:
+            stripped = stripped.split("}", 1)[1].lstrip(".")
+        last_segment = stripped.rsplit(".", 1)[-1].strip()
+        bare_pattern = r"^[A-Za-z_][A-Za-z0-9_]*$"
+        import re as _re
+        if not _re.fullmatch(bare_pattern, last_segment) or (name and last_segment != name):
+            raise ValueError(
+                "Dimension.sql phải bằng chính tên cột (không hỗ trợ biểu thức). "
+                "Nếu cần tính toán, hãy tạo Calculated Column trên bảng nguồn rồi "
+                "thêm dimension trỏ vào cột đó."
+            )
+        return text
 
 
 class MeasureFilter(BaseModel):
@@ -133,16 +169,41 @@ class JoinDefinition(BaseModel):
     managed: Optional[bool] = None
     presentation_view: Optional[str] = None
     calendar_source_field: Optional[str] = None
+    # Phase-3b: edge controls inspired by Power BI's "Manage relationships".
+    # Default both fields preserve pre-Phase-3 behaviour so legacy joins keep
+    # working without migration: every existing join is active + single-direction.
+    is_active: bool = True
+    cross_filter: Literal["single", "both"] = "single"
 
 
 # Semantic View
 class SemanticViewBase(BaseModel):
+    """A semantic view bound to one DatasetTable.
+
+    Phase-4 invariant: when ``dataset_table_id`` is set, ``sql_table_name``
+    must be empty. The reverse path (``sql_table_name`` only, no
+    ``dataset_table_id``) is grandfathered for legacy external-table views
+    and is logged as a deprecation warning at validation time.
+    """
     name: str
     sql_table_name: Optional[str] = None
     dataset_table_id: Optional[int] = None
     dimensions: List[DimensionDefinition] = []
     measures: List[MeasureDefinition] = []
     description: Optional[str] = None
+
+    @field_validator("sql_table_name")
+    @classmethod
+    def _reject_dual_binding(cls, value: Optional[str], info) -> Optional[str]:
+        # Field validator order follows declaration: dataset_table_id is
+        # declared AFTER sql_table_name in the class body, so it isn't yet
+        # in info.data when this validator runs. We can only validate the
+        # other direction in __init__ via model-level rules. So here we just
+        # normalise to None for empty strings; the cross-field check happens
+        # at the API boundary (cleaner and easier to surface to the user).
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class SemanticViewCreate(SemanticViewBase):

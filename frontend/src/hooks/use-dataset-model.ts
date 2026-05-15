@@ -75,6 +75,10 @@ export interface JoinDefinition {
   managed?: boolean;
   presentation_view?: string;
   calendar_source_field?: string;
+  /** Phase-3b: inactive joins are stored but ignored by the engine. */
+  is_active?: boolean;
+  /** Phase-3b: 'both' adds a reverse edge in the resolver. */
+  cross_filter?: 'single' | 'both';
 }
 
 export interface DatasetModelView {
@@ -170,6 +174,7 @@ export const modelKeys = {
   all: ['dataset-model'] as const,
   detail: (datasetId: number) => [...modelKeys.all, datasetId] as const,
   distinct: (datasetId: number, field: string) => [...modelKeys.detail(datasetId), 'distinct', field] as const,
+  layout: (datasetId: number) => [...modelKeys.detail(datasetId), 'layout'] as const,
   joinSuggestion: (
     datasetId: number,
     fromViewId: number,
@@ -262,13 +267,20 @@ export function useUpdateModelView() {
       datasetId,
       viewId,
       data,
+      force,
     }: {
       datasetId: number;
       viewId: number;
-      data: Partial<Pick<DatasetModelView, 'dimensions' | 'measures' | 'description'>>;
+      data: Partial<Pick<DatasetModelView, 'dimensions' | 'measures' | 'description'>> & {
+        /** Phase-6: BE auto-rewrites every Chart.config and depends_on
+         *  reference that targets an old measure name in this map. */
+        rename_map?: Record<string, string>;
+      };
+      /** Phase-3: when true, bypass cascade guards (e.g. measure used by chart). */
+      force?: boolean;
     }) => {
       const response = await api.put(
-        `/datasets/${datasetId}/model/views/${viewId}`,
+        `/datasets/${datasetId}/model/views/${viewId}${force ? '?force=true' : ''}`,
         data
       );
       return response.data;
@@ -386,6 +398,10 @@ export interface AddJoinParams {
   relationship?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
   /** Optional alias for role-playing joins (e.g. "creator", "updater" → users) */
   alias?: string | null;
+  /** Phase-3b: inactive joins are stored but ignored by the engine. */
+  isActive?: boolean;
+  /** Phase-3b: bidirectional filter propagation when set to 'both'. */
+  crossFilter?: 'single' | 'both';
 }
 
 export function useAddJoin() {
@@ -402,6 +418,9 @@ export function useAddJoin() {
           join_type: params.joinType ?? 'left',
           relationship: params.relationship ?? 'many_to_one',
           ...(params.alias ? { alias: params.alias } : {}),
+          // Phase-3b extras — server defaults preserve old behaviour if omitted.
+          ...(params.isActive !== undefined ? { is_active: params.isActive } : {}),
+          ...(params.crossFilter ? { cross_filter: params.crossFilter } : {}),
         }
       );
       return response.data;
@@ -446,4 +465,70 @@ export function useRemoveJoin() {
       queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
     },
   });
+}
+
+// ===== Phase-4: Canvas layout (server-side persistence) =====
+
+export type ModelLayoutPositions = Record<string, { x: number; y: number }>;
+
+/**
+ * Fetch the saved canvas card positions for the data-model view. Positions
+ * follow the dataset (not the browser) so multiple users see the same
+ * layout. Returns an empty object when nothing has been saved — the canvas
+ * falls back to its topology-aware auto layout.
+ */
+export function useModelLayout(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetId == null ? ['dataset-model', 'layout', 'null'] : modelKeys.layout(datasetId),
+    queryFn: async () => {
+      if (datasetId == null) return {} as ModelLayoutPositions;
+      const res = await api.get<ModelLayoutPositions>(`/datasets/${datasetId}/model/layout`);
+      return res.data || {};
+    },
+    enabled: datasetId != null,
+    staleTime: 60_000,
+  });
+}
+
+export function useSaveModelLayout() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { datasetId: number; positions: ModelLayoutPositions }) => {
+      const res = await api.put<ModelLayoutPositions>(
+        `/datasets/${args.datasetId}/model/layout`,
+        args.positions,
+      );
+      return res.data || {};
+    },
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(modelKeys.layout(variables.datasetId), data);
+    },
+  });
+}
+
+// ===== Phase-5: Column lineage probe (proactive cascade warning) =====
+
+export interface ColumnLineageResponse {
+  column: string;
+  table_id: number;
+  dataset_id: number;
+  semantic_refs: string[];
+  chart_count_on_table: number;
+}
+
+/**
+ * Ask the BE which dimensions/measures still reference a given column.
+ * Use this BEFORE opening a destructive flow (delete column, rename) so
+ * the UI can warn the user about the blast radius up front instead of
+ * surfacing the cascade only when the save fails.
+ */
+export async function fetchColumnLineage(
+  datasetId: number,
+  tableId: number,
+  columnName: string,
+): Promise<ColumnLineageResponse> {
+  const res = await api.get<ColumnLineageResponse>(
+    `/datasets/${datasetId}/lineage/column/${tableId}/${encodeURIComponent(columnName)}`,
+  );
+  return res.data;
 }

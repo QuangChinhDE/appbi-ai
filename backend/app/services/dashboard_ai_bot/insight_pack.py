@@ -4,8 +4,10 @@ The agent calls into here instead of stuffing raw rows into the LLM context.
 Numbers returned here are authoritative; the agent is instructed to cite
 them rather than computing its own.
 
-Pure functions, no DB access — accepts the dict shape returned by
-``ChartService.get_chart_data()['data']`` (i.e. ``{columns, rows, ...}``).
+Pure functions, no DB access — accepts the normalized ``{columns, rows}``
+shape produced by ``dashboard_ai_bot.tools._fetch_chart_data`` after
+flattening ``ChartService.get_chart_data()['data']`` (which is a list of
+row dicts, NOT a ``{columns, rows}`` envelope).
 
 This makes the module trivial to unit-test without a database.
 """

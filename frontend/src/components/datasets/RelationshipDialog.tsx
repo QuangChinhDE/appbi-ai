@@ -26,6 +26,8 @@ type JoinPair = {
   toColumn: string;
 };
 
+export type CrossFilter = 'single' | 'both';
+
 export interface RelationshipDialogValue {
   fromViewId: number;
   toViewId: number;
@@ -36,6 +38,8 @@ export interface RelationshipDialogValue {
   joinType: JoinType;
   relationship: RelationshipType;
   alias?: string | null;
+  isActive?: boolean;
+  crossFilter?: CrossFilter;
 }
 
 interface RelationshipDialogProps {
@@ -65,7 +69,14 @@ const RELATIONSHIP_OPTIONS: {
   { value: 'one_to_one', label: '1 : 1  -  One to One', from: '1', to: '1' },
   { value: 'one_to_many', label: '1 : N  -  One to Many', from: '1', to: 'N' },
   { value: 'many_to_one', label: 'N : 1  -  Many to One', from: 'N', to: '1' },
-  { value: 'many_to_many', label: 'N : N  -  Unsupported', from: 'N', to: 'N', disabled: true },
+  // Phase-3b: N:N allowed but flagged with a red banner in the dialog body
+  // because cartesian fan-out can double aggregates.
+  { value: 'many_to_many', label: 'N : N  -  Many to Many (cảnh báo)', from: 'N', to: 'N' },
+];
+
+const CROSS_FILTER_OPTIONS: { value: CrossFilter; label: string }[] = [
+  { value: 'single', label: 'Single — chỉ filter từ source → target' },
+  { value: 'both', label: 'Both — filter cả 2 chiều (giống Power BI bidirectional)' },
 ];
 
 function Select({
@@ -162,6 +173,8 @@ export function RelationshipDialog({
     initialValue?.relationship ?? 'many_to_one',
   );
   const [alias, setAlias] = useState<string>(initialValue?.alias ?? '');
+  const [isActive, setIsActive] = useState<boolean>(initialValue?.isActive ?? true);
+  const [crossFilter, setCrossFilter] = useState<CrossFilter>(initialValue?.crossFilter ?? 'single');
   const [error, setError] = useState('');
   const [relationshipTouched, setRelationshipTouched] = useState(false);
   const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
@@ -179,6 +192,8 @@ export function RelationshipDialog({
     setJoinType(initialValue?.joinType ?? 'left');
     setRelationship(initialValue?.relationship ?? 'many_to_one');
     setAlias(initialValue?.alias ?? '');
+    setIsActive(initialValue?.isActive ?? true);
+    setCrossFilter(initialValue?.crossFilter ?? 'single');
     setError('');
     setRelationshipTouched(false);
     setAutoSuggestRelationship(!initialValue?.relationship);
@@ -315,6 +330,8 @@ export function RelationshipDialog({
         joinType,
         relationship,
         alias: aliasTrimmed || null,
+        isActive,
+        crossFilter,
       });
       onClose();
     } catch (saveError: any) {
@@ -527,6 +544,15 @@ export function RelationshipDialog({
                   : `Suggested from current data: ${suggestedRelationshipLabel}${suggestedUniquenessLabel}`}
               </p>
             )}
+            {/* Phase-3b: many-to-many is allowed but high-risk. Show a red
+                banner whenever the user (or auto-suggestion) selects it so
+                they're nudged toward a bridge-table design. */}
+            {relationship === 'many_to_many' && (
+              <p className="rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-[11px] leading-snug text-danger">
+                ⚠ Many-to-many có thể nhân đôi giá trị aggregate do cartesian fan-out.
+                Nên tạo bridge table + 2 quan hệ N:1 thay vì N:N trực tiếp.
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -557,6 +583,44 @@ export function RelationshipDialog({
             Use this when the same table is joined more than once via different keys. Field references will use
             the alias (e.g. <code>creator.email</code>) instead of the table name.
           </p>
+        </div>
+
+        {/* Phase-3b: Active toggle + Cross-filter direction. Defaults match
+            legacy behaviour (active + single) so existing joins behave as
+            before unless the user explicitly opts in. */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-text-secondary">
+              <input
+                type="checkbox"
+                checked={isActive}
+                onChange={(e) => setIsActive(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Active relationship
+            </label>
+            <p className="text-xs text-text-quaternary leading-snug">
+              {isActive
+                ? 'Quan hệ đang chạy. Engine sẽ dùng để resolve join path.'
+                : 'Tắt — engine sẽ bỏ qua. Dùng khi cần break vòng lặp hoặc giữ role-playing thay thế.'}
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Cross-filter direction
+            </label>
+            <Select
+              value={crossFilter}
+              onChange={(value) => setCrossFilter(value as CrossFilter)}
+              options={CROSS_FILTER_OPTIONS}
+            />
+            <p className="text-xs text-text-quaternary leading-snug">
+              {crossFilter === 'both'
+                ? 'Hai chiều: filter từ fact → dim sẽ cũng lan sang dim → fact. Cẩn thận với ambiguous paths.'
+                : 'Một chiều — chuẩn cho hầu hết star schema.'}
+            </p>
+          </div>
         </div>
 
         {fromView && toView && previewPairs.length > 0 && (

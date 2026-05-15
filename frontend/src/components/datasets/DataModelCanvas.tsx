@@ -40,6 +40,8 @@ import {
   useGenerateModel,
   useAddJoin,
   useRemoveJoin,
+  useModelLayout,
+  useSaveModelLayout,
   type AddJoinParams,
   type DatasetModelView,
   type DatasetModelExplore,
@@ -466,6 +468,11 @@ interface RelLineProps {
   toCol?: string;
   relationship?: string;
   joinType: string;
+  // Phase-3b: edge controls. `isActive=false` renders dashed + dimmed so the
+  // user sees at-a-glance the join is stored but ignored by the engine.
+  // `crossFilter='both'` adds a small "↔" badge near the joinType chip.
+  isActive?: boolean;
+  crossFilter?: 'single' | 'both';
   isSelected: boolean;
   onClick: () => void;
 }
@@ -475,6 +482,8 @@ function RelLine({
   sDir, tDir,
   fromCol, toCol,
   relationship, joinType,
+  isActive = true,
+  crossFilter = 'single',
   isSelected, onClick,
 }: RelLineProps) {
   const [hovered, setHovered] = useState(false);
@@ -483,7 +492,9 @@ function RelLine({
   const { mx: chipX, my: chipY } = bezierMidpoint(sx, sy, sDir, tx, ty, tDir);
   const { src, tgt } = cardinalityLabels(relationship);
   const active = isSelected || hovered;
-  const stroke = active ? '#6366f1' : '#94a3b8';
+  // Phase-3b: dim inactive edges so they're visually muted. Selected /
+  // hovered still take precedence so the user can interact with them.
+  const stroke = active ? '#6366f1' : (isActive ? '#94a3b8' : '#cbd5e1');
 
   // Column label pill width (proportional to text length, max 90)
   const fromLW = Math.min(90, (fromCol?.length ?? 0) * 5.8 + 14);
@@ -511,14 +522,15 @@ function RelLine({
         onClick={(e) => { e.stopPropagation(); onClick(); }}
       />
 
-      {/* Visible line */}
+      {/* Visible line — dashed when inactive OR when selected */}
       <path
         d={path}
         stroke={stroke}
         strokeWidth={active ? 2 : 1.5}
         fill="none"
-        strokeDasharray={isSelected ? '6 3' : undefined}
-        style={{ pointerEvents: 'none', transition: 'stroke 0.15s, stroke-width 0.15s' }}
+        strokeDasharray={isSelected ? '6 3' : (!isActive ? '4 4' : undefined)}
+        opacity={isActive ? 1 : 0.55}
+        style={{ pointerEvents: 'none', transition: 'stroke 0.15s, stroke-width 0.15s, opacity 0.15s' }}
       />
 
       {/* ── Source side ─────────────────────────────── */}
@@ -591,7 +603,11 @@ function RelLine({
 
       {/* ── Join-type chip — rides the bezier midpoint so it tracks the line cleanly ── */}
       <g transform={`translate(${chipX}, ${chipY})`} style={{ pointerEvents: 'none' }}>
-        <rect x={-22} y={-9} width={44} height={18} rx={9} fill={active ? '#6366f1' : '#94a3b8'} />
+        <rect
+          x={-22} y={-9} width={44} height={18} rx={9}
+          fill={active ? '#6366f1' : (isActive ? '#94a3b8' : '#cbd5e1')}
+          opacity={isActive ? 1 : 0.75}
+        />
         <text
           textAnchor="middle" dominantBaseline="central"
           fontSize={7} fontWeight="700" fill="white" letterSpacing={0.3}
@@ -599,6 +615,25 @@ function RelLine({
           {joinType.toUpperCase()}
         </text>
       </g>
+
+      {/* Phase-3b: small badges hugging the join-type chip.
+          Inactive → "OFF" pill (left). Bidirectional → "↔" pill (right). */}
+      {!isActive && (
+        <g transform={`translate(${chipX - 32}, ${chipY})`} style={{ pointerEvents: 'none' }}>
+          <rect x={-12} y={-7} width={24} height={14} rx={7} fill="#fde68a" stroke="#f59e0b" strokeWidth={0.6} />
+          <text textAnchor="middle" dominantBaseline="central" fontSize={6.5} fontWeight="700" fill="#92400e">
+            OFF
+          </text>
+        </g>
+      )}
+      {crossFilter === 'both' && (
+        <g transform={`translate(${chipX + 32}, ${chipY})`} style={{ pointerEvents: 'none' }}>
+          <rect x={-9} y={-7} width={18} height={14} rx={7} fill="#dbeafe" stroke="#3b82f6" strokeWidth={0.6} />
+          <text textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight="700" fill="#1d4ed8">
+            ↔
+          </text>
+        </g>
+      )}
     </g>
   );
 }
@@ -628,6 +663,10 @@ interface ModelRelationship {
   toCols: string[];
   origin?: string;
   managed: boolean;
+  // Phase-3b: expose the engine-side controls so the edit dialog can
+  // pre-fill them and the canvas can render an "inactive" affordance.
+  isActive: boolean;
+  crossFilter: 'single' | 'both';
   key: string;
 }
 
@@ -844,31 +883,38 @@ export function DataModelCanvas({
     return computeLayout(visibleViews, layoutExplores);
   }, [model?.model_id, visibleViews, layoutExplores]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // User-overridden card positions (from dragging). Keyed by view id and
-  // persisted to localStorage per (datasetId, model_id) so layouts survive
-  // reloads without leaking between datasets.
-  const storageKey = model?.model_id
-    ? `appbi:dm-layout:${datasetId}:${model.model_id}`
-    : null;
+  // Phase-4: User-overridden card positions. Persisted SERVER-SIDE via
+  // /api/v1/datasets/{id}/model/layout so the layout follows the dataset
+  // (not the browser) and stays shared across users. A localStorage write
+  // is still kept as a transient fallback while the server save is in
+  // flight — purely for snappy UI feedback.
+  const { data: serverPositions } = useModelLayout(datasetId);
+  const saveLayout = useSaveModelLayout();
   const [userPositions, setUserPositions] = useState<Record<number, { x: number; y: number }>>({});
   const userPositionsRef = useRef(userPositions);
   useEffect(() => { userPositionsRef.current = userPositions; }, [userPositions]);
 
-  // Load persisted layout when the model/dataset changes.
+  // Hydrate userPositions from the server response when it arrives.
   useEffect(() => {
-    if (!storageKey) { setUserPositions({}); return; }
-    try {
-      const raw = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null;
-      setUserPositions(raw ? JSON.parse(raw) : {});
-    } catch {
-      setUserPositions({});
+    if (!serverPositions) return;
+    const numericKeyed: Record<number, { x: number; y: number }> = {};
+    for (const [k, v] of Object.entries(serverPositions)) {
+      const id = Number(k);
+      if (!Number.isFinite(id) || !v) continue;
+      numericKeyed[id] = v;
     }
-  }, [storageKey]);
+    setUserPositions(numericKeyed);
+  }, [serverPositions]);
 
   const persistPositions = useCallback((next: Record<number, { x: number; y: number }>) => {
-    if (!storageKey || typeof window === 'undefined') return;
-    try { window.localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* quota / disabled */ }
-  }, [storageKey]);
+    if (!datasetId) return;
+    // Stringify keys for transport — server schema uses {view_id: {x, y}}
+    const payload: Record<string, { x: number; y: number }> = {};
+    for (const [id, pos] of Object.entries(next)) {
+      payload[String(id)] = pos;
+    }
+    saveLayout.mutate({ datasetId, positions: payload });
+  }, [datasetId, saveLayout]);
 
   const effectivePositions = useMemo<Record<number, { x: number; y: number }>>(() => {
     const merged = { ...positions };
@@ -937,10 +983,12 @@ export function DataModelCanvas({
 
   const handleResetLayout = useCallback(() => {
     setUserPositions({});
-    if (storageKey && typeof window !== 'undefined') {
-      try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+    // Phase-4: reset = push empty positions to the server. The auto-layout
+    // becomes the effective layout until the user drags again.
+    if (datasetId) {
+      saveLayout.mutate({ datasetId, positions: {} });
     }
-  }, [storageKey]);
+  }, [datasetId, saveLayout]);
 
   const handleZoomOut = useCallback(() => {
     setZoom((current) => Math.max(ZOOM_MIN, Number((current - ZOOM_STEP).toFixed(2))));
@@ -979,6 +1027,10 @@ export function DataModelCanvas({
     return (model?.explores ?? []).flatMap((ex) =>
       (ex.joins ?? []).map((j) => {
         const { fromColumns, toColumns } = normalizeJoinColumns(j);
+        // Phase-3b: default the new fields to legacy-equivalent values when
+        // the join JSON predates the schema change.
+        const isActive = j.is_active === undefined ? true : Boolean(j.is_active);
+        const crossFilter = j.cross_filter === 'both' ? 'both' : 'single';
         return {
           fromViewId:   ex.base_view_id,
           fromViewName: ex.base_view_name,
@@ -995,6 +1047,8 @@ export function DataModelCanvas({
           toCols:       toColumns,
           origin:       j.origin,
           managed:      Boolean(j.managed),
+          isActive,
+          crossFilter,
           key: `${ex.base_view_id}->${j.view}->${j.alias ?? ''}->${fromColumns.join('|')}=>${toColumns.join('|')}`,
         };
       })
@@ -1419,6 +1473,36 @@ export function DataModelCanvas({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* Phase-3b: edit existing relationship so the user can toggle
+              is_active / cross_filter without having to delete + recreate. */}
+          {canDeleteSelectedRelationship && selectedRelationship && selectedRelationship.origin !== 'auto_calendar' && (
+            <button
+              onClick={() => {
+                const toView = selectedToView ?? allViewsByName[selectedRelationship.toViewName];
+                if (!toView) return;
+                setDialogInitialValue({
+                  fromViewId: selectedRelationship.fromViewId,
+                  toViewId: toView.id,
+                  fromColumn: selectedRelationship.fromCol ?? selectedRelationship.fromCols[0] ?? '',
+                  toColumn: selectedRelationship.toCol ?? selectedRelationship.toCols[0] ?? '',
+                  fromColumns: selectedRelationship.fromCols,
+                  toColumns: selectedRelationship.toCols,
+                  joinType: (selectedRelationship.joinType as 'left' | 'inner' | 'right' | 'full') ?? 'left',
+                  relationship: (selectedRelationship.relationship as 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many' | undefined) ?? 'many_to_one',
+                  alias: selectedRelationship.alias ?? null,
+                  isActive: selectedRelationship.isActive,
+                  crossFilter: selectedRelationship.crossFilter,
+                });
+                setDialogOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
+                border border-brand/40 rounded-md hover:bg-brand/10 transition-colors"
+              title="Edit relationship — change cardinality, active status, cross-filter direction"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              Edit
+            </button>
+          )}
           {canDeleteSelectedRelationship && (
             <button
               onClick={handleDeleteRel}
@@ -1570,6 +1654,8 @@ export function DataModelCanvas({
                   toCol={rel.toCol}
                   relationship={rel.relationship}
                   joinType={rel.joinType}
+                  isActive={rel.isActive}
+                  crossFilter={rel.crossFilter}
                   isSelected={selectedRelKey === rel.key}
                   onClick={() => setSelectedRelKey(selectedRelKey === rel.key ? null : rel.key)}
                 />

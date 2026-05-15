@@ -8,6 +8,7 @@ import {
   TABLE_PIVOT_COLUMN_LIMIT,
   type ChartRoleConfig,
   type MetricConfig,
+  type SemanticLabelMap,
 } from './ExploreChartConfig';
 
 export const MAX_CHART_POINTS = 2000;
@@ -273,8 +274,12 @@ export function buildExploreChartModel(args: {
   roleConfig: ChartRoleConfig;
   havingFilters?: BaseFilter[];
   preAggregated?: boolean;
+  /** Optional map of qualified-or-bare field → display label from the
+   *  semantic model. Used so legend / tooltips show measure.label instead
+   *  of raw SQL identifiers. */
+  labelMap?: SemanticLabelMap;
 }): ExploreChartModel {
-  const { type, data, roleConfig, havingFilters = [], preAggregated = false } = args;
+  const { type, data, roleConfig, havingFilters = [], preAggregated = false, labelMap } = args;
   const normalizedRoleConfig = normalizeRoleConfig(type, roleConfig);
   const { dimension, metrics, breakdown, lineMetric, timeField, scatterX, scatterY, selectedColumns } = normalizedRoleConfig;
   const xField = (type === 'TIME_SERIES' || type === 'RIBBON') ? (timeField || dimension) : dimension;
@@ -295,17 +300,17 @@ export function buildExploreChartModel(args: {
     categoricalData: data,
     categoricalSeries: metrics.map(metric => ({
       key: metricKey(metric),
-      label: metricLabel(metric),
+      label: metricLabel(metric, labelMap),
       metric,
     })),
     comboData: data,
     comboBarSeries: metrics.map(metric => ({
       key: metricKey(metric),
-      label: metricLabel(metric),
+      label: metricLabel(metric, labelMap),
       metric,
     })),
     comboLineSeries: lineMetric
-      ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric), metric: lineMetric }]
+      ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric, labelMap), metric: lineMetric }]
       : [],
     pieData: [],
     scatterPoints: [],
@@ -417,11 +422,11 @@ export function buildExploreChartModel(args: {
       comboData: limitedCombo.rows,
       comboBarSeries: metrics.map(metric => ({
         key: metricKey(metric),
-        label: metricLabel(metric),
+        label: metricLabel(metric, labelMap),
         metric,
       })),
       comboLineSeries: lineMetric
-        ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric), metric: lineMetric }]
+        ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric, labelMap), metric: lineMetric }]
         : [],
     };
   }
@@ -445,7 +450,7 @@ export function buildExploreChartModel(args: {
     categoricalData: limitedAgg.rows,
     categoricalSeries: metrics.map(metric => ({
       key: metricKey(metric),
-      label: metricLabel(metric),
+      label: metricLabel(metric, labelMap),
       metric,
     })),
   };

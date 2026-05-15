@@ -224,7 +224,13 @@ export interface DatasetTableSourceStatusResponse {
 
 export interface AggregationSpec {
   field: string;
-  function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
+  /**
+   * 'auto' is sent when the metric references a semantic measure whose
+   * aggregation is part of the measure definition (e.g. count_distinct,
+   * percent_of_total, formula). The backend resolves 'auto' against the
+   * measure's stored type at query time.
+   */
+  function: 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'auto';
 }
 
 export interface FilterCondition {

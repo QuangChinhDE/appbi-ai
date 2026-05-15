@@ -374,6 +374,75 @@ def extract_dataset_table_aliases_from_sql(sql: str) -> List[str]:
     return aliases
 
 
+def check_derived_table_cycle(
+    db: Session,
+    dataset_id: int,
+    *,
+    table_id: int | None,
+    proposed_dependency_ids: List[int],
+) -> None:
+    """Reject Calculated Tables that would close a dependency cycle.
+
+    Walks downstream from each proposed dependency: if any of them already
+    depends (transitively) on ``table_id``, accepting this update would form
+    a cycle (A → B → A). Raises ``DatasetTableSqlError`` with a Vietnamese
+    user-facing message so the API can surface a 400.
+
+    Safe to call for both create (``table_id=None``) and update flows; when
+    ``table_id`` is None nothing to check (a brand-new table cannot yet be
+    referenced by anything).
+    """
+    if table_id is None or not proposed_dependency_ids:
+        return
+
+    candidate_tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    )
+    by_id = {int(t.id): t for t in candidate_tables}
+    alias_lookup = build_dataset_table_reference_alias_lookup(candidate_tables)
+
+    def _dependencies_of(other_id: int) -> List[int]:
+        table = by_id.get(other_id)
+        if table is None:
+            return []
+        if getattr(table, "source_kind", "") != "derived_table":
+            return []
+        query = getattr(table, "source_query", None) or ""
+        if not query.strip():
+            return []
+        try:
+            aliases = extract_dataset_table_aliases_from_sql(query)
+        except DatasetTableSqlError:
+            return []
+        deps: List[int] = []
+        for alias in aliases:
+            ref_id = alias_lookup.get(alias.lower())
+            if ref_id is not None and ref_id != other_id:
+                deps.append(ref_id)
+        return deps
+
+    target = int(table_id)
+    for start in proposed_dependency_ids:
+        # BFS from each proposed dependency; if we reach `target`, we have a cycle.
+        stack = [int(start)]
+        visited: set[int] = set()
+        while stack:
+            current = stack.pop()
+            if current == target:
+                raise DatasetTableSqlError(
+                    "Phát hiện vòng lặp giữa các Calculated Table — bảng này đang trỏ "
+                    "vào một bảng mà (cuối cùng) lại trỏ ngược về chính nó. "
+                    "Hãy gỡ một mắt xích trong chuỗi phụ thuộc trước khi lưu.",
+                    code="DERIVED_TABLE_CYCLE",
+                )
+            if current in visited:
+                continue
+            visited.add(current)
+            stack.extend(_dependencies_of(current))
+
+
 def collect_derived_dependency_table_ids(
     db: Session,
     dataset_id: int,

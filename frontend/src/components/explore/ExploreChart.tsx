@@ -351,6 +351,9 @@ export interface ExploreChartProps {
   /** When true, backend already ran GROUP BY aggregation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip client-side applyGroupByAgg */
   preAggregated?: boolean;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  /** Phase-4: map qualified-or-bare field → display label, so legends and
+   *  tooltips show measure.label instead of SQL identifiers. */
+  labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
 }
 
 function ExploreChartInner({
@@ -362,6 +365,7 @@ function ExploreChartInner({
   havingFilters = [],
   preAggregated = false,
   onSelectDataPoint,
+  labelMap,
 }: ExploreChartProps) {
   const style = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   const PALETTE = useMemo(
@@ -385,8 +389,8 @@ function ExploreChartInner({
   const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
   const model = useMemo(
-    () => buildExploreChartModel({ type, data, roleConfig, havingFilters, preAggregated }),
-    [type, data, roleConfig, havingFilters, preAggregated],
+    () => buildExploreChartModel({ type, data, roleConfig, havingFilters, preAggregated, labelMap }),
+    [type, data, roleConfig, havingFilters, preAggregated, labelMap],
   );
   const {
     roleConfig: normalizedRoleConfig,
@@ -573,7 +577,7 @@ function ExploreChartInner({
 
   if (type === 'KPI') {
     if (!kpiMetric || kpiValue === undefined) return <EmptyState message="Select a value column to render this card." />;
-    const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric);
+    const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric, labelMap);
     const benchmarkValue = kpiBenchmarkValue ?? (
       style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
         ? null
@@ -696,7 +700,7 @@ function ExploreChartInner({
                   <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m)]} />
+              <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m, labelMap)]} />
               {renderLegend()}
             </PieChart>
           </ResponsiveContainer>

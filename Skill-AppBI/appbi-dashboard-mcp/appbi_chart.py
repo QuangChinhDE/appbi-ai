@@ -142,12 +142,30 @@ CATEGORY_VALUE_CHART_TYPES = {
 
 @tool("report")
 async def list_charts(
+    q: str | None = None,
+    chart_type: str | None = None,
+    scope: str = "all",
+    sort: str = "updated_desc",
+    skip: int = 0,
+    limit: int = 100,
     dataset_id: int | None = None,
     dataset_table_id: int | None = None,
     summary: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """List charts. Filter by dataset or specific table when narrowing scope.
+    """List charts. Narrow via BE-supported filters or post-filter locally.
+
+    BE-supported query params:
+      - `q`: substring search across name/type/dataset/description/tags.
+      - `chart_type`: enum filter (BAR, LINE, KPI, ...). Uppercase.
+      - `scope`: 'all' (default) | 'mine' | 'shared'.
+      - `sort`: 'updated_desc' | 'created_desc' | 'name_asc' | 'name_desc' | 'relevance'.
+      - `skip` / `limit`: pagination (max limit=500).
+
+    `dataset_id` / `dataset_table_id` are NOT understood by the backend
+    list endpoint; when supplied, this tool fetches the page and filters
+    the returned items client-side. Combine with `limit` to avoid pulling
+    every chart in the org.
 
     Default returns the full chart records (config payload included — a list
     of 40+ charts can exceed 500KB). Pass `summary=True` to keep only
@@ -159,11 +177,28 @@ async def list_charts(
         _query_path(
             "/charts/",
             {
-                "dataset_id": dataset_id,
-                "dataset_table_id": dataset_table_id,
+                "q": q,
+                "chart_type": chart_type,
+                "scope": scope,
+                "sort": sort,
+                "skip": skip,
+                "limit": limit,
             },
         ),
     )
+    if isinstance(items, list):
+        if dataset_id is not None:
+            items = [
+                item for item in items
+                if isinstance(item, dict)
+                and (item.get("dataset_id") == int(dataset_id))
+            ]
+        if dataset_table_id is not None:
+            items = [
+                item for item in items
+                if isinstance(item, dict)
+                and (item.get("dataset_table_id") == int(dataset_table_id))
+            ]
     if summary and isinstance(items, list):
         return {"items": [_summarize_chart_item(item) for item in items]}
     return {"items": items}
@@ -235,7 +270,7 @@ async def preview_chart_data(
     dataset_table_id: int,
     chart_type: str,
     config: dict[str, Any],
-    context: dict[str, Any] | None = None,
+    context: str | None = None,
     include_source_sample: bool = False,
     source_sample_limit: int = 50,
     ctx: Context | None = None,
@@ -253,6 +288,9 @@ async def preview_chart_data(
     `styleConfig`, `filters`, `baseFilters`. The blueprint flow builds
     this shape for you; for ad-hoc previews, mirror the structure
     `propose_dashboard_blueprint` returns under `blueprint_template`.
+    `context` is a string label for the runtime filter scope (typical
+    value: "dashboard"). Backend uses it to resolve filter context when
+    the chart's config has scope-keyed filter overrides.
     """
     body = _drop_none(
         {

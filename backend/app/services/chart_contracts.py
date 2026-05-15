@@ -11,7 +11,7 @@ from copy import deepcopy
 from typing import Any
 
 
-_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct"}
+_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
 CHART_QUERY_MODE_GENERATED = "generated"
 CHART_QUERY_MODE_CUSTOM = "custom"
 _VALID_CHART_QUERY_MODES = {

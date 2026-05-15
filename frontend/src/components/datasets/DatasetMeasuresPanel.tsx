@@ -17,6 +17,8 @@ interface DatasetMeasuresPanelProps {
   focusMeasureName?: string | null;
   triggerAddMeasure?: number;
   onClearMeasureFocus?: () => void;
+  /** Open the page-level AddColumnModal targeting a specific table. */
+  onRequestAddColumn?: (tableId: number) => void;
 }
 
 function tableKindRank(table: DatasetTable | null | undefined): number {
@@ -27,7 +29,7 @@ function tableKindRank(table: DatasetTable | null | undefined): number {
   return 3;
 }
 
-export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus }: DatasetMeasuresPanelProps) {
+export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRequestAddColumn }: DatasetMeasuresPanelProps) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
 
@@ -176,6 +178,7 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
             focusMeasureName={focusMeasureName}
             triggerAddMeasure={triggerAddMeasure}
             singleMeasureMode={singleMeasureMode}
+            onRequestAddColumn={onRequestAddColumn}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">

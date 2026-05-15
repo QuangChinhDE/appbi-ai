@@ -359,6 +359,75 @@ def _heuristic_relationship_for_columns(from_column: str, to_column: str) -> str
     return "many_to_one"
 
 
+def _ensure_no_chart_depends_on_join(
+    db: Session,
+    *,
+    dataset_id: int,
+    join_view_name: str,
+    join_alias: str | None,
+) -> None:
+    """Reject deactivation of a join when at least one chart still uses it.
+
+    A chart "uses" a join when its config JSON mentions the joined view name
+    or alias as a qualifier (e.g. ``users.email`` or ``creator.name``). The
+    check is intentionally substring-based: it's conservative (a couple of
+    false positives are fine — they only warn) and side-steps having to know
+    every chart config dialect.
+    """
+    import json as _json
+    from app.models.dataset import DatasetTable
+    from app.models.models import Chart
+
+    qualifiers = {join_view_name.strip()}
+    if join_alias:
+        qualifiers.add(join_alias.strip())
+    qualifiers = {q for q in qualifiers if q}
+    if not qualifiers:
+        return
+
+    charts = (
+        db.query(Chart)
+        .join(DatasetTable, Chart.dataset_table_id == DatasetTable.id, isouter=True)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    )
+    hits: list[str] = []
+    for chart in charts:
+        try:
+            config_text = _json.dumps(chart.config or {}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            config_text = str(chart.config or "")
+        for q in qualifiers:
+            # Match qualified field reference patterns: "qualifier." or
+            # "qualifier"<colon|quote-close> in JSON. Plain substring is
+            # acceptable for a guard rail — the user can always remove the
+            # chart binding then retry.
+            if f'"{q}.' in config_text or f"{q}." in config_text:
+                hits.append(f"Chart \"{chart.name}\" (id={chart.id})")
+                break
+
+    if hits:
+        # Raise with a structured payload so the API layer can serialise it
+        # as a 409 with `code`, `message`, `affected_charts` — matching the
+        # other Phase-3 cascade flows. We attach the data on the exception
+        # via a custom attribute that the caller inspects.
+        err = ValueError(
+            f"{len(hits)} chart đang dùng field từ \"{join_view_name}\". "
+            "Xác nhận để tắt quan hệ (chart cần sửa lại sau)."
+        )
+        err.cascade_payload = {  # type: ignore[attr-defined]
+            "code": "JOIN_INACTIVE_CASCADE",
+            "message": (
+                f"{len(hits)} chart đang dùng field từ \"{join_view_name}\". "
+                "Xác nhận để tắt quan hệ (chart cần sửa lại sau)."
+            ),
+            "join_view": join_view_name,
+            "join_alias": join_alias,
+            "affected_charts": hits,
+        }
+        raise err
+
+
 def _build_join_adjacency(model: SemanticModel) -> dict[str, set[str]]:
     adjacency: dict[str, set[str]] = {}
     for explore in model.explores or []:
@@ -367,6 +436,12 @@ def _build_join_adjacency(model: SemanticModel) -> dict[str, set[str]]:
             continue
         adjacency.setdefault(base_view_name, set())
         for join in explore.joins or []:
+            # Phase-3b: inactive joins are stored but ignored for graph
+            # operations (path resolution, cycle detection). Default True
+            # for legacy joins missing the flag.
+            raw_active = join.get("is_active")
+            if raw_active is not None and not bool(raw_active):
+                continue
             source_view_name = str(join.get("from_view") or base_view_name).strip()
             target_view_name = str(join.get("view") or "").strip()
             if not source_view_name or not target_view_name:
@@ -1516,6 +1591,9 @@ def add_join(
     join_type: str = "left",
     relationship: str = "many_to_one",
     alias: str | None = None,
+    is_active: bool = True,
+    cross_filter: str = "single",
+    force: bool = False,
 ) -> dict:
     """
     Add (or update) a join from one semantic view to another.
@@ -1581,8 +1659,10 @@ def add_join(
 
     normalized_join_type = _normalize_join_type(join_type)
     normalized_relationship = _normalize_relationship_type(relationship)
-    if normalized_relationship == "many_to_many":
-        raise ValueError("Many-to-many relationships are not supported")
+    # Phase-3b: many-to-many is allowed but risky (cartesian fan-out can double
+    # aggregates). We accept the relationship and surface a warning to the
+    # caller via the response; the UI shows a red banner in RelationshipDialog
+    # so the user is reminded to use a bridge table when possible.
 
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
@@ -1621,6 +1701,9 @@ def add_join(
         "to_column": primary_to_column,
         "from_columns": normalized_from_columns,
         "to_columns": normalized_to_columns,
+        # Phase-3b additions
+        "is_active": bool(is_active),
+        "cross_filter": cross_filter if cross_filter in ("single", "both") else "single",
     }
 
     # Update an exact existing join, otherwise append so one pair of tables can
@@ -1634,6 +1717,20 @@ def add_join(
             == _join_pairs_signature(normalized_from_columns, normalized_to_columns)
             and existing_alias == alias_clean
         ):
+            # Phase-3b: if the user is flipping a previously-active join to
+            # inactive, refuse when any chart still consumes the joined view's
+            # fields. Without this guard the chart silently breaks because
+            # the resolver stops emitting that join in the SQL.
+            # When `force=True`, the API layer has already prompted the user
+            # to confirm — skip the guard.
+            previously_active = bool(j.get("is_active", True))
+            if previously_active and not new_join["is_active"] and not force:
+                _ensure_no_chart_depends_on_join(
+                    db,
+                    dataset_id=dataset_id,
+                    join_view_name=to_view.name,
+                    join_alias=alias_clean,
+                )
             joins[i] = new_join
             break
     else:
@@ -1872,11 +1969,17 @@ def suggest_join_relationship(
             normalized_to_column,
         )
 
-    if blocking_code is None and suggested_relationship == "many_to_many":
-        blocking_code = "many_to_many"
-        blocking_message = (
-            "Cannot create relationship because both join columns contain duplicate non-null values, "
-            "so this join is many-to-many."
+    # Phase-3b: many-to-many is no longer a blocking condition. We still flag
+    # it as a non-blocking warning so the dialog can render a red banner that
+    # nudges users toward the safer bridge-table pattern, but they can choose
+    # to proceed if the schema genuinely is many-to-many (e.g. tag tables).
+    warning_code: str | None = None
+    warning_message: str | None = None
+    if suggested_relationship == "many_to_many":
+        warning_code = "many_to_many"
+        warning_message = (
+            "Quan hệ many-to-many: aggregate có thể bị nhân đôi do cartesian fan-out. "
+            "Nên dùng bridge table + 2 quan hệ N:1 khi có thể."
         )
 
     return {
@@ -1891,6 +1994,8 @@ def suggest_join_relationship(
         "can_create": blocking_code is None,
         "blocking_code": blocking_code,
         "message": blocking_message,
+        "warning_code": warning_code,
+        "warning_message": warning_message,
     }
 
 

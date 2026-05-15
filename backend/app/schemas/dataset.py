@@ -250,9 +250,15 @@ class DatasourceTable(BaseModel):
 # ===== Execute Query Schemas =====
 
 class AggregationSpec(BaseModel):
-    """Aggregation specification"""
+    """Aggregation specification.
+
+    ``function`` accepts the 6 built-in aggregates plus ``auto`` — which means
+    "use the aggregation stored on the semantic measure". The Explore editor
+    sends ``auto`` for any metric pulled from a measure (because the
+    aggregation is part of the measure definition, not a per-chart choice).
+    """
     field: str
-    function: str = Field(..., pattern="^(sum|avg|count|min|max|count_distinct)$")
+    function: str = Field(..., pattern="^(sum|avg|count|min|max|count_distinct|auto)$")
 
 
 class OrderBySpec(BaseModel):

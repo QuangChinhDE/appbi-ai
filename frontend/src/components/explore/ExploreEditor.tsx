@@ -106,6 +106,8 @@ interface ExploreQueryState {
   chartColumns: ColumnMetadata[];
   chartPreAggregated: boolean;
   executionTimeMs?: number;
+  /** Phase-3b: semantic engine warnings (ambiguous join paths, etc.) */
+  warnings?: string[];
 }
 
 function normalizeSavedQueryMode(config: Record<string, any> | null | undefined): QueryMode {
@@ -596,6 +598,37 @@ export function ExploreEditor({
   const { data: dataset } = useDataset(selectedDatasetId);
   const { data: datasetModel } = useDatasetModel(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
+
+  /**
+   * Phase-4: build a {qualified-or-bare field → display label} map from the
+   * dataset's semantic model. Passed into ExploreChart so chart legends /
+   * tooltips render the user-friendly label declared on the measure or
+   * dimension (e.g. "Số người dùng" instead of "task_user_distinct").
+   *
+   * Same map covers both dimensions and measures. Falls back to undefined
+   * when the model hasn't loaded, in which case metricLabel uses the bare
+   * field name (already a big improvement over "AUTO of view.field").
+   */
+  const semanticLabelMap = useMemo(() => {
+    if (!datasetModel?.views) return undefined;
+    const map = new Map<string, string>();
+    for (const view of datasetModel.views) {
+      for (const dim of view.dimensions ?? []) {
+        const label = (dim.label || '').trim();
+        if (!label) continue;
+        map.set(`${view.name}.${dim.name}`, label);
+        // Bare key as fallback for queries that strip the view qualifier
+        if (!map.has(dim.name)) map.set(dim.name, label);
+      }
+      for (const measure of view.measures ?? []) {
+        const label = (measure.label || '').trim();
+        if (!label) continue;
+        map.set(`${view.name}.${measure.name}`, label);
+        if (!map.has(measure.name)) map.set(measure.name, label);
+      }
+    }
+    return map;
+  }, [datasetModel]);
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);
   const resolvedBackLabel = backLabel ?? (embedded ? 'Back to dashboard' : 'All Charts');
@@ -1318,6 +1351,7 @@ export function ExploreEditor({
           chartColumns,
           chartPreAggregated: Boolean(previewResponse.pre_aggregated),
           executionTimeMs: previewResponse.execution_time_ms,
+          warnings: previewResponse.warnings,
         });
         setCustomLastRunSignature(nextCustomSignature);
       } else {
@@ -1349,6 +1383,7 @@ export function ExploreEditor({
           chartRows: chartResult.rows,
           chartColumns: chartResult.columns,
           chartPreAggregated: chartResult.preAggregated,
+          warnings: (response as any).warnings,
         });
         setGeneratedLastRunSignature(currentQuerySignature);
       }
@@ -2013,15 +2048,28 @@ export function ExploreEditor({
                 </div>
               ) : previewPanelTab === 'chart' ? (
                 <div className="h-full overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                  <div className="h-full overflow-hidden rounded-[20px] bg-surface-1 p-3">
-                    <ExploreChart
-                      type={chartType}
-                      data={displayedQueryState.chartRows}
-                      roleConfig={normalizedRoleConfig}
-                      styleConfig={chartStyleConfig}
-                      onStyleConfigChange={setChartStyleConfig}
-                      preAggregated={displayedQueryState.chartPreAggregated}
-                    />
+                  <div className="flex h-full flex-col overflow-hidden rounded-[20px] bg-surface-1 p-3">
+                    {/* Phase-3b: surface semantic engine warnings (ambiguous
+                        join paths, etc.) so the user knows when results may
+                        depend on which join path the resolver picked. */}
+                    {displayedQueryState.warnings && displayedQueryState.warnings.length > 0 && (
+                      <div className="mb-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-[11px] leading-snug text-warning">
+                        {displayedQueryState.warnings.map((w, i) => (
+                          <div key={i}>⚠ {w}</div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex-1 overflow-hidden">
+                      <ExploreChart
+                        type={chartType}
+                        data={displayedQueryState.chartRows}
+                        roleConfig={normalizedRoleConfig}
+                        styleConfig={chartStyleConfig}
+                        onStyleConfigChange={setChartStyleConfig}
+                        preAggregated={displayedQueryState.chartPreAggregated}
+                        labelMap={semanticLabelMap}
+                      />
+                    </div>
                   </div>
                 </div>
               ) : (

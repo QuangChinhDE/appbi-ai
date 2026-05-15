@@ -431,6 +431,7 @@ async def update_dataset_table(
     enabled: bool | None = None,
     type_overrides: dict[str, Any] | None = None,
     column_formats: dict[str, Any] | None = None,
+    transformations: list[dict[str, Any]] | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -441,6 +442,9 @@ async def update_dataset_table(
         (e.g. {"order_date": "date"}).
       - Set display formats via `column_formats`.
       - Disable a table without removing it via `enabled=False`.
+      - Re-author the column transformation pipeline via `transformations`
+        (calculated columns, lookups, etc.). Replaces the existing list
+        wholesale — pass the full pipeline you want stored.
     """
     changes = _drop_none(
         {
@@ -449,6 +453,7 @@ async def update_dataset_table(
             "enabled": enabled,
             "type_overrides": type_overrides,
             "column_formats": column_formats,
+            "transformations": transformations,
         }
     )
     if not user_confirmed:

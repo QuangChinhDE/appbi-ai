@@ -39,6 +39,11 @@ class JoinEdge:
     from_column: str | None
     to_column: str | None
     relationship: str | None
+    # Phase-3b additions. Defaults preserve pre-Phase-3 behaviour (every join
+    # is active + uni-directional) so legacy `joins` JSON without these keys
+    # still build the same graph.
+    is_active: bool = True
+    cross_filter: str = "single"   # "single" | "both"
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,11 @@ class JoinPath:
     """A resolved multi-hop join path from base node to a target node."""
     target_node: str
     steps: list[JoinStep] = field(default_factory=list)
+    # Phase-3b: BFS hit the target via more than one same-depth route. The
+    # first path is still returned (deterministic) but downstream consumers
+    # can surface this so the user knows the answer might depend on which
+    # path the engine picked.
+    ambiguous: bool = False
 
     def is_empty(self) -> bool:
         return not self.steps
@@ -98,13 +108,24 @@ class SemanticJoinResolver:
                 edge = self._edge_from_join_dict(from_view, join)
                 if edge is None:
                     continue
+                # Phase-3b: inactive joins stay in storage but are invisible to
+                # the resolver so path resolution / filter checks behave as if
+                # the relationship doesn't exist. Active=True is the default
+                # so legacy joins are unaffected.
+                if not edge.is_active:
+                    continue
                 self._adj.setdefault(edge.from_node, []).append(edge)
                 self._node_to_view.setdefault(edge.to_node, edge.to_view)
-                # In bidirectional mode add a reverse edge so views that are
-                # normally only join *targets* can reach the base view.  We
-                # only do this for simple column-equality joins because the
-                # sql_on template cannot be reliably reversed.
-                if self._bidirectional and edge.from_column and edge.to_column:
+                # Add a reverse edge when either:
+                #   (a) the resolver was constructed in legacy bidirectional
+                #       mode (used by a few callers that want full bidir model)
+                #   (b) this specific edge requested cross_filter="both"
+                # Only simple column-equality joins can be safely reversed
+                # because we can't flip an arbitrary `sql_on` template.
+                wants_reverse = (
+                    self._bidirectional or edge.cross_filter == "both"
+                )
+                if wants_reverse and edge.from_column and edge.to_column:
                     reverse = JoinEdge(
                         from_node=edge.to_node,
                         to_node=edge.from_node,
@@ -114,6 +135,8 @@ class SemanticJoinResolver:
                         from_column=edge.to_column,
                         to_column=edge.from_column,
                         relationship=edge.relationship,
+                        is_active=True,
+                        cross_filter="both",
                     )
                     self._adj.setdefault(reverse.from_node, []).append(reverse)
                     self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
@@ -128,6 +151,13 @@ class SemanticJoinResolver:
         # from the actual source view (legacy data). Honor it when present.
         explicit_from = str(join.get("from_view") or "").strip()
         from_node = explicit_from or from_view
+        # Phase-3b: read is_active / cross_filter with defaults preserving
+        # pre-Phase-3 behaviour when the keys are missing on legacy JSON.
+        raw_active = join.get("is_active")
+        is_active = True if raw_active is None else bool(raw_active)
+        cross_filter = str(join.get("cross_filter") or "single").strip().lower()
+        if cross_filter not in ("single", "both"):
+            cross_filter = "single"
         return JoinEdge(
             from_node=from_node,
             to_node=alias,
@@ -137,6 +167,8 @@ class SemanticJoinResolver:
             from_column=(str(join.get("from_column") or "").strip() or None),
             to_column=(str(join.get("to_column") or "").strip() or None),
             relationship=(join.get("relationship") or None),
+            is_active=is_active,
+            cross_filter=cross_filter,
         )
 
     # ── public API ─────────────────────────────────────────────────────
@@ -192,7 +224,9 @@ class SemanticJoinResolver:
                             "Ambiguous join paths to %r in model; using first discovered path.",
                             target_node,
                         )
-                    return self._reconstruct_path(target_node, parent)
+                    path = self._reconstruct_path(target_node, parent)
+                    path.ambiguous = ambiguous_tie
+                    return path
                 queue.append(edge.to_node)
 
         return None

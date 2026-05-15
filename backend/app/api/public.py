@@ -1892,6 +1892,10 @@ def get_public_chart_data(
 class _AiChatBody(BaseModel):
     messages: list[dict]
     context_snapshot: dict | None = None
+    # Viewer-applied slicer filters (currently set on the dashboard UI).
+    # When present, merged with the link's DA-defined public filters so the
+    # bot sees exactly what the dashboard is showing.
+    viewer_filters: list[dict] | None = None
 
 
 @router.get("/dashboards/{token}/ai/context")
@@ -1899,13 +1903,19 @@ class _AiChatBody(BaseModel):
 def get_dashboard_ai_context(
     token: str,
     request: Request,
+    filters: str | None = Query(
+        default=None,
+        description="JSON-encoded list of viewer-applied slicer filter objects.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
     """Return chart data context for the AI bot.
 
     The AI bot fetches this once on first open, caches it client-side for
-    the session, and sends a snapshot with each chat turn.
+    the session, and sends a snapshot with each chat turn. ``filters``
+    carries the viewer's current slicer state so the snapshot reflects the
+    same data the dashboard is rendering.
     """
     from app.services import dashboard_ai_service  # local import â€” optional feature
 
@@ -1922,8 +1932,26 @@ def get_dashboard_ai_context(
             detail="AI bot is not enabled for this shared link.",
         )
 
+    viewer_filters: list[dict] = []
+    if filters:
+        try:
+            parsed = json.loads(filters)
+            if not isinstance(parsed, list):
+                raise ValueError("filters must be a JSON array")
+            viewer_filters = [item for item in parsed if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filters parameter: {exc}",
+            ) from exc
+
+    combined_filters = _dedupe_filters_by_field([
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *viewer_filters,
+    ])
+
     try:
-        context = dashboard_ai_service.build_ai_context(db, dash, public_filters)
+        context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
     except Exception as exc:
         logger.exception("AI context build error for token=%s", token)
         raise HTTPException(
@@ -1998,8 +2026,15 @@ async def chat_dashboard_ai(
                 )
         context = context_snapshot
     else:
+        # Merge viewer slicer filters with link-level public filters so the
+        # context the LLM sees matches what the dashboard is rendering.
+        viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
+        combined_filters = _dedupe_filters_by_field([
+            *[item for item in (public_filters or []) if isinstance(item, dict)],
+            *[item for item in viewer_filters_body if isinstance(item, dict)],
+        ])
         try:
-            context = dashboard_ai_service.build_ai_context(db, dash, public_filters)
+            context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
         except Exception:
             logger.exception("AI context build error (chat fallback) for token=%s", token)
             raise HTTPException(
@@ -2110,6 +2145,12 @@ class _AiAgentChatBody(BaseModel):
     briefing: dict | None = None
     # Phase B â€” conversation state from previous turns. Optional first turn.
     state: dict | None = None
+    # Viewer-applied slicer filters (currently set on the dashboard UI). When
+    # present, merged with the link's DA-defined public filters so the agent's
+    # tool calls see exactly what the dashboard is rendering. Without this the
+    # bot is blind to live slicer changes â€” it would answer with un-filtered
+    # numbers while the user is looking at a filtered view.
+    viewer_filters: list[dict] | None = None
 
 
 
@@ -2122,6 +2163,9 @@ class _AiBriefingBriefBody(BaseModel):
     produce an Executive Brief paragraph.
     """
     briefing: dict
+    # Same purpose as on _AiAgentChatBody: viewer slicer state so the recon
+    # snapshot reflects the dashboard the user is actually looking at.
+    viewer_filters: list[dict] | None = None
 
 
 @router.get("/dashboards/{token}/ai/dashboard.pdf")
@@ -2210,6 +2254,10 @@ def get_dashboard_ai_pdf(
 def get_dashboard_ai_briefing_guess(
     token: str,
     request: Request,
+    filters: str | None = Query(
+        default=None,
+        description="JSON-encoded list of viewer-applied slicer filter objects.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
@@ -2229,8 +2277,27 @@ def get_dashboard_ai_briefing_guess(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI bot is not enabled for this shared link.",
         )
+
+    viewer_filters: list[dict] = []
+    if filters:
+        try:
+            parsed = json.loads(filters)
+            if not isinstance(parsed, list):
+                raise ValueError("filters must be a JSON array")
+            viewer_filters = [item for item in parsed if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filters parameter: {exc}",
+            ) from exc
+
+    combined_filters = _dedupe_filters_by_field([
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *viewer_filters,
+    ])
+
     try:
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
         recon = build_proactive_recon(ctx)
         guess = guess_briefing_from_recon(
             recon,
@@ -2305,7 +2372,12 @@ async def post_dashboard_ai_briefing_brief(
     briefing = Briefing.from_dict(body.briefing or {})
     briefing.confirmed = True
 
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
+    combined_filters = _dedupe_filters_by_field([
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *[item for item in viewer_filters_body if isinstance(item, dict)],
+    ])
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
         briefing=briefing,
@@ -2564,7 +2636,15 @@ async def chat_dashboard_ai_agent(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
 
     captured_key = effective_key
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+    # Merge link-level public filters with viewer-applied slicer filters from
+    # the dashboard UI. Same pattern as the public chart-data endpoint at
+    # line ~1864 â€” later entries (viewer overrides) win via dedupe.
+    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
+    combined_filters = _dedupe_filters_by_field([
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *[item for item in viewer_filters_body if isinstance(item, dict)],
+    ])
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
 
     # Phase A + B: parse briefing + state, default-construct if missing.
     from app.services.dashboard_ai_bot.briefing import Briefing as _Briefing

@@ -81,6 +81,10 @@ class FilterUtils:
             
             # Check joined views
             for join_def in explore.joins:
+                # Phase-3b: inactive joins don't expose fields for filter usage
+                raw_active = join_def.get('is_active')
+                if raw_active is not None and not bool(raw_active):
+                    continue
                 if join_def.get('view') == view_name:
                     # Get joined view
                     joined_view = (

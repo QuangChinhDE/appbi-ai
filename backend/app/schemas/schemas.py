@@ -144,6 +144,30 @@ class ChartCreate(ChartBase):
             raise ValueError("dataset_table_id must be provided")
         return self
 
+    @model_validator(mode='after')
+    def validate_config_shape(self):
+        """Phase-9: prevent obviously broken chart configs from being saved.
+
+        We can't enforce per-chart-type schemas without breaking the many
+        legacy / hand-edited configs in production. Instead we require the
+        config to carry at least ONE recognised role container — that's the
+        minimum shape every renderer expects. An empty ``{}`` saved by a
+        broken UI flow would otherwise live happily in DB and only fail at
+        query time with a confusing "no data" empty chart.
+        """
+        if not isinstance(self.config, dict):
+            raise ValueError("config must be an object")
+        recognised_keys = {
+            "roleConfig", "generatedRoleConfig", "customRoleConfig",
+            "customSql", "semanticBinding",
+        }
+        if not (set(self.config.keys()) & recognised_keys):
+            raise ValueError(
+                "config phải có ít nhất một trong: roleConfig, generatedRoleConfig, "
+                "customRoleConfig, customSql, semanticBinding"
+            )
+        return self
+
 
 class ChartUpdate(BaseModel):
     """Schema for updating a chart."""

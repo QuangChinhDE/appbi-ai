@@ -1,24 +1,79 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
+
+/**
+ * usePortalTooltip — anchored tooltip rendered into document.body so it
+ * escapes ancestor `overflow:hidden` containers (table headers, panel bars).
+ * Updates position on hover/focus and on scroll/resize.
+ */
+function usePortalTooltip(side: 'left' | 'right') {
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number; align: 'left' | 'right' } | null>(null);
+
+  const recompute = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    setCoords({
+      top: rect.bottom + 6,
+      left: side === 'right' ? rect.right : rect.left,
+      align: side,
+    });
+  }, [side]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recompute();
+    const onMove = () => recompute();
+    window.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
+    return () => {
+      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+    };
+  }, [open, recompute]);
+
+  const bind = {
+    ref: triggerRef,
+    onMouseEnter: () => setOpen(true),
+    onMouseLeave: () => setOpen(false),
+    onFocus: () => setOpen(true),
+    onBlur: () => setOpen(false),
+  };
+
+  return { open, coords, bind };
+}
 
 /**
  * HelpTooltip — small info icon that shows a plain-text tooltip on hover or focus.
  */
 export function HelpTooltip({ text }: { text: string }) {
+  const { open, coords, bind } = usePortalTooltip('left');
   return (
-    <span
-      tabIndex={0}
-      role="button"
-      aria-label="Show help"
-      className="group/help relative ml-1 inline-flex items-center rounded-full align-middle outline-none"
-    >
-      <Info className="h-3.5 w-3.5 cursor-help text-text-quaternary transition-colors group-hover/help:text-brand group-focus/help:text-brand" />
-      <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-72 rounded-md bg-surface-inverse px-2.5 py-2 text-tiny font-normal normal-case tracking-normal text-text-inverse shadow-linear-lg group-hover/help:block group-focus/help:block">
-        {text}
+    <>
+      <span
+        {...bind}
+        tabIndex={0}
+        role="button"
+        aria-label="Show help"
+        className="group/help ml-1 inline-flex items-center rounded-full align-middle outline-none"
+      >
+        <Info className="h-3.5 w-3.5 cursor-help text-text-quaternary transition-colors group-hover/help:text-brand group-focus/help:text-brand" />
       </span>
-    </span>
+      {open && coords && typeof document !== 'undefined' && createPortal(
+        <span
+          style={{ position: 'fixed', top: coords.top, left: coords.left, zIndex: 9999 }}
+          className="pointer-events-none w-72 rounded-md bg-surface-inverse px-2.5 py-2 text-tiny font-normal normal-case tracking-normal text-text-inverse shadow-linear-lg"
+        >
+          {text}
+        </span>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -26,8 +81,8 @@ export function HelpTooltip({ text }: { text: string }) {
  * HelpTooltipRich — info icon with rich (JSX) tooltip content.
  * Use when the tooltip needs formatting: bold labels, bullet lists, etc.
  *
- * @param side  - Which side of the trigger the panel appears ('left' | 'right')
- *               Defaults to 'left' (panel aligns to the left edge of the icon).
+ * Rendered via React Portal so the tooltip is not clipped by an ancestor
+ * with `overflow:hidden` (a frequent issue inside scrollable panels).
  */
 export function HelpTooltipRich({
   children,
@@ -36,20 +91,33 @@ export function HelpTooltipRich({
   children: React.ReactNode;
   side?: 'left' | 'right';
 }) {
-  const alignClass = side === 'right' ? 'right-0' : 'left-0';
+  const { open, coords, bind } = usePortalTooltip(side);
   return (
-    <span
-      tabIndex={0}
-      role="button"
-      aria-label="Show help"
-      className="group/help relative ml-1 inline-flex items-center rounded-full align-middle outline-none"
-    >
-      <Info className="h-3.5 w-3.5 cursor-help text-text-quaternary transition-colors group-hover/help:text-text-secondary group-focus/help:text-brand" />
+    <>
       <span
-        className={`pointer-events-none absolute ${alignClass} top-full z-50 mt-1.5 hidden w-80 rounded-md border border-[rgba(255,255,255,0.08)] bg-surface-inverse px-3 py-2.5 text-tiny font-normal normal-case tracking-normal text-text-inverse shadow-linear-lg group-hover/help:block group-focus/help:block`}
+        {...bind}
+        tabIndex={0}
+        role="button"
+        aria-label="Show help"
+        className="group/help ml-1 inline-flex items-center rounded-full align-middle outline-none"
       >
-        {children}
+        <Info className="h-3.5 w-3.5 cursor-help text-text-quaternary transition-colors group-hover/help:text-text-secondary group-focus/help:text-brand" />
       </span>
-    </span>
+      {open && coords && typeof document !== 'undefined' && createPortal(
+        <span
+          style={{
+            position: 'fixed',
+            top: coords.top,
+            left: coords.align === 'left' ? coords.left : undefined,
+            right: coords.align === 'right' ? window.innerWidth - coords.left : undefined,
+            zIndex: 9999,
+          }}
+          className="pointer-events-none w-80 rounded-md border border-[rgb(var(--border-strong))] bg-surface-inverse px-3 py-2.5 text-tiny font-normal normal-case tracking-normal text-text-inverse shadow-linear-lg"
+        >
+          {children}
+        </span>,
+        document.body,
+      )}
+    </>
   );
 }

@@ -239,6 +239,11 @@ interface Props {
   /** True when the admin has pre-configured an API key for this link.
    *  When set, skip the key-entry view and send no key header (backend uses stored key). */
   keyConfigured?: boolean;
+  /** Viewer-applied slicer filters from the dashboard UI. Passed verbatim to
+   *  every AI Bot call so the bot sees the same filtered data the user is
+   *  looking at. When empty/missing the bot sees only the link's DA-defined
+   *  Access filters (legacy behavior). */
+  viewerFilters?: unknown[];
 }
 
 // ── Chart name resolution ────────────────────────────────────────────────────
@@ -317,6 +322,7 @@ export function DashboardAiBot({
   normalCostCapUsd,
   thinkingCostCapUsd,
   keyConfigured,
+  viewerFilters,
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   // When keyConfigured the admin has pre-set a key server-side — start in 'chat'
@@ -631,6 +637,7 @@ export function DashboardAiBot({
         convState,
         thinkingMode ? resolvedThinkingCostCapUsd : resolvedNormalCostCapUsd,
         thinkingMode ? 'thinking' : 'normal',
+        viewerFilters,
       );
       for await (const ev of gen) {
         if (abortRef.current) break;

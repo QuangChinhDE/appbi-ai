@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from datetime import datetime, date
 from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
@@ -227,8 +228,404 @@ def _validate_measure_dependencies(
         visiting.remove(node)
         visited.add(node)
 
-    for measure_name in graph:
-        visit(measure_name, [])
+    for node in graph:
+        visit(node, [])
+
+
+def _columns_for_table(table: Optional[DatasetTable]) -> set[str]:
+    """Return the set of column names available on a DatasetTable.
+
+    Reads from ``columns_cache`` which reflects any Transformation
+    (Calculated Column) already applied. Returns an empty set when the
+    cache hasn't been populated yet (fresh import / sync pending) so the
+    caller knows to skip existence checks rather than reject valid data.
+    """
+    if table is None:
+        return set()
+    raw = getattr(table, "columns_cache", None)
+    if not raw:
+        return set()
+    if isinstance(raw, dict):
+        raw = raw.get("columns") or []
+    names: set[str] = set()
+    for item in raw or []:
+        if isinstance(item, dict):
+            name = item.get("name")
+        else:
+            name = item
+        if name:
+            names.add(str(name).strip())
+    return names
+
+
+def _last_segment(value: Optional[str]) -> str:
+    """Extract the final identifier from a placeholder/qualified expression.
+
+    Accepts ``"col"``, ``"table.col"``, ``"${TABLE}.col"``, ``"${view.col}"``
+    and returns just ``"col"``. Anything that doesn't look like an identifier
+    after stripping returns an empty string.
+    """
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.startswith("${") and "}" in text:
+        text = text.split("}", 1)[1].lstrip(".")
+        # ${view.field} case: text may now be empty if the placeholder
+        # already contained the field; recover by re-splitting the original.
+        if not text:
+            inner = value.strip()[2:].split("}", 1)[0]
+            if "." in inner:
+                text = inner.rsplit(".", 1)[-1]
+    last = text.rsplit(".", 1)[-1].strip()
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", last):
+        return ""
+    return last
+
+
+def _validate_field_references(
+    table: Optional[DatasetTable],
+    dimensions: list[Any],
+    measures: list[Any],
+) -> None:
+    """Reject semantic definitions that reference columns the table doesn't have.
+
+    Phase-2 of "Rút về 2": catches the silent-failure class where a dimension
+    or measure points at a column that was renamed/deleted at the data layer.
+    Without this check, the save succeeds and the failure only surfaces at
+    chart query time as a cryptic SQL error.
+
+    Skips silently when ``columns_cache`` is empty (e.g. table hasn't synced
+    yet) — better to allow the save than to block users on missing metadata.
+    """
+    columns = _columns_for_table(table)
+    if not columns:
+        return  # columns_cache not populated; skip rather than reject
+
+    errors: list[str] = []
+
+    for index, dim in enumerate(dimensions or []):
+        if not isinstance(dim, dict):
+            continue
+        name = str(dim.get("name") or "").strip()
+        if not name:
+            continue
+        # After Phase-1 enforcement, dim.sql == name (or null). The column we
+        # need to verify is `name` itself; we still defensively check the
+        # last segment of `sql` in case a legacy record slips through.
+        target = _last_segment(dim.get("sql")) or name
+        if target not in columns:
+            errors.append(
+                f"Dimension #{index + 1} \"{name}\": cột \"{target}\" không tồn tại trên bảng. "
+                "Kiểm tra lại tên cột hoặc tạo Calculated Column tương ứng trước."
+            )
+
+    for index, measure in enumerate(measures or []):
+        if not isinstance(measure, dict):
+            continue
+        m_name = str(measure.get("name") or "").strip() or f"#{index + 1}"
+        m_type = str(measure.get("type") or "").strip()
+        sql = measure.get("sql")
+        expression = measure.get("expression")
+        # COUNT(*) and expression-based measures don't aggregate a single
+        # named column, so skip the column check for those.
+        if m_type == "count" and (sql in (None, "", "*")):
+            pass
+        elif expression:
+            pass  # free-form SQL; out of scope for this validator
+        else:
+            target = _last_segment(sql)
+            if target and target not in columns:
+                errors.append(
+                    f"Measure \"{m_name}\": cột \"{target}\" không tồn tại trên bảng. "
+                    "Tạo Calculated Column trên bảng nguồn rồi chọn lại cột này."
+                )
+
+        for f_index, flt in enumerate(measure.get("filters") or []):
+            if not isinstance(flt, dict):
+                continue
+            field = flt.get("field")
+            target = _last_segment(field)
+            if target and target not in columns:
+                errors.append(
+                    f"Measure \"{m_name}\": filter #{f_index + 1} trỏ vào cột "
+                    f"\"{target}\" không tồn tại trên bảng."
+                )
+
+    if errors:
+        raise HTTPException(status_code=400, detail=errors[0])
+
+
+def _rewrite_measure_references(
+    db: Session,
+    *,
+    dataset_id: int,
+    view_name: str,
+    rename_map: dict[str, str],
+) -> dict[str, int]:
+    """Phase-6: propagate measure renames across every persisted consumer.
+
+    Rewrites:
+      * Chart.config — qualified ``"<view>.<old>"`` AND bare ``"<old>"``
+        references inside metric.field, measure_configs[].field, x_axis,
+        y_axis, etc. Substring replacement uses JSON-quoted boundaries so
+        we don't accidentally clobber substrings of unrelated identifiers
+        (e.g. renaming ``"rev"`` won't touch ``"revenue"``).
+      * SemanticView.measures[].depends_on — same-view bare entries and
+        cross-view ``"<view>.<old>"`` entries on any view in the dataset.
+      * SemanticView.measures[].expression / where_sql — placeholder
+        ``${<old>}`` and ``${<view>.<old>}`` tokens.
+
+    Returns a summary like ``{"charts": 3, "depends_on": 2, "expressions": 1}``
+    so the API can surface what was changed.
+    """
+    if not rename_map:
+        return {}
+
+    import json as _json
+    import re as _re
+    from app.models.semantic import SemanticView
+    from app.models.models import Chart
+
+    summary = {"charts": 0, "depends_on": 0, "expressions": 0}
+
+    # Resolve the host table of the renamed view. We need this to decide
+    # whether bare references inside a Chart.config can be safely rewritten:
+    # a chart anchored on the SAME dataset_table as the renamed view treats
+    # bare refs as same-view by convention (legacy chart format), so the
+    # rewrite is safe. Charts anchored on a different table use qualified
+    # refs only — bare strings there are unrelated values and must not be
+    # touched.
+    view_obj = (
+        db.query(SemanticView)
+        .filter(SemanticView.name == view_name)
+        .filter(
+            SemanticView.dataset_table_id.in_(
+                [t.id for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()]
+            )
+        )
+        .first()
+    )
+    view_table_id = view_obj.dataset_table_id if view_obj else None
+
+    # ── 1. Chart.config ────────────────────────────────────────────────
+    charts = (
+        db.query(Chart)
+        .join(DatasetTable, Chart.dataset_table_id == DatasetTable.id, isouter=True)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    )
+    for chart in charts:
+        try:
+            config_text = _json.dumps(chart.config or {}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            continue
+        new_text = config_text
+        chart_same_view = (
+            view_table_id is not None
+            and chart.dataset_table_id is not None
+            and chart.dataset_table_id == view_table_id
+        )
+        for old, new in rename_map.items():
+            # Qualified form: "view.old" → "view.new". JSON-quoted so we
+            # only match field-reference strings, not free text. Applied
+            # to every chart in the dataset because qualified refs are
+            # globally unambiguous.
+            new_text = new_text.replace(f'"{view_name}.{old}"', f'"{view_name}.{new}"')
+            # Bare form: only safe on charts anchored to the SAME table
+            # as the renamed view. JSON-quoted boundary prevents matching
+            # substrings (e.g. renaming "rev" must not touch "revenue").
+            if chart_same_view:
+                new_text = new_text.replace(f'"{old}"', f'"{new}"')
+        if new_text != config_text:
+            try:
+                chart.config = _json.loads(new_text)
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(chart, "config")
+                summary["charts"] += 1
+            except _json.JSONDecodeError:
+                continue
+
+    # ── 2. depends_on + expression / where_sql in all views of the model ─
+    table_ids = [
+        t.id for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+    ]
+    views = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id.in_(table_ids))
+        .all()
+        if table_ids
+        else []
+    )
+
+    for v in views:
+        measures = list(v.measures or [])
+        changed = False
+        for m in measures:
+            if not isinstance(m, dict):
+                continue
+
+            # depends_on rewrite. Same-view bare names (when v.name ==
+            # view_name) and cross-view qualified refs both get remapped.
+            deps = m.get("depends_on") or []
+            new_deps: list[str] = []
+            dep_changed = False
+            for dep in deps:
+                raw = str(dep or "").strip()
+                if not raw:
+                    new_deps.append(dep)
+                    continue
+                if "." in raw:
+                    dep_view, dep_name = raw.split(".", 1)
+                    if dep_view == view_name and dep_name in rename_map:
+                        new_deps.append(f"{dep_view}.{rename_map[dep_name]}")
+                        dep_changed = True
+                        continue
+                else:
+                    # Bare → assume same-view, rewrite only when v.name == view_name
+                    if v.name == view_name and raw in rename_map:
+                        new_deps.append(rename_map[raw])
+                        dep_changed = True
+                        continue
+                new_deps.append(dep)
+            if dep_changed:
+                m["depends_on"] = new_deps
+                summary["depends_on"] += 1
+                changed = True
+
+            # expression / where_sql token rewrite. ``${old}`` (bare) is only
+            # valid inside the SAME view as the renamed measure — engines
+            # resolve placeholders against the measure's host view's alias.
+            # ``${view.old}`` is the cross-view form and applies to every
+            # measure on every view in the dataset.
+            is_same_view = v.name == view_name
+            for sql_key in ("expression", "where_sql"):
+                sql_val = m.get(sql_key)
+                if not isinstance(sql_val, str) or not sql_val:
+                    continue
+                new_sql = sql_val
+                for old, new in rename_map.items():
+                    if is_same_view:
+                        new_sql = _re.sub(
+                            r"\$\{\s*" + _re.escape(old) + r"\s*\}",
+                            "${" + new + "}",
+                            new_sql,
+                        )
+                    new_sql = _re.sub(
+                        r"\$\{\s*" + _re.escape(view_name) + r"\." + _re.escape(old) + r"\s*\}",
+                        "${" + view_name + "." + new + "}",
+                        new_sql,
+                    )
+                if new_sql != sql_val:
+                    m[sql_key] = new_sql
+                    summary["expressions"] += 1
+                    changed = True
+
+        if changed:
+            v.measures = measures
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(v, "measures")
+
+    db.commit()
+    return summary
+
+
+def _find_chart_refs_to_measures(
+    db: Session,
+    view_name: str,
+    measure_names: set[str],
+    dataset_id: int,
+) -> list[str]:
+    """Return chart names that reference any of the given measures.
+
+    Charts store measure references inside their JSON ``config`` either as
+    ``"view.measure"`` qualified strings (semantic charts) or bare names in
+    role-config fields (legacy charts on the same table). We scan with a
+    simple substring match — false positives are rare and only mean we'll
+    show a slightly conservative warning, not block legitimate renames.
+    """
+    if not measure_names:
+        return []
+
+    import json as _json
+    from app.models.models import Chart
+
+    charts = (
+        db.query(Chart)
+        .join(DatasetTable, Chart.dataset_table_id == DatasetTable.id, isouter=True)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    )
+    hits: list[str] = []
+    for chart in charts:
+        try:
+            config_text = _json.dumps(chart.config or {}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            config_text = str(chart.config or "")
+        for m_name in measure_names:
+            qualified = f"{view_name}.{m_name}"
+            if qualified in config_text or f'"{m_name}"' in config_text:
+                hits.append(f"Chart \"{chart.name}\" (id={chart.id}) đang dùng measure \"{m_name}\"")
+                break
+    return hits
+
+
+def _find_semantic_refs_to_columns(
+    db: Session,
+    table_id: int,
+    columns: set[str],
+) -> list[str]:
+    """Return human-readable descriptions of dimensions/measures referencing
+    any column in ``columns`` on the given DatasetTable.
+
+    Used to block destructive schema changes (e.g. deleting a column via a
+    ``select_columns`` transformation) when the data layer would orphan
+    semantic objects. Each entry is a sentence the API surfaces back to the
+    user so they know exactly what would break.
+    """
+    if not columns:
+        return []
+
+    from app.models.semantic import SemanticView
+
+    views = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id == table_id)
+        .all()
+    )
+    refs: list[str] = []
+    for view in views:
+        for dim in view.dimensions or []:
+            if not isinstance(dim, dict):
+                continue
+            name = str(dim.get("name") or "").strip()
+            target = _last_segment(dim.get("sql")) or name
+            if target in columns:
+                refs.append(
+                    f"Dimension \"{name}\" (view {view.name}) đang dùng cột \"{target}\""
+                )
+        for measure in view.measures or []:
+            if not isinstance(measure, dict):
+                continue
+            m_name = str(measure.get("name") or "").strip()
+            # `sql` column refs
+            target = _last_segment(measure.get("sql"))
+            if target in columns:
+                refs.append(
+                    f"Measure \"{m_name}\" (view {view.name}) đang aggregate cột \"{target}\""
+                )
+            # filter refs
+            for flt in measure.get("filters") or []:
+                if not isinstance(flt, dict):
+                    continue
+                target = _last_segment(flt.get("field"))
+                if target in columns:
+                    refs.append(
+                        f"Measure \"{m_name}\" (view {view.name}) có filter trên cột \"{target}\""
+                    )
+    return refs
 
 
 def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
@@ -260,7 +657,7 @@ def _strip_base_view_qualifiers(
     The live-query execution path (``execute_dataset_query``) accepts bare
     column names and works correctly for these cases.  The semantic-query
     path (``_execute_semantic_dataset_query``) routes all dot-qualified refs
-    through ``SemanticQueryEngineV2`` which requires every referenced field
+    through ``SemanticQueryEngine`` which requires every referenced field
     to be an *explicitly declared* semantic measure or dimension — a
     requirement that plain raw columns don't meet, causing HTTP 500.
 
@@ -344,7 +741,7 @@ def _execute_semantic_dataset_query(
     execute_request: ExecuteQueryRequest,
 ) -> ExecuteQueryResponse:
     from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
-    from app.services.semantic_query_engine_v2 import SemanticQueryEngineV2
+    from app.services.semantic_query_engine import SemanticQueryEngine
 
     view = db.query(SemanticView).filter(
         SemanticView.dataset_table_id == db_table.id,
@@ -404,7 +801,7 @@ def _execute_semantic_dataset_query(
         if item.field
     ]
 
-    engine = SemanticQueryEngineV2(db, database_type="postgresql")
+    engine = SemanticQueryEngine(db, database_type="postgresql")
     sql, _columns, _pivot_metadata = engine.generate_sql(
         explore_name=explore.name,
         dimensions=dimensions,
@@ -1859,10 +2256,16 @@ def update_dataset_table(
     table_id: int,
     table_update: TableUpdate,
     background_tasks: BackgroundTasks,
+    force: bool = Query(False, description="Bypass the cascade guard that blocks dropping columns still referenced by dimensions/measures."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update a table in a dataset"""
+    """Update a table in a dataset.
+
+    Cascade guard: when transformations would drop columns currently used by
+    a dimension or measure, the default request returns 409 with the list of
+    affected semantic objects. Pass ``?force=true`` to override.
+    """
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -1893,6 +2296,22 @@ def update_dataset_table(
         if db_table.source_kind == "derived_table":
             try:
                 table_update.source_query = validate_and_clean_derived_query(table_update.source_query)
+                # Phase-2: reject cycles before we accept the new source_query.
+                # collect_derived_dependency_table_ids resolves alias → table_id;
+                # check_derived_table_cycle then walks the downstream graph.
+                proposed_deps = collect_derived_dependency_table_ids(
+                    db,
+                    dataset_id,
+                    table_update.source_query,
+                    exclude_table_id=db_table.id,
+                )
+                from app.services.dataset_table_sql_service import check_derived_table_cycle
+                check_derived_table_cycle(
+                    db,
+                    dataset_id,
+                    table_id=db_table.id,
+                    proposed_dependency_ids=proposed_deps,
+                )
                 table_draft = _build_table_draft(db_table, table_update)
                 datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
                     db,
@@ -2057,6 +2476,35 @@ def update_dataset_table(
                 raise HTTPException(status_code=400, detail=_normalize_preview_error_message(exc)) from exc
             raise
 
+        # Phase-2 / Phase-3 refinement: cascade check. When transformations
+        # would drop columns currently referenced by a dimension or measure,
+        # respond with 409 (soft conflict) plus structured payload so the FE
+        # can show a confirm dialog instead of a generic toast. Caller may
+        # retry with ?force=true to bypass.
+        if preview_metadata and not force:
+            new_cols = {
+                str(col.get("name") if isinstance(col, dict) else col).strip()
+                for col in preview_metadata
+                if (col.get("name") if isinstance(col, dict) else col)
+            }
+            old_cols = _columns_for_table(db_table)
+            dropped = old_cols - new_cols
+            if dropped:
+                refs = _find_semantic_refs_to_columns(db, table_id, dropped)
+                if refs:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "COLUMN_CASCADE",
+                            "message": (
+                                f"{len(refs)} tham chiếu semantic đang dùng các cột sắp bị xoá. "
+                                "Xác nhận để tiếp tục (các dimension/measure đó cần sửa lại sau)."
+                            ),
+                            "dropped_columns": sorted(dropped),
+                            "affected_refs": refs,
+                        },
+                    )
+
     try:
         updated_table = DatasetCRUDService.update_table(
             db, table_id, table_update
@@ -2088,6 +2536,13 @@ def update_dataset_table(
                     ),
                     sample_cache=_serialize_cached_rows(preview_rows) or None,
                 ) or updated_table
+                # Phase-2: flag the table as schema-changed synchronously so
+                # any concurrent semantic-view save in the same session sees
+                # the new column set. The background description pipeline
+                # will clear this flag once it finishes re-describing.
+                if updated_table is not None:
+                    updated_table.schema_change_pending = True
+                    db.commit()
         except Exception as exc:
             logger.warning("Column inference failed after updating table %s: %s", updated_table.id, exc)
 
@@ -3208,12 +3663,20 @@ def update_dataset_view(
     dataset_id: int,
     view_id: int,
     update_data: dict,
+    force: bool = Query(False, description="When true, bypass the cascade guard that blocks deleting/renaming measures still used by charts."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Update dimensions/measures/description of a semantic view.
     Used by the Visual Model editor.
+
+    Cascade guard (Phase-2 / refined in Phase-3): when a save removes or renames
+    measures still referenced by charts, the default behaviour returns 409 with
+    the list of affected charts so the front-end can prompt for confirmation.
+    Pass ``?force=true`` to bypass the guard and let the save go through; charts
+    will then surface a "field not found" error at query time until the user
+    rebinds them.
     """
     from app.models.semantic import SemanticView
     from app.schemas.semantic import SemanticViewUpdate
@@ -3240,13 +3703,18 @@ def update_dataset_view(
     if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
         raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
 
-    allowed_fields = {"dimensions", "measures", "description"}
+    # Phase-6: rename_map is an out-of-band field that the rewrite step
+    # consumes — it must not be forwarded to the Pydantic SemanticViewUpdate
+    # validator (which would treat it as unknown). Pop it first.
+    allowed_fields = {"dimensions", "measures", "description", "rename_map"}
     unknown_fields = set(update_data.keys()) - allowed_fields
     if unknown_fields:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported model view fields: {', '.join(sorted(unknown_fields))}",
         )
+
+    rename_map_raw = update_data.pop("rename_map", None) if isinstance(update_data, dict) else None
 
     try:
         validated = SemanticViewUpdate(**update_data)
@@ -3259,6 +3727,79 @@ def update_dataset_view(
     if "measures" in update_payload and update_payload["measures"] is not None:
         _validate_measure_dependencies(db, dataset_id, view.name, update_payload["measures"])
         update_payload["measures"] = [measure.model_dump() for measure in validated.measures or []]
+
+    # Phase-2: ensure every dimension/measure points at a column that actually
+    # exists on the bound table. Catches silent failures where the data layer
+    # diverged from the semantic layer without anyone noticing.
+    if (
+        ("dimensions" in update_payload and update_payload["dimensions"] is not None)
+        or ("measures" in update_payload and update_payload["measures"] is not None)
+    ):
+        # Take the proposed dimensions/measures when present, fall back to
+        # whatever is already persisted on the view so we validate the full
+        # final state, not just the patched fragment.
+        final_dims = (
+            update_payload.get("dimensions")
+            if update_payload.get("dimensions") is not None
+            else (view.dimensions or [])
+        )
+        final_measures = (
+            update_payload.get("measures")
+            if update_payload.get("measures") is not None
+            else (view.measures or [])
+        )
+        _validate_field_references(table, final_dims, final_measures)
+
+    # Phase-6: optional rename_map carried alongside the measures patch.
+    # Format: {"old_name": "new_name"}. When present, the cascade guard
+    # excludes the listed old_names (they're not really dropped — they're
+    # renamed) AND the engine auto-rewrites every Chart.config + cross-view
+    # depends_on entry that still references the old qualified ref.
+    rename_map: dict[str, str] = {}
+    if isinstance(rename_map_raw, dict):
+        for k, v in rename_map_raw.items():
+            ok = str(k or "").strip()
+            nv = str(v or "").strip()
+            if ok and nv and ok != nv:
+                rename_map[ok] = nv
+
+    # Phase-2: cascade-rename guard. If a save removes measures that charts
+    # in this dataset still reference, block the save and tell the user
+    # which charts would break. A rename presents as "old name missing
+    # from new measure list" — Phase-6 adds rename_map so the user can
+    # opt into auto-rewrite without `force=true` (force still works for
+    # genuine deletes).
+    if "measures" in update_payload and update_payload["measures"] is not None and not force:
+        old_measure_names = {
+            str((m or {}).get("name") or "").strip()
+            for m in (view.measures or [])
+            if isinstance(m, dict) and str((m or {}).get("name") or "").strip()
+        }
+        new_measure_names = {
+            str((m or {}).get("name") or "").strip()
+            for m in (update_payload["measures"] or [])
+            if isinstance(m, dict) and str((m or {}).get("name") or "").strip()
+        }
+        # Old names listed in rename_map are NOT considered dropped — the
+        # rewrite step below remaps every consumer to the new name. Only
+        # raise the cascade guard for genuinely deleted measures.
+        dropped = (old_measure_names - new_measure_names) - set(rename_map.keys())
+        if dropped:
+            hits = _find_chart_refs_to_measures(db, view.name, dropped, dataset_id)
+            if hits:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "MEASURE_CASCADE",
+                        "message": (
+                            f"{len(hits)} chart đang dùng measure sắp bị xoá. "
+                            "Xác nhận để vẫn lưu (chart sẽ phải sửa lại sau), "
+                            "hoặc dùng rename_map nếu bạn muốn đổi tên thay vì xoá."
+                        ),
+                        "dropped": sorted(dropped),
+                        "affected_charts": hits,
+                    },
+                )
 
     for key, value in update_payload.items():
         setattr(view, key, value)
@@ -3273,6 +3814,26 @@ def update_dataset_view(
     db.commit()
     db.refresh(view)
 
+    # Phase-6: after the view is persisted, fan out the rename to every
+    # consumer that still references the old name. This is deliberately
+    # AFTER the commit — if the rewrite fails we still keep the view's
+    # new shape and report the issue so the user can rerun manually.
+    rewrite_summary: dict[str, int] = {}
+    if rename_map:
+        try:
+            rewrite_summary = _rewrite_measure_references(
+                db,
+                dataset_id=dataset_id,
+                view_name=view.name,
+                rename_map=rename_map,
+            )
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.warning(
+                "[rename] auto-rewrite failed for view=%s map=%s: %s",
+                view.name, rename_map, exc,
+            )
+            rewrite_summary = {"error": 1}
+
     return {
         "id": view.id,
         "name": view.name,
@@ -3281,7 +3842,125 @@ def update_dataset_view(
         "dimensions": view.dimensions or [],
         "measures": view.measures or [],
         "description": view.description,
+        "renamed": rewrite_summary,
     }
+
+
+@router.get(
+    "/{dataset_id}/lineage/column/{table_id}/{column_name}",
+    summary="List every semantic object that depends on a column (Phase-4)",
+)
+def get_column_lineage(
+    dataset_id: int,
+    table_id: int,
+    column_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Proactive lineage probe.
+
+    Returns ``{ dimensions: [...], measures: [...], chart_count: int }``
+    describing what would break if the column were removed. The FE can hit
+    this before opening a destructive UI flow so the user sees the impact
+    BEFORE clicking delete (rather than only when the cascade guard fires
+    at save time).
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    column = (column_name or "").strip()
+    if not column:
+        raise HTTPException(status_code=400, detail="Column name is required")
+
+    refs = _find_semantic_refs_to_columns(db, table_id, {column})
+
+    # Detect chart usage: any chart on this table whose config references
+    # a measure that references the column. We keep this lightweight — a
+    # simple count is enough for a "X measures and Y charts will break"
+    # warning. Full per-chart lineage is in the cascade guard at save time.
+    from app.models.models import Chart
+    chart_count = (
+        db.query(Chart)
+        .filter(Chart.dataset_table_id == table_id)
+        .count()
+    )
+
+    return {
+        "column": column,
+        "table_id": table_id,
+        "dataset_id": dataset_id,
+        "semantic_refs": refs,
+        "chart_count_on_table": chart_count,
+    }
+
+
+@router.get(
+    "/{dataset_id}/model/layout",
+    summary="Get persisted canvas positions for the data-model view",
+)
+def get_dataset_model_layout(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return saved card positions for the Visual Model canvas.
+
+    Phase-4: positions are stored in ``Dataset.settings.model_layout`` keyed
+    by ``str(view_id)`` so they survive across browsers / users. Returns
+    ``{}`` when nothing has been saved yet — the canvas falls back to its
+    topology-aware auto layout.
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+    settings = dataset_obj.settings or {}
+    return settings.get("model_layout") or {}
+
+
+@router.put(
+    "/{dataset_id}/model/layout",
+    summary="Save canvas positions for the data-model view",
+)
+def update_dataset_model_layout(
+    dataset_id: int,
+    positions: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist canvas card positions. Body is ``{view_id: {x, y}}``.
+
+    Phase-4: replaces the previous localStorage-only persistence so layout
+    follows the dataset (not the browser) and stays synced across users
+    sharing the dataset.
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    # Normalise & validate. Only keep entries with numeric x/y; drop the rest.
+    cleaned: dict[str, dict[str, float]] = {}
+    if isinstance(positions, dict):
+        for key, value in positions.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                x = float(value.get("x"))
+                y = float(value.get("y"))
+            except (TypeError, ValueError):
+                continue
+            cleaned[str(key)] = {"x": x, "y": y}
+
+    settings = dict(dataset_obj.settings or {})
+    settings["model_layout"] = cleaned
+    dataset_obj.settings = settings
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(dataset_obj, "settings")
+    db.commit()
+    return cleaned
 
 
 @router.put(
@@ -3428,6 +4107,14 @@ def add_model_join(
         alias_value = payload.get("alias")
         if alias_value is not None:
             alias_value = str(alias_value).strip() or None
+        # Phase-3b: optional is_active + cross_filter. Defaults preserved on
+        # service side so callers from older clients keep working.
+        raw_active = payload.get("is_active")
+        is_active = True if raw_active is None else bool(raw_active)
+        cross_filter = str(payload.get("cross_filter") or "single").strip().lower()
+        if cross_filter not in ("single", "both"):
+            cross_filter = "single"
+        force = bool(payload.get("force", False))
         result = add_join(
             db,
             dataset_id=dataset_id,
@@ -3440,9 +4127,17 @@ def add_model_join(
             join_type=payload.get("join_type", "left"),
             relationship=payload.get("relationship", "many_to_one"),
             alias=alias_value,
+            is_active=is_active,
+            cross_filter=cross_filter,
+            force=force,
         )
         return result
     except ValueError as e:
+        # Phase-3 cascade: surface structured payload as 409 when present so
+        # the FE can show a confirm dialog rather than a generic error.
+        payload_attr = getattr(e, "cascade_payload", None)
+        if payload_attr:
+            raise HTTPException(status_code=409, detail=payload_attr)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to add join for dataset {dataset_id}: {e}")

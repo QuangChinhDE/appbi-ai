@@ -22,7 +22,7 @@ from app.schemas.semantic import (
     SemanticQueryRequest,
     SemanticQueryResponse,
 )
-from app.services.semantic_query_engine_v2 import SemanticQueryEngineV2
+from app.services.semantic_query_engine import SemanticQueryEngine
 from app.services.datasource_service import DataSourceConnectionService
 import time
 
@@ -56,6 +56,17 @@ def create_view(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"View with name '{view.name}' already exists"
         )
+
+    # Phase-4 originally blocked any dual binding; Phase-5 narrows that:
+    # physical_table views on remote datasources (BigQuery, schema-qualified
+    # Postgres) NEED `sql_table_name` to hold the fully-qualified target
+    # (e.g. `project.dataset.table`). The engine emits `sql_table_name` in
+    # FROM and uses `dataset_table_id` for metadata. Both required.
+    #
+    # We only reject the truly ambiguous case: user explicitly typed a
+    # sql_table_name that contradicts the dataset table's own source path.
+    # That's a real foot-gun (the engine and the metadata would disagree),
+    # so we surface it as a 400 with a clear message.
 
     resolved_sql_table_name = view.sql_table_name
     dataset_table_id = view.dataset_table_id
@@ -475,7 +486,7 @@ def execute_semantic_query(
             db_type = "postgresql"
         
         # Initialize query engine v2
-        engine = SemanticQueryEngineV2(db, database_type=db_type)
+        engine = SemanticQueryEngine(db, database_type=db_type)
         
         # Generate SQL with v2 features
         sql, columns, pivot_metadata = engine.generate_sql(

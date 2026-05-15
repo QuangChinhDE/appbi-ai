@@ -624,6 +624,8 @@ export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
   pre_aggregated?: boolean;
+  /** Phase-3b: ambiguous-path / N:N warnings surfaced from the semantic engine. */
+  warnings?: string[];
   meta?: {
     row_count?: number;
     execution_time_ms?: number;
@@ -643,6 +645,8 @@ export interface ChartPreviewDataResponse {
   data: Record<string, any>[];
   pre_aggregated?: boolean;
   execution_time_ms?: number;
+  /** Phase-3b: warnings from the semantic engine (also returned by preview). */
+  warnings?: string[];
   source_columns?: string[];
   source_rows?: Record<string, any>[];
 }

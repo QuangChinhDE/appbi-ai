@@ -209,6 +209,11 @@ def resolve_chart_semantic_binding(
         }
         if explore is not None:
             for join in explore.joins or []:
+                # Phase-3b: skip inactive joins so fields reachable only via an
+                # inactive relationship don't show up in chart binding picker.
+                raw_active = join.get("is_active")
+                if raw_active is not None and not bool(raw_active):
+                    continue
                 join_view_name = str(join.get("view") or "").strip()
                 join_node_name = str(join.get("alias") or "").strip() or join_view_name
                 if not join_view_name or not join_node_name or join_node_name in join_targets:

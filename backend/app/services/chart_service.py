@@ -55,7 +55,7 @@ _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #   `"customers"."name"` against the orders subquery and fail.
 #
 #   The dataset-execute endpoint already handles this by routing to
-#   `SemanticQueryEngineV2`, which knows how to materialise the JOIN chain
+#   `SemanticQueryEngine`, which knows how to materialise the JOIN chain
 #   from `SemanticExplore.joins`. We extend the same routing into the chart
 #   runtime when a chart uses joined fields or declared semantic fields
 #   (formulas, filtered measures, aliases). Pure physical-table charts
@@ -143,13 +143,31 @@ def _role_config_needs_semantic_runtime(
         return False
 
     semantic_fields = _binding_semantic_fields(binding)
+    semantic_measures = _binding_semantic_measure_fields(binding)
+    # Phase-3 fix: even when the binding doesn't enumerate semantic fields
+    # explicitly, ANY metric in the role_config carrying a `view.field`
+    # qualified reference is by definition a semantic measure (live charts
+    # never qualify physical columns this way). Route those through the
+    # engine so measure formulas / filtered measures are compiled.
+    if role_config:
+        for metric in role_config.get("metrics") or []:
+            if isinstance(metric, dict):
+                field = str(metric.get("field") or "").strip()
+                if field and "." in field:
+                    return True
+        for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+            metric = role_config.get(key)
+            if isinstance(metric, dict):
+                field = str(metric.get("field") or "").strip()
+                if field and "." in field:
+                    return True
     for ref in _collect_role_config_field_refs(role_config):
         if "." not in ref:
             continue
         view_part, _ = ref.split(".", 1)
         if view_part.strip() and view_part.strip() != base:
             return True
-        if ref in semantic_fields:
+        if ref in semantic_fields or ref in semantic_measures:
             return True
     return False
 
@@ -224,7 +242,7 @@ def _strip_nonsemantic_base_view_refs_from_role_config(
 def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
     """Map engine SQL alias (`view_field`) → canonical caller ref (`view.field`).
 
-    Mirrors `SemanticQueryEngineV2._safe_alias`. Used to rename keys in
+    Mirrors `SemanticQueryEngine._safe_alias`. Used to rename keys in
     returned rows so the response contract matches the request (callers ask
     in `view.field` form, they get back `view.field` keyed rows)."""
     out: dict[str, str] = {}
@@ -1153,7 +1171,7 @@ def _execute_semantic_chart_runtime(
 ) -> Dict[str, Any]:
     """Execute a chart whose role_config needs semantic SQL rendering.
 
-    Uses `SemanticQueryEngineV2` so the generated SQL contains the explore's
+    Uses `SemanticQueryEngine` so the generated SQL contains the explore's
     join chain and measure formulas. Returned row keys are remapped to match
     the requested `view.field` refs (rather than the engine's `view_field`
     SQL aliases) — preserves the chart-runtime contract."""
@@ -1161,7 +1179,7 @@ def _execute_semantic_chart_runtime(
     import time
 
     from app.models.semantic import SemanticExplore
-    from app.services.semantic_query_engine_v2 import SemanticQueryEngineV2
+    from app.services.semantic_query_engine import SemanticQueryEngine
     from app.services.datasource_service import DataSourceConnectionService
     from app.services.live_query_service import (
         _dialect_for_ds_type,
@@ -1324,7 +1342,7 @@ def _execute_semantic_chart_runtime(
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
 
-    engine = SemanticQueryEngineV2(db, database_type=dialect)
+    engine = SemanticQueryEngine(db, database_type=dialect)
     sql, _engine_columns, _pivot_metadata = engine.generate_sql(
         explore_name=explore_name,
         dimensions=dimension_refs,
@@ -1392,6 +1410,9 @@ def _execute_semantic_chart_runtime(
         # chart wants. Mark pre-aggregated so frontend skips client-side agg.
         "pre_aggregated": True,
         "execution_time_ms": round(elapsed_ms, 1),
+        # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
+        # chart UI can banner them. List is empty in the happy path.
+        "warnings": list(getattr(engine, "warnings", []) or []),
     }
 
     if cache_enabled:
@@ -1890,7 +1911,19 @@ class ChartService:
             if not datasource:
                 raise ValueError("Data source not found")
 
-        config = chart_config or {}
+        # Hydrate semanticBinding so preview takes the same routing path as
+        # `GET /charts/{id}/data` (which goes through `hydrate_runtime_config`).
+        # Without this, an MCP-saved or freshly-typed config carrying only the
+        # minimal binding (baseViewName, exploreName, modelId, exploreId)
+        # would skip the semantic engine for non-aggregating charts
+        # (SCATTER / MAP_POINT) and the row keys come back bare instead of
+        # `view.field`-qualified — breaking the FE axis lookup.
+        config = with_chart_semantic_binding(
+            db,
+            dataset_table_id,
+            chart_config,
+            auto_generate=True,
+        )
         custom_sql = get_chart_custom_sql(config)
         limit_override = None
         raw_limit_override = config.get("limit")

@@ -5,44 +5,59 @@ import { ChartType } from '@/types/api';
 import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity, Trophy } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
-type ChartTypeOption = {
-  type: ChartType;
+type ChartTypeMeta = {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
 };
 
-const chartTypeOptions: ChartTypeOption[] = [
-  { type: ChartType.BAR, label: 'Bar', icon: BarChart3 },
-  { type: ChartType.GROUPED_BAR, label: 'Grouped Bar', icon: BarChart2 },
-  { type: ChartType.STACKED_BAR, label: 'Stacked Bar', icon: BarChart4 },
-  { type: ChartType.LINE, label: 'Line', icon: LineChart },
-  { type: ChartType.AREA, label: 'Area', icon: AreaChart },
-  { type: ChartType.SCATTER, label: 'Scatter', icon: ScatterChart },
-  { type: ChartType.BUBBLE, label: 'Bubble', icon: ScatterChart },
-  { type: ChartType.PIE, label: 'Pie', icon: PieChart },
-  { type: ChartType.DONUT, label: 'Donut', icon: PieChart },
-  { type: ChartType.POLAR_AREA, label: 'Polar Area', icon: PieChart },
-  { type: ChartType.RADAR, label: 'Radar', icon: TrendingUp },
-  { type: ChartType.TIME_SERIES, label: 'Time Series', icon: TrendingUp },
-  { type: ChartType.TABLE, label: 'Table', icon: Table },
-  { type: ChartType.MATRIX, label: 'Matrix', icon: Table },
-  { type: ChartType.HEATMAP, label: 'Heatmap', icon: Table },
-  { type: ChartType.TREEMAP, label: 'Treemap', icon: BarChart4 },
-  { type: ChartType.FUNNEL, label: 'Funnel', icon: BarChart4 },
-  { type: ChartType.GAUGE, label: 'Gauge', icon: Activity },
-  { type: ChartType.WATERFALL, label: 'Waterfall', icon: BarChart3 },
-  { type: ChartType.MAP_POINT, label: 'Point Map', icon: ScatterChart },
-  { type: ChartType.MAP_REGION, label: 'Region Map', icon: Table },
-  { type: ChartType.BOXPLOT, label: 'Boxplot', icon: BarChart2 },
-  { type: ChartType.BULLET, label: 'Bullet', icon: Activity },
-  { type: ChartType.SANKEY, label: 'Sankey', icon: TrendingUp },
-  { type: ChartType.SUNBURST, label: 'Sunburst', icon: PieChart },
-  { type: ChartType.RIBBON, label: 'Ribbon', icon: TrendingUp },
-  { type: ChartType.TIMELINE, label: 'Timeline', icon: TrendingUp },
-  { type: ChartType.WORD_CLOUD, label: 'Word Cloud', icon: BarChart3 },
-  { type: ChartType.KPI, label: 'KPI', icon: Activity },
-  { type: ChartType.PODIUM, label: 'Podium', icon: Trophy },
-];
+/**
+ * Display metadata for every value in {@link ChartType}. Keyed by the enum
+ * literal so adding a new type to `ChartType` causes a TypeScript compile
+ * error here — preventing the Phase-3 incident where two new types
+ * (HORIZONTAL_BAR, BAR_LINE) shipped in the enum but were silently missing
+ * from the picker for weeks.
+ */
+const CHART_TYPE_META: Record<ChartType, ChartTypeMeta> = {
+  [ChartType.BAR]: { label: 'Bar', icon: BarChart3 },
+  [ChartType.HORIZONTAL_BAR]: { label: 'Horizontal Bar', icon: BarChart2 },
+  [ChartType.GROUPED_BAR]: { label: 'Grouped Bar', icon: BarChart2 },
+  [ChartType.STACKED_BAR]: { label: 'Stacked Bar', icon: BarChart4 },
+  [ChartType.LINE]: { label: 'Line', icon: LineChart },
+  [ChartType.BAR_LINE]: { label: 'Bar + Line', icon: BarChart4 },
+  [ChartType.AREA]: { label: 'Area', icon: AreaChart },
+  [ChartType.SCATTER]: { label: 'Scatter', icon: ScatterChart },
+  [ChartType.BUBBLE]: { label: 'Bubble', icon: ScatterChart },
+  [ChartType.PIE]: { label: 'Pie', icon: PieChart },
+  [ChartType.DONUT]: { label: 'Donut', icon: PieChart },
+  [ChartType.POLAR_AREA]: { label: 'Polar Area', icon: PieChart },
+  [ChartType.RADAR]: { label: 'Radar', icon: TrendingUp },
+  [ChartType.TIME_SERIES]: { label: 'Time Series', icon: TrendingUp },
+  [ChartType.TABLE]: { label: 'Table', icon: Table },
+  [ChartType.MATRIX]: { label: 'Matrix', icon: Table },
+  [ChartType.HEATMAP]: { label: 'Heatmap', icon: Table },
+  [ChartType.TREEMAP]: { label: 'Treemap', icon: BarChart4 },
+  [ChartType.FUNNEL]: { label: 'Funnel', icon: BarChart4 },
+  [ChartType.GAUGE]: { label: 'Gauge', icon: Activity },
+  [ChartType.WATERFALL]: { label: 'Waterfall', icon: BarChart3 },
+  [ChartType.MAP_POINT]: { label: 'Point Map', icon: ScatterChart },
+  [ChartType.MAP_REGION]: { label: 'Region Map', icon: Table },
+  [ChartType.BOXPLOT]: { label: 'Boxplot', icon: BarChart2 },
+  [ChartType.BULLET]: { label: 'Bullet', icon: Activity },
+  [ChartType.SANKEY]: { label: 'Sankey', icon: TrendingUp },
+  [ChartType.SUNBURST]: { label: 'Sunburst', icon: PieChart },
+  [ChartType.RIBBON]: { label: 'Ribbon', icon: TrendingUp },
+  [ChartType.TIMELINE]: { label: 'Timeline', icon: TrendingUp },
+  [ChartType.WORD_CLOUD]: { label: 'Word Cloud', icon: BarChart3 },
+  [ChartType.KPI]: { label: 'KPI', icon: Activity },
+  [ChartType.PODIUM]: { label: 'Podium', icon: Trophy },
+};
+
+// Build options list by iterating the enum directly — single source of
+// truth. Order follows enum declaration order.
+const chartTypeOptions = Object.values(ChartType).map((type) => ({
+  type,
+  ...CHART_TYPE_META[type],
+}));
 
 type ChartTypeSelectorProps = {
   chartType: ChartType;
