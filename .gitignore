@@ -60,6 +60,8 @@ scripts/audit_workboard.py
 scripts/production_demo_*
 scripts/seed_*workboard.sql
 scripts/verify_*workboard.py
+backend/scripts/audit_dimension_sql.py
+backend/scripts/dedupe_view_binding.py
 
 # Local large data / one-off bootstrap helpers
 2019-Nov.csv
@@ -75,6 +77,7 @@ Skill-AppBI/old/
 Skill-AppBI/*.zip
 dashboard_example/
 demo_dataset/
+example/
 *.workboard.json
 UI_LINEAR_AUDIT_CHECKLIST.md
 Design System Inspired by Linear.md
