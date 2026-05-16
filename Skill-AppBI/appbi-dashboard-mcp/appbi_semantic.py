@@ -596,12 +596,21 @@ async def execute_semantic_query(
 ) -> dict[str, Any]:
     """Run a semantic query (data + SQL). Use to verify before chart create.
 
-    `dimensions`/`measures`: qualified ('orders.country').
+    `dimensions`/`measures`: REQUIRED qualified `view.field` form. Bare
+    names route to the wrong view's resolver and silently produce data
+    from the base view's columns only — NO JOIN, wrong numbers. The
+    engine raises a VN error like:
+        Bảng "X" chưa có relationship tới base view "Y". Mở tab Data Model...
+    when a qualified ref points to an unreachable view; treat that as a
+    hint to either add a `set_view_relationship` or pick a different
+    measure / dimension.
     `filters`: {qualified_field: {operator, value}}. operator ∈ eq|ne|gt|
        gte|lt|lte|in|not_in|contains|starts_with|ends_with. Plain
        {field: value} → 422.
     `sorts`: [{field, direction:'asc'|'desc'}].
     `time_grains`: {field: 'day'|'week'|'month'|'quarter'|'year'}.
+       USE THIS for time-series instead of grouping on raw timestamps —
+       BE buckets via date_trunc per dialect (Phase-5 multi-dialect).
     `window_functions`: [{name, base_measure, partition_by, order_by,
        type:'running_sum'|'running_avg'|'rank'|'dense_rank'|'row_number'}].
     """

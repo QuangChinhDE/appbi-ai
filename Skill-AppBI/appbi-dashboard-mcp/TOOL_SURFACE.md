@@ -175,6 +175,32 @@ Hai field mới optional, dành cho measure cần aggregate cột từ **nhiều
    - source_columns ref field không tồn tại trên view → 400
    - View khai báo trong source_columns không reachable từ base view qua join graph → engine raise tiếng Việt "Bảng X chưa có relationship tới base view Y" (user nhìn thấy ở chart preview).
 
+### Field qualifier convention (Phase-12.5)
+
+**Rule cứng cho AI khi gọi mọi tool dạng query/chart:**
+
+| Tool | Field format | Lý do |
+|---|---|---|
+| `execute_semantic_query` (dimensions/measures) | **PHẢI qualified** `"view.field"` | Engine routes theo view; bare → wrong view, JOIN miss, số sai silent |
+| `create_chart` / `update_chart` / `preview_chart_data` (role_config) | **Prefer qualified** khi field là semantic measure / cross-table dim. Bare OK cho raw column trên bound view | BE routing oracle (`_role_config_needs_semantic_runtime`): qualified → SemanticQueryEngine với JOIN resolver, bare → legacy live_query không JOIN |
+| `propose_dashboard_blueprint` (metrics[].field) | Qualified (sẽ được surface trong `available_measures[].qualified_name`) | Blueprint validate qualified refs; BE handle stripping same-base-view khi cần |
+| `set_chart_filter`, `set_chart_calculated_field` | Cùng quy ước với roleConfig của chart đang sửa | Consistency — tránh mix bare và qualified cho cùng 1 logical field |
+
+**Mistakes phổ biến của AI cần tránh:**
+
+1. **Strip qualifier trong code MCP** — KHÔNG bao giờ làm. Phase 11/12 đã giao cho BE: `_strip_base_view_qualifiers` (datasets.py:743) strip qualifier cùng-base-view; cross-view giữ nguyên. MCP strip → demote Phase-12 dataset-scope measure xuống live_query → mất JOIN silent.
+
+2. **Mix bare và qualified cho cùng 1 chart** — vd metric `"deals.amount"` nhưng dimension `"date"` (bare, cùng base view). BE strip qualifier cùng-base-view nên work, nhưng habit này gây bug khi base view thay đổi. Luôn pick 1 convention per chart.
+
+3. **Group time-series bằng raw timestamp column** — không qualify, không khai báo `time_grains`. FE adapter sẽ log warning ở console (Phase 12.5 `chartDataAdapter`). Fix: pass `time_grains: {field: "day"}` trong `execute_semantic_query`, hoặc đảm bảo field qualified để BE bucket qua date_trunc.
+
+4. **Đoán field name từ context** — luôn xác nhận với `list_semantic_views` / `propose_dashboard_blueprint`'s `available_measures` trước khi build config. Field không tồn tại → 400 từ Pydantic validator.
+
+**Engine error message DA sẽ thấy** (Phase 11 VN-friendly):
+> `Bảng "deals" chưa có relationship tới base view "leads". Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này.`
+
+Forward verbatim trong response cho user. Đừng dịch sang English — DA hiểu VN trực tiếp hơn engine identifier. Để fix: gọi `set_view_relationship` để add JOIN, hoặc đổi base view của chart sang view có sẵn JOIN.
+
 ---
 
 ## Stage 4 — Charts (`appbi_chart.py`)

@@ -286,6 +286,12 @@ async def preview_chart_data(
     `config`: Explore shape — chartType, queryMode, roleConfig,
     generatedRoleConfig|customRoleConfig, styleConfig, filters, baseFilters.
     `context`: filter scope label ("dashboard" typical) for scope-keyed overrides.
+
+    Field-qualifier contract (Phase 12.5): same as `create_chart` — use
+    qualified `view.field` for semantic measures and cross-table dims,
+    bare names only for legacy single-table raw columns. Mixing bare and
+    qualified refs for the same logical field WILL produce silently wrong
+    routing (live_query vs semantic engine choose different paths).
     """
     body = _drop_none(
         {
@@ -364,11 +370,29 @@ async def create_chart(
 ) -> dict[str, Any]:
     """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
 
-    Every semantic field must resolve in the SemanticView. Qualified refs
-    like `orders.customer_name` are preserved (the runtime decides legacy
-    vs semantic-JOIN path). `bypass_semantic_check=True` skips that gate —
-    explain to the user first. Workflow: get_table_profile → ensure
-    SemanticView → preview_chart_data → user_confirmed=True.
+    Every semantic field must resolve in the SemanticView. The BE routing
+    oracle (`_role_config_needs_semantic_runtime` + `_contains_semantic_field_refs`)
+    inspects role_config field refs at execute time:
+
+      * Qualified `view.field` → routes to SemanticQueryEngine with the
+        multi-hop JOIN resolver. Required for cross-table charts AND for
+        any semantic measure (filtered, formula, dataset-scope Phase 12).
+      * Bare `field` → routes to legacy live_query (single table, NO JOIN).
+
+    Field-qualifier contract for this tool (Phase 12.5):
+      * **Prefer qualified `view.field`** whenever the field is declared
+        as a semantic dimension or measure. Required when chart aggregates
+        across multiple tables, or when measure is dataset-scope.
+      * Bare names work for legacy single-table charts on raw columns
+        only (NOT semantic measures).
+      * DO NOT manually strip qualifiers. The BE handles same-base-view
+        unqualify via `_strip_base_view_qualifiers` (datasets.py:743).
+        Sending bare when qualified is available demotes the query to
+        live_query and silently drops JOINs.
+
+    `bypass_semantic_check=True` skips the runtime preview gate — explain
+    to the user first. Workflow: get_table_profile → ensure SemanticView
+    → preview_chart_data → user_confirmed=True.
     """
     # Phase-12 single-source-of-truth contract:
     # Instead of mirroring normalization / Pydantic validation / runtime
@@ -801,7 +825,14 @@ async def update_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Update a chart's name/type/config/source/description."""
+    """Update a chart's name/type/config/source/description.
+
+    Field-qualifier contract (Phase 12.5): when updating `config`, keep
+    the same qualified/bare convention as `create_chart`. If the original
+    chart used qualified `view.field` refs for semantic measures, the
+    update payload should too — flipping to bare would silently demote
+    the chart to live_query path on next render.
+    """
     changes = _drop_none(
         {
             "name": name,
@@ -1136,54 +1167,25 @@ def _get_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
-def _bare_field(val: str) -> str:
-    """Strip 'view.' prefix from a qualified 'view.field' string."""
-    if val and "." in val:
-        _, _, name = val.partition(".")
-        return name.strip() or val
-    return val
-
-
-def _unqualify_role_config(role_config: dict[str, Any]) -> dict[str, Any]:
-    """Strip 'view.' qualifiers from all field names in a role_config dict.
-
-    The backend's LiveQueryService.build_live_agg_query uses role_config field
-    names as raw SQL column identifiers. Qualified names like 'orders.amount'
-    get wrapped as \"orders.amount\" by _quote_identifier — an invalid SQL
-    identifier — causing a 500 in Explore. Strip the qualifier here.
-    """
-    rc = dict(role_config)
-    for key in ("dimension", "breakdown", "timeField", "scatterX", "scatterY",
-                "tableRowDimension", "tableColumnDimension"):
-        if isinstance(rc.get(key), str):
-            rc[key] = _bare_field(rc[key])
-    if isinstance(rc.get("metrics"), list):
-        rc["metrics"] = [
-            {**m, "field": _bare_field(m["field"])}
-            if isinstance(m, dict) and isinstance(m.get("field"), str)
-            else m
-            for m in rc["metrics"]
-        ]
-    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
-        if isinstance(rc.get(key), dict) and isinstance(rc[key].get("field"), str):
-            rc[key] = {**rc[key], "field": _bare_field(rc[key]["field"])}
-    if isinstance(rc.get("selectedColumns"), list):
-        rc["selectedColumns"] = [
-            _bare_field(c) if isinstance(c, str) else c
-            for c in rc["selectedColumns"]
-        ]
-    return rc
-
-
-def _unqualify_config_role_fields(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Apply _unqualify_role_config to all role_config slots in a chart config."""
-    if not isinstance(config, dict):
-        return config or {}
-    result = dict(config)
-    for slot in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
-        if isinstance(result.get(slot), dict):
-            result[slot] = _unqualify_role_config(result[slot])
-    return result
+# NOTE (Phase-12.5, 2026-05-16): The previous `_bare_field` / `_unqualify_role_config`
+# / `_unqualify_config_role_fields` helpers were removed.
+#
+# Those helpers stripped "view." prefixes from chart role_config fields so the
+# legacy live_query SQL builder wouldn't wrap them as invalid identifiers.
+# Since Phase 3 the BE has had a routing oracle (`_role_config_needs_semantic_runtime`
+# in backend/app/services/chart_service.py:129 and `_contains_semantic_field_refs`
+# in backend/app/api/datasets.py:704): any dotted "view.field" routes to the
+# SemanticQueryEngine + JOIN resolver, and same-base-view qualifiers get
+# stripped by `_strip_base_view_qualifiers` (datasets.py:743) before live_query
+# fallback. The MCP-side strip was redundant — and worse, when called on
+# Phase-12 dataset-scope measures it would have silently broken multi-table
+# JOIN routing.
+#
+# These helpers had ZERO call sites in appbi_chart.py / appbi_blueprint.py
+# (verified at removal time). Deleting them avoids future devs (and DAs
+# reading code) reaching for the wrong tool. If you ever need to normalize
+# qualifiers BE-side, do it in `_strip_base_view_qualifiers` — single source
+# of truth.
 
 
 def _has_metric(role_config: dict[str, Any]) -> bool:

@@ -189,12 +189,20 @@ _BLUEPRINT_MAX_CHARTS = 20
 def _measure_chart_compatibility(measure: dict[str, Any]) -> dict[str, Any]:
     """Decide whether a semantic measure can be referenced directly in a chart.
 
-    Chart runtime (`build_live_agg_query` in live_query_service) uses
-    `role_config.metrics[].field` as a bare SQL column name on the bound
-    view. It does NOT compile semantic measure expressions or filtered
-    measures. So measures that carry `expression`, `filters`, or
-    `where_sql` are unusable in a chart's metric slot — they need a
-    workaround.
+    Phase 11/12 routing (chart_service.py:129 `_role_config_needs_semantic_runtime`):
+      * Bare ref → legacy `build_live_agg_query` (live_query_service) treats
+        the field as a raw column on the bound view. Does NOT compile
+        expression / filters / where_sql.
+      * Qualified `view.field` ref → SemanticQueryEngine compiles measure
+        SQL (expression, filtered measure, dataset-scope JOIN) correctly.
+
+    For backward compat with charts authored before Phase 11, this helper
+    marks measures with `expression`, `filters`, or `where_sql` as
+    "chart_incompatible" so the agent prefers a workaround (materialise via
+    transformation, or use count_distinct + structured filter). The agent
+    CAN reference these measures with qualified refs and they will work —
+    the warning exists because Claude-generated dashboards often use bare
+    refs as a habit, and qualifying every metric ref is more reliable.
 
     Returns: {"compatible": bool, "reason": str|None, "workaround": str|None}.
     """
@@ -1046,17 +1054,33 @@ async def propose_dashboard_blueprint(
         "agent_contract": {
             "stored_queryMode": "generated",
             "metric_field_resolution": (
-                "Chart engine treats role_config.metrics[].field as a bare SQL "
-                "column on the chart's bound view (the SemanticView matched by "
-                "dataset_table_id). Qualified 'view.field' references are "
-                "stripped to the bare name before storage."
+                "Phase-12.5 field-qualifier contract — chart engine routes based "
+                "on whether ANY role_config field has a dotted 'view.field' ref:\n"
+                "  * Qualified 'view.field' → SemanticQueryEngine with multi-hop "
+                "JOIN resolver (`_role_config_needs_semantic_runtime`). Required "
+                "for semantic measures (filtered / expression / dataset-scope "
+                "Phase 12) AND cross-table dimensions.\n"
+                "  * Bare 'field' → legacy live_query path (single table, NO "
+                "JOIN). Only valid for raw columns on the chart's bound view.\n"
+                "Same-base-view qualifiers (e.g. 'orders.amount' when chart is "
+                "bound to orders) are stripped to bare BY THE BE in "
+                "`_strip_base_view_qualifiers` (datasets.py:743). DO NOT strip "
+                "client-side — that breaks Phase-12 dataset-scope measures.\n"
+                "Use the qualified form whenever a field is declared as a "
+                "semantic dimension or measure. The FE Explore Editor "
+                "auto-upgrades bare→qualified via `upgradeRoleConfigToQualified` "
+                "(Phase 12.5) when a unique mapping exists."
             ),
             "joined_view_fields_blocked": (
-                "Joined-view fields (e.g. 'pipeline_name' from a view different "
-                "than the bound one) FAIL at chart query time even when the "
-                "explore reaches them. To use a joined field, materialise it as "
-                "a dimension on the bound view via a SQL transformation OR "
-                "switch the chart's bound view to the table that owns the field."
+                "Phase 11/12 — joined-view raw dimensions (e.g. 'pipeline_name' "
+                "from a non-bound view) ARE supported when referenced qualified "
+                "('pipeline.pipeline_name') AND the explore has an active JOIN "
+                "from the bound view to that view. If not reachable, the engine "
+                "raises a VN message: `Bảng \"X\" chưa có relationship tới base "
+                "view \"Y\". Mở tab Data Model...` — fix by adding the JOIN via "
+                "`set_view_relationship`. Joined-view SEMANTIC measures still "
+                "require either (a) declaring them dataset-scope on a hub view "
+                "with source_columns, or (b) materialising via transformation."
             ),
             "chart_incompatible_measures": [
                 {
@@ -1859,47 +1883,12 @@ async def _ensure_semantic_model(
     return int(result["id"])
 
 
-def _unqualify_role_config(role_config: dict[str, Any]) -> dict[str, Any]:
-    """Strip 'view.' prefix from all field names in a role_config dict.
-
-    The backend's LiveQueryService.build_live_agg_query treats role_config
-    field names as raw SQL column identifiers: it wraps them with
-    _quote_identifier which produces `"view.field"` — an invalid SQL
-    identifier. The semantic validation layer accepts qualified names for
-    cross-view resolution, but the stored config must use bare column names.
-    """
-    def _bare(val: str) -> str:
-        """Return the part after 'view.' if qualified, else the value unchanged."""
-        if val and "." in val:
-            _, _, name = val.partition(".")
-            return name.strip() or val
-        return val
-
-    rc = dict(role_config)
-
-    # Scalar dimension-like fields
-    for key in ("dimension", "breakdown", "timeField", "scatterX", "scatterY",
-                "tableRowDimension", "tableColumnDimension"):
-        if isinstance(rc.get(key), str):
-            rc[key] = _bare(rc[key])
-
-    # metrics list
-    if isinstance(rc.get("metrics"), list):
-        rc["metrics"] = [
-            {**m, "field": _bare(m["field"])} if isinstance(m, dict) and isinstance(m.get("field"), str) else m
-            for m in rc["metrics"]
-        ]
-
-    # Single-metric special fields
-    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
-        if isinstance(rc.get(key), dict) and isinstance(rc[key].get("field"), str):
-            rc[key] = {**rc[key], "field": _bare(rc[key]["field"])}
-
-    # selectedColumns list
-    if isinstance(rc.get("selectedColumns"), list):
-        rc["selectedColumns"] = [_bare(c) if isinstance(c, str) else c for c in rc["selectedColumns"]]
-
-    return rc
+# NOTE (Phase-12.5, 2026-05-16): Removed `_unqualify_role_config` from this
+# file as well — it was a duplicate of the one in appbi_chart.py and had no
+# call sites. See the longer note in appbi_chart.py for the full reasoning:
+# the BE routing oracle now correctly handles qualified field refs, so MCP
+# must NOT strip them. Stripping would silently demote dataset-scope (Phase
+# 12) measures to the live_query path and lose JOINs.
 
 
 def _build_chart_config_from_spec(chart_spec: dict[str, Any]) -> dict[str, Any]:
