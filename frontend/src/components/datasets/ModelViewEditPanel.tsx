@@ -708,6 +708,7 @@ function MeasureRow({
   viewName,
   rowKey,
   defaultOpen,
+  modelViews,
   onChange,
   onRemove,
 }: {
@@ -718,6 +719,9 @@ function MeasureRow({
   viewName?: string;
   rowKey: string;
   defaultOpen?: boolean;
+  /** Phase-12: every view in the dataset model — used to populate the
+   * cross-table source-columns picker when measure scope='dataset'. */
+  modelViews?: DatasetModelView[];
   onChange: (updated: MeasureDefinition) => void;
   onRemove: () => void;
 }) {
@@ -1009,6 +1013,105 @@ function MeasureRow({
                   className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
                   placeholder="e.g. revenue, calendar.days"
                 />
+              </div>
+
+              {/* Phase-12: dataset-scope measure with cross-table source columns. */}
+              <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
+                <label className="flex cursor-pointer items-center gap-2 text-[10px] uppercase font-medium text-text-tertiary">
+                  <input
+                    type="checkbox"
+                    checked={measure.scope === 'dataset'}
+                    disabled={!canEdit}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        onChange({ ...measure, scope: 'dataset', source_columns: measure.source_columns ?? [] });
+                      } else {
+                        onChange({ ...measure, scope: 'view', source_columns: [] });
+                      }
+                    }}
+                  />
+                  Cross-table (dataset-scope) — measure đa bảng
+                </label>
+                <p className="text-[10px] leading-snug text-text-quaternary">
+                  Khi bật: SQL expression có thể dùng <code>${'${view.field}'}</code> từ bảng khác.
+                  Khai báo từng cột nguồn dưới đây để engine tự JOIN qua relationship.
+                </p>
+                {measure.scope === 'dataset' && (
+                  <div className="space-y-1.5">
+                    {(measure.source_columns ?? []).map((src, idx) => {
+                      const targetView = modelViews?.find((v) => v.name === src.view);
+                      const fieldOptions = targetView
+                        ? [
+                            ...targetView.dimensions.filter((d) => !d.hidden).map((d) => d.name),
+                          ]
+                        : [];
+                      return (
+                        <div key={idx} className="flex items-center gap-1">
+                          <select
+                            value={src.view}
+                            disabled={!canEdit}
+                            onChange={(e) => {
+                              const next = [...(measure.source_columns ?? [])];
+                              next[idx] = { view: e.target.value, field: '' };
+                              onChange({ ...measure, source_columns: next });
+                            }}
+                            className="flex-1 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+                          >
+                            <option value="">Chọn bảng…</option>
+                            {(modelViews ?? [])
+                              .filter((v) => !v.hidden_in_canvas)
+                              .map((v) => (
+                                <option key={v.id} value={v.name}>
+                                  {v.table_display_name || v.name}
+                                </option>
+                              ))}
+                          </select>
+                          <span className="text-[10px] text-text-quaternary">.</span>
+                          <select
+                            value={src.field}
+                            disabled={!canEdit || !src.view}
+                            onChange={(e) => {
+                              const next = [...(measure.source_columns ?? [])];
+                              next[idx] = { view: src.view, field: e.target.value };
+                              onChange({ ...measure, source_columns: next });
+                            }}
+                            className="flex-1 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+                          >
+                            <option value="">Chọn cột…</option>
+                            {fieldOptions.map((opt) => (
+                              <option key={opt} value={opt}>
+                                {opt}
+                              </option>
+                            ))}
+                          </select>
+                          {canEdit && (
+                            <button
+                              onClick={() => {
+                                const next = (measure.source_columns ?? []).filter((_, i) => i !== idx);
+                                onChange({ ...measure, source_columns: next });
+                              }}
+                              className="text-[10px] text-text-quaternary hover:text-danger"
+                              title="Xoá entry"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {canEdit && (
+                      <button
+                        onClick={() => {
+                          const next = [...(measure.source_columns ?? []), { view: '', field: '' }];
+                          onChange({ ...measure, source_columns: next });
+                        }}
+                        className="text-[10px] text-brand hover:underline"
+                      >
+                        + Add source column
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1665,6 +1768,7 @@ export function ModelViewEditPanel({
                             columnOptions={columnOptions}
                             measureNames={measureDependencyRefs}
                             viewName={view.name}
+                            modelViews={modelViews}
                             defaultOpen={singleMeasureMode || Boolean(focusMeasureName && m.name === focusMeasureName)}
                             onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
                             onRemove={() => {

@@ -51,6 +51,7 @@ import { RelationshipDialog, type RelationshipDialogValue } from './Relationship
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
+import { extractApiError } from '@/lib/api-errors';
 
 // ─── Measure folder grouping ──────────────────────────────────────────────────
 
@@ -1180,8 +1181,8 @@ export function DataModelCanvas({
     try {
       const r = await generateModel.mutateAsync({ datasetId, force });
       toast.success(`Model generated: ${r.views_created} views, ${r.explores_created} explores`);
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || 'Failed to generate model');
+    } catch (e: unknown) {
+      toast.error(extractApiError(e, 'Failed to generate model'));
     }
   };
 
@@ -1206,10 +1207,12 @@ export function DataModelCanvas({
       });
       setSelectedRelKey(null);
       toast.success(removingDateLink ? 'Date link removed' : 'Relationship removed');
-    } catch (e: any) {
+    } catch (e: unknown) {
       toast.error(
-        e?.response?.data?.detail
-          || (removingDateLink ? 'Failed to remove date link' : 'Failed to remove relationship')
+        extractApiError(
+          e,
+          removingDateLink ? 'Failed to remove date link' : 'Failed to remove relationship',
+        ),
       );
     }
   };

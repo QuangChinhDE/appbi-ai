@@ -1,9 +1,13 @@
 /**
- * ExploreSourceSelector - Selects dataset and table for exploration
+ * ExploreSourceSelector - Selects dataset and table for exploration.
+ *
+ * Phase-11: chọn Dataset là đủ — table được auto-pick (first table) khi user
+ * chưa chọn. User vẫn override được nếu muốn anchor chart vào table khác.
+ * Giảm friction so với flow cũ ép chọn 2 dropdown tuần tự.
  */
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Database, Table as TableIcon } from 'lucide-react';
 import { useDatasets, useDataset } from '@/hooks/use-datasets';
 import { FieldGroup, Select } from '@/components/ui/Input';
@@ -38,13 +42,24 @@ export function ExploreSourceSelector({
   const handleDatasetChange = (datasetId: string) => {
     const id = datasetId ? Number(datasetId) : null;
     onDatasetChange(id);
-    onTableChange(null); // Reset table selection
+    onTableChange(null); // Reset; auto-pick effect below sẽ chọn lại
   };
 
   const handleTableChange = (tableId: string) => {
     const id = tableId ? Number(tableId) : null;
     onTableChange(id);
   };
+
+  // Phase-11: auto-pick first table khi user mới chọn dataset (selectedTableId = null).
+  // User vẫn override được bằng dropdown bên dưới.
+  useEffect(() => {
+    if (selectedDatasetId == null) return;
+    if (selectedTableId != null) return;
+    const firstTable = dataset?.tables?.[0];
+    if (firstTable?.id) {
+      onTableChange(firstTable.id);
+    }
+  }, [selectedDatasetId, selectedTableId, dataset?.tables, onTableChange]);
 
   if (variant === 'compact') {
     return (

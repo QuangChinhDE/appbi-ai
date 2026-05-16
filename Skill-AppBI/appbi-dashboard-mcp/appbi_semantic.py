@@ -213,10 +213,26 @@ async def create_semantic_view(
       type ∈ string|number|date|datetime|yesno.
     `measures`: {name, type, sql?, label?, description?, hidden?,
                   expression?, filters?, where_sql?, depends_on?,
-                  format?, folder?}.
+                  format?, folder?, scope?, source_columns?}.
       type ∈ count|sum|avg|min|max|count_distinct|percent_of_total.
       `expression` overrides `sql`. `filters` (Looker-style) preferred
       over `where_sql`. `${TABLE}` = underlying table alias.
+
+      Phase-12 cross-table measure (Power BI parity):
+        scope='view' (default) — measure aggregates columns from THIS view.
+        scope='dataset' — measure pulls columns from other views joined
+                          into the dataset. Required: source_columns =
+                          [{view, field}, ...] listing each referenced
+                          column. Engine auto-JOINs via the dataset join
+                          graph. Example: measure `revenue_per_lead` in
+                          view `analytics`:
+                            scope: "dataset"
+                            expression: "${deals.amount} / NULLIF(COUNT(${leads.id}), 0)"
+                            source_columns:
+                              - {view: "deals", field: "amount"}
+                              - {view: "leads", field: "id"}
+        BE rejects mismatch: scope='view' + non-empty source_columns,
+        or scope='dataset' + empty source_columns → 400.
     """
     body = _drop_none(
         {
@@ -253,7 +269,10 @@ async def update_semantic_view(
 
     `measures` REPLACES the whole array — read current view, mutate, write back.
     Measure schema = same as create_semantic_view (expression/filters/where_sql/
-    depends_on/format/folder optional)."""
+    depends_on/format/folder/scope/source_columns all optional).
+
+    Phase-12: see create_semantic_view docstring for scope='dataset' usage —
+    same rules apply on update."""
     if not user_confirmed:
         return _requires_confirmation(
             "update_semantic_view",

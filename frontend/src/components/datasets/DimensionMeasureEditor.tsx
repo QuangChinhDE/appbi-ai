@@ -31,6 +31,7 @@ import {
   type MeasureFormat,
 } from '@/hooks/use-dataset-model';
 import { toast } from '@/lib/toast';
+import { extractApiError } from '@/lib/api-errors';
 
 const DIM_TYPES = ['string', 'number', 'date', 'datetime', 'yesno'] as const;
 const MEASURE_TYPES = [
@@ -628,8 +629,8 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
       });
       toast.success('Table fields updated');
       onClose();
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Failed to update table fields');
+    } catch (err: unknown) {
+      toast.error(extractApiError(err, 'Failed to update table fields'));
     }
   };
 

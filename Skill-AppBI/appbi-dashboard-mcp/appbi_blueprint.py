@@ -130,6 +130,30 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
                         "suffix": "<str — optional, e.g. ' orders'>",
                         "pattern": "<str — only when kind=custom>",
                     },
+                    # ── Phase-12 extensions: dataset-scope measure (Power BI parity) ──
+                    # Default scope='view' — measure aggregates columns from its
+                    # parent view only. Use scope='dataset' when measure needs
+                    # columns from OTHER views joined into the model (cross-table
+                    # aggregation). Engine auto-joins via the dataset join graph;
+                    # `source_columns` tells engine which views to pull in.
+                    # Example: revenue_per_lead lives in `analytics` view but
+                    # references deals.amount and leads.id —
+                    #   scope: "dataset"
+                    #   expression: "${deals.amount} / NULLIF(COUNT(${leads.id}), 0)"
+                    #   source_columns: [{view: "deals", field: "amount"},
+                    #                    {view: "leads", field: "id"}]
+                    # Rules enforced by BE (and pre-validated here):
+                    #   * scope='view' + non-empty source_columns → reject
+                    #   * scope='dataset' + empty source_columns → reject
+                    #   * source_columns[].view must exist in plan views[]
+                    #   * source_columns[].field must exist as dimension/column
+                    "scope": "view|dataset  (default 'view'; omit if not cross-table)",
+                    "source_columns": [
+                        {
+                            "view": "<str — name of view in plan>",
+                            "field": "<str — bare column / dimension name on that view>",
+                        }
+                    ],
                 }
             ],
         }
@@ -438,6 +462,13 @@ async def commit_semantic_model(
     # Mirrors backend `_validate_measure_dependencies` (datasets.py) which
     # accepts both bare (same-view) and qualified (`view.measure`) refs.
     measure_names_by_view: dict[str, set[str]] = {}
+    # Phase-12: dimension names per view so source_columns[].field can be
+    # pre-validated before the plan hits the backend. Mirror BE validator
+    # in datasets.py which also checks columns_cache; MCP can only check
+    # dimensions declared in this plan, but that already catches the
+    # common DA mistake of misnaming a field. BE still has final say on
+    # columns_cache existence.
+    dim_names_by_view: dict[str, set[str]] = {}
     for _v in views_plan:
         if not isinstance(_v, dict):
             continue
@@ -448,6 +479,11 @@ async def commit_semantic_model(
             str(_m.get("name") or "").strip()
             for _m in (_v.get("measures") or [])
             if isinstance(_m, dict) and str(_m.get("name") or "").strip()
+        }
+        dim_names_by_view[_vname] = {
+            str(_d.get("name") or "").strip()
+            for _d in (_v.get("dimensions") or [])
+            if isinstance(_d, dict) and str(_d.get("name") or "").strip()
         }
 
     for index, view in enumerate(views_plan):
@@ -574,6 +610,72 @@ async def commit_semantic_model(
                         validation_errors.append(
                             f"{loc}.format.decimals must be int 0..10."
                         )
+
+            # ── Phase-12: scope + source_columns validation ──
+            # Mirrors `_validate_measure_dependencies` (Phase-12 block) in
+            # backend/app/api/datasets.py so DA gets the same error here
+            # — without round-tripping through the BE.
+            scope_raw = m.get("scope")
+            source_cols = m.get("source_columns") or []
+            if scope_raw is not None or source_cols:
+                scope = str(scope_raw or "view").lower().strip()
+                if scope not in ("view", "dataset"):
+                    validation_errors.append(
+                        f"{loc}.scope '{scope_raw}' invalid. Use 'view' (default) "
+                        "or 'dataset' (cross-table measure)."
+                    )
+                elif scope == "view" and source_cols:
+                    validation_errors.append(
+                        f"{loc}.scope='view' but source_columns is non-empty. "
+                        "Either remove source_columns, or set scope='dataset' if "
+                        "the measure aggregates columns from other tables."
+                    )
+                elif scope == "dataset" and not source_cols:
+                    validation_errors.append(
+                        f"{loc}.scope='dataset' requires at least one entry in "
+                        "source_columns. Each entry = {view: <view name>, "
+                        "field: <bare column / dimension name>}. The engine uses "
+                        "this to auto-JOIN the source views into the query."
+                    )
+                elif scope == "dataset":
+                    for sc_idx, sc in enumerate(source_cols):
+                        if not isinstance(sc, dict):
+                            validation_errors.append(
+                                f"{loc}.source_columns[{sc_idx}] must be an object "
+                                "{view, field}."
+                            )
+                            continue
+                        sc_view = str(sc.get("view") or "").strip()
+                        sc_field = str(sc.get("field") or "").strip()
+                        if not sc_view:
+                            validation_errors.append(
+                                f"{loc}.source_columns[{sc_idx}].view is required."
+                            )
+                        elif sc_view not in measure_names_by_view:
+                            validation_errors.append(
+                                f"{loc}.source_columns[{sc_idx}].view '{sc_view}' "
+                                "is not declared in plan views[]. Known views: "
+                                f"{sorted(measure_names_by_view)}."
+                            )
+                        if not sc_field:
+                            validation_errors.append(
+                                f"{loc}.source_columns[{sc_idx}].field is required."
+                            )
+                        elif sc_view in dim_names_by_view:
+                            # Pre-check: field should match a declared dimension
+                            # on that view. BE has the final say (it also
+                            # consults columns_cache), so we only WARN-via-error
+                            # if the plan has dimensions[] declared at all.
+                            known_dims = dim_names_by_view.get(sc_view, set())
+                            if known_dims and sc_field not in known_dims:
+                                validation_errors.append(
+                                    f"{loc}.source_columns[{sc_idx}].field "
+                                    f"'{sc_field}' is not a declared dimension on "
+                                    f"view '{sc_view}'. Declared dimensions: "
+                                    f"{sorted(known_dims)}. (If field is a column "
+                                    "not surfaced as a dimension, BE will still "
+                                    "accept it if columns_cache has it.)"
+                                )
 
     # Cycle detection across the whole plan using qualified node names
     # (view.measure). Mirrors backend cycle check so two measures with the

@@ -13,6 +13,7 @@ import {
   type DatasetModelView,
   type AddJoinParams,
 } from '@/hooks/use-dataset-model';
+import { extractApiError } from '@/lib/api-errors';
 
 export type JoinType = 'left' | 'inner' | 'right' | 'full';
 export type RelationshipType =
@@ -334,8 +335,11 @@ export function RelationshipDialog({
         crossFilter,
       });
       onClose();
-    } catch (saveError: any) {
-      setError(saveError?.response?.data?.detail || saveError?.message || 'Failed to save relationship.');
+    } catch (saveError: unknown) {
+      // BE có thể trả detail dạng object (vd JOIN_INACTIVE_CASCADE 409) —
+      // dùng extractApiError để chuyển an toàn về string, tránh React #31
+      // khi render object trực tiếp vào JSX.
+      setError(extractApiError(saveError, 'Failed to save relationship.'));
     }
   };
 

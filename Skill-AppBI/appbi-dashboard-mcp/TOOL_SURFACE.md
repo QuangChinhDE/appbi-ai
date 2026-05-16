@@ -138,6 +138,43 @@ Mục tiêu: dựng layer ngữ nghĩa (views, joins, measures, dimensions) đ�
 
 `commit_semantic_model` validate đầy đủ: operator hợp lệ, value đúng kiểu (list cho `in/between`), `depends_on` không self-ref và không chu trình, `format.currency` bắt buộc khi `kind=currency`, etc.
 
+### Measure schema (Phase-12 — cross-table)
+
+Hai field mới optional, dành cho measure cần aggregate cột từ **nhiều bảng** (Power BI parity — DA 10y feedback 2026-05-16):
+
+| Field | Mô tả | Khi nào dùng |
+|---|---|---|
+| `scope` | `"view"` (default) hoặc `"dataset"`. View-scope = measure chỉ dùng cột của view chứa nó. Dataset-scope = measure pull cột từ view khác qua join graph. | Bật `"dataset"` khi expression có placeholder `${other_view.col}` |
+| `source_columns` | List `[{view, field}]`. Mỗi entry = 1 cột nguồn từ view khác. **Bắt buộc khi `scope="dataset"`**, **phải rỗng khi `scope="view"`**. | Khai báo từng cột mà expression dùng. Engine dùng list này để auto-JOIN các view vào query. |
+
+**Ví dụ — Revenue per Lead (deals.amount / leads count):**
+
+```json
+{
+  "name": "revenue_per_lead",
+  "type": "sum",
+  "scope": "dataset",
+  "expression": "${deals.amount} / NULLIF(COUNT(${leads.id}), 0)",
+  "source_columns": [
+    {"view": "deals", "field": "amount"},
+    {"view": "leads", "field": "id"}
+  ],
+  "format": {"kind": "currency", "currency": "VND"}
+}
+```
+
+**Quy tắc cho AI khi user yêu cầu measure đa bảng:**
+1. **Mặc định `scope="view"`** — KHÔNG khai báo `scope` cho measure 1 bảng. Chỉ set `scope="dataset"` khi user nói rõ measure dùng cột 2+ bảng (vd "doanh thu chia cho số lead", "tỷ lệ won theo region").
+2. `source_columns` phải khai báo **đầy đủ** mọi `${view.field}` trong expression. BE sẽ reject nếu thiếu (cột không reachable trong join graph).
+3. View được referenced trong `source_columns` phải tồn tại trong `views[]` của plan, và phải có **relationship** trong join graph tới base view (set qua `set_view_relationship`).
+4. Field trong `source_columns` phải là **dimension đã khai báo** trên view đó hoặc cột vật lý trong table (BE check qua columns_cache).
+5. BE error khi MCP gửi sai (đã được pre-validate ở `commit_semantic_model`):
+   - `scope='view'` + non-empty source_columns → 400
+   - `scope='dataset'` + empty source_columns → 400
+   - source_columns ref view không tồn tại → 400
+   - source_columns ref field không tồn tại trên view → 400
+   - View khai báo trong source_columns không reachable từ base view qua join graph → engine raise tiếng Việt "Bảng X chưa có relationship tới base view Y" (user nhìn thấy ở chart preview).
+
 ---
 
 ## Stage 4 — Charts (`appbi_chart.py`)

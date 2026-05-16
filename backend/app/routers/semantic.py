@@ -2,7 +2,7 @@
 Semantic Layer API Routes
 Endpoints for managing semantic views, models, explores, and executing semantic queries
 """
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -128,6 +128,20 @@ def create_view(
             detail="Either sql_table_name or dataset_table_id must be provided",
         )
 
+    # Phase-12: run cross-reference measure validation (parity with the
+    # dataset-scoped endpoint). dataset_table is resolved a few blocks up
+    # when dataset_table_id is supplied; if it was a sql_table_name-only
+    # view we cannot run dataset-scoped checks, but the per-measure
+    # Pydantic model_validator already caught shape mismatches.
+    if view.measures and dataset_table is not None:
+        from app.api.datasets import _validate_measure_dependencies
+        _validate_measure_dependencies(
+            db,
+            int(dataset_table.dataset_id),
+            view.name,
+            view.measures,
+        )
+
     # Convert Pydantic models to dicts for JSON storage
     dimensions_data = [dim.model_dump() for dim in view.dimensions]
     measures_data = [measure.model_dump() for measure in view.measures]
@@ -180,25 +194,62 @@ def update_view(
     db: Session = Depends(get_db),
     _: User = Depends(require_semantic_edit),
 ):
-    """Update a semantic view"""
+    """Update a semantic view.
+
+    Phase-12: also runs `_validate_measure_dependencies` so MCP callers
+    (`update_semantic_view`) get the same cross-reference checks (depends_on
+    cycles, scope/source_columns validation) as the dataset-scoped endpoint
+    `PUT /datasets/{id}/model/views/{view_id}`. Without this, MCP paths
+    bypass the cross-ref validator and DA only sees the error at chart
+    preview time, far from the offending save.
+    """
     db_view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
     if not db_view:
         raise HTTPException(status_code=404, detail="View not found")
-    
+
     update_data = view_update.model_dump(exclude_unset=True)
-    
+
+    # Phase-12: resolve dataset_id (view → table → dataset) so the validator
+    # can cross-check source_columns against the model's other views.
+    dataset_id_for_check: Optional[int] = None
+    try:
+        from app.models.dataset import DatasetTable as _DatasetTable  # local import to avoid cycles
+        if db_view.dataset_table_id:
+            table_row = (
+                db.query(_DatasetTable)
+                .filter(_DatasetTable.id == db_view.dataset_table_id)
+                .first()
+            )
+            if table_row:
+                dataset_id_for_check = int(table_row.dataset_id)
+    except Exception:
+        dataset_id_for_check = None
+
+    if (
+        "measures" in update_data
+        and update_data["measures"] is not None
+        and dataset_id_for_check is not None
+    ):
+        from app.api.datasets import _validate_measure_dependencies
+        _validate_measure_dependencies(
+            db,
+            dataset_id_for_check,
+            db_view.name,
+            view_update.measures or [],
+        )
+
     # Convert Pydantic models to dicts if present
     if "dimensions" in update_data and update_data["dimensions"] is not None:
         update_data["dimensions"] = [dim.model_dump() for dim in view_update.dimensions]
     if "measures" in update_data and update_data["measures"] is not None:
         update_data["measures"] = [measure.model_dump() for measure in view_update.measures]
-    
+
     for key, value in update_data.items():
         setattr(db_view, key, value)
-    
+
     db.commit()
     db.refresh(db_view)
-    
+
     return db_view
 
 

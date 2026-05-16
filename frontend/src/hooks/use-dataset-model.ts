@@ -37,6 +37,11 @@ export interface MeasureFormat {
   pattern?: string;
 }
 
+export interface MeasureSourceColumn {
+  view: string;
+  field: string;
+}
+
 export interface MeasureDefinition {
   name: string;
   type: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct' | 'percent_of_total';
@@ -57,6 +62,19 @@ export interface MeasureDefinition {
   label?: string;
   description?: string;
   hidden: boolean;
+  /**
+   * Phase-12: 'view' (default) means the measure aggregates columns from
+   * its parent SemanticView only. 'dataset' means it pulls columns from
+   * other views in the dataset declared via {@link source_columns}; the
+   * engine auto-joins those views via the dataset's join graph.
+   */
+  scope?: 'view' | 'dataset';
+  /**
+   * Phase-12: required when scope='dataset'. Each entry names a view + field
+   * the measure expression references (e.g. ${deals.amount}). Save-time
+   * validator checks the view/field exist in the dataset model.
+   */
+  source_columns?: MeasureSourceColumn[];
 }
 
 export interface JoinDefinition {

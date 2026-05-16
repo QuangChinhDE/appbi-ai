@@ -253,14 +253,49 @@ class SemanticQueryEngine:
         )
     
     def _load_views(self, field_refs: List[str]):
-        """Load all views referenced in field names"""
-        node_ids = set()
+        """Load all views referenced in field names.
+
+        Phase-12: when a referenced measure has ``scope='dataset'`` and
+        declares ``source_columns``, the views named in source_columns are
+        also loaded so the join-graph builder includes them. Without this
+        step a dataset-scope measure like
+        ``${deals.amount} / COUNT(${leads.id})`` would only join the parent
+        view's table; the engine would then fail to resolve ${deals.amount}
+        because the ``deals`` view was never registered in views_cache.
+        """
+        node_ids: set[str] = set()
         for field_ref in field_refs:
             if '.' in field_ref:
                 node_id, _ = self._parse_field_ref(field_ref)
                 node_ids.add(node_id)
 
+        # First pass: load every directly-referenced view.
         for node_id in node_ids:
+            self._get_view_for_node(node_id)
+
+        # Second pass: for each measure ref, if it's a dataset-scope measure,
+        # add its source_columns views into the load set.
+        extra_node_ids: set[str] = set()
+        for field_ref in field_refs:
+            if '.' not in field_ref:
+                continue
+            view_name, field_name = self._parse_field_ref(field_ref)
+            view = self.views_cache.get(view_name)
+            if not view:
+                continue
+            measure_def = next(
+                (m for m in (view.measures or []) if str(m.get('name') or '') == field_name),
+                None,
+            )
+            if not measure_def:
+                continue
+            if str(measure_def.get('scope') or 'view') != 'dataset':
+                continue
+            for entry in measure_def.get('source_columns') or []:
+                src_view = str(entry.get('view') or '').strip() if isinstance(entry, dict) else ''
+                if src_view and src_view not in node_ids:
+                    extra_node_ids.add(src_view)
+        for node_id in extra_node_ids:
             self._get_view_for_node(node_id)
 
     def _get_view_for_node(self, node_id: str) -> SemanticView:
@@ -813,8 +848,12 @@ class SemanticQueryEngine:
         for target_node in target_nodes:
             path = resolver.resolve_path(target_node)
             if path is None:
+                # Phase-11: friendly Vietnamese message so DA hiểu cần thêm
+                # relationship. Tránh raw English engine identifier.
                 raise ValueError(
-                    f"View '{target_node}' is not reachable from base view '{explore.base_view_name}'"
+                    f"Bảng \"{target_node}\" chưa có relationship tới base view "
+                    f"\"{explore.base_view_name}\". "
+                    f"Mở tab Data Model để định nghĩa join trước khi dùng field từ bảng này."
                 )
             # Phase-3b: surface ambiguous path so the front-end can banner it.
             # The path itself is deterministic (first-found in BFS), but the

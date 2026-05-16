@@ -231,6 +231,79 @@ def _validate_measure_dependencies(
     for node in graph:
         visit(node, [])
 
+    # Phase-12: validate source_columns for dataset-scope measures. Every
+    # (view, field) declared must reference an existing view in this dataset's
+    # model AND a real column/dimension on that view. We don't yet validate
+    # join reachability — that becomes a runtime warning so users can save
+    # the measure before they finish wiring the relationships.
+    known_views_by_name = {view.name: view for view in views}
+    dim_names_by_view: dict[str, set[str]] = {
+        view.name: {
+            str((dim or {}).get("name") or "").strip()
+            for dim in (view.dimensions or [])
+            if isinstance(dim, dict) and str((dim or {}).get("name") or "").strip()
+        }
+        for view in views
+    }
+    columns_cache_by_view: dict[str, set[str]] = {}
+    for view in views:
+        if view.dataset_table_id:
+            table = (
+                db.query(DatasetTable)
+                .filter(DatasetTable.id == view.dataset_table_id)
+                .first()
+            )
+            columns_cache_by_view[view.name] = _columns_for_table(table)
+        else:
+            columns_cache_by_view[view.name] = set()
+
+    for measure in measures:
+        scope = str(
+            (measure.scope if hasattr(measure, "scope") else measure.get("scope", "view"))
+            or "view"
+        )
+        if scope != "dataset":
+            continue
+        raw_sources = (
+            measure.source_columns
+            if hasattr(measure, "source_columns")
+            else measure.get("source_columns", [])
+        ) or []
+        m_name = measure_name(measure) or "<unnamed>"
+        for src in raw_sources:
+            src_view = str(
+                (src.view if hasattr(src, "view") else src.get("view", "")) or ""
+            ).strip()
+            src_field = str(
+                (src.field if hasattr(src, "field") else src.get("field", "")) or ""
+            ).strip()
+            if not src_view or not src_field:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Measure '{m_name}' (scope=dataset) có source_columns entry "
+                        "thiếu view hoặc field."
+                    ),
+                )
+            if src_view not in known_views_by_name and src_view != current_view_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Measure '{m_name}' tham chiếu view '{src_view}' không tồn tại "
+                        "trong dataset model."
+                    ),
+                )
+            view_dims = dim_names_by_view.get(src_view, set())
+            view_cols = columns_cache_by_view.get(src_view, set())
+            if view_dims and src_field not in view_dims and (not view_cols or src_field not in view_cols):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Measure '{m_name}': cột '{src_field}' không tồn tại trên "
+                        f"view '{src_view}'. Kiểm tra lại tên cột hoặc dimension."
+                    ),
+                )
+
 
 def _columns_for_table(table: Optional[DatasetTable]) -> set[str]:
     """Return the set of column names available on a DatasetTable.

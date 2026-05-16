@@ -1,27 +1,32 @@
 /**
- * ExploreColumnPanel — Sidebar panel showing semantic dimensions/measures
- * from the dataset model. Users can click to add dimensions to group-by
- * or measures to aggregation config.
+ * ExploreColumnPanel — Flat searchable list of every dimension and measure
+ * defined in the dataset's semantic model. Modeled after Power BI's Fields
+ * pane: one searchable list with a "by view" filter chip, no forced grouping.
+ *
+ * Cross-table flow (Phase-11): when a field's owning view is NOT reachable
+ * from the chart's base view via existing JOIN graph, the row stays clickable
+ * but renders a "⚠ cần join" badge. Clicking the badge calls
+ * `onRequestRelationship` with the source/target view names so the parent can
+ * open the RelationshipDialog pre-filled.
  */
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  ChevronDown,
-  ChevronRight,
   Hash,
   Type,
   Calendar,
   ToggleLeft,
   Sigma,
   Search,
-  Table as TableIcon,
+  AlertTriangle,
   Info,
 } from 'lucide-react';
 import {
   useDatasetModel,
   type DimensionDefinition,
   type MeasureDefinition,
+  type DatasetModelView,
 } from '@/hooks/use-dataset-model';
 import { Input } from '@/components/ui/Input';
 
@@ -39,32 +44,38 @@ function DimensionIcon({ type }: { type: string }) {
   }
 }
 
-interface ExploreColumnPanelProps {
-  datasetId: number | null;
-  selectedTableId: number | null;
-  /**
-   * Names of views reachable from the selected table via JOINs declared in
-   * the dataset's semantic explore. Views NOT in this set are still rendered,
-   * but disabled with a tooltip prompting the user to define a relationship
-   * in the Data Model tab. When `undefined`, all views are treated as
-   * reachable (back-compat for callers that don't yet pass the prop).
-   */
-  reachableViewNames?: Set<string>;
-  onSelectDimension?: (dim: DimensionDefinition, viewName: string) => void;
-  onSelectMeasure?: (measure: MeasureDefinition, viewName: string) => void;
+type FieldKind = 'dimension' | 'measure';
+
+interface FlatField {
+  kind: FieldKind;
+  view: DatasetModelView;
+  dimension?: DimensionDefinition;
+  measure?: MeasureDefinition;
+  label: string;
+  searchHaystack: string;
 }
 
-function groupMeasures(measures: MeasureDefinition[]) {
-  const groups = new Map<string, MeasureDefinition[]>();
-  for (const measure of measures) {
-    const groupName = measure.folder?.trim() || 'Measures';
-    groups.set(groupName, [...(groups.get(groupName) ?? []), measure]);
-  }
-  return Array.from(groups.entries()).sort(([a], [b]) => {
-    if (a === 'Measures') return -1;
-    if (b === 'Measures') return 1;
-    return a.localeCompare(b);
-  });
+interface ExploreColumnPanelProps {
+  datasetId: number | null;
+  /**
+   * Names of views reachable from the chart's base view via the join graph.
+   * Fields from views NOT in this set get a "need join" badge. When undefined
+   * all views are treated as reachable.
+   */
+  reachableViewNames?: Set<string>;
+  /**
+   * Name of the chart's base view — used as the "from" side when the user
+   * asks to add a relationship. When null, the badge button is hidden because
+   * we don't know what to join against.
+   */
+  baseViewName?: string | null;
+  onSelectDimension?: (dim: DimensionDefinition, viewName: string) => void;
+  onSelectMeasure?: (measure: MeasureDefinition, viewName: string) => void;
+  /**
+   * Fired when the user clicks the "⚠ cần join" badge on an unreachable field.
+   * Parent should open RelationshipDialog pre-filled with these view names.
+   */
+  onRequestRelationship?: (params: { fromViewName: string; toViewName: string }) => void;
 }
 
 function measureTitle(measure: MeasureDefinition) {
@@ -75,62 +86,96 @@ function measureTitle(measure: MeasureDefinition) {
   return parts.join(' | ');
 }
 
+function viewLabel(view: DatasetModelView) {
+  return view.table_display_name || view.name;
+}
+
 export function ExploreColumnPanel({
   datasetId,
-  selectedTableId,
   reachableViewNames,
+  baseViewName,
   onSelectDimension,
   onSelectMeasure,
+  onRequestRelationship,
 }: ExploreColumnPanelProps) {
   const { data: model, isLoading } = useDatasetModel(datasetId);
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedViews, setExpandedViews] = useState<Record<number, boolean>>({});
+  const [viewFilter, setViewFilter] = useState<string>('__all__');
 
-  // Auto-expand the selected table's view
-  const views = useMemo(() => {
+  const views = useMemo<DatasetModelView[]>(() => {
     if (!model?.views) return [];
     return model.views.filter(
-      (v) => !v.hidden_in_canvas && (!v.dimensions.every((d) => d.hidden) || !v.measures.every((m) => m.hidden)),
+      (v) =>
+        !v.hidden_in_canvas &&
+        (!v.dimensions.every((d) => d.hidden) || !v.measures.every((m) => m.hidden)),
     );
   }, [model?.views]);
 
-  // Filter by search
-  const filteredViews = useMemo(() => {
-    if (!searchQuery) return views;
-    const q = searchQuery.toLowerCase();
-    return views
-      .map((v) => ({
-        ...v,
-        dimensions: v.dimensions.filter(
-          (d) => !d.hidden && ((d.label || d.name).toLowerCase().includes(q) || d.name.toLowerCase().includes(q))
-        ),
-        measures: v.measures.filter(
-          (m) => !m.hidden && ((m.label || m.name).toLowerCase().includes(q) || m.name.toLowerCase().includes(q))
-        ),
-      }))
-      .filter((v) => v.dimensions.length > 0 || v.measures.length > 0);
-  }, [views, searchQuery]);
+  // Phase-13: empty-state — dataset has multiple views but no joins between
+  // them. Surface a banner so DA understand chart đa bảng cần relationship.
+  const hasMultipleViewsWithoutJoins = useMemo(() => {
+    if (!model || views.length < 2) return false;
+    const totalJoins = (model.explores ?? []).reduce(
+      (sum, e) => sum + ((e.joins ?? []).filter((j) => j.is_active !== false).length),
+      0,
+    );
+    return totalJoins === 0;
+  }, [model, views.length]);
 
-  // Default expand: the view matching selectedTableId
-  React.useEffect(() => {
-    if (selectedTableId) {
-      const match = views.find((v) => v.dataset_table_id === selectedTableId);
-      if (match) {
-        setExpandedViews((prev) => ({ ...prev, [match.id]: true }));
+  const allFields = useMemo<FlatField[]>(() => {
+    const out: FlatField[] = [];
+    for (const view of views) {
+      for (const dim of view.dimensions) {
+        if (dim.hidden) continue;
+        const label = dim.label || dim.name;
+        out.push({
+          kind: 'dimension',
+          view,
+          dimension: dim,
+          label,
+          searchHaystack: `${label} ${dim.name} ${viewLabel(view)}`.toLowerCase(),
+        });
+      }
+      for (const measure of view.measures) {
+        if (measure.hidden) continue;
+        const label = measure.label || measure.name;
+        out.push({
+          kind: 'measure',
+          view,
+          measure,
+          label,
+          searchHaystack: `${label} ${measure.name} ${viewLabel(view)} ${measure.folder ?? ''}`.toLowerCase(),
+        });
       }
     }
-  }, [selectedTableId, views]);
+    return out;
+  }, [views]);
 
-  const toggleView = (id: number) => {
-    setExpandedViews((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
+  const filteredFields = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return allFields.filter((field) => {
+      if (viewFilter !== '__all__' && field.view.name !== viewFilter) return false;
+      if (q && !field.searchHaystack.includes(q)) return false;
+      return true;
+    });
+  }, [allFields, searchQuery, viewFilter]);
+
+  const dimensionFields = useMemo(
+    () => filteredFields.filter((f) => f.kind === 'dimension'),
+    [filteredFields],
+  );
+  const measureFields = useMemo(
+    () => filteredFields.filter((f) => f.kind === 'measure'),
+    [filteredFields],
+  );
+
+  const isReachable = (viewName: string) =>
+    reachableViewNames === undefined || reachableViewNames.has(viewName);
 
   if (!datasetId) return null;
 
   if (isLoading) {
-    return (
-      <div className="px-4 py-3 text-caption text-text-quaternary">Loading model...</div>
-    );
+    return <div className="px-4 py-3 text-caption text-text-quaternary">Loading model...</div>;
   }
 
   if (!model?.model_id || views.length === 0) {
@@ -149,123 +194,176 @@ export function ExploreColumnPanel({
 
   return (
     <div className="flex flex-col">
-      <div className="px-4 pb-2 pt-3">
+      <div className="space-y-2 px-4 pb-2 pt-3">
         <Input
           size="sm"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search columns..."
+          placeholder="Search fields..."
           leadingIcon={<Search className="h-3.5 w-3.5" />}
         />
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            onClick={() => setViewFilter('__all__')}
+            className={`rounded-full border px-2 py-0.5 text-tiny transition-colors ${
+              viewFilter === '__all__'
+                ? 'border-brand bg-brand/10 text-brand'
+                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
+            }`}
+          >
+            All views
+          </button>
+          {views.map((v) => (
+            <button
+              key={v.id}
+              onClick={() => setViewFilter(v.name)}
+              className={`rounded-full border px-2 py-0.5 text-tiny transition-colors ${
+                viewFilter === v.name
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
+              }`}
+              title={isReachable(v.name) ? undefined : 'View này chưa có join tới base view'}
+            >
+              {viewLabel(v)}
+              {!isReachable(v.name) && <span className="ml-1 text-warning">⚠</span>}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {hasMultipleViewsWithoutJoins && (
+        <div className="mx-4 mb-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-tiny leading-snug text-warning">
+          <div className="font-emphasis">Dataset chưa có relationship nào.</div>
+          <div className="opacity-90">
+            Chart đa bảng chỉ work khi có ít nhất 1 join. Mở tab <em>Data Model</em> hoặc bấm
+            badge <em>⚠ cần join</em> trên field để define relationship.
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto pb-2">
-        {filteredViews.map((view) => {
-          const isExpanded = expandedViews[view.id] ?? false;
-          const visibleDims = view.dimensions.filter((d) => !d.hidden);
-          const visibleMeasures = view.measures.filter((m) => !m.hidden);
-          const measureGroups = groupMeasures(visibleMeasures);
-          const isReachable = reachableViewNames === undefined || reachableViewNames.has(view.name);
-          const unreachableTitle = isReachable
-            ? undefined
-            : 'No JOIN defined between this view and the selected table. Open the Data Model tab to add a relationship.';
+        {dimensionFields.length === 0 && measureFields.length === 0 && (
+          <div className="px-4 py-6 text-center text-caption italic text-text-quaternary">
+            No fields match.
+          </div>
+        )}
 
-          return (
-            <div key={view.id}>
-              <button
-                onClick={() => toggleView(view.id)}
-                className="flex w-full items-center gap-1.5 px-4 py-1.5 text-caption font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
-                title={unreachableTitle}
-              >
-                {isExpanded ? (
-                  <ChevronDown className="h-3 w-3 text-text-quaternary" />
-                ) : (
-                  <ChevronRight className="h-3 w-3 text-text-quaternary" />
-                )}
-                <TableIcon className="h-3 w-3 text-text-quaternary" />
-                <span className={`truncate ${isReachable ? '' : 'text-text-quaternary'}`}>
-                  {view.table_display_name || view.name}
-                </span>
-                {!isReachable && (
-                  <span className="rounded bg-surface-2 px-1 text-tiny text-text-quaternary">no join</span>
-                )}
-                <span className="ml-auto text-tiny text-text-quaternary">
-                  {visibleDims.length}d · {visibleMeasures.length}m
-                </span>
-              </button>
-
-              {isExpanded && (
-                <div className="ml-4">
-                  {visibleDims.length > 0 && (
-                    <div className="mb-1">
-                      <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
-                        Dimensions
-                      </div>
-                      {visibleDims.map((dim) => (
-                        <button
-                          key={dim.name}
-                          disabled={!isReachable}
-                          onClick={() => isReachable && onSelectDimension?.(dim, view.name)}
-                          className={`flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption transition-colors ${
-                            isReachable
-                              ? 'text-text-secondary hover:bg-brand/10 hover:text-brand'
-                              : 'cursor-not-allowed text-text-quaternary opacity-60'
-                          }`}
-                          title={unreachableTitle ?? dim.description ?? dim.sql ?? dim.name}
-                        >
-                          <DimensionIcon type={dim.type} />
-                          <span className="truncate">{dim.label || dim.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {visibleMeasures.length > 0 && (
-                    <div className="mb-1">
-                      {measureGroups.map(([groupName, groupMeasures]) => (
-                        <div key={groupName}>
-                          <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
-                            {groupName}
-                          </div>
-                          {groupMeasures.map((m) => (
-                            <button
-                              key={m.name}
-                              disabled={!isReachable}
-                              onClick={() => isReachable && onSelectMeasure?.(m, view.name)}
-                              className={`flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption transition-colors ${
-                                isReachable
-                                  ? 'text-text-secondary hover:bg-warning/10 hover:text-warning'
-                                  : 'cursor-not-allowed text-text-quaternary opacity-60'
-                              }`}
-                              title={unreachableTitle ?? measureTitle(m)}
-                            >
-                              <Sigma className="h-3 w-3 shrink-0 text-warning" />
-                              <span className="truncate">{m.label || m.name}</span>
-                              {(m.filters?.length ?? 0) > 0 && (
-                                <span className="rounded bg-warning/10 px-1 text-tiny text-warning">
-                                  f{m.filters?.length}
-                                </span>
-                              )}
-                              {m.format?.kind && m.format.kind !== 'number' && (
-                                <span className="rounded bg-surface-2 px-1 text-tiny text-text-quaternary">
-                                  {m.format.kind}
-                                </span>
-                              )}
-                              <span className="ml-auto text-tiny uppercase text-text-quaternary">
-                                {m.type}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+        {dimensionFields.length > 0 && (
+          <div className="mb-2">
+            <div className="sticky top-0 z-10 bg-surface-1 px-4 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              Dimensions
             </div>
-          );
-        })}
+            {dimensionFields.map((field) => {
+              const dim = field.dimension!;
+              const reachable = isReachable(field.view.name);
+              return (
+                <FieldRow
+                  key={`d-${field.view.id}-${dim.name}`}
+                  reachable={reachable}
+                  baseViewName={baseViewName ?? null}
+                  fromViewName={field.view.name}
+                  fromViewLabel={viewLabel(field.view)}
+                  onRequestRelationship={onRequestRelationship}
+                  hoverColorClass="hover:bg-brand/10 hover:text-brand"
+                  title={dim.description ?? dim.sql ?? dim.name}
+                  onClick={() => onSelectDimension?.(dim, field.view.name)}
+                >
+                  <DimensionIcon type={dim.type} />
+                  <span className="truncate">{field.label}</span>
+                </FieldRow>
+              );
+            })}
+          </div>
+        )}
+
+        {measureFields.length > 0 && (
+          <div className="mb-2">
+            <div className="sticky top-0 z-10 bg-surface-1 px-4 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              Measures
+            </div>
+            {measureFields.map((field) => {
+              const m = field.measure!;
+              const reachable = isReachable(field.view.name);
+              return (
+                <FieldRow
+                  key={`m-${field.view.id}-${m.name}`}
+                  reachable={reachable}
+                  baseViewName={baseViewName ?? null}
+                  fromViewName={field.view.name}
+                  fromViewLabel={viewLabel(field.view)}
+                  onRequestRelationship={onRequestRelationship}
+                  hoverColorClass="hover:bg-warning/10 hover:text-warning"
+                  title={measureTitle(m)}
+                  onClick={() => onSelectMeasure?.(m, field.view.name)}
+                >
+                  <Sigma className="h-3 w-3 shrink-0 text-warning" />
+                  <span className="truncate">{field.label}</span>
+                  {(m.filters?.length ?? 0) > 0 && (
+                    <span className="rounded bg-warning/10 px-1 text-tiny text-warning">
+                      f{m.filters?.length}
+                    </span>
+                  )}
+                  <span className="ml-auto text-tiny uppercase text-text-quaternary">{m.type}</span>
+                </FieldRow>
+              );
+            })}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+interface FieldRowProps {
+  reachable: boolean;
+  baseViewName: string | null;
+  fromViewName: string;
+  fromViewLabel: string;
+  onRequestRelationship?: (params: { fromViewName: string; toViewName: string }) => void;
+  hoverColorClass: string;
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}
+
+function FieldRow({
+  reachable,
+  baseViewName,
+  fromViewName,
+  fromViewLabel,
+  onRequestRelationship,
+  hoverColorClass,
+  title,
+  onClick,
+  children,
+}: FieldRowProps) {
+  return (
+    <div className="group flex w-full items-center gap-2 px-4 py-1 text-caption">
+      <button
+        onClick={onClick}
+        title={title}
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left text-text-secondary transition-colors ${hoverColorClass}`}
+      >
+        {children}
+      </button>
+      <span className="shrink-0 text-tiny text-text-quaternary opacity-60 group-hover:opacity-100">
+        {fromViewLabel}
+      </span>
+      {!reachable && baseViewName && (
+        <button
+          onClick={() =>
+            onRequestRelationship?.({
+              fromViewName: baseViewName,
+              toViewName: fromViewName,
+            })
+          }
+          title={`Thiếu join từ "${baseViewName}" → "${fromViewLabel}". Bấm để tạo relationship.`}
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-tiny font-emphasis text-warning hover:bg-warning/20"
+        >
+          <AlertTriangle className="h-2.5 w-2.5" />
+          cần join
+        </button>
+      )}
     </div>
   );
 }

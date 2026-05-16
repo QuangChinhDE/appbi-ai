@@ -8,6 +8,29 @@ Removed vs the legacy MCP:
     config directly and uses `preview_chart_data` to verify.
   - `regenerate_chart_description` — backend LLM. Claude writes the
     description; `update_chart_description` saves it as plain text.
+
+Phase-11 error-message contract:
+  When a chart references a field on a view that is NOT reachable from
+  the chart's base view via the dataset join graph, the BE semantic
+  engine raises a Vietnamese message:
+
+      "Bảng \"<X>\" chưa có relationship tới base view \"<Y>\".
+       Mở tab Data Model để định nghĩa join trước khi dùng field từ
+       bảng này."
+
+  This surfaces in `preview_chart_data` / `create_chart` responses as
+  `detail` on a 4xx. Forward the message verbatim — DA understands VN
+  better than the old English engine identifier. To fix, the user must
+  either (a) remove the cross-table field, or (b) add a relationship
+  via `set_view_relationship`.
+
+Phase-12 dataset-scope measure note:
+  When chart `metric.field` references a measure with `scope='dataset'`
+  (Phase-12), the engine auto-pulls every view in `source_columns` into
+  the join graph. If any of those views is not reachable from the
+  chart's base view, the engine raises the same VN message above. Tell
+  the user to add a relationship between the base view and the missing
+  source view.
 """
 from __future__ import annotations
 

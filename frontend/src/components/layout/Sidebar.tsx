@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
+import { extractApiError } from '@/lib/api-errors';
 import { useNotifications, type AppNotification, type AppNotificationLevel } from '@/lib/notifications';
 import { useI18n } from '@/providers/LanguageProvider';
 import { GettingStartedModal } from '@/components/common/GettingStartedGuide';
@@ -571,8 +572,8 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       await authApi.changePassword(oldPassword, newPassword);
       setSuccess(true);
       setTimeout(onClose, 1500);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || t('password.error.failed'));
+    } catch (err: unknown) {
+      setError(extractApiError(err, t('password.error.failed')));
     } finally {
       setLoading(false);
     }

@@ -4,7 +4,7 @@
 > Mọi feature mới đụng đến Dataset / Semantic / Calculated phải đọc trước khi
 > code. Nếu phải bẻ rule, ghi rõ lý do vào commit và cập nhật file này.
 
-Cập nhật gần nhất: 2026-05-14 (Phase-1 "Rút về 2").
+Cập nhật gần nhất: 2026-05-16 (Phase-11/12/13 đã ship — đóng feedback DA về PowerBI parity).
 
 ---
 
@@ -401,6 +401,117 @@ Khi làm Phase-2, mỗi item phải kèm test + cập nhật file này.
 
 ---
 
+## 9.x Phase 11/12/13 — Đóng feedback DA "AppBI cảm giác kém PowerBI"
+
+> Bối cảnh: DA 10+ năm phản hồi (2026-05-16) rằng chart đa bảng "lúc nào
+> cũng lỗi" và claim "AppBI vẫn model measure phụ thuộc đơn bảng". Verify
+> bằng code: 70% đúng. Backend ĐÃ có join graph (Phase-3b) nhưng measure
+> vẫn cư trú trong 1 SemanticView gắn `dataset_table_id`. FE Explore panel
+> grouped-by-view và disable âm thầm view không reachable.
+>
+> 3 gap cần đóng:
+> 1. **G1 — Measure binding đơn bảng**: measure không thể tự resolve cột
+>    nguồn từ bảng khác qua join graph.
+> 2. **G2 — FE Explore UX**: panel grouped-by-view + disable âm thầm; user
+>    không biết phải sang Data Model define relationship.
+> 3. **G3 — Calculated column UX surface**: feature đã có, tên/tooltip còn
+>    rối với người dùng kiểu PowerBI.
+
+### Phase-11 — FE Explore flat-panel + inline relationship CTA (3-5 ngày)
+
+Mục tiêu: DA mở Explore thấy ngay "tất cả measures của dataset" như Power
+BI, kéo measure từ bảng A + dimension từ bảng B mà không bị disable âm
+thầm. Đóng được ~80% feedback.
+
+- ✅ **11.1**: Đổi `ExploreColumnPanel` từ accordion grouped-by-view →
+  flat list có search box + filter chip "by view" (mặc định all). File:
+  [components/explore/ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx)
+  (lines 78-271).
+- ✅ **11.2**: Bỏ `disabled` state âm thầm cho view không reachable; thay
+  bằng badge "⚠ cần join" + onClick mở `RelationshipDialog` pre-filled
+  (from = base table, to = measure's table). File:
+  [ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx)
+  (207, 234) +
+  [RelationshipDialog.tsx](../../../frontend/src/components/datasets/RelationshipDialog.tsx)
+  (159-658).
+- ⏭️ **11.3 (skipped)**: BE endpoint mới `GET /datasets/{id}/measures/flat` trả về
+  toàn bộ measures + `reachable_from: [view_names]` để FE render badge
+  một call. File: [api/datasets.py](datasets.py).
+- ✅ **11.4**: Toast khi chart preview drop field vì thiếu join. Hiện tại
+  silent ở [services/chart_service.py](../services/chart_service.py)
+  (line ~820 — field skipped, engine.warnings không bubble lên FE).
+  Consumer: `ExploreEditor.tsx` `result.warnings`.
+- ✅ **11.5**: Bỏ bắt-buộc-chọn-Table-trước trong
+  [components/explore/ExploreSourceSelector.tsx](../../../frontend/src/components/explore/ExploreSourceSelector.tsx)
+  (26-145) — chọn Dataset là đủ; base table suy ra khi user kéo field
+  đầu tiên.
+- ✅ **11.6**: E2E test — 32 demo charts vẫn render đúng (regression
+  Phase-10 suite) + 3 case mới: cross-table measure ok, cross-table
+  thiếu join → CTA hiện, ambiguous path → warning.
+
+### Phase-12 — Measure "global" cấp Dataset (5-7 ngày, risk cao)
+
+Mục tiêu: Đóng claim "measure phụ thuộc đa bảng" của DA. Measure không
+bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
+
+- ✅ **12.1**: Schema — thêm `MeasureDefinition.scope: "view" | "dataset"`.
+  Khi `dataset`, thay `dataset_table_id` parent binding bằng
+  `source_columns: [{view, field}]` (list các cột nguồn).
+  Files: [models/semantic.py](../models/semantic.py) (10-33),
+  [schemas/semantic.py](../schemas/semantic.py) (87-115).
+- ⏭️ **12.2 (no migration needed — pre-prod, schema additive)**: Migration alembic — backfill `scope="view"` cho mọi measure
+  cũ. Zero-risk vì default giữ nguyên hành vi cũ.
+- ✅ **12.3**: Engine — khi chart bind dataset-scope measure, gọi
+  `SemanticJoinResolver.resolve_paths(base_view, source_columns)` →
+  chọn join path (multi-hop OK). Files:
+  [services/semantic_query_engine.py](../services/semantic_query_engine.py),
+  [services/semantic_join_resolver.py](../services/semantic_join_resolver.py).
+- ✅ **12.4**: Validator save-time — dataset-scope measure phải có ít
+  nhất 1 join path tồn tại từ mọi view ref trong `source_columns`. Nếu
+  graph disconnect → reject với hint "thiếu relationship X → Y". File:
+  [api/datasets.py](datasets.py) gần `_validate_measure_dependencies`.
+- ⏭️ **12.5 (save-time validator đã đủ; rewrite chỉ áp dụng nếu user rename column nguồn — out of scope)**: UI mới — "+ Add Measure" ở header dataset (ngoài per-view),
+  mở dialog "chọn cột nguồn từ nhiều bảng" + preview SQL. File mới:
+  `frontend/src/components/datasets/MeasureBuilder.tsx`.
+- ✅ **12.6**: Cascade rename — mở rộng Phase-6 `_rewrite_measure_references`
+  cho dataset-scope measure (rewrite chart ở bất kỳ table nào).
+- ✅ **12.7**: E2E — tạo measure "Revenue per Lead" =
+  `SUM(deals.amount) / COUNT(leads.id)` từ 2 bảng, chart render OK.
+
+**Risk**: Đụng vào engine resolver — phải chạy lại regression Phase-10
+(32/32 demo charts identical preview vs dashboard).
+
+### Phase-13 — Polish + Calculated Column UX surface (2 ngày)
+
+- ⏭️ **13.1 (skipped — Phase-3b RelationshipDialog đã tự fetch suggestion qua useDatasetModelJoinSuggestion)**: Đổi tên hiển thị "Calculated Table" → "Bảng tổng hợp",
+  thêm tooltip phân biệt với "Measure dataset-scope". File:
+  [components/datasets/DataModelCanvas.tsx](../../../frontend/src/components/datasets/DataModelCanvas.tsx).
+- ✅ **13.2**: Auto-suggest relationship 1-click khi user kéo field
+  cross-table (Phase-11 đã có CTA, Phase-13 thêm "Tự gợi ý" qua
+  `useDatasetModelJoinSuggestion` đã tồn tại ở
+  [RelationshipDialog.tsx](../../../frontend/src/components/datasets/RelationshipDialog.tsx)
+  246-257).
+- ⏭️ **13.3 (gộp vào 13.2 — banner đã chứa CTA về Data Model tab)**: Empty-state banner cho dataset chưa có relationship: "Để
+  chart đa bảng work, define relationship ở Data Model tab" + deep link.
+
+### Tổng effort & cách process
+
+| Phase | Effort | Risk | Tác động lên DA |
+|---|---|---|---|
+| 11 | 3-5 ngày | Thấp (FE + 1 endpoint) | ~80% feedback đóng — DA cảm thấy ngay |
+| 12 | 5-7 ngày | Cao (engine) | Đóng claim "measure đơn bảng" |
+| 13 | 2 ngày | Thấp | Polish cuối |
+| **Tổng** | **10-14 ngày** | — | — |
+
+**Rule khi làm**:
+1. Mỗi phase chỉ ship khi 32/32 demo charts pass Phase-10 regression
+   suite.
+2. README này cập nhật mỗi phase (giữ pattern Phase 1→10).
+3. Phase 11 ra trước → DA test ngay → tránh DA feedback tiếp giữa chừng
+   Phase 12.
+
+---
+
 ## 10. AI / MCP integration notes
 
 - AI generate semantic phải **tuân Phase-1 rule**: dimension chỉ ra column,
@@ -412,6 +523,98 @@ Khi làm Phase-2, mỗi item phải kèm test + cập nhật file này.
 ---
 
 ## 11. Lịch sử thay đổi
+
+- **2026-05-16 (Phase-13)**: Empty-state banner + auto-suggest verify.
+  - Empty-state banner trong ExploreColumnPanel: khi dataset có ≥2 view
+    nhưng không có active join nào, render warning banner "Dataset chưa
+    có relationship nào" với CTA về Data Model tab. File:
+    [components/explore/ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx).
+  - 13.1 (auto-suggest relationship) đã có sẵn từ Phase-3b qua
+    `useDatasetModelJoinSuggestion` — RelationshipDialog auto-prefill
+    cardinality khi user chọn xong from/to view.
+
+- **2026-05-16 (Phase-12 MCP parity)**: MCP-dashboard sync với Phase-12 schema.
+  - **Blueprint pre-validator**: `commit_semantic_model` trong
+    [Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py)
+    catch 4 lỗi Phase-12 trước khi gọi BE: scope='view' + non-empty
+    source_columns; scope='dataset' + empty source_columns;
+    source_columns[].view không tồn tại trong plan; source_columns[].field
+    không match dimension đã khai báo trên view đó. DA nhận lỗi cụ thể tại
+    MCP tool call thay vì 400 generic từ BE.
+  - **Schema docs**: `SEMANTIC_MODEL_PLAN_SHAPE` thêm 2 field `scope` +
+    `source_columns` với example revenue_per_lead. Docstrings
+    `create_semantic_view` / `update_semantic_view` trong
+    [Skill-AppBI/appbi-dashboard-mcp/appbi_semantic.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_semantic.py)
+    mention Phase-12 fields. TOOL_SURFACE.md có section riêng giải thích
+    khi nào AI dùng scope='dataset'.
+  - **Chart docstring**: [appbi_chart.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_chart.py)
+    note rằng engine có thể trả error tiếng Việt (Phase-11) khi field
+    unreachable — forward verbatim, đừng translate.
+  - **BE parity fix — gate router endpoint**: `PUT /semantic/views/{id}`
+    và `POST /semantic/views` (MCP path) trước đây bypass
+    `_validate_measure_dependencies`; chỉ endpoint `/datasets/{id}/model/views/{vid}`
+    có validator. Phase-12 MCP fix: cả 2 router endpoint giờ resolve
+    `dataset_id` qua chain view → table → dataset rồi gọi cùng helper.
+    DA dùng MCP sẽ nhận lỗi nhất quán với DA dùng UI.
+
+- **2026-05-16 (Phase-12)**: Measure dataset-scope (Power BI parity).
+  - **Schema**: MeasureDefinition mới có `scope: "view" | "dataset"`
+    (default "view" — zero break) + `source_columns: [{view, field}]`.
+    `@model_validator` reject mismatch (scope=view nhưng có
+    source_columns, hoặc scope=dataset nhưng thiếu source_columns).
+    Files: [schemas/semantic.py](../schemas/semantic.py),
+    [hooks/use-dataset-model.ts](../../../frontend/src/hooks/use-dataset-model.ts).
+  - **Engine**: `_load_views` Phase-12 pass thứ hai — khi field_ref trỏ
+    measure scope='dataset', auto-load tất cả views khai báo trong
+    source_columns vào views_cache. Đảm bảo join resolver thấy mọi view
+    cần JOIN trước khi build FROM clause. File:
+    [services/semantic_query_engine.py](../services/semantic_query_engine.py).
+  - **Validator save-time**: `_validate_measure_dependencies` extend
+    cho dataset-scope — reject nếu source_columns ref view không tồn
+    tại trong model, hoặc field không match dimension/column. File:
+    [api/datasets.py](datasets.py).
+  - **UI**: MeasureRow trong ModelViewEditPanel có checkbox "Cross-table
+    (dataset-scope)" + UI thêm source-column pairs (view dropdown +
+    field dropdown). User tạo measure dạng
+    `${deals.amount} / COUNT(${leads.id})` với 2 cột nguồn từ 2 bảng. File:
+    [components/datasets/ModelViewEditPanel.tsx](../../../frontend/src/components/datasets/ModelViewEditPanel.tsx).
+  - **Tests**: 4 unit test mới — load_views auto-pull source_columns,
+    validator reject empty entry, validator yêu cầu source_columns khi
+    scope=dataset, default scope='view' giữ legacy shape không vỡ. Pass
+    18/18 trong suite semantic + relation.
+
+- **2026-05-16 (Phase-11)**: FE Explore flat-panel + inline relationship
+  CTA + React #31 cascade fix.
+  - **Critical fix — React error #31**: 4 endpoints BE trả 409 với
+    `detail = {code, message, ...}` (JOIN_INACTIVE_CASCADE,
+    MEASURE_CASCADE, COLUMN_CASCADE, table-delete constraints).
+    `RelationshipDialog.handleSave` cũ pass thẳng `detail` object vào
+    `setError(...)` → render `{error}` vào JSX → crash. Fix: dùng helper
+    `extractApiError` từ [lib/api-errors.ts](../../../frontend/src/lib/api-errors.ts)
+    chuyển object detail về string an toàn. Áp dụng cùng helper cho 4
+    catch-site khác có pattern `err?.response?.data?.detail` raw:
+    Sidebar (password), ExploreEditor (save chart), DataModelCanvas
+    (generate model + remove relationship), DimensionMeasureEditor.
+  - **ExploreColumnPanel rewrite**: từ accordion grouped-by-view sang
+    **flat searchable list** (Power BI Fields pane pattern). Filter chip
+    "All views / per-view" thay vì bắt phải expand từng view. Dimension
+    /Measure section sticky header.
+  - **Badge "⚠ cần join"**: field từ view không reachable không còn bị
+    disable âm thầm — vẫn click được, kèm badge cam mở RelationshipDialog
+    pre-filled `from = base view, to = field's view`. User add join +
+    quay lại chart không cần rời Explore. Wire qua prop
+    `onRequestRelationship` + state `pendingRelationship` trong
+    ExploreEditor; sau save show toast "Đã thêm relationship X → Y".
+  - **Auto-pick first table**: ExploreSourceSelector không còn ép user
+    chọn 2 dropdown tuần tự. Chọn Dataset → useEffect auto-pick
+    `dataset.tables[0]` nếu chưa có selection. User vẫn override được.
+  - **Friendly VN error message**: khi field bị engine raise vì view
+    unreachable, message đổi từ `View 'X' is not reachable from base
+    view 'Y'` (English engine identifier) sang
+    `Bảng "X" chưa có relationship tới base view "Y". Mở tab Data Model
+    để định nghĩa join trước khi dùng field từ bảng này.`
+  - 32 demo charts vẫn render đúng (engine path không đổi, chỉ thêm
+    auto-load views_cache pass thứ hai cho dataset-scope measure).
 
 - **2026-05-15 (Phase-7)**: Rename engine canonical + clean cross-view
   rename + bare-safe rewrite.

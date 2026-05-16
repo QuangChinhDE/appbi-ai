@@ -4,7 +4,7 @@
 > `DATASETS_README.md`, dev mới phải đọc trước khi đụng vào Chart code để
 > tránh phá rule kiến trúc.
 
-Cập nhật gần nhất: 2026-05-15 (Phase-10).
+Cập nhật gần nhất: 2026-05-16 (Phase-11/12/13 đã ship — đóng feedback DA về PowerBI parity).
 
 ---
 
@@ -201,3 +201,75 @@ refactor) → thêm enum value mới = TypeScript compile error tại
   nghĩa hiện ít exposed. ExploreEditor có gọi `replaceParameters`
   nhưng UI flow chưa rõ ràng cho user thông thường. Cần audit UX khi
   có request.
+
+---
+
+## 10. Phase 11/12/13 — PowerBI parity (đã ship)
+
+Phần Chart bị ảnh hưởng bởi roadmap đóng feedback DA. Plan đầy đủ ở
+[DATASETS_README.md §9.x](DATASETS_README.md#9x-phase-11-12-13--đóng-feedback-da-appbi-cảm-giác-kém-powerbi).
+Tóm tắt phần Chart đã thay đổi:
+
+### Phase-11 (Chart-side) — ✅
+- ✅ **11.2**: Pre-fill `RelationshipDialog` từ Explore khi user click
+  badge "⚠ cần join" trên measure không reachable. Wire qua prop
+  `onRequestRelationship` + state `pendingRelationship` trong
+  [ExploreEditor.tsx](../../../frontend/src/components/explore/ExploreEditor.tsx).
+- ✅ **11.4**: Friendly VN error khi engine raise unreachable view —
+  thay raw `View 'X' is not reachable...` bằng `Bảng "X" chưa có
+  relationship tới base view "Y". Mở tab Data Model để định nghĩa join.`
+  ChartService warnings (Phase-3b) đã render trong FE từ trước.
+
+### Phase-12 (Chart-side) — ✅
+- ✅ **12.3**: Chart consume dataset-scope measure không đổi schema —
+  metric ref dạng `analytics.revenue_per_lead` resolve qua engine
+  `_load_views` Phase-12 pass thứ hai, tự pull mọi view trong
+  `source_columns` vào views_cache.
+- ⏭️ **12.6 (deferred)**: Cascade rewrite cho rename column nguồn — out
+  of scope; save-time validator đã reject nếu source_columns ref column
+  không tồn tại.
+- ✅ **12.7**: Regression — 18 unit test pass (14 semantic engine + 4
+  relation invariant), bao gồm 4 test mới cho dataset-scope.
+
+### Rule không phá Phase-10
+1. Mọi thay đổi engine PHẢI giữ `with_chart_semantic_binding` hydrate
+   trước routing (Phase-10 Issue A).
+2. Mọi thay đổi response shape PHẢI giữ `data` là `list[dict]`
+   (Phase-10 Issue B — AI Bot context).
+3. Mọi thay đổi filter merge PHẢI giữ `_dedupe_filters_by_field(public + viewer)`
+   pattern (Phase-10 Issue C — AI Bot viewer filters).
+
+---
+
+## 11. Phase 11/12/13 — Ship log (chart-side delta)
+
+### Phase-11 (Chart-side, 2026-05-16) — ✅ shipped
+- **React #31 fix** trong RelationshipDialog (mở từ ExploreColumnPanel
+  badge): structured 409 `detail` object giờ chuyển qua `extractApiError`
+  trước khi set vào state, tránh crash khi render. Áp dụng cùng pattern
+  cho 4 catch-site khác có structured detail risk (xem
+  [DATASETS_README §11](DATASETS_README.md#11-lịch-sử-thay-đổi)).
+- **ChartService warnings bubble**: engine warnings (Phase-3b) đã được
+  render trong [ExploreEditor.tsx](../../../frontend/src/components/explore/ExploreEditor.tsx)
+  từ trước — Phase-11 thêm error message tiếng Việt thân thiện cho case
+  "view unreachable" (engine.py raise ValueError → toast).
+
+### Phase-12 (Chart-side, 2026-05-16) — ✅ shipped
+- **Dataset-scope measure binding**: chart vẫn bind 1
+  `dataset_table_id` làm base; khi metric ref tới measure scope='dataset',
+  engine `_load_views` Phase-12 pass thứ hai pull mọi view trong
+  `source_columns` vào cache trước khi build FROM/JOIN. Không cần đổi
+  Chart schema — measure ref dạng `analytics.revenue_per_lead` vẫn
+  resolve qua semantic explore như cũ.
+- **Phase-10 invariants** vẫn giữ — `with_chart_semantic_binding`,
+  response shape `list[dict]`, filter dedup pattern không thay đổi.
+
+### Phase-13 (Chart-side, 2026-05-16) — ✅ shipped
+- Empty-state banner thuần FE — không đụng Chart pipeline.
+
+### Regression verified
+- BE: 18 unit tests pass (14 semantic engine + 4 dataset relation).
+- FE: 0 TypeScript errors (3 file Phase 11 + ModelViewEditPanel +
+  hooks/use-dataset-model + ExploreColumnPanel banner).
+- Pre-existing failures (test_classify_columns_*) đã có trên master từ
+  trước Phase 11 — không phải regression.

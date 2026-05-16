@@ -35,6 +35,7 @@ import {
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
 import { toast } from '@/lib/toast';
+import { extractApiError } from '@/lib/api-errors';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionDrawer, ChartDescriptionTrigger } from '@/components/explore/ChartDescriptionDrawer';
 import {
@@ -48,8 +49,9 @@ import {
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
-import { useDatasetModel, type DimensionDefinition, type MeasureDefinition, type DatasetModelView } from '@/hooks/use-dataset-model';
+import { useDatasetModel, type DimensionDefinition, type MeasureDefinition, type DatasetModelView, useAddJoin, type AddJoinParams } from '@/hooks/use-dataset-model';
 import { getReachableViews } from '@/lib/dataset-model-graph';
+import { RelationshipDialog } from '@/components/datasets/RelationshipDialog';
 
 type ChartType = ExploreChartType;
 
@@ -587,12 +589,21 @@ export function ExploreEditor({
   type ParamRow = ChartParameterCreate & { _key: string };
   const [paramRows, setParamRows] = useState<ParamRow[]>([]);
 
+  // Phase-11: pending relationship from "cần join" badge in ExploreColumnPanel.
+  // When set, opens RelationshipDialog pre-filled with these view names so the
+  // user can add the missing JOIN without leaving the chart builder.
+  const [pendingRelationship, setPendingRelationship] = useState<{
+    fromViewName: string;
+    toViewName: string;
+  } | null>(null);
+
   const createChart = useCreateChart();
   const updateChart = useUpdateChart();
   const upsertMetadata = useUpsertChartMetadata();
   const replaceParams = useReplaceChartParameters();
   const executeDatasetQuery = useExecuteDatasetTableQueryMutation();
   const previewChartData = usePreviewChartData();
+  const addJoin = useAddJoin();
 
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
@@ -1541,9 +1552,9 @@ export function ExploreEditor({
           router.replace('/explore/' + newChart.id);
         }
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error saving chart:', error);
-      toast.error(`Failed to save chart: ${error?.response?.data?.detail || error.message}`);
+      toast.error(`Failed to save chart: ${extractApiError(error, 'unknown error')}`);
     }
   };
 
@@ -1894,10 +1905,11 @@ export function ExploreEditor({
                       <div className="max-h-72 overflow-y-auto border-t border-[rgb(var(--border-line))]">
                         <ExploreColumnPanel
                           datasetId={selectedDatasetId}
-                          selectedTableId={selectedTableId}
                           reachableViewNames={reachableViewNames}
+                          baseViewName={selectedSemanticView?.name ?? null}
                           onSelectDimension={handleSelectSemanticDimension}
                           onSelectMeasure={handleSelectSemanticMeasure}
+                          onRequestRelationship={setPendingRelationship}
                         />
                       </div>
                     </div>
@@ -2091,6 +2103,31 @@ export function ExploreEditor({
           onClose={() => setIsDescDrawerOpen(false)}
         />
       )}
+
+      {/* Phase-11: inline RelationshipDialog opened from "cần join" badge. */}
+      {pendingRelationship && datasetModel && selectedDatasetId && (() => {
+        const fromView = datasetModel.views.find((v) => v.name === pendingRelationship.fromViewName);
+        const toView = datasetModel.views.find((v) => v.name === pendingRelationship.toViewName);
+        if (!fromView || !toView) return null;
+        return (
+          <RelationshipDialog
+            isOpen
+            onClose={() => setPendingRelationship(null)}
+            onSave={async (value) => {
+              await addJoin.mutateAsync({
+                datasetId: selectedDatasetId,
+                ...value,
+              } as AddJoinParams);
+              toast.success(`Đã thêm relationship ${fromView.name} → ${toView.name}.`);
+              setPendingRelationship(null);
+            }}
+            datasetId={selectedDatasetId}
+            views={datasetModel.views}
+            initialValue={{ fromViewId: fromView.id, toViewId: toView.id }}
+            isSaving={addJoin.isPending}
+          />
+        );
+      })()}
     </div>
   );
 }

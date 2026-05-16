@@ -3,7 +3,7 @@ Semantic Layer Schemas
 Pydantic schemas for LookML-style semantic definitions
 """
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
 
 
@@ -84,8 +84,18 @@ class MeasureFormat(BaseModel):
     pattern: Optional[str] = Field(default=None, max_length=64)  # for custom
 
 
+class MeasureSourceColumn(BaseModel):
+    """Phase-12: reference to a column in a specific view, used by dataset-scope
+    measures to declare which views/columns the engine must join in before
+    evaluating the measure expression. The engine then auto-resolves the join
+    path via the dataset's join graph.
+    """
+    view: str
+    field: str
+
+
 class MeasureDefinition(BaseModel):
-    """Measure definition (extended Phase-1).
+    """Measure definition (extended Phase-1, Phase-12).
 
     Backwards compatible: legacy measures with only {name, type, sql, ...}
     still validate. New optional fields:
@@ -100,6 +110,18 @@ class MeasureDefinition(BaseModel):
                     happens through `expression` SQL.
       - format:     display format hint.
       - folder:     UI grouping label.
+      - scope:      Phase-12. "view" (default) means measure lives in the
+                    parent SemanticView and only references columns in that
+                    view. "dataset" means the measure references columns from
+                    other views in the dataset (declared via source_columns);
+                    the engine auto-joins those views via the join graph.
+                    Power BI parity: a measure that spans multiple tables.
+      - source_columns: Phase-12. Required when scope="dataset". List of
+                    {view, field} entries — every view referenced here must be
+                    reachable from the chart's base view via the join graph
+                    at query time. The parent SemanticView acts as an
+                    organizational container; its dataset_table_id is NOT
+                    used to anchor the measure's data.
     """
     name: str
     type: Literal["count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total"]
@@ -113,6 +135,9 @@ class MeasureDefinition(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+    # Phase-12 additions
+    scope: Literal["view", "dataset"] = "view"
+    source_columns: List[MeasureSourceColumn] = Field(default_factory=list)
 
     @field_validator("expression", "where_sql")
     @classmethod
@@ -143,6 +168,28 @@ class MeasureDefinition(BaseModel):
         if any(token in padded for token in forbidden):
             raise ValueError("Measure SQL fragment contains a forbidden token")
         return text
+
+    @model_validator(mode="after")
+    def _validate_scope_and_source_columns(self):
+        # Phase-12: scope and source_columns must agree.
+        # view-scope measures cannot declare source_columns (their data comes
+        # from the parent SemanticView). dataset-scope measures must declare
+        # at least one source column so the engine knows which views to join.
+        if self.scope == "view" and self.source_columns:
+            raise ValueError(
+                "source_columns chỉ dùng cho measure scope='dataset'. "
+                "Đã xoá source_columns hoặc đổi scope sang 'dataset'."
+            )
+        if self.scope == "dataset" and not self.source_columns:
+            raise ValueError(
+                "Measure scope='dataset' phải khai báo ít nhất một entry trong "
+                "source_columns (view, field)."
+            )
+        # Reject empty view/field strings — fail fast at save time
+        for entry in self.source_columns:
+            if not entry.view.strip() or not entry.field.strip():
+                raise ValueError("source_columns entry phải có cả 'view' và 'field' không rỗng.")
+        return self
 
 
 # Join Definition
