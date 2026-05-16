@@ -702,6 +702,30 @@ def _find_semantic_refs_to_columns(
 
 
 def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
+    """FE→BE routing oracle: presence of ANY dotted ref ('view.field') in
+    dimensions / measures / filters / order_by tells the dataset query
+    endpoint (`execute_dataset_query`) to route the request to
+    ``_execute_semantic_dataset_query`` — the path that wires
+    ``SemanticQueryEngine`` + the multi-hop ``SemanticJoinResolver`` so
+    cross-table fields get JOINed correctly.
+
+    Bare refs route to the legacy ``live_query`` path, which only knows
+    one table (no JOIN logic). This is the contract FE has to honour:
+    whenever a field has a qualified equivalent on the semantic model,
+    send the QUALIFIED form. Otherwise, JOINs silently disappear.
+
+    Phase-12.5 reinforces the contract at the FE layer:
+      * ``ExploreEditor.upgradeRoleConfigToQualified`` (frontend) rewrites
+        bare→qualified before any request hits this endpoint whenever a
+        unique mapping exists in the join graph.
+      * ``ExploreColumnPanel`` ⚠ "cần join" badge stops the user from
+        picking a field on a view that has no reachable JOIN to the base.
+      * ``semanticReady`` gate delays role-config seeding until the
+        dataset model is loaded, eliminating the race where preview
+        columns arrive first and a bare pick gets locked in.
+
+    This trio is what gives ``has_ref`` consistent input.
+    """
     def has_ref(value: Any) -> bool:
         return isinstance(value, str) and "." in value and value.split(".", 1)[0].strip()
 

@@ -105,12 +105,63 @@ function aggregateMetricValue(
   }
 }
 
+/**
+ * Group rows by an exact-equality match on `dimField` and aggregate every
+ * metric per group.
+ *
+ * GRANULARITY CONTRACT (DA review 2026-05-16):
+ *
+ * This function does NOT bucket time — it groups by string-equality of
+ * `row[dimField]`. That works in two scenarios only:
+ *
+ *   A. `preAggregated=true` is passed by the caller because the BE has
+ *      already emitted SELECT … GROUP BY date_trunc(…) on the time
+ *      dimension. The rows arriving here are at the chart's intended
+ *      granularity (one row per bucket). This is the standard path —
+ *      see `SemanticQueryEngine._build_group_by_clause`.
+ *
+ *   B. `dimField` is a categorical (not a raw timestamp). Each distinct
+ *      string value is its own group — correct by definition.
+ *
+ * Scenarios that BREAK if we get here with raw timestamps:
+ *   - live_query path on a non-bucketed datetime column. Every distinct
+ *     timestamp becomes its own group; the resulting line chart has one
+ *     point per row instead of one per day. To prevent silent wrong
+ *     output we now warn in the console so it shows up during DA QA;
+ *     the fix is to either route through the semantic engine (qualify
+ *     the field) or expose time_grains on the role config.
+ *
+ * If you need true client-side time bucketing, extend this with a
+ * `timeGrain?: 'day' | 'week' | 'month'` parameter and quantize the key.
+ * Don't silently re-aggregate — that re-introduces the BE/FE divergence
+ * Phase-10 Issue A originally fixed.
+ */
+function looksLikeRawTimestamp(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  // ISO timestamps with hour/minute/second, e.g. "2026-05-16T14:23:11..."
+  // or "2026-05-16 14:23:11". Plain "2026-05-16" (date-only) is OK and
+  // a valid bucket.
+  return /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value);
+}
+
 export function applyGroupByAgg(
   data: Record<string, any>[],
   dimField: string,
   metrics: MetricConfig[],
 ): Record<string, any>[] {
   if (!dimField || metrics.length === 0 || data.length === 0) return data;
+
+  // Phase-12.5 granularity warning. Only fires on raw timestamps; categorical
+  // dimensions never trigger it. Keeps DA QA honest without changing output.
+  const firstValue = data[0]?.[dimField];
+  if (looksLikeRawTimestamp(firstValue)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[chartDataAdapter] applyGroupByAgg called with raw-timestamp values on "${dimField}". ` +
+      `Each row becomes its own group, which is almost certainly wrong for a time series. ` +
+      `Use the semantic engine (qualify the field as view.field) or pre-bucket on the BE.`,
+    );
+  }
 
   const groups = new Map<string, Record<string, any>[]>();
   for (const row of data) {

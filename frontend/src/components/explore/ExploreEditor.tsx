@@ -133,6 +133,69 @@ function metricMatchesColumns(metric: MetricConfig | null | undefined, columnNam
   return candidates.some((candidate) => columnNames.has(candidate));
 }
 
+/**
+ * Phase-12.5 — Qualified-field guarantee.
+ *
+ * Background: BE routes a chart query to the semantic engine (with JOIN
+ * resolver) when ANY metric/dimension carries a dotted `view.field` ref —
+ * see `_contains_semantic_field_refs` in backend/app/api/datasets.py:704
+ * and `_role_config_needs_semantic_runtime` in chart_service.py:129.
+ *
+ * Before Phase-12.5, this routing was at risk because:
+ *   1. `availableColumns` is built from `[previewColumns, semanticColumns]`
+ *      where preview columns are bare names ("amount") and semantic columns
+ *      are qualified ("deals.amount").
+ *   2. When semanticColumns finishes loading AFTER previewColumns, the user
+ *      may have already picked "amount" — bare — and the engine routes to
+ *      live_query instead of semantic. Cross-table JOINs silently fail.
+ *
+ * `upgradeFieldToQualified` walks every potential field in a role config
+ * and replaces bare names with their qualified counterpart whenever both
+ * exist in the column registry. Idempotent — safe to call on already-
+ * qualified configs.
+ */
+function upgradeFieldToQualified(
+  field: string | undefined,
+  qualifiedByBare: Map<string, string>,
+): string | undefined {
+  if (!field) return field;
+  if (field.includes('.')) return field; // already qualified
+  return qualifiedByBare.get(field) ?? field;
+}
+
+function upgradeMetricToQualified(
+  metric: MetricConfig | undefined,
+  qualifiedByBare: Map<string, string>,
+): MetricConfig | undefined {
+  if (!metric) return metric;
+  const next = upgradeFieldToQualified(metric.field, qualifiedByBare);
+  return next === metric.field ? metric : { ...metric, field: next ?? metric.field };
+}
+
+function upgradeRoleConfigToQualified(
+  roleConfig: ChartRoleConfig,
+  qualifiedByBare: Map<string, string>,
+): ChartRoleConfig {
+  if (qualifiedByBare.size === 0) return roleConfig;
+  return {
+    ...roleConfig,
+    dimension: upgradeFieldToQualified(roleConfig.dimension, qualifiedByBare),
+    breakdown: upgradeFieldToQualified(roleConfig.breakdown, qualifiedByBare),
+    timeField: upgradeFieldToQualified(roleConfig.timeField, qualifiedByBare),
+    scatterX: upgradeFieldToQualified(roleConfig.scatterX, qualifiedByBare),
+    scatterY: upgradeFieldToQualified(roleConfig.scatterY, qualifiedByBare),
+    tableRowDimension: upgradeFieldToQualified(roleConfig.tableRowDimension, qualifiedByBare),
+    tableColumnDimension: upgradeFieldToQualified(roleConfig.tableColumnDimension, qualifiedByBare),
+    metrics: roleConfig.metrics.map((m) => upgradeMetricToQualified(m, qualifiedByBare) ?? m),
+    lineMetric: upgradeMetricToQualified(roleConfig.lineMetric, qualifiedByBare),
+    benchmarkMetric: upgradeMetricToQualified(roleConfig.benchmarkMetric, qualifiedByBare),
+    tablePivotMetric: upgradeMetricToQualified(roleConfig.tablePivotMetric, qualifiedByBare),
+    selectedColumns: roleConfig.selectedColumns?.map(
+      (col) => upgradeFieldToQualified(col, qualifiedByBare) ?? col,
+    ),
+  };
+}
+
 function normalizeTableDisplayColumns(
   columns: ColumnMetadata[],
   roleConfig: ChartRoleConfig,
@@ -827,6 +890,101 @@ export function ExploreEditor({
     return out;
   }, [reachableSemanticViews]);
 
+  /**
+   * Phase-12.5 — Bare-to-qualified field name registry.
+   *
+   * Maps `"amount"` → `"deals.amount"` whenever the bare name appears on
+   * exactly ONE reachable semantic view. Used by `upgradeRoleConfigToQualified`
+   * (defined above) to silently rewrite chart configs so the BE always sees
+   * dotted refs when a semantic column exists. Eliminates the FE→BE contract
+   * gap that DA identified: bare ref → live_query path, qualified ref →
+   * semantic engine with JOIN resolver.
+   *
+   * Ambiguous cases (same bare name on multiple views) are SKIPPED — leaving
+   * the value bare. UI flags those via the "⚠ cần join" badge in
+   * ExploreColumnPanel so the user picks the qualified form explicitly.
+   */
+  const qualifiedByBare = useMemo<Map<string, string>>(() => {
+    const occurrences = new Map<string, string[]>();
+    for (const col of semanticColumns) {
+      if (!col.name.includes('.')) continue;
+      const bare = col.name.split('.', 2)[1];
+      const list = occurrences.get(bare) ?? [];
+      list.push(col.name);
+      occurrences.set(bare, list);
+    }
+    const map = new Map<string, string>();
+    for (const [bare, qualifiedList] of occurrences.entries()) {
+      if (qualifiedList.length === 1) {
+        map.set(bare, qualifiedList[0]);
+      }
+    }
+    return map;
+  }, [semanticColumns]);
+
+  /**
+   * Phase-12.5 — Semantic-ready gate.
+   *
+   * Returns true when the dataset model has finished loading AND we know
+   * whether semantic columns exist. Used to avoid the race condition DA
+   * identified: previewColumns may arrive before semanticColumns, causing
+   * `syncRoleConfigWithColumns` to pick a bare column first; when semantic
+   * columns later load, the choice is "stuck" because the bare name also
+   * exists in `[previewColumns, semanticColumns]`. Gating the seeding pass
+   * on this flag delays the role-config seed until both sources are
+   * available — eliminating the partial-config requests DA observed.
+   */
+  const semanticReady = useMemo(
+    () => Boolean(datasetModel) && (selectedSemanticView === null || reachableSemanticViews.length > 0),
+    [datasetModel, selectedSemanticView, reachableSemanticViews.length],
+  );
+
+  /**
+   * Phase-12.5 — Active-relationship summary for the topbar chip.
+   *
+   * DA feedback said the FE state had "no explicit relationship awareness."
+   * Cross-table state IS tracked (via `reachableViewNames`), it just wasn't
+   * surfaced. This memo computes a compact summary the user can SEE so the
+   * mental model lines up with what the engine will do at query time:
+   *
+   *   - `activeViewCount` — how many semantic views the chart can pull
+   *     fields from (base view + every view reachable via active joins).
+   *   - `crossTableInUse` — true when the current roleConfig actually
+   *     references a view OTHER than the chart's base view (i.e. JOINs
+   *     will fire at BE).
+   */
+  const activeRelationshipSummary = useMemo(() => {
+    if (!datasetModel || !selectedSemanticView) {
+      return { activeViewCount: 0, crossTableInUse: false };
+    }
+    const baseView = selectedSemanticView.name;
+    const reachable = reachableViewNames;
+    const refsViews = new Set<string>();
+    const collectField = (field?: string) => {
+      if (!field || !field.includes('.')) return;
+      const view = field.split('.', 1)[0];
+      if (view && view !== baseView) refsViews.add(view);
+    };
+    const rc = generatedRoleConfig;
+    collectField(rc.dimension);
+    collectField(rc.breakdown);
+    collectField(rc.timeField);
+    collectField(rc.scatterX);
+    collectField(rc.scatterY);
+    collectField(rc.tableRowDimension);
+    collectField(rc.tableColumnDimension);
+    rc.metrics.forEach((m) => collectField(m.field));
+    collectField(rc.lineMetric?.field);
+    collectField(rc.benchmarkMetric?.field);
+    collectField(rc.tablePivotMetric?.field);
+    rc.selectedColumns?.forEach(collectField);
+    return {
+      activeViewCount: reachable.size,
+      crossTableInUse: refsViews.size > 0,
+      crossTableViews: Array.from(refsViews),
+    };
+  }, [datasetModel, selectedSemanticView, reachableViewNames, generatedRoleConfig]);
+
   /** Map of bare column-name → friendly label, sourced from the selected
    *  view's dimensions/measures so raw preview columns can also display
    *  the user-facing label rather than the SQL identifier. Only the selected
@@ -1188,11 +1346,34 @@ export function ExploreEditor({
     setCustomRoleConfig({ metrics: [] });
   }, [selectedTableId]);
 
+  /**
+   * Phase-12.5 — Seeding pass for generatedRoleConfig.
+   *
+   * Two important contracts (DA feedback 2026-05-16):
+   *
+   * 1) GATE BY semanticReady. We do NOT seed until the dataset model has
+   *    finished loading. Previously this effect fired with previewColumns
+   *    alone (semanticColumns still []), which let `syncRoleConfigWithColumns`
+   *    pick a BARE column. When semantic loaded a moment later, the bare
+   *    pick stayed (still valid in availableGeneratedColumns) and BE routed
+   *    to live_query instead of the semantic engine — silently dropping
+   *    JOINs for cross-table charts.
+   *
+   * 2) UPGRADE bare→qualified after sync. `qualifiedByBare` lets us rewrite
+   *    any bare ref that has exactly one qualified match in the reachable
+   *    join graph. This guarantees BE.`_contains_semantic_field_refs`
+   *    (datasets.py:704) sees a dotted ref whenever one is available,
+   *    routing to SemanticQueryEngine which handles JOINs correctly.
+   */
   useEffect(() => {
+    if (!semanticReady) return;
     const availableGeneratedColumns = [...previewColumns, ...semanticColumns];
     if (!availableGeneratedColumns.length) return;
-    setGeneratedRoleConfig((prev) => syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns));
-  }, [chartType, previewColumns, semanticColumns]);
+    setGeneratedRoleConfig((prev) => {
+      const synced = syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns);
+      return upgradeRoleConfigToQualified(synced, qualifiedByBare);
+    });
+  }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare]);
 
   useEffect(() => {
     const maxLimit = getMaxQueryLimit(sqlMode);
@@ -1708,6 +1889,28 @@ export function ExploreEditor({
                 variant="compact"
               />
             </div>
+            {/* Phase-12.5: relationship summary chip — DA feedback said the
+                FE didn't surface active-relationship state. This pill makes
+                "joins are wired up" visible without leaving Explore. Click
+                forwards to the Data Model tab for full edit. */}
+            {selectedSemanticView && activeRelationshipSummary.activeViewCount > 1 && (
+              <span
+                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                  activeRelationshipSummary.crossTableInUse
+                    ? 'border-success/40 bg-success/10 text-success'
+                    : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary'
+                }`}
+                title={
+                  activeRelationshipSummary.crossTableInUse
+                    ? `Chart đang dùng field từ ${activeRelationshipSummary.crossTableViews?.length ?? 0} bảng khác qua relationship: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}. Engine sẽ JOIN tự động.`
+                    : `${activeRelationshipSummary.activeViewCount} bảng đang có thể join tới base view "${selectedSemanticView.name}". Kéo field từ chúng vào chart để dùng cross-table.`
+                }
+              >
+                {activeRelationshipSummary.crossTableInUse ? '🔗' : '🔌'}
+                {activeRelationshipSummary.activeViewCount} table
+                {activeRelationshipSummary.activeViewCount === 1 ? '' : 's'} joined
+              </span>
+            )}
           </div>
 
           {/* Right: status + limit + run + save (+ desc note) */}

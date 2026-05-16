@@ -533,6 +533,39 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
     `useDatasetModelJoinSuggestion` — RelationshipDialog auto-prefill
     cardinality khi user chọn xong from/to view.
 
+- **2026-05-16 (Phase-12.5)**: FE→BE qualified-field contract + UX surface.
+  - **Vấn đề DA nêu**: 3 điểm — (1) FE có thể gửi metric/dimension bare
+    (mất qualifier) → BE không kích semantic engine, JOIN silent miss;
+    (2) chartDataAdapter `applyGroupByAgg` group bằng equality, không
+    time-bucket → raw timestamp = mỗi row 1 group, sai chart time-series
+    khi không pre-aggregated; (3) useEffect chain seed roleConfig chạy
+    trước khi semanticColumns load → bare pick "stuck".
+  - **Fix #1 — qualified-field guarantee**: `upgradeRoleConfigToQualified`
+    + `qualifiedByBare` map trong [ExploreEditor.tsx](../../../frontend/src/components/explore/ExploreEditor.tsx).
+    Khi 1 bare name map duy nhất tới 1 qualified `view.field` trong join
+    graph reachable, FE auto-upgrade trước khi build request. Ambiguous
+    (≥2 view có cùng bare) → giữ nguyên + UI badge "⚠ cần join".
+  - **Fix #2 — granularity guard**: chartDataAdapter `applyGroupByAgg`
+    thêm `looksLikeRawTimestamp` check; nếu phát hiện ISO-timestamp với
+    HH:mm:ss thì `console.warn` ngay (DA QA thấy ở DevTools). Doc rõ
+    contract trong [chartDataAdapter.ts](../../../frontend/src/components/explore/chartDataAdapter.ts):
+    function chỉ valid khi `preAggregated=true` (BE đã GROUP BY) hoặc
+    dimension là categorical thực sự.
+  - **Fix #3 — semantic-ready gate**: useEffect seed roleConfig giờ
+    `if (!semanticReady) return`. `semanticReady = datasetModel loaded
+    && (no semantic view selected || reachableViews available)`. Race
+    không còn.
+  - **UX polish — relationship state visible**: chip "{N} tables joined"
+    trong topbar bên cạnh ExploreSourceSelector. Màu xanh khi chart
+    đang dùng cross-table; xám khi chỉ có khả năng join nhưng chưa
+    dùng. Title tooltip liệt kê view names + giải thích engine sẽ JOIN
+    tự động. DA mở Explore thấy ngay state thay vì phải reverse-engineer.
+  - **Inline doc trong BE**: `_contains_semantic_field_refs` ở
+    [datasets.py:704](datasets.py) thêm docstring giải thích trio
+    FE-side (`upgradeRoleConfigToQualified` + badge `⚠ cần join` +
+    `semanticReady` gate) đảm bảo input cho oracle này có chất lượng.
+    DA đọc BE code thấy ngay FE side đang phòng thủ cái gì.
+
 - **2026-05-16 (Phase-12 MCP parity)**: MCP-dashboard sync với Phase-12 schema.
   - **Blueprint pre-validator**: `commit_semantic_model` trong
     [Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py)
