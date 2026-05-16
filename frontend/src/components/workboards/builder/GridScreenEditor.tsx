@@ -33,6 +33,7 @@ import {
   BuilderNavigatorGroup,
   BuilderNavigatorItem,
   BuilderObjectEditor,
+  BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
 import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
@@ -119,8 +120,10 @@ export default function GridScreenEditor({ screen, tables, onChange }: Props) {
   const computed = grid.computed_columns || [];
   const lookups = grid.lookup_columns || [];
   const totals = grid.totals || {};
-  const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
+  const boundTable = tables.find((table) => table.id === screen.table_id);
+  const tableCols = boundTable?.columns ?? [];
   const columnNames = tableCols.map((column) => column.name);
+  const tableMissing = !!screen.table_id && !boundTable;
   const [activeItem, setActiveItem] = useState<ActiveItem>('columns');
 
   // All column identifiers visible to formula scope: regular + lookup +
@@ -955,7 +958,9 @@ export default function GridScreenEditor({ screen, tables, onChange }: Props) {
         onChange={(nextId) => onChange({ ...screen, table_id: nextId })}
       />
 
-      {!screen.table_id ? (
+      {tableMissing ? (
+        <BuilderTableMissingBanner tableId={screen.table_id} />
+      ) : !screen.table_id ? (
         <BuilderEmptyHint className="text-left">
           Pick a primary data source before configuring columns or filters.
         </BuilderEmptyHint>

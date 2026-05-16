@@ -86,6 +86,10 @@ export interface AppShellResponse {
   branding: WorkspaceBranding;
   nav: AppShellNav;
   screens: AppShellScreenStub[];
+  viewer?: {
+    role?: string | null;
+    username?: string | null;
+  };
 }
 
 export interface ScreenAction {
@@ -96,6 +100,7 @@ export interface ScreenAction {
   go_to_screen?: string | null;
   carry?: string[];
   confirm_message?: string | null;
+  visible_for_roles?: string[];
 }
 
 export interface FormScreenResponse {
@@ -111,6 +116,13 @@ export interface FormScreenResponse {
   lookups: Record<string, Array<{ label: string; value: unknown }>>;
   initial_values: Record<string, unknown>;
   after_submit?: ScreenAction | null;
+  /** Columns the workboard auto-fills on insert when left blank.
+   *  Treat as readonly with a hint so the user knows typing is ignored. */
+  auto_number_columns?: string[];
+  /** Pages array for multi-step forms (optional). */
+  pages?: Array<Record<string, unknown>>;
+  /** Section headings used to group fields inside a single page. */
+  sections?: string[];
 }
 
 export interface ListScreenResponse {
@@ -275,6 +287,30 @@ export const workspaceApi = {
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       { values },
+    );
+    return r.data;
+  },
+  async bulkInsertScreenRows(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    rows: Array<Record<string, unknown>>,
+  ): Promise<{
+    total: number;
+    success: number;
+    failure: number;
+    results: Array<{
+      index: number;
+      ok: boolean;
+      error?: string;
+      violations?: Array<Record<string, unknown>>;
+      pk?: Record<string, unknown>;
+      warnings?: Array<Record<string, unknown>>;
+    }>;
+  }> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows/bulk`,
+      { rows },
     );
     return r.data;
   },

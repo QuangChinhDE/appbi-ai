@@ -1832,6 +1832,31 @@ def delete_dataset(
                 },
             )
 
+    # Block Workboard reference too — without this the CASCADE on
+    # Workboard.dataset_id would silently drop every mini-app + its
+    # submissions / sync_runs the moment the dataset is deleted, which
+    # users almost never intend. Matches the Chart pre-check above.
+    from app.modules.workboards.models import Workboard
+    blocking_workboards = (
+        db.query(Workboard)
+        .filter(Workboard.dataset_id == dataset_id)
+        .all()
+    )
+    if blocking_workboards:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Dataset \"{dataset_obj.name}\" đang được dùng bởi "
+                    f"{len(blocking_workboards)} workboard và không thể xóa."
+                ),
+                "constraints": [
+                    {"type": "workboard", "id": wb.id, "name": wb.name}
+                    for wb in blocking_workboards
+                ],
+            },
+        )
+
     success = DatasetCRUDService.delete_dataset(db, dataset_id)
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -2877,6 +2902,58 @@ def remove_table_from_dataset(
                     ),
                 ))
 
+    # ------------------------------------------------------------------
+    # Check 5: workboards that reference this table either as the primary
+    # table or via any screen.table_id inside their layout. Without this
+    # block, the FK CASCADE on Workboard.primary_table_id silently deletes
+    # the entire mini-app + submissions when the user removes a single
+    # table; for screen-level references the row stays but every screen
+    # bound to the missing table becomes a 400 at runtime.
+    # ------------------------------------------------------------------
+    from app.modules.workboards.models import Workboard
+    blocking_workboards: list[dict[str, Any]] = []
+    workboards_in_dataset = (
+        db.query(Workboard)
+        .filter(Workboard.dataset_id == dataset_id)
+        .all()
+    )
+    for wb in workboards_in_dataset:
+        if wb.primary_table_id == table_id:
+            blocking_workboards.append(_build_delete_constraint(
+                "workboard_primary_table",
+                id=wb.id,
+                name=wb.name,
+                object_label=f'Workboard "{wb.name}" (primary table)',
+                detail="This table is the workboard's primary data source.",
+            ))
+            continue
+        layout = wb.layout_json or {}
+        screens = layout.get("screens") if isinstance(layout, dict) else None
+        if not isinstance(screens, list):
+            continue
+        screen_refs = []
+        for screen in screens:
+            if not isinstance(screen, dict):
+                continue
+            if screen.get("table_id") == table_id:
+                screen_refs.append({
+                    "screen_id": screen.get("id"),
+                    "screen_kind": screen.get("kind"),
+                    "screen_title": screen.get("title"),
+                })
+        if screen_refs:
+            blocking_workboards.append(_build_delete_constraint(
+                "workboard_screen",
+                id=wb.id,
+                name=wb.name,
+                object_label=f'Workboard "{wb.name}" (screen reference)',
+                detail=(
+                    f"{len(screen_refs)} screen(s) bind this table — "
+                    "remove or rebind them in the workboard builder first."
+                ),
+                screens=screen_refs,
+            ))
+
     constraints = []
     for ch in blocking_charts:
         chart_name = ch.name or f"Chart {ch.id}"
@@ -2891,6 +2968,7 @@ def remove_table_from_dataset(
     constraints.extend(blocking_lookups)
     constraints.extend(blocking_semantic_refs)
     constraints.extend(blocking_measures)
+    constraints.extend(blocking_workboards)
     constraints = _dedupe_delete_constraints(constraints)
 
     if constraints:

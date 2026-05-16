@@ -287,6 +287,119 @@ def _filter_to_allowed_columns(
     return dict(values)
 
 
+_AUTO_NUMBER_N_RE = re.compile(r"\{N(?::(\d+))?\}")
+
+
+def _auto_number_bucket(reset: str, now: datetime) -> str:
+    if reset == "daily":
+        return now.strftime("%Y-%m-%d")
+    if reset == "monthly":
+        return now.strftime("%Y-%m")
+    if reset == "yearly":
+        return now.strftime("%Y")
+    return "all"
+
+
+def _render_auto_number_pattern(pattern: str, seq: int, now: datetime, padding: int) -> str:
+    """Render an AutoNumberConfig pattern.
+
+    Replaces ``{YYYY}/{YY}/{MM}/{DD}`` with the current date and
+    ``{N}`` / ``{N:<digits>}`` with the sequence number. Outer ``{N:4}``
+    width directive wins; otherwise fall back to ``AutoNumberConfig.padding``.
+    """
+
+    def _sub_n(match: "re.Match[str]") -> str:
+        width_token = match.group(1)
+        width = int(width_token) if width_token else padding
+        return str(seq).zfill(width) if width > 0 else str(seq)
+
+    text = _AUTO_NUMBER_N_RE.sub(_sub_n, pattern)
+    return (
+        text.replace("{YYYY}", now.strftime("%Y"))
+        .replace("{YY}", now.strftime("%y"))
+        .replace("{MM}", now.strftime("%m"))
+        .replace("{DD}", now.strftime("%d"))
+    )
+
+
+def _claim_auto_number_value(
+    db: Session,
+    workboard: Workboard,
+    config: Any,
+    now: datetime,
+) -> str:
+    """Reserve the next sequence value for ``config.column`` and render it.
+
+    Uses an UPSERT on :class:`WorkboardAutoNumberSequence` so two concurrent
+    inserts cannot end up with the same id. The pattern is rendered
+    against the value we just reserved; the caller writes that into the
+    insert payload.
+    """
+    from sqlalchemy import select, update
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.modules.workboards.models import WorkboardAutoNumberSequence
+
+    bucket = _auto_number_bucket(config.reset, now)
+    column_name = config.column
+    seed = max(int(config.start_at or 1), 1)
+
+    stmt = (
+        pg_insert(WorkboardAutoNumberSequence)
+        .values(
+            workboard_id=workboard.id,
+            column_name=column_name,
+            bucket=bucket,
+            next_value=seed + 1,
+        )
+        .on_conflict_do_update(
+            index_elements=["workboard_id", "column_name", "bucket"],
+            set_={"next_value": WorkboardAutoNumberSequence.next_value + 1},
+        )
+        .returning(WorkboardAutoNumberSequence.next_value)
+    )
+    next_value = db.execute(stmt).scalar_one()
+    # `next_value` is what the row holds AFTER bumping; the value just claimed
+    # is one less. The seed branch returns (seed + 1) so the claim is `seed`.
+    claimed = max(int(next_value) - 1, seed)
+    db.commit()
+    return _render_auto_number_pattern(
+        config.pattern, claimed, now, int(config.padding or 0)
+    )
+
+
+def _apply_auto_number_on_insert(
+    db: Session,
+    workboard: Workboard,
+    values: Dict[str, Any],
+    layout: LayoutJson,
+    now: datetime,
+) -> Dict[str, Any]:
+    """Fill blank auto-number columns with the next value from their sequence.
+
+    Only runs when the column is missing/blank — if the caller pre-set a
+    value, we trust it (useful for imports). Errors here are non-fatal:
+    a sequence DB failure should not block the user's submit.
+    """
+    configs = list(layout.auto_number_columns or [])
+    if not configs:
+        return values
+    out = dict(values)
+    for cfg in configs:
+        col = cfg.column
+        existing = out.get(col)
+        if existing not in (None, "", []):
+            continue
+        try:
+            out[col] = _claim_auto_number_value(db, workboard, cfg, now)
+        except Exception:
+            logger.exception(
+                "Auto-number claim failed (workboard=%s column=%s) — leaving blank",
+                workboard.id,
+                col,
+            )
+    return out
+
+
 def _apply_audit_on_insert(
     values: Dict[str, Any], layout: LayoutJson, user: Optional[User], now: datetime
 ) -> Dict[str, Any]:
@@ -416,6 +529,10 @@ class WorkboardWriteService:
         ctx = _build_context(db, workboard)
         clean = _filter_to_allowed_columns(values, ctx.allowed_columns)
         now = datetime.now(timezone.utc)
+        # Auto-number runs BEFORE audit fields + validation so the rendered
+        # value can be referenced by audit / quality rules and so the value
+        # actually lands in the row payload that gets validated.
+        clean = _apply_auto_number_on_insert(db, workboard, clean, ctx.layout, now)
         clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
         warnings = _enforce_validation(ctx.rules, clean)
 

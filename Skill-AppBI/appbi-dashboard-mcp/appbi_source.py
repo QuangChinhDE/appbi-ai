@@ -48,16 +48,8 @@ async def get_data_source(
 async def test_data_source_connection(
     data_source_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
-    """Test the data source connection is still live.
-
-    Use this when a later tool fails with a connection error to confirm
-    whether the issue is the source itself or the query.
-
-    Implementation note: AppBI's `/datasources/test` expects a `type` +
-    `config` body. We fetch the existing data source first and forward
-    its stored config so the backend re-authenticates with the real
-    credentials (sensitive fields are restored server-side).
-    """
+    """Test if a data source connection is still live. Use after connection
+    errors to isolate source vs query."""
     ds = await _request("GET", f"/datasources/{int(data_source_id)}")
     body = {
         "data_source_id": int(data_source_id),
@@ -76,16 +68,11 @@ async def test_data_source_connection(
 async def inspect_source_schema(
     data_source_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
-    """Return the schema tree for a data source: schemas → tables/views.
+    """Return the source's schema tree: schemas → tables/views.
 
-    Output shape (per backend):
-      { "schemas": [
-          { "name": "public",
-            "tables": [{"name": "orders", "row_count_estimate": 12345, ...}, ...],
-            "views":  [...] }, ... ]}
-
-    Use this to map out what's available before deciding which tables to
-    pull into a dataset.
+    Use to scout what's available before pulling tables into a dataset.
+    Output: {schemas: [{name, tables: [{name, row_count_estimate, ...}],
+    views: [...]}]}.
     """
     return await _request("GET", f"/datasources/{int(data_source_id)}/schema")
 
@@ -98,13 +85,8 @@ async def inspect_source_table(
     preview_rows: int = 5,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Return column metadata + a tiny preview for ONE source table.
-
-    The response includes column names, types, primary-key/foreign-key/index
-    flags (when the source supports them), and the first `preview_rows`
-    rows. Use this for a quick look — for serious profiling pull the table
-    into a dataset first and call `get_table_profile`.
-    """
+    """Quick look at ONE source table — columns + types + PK/FK flags
+    + N preview rows. For serious profiling use get_table_profile."""
     rows = _clamp_int(preview_rows, default=5, minimum=0, maximum=50)
     path = (
         f"/datasources/{int(data_source_id)}"
@@ -144,17 +126,9 @@ async def run_source_query(
     timeout_seconds: int = 30,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run an ad-hoc SELECT against the data source.
-
-    Use this to verify hypotheses about the data: cardinality of a column,
-    overlap between two tables (for FK detection), distribution of a value,
-    etc. The backend rate-limits this to 20 calls/minute per user.
-
-    Safety:
-      - Prefer SELECT-only. Backend validators block destructive statements
-        but be polite.
-      - Bound the result size — `limit` defaults to 100, max 5000.
-    """
+    """Run an ad-hoc SELECT to verify data hypotheses (cardinality,
+    FK overlap, distribution). Rate-limit 20/min/user. SELECT-only;
+    limit defaults 100, max 5000."""
     capped_limit = _clamp_int(limit, default=100, minimum=1, maximum=5000)
     capped_timeout = _clamp_int(timeout_seconds, default=30, minimum=1, maximum=120)
     body = {

@@ -200,6 +200,12 @@ defect; the canonical workflow below is designed to prevent it.
 _VALID_PROFILES = {"report", "dataset", "explore", "all"}
 
 
+# Profile tags are kept for power users who want a smaller surface area,
+# but the default is "all" so non-technical end users don't have to touch
+# env vars to make the MCP work. Token cost is kept down at the
+# *per-tool* level — see the slim docstrings on each @tool decorator.
+
+
 def _active_profiles() -> set[str]:
     raw = os.getenv("APPBI_MCP_PROFILE", "all").strip().lower()
     if not raw:
@@ -209,7 +215,7 @@ def _active_profiles() -> set[str]:
     if unknown:
         raise RuntimeError(
             f"APPBI_MCP_PROFILE has unknown values: {sorted(unknown)}. "
-            f"Valid: {sorted(_VALID_PROFILES)}"
+            f"Valid: {sorted(_VALID_PROFILES)}."
         )
     return parts or {"all"}
 

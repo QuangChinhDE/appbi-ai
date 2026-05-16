@@ -501,11 +501,48 @@ def _apply_field_conditions(
     }
     cleaned = dict(values or {})
     violations: List[str] = []
+    # Hard ceiling for inline file uploads (base64 in JSONB). Anything larger
+    # blows up the row payload + the audit log + Postgres TOAST. Builder can
+    # set a stricter per-field cap via FormField.max_file_kb.
+    _HARD_FILE_KB_CAP = 1024
+    _FILE_WIDGETS = {"file", "image"}
     for field in screen.form.fields:
         col = field.column
         if getattr(field, "readonly", False):
             # Static readonly fields are display-only. Drop submitted values so
             # callers cannot override system columns such as generated PKs.
+            cleaned.pop(col, None)
+            continue
+        if getattr(field, "widget", None) in _FILE_WIDGETS:
+            raw_value = cleaned.get(col)
+            if isinstance(raw_value, str) and raw_value:
+                # Strip a leading data-URL header so length is the raw payload.
+                payload_for_size = (
+                    raw_value.split(",", 1)[1]
+                    if raw_value.startswith("data:") and "," in raw_value
+                    else raw_value
+                )
+                # Base64 expands by 4/3; size_kb ≈ len * 3 / 4 / 1024.
+                size_kb = (len(payload_for_size) * 3) // 4 // 1024
+                builder_cap = int(getattr(field, "max_file_kb", None) or 0)
+                effective_cap = (
+                    min(builder_cap, _HARD_FILE_KB_CAP) if builder_cap > 0
+                    else _HARD_FILE_KB_CAP
+                )
+                if size_kb > effective_cap:
+                    label = field.label or col
+                    violations.append(
+                        f"Tệp '{label}' lớn hơn giới hạn {effective_cap} KB "
+                        f"(thực tế ≈ {size_kb} KB)."
+                    )
+                    cleaned.pop(col, None)
+                    continue
+        if getattr(field, "computed_from_dataset", None):
+            # Field is auto-filled by a dataset-side transformation (calculated
+            # column, lookup, etc.). The dataset is the source of truth, so any
+            # value the FE submits here would clobber the computed result on
+            # the next fetch. Drop it — same contract as `readonly` static
+            # fields, but the cause is "computed upstream" not "system PK".
             cleaned.pop(col, None)
             continue
         show_if_expr = getattr(field, "show_if", None)
@@ -526,6 +563,23 @@ def _apply_field_conditions(
             v = cleaned.get(col)
             if v is None or (isinstance(v, str) and v.strip() == ""):
                 violations.append(f"Trường '{field.label or col}' là bắt buộc.")
+        # valid_if runs AFTER required — an empty optional field skips it.
+        # Refresh ctx.row with the latest cleaned values so expressions that
+        # reference sibling fields see the values being submitted, not the
+        # untouched copy from the top of the loop.
+        valid_if_expr = getattr(field, "valid_if", None)
+        if valid_if_expr:
+            value = cleaned.get(col)
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                continue
+            ctx["row"] = dict(cleaned)
+            if not evaluate_truthy(valid_if_expr, ctx, default=True):
+                custom_msg = getattr(field, "valid_if_error", None)
+                label = field.label or col
+                violations.append(
+                    custom_msg.strip() if custom_msg and custom_msg.strip()
+                    else f"Trường '{label}' không thoả điều kiện kiểm tra."
+                )
     if violations:
         raise HTTPException(
             status_code=422,
@@ -604,6 +658,11 @@ def render_form_screen(
         shared_context=shared_context,
     )
 
+    layout = parse_layout(workboard)
+    auto_number_columns = [
+        cfg.column for cfg in (layout.auto_number_columns or []) if cfg.column
+    ]
+
     return {
         "screen_id": screen.id,
         "kind": "form",
@@ -623,6 +682,10 @@ def render_form_screen(
         ),
         "pages": [p.model_dump() for p in (screen.form.pages or [])],
         "sections": list(screen.form.sections or []),
+        # Columns the server will auto-fill on insert when blank. The FE
+        # treats these as readonly + shows a hint so users don't think the
+        # form is broken when typing into them is ignored.
+        "auto_number_columns": auto_number_columns,
     }
 
 
@@ -1122,7 +1185,14 @@ def render_grid_screen(
             order = list(compiled.keys())
             logger.warning("Grid DAG fallback (screen=%s): %s", screen.id, exc)
 
-        for row in base_rows:
+        # Cross-row aggregators (COL_SUM / COUNTIF / SUMIF / THIS_ROW_INDEX)
+        # need to see the page's full row set. We inject it under reserved
+        # ``__rows__`` / ``__row_index__`` keys — these names start with
+        # ``__`` so they cannot collide with a real column reference (the
+        # formula parser rejects identifiers starting with ``_``).
+        for index, row in enumerate(base_rows):
+            row["__rows__"] = base_rows
+            row["__row_index__"] = index
             for name in order:
                 formula = compiled.get(name)
                 if formula is None:
@@ -1138,6 +1208,10 @@ def render_grid_screen(
             for draft_name in draft_names:
                 if draft_name not in row:
                     row[draft_name] = None
+        # Strip the internal scope keys so they don't leak in the API response.
+        for row in base_rows:
+            row.pop("__rows__", None)
+            row.pop("__row_index__", None)
 
     # ── Footer totals ────────────────────────────────────────────────
     totals_row = _compute_grid_totals(grid_spec, base_rows) or None
@@ -1555,6 +1629,36 @@ def _resolve_doc_data_block(
     _auto_labels = (_pivot_extra or {}).get("column_labels")
     if _auto_labels:
         payload["column_labels"] = _auto_labels
+    # Surface the builder-side `column_metadata` (label override, width, format,
+    # align, per-column total override, merge flag) so the doc runtime can
+    # honour the formatting the builder configured. Was previously only
+    # additive — clients now opt in by reading payload.column_metadata.
+    column_metadata_raw = block.column_metadata or {}
+    if column_metadata_raw:
+        forwarded_meta: Dict[str, Any] = {}
+        for col_name, meta in column_metadata_raw.items():
+            if col_name not in selected:
+                continue
+            if hasattr(meta, "model_dump"):
+                meta_dict = meta.model_dump(exclude_none=True)
+            elif isinstance(meta, dict):
+                meta_dict = {k: v for k, v in meta.items() if v is not None}
+            else:
+                continue
+            if meta_dict:
+                forwarded_meta[col_name] = meta_dict
+        if forwarded_meta:
+            payload["column_metadata"] = forwarded_meta
+            # Pre-fold metadata.label into the column_labels map so existing
+            # FE table renderers (which already read column_labels) display
+            # the override without needing to know about column_metadata.
+            existing_labels = dict(payload.get("column_labels") or {})
+            for col_name, meta_dict in forwarded_meta.items():
+                label_override = meta_dict.get("label")
+                if isinstance(label_override, str) and label_override and col_name not in existing_labels:
+                    existing_labels[col_name] = label_override
+            if existing_labels:
+                payload["column_labels"] = existing_labels
     merges = _compute_merges(rows, block.group_by, selected)
     if merges:
         payload["merges"] = merges
@@ -1667,4 +1771,12 @@ def render_app_shell(
             }
             for s in visible_screens
         ],
+        # Surface the caller's role so the FE can hide per-action
+        # buttons whose `visible_for_roles` excludes the current user.
+        # Internal/admin previews come in as identity.role=None — the FE
+        # treats None as "see everything".
+        "viewer": {
+            "role": identity.role,
+            "username": (identity.app_user or {}).get("username") if identity.app_user else None,
+        },
     }

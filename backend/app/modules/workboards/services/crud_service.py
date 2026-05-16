@@ -59,6 +59,21 @@ def _columns_cache_list(table: DatasetTable) -> List[Dict[str, Any]]:
     return []
 
 
+def _collect_table_column_names(table: DatasetTable) -> List[str]:
+    """Return the column names cached on the table, in declaration order.
+
+    Used by the workboard audit endpoint to detect screens that reference
+    a column the upstream schema no longer has. Reads from
+    ``DatasetTable.columns_cache`` only (no live introspection) so the
+    audit is cheap and side-effect free.
+    """
+    return [
+        str(item.get("name") or "").strip()
+        for item in _columns_cache_list(table)
+        if isinstance(item, dict) and item.get("name")
+    ]
+
+
 def _parse_source_table_name(source_table_name: Optional[str], datasource: Optional[DataSource]) -> Tuple[str, str]:
     raw = str(source_table_name or "").strip().strip('"').strip("`")
     if "." in raw:
@@ -354,8 +369,15 @@ def _dataset_table_ids(db: Session, dataset_id: int) -> set[int]:
 def _clear_layout_table_refs_not_in_dataset(
     raw_layout: Any,
     valid_table_ids: set[int],
-) -> Dict[str, Any]:
-    """Clear stale table ids after rebinding a workboard to another dataset."""
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Clear stale table ids after rebinding a workboard to another dataset.
+
+    Returns ``(cleaned_layout, manifest)``. ``manifest`` lists every
+    screen whose ``table_id`` was nullified or whose doc data-table block
+    ``source`` was downgraded to ``primary`` — so the caller can surface
+    a "we cleaned up these N screens" notice instead of the rebind
+    silently re-shaping the user's mini-app.
+    """
     if raw_layout is None:
         layout: Dict[str, Any] = {}
     elif isinstance(raw_layout, LayoutJson):
@@ -365,28 +387,66 @@ def _clear_layout_table_refs_not_in_dataset(
     else:
         layout = LayoutJson.model_validate(raw_layout).model_dump(mode="json")
 
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in list(node.keys()):
-                value = node[key]
-                if key == "table_id" and isinstance(value, int):
-                    if value not in valid_table_ids:
-                        node[key] = None
-                elif key == "source" and isinstance(value, str) and value.startswith("lookup:"):
-                    try:
-                        ref_table_id = int(value.split(":", 1)[1])
-                    except ValueError:
-                        continue
-                    if ref_table_id not in valid_table_ids:
-                        node[key] = "primary"
-                else:
-                    _walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
+    manifest: List[Dict[str, Any]] = []
 
-    _walk(layout)
-    return layout
+    def _screen_entry(screen: Dict[str, Any], reason: str, **extras: Any) -> None:
+        manifest.append({
+            "screen_id": screen.get("id"),
+            "screen_kind": screen.get("kind"),
+            "screen_title": screen.get("title"),
+            "reason": reason,
+            **extras,
+        })
+
+    def _walk_block(block: Any, screen: Dict[str, Any]) -> None:
+        if not isinstance(block, dict):
+            return
+        source = block.get("source")
+        if isinstance(source, str) and source.startswith("lookup:"):
+            try:
+                ref_table_id = int(source.split(":", 1)[1])
+            except ValueError:
+                ref_table_id = None
+            if ref_table_id is not None and ref_table_id not in valid_table_ids:
+                block["source"] = "primary"
+                _screen_entry(
+                    screen,
+                    "doc_lookup_table_missing",
+                    old_table_id=ref_table_id,
+                )
+
+    screens = layout.get("screens") if isinstance(layout, dict) else None
+    if isinstance(screens, list):
+        for screen in screens:
+            if not isinstance(screen, dict):
+                continue
+            table_id = screen.get("table_id")
+            if isinstance(table_id, int) and table_id not in valid_table_ids:
+                screen["table_id"] = None
+                _screen_entry(
+                    screen,
+                    "table_missing",
+                    old_table_id=table_id,
+                )
+            doc_spec = screen.get("doc")
+            if isinstance(doc_spec, dict):
+                for block in doc_spec.get("blocks") or []:
+                    _walk_block(block, screen)
+            grid_spec = screen.get("grid")
+            if isinstance(grid_spec, dict):
+                for lookup in grid_spec.get("lookup_columns") or []:
+                    if not isinstance(lookup, dict):
+                        continue
+                    from_id = lookup.get("from_table_id")
+                    if isinstance(from_id, int) and from_id and from_id not in valid_table_ids:
+                        lookup["from_table_id"] = 0
+                        _screen_entry(
+                            screen,
+                            "grid_lookup_table_missing",
+                            old_table_id=from_id,
+                            lookup_name=lookup.get("name"),
+                        )
+    return layout, manifest
 
 
 class WorkboardService:
@@ -542,12 +602,13 @@ class WorkboardService:
             ("layout_json" in update_data and update_data["layout_json"] is not None)
             or schema_binding_changed
         )
+        cleared_screens: List[Dict[str, Any]] = []
         if should_refresh_schema:
             raw_layout = update_data.get("layout_json")
             if raw_layout is None:
                 raw_layout = db_obj.layout_json or {}
             if schema_binding_changed:
-                raw_layout = _clear_layout_table_refs_not_in_dataset(
+                raw_layout, cleared_screens = _clear_layout_table_refs_not_in_dataset(
                     raw_layout,
                     _dataset_table_ids(db, target_dataset_id),
                 )
@@ -581,7 +642,15 @@ class WorkboardService:
             db.rollback()
             raise ValueError(f"Workboard could not be updated: {exc.orig}") from exc
         db.refresh(db_obj)
-        logger.info("Updated workboard id=%s", workboard_id)
+        # Stash the rebind manifest as a transient attribute so the API layer
+        # can surface "we cleaned up these screens" in the response headers
+        # without changing the WorkboardResponse contract. Not persisted.
+        db_obj._cleared_screens = cleared_screens  # type: ignore[attr-defined]
+        logger.info(
+            "Updated workboard id=%s (cleared_screens=%d)",
+            workboard_id,
+            len(cleared_screens),
+        )
         return db_obj
 
     @staticmethod

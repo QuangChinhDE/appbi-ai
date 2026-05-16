@@ -103,6 +103,10 @@ interface RuntimeField extends Record<string, unknown> {
   show_if?: unknown;
   required_if?: unknown;
   readonly_if?: unknown;
+  valid_if?: unknown;
+  valid_if_error?: unknown;
+  computed_from_dataset?: unknown;
+  max_file_kb?: unknown;
   lookup?: Record<string, unknown>;
 }
 
@@ -291,6 +295,7 @@ export default function WorkspaceWorkboardPage() {
               screenId={activeScreenId}
               shared={shared}
               accent={accent}
+              viewerRole={shell?.viewer?.role ?? null}
               onNavigate={goToScreen}
             />
           ) : (
@@ -635,6 +640,7 @@ function ScreenContainer({
   screenId,
   shared,
   accent,
+  viewerRole,
   onNavigate,
 }: {
   token: string;
@@ -642,6 +648,7 @@ function ScreenContainer({
   screenId: string;
   shared: Record<string, unknown>;
   accent: string;
+  viewerRole?: string | null;
   onNavigate: (next: string, carry?: Record<string, unknown>) => void;
 }) {
   const [data, setData] = useState<ScreenResponse | null>(null);
@@ -701,6 +708,7 @@ function ScreenContainer({
         token={token}
         workboardId={workboardId}
         accent={accent}
+        viewerRole={viewerRole}
         onAction={(action, row) => {
           if (action.go_to_screen) {
             const carry: Record<string, unknown> = {};
@@ -873,6 +881,9 @@ function FormScreen({
   const isMultiPage = pages.length >= 2;
 
   const allFields = (spec.fields as RuntimeField[]) || [];
+  const autoNumberSet = new Set(
+    (spec.auto_number_columns || []).map((c) => String(c)),
+  );
   // Distribute fields per page when multi-page; default page=1 for unassigned fields.
   const fieldsByPage: Record<number, RuntimeField[]> = {};
   for (const f of allFields) {
@@ -933,6 +944,35 @@ function FormScreen({
         const v = values[k];
         if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
         payload[k] = v;
+      }
+      // Client-side valid_if check. Mirrors the BE enforcement so the user
+      // sees the rule-specific error message inline instead of waiting for a
+      // round-trip rejection. BE remains the source of truth on submit.
+      const validationCtx: RuntimeEvalCtx = {
+        row: { ...values, ...payload },
+        app_user: spec.initial_values || {},
+        shared: evalCtx.shared,
+      };
+      for (const f of allFields) {
+        const validIfExpr =
+          typeof (f as RuntimeField).valid_if === 'string'
+            ? ((f as RuntimeField).valid_if as string)
+            : null;
+        if (!validIfExpr) continue;
+        const col = String(f.column);
+        const value = payload[col];
+        // Empty optional fields skip valid_if — same contract as BE.
+        if (value === null || value === undefined || value === '') continue;
+        if (!evaluateTruthy(validIfExpr, validationCtx, true)) {
+          const msg =
+            typeof (f as RuntimeField).valid_if_error === 'string' &&
+            (f as RuntimeField).valid_if_error
+              ? String((f as RuntimeField).valid_if_error)
+              : `Trường "${f.label || col}" không thoả điều kiện kiểm tra.`;
+          setSubmitError(msg);
+          setSubmitting(false);
+          return;
+        }
       }
       const pk: Record<string, unknown> = {};
       const isEditing =
@@ -1032,6 +1072,7 @@ function FormScreen({
                   lookups={spec.lookups}
                   value={values[String(field.column || '')]}
                   evalCtx={evalCtx}
+                  autoNumberSet={autoNumberSet}
                   onChange={(v) =>
                     setValues((curr) => ({
                       ...curr,
@@ -1134,12 +1175,14 @@ function Field({
   value,
   onChange,
   evalCtx,
+  autoNumberSet,
 }: {
   field: RuntimeField;
   lookups: Record<string, Array<{ label: string; value: unknown }>>;
   value: unknown;
   onChange: (v: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
+  autoNumberSet?: Set<string>;
 }) {
   const col = String(field.column);
   const widget = String(field.widget || 'text');
@@ -1150,12 +1193,21 @@ function Field({
     typeof field.required_if === 'string' ? field.required_if : undefined;
   const readonlyIfExpr =
     typeof field.readonly_if === 'string' ? field.readonly_if : undefined;
+  const computedFromDataset =
+    typeof field.computed_from_dataset === 'string' && field.computed_from_dataset
+      ? field.computed_from_dataset
+      : null;
+  const isAutoNumberCol = !!autoNumberSet && autoNumberSet.has(col);
   const required = requiredIfExpr && evalCtx
     ? evaluateTruthy(requiredIfExpr, evalCtx, false)
     : !!field.required;
-  const readonly = (readonlyIfExpr && evalCtx
-    ? evaluateTruthy(readonlyIfExpr, evalCtx, false)
-    : false) || !!field.readonly;
+  const readonly =
+    (readonlyIfExpr && evalCtx
+      ? evaluateTruthy(readonlyIfExpr, evalCtx, false)
+      : false) ||
+    !!field.readonly ||
+    !!computedFromDataset ||
+    isAutoNumberCol;
   const lookupOpts =
     lookups[col] ||
     (((field.lookup as Record<string, unknown> | undefined)?.values as Array<{
@@ -1241,6 +1293,15 @@ function Field({
           placeholder={placeholder}
           className={baseInput}
         />
+      ) : widget === 'file' || widget === 'image' ? (
+        <FileUploadField
+          field={field}
+          value={value}
+          onChange={onChange}
+          readonly={readonly}
+          required={required}
+          isImage={widget === 'image'}
+        />
       ) : (
         <input
           type="text"
@@ -1255,6 +1316,122 @@ function Field({
 
       {widget !== 'checkbox' && help && (
         <p className="text-xs text-slate-500">{help}</p>
+      )}
+      {computedFromDataset && (
+        <p className="text-xs text-slate-500 italic">
+          Giá trị do dataset tự tính (cột <code>{computedFromDataset}</code>) — không thể chỉnh trực tiếp ở đây.
+        </p>
+      )}
+      {isAutoNumberCol && !computedFromDataset && (
+        <p className="text-xs text-slate-500 italic">
+          Hệ thống sẽ tự sinh giá trị cho cột này khi lưu — bỏ trống là đủ.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── File / image upload widget ───────────────────────────────────────────
+//
+// Stores the file as a base64 data URL directly in the row's JSONB cell.
+// Hard ceiling is 1 MB — anything bigger blows up the row payload + audit
+// log. Builder can lower this via FormField.max_file_kb.
+
+const FILE_HARD_CAP_KB = 1024;
+
+function FileUploadField({
+  field,
+  value,
+  onChange,
+  readonly,
+  required,
+  isImage,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+  required: boolean;
+  isImage: boolean;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const maxKb = Math.min(
+    Number(field.max_file_kb) || FILE_HARD_CAP_KB,
+    FILE_HARD_CAP_KB,
+  );
+  const stringValue = typeof value === 'string' ? value : '';
+  const hasValue = !!stringValue;
+
+  const handleFile = (file: File | null) => {
+    setError(null);
+    if (!file) {
+      onChange('');
+      return;
+    }
+    const sizeKb = Math.round(file.size / 1024);
+    if (sizeKb > maxKb) {
+      setError(`Tệp ${sizeKb} KB vượt giới hạn ${maxKb} KB.`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') {
+        onChange(result);
+      }
+    };
+    reader.onerror = () => setError('Không đọc được tệp.');
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="space-y-2">
+      {hasValue && isImage && stringValue.startsWith('data:image') && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={stringValue}
+          alt={String(field.label || field.column)}
+          className="max-h-40 rounded-md border border-slate-200"
+        />
+      )}
+      {hasValue && !isImage && (
+        <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <span>📎</span>
+          <span className="truncate">
+            {stringValue.startsWith('data:')
+              ? stringValue.slice(0, 60) + '…'
+              : stringValue}
+          </span>
+        </div>
+      )}
+      {!readonly && (
+        <div className="flex items-center gap-2">
+          <input
+            type="file"
+            accept={isImage ? 'image/*' : undefined}
+            onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
+            required={required && !hasValue}
+            className="text-xs"
+          />
+          {hasValue && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                onChange('');
+              }}
+              className="text-xs text-rose-600 hover:underline"
+            >
+              Xoá
+            </button>
+          )}
+        </div>
+      )}
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+      {!error && (
+        <p className="text-xs text-slate-500">
+          Tối đa {maxKb} KB. Tệp được lưu trực tiếp trong cơ sở dữ liệu — phù hợp cho ảnh/scan nhỏ.
+        </p>
       )}
     </div>
   );
@@ -1370,14 +1547,25 @@ function ListScreen({
   token,
   workboardId,
   accent,
+  viewerRole,
   onAction,
 }: {
   spec: ListScreenResponse;
   token: string;
   workboardId: number;
   accent: string;
+  viewerRole?: string | null;
   onAction: (
-    action: { go_to_screen?: string | null; carry?: string[] },
+    action: {
+      id: string;
+      label: string;
+      icon?: string | null;
+      style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+      go_to_screen?: string | null;
+      carry?: string[];
+      confirm_message?: string | null;
+      visible_for_roles?: string[];
+    },
     row: Record<string, unknown>,
   ) => void;
 }) {
@@ -1403,13 +1591,28 @@ function ListScreen({
   const configuredFilters = ((lv.filters as RuntimeFilter[] | undefined) || []).filter(
     (item) => item?.column,
   );
-  const rowActions =
+  const rowActionsRaw =
     (lv.row_actions as Array<{
       id: string;
       label: string;
+      icon?: string | null;
+      style?: 'primary' | 'secondary' | 'ghost' | 'danger';
       go_to_screen?: string | null;
       carry?: string[];
+      confirm_message?: string | null;
+      visible_for_roles?: string[];
     }>) ?? [];
+  // Hide actions whose `visible_for_roles` excludes the current viewer.
+  // An empty array means "visible to everyone". When the viewer's role is
+  // unknown (admin preview, internal workspace) we show all actions —
+  // matches Screen.visible_for_roles handling on the backend.
+  const rowActions = rowActionsRaw.filter((a) => {
+    const allow = a.visible_for_roles;
+    if (!allow || allow.length === 0) return true;
+    if (!viewerRole) return true;
+    const target = viewerRole.toLowerCase();
+    return allow.some((r) => r.toLowerCase() === target);
+  });
   const empty = (lv.empty_state_message as string | undefined) || 'No data yet.';
 
   const buildApiFilters = (values: Record<string, string>) => {
@@ -1587,16 +1790,35 @@ function ListScreen({
                   ))}
                   {rowActions.length > 0 && (
                     <td className="px-3 py-2 text-right">
-                      {rowActions.map((a) => (
-                        <button
-                          key={a.id}
-                          onClick={() => onAction(a, r)}
-                          className="ml-2 rounded-md px-2 py-1 text-xs font-medium text-white"
-                          style={{ backgroundColor: accent }}
-                        >
-                          {a.label}
-                        </button>
-                      ))}
+                      {rowActions.map((a) => {
+                        const style = a.style || 'primary';
+                        const cls =
+                          style === 'danger'
+                            ? 'bg-rose-600 text-white hover:bg-rose-700'
+                            : style === 'secondary'
+                            ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                            : style === 'ghost'
+                            ? 'text-slate-700 hover:bg-slate-100'
+                            : 'text-white';
+                        const inlineStyle =
+                          style === 'primary' ? { backgroundColor: accent } : undefined;
+                        return (
+                          <button
+                            key={a.id}
+                            onClick={() => {
+                              if (a.confirm_message && !window.confirm(a.confirm_message)) {
+                                return;
+                              }
+                              onAction(a, r);
+                            }}
+                            className={`ml-2 rounded-md px-2 py-1 text-xs font-medium ${cls}`}
+                            style={inlineStyle}
+                            title={a.icon ? `${a.icon} ${a.label}` : a.label}
+                          >
+                            {a.label}
+                          </button>
+                        );
+                      })}
                     </td>
                   )}
                 </tr>
@@ -1749,9 +1971,18 @@ function GridScreen({
   // Re-evaluate computed cells against a row that may have been edited
   // locally before the next reload. Lookup cells are left alone — they
   // depend on the linked table which the client doesn't have.
-  const evalRow = (row: Record<string, unknown>): Record<string, unknown> => {
+  // The cross-row aggregators (COL_SUM / COUNTIF / SUMIF / THIS_ROW_INDEX)
+  // read the current page's rows from reserved `__rows__` / `__row_index__`
+  // scope keys — we inject them here for parity with the BE evaluator.
+  const evalRow = (
+    row: Record<string, unknown>,
+    contextRows?: Array<Record<string, unknown>>,
+    rowIndex?: number,
+  ): Record<string, unknown> => {
     if (formulaOrder.length === 0) return row;
     const next = { ...row };
+    if (contextRows) next.__rows__ = contextRows;
+    if (rowIndex !== undefined) next.__row_index__ = rowIndex;
     for (const name of formulaOrder) {
       const compiled = compiledFormulas[name];
       if (!compiled || 'error' in compiled || 'draft' in compiled) {
@@ -1764,6 +1995,8 @@ function GridScreen({
         next[name] = `#ERR: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
+    delete next.__rows__;
+    delete next.__row_index__;
     return next;
   };
 
@@ -1919,13 +2152,23 @@ function GridScreen({
   // Optimistic cell update. Also re-runs computed formulas so the user sees
   // dependent cells refresh immediately (no waiting for the server roundtrip).
   const updateRowCell = (rowKey: string, column: string, value: unknown) => {
-    setCurrent((prev) => ({
-      ...prev,
-      rows: (prev.rows || []).map((r) => {
-        if (gridRowKey(r, pkCols) !== rowKey) return r;
-        return evalRow({ ...r, [column]: value });
-      }),
-    }));
+    setCurrent((prev) => {
+      const currentRows = prev.rows || [];
+      const editedIdx = currentRows.findIndex((r) => gridRowKey(r, pkCols) === rowKey);
+      // Build the "after edit" page so cross-row aggregators (COL_SUM / SUMIF
+      // / COUNTIF) reflect the new value while we re-evaluate the edited
+      // row's computed cells. Mutating then evaluating keeps the BE/FE
+      // contract identical: aggregators see the same shape both sides.
+      const newRows = currentRows.map((r, idx) =>
+        idx === editedIdx ? { ...r, [column]: value } : r,
+      );
+      return {
+        ...prev,
+        rows: newRows.map((r, idx) =>
+          idx === editedIdx ? evalRow(r, newRows, idx) : r,
+        ),
+      };
+    });
     queueCellEdit(rowKey, column, value);
   };
 
@@ -1951,6 +2194,80 @@ function GridScreen({
         ...prev,
         [rowKey]: { status: 'error', error: String(msg) },
       }));
+    }
+  };
+
+  // ── Bulk paste ────────────────────────────────────────────────────────
+  // Paste tab-separated text from a spreadsheet → parsed into row objects
+  // keyed by the editable column list → preview modal → POST /rows/bulk.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkResult, setBulkResult] = useState<null | {
+    total: number;
+    success: number;
+    failure: number;
+    errors: Array<{ index: number; error: string }>;
+  }>(null);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const bulkColumns = useMemo(() => {
+    const editableArr = cols.filter((c) => editableCols.has(c));
+    return editableArr.length > 0 ? editableArr : cols;
+  }, [cols, editableCols]);
+
+  const parseBulkText = (text: string): Array<Record<string, unknown>> => {
+    const lines = text
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .filter((line) => line.length > 0);
+    return lines.map((line) => {
+      const cells = line.split('\t');
+      const row: Record<string, unknown> = {};
+      bulkColumns.forEach((col, i) => {
+        const cell = cells[i];
+        if (cell === undefined) return;
+        const trimmed = cell.trim();
+        if (trimmed === '') return;
+        row[col] = trimmed;
+      });
+      return row;
+    });
+  };
+
+  const submitBulk = async () => {
+    const parsed = parseBulkText(bulkText);
+    if (parsed.length === 0) return;
+    setBulkSubmitting(true);
+    setBulkResult(null);
+    try {
+      const result = await workspaceApi.bulkInsertScreenRows(
+        token,
+        workboardId,
+        current.screen_id,
+        parsed,
+      );
+      setBulkResult({
+        total: result.total,
+        success: result.success,
+        failure: result.failure,
+        errors: result.results
+          .filter((r) => !r.ok)
+          .map((r) => ({ index: r.index, error: r.error || 'Insert failed' })),
+      });
+      if (result.success > 0) await reloadRows(filterValues);
+      if (result.failure === 0) {
+        setBulkText('');
+        setBulkOpen(false);
+      }
+    } catch (err: unknown) {
+      const detail = (err as ApiErrorLike)?.response?.data?.detail;
+      setBulkResult({
+        total: parsed.length,
+        success: 0,
+        failure: parsed.length,
+        errors: [{ index: 0, error: typeof detail === 'string' ? detail : 'Bulk insert failed' }],
+      });
+    } finally {
+      setBulkSubmitting(false);
     }
   };
 
@@ -2255,25 +2572,38 @@ function GridScreen({
                       );
                     })}
                     <td className="px-2 py-1.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => void submitGhost()}
-                        disabled={adding || ghostMissingRequired.length > 0}
-                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                        style={{ backgroundColor: accent }}
-                        title={
-                          ghostMissingRequired.length > 0
-                            ? `Required: ${ghostMissingRequired.join(', ')}`
-                            : 'Add row'
-                        }
-                      >
-                        {adding ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Plus className="h-3 w-3" />
-                        )}
-                        Add
-                      </button>
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void submitGhost()}
+                          disabled={adding || ghostMissingRequired.length > 0}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                          style={{ backgroundColor: accent }}
+                          title={
+                            ghostMissingRequired.length > 0
+                              ? `Required: ${ghostMissingRequired.join(', ')}`
+                              : 'Add row'
+                          }
+                        >
+                          {adding ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Plus className="h-3 w-3" />
+                          )}
+                          Add
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBulkResult(null);
+                            setBulkOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          title="Dán nhiều dòng từ Excel"
+                        >
+                          📋 Paste rows
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -2314,6 +2644,93 @@ function GridScreen({
           {ghostError}
         </div>
       ) : null}
+
+      {bulkOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+              <h3 className="text-sm font-semibold text-slate-900">Dán nhiều dòng</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkOpen(false);
+                  setBulkResult(null);
+                  setBulkText('');
+                }}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div className="text-xs text-slate-600">
+                Sao chép từ Excel/Google Sheets rồi dán vào ô bên dưới (mỗi dòng = 1 record,
+                các cột cách bằng tab).
+                <br />
+                Thứ tự cột:{' '}
+                <code className="rounded bg-slate-100 px-1 py-0.5">
+                  {bulkColumns.join('\t')}
+                </code>
+              </div>
+              <textarea
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                rows={10}
+                placeholder={bulkColumns.map(() => '...').join('\t')}
+                className="w-full rounded-md border border-slate-300 px-2 py-1.5 font-mono text-xs outline-none focus:border-slate-500"
+              />
+              <div className="text-xs text-slate-500">
+                {parseBulkText(bulkText).length > 0
+                  ? `Sẽ nhập ${parseBulkText(bulkText).length} dòng`
+                  : 'Chưa có dòng hợp lệ'}
+                . Tối đa 500 dòng/lần.
+              </div>
+              {bulkResult && (
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
+                  <div className="font-medium text-slate-700">
+                    Đã xử lý {bulkResult.total} dòng: {bulkResult.success} thành công,{' '}
+                    {bulkResult.failure} lỗi.
+                  </div>
+                  {bulkResult.errors.length > 0 && (
+                    <ul className="mt-2 space-y-1 text-rose-700">
+                      {bulkResult.errors.slice(0, 10).map((err) => (
+                        <li key={err.index}>
+                          Dòng {err.index + 1}: {err.error}
+                        </li>
+                      ))}
+                      {bulkResult.errors.length > 10 && (
+                        <li>... và {bulkResult.errors.length - 10} dòng khác.</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkOpen(false);
+                  setBulkResult(null);
+                  setBulkText('');
+                }}
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Huỷ
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitBulk()}
+                disabled={bulkSubmitting || parseBulkText(bulkText).length === 0}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                style={{ backgroundColor: accent }}
+              >
+                {bulkSubmitting ? 'Đang lưu...' : 'Nhập'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

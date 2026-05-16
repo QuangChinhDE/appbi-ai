@@ -142,6 +142,8 @@ export default function AppSettingsEditor({
             </div>
           </section>
 
+          <AutoNumberSection layout={layout} onChange={onChange} />
+
           <section>
             <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
               Navigation
@@ -188,5 +190,96 @@ export default function AppSettingsEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+
+function AutoNumberSection({
+  layout,
+  onChange,
+}: {
+  layout: MiniAppLayoutSpec;
+  onChange: (next: MiniAppLayoutSpec) => void;
+}) {
+  const configs = layout.auto_number_columns || [];
+  const update = (next: typeof configs) =>
+    onChange({ ...layout, auto_number_columns: next });
+  return (
+    <section>
+      <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+        Auto-number columns
+      </h3>
+      <p className="mb-3 text-caption text-text-tertiary">
+        Server fills these columns on insert when the user leaves them blank.
+        Use placeholders like <code>{'{YYYY}{MM}{DD}'}</code> and{' '}
+        <code>{'{N:4}'}</code> in the pattern.
+      </p>
+      <div className="space-y-2">
+        {configs.map((cfg, idx) => (
+          <div
+            key={idx}
+            className="grid grid-cols-12 gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
+          >
+            <input
+              value={cfg.column}
+              onChange={(e) => {
+                const next = [...configs];
+                next[idx] = { ...cfg, column: e.target.value };
+                update(next);
+              }}
+              placeholder="column"
+              className={`${INPUT} col-span-3`}
+            />
+            <input
+              value={cfg.pattern}
+              onChange={(e) => {
+                const next = [...configs];
+                next[idx] = { ...cfg, pattern: e.target.value };
+                update(next);
+              }}
+              placeholder="PO-{YYYY}{MM}{DD}-{N:4}"
+              className={`${INPUT} col-span-5`}
+            />
+            <select
+              value={cfg.reset || 'never'}
+              onChange={(e) => {
+                const next = [...configs];
+                next[idx] = {
+                  ...cfg,
+                  reset: e.target.value as 'never' | 'daily' | 'monthly' | 'yearly',
+                };
+                update(next);
+              }}
+              className={`${INPUT} col-span-3`}
+            >
+              <option value="never">No reset</option>
+              <option value="daily">Reset daily</option>
+              <option value="monthly">Reset monthly</option>
+              <option value="yearly">Reset yearly</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => update(configs.filter((_, i) => i !== idx))}
+              className="col-span-1 rounded-md text-caption text-status-danger hover:bg-status-danger/10"
+              title="Remove"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() =>
+            update([
+              ...configs,
+              { column: '', pattern: 'PO-{YYYY}{MM}{DD}-{N:4}', reset: 'never' },
+            ])
+          }
+          className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
+        >
+          + Thêm cột auto-number
+        </button>
+      </div>
+    </section>
   );
 }

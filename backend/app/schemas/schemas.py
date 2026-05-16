@@ -146,14 +146,24 @@ class ChartCreate(ChartBase):
 
     @model_validator(mode='after')
     def validate_config_shape(self):
-        """Phase-9: prevent obviously broken chart configs from being saved.
+        """Phase-9 + Phase-12: prevent obviously broken chart configs.
 
-        We can't enforce per-chart-type schemas without breaking the many
-        legacy / hand-edited configs in production. Instead we require the
-        config to carry at least ONE recognised role container — that's the
-        minimum shape every renderer expects. An empty ``{}`` saved by a
-        broken UI flow would otherwise live happily in DB and only fail at
-        query time with a confusing "no data" empty chart.
+        Two layers of protection:
+
+        1. Container shape — config must carry at least one of
+           ``roleConfig`` / ``generatedRoleConfig`` / ``customRoleConfig``
+           / ``customSql`` / ``semanticBinding``. Phase-9 introduced this
+           after empty ``{}`` configs were silently saved by a broken UI
+           flow and surfaced as "no data" charts only at render time.
+
+        2. Per-metric aggregation — every ``roleConfig.metrics[].agg``
+           (and the singleton ``lineMetric`` / ``benchmarkMetric`` /
+           ``tablePivotMetric``) must use one of the supported aggregation
+           names, OR ``"auto"`` for measures whose aggregation is part of
+           the semantic definition (Phase-3). The Explore renderer crashes
+           on unknown ``agg`` strings (``m.agg.toUpperCase()`` etc.), so
+           we reject them here instead of letting MCP-authored configs
+           slip past validation and brick the chart at view time.
         """
         if not isinstance(self.config, dict):
             raise ValueError("config must be an object")
@@ -166,6 +176,39 @@ class ChartCreate(ChartBase):
                 "config phải có ít nhất một trong: roleConfig, generatedRoleConfig, "
                 "customRoleConfig, customSql, semanticBinding"
             )
+
+        allowed_aggs = {
+            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
+        }
+
+        def _check_metric(metric, where: str) -> None:
+            if not isinstance(metric, dict):
+                return
+            raw_agg = metric.get("agg")
+            if raw_agg is None:
+                # Missing agg → FE renders `undefined.toUpperCase()` and
+                # crashes. Reject so callers fix the payload upstream.
+                raise ValueError(
+                    f"config.{where}.agg is missing — must be one of "
+                    f"{sorted(allowed_aggs)}."
+                )
+            agg = str(raw_agg).strip().lower()
+            if agg not in allowed_aggs:
+                raise ValueError(
+                    f"config.{where}.agg={raw_agg!r} is not supported — "
+                    f"use one of {sorted(allowed_aggs)}."
+                )
+
+        for container_key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+            container = self.config.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            for index, metric in enumerate(container.get("metrics") or []):
+                _check_metric(metric, f"{container_key}.metrics[{index}]")
+            for solo_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+                metric = container.get(solo_key)
+                if metric is not None:
+                    _check_metric(metric, f"{container_key}.{solo_key}")
         return self
 
 
@@ -176,6 +219,47 @@ class ChartUpdate(BaseModel):
     chart_type: Optional[ChartTypeSchema] = None
     config: Optional[Dict[str, Any]] = None
     dataset_table_id: Optional[int] = None
+
+    @model_validator(mode='after')
+    def validate_config_shape(self):
+        """Mirror ChartCreate's metric.agg guard on updates so an MCP-
+        authored PATCH cannot put the chart into the same un-renderable
+        state Phase-12 audit caught for fresh creates."""
+        if self.config is None:
+            return self
+        if not isinstance(self.config, dict):
+            raise ValueError("config must be an object")
+        allowed_aggs = {
+            "sum", "avg", "count", "min", "max", "count_distinct", "auto",
+        }
+
+        def _check_metric(metric, where: str) -> None:
+            if not isinstance(metric, dict):
+                return
+            raw_agg = metric.get("agg")
+            if raw_agg is None:
+                raise ValueError(
+                    f"config.{where}.agg is missing — must be one of "
+                    f"{sorted(allowed_aggs)}."
+                )
+            agg = str(raw_agg).strip().lower()
+            if agg not in allowed_aggs:
+                raise ValueError(
+                    f"config.{where}.agg={raw_agg!r} is not supported — "
+                    f"use one of {sorted(allowed_aggs)}."
+                )
+
+        for container_key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+            container = self.config.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            for index, metric in enumerate(container.get("metrics") or []):
+                _check_metric(metric, f"{container_key}.metrics[{index}]")
+            for solo_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+                metric = container.get(solo_key)
+                if metric is not None:
+                    _check_metric(metric, f"{container_key}.{solo_key}")
+        return self
 
 
 # ─── Chart Metadata Schemas ────────────────────────────────────────────────────

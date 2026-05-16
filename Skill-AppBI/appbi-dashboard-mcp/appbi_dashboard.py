@@ -64,21 +64,11 @@ async def get_dashboard(
 async def get_dashboard_filter_fields(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
-    """Return the slicer-style filter slots exposed by a dashboard.
+    """Return the slicer-style filter slots a dashboard exposes.
 
-    Mirrors what the public link runtime exposes: each entry is
-    ``{datasetId, semanticField:'view.col', label, type, ...}``. When the
-    DA has pinned Access filters via the share dialog, those slots are
-    returned verbatim; otherwise the backend scans chart semantic
-    bindings.
-
-    Use this when:
-      - designing dashboard public-link filter presets (``create_public_link``
-        filters_config slots must reference one of these),
-      - configuring a workboard ``dashboard`` screen's
-        ``role_filter_mapping`` / ``static_filters`` — copy ``datasetId``
-        and ``semanticField`` straight from this response (the workboard
-        runtime silently drops slots that don't match).
+    Each entry: {datasetId, semanticField:'view.col', label, type, ...}.
+    Use when designing public-link filter presets or workboard dashboard
+    screen role_filter_mapping / static_filters.
     """
     return await _request(
         "GET", f"/dashboards/{int(dashboard_id)}/filter-fields"
@@ -89,14 +79,10 @@ async def get_dashboard_filter_fields(
 async def list_public_links(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
-    """List public links created on a dashboard (each link has its own
-    filters preset and access stats).
+    """List user-created public links on a dashboard.
 
-    Note: workboard-managed links (``source='workboard'``) are filtered out
-    by the backend and never appear here. Those links are owned by a
-    workboard dashboard screen and re-created automatically on every
-    workboard save / app-user change — manage them through the workboard
-    builder, not this endpoint.
+    Workboard-managed links (source='workboard') are hidden — those belong
+    to a workboard dashboard screen and self-regenerate on save.
     """
     items = await _request(
         "GET", f"/dashboards/{int(dashboard_id)}/public-links"
@@ -127,25 +113,15 @@ async def create_dashboard(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create a dashboard, optionally pre-populated with charts.
+    """Create a dashboard with optional pre-populated charts.
 
-    This is **Path B** (Direct API) — suited when charts already exist and
-    you are assembling them into a new shell. For a new dashboard from raw
-    data, prefer **Path A** (HTML Import):
-      get_html_dashboard_spec → write HTML → analyze_html_import → build_dashboard_from_html
-
-    `charts` items:
-      - chart: {chart_id, layout: {x, y, w, h}, parameters?, widget_type?}
-      - widget: {widget_type, widget_config, layout}; chart_id may be omitted.
-    `filters_config` items: dashboard filter configs (text/number/date/dropdown).
-    `layout_mode`: 'grid' (default) or 'canvas'.
-    `theme_config`: supports mode, accent, font/fontFamily, background/backgroundColor,
-    density compact|normal|spacious, cardStyle soft|sharp|flat|elevated,
-    cardRadius, cardShadow, hoverAnimation.
-
-    Workflow: prefer creating empty + adding charts one-by-one when you
-    want individual confirmations. Use the bundled form for fast bulk
-    creation when the user has already approved the layout.
+    Use this when charts already exist; for raw data use HTML import path.
+    `charts`: [{chart_id, layout:{x,y,w,h}, parameters?, widget_type?}]
+              OR [{widget_type, widget_config, layout}] for non-chart widgets.
+    `filters_config`: dashboard filters (text|number|date|dropdown).
+    `layout_mode`: "grid"|"canvas".
+    `theme_config`: mode, accent, font, background, density (compact|normal|spacious),
+                    cardStyle (soft|sharp|flat|elevated), cardRadius, cardShadow, hoverAnimation.
     """
     body = _drop_none(
         {
@@ -387,21 +363,11 @@ async def add_dashboard_filter(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Append a filter to the dashboard's `filters_config`.
+    """Append a filter to the dashboard's filters_config.
 
-    Implementation: GET the dashboard, append `filter_def` to `filters_config`,
-    PUT it back. This avoids accidentally overwriting other filters when
-    someone edits the dashboard concurrently.
-
-    `filter_def` shape (typical):
-      {
-        "id": "filter_country",          # unique within dashboard
-        "name": "Country",
-        "type": "dropdown",              # text|number|date|dropdown
-        "field": "orders.country",       # qualified semantic field
-        "default_value": null,
-        "scope": "global"                # or "page:<page_id>"
-      }
+    `filter_def`: {id (unique), name, type:text|number|date|dropdown,
+    field ('orders.country' qualified), default_value?, scope:'global' or
+    'page:<page_id>'}. GET/append/PUT to avoid overwriting concurrent edits.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -554,14 +520,9 @@ async def delete_public_link(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Delete a public link (revokes the URL permanently).
+    """Delete a public link (revokes URL permanently).
 
-    Backend rejects deletion of workboard-managed links with HTTP 403
-    ("This link is managed by a workboard..."). Those links are tied to a
-    workboard dashboard screen's lifecycle — remove the screen or the
-    workboard itself to garbage-collect them. This tool surfaces the
-    backend message verbatim when that happens so the caller knows where
-    to act.
+    Workboard-managed links → 403; remove via workboard builder instead.
     """
     if not user_confirmed:
         return _confirmation_required_for_destructive(

@@ -1603,6 +1603,114 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "insert", **result}
 
 
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows/bulk")
+    def workspace_screen_bulk_insert(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Insert many rows in one call — used by the grid's bulk-paste UI.
+
+        Each row goes through the normal ``insert_screen_row`` pipeline
+        (RLS, auto-number, audit fields, validation) so the contract is
+        identical to a one-by-one insert. We loop instead of doing a true
+        batch SQL because the dataset-side validation rules + auto-number
+        sequencing both depend on the inserted row's resolved values.
+
+        Hard cap: 500 rows per call to keep the request reasonable.
+        Returns one entry per input row: ``{ok, error?, pk?, warnings?}``.
+        Partial failure does NOT roll back successful rows — the caller
+        sees which rows landed and which didn't so they can retry only the
+        rejects.
+        """
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        if screen.kind != "grid":
+            raise HTTPException(status_code=400, detail="Bulk insert is only for grid screens.")
+        rows = body.get("rows") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=400, detail="rows (list) is required.")
+        if not rows:
+            raise HTTPException(status_code=400, detail="rows cannot be empty.")
+        BULK_CAP = 500
+        if len(rows) > BULK_CAP:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Bulk insert limited to {BULK_CAP} rows per call (got {len(rows)}).",
+            )
+
+        results: list[dict] = []
+        success_count = 0
+        failure_count = 0
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                failure_count += 1
+                results.append({
+                    "index": index,
+                    "ok": False,
+                    "error": "Row must be an object",
+                })
+                continue
+            try:
+                outcome = screen_runtime.insert_screen_row(
+                    db, wb, screen, row, identity=identity
+                )
+                success_count += 1
+                results.append({
+                    "index": index,
+                    "ok": True,
+                    "pk": outcome.get("pk"),
+                    "warnings": outcome.get("warnings") or [],
+                })
+            except WorkboardValidationError as exc:
+                failure_count += 1
+                results.append({
+                    "index": index,
+                    "ok": False,
+                    "error": str(exc),
+                    "violations": getattr(exc, "violations", []),
+                })
+            except WorkboardWriteError as exc:
+                failure_count += 1
+                results.append({
+                    "index": index,
+                    "ok": False,
+                    "error": str(exc),
+                })
+            except HTTPException as exc:
+                failure_count += 1
+                detail = exc.detail
+                results.append({
+                    "index": index,
+                    "ok": False,
+                    "error": (
+                        detail.get("message") if isinstance(detail, dict) and detail.get("message")
+                        else str(detail)
+                    ),
+                    "violations": (
+                        detail.get("violations") if isinstance(detail, dict) else None
+                    ),
+                })
+        return {
+            "action": "bulk_insert",
+            "total": len(rows),
+            "success": success_count,
+            "failure": failure_count,
+            "results": results,
+        }
+
+
     @router.patch("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
     def workspace_screen_update(
         token: str,

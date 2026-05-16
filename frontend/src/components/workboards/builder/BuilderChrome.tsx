@@ -331,6 +331,40 @@ export function BuilderEmptyHint({
   );
 }
 
+/**
+ * Warning banner shown above a screen editor when the screen references a
+ * dataset table that no longer exists (renamed, removed, or detached after
+ * a dataset rebind). Without this hint the picker silently shows zero
+ * columns and the builder appears blank, hiding the underlying problem.
+ */
+export function BuilderTableMissingBanner({
+  tableId,
+  className,
+}: {
+  tableId: number | null | undefined;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cx(
+        'rounded-md border border-status-danger/30 bg-status-danger/5 px-4 py-3 text-caption text-status-danger',
+        className,
+      )}
+    >
+      <div className="font-medium">
+        {tableId
+          ? `Bảng (id=${tableId}) trong dataset không còn tồn tại.`
+          : 'Screen chưa gán bảng nguồn.'}
+      </div>
+      <div className="mt-1 text-text-secondary">
+        {tableId
+          ? 'Có thể bảng đã bị xóa hoặc workboard vừa đổi dataset. Chọn lại bảng nguồn trước khi cấu hình tiếp — các cột hiển thị đang trống vì không có schema để tham chiếu.'
+          : 'Chọn dataset table ở mục "Data source" để bắt đầu cấu hình các cột.'}
+      </div>
+    </div>
+  );
+}
+
 export function BuilderActionButton({
   children,
   onClick,

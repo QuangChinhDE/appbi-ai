@@ -73,6 +73,66 @@ class ChartPreviewDataRequest(BaseModel):
     source_sample_limit: int = Field(default=100, ge=1, le=5000)
 
 
+class ChartNormalizeConfigRequest(BaseModel):
+    """Request body for the canonical normalize endpoint.
+
+    Phase-12 single-source-of-truth contract: MCP / SDK / FE callers POST
+    their proposed (chart_type, config) here and trust the response —
+    never re-implement role-config / metric / agg normalization locally.
+    """
+    chart_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChartConfigChange(BaseModel):
+    """One field the normalize endpoint mutated, surfaced to the caller."""
+    path: str
+    before: Any
+    after: Any
+    reason: str
+
+
+class ChartNormalizeConfigResponse(BaseModel):
+    """Response shape — the normalized config the BE will actually save."""
+    normalized_config: Dict[str, Any]
+    changes: List[ChartConfigChange] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ChartDryRunCreateRequest(BaseModel):
+    """Run the full ChartCreate validation pipeline WITHOUT saving."""
+    name: str
+    chart_type: str
+    dataset_table_id: int
+    config: Dict[str, Any]
+    description: Optional[str] = None
+
+
+class ChartDryRunCreateResponse(BaseModel):
+    """Single endpoint MCP / SDK call before creating a chart.
+
+    On ``ok=True`` the caller can confidently call ``POST /charts/`` with
+    ``normalized_config`` and the chart will land cleanly. On ``ok=False``
+    the caller MUST not write — show ``validation_errors`` /
+    ``runtime_errors`` to the user (or AI) and ask for a corrected
+    payload.
+    """
+    ok: bool
+    normalized_config: Dict[str, Any]
+    changes: List[ChartConfigChange] = Field(default_factory=list)
+    validation_errors: List[str] = Field(default_factory=list)
+    semantic_warnings: List[str] = Field(default_factory=list)
+    runtime_errors: List[str] = Field(default_factory=list)
+    runtime_root_cause: Optional[str] = None
+    runtime_preview_sample: Optional[List[Dict[str, Any]]] = None
+    # Phase-12.6: config keys the BE would accept + save but the FE
+    # Explore renderer does NOT consume — typically misspellings or
+    # legacy fields the AI emitted. These don't block the create (BE is
+    # tolerant) but are surfaced so the caller can warn the user
+    # "the chart will save but the field X won't visibly affect rendering".
+    fe_unrecognised_keys: List[str] = Field(default_factory=list)
+
+
 class ChartPreviewDataResponse(BaseModel):
     """Shared preview response for Explore."""
     data: List[Dict[str, Any]]
@@ -460,6 +520,323 @@ def preview_chart_data(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to preview chart data: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase-12: BE-as-single-source-of-truth contract.
+#
+# `/normalize-config` is a pure function — caller (MCP / FE / SDK) sends a
+# raw config, gets back the canonical form the BE will actually save +
+# the list of fields that were rewritten so the caller can surface the diff.
+#
+# `/dry-run-create` runs the full ChartCreate validation + semantic
+# preflight + runtime preview pipeline WITHOUT touching the DB. Callers
+# use this as their single pre-flight check before POST /charts/.
+#
+# Why these exist: every previous attempt to embed normalization logic in
+# MCP (or any external SDK) eventually drifted from the canonical BE
+# rules — Phase-3 `agg='auto'`, Phase-9 validator, Phase-10 binding
+# hydration. With these endpoints the BE is the single gatekeeper; MCP
+# tools call here instead of re-implementing the contract.
+
+
+# Phase-12.6 FE-key registry. These are the keys the Explore renderer
+# actually consumes. Maintained by hand here so the BE can warn callers
+# (MCP, AI agents) when they emit configs with keys the FE will silently
+# drop — the recurring "chart saves but doesn't look like I asked" defect.
+#
+# Source of truth: keep these sets in sync with the TS interfaces in
+# `frontend/src/components/explore/ExploreChartConfig.tsx`:
+#   - ChartRoleConfig         → _FE_ROLE_CONFIG_KEYS
+#   - ChartStyleConfig        → _FE_STYLE_CONFIG_KEYS
+#   - MetricConfig            → _FE_METRIC_KEYS
+#   - Top-level config keys   → _FE_TOP_LEVEL_KEYS
+#
+# Don't pretend to enumerate every legacy / per-chart-type key — just the
+# ones likely to be emitted by Claude. A missing entry only produces a
+# false-positive "won't render" warning, never an error.
+
+_FE_TOP_LEVEL_KEYS: set[str] = {
+    "chartType", "queryMode", "roleConfig", "generatedRoleConfig",
+    "customRoleConfig", "customSql", "styleConfig", "filters", "baseFilters",
+    "semanticBinding", "limit", "sort", "calculatedFields", "windowFunctions",
+    "rename_map",
+}
+
+_FE_ROLE_CONFIG_KEYS: set[str] = {
+    "dimension", "metrics", "breakdown", "lineMetric", "benchmarkMetric",
+    "timeField", "scatterX", "scatterY", "tableMode", "tableRowDimension",
+    "tableColumnDimension", "tablePivotMetric", "selectedColumns",
+}
+
+_FE_METRIC_KEYS: set[str] = {
+    "field", "agg", "label", "format", "function",
+}
+
+_FE_STYLE_CONFIG_KEYS: set[str] = {
+    # Data labels
+    "showDataLabels", "dataLabelPosition",
+    # Number formatting
+    "numberFormat", "currencySymbol", "decimalPlaces",
+    # Axis
+    "xAxisLabel", "yAxisLabel", "yAxisMin", "yAxisMax", "yAxisRightLabel",
+    # Legend / grid
+    "legendPosition", "showGrid",
+    # Palette
+    "palette", "seriesColors",
+    # Font
+    "fontSize", "chartTitleFontSize",
+    # Bar
+    "barRadius",
+    # Line
+    "showDots", "lineStyle",
+    # Benchmark line
+    "showBenchmarkLine", "benchmarkValue", "benchmarkLabel",
+    "benchmarkColor", "benchmarkLineStyle",
+    # KPI
+    "kpiLabel", "kpiContextTemplate", "kpiBenchmarkValue",
+    "kpiBenchmarkLabel", "kpiShowBenchmarkValue", "kpiShowDelta",
+    "kpiGoalDirection", "kpiAccentColor", "kpiEnableColorRules",
+    "kpiColorRules", "kpiIconName", "kpiIconColor", "kpiAccentBorder",
+    "kpiGradientBg", "kpiValueFontSize",
+    # PODIUM
+    "podiumTop", "podiumNameField", "podiumValueField",
+    "podiumGoldColor", "podiumSilverColor", "podiumBronzeColor",
+    # Table
+    "tableEnableConditionalFormatting", "tableEnableHeatmap",
+    "tableConditionalFormatting", "tableHeatmapRules",
+    "tableShowSummaryRow", "tableSummaryLabel", "tableSummaryLabelColumn",
+    "tableSummaryRows", "tableColumnWidths", "tableColumnAlignments",
+    "tableHyperlinkRules",
+    # Chart title
+    "chartTitle",
+    # PIE / donut
+    "pieInnerRadius",
+    # Stacked bar
+    "stackMode",
+    # Time series
+    "timeGranularity",
+    # Data shaping
+    "chartSortRules", "dataLimit", "dataLimitDirection",
+    # BAR_LINE
+    "dualYAxis",
+    # AREA
+    "areaOpacity",
+}
+
+
+def _collect_fe_unrecognised_keys(config: Dict[str, Any]) -> List[str]:
+    """Walk a chart config and list any keys the Explore renderer doesn't
+    know about. Used by ``/charts/dry-run-create`` so MCP / AI agents
+    learn which fields they emitted will silently no-op at view time.
+
+    The walk only checks the well-known buckets — role containers, style
+    config, metric entries. It does NOT recurse into arbitrary user
+    payloads (e.g. ``conditional_formatting[].rule.value`` literals);
+    those are caller-controlled values, not renderer-recognised keys.
+    """
+    if not isinstance(config, dict):
+        return []
+    out: List[str] = []
+    for key in config.keys():
+        if key not in _FE_TOP_LEVEL_KEYS:
+            out.append(f"config.{key}")
+
+    style = config.get("styleConfig")
+    if isinstance(style, dict):
+        for key in style.keys():
+            if key not in _FE_STYLE_CONFIG_KEYS:
+                out.append(f"config.styleConfig.{key}")
+
+    for container_key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        container = config.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in container.keys():
+            if key not in _FE_ROLE_CONFIG_KEYS:
+                out.append(f"config.{container_key}.{key}")
+        metrics = container.get("metrics") or []
+        for idx, metric in enumerate(metrics):
+            if not isinstance(metric, dict):
+                continue
+            for key in metric.keys():
+                if key not in _FE_METRIC_KEYS:
+                    out.append(f"config.{container_key}.metrics[{idx}].{key}")
+        for solo_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+            metric = container.get(solo_key)
+            if not isinstance(metric, dict):
+                continue
+            for key in metric.keys():
+                if key not in _FE_METRIC_KEYS:
+                    out.append(f"config.{container_key}.{solo_key}.{key}")
+    return out
+
+
+def _normalize_chart_config_with_diff(
+    chart_type: str,
+    raw_config: Dict[str, Any],
+) -> tuple[Dict[str, Any], List[ChartConfigChange]]:
+    """Run the canonical role-config normalizer on every container in the
+    config and return (normalized, list_of_changes).
+
+    The change list is intentionally simple — one entry per
+    rewritten role container, with a structural diff the caller can
+    print in plain language. We do NOT walk every leaf because the
+    normalizer is idempotent and most callers only need a yes/no signal
+    + the final value.
+    """
+    from app.services.chart_contracts import normalize_chart_role_config
+
+    if not isinstance(raw_config, dict):
+        return raw_config, []
+    out = dict(raw_config)
+    changes: List[ChartConfigChange] = []
+    for container_key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        before = raw_config.get(container_key)
+        if not isinstance(before, dict):
+            continue
+        after = normalize_chart_role_config(chart_type, before)
+        if after != before:
+            changes.append(
+                ChartConfigChange(
+                    path=container_key,
+                    before=before,
+                    after=after,
+                    reason="Coerced metric.agg / role keys to canonical values.",
+                )
+            )
+        out[container_key] = after
+    return out, changes
+
+
+@router.post("/normalize-config", response_model=ChartNormalizeConfigResponse)
+def normalize_chart_config(
+    payload: ChartNormalizeConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Canonicalise a chart config without saving.
+
+    Used by external SDKs (MCP, scripts) so they never have to mirror the
+    normalization rules locally. Pass any role-config shape the AI emitted
+    and you get back the exact form the BE would persist.
+    """
+    normalized, changes = _normalize_chart_config_with_diff(
+        payload.chart_type, payload.config or {}
+    )
+    return ChartNormalizeConfigResponse(
+        normalized_config=normalized,
+        changes=changes,
+        warnings=[],
+    )
+
+
+@router.post("/dry-run-create", response_model=ChartDryRunCreateResponse)
+def dry_run_create_chart(
+    payload: ChartDryRunCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("explore_charts", "view")),
+):
+    """Validate a proposed chart through the full create pipeline — WITHOUT
+    writing to the DB.
+
+    Runs (in order):
+      1. ``normalize_chart_role_config`` to canonicalise the payload.
+      2. The Pydantic ``ChartCreate`` model validator (Phase-9 shape +
+         Phase-12 metric.agg checks).
+      3. ``ChartService.preview_chart_data`` so we know the chart's query
+         would actually execute against the bound table.
+
+    Returns ``ok=True`` only when all three pass. Callers (MCP) treat that
+    as permission to POST ``/charts/`` with ``normalized_config``.
+    """
+    from pydantic import ValidationError
+    from app.schemas import ChartCreate as ChartCreateSchema
+    from app.schemas.schemas import ChartTypeSchema
+
+    normalized, changes = _normalize_chart_config_with_diff(
+        payload.chart_type, payload.config or {}
+    )
+
+    validation_errors: List[str] = []
+    try:
+        chart_type_enum = ChartTypeSchema(payload.chart_type.upper())
+    except ValueError:
+        validation_errors.append(
+            f"chart_type={payload.chart_type!r} is not a recognised ChartType."
+        )
+        chart_type_enum = None
+
+    if chart_type_enum is not None:
+        try:
+            ChartCreateSchema.model_validate(
+                {
+                    "name": payload.name,
+                    "description": payload.description,
+                    "dataset_table_id": payload.dataset_table_id,
+                    "chart_type": chart_type_enum,
+                    "config": normalized,
+                }
+            )
+        except ValidationError as exc:
+            validation_errors.extend(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
+                for err in exc.errors()
+            )
+
+    fe_unrecognised = _collect_fe_unrecognised_keys(normalized)
+
+    if validation_errors:
+        return ChartDryRunCreateResponse(
+            ok=False,
+            normalized_config=normalized,
+            changes=changes,
+            validation_errors=validation_errors,
+            fe_unrecognised_keys=fe_unrecognised,
+        )
+
+    # Verify the dataset_table exists + user can view it BEFORE simulating
+    # the runtime preview — otherwise we'd 500 with a confusing dataset
+    # lookup error.
+    try:
+        dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
+    except HTTPException as exc:
+        return ChartDryRunCreateResponse(
+            ok=False,
+            normalized_config=normalized,
+            changes=changes,
+            validation_errors=[f"dataset_table_id: {exc.detail}"],
+        )
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    runtime_errors: List[str] = []
+    runtime_root_cause: Optional[str] = None
+    runtime_sample: Optional[List[Dict[str, Any]]] = None
+    try:
+        preview = ChartService.preview_chart_data(
+            db,
+            payload.dataset_table_id,
+            payload.chart_type,
+            normalized,
+        )
+        runtime_sample = (preview.get("data") or [])[:5]
+    except ValueError as exc:
+        runtime_errors.append(str(exc))
+    except Exception as exc:
+        logger.exception("dry-run-create runtime preview failed")
+        runtime_errors.append(f"runtime preview failed: {type(exc).__name__}: {exc}")
+        runtime_root_cause = type(exc).__name__
+
+    return ChartDryRunCreateResponse(
+        ok=not runtime_errors,
+        normalized_config=normalized,
+        changes=changes,
+        validation_errors=[],
+        semantic_warnings=[],
+        runtime_errors=runtime_errors,
+        runtime_root_cause=runtime_root_cause,
+        runtime_preview_sample=runtime_sample,
+        fe_unrecognised_keys=fe_unrecognised,
+    )
 
 
 @router.get("/{chart_id}", response_model=ChartResponse)

@@ -30,7 +30,9 @@ export interface FormFieldSpec {
     | 'date'
     | 'datetime'
     | 'checkbox'
-    | 'lookup';
+    | 'lookup'
+    | 'file'
+    | 'image';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -54,7 +56,10 @@ export interface FormFieldSpec {
   show_if?: string | null;
   required_if?: string | null;
   readonly_if?: string | null;
+  valid_if?: string | null;
+  valid_if_error?: string | null;
   computed_from_dataset?: string | null;
+  max_file_kb?: number | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -251,11 +256,20 @@ export interface BrandingSpec {
   welcome_text?: string | null;
 }
 
+export interface AutoNumberConfigSpec {
+  column: string;
+  pattern: string;
+  reset?: 'never' | 'daily' | 'monthly' | 'yearly';
+  padding?: number;
+  start_at?: number;
+}
+
 export interface MiniAppLayoutSpec {
   screens: ScreenSpec[];
   mini_app_nav: MiniAppNavSpec;
   branding?: BrandingSpec;
   audit?: unknown;
+  auto_number_columns?: AutoNumberConfigSpec[];
   [key: string]: unknown;
 }
 
@@ -264,6 +278,7 @@ export const DEFAULT_LAYOUT: MiniAppLayoutSpec = {
   mini_app_nav: { mobile_kind: 'bottom_nav', desktop_kind: 'sidebar', items: [] },
   branding: { primary_color: '#2563eb' },
   audit: {},
+  auto_number_columns: [],
 };
 
 export function ensureLayout(raw: unknown): MiniAppLayoutSpec {
@@ -275,5 +290,8 @@ export function ensureLayout(raw: unknown): MiniAppLayoutSpec {
     screens: Array.isArray(obj.screens) ? (obj.screens as ScreenSpec[]) : [],
     mini_app_nav: (obj.mini_app_nav as MiniAppNavSpec) || DEFAULT_LAYOUT.mini_app_nav,
     branding: (obj.branding as BrandingSpec) || DEFAULT_LAYOUT.branding,
+    auto_number_columns: Array.isArray(obj.auto_number_columns)
+      ? (obj.auto_number_columns as AutoNumberConfigSpec[])
+      : [],
   };
 }

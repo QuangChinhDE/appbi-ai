@@ -36,6 +36,7 @@ import {
   BuilderNavigatorGroup,
   BuilderNavigatorItem,
   BuilderObjectEditor,
+  BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
 import type { FormFieldSpec, ScreenSpec } from './types';
@@ -80,6 +81,8 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'date', label: 'Date' },
   { value: 'datetime', label: 'Date + time' },
   { value: 'checkbox', label: 'On / off' },
+  { value: 'file', label: 'File upload (base64, ≤1MB)' },
+  { value: 'image', label: 'Image upload (base64, ≤1MB)' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -152,7 +155,9 @@ export default function FormScreenEditor({
 }: Props) {
   const form = screen.form || EMPTY_FORM;
   const fields = form.fields || [];
-  const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
+  const boundTable = tables.find((table) => table.id === screen.table_id);
+  const tableCols = boundTable?.columns ?? [];
+  const tableMissing = !!screen.table_id && !boundTable && !tablesLoading;
   const fieldColumnOptions = Array.from(
     new Set(fields.map((field) => field.column).filter(Boolean)),
   );
@@ -360,7 +365,9 @@ export default function FormScreenEditor({
         onChange={(nextId) => onChange({ ...screen, table_id: nextId })}
       />
 
-      {!screen.table_id ? (
+      {tableMissing ? (
+        <BuilderTableMissingBanner tableId={screen.table_id} />
+      ) : !screen.table_id ? (
         <BuilderEmptyHint className="text-left">
           Pick a primary data source before adding fields. Form fields are bound to columns
           in that table.
@@ -1001,6 +1008,22 @@ function FieldInspector({
               placeholder="[submitted] == true"
             />
           </Lbl>
+          <Lbl label="Valid when (valid_if)" className="wb-col-span-2">
+            <input
+              value={field.valid_if || ''}
+              onChange={(event) => onChange({ valid_if: event.target.value || null })}
+              className={INPUT}
+              placeholder="[end_date] >= [start_date]"
+            />
+          </Lbl>
+          <Lbl label="Validation error message" className="wb-col-span-2">
+            <input
+              value={field.valid_if_error || ''}
+              onChange={(event) => onChange({ valid_if_error: event.target.value || null })}
+              className={INPUT}
+              placeholder="Ngày kết thúc phải ≥ ngày bắt đầu"
+            />
+          </Lbl>
           <Lbl label="Auto-compute from dataset" className="wb-col-span-2">
             <SingleColumnPicker
               sourceColumns={tableCols.map((column) => column.name)}
@@ -1009,6 +1032,23 @@ function FieldInspector({
               placeholder="Not used"
             />
           </Lbl>
+          {(field.widget === 'file' || field.widget === 'image') && (
+            <Lbl label="Max file size (KB)" className="wb-col-span-2">
+              <input
+                type="number"
+                min={1}
+                max={1024}
+                value={field.max_file_kb ?? ''}
+                onChange={(event) =>
+                  onChange({
+                    max_file_kb: event.target.value ? Number(event.target.value) : null,
+                  })
+                }
+                className={INPUT}
+                placeholder="Mặc định 1024"
+              />
+            </Lbl>
+          )}
         </div>
       </CollapsibleGroup>
     </div>

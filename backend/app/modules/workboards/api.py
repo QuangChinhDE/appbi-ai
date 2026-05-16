@@ -162,6 +162,7 @@ def update_workboard(
     workboard_id: int,
     payload: WorkboardUpdate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -176,6 +177,18 @@ def update_workboard(
     # cheap when no dashboard screen exists.
     if updated is not None and payload.model_dump(exclude_unset=True).get("layout_json") is not None:
         updated = sync_managed_dashboard_links(db, updated, creator=current_user)
+    # Surface the rebind-cleanup manifest set by WorkboardService.update so
+    # the builder can warn the user about screens that were nullified when
+    # the dataset/primary-table binding changed. Header is the least
+    # intrusive carrier — keeps WorkboardResponse stable.
+    cleared = getattr(updated, "_cleared_screens", None) if updated else None
+    if isinstance(cleared, list) and cleared:
+        import json as _json
+        response.headers["X-AppBI-Cleared-Screens"] = str(len(cleared))
+        # Truncate to ~6KB to stay within typical HTTP header limits.
+        encoded = _json.dumps(cleared, ensure_ascii=False)
+        if len(encoded) <= 6000:
+            response.headers["X-AppBI-Cleared-Screens-Detail"] = encoded
     audit(
         db,
         AuditAction.WORKBOARD_UPDATED,
@@ -183,7 +196,10 @@ def update_workboard(
         user_id=current_user.id,
         resource_type="workboard",
         resource_id=str(workboard_id),
-        details={"fields": list(payload.model_dump(exclude_unset=True).keys())},
+        details={
+            "fields": list(payload.model_dump(exclude_unset=True).keys()),
+            "cleared_screen_count": len(cleared) if isinstance(cleared, list) else 0,
+        },
     )
     if updated:
         updated.user_permission = "full"
@@ -238,6 +254,306 @@ def publish_workboard(
     )
     wb.user_permission = "full"
     return wb
+
+
+@router.get("/{workboard_id}/audit")
+def audit_workboard(
+    workboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Inventory broken references inside a workboard's layout.
+
+    Cross-checks every screen against the live dataset state. Catches the
+    common rot path where a column / table / dashboard the workboard
+    points at was removed in the dataset editor but the workboard layout
+    still references it.
+
+    Read-only — does NOT mutate the layout. Combine with the workboard
+    builder's "Fix" buttons to actually clean each issue up.
+
+    Returns::
+
+        {
+          "workboard_id": int,
+          "screen_count": int,
+          "issue_count": int,
+          "ok": bool,
+          "issues": [
+            {
+              "severity": "error" | "warning",
+              "screen_id": str | None,
+              "screen_kind": str | None,
+              "screen_title": str | None,
+              "code": str,         # e.g. "missing_table", "missing_column"
+              "detail": str,
+              "context": {...}
+            }
+          ]
+        }
+    """
+    from app.models.dataset import DatasetTable
+    from app.models.models import Dashboard
+    from app.modules.workboards.services.crud_service import (
+        _collect_table_column_names,
+    )
+
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+
+    issues: list[dict[str, Any]] = []
+
+    # Build dataset table index once.
+    dataset_tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == wb.dataset_id)
+        .all()
+    )
+    tables_by_id = {int(t.id): t for t in dataset_tables}
+    columns_by_table_id: dict[int, set[str]] = {
+        int(t.id): set(_collect_table_column_names(t)) for t in dataset_tables
+    }
+
+    def _column_set(table_id: int | None) -> set[str]:
+        if table_id is None:
+            return set()
+        return columns_by_table_id.get(int(table_id), set())
+
+    def _add(
+        *,
+        severity: str,
+        code: str,
+        detail: str,
+        screen: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        issues.append({
+            "severity": severity,
+            "screen_id": (screen or {}).get("id"),
+            "screen_kind": (screen or {}).get("kind"),
+            "screen_title": (screen or {}).get("title"),
+            "code": code,
+            "detail": detail,
+            "context": context or {},
+        })
+
+    # ── Workboard-level checks ────────────────────────────────────────────
+    if wb.primary_table_id and int(wb.primary_table_id) not in tables_by_id:
+        _add(
+            severity="error",
+            code="missing_primary_table",
+            detail=(
+                f"Primary table {wb.primary_table_id} no longer exists in "
+                f"dataset {wb.dataset_id}."
+            ),
+            context={"primary_table_id": wb.primary_table_id},
+        )
+
+    # ── Screen-level checks ───────────────────────────────────────────────
+    layout = wb.layout_json or {}
+    screens = layout.get("screens") if isinstance(layout, dict) else None
+    screens_iter: list[dict[str, Any]] = (
+        [s for s in screens if isinstance(s, dict)] if isinstance(screens, list) else []
+    )
+
+    # Distinct dashboard ids referenced — fetched once.
+    referenced_dashboard_ids: set[int] = set()
+    for screen in screens_iter:
+        if screen.get("kind") == "dashboard":
+            dash_spec = screen.get("dashboard") or {}
+            dash_id = dash_spec.get("dashboard_id") if isinstance(dash_spec, dict) else None
+            if isinstance(dash_id, int):
+                referenced_dashboard_ids.add(int(dash_id))
+    existing_dashboard_ids: set[int] = set()
+    if referenced_dashboard_ids:
+        existing_dashboard_ids = {
+            int(row[0])
+            for row in db.query(Dashboard.id)
+            .filter(Dashboard.id.in_(referenced_dashboard_ids))
+            .all()
+        }
+
+    for screen in screens_iter:
+        kind = str(screen.get("kind") or "").strip()
+        table_id = screen.get("table_id")
+        # 1. table_id existence (skipped for dashboard kind — it doesn't use one).
+        if kind != "dashboard":
+            if table_id is None:
+                _add(
+                    severity="error",
+                    code="missing_table_binding",
+                    detail="Screen has no table_id — it cannot render or write.",
+                    screen=screen,
+                )
+                continue
+            if int(table_id) not in tables_by_id:
+                _add(
+                    severity="error",
+                    code="missing_table",
+                    detail=(
+                        f"Screen references dataset_table {table_id} which is "
+                        "no longer in this dataset."
+                    ),
+                    screen=screen,
+                    context={"table_id": table_id},
+                )
+                continue
+
+        cols = _column_set(table_id) if kind != "dashboard" else set()
+
+        # 2. Per-kind column references
+        if kind == "form":
+            form_spec = screen.get("form") or {}
+            for index, field in enumerate(form_spec.get("fields") or []):
+                if not isinstance(field, dict):
+                    continue
+                col = field.get("column")
+                if col and col not in cols:
+                    _add(
+                        severity="error",
+                        code="missing_column",
+                        detail=f"Form field '{field.get('label') or col}' references missing column '{col}'.",
+                        screen=screen,
+                        context={"column": col, "field_index": index},
+                    )
+        elif kind == "list":
+            list_spec = screen.get("list") or {}
+            for col in list_spec.get("columns") or []:
+                if col and col not in cols:
+                    _add(
+                        severity="error",
+                        code="missing_column",
+                        detail=f"List screen displays missing column '{col}'.",
+                        screen=screen,
+                        context={"column": col},
+                    )
+            sort_col = list_spec.get("default_sort_column")
+            if sort_col and sort_col not in cols:
+                _add(
+                    severity="warning",
+                    code="missing_sort_column",
+                    detail=f"Default sort column '{sort_col}' is missing.",
+                    screen=screen,
+                    context={"column": sort_col},
+                )
+        elif kind == "grid":
+            grid_spec = screen.get("grid") or {}
+            computed_names = {
+                str(c.get("name") or "").strip()
+                for c in (grid_spec.get("computed_columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            }
+            lookup_names = {
+                str(c.get("name") or "").strip()
+                for c in (grid_spec.get("lookup_columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            }
+            valid_grid_cols = cols | computed_names | lookup_names
+            for col in grid_spec.get("columns") or []:
+                if col and col not in valid_grid_cols:
+                    _add(
+                        severity="error",
+                        code="missing_column",
+                        detail=f"Grid surfaces missing column '{col}'.",
+                        screen=screen,
+                        context={"column": col},
+                    )
+            for col in grid_spec.get("editable_columns") or []:
+                if col and col not in cols:
+                    _add(
+                        severity="error",
+                        code="non_editable_column",
+                        detail=(
+                            f"Grid marks '{col}' as editable but it is not a "
+                            "physical column of the bound table."
+                        ),
+                        screen=screen,
+                        context={"column": col},
+                    )
+            for index, lookup in enumerate(grid_spec.get("lookup_columns") or []):
+                if not isinstance(lookup, dict):
+                    continue
+                from_id = lookup.get("from_table_id")
+                if from_id and int(from_id) not in tables_by_id:
+                    _add(
+                        severity="error",
+                        code="missing_lookup_table",
+                        detail=(
+                            f"Lookup column '{lookup.get('name')}' joins table "
+                            f"{from_id} which is no longer in this dataset."
+                        ),
+                        screen=screen,
+                        context={"lookup_index": index, "from_table_id": from_id},
+                    )
+        elif kind == "doc":
+            doc_spec = screen.get("doc") or {}
+            for block_index, block in enumerate(doc_spec.get("blocks") or []):
+                if not isinstance(block, dict) or block.get("type") != "data_table":
+                    continue
+                source = block.get("source") or "primary"
+                effective_table_id: int | None = None
+                if source == "primary":
+                    effective_table_id = int(table_id) if table_id else None
+                elif isinstance(source, str) and source.startswith("lookup:"):
+                    try:
+                        effective_table_id = int(source.split(":", 1)[1])
+                    except (ValueError, IndexError):
+                        effective_table_id = None
+                    if effective_table_id and effective_table_id not in tables_by_id:
+                        _add(
+                            severity="error",
+                            code="missing_doc_lookup_table",
+                            detail=(
+                                f"Doc data_table block #{block_index} sources "
+                                f"missing table {effective_table_id}."
+                            ),
+                            screen=screen,
+                            context={"block_index": block_index, "source": source},
+                        )
+                        continue
+                block_cols = _column_set(effective_table_id)
+                for col in block.get("columns") or []:
+                    if col and col not in block_cols:
+                        _add(
+                            severity="error",
+                            code="missing_column",
+                            detail=(
+                                f"Doc data_table block #{block_index} requests "
+                                f"missing column '{col}'."
+                            ),
+                            screen=screen,
+                            context={"block_index": block_index, "column": col},
+                        )
+        elif kind == "dashboard":
+            dash_spec = screen.get("dashboard") or {}
+            dash_id = dash_spec.get("dashboard_id") if isinstance(dash_spec, dict) else None
+            share_token = dash_spec.get("share_token") if isinstance(dash_spec, dict) else None
+            if dash_id is None and not share_token:
+                _add(
+                    severity="error",
+                    code="dashboard_unbound",
+                    detail="Dashboard screen has neither dashboard_id nor share_token.",
+                    screen=screen,
+                )
+            elif isinstance(dash_id, int) and int(dash_id) not in existing_dashboard_ids:
+                _add(
+                    severity="error",
+                    code="missing_dashboard",
+                    detail=(
+                        f"Dashboard {dash_id} referenced by this screen has been "
+                        "deleted; the embedded iframe will 404."
+                    ),
+                    screen=screen,
+                    context={"dashboard_id": dash_id},
+                )
+
+    return {
+        "workboard_id": int(workboard_id),
+        "screen_count": len(screens_iter),
+        "issue_count": len(issues),
+        "ok": not any(issue["severity"] == "error" for issue in issues),
+        "issues": issues,
+    }
 
 
 @router.get("/{workboard_id}/public-links", response_model=List[WorkboardPublicLinkResponse])

@@ -19,7 +19,7 @@ import {
   Gauge,
   GitBranch,
   LineChart,
-  Map,
+  Map as MapIcon,
   MapPin,
   Network,
   PieChart,
@@ -400,7 +400,7 @@ export type SemanticLabelMap = Map<string, string> | Record<string, string>;
 function lookupSemanticLabel(field: string, map?: SemanticLabelMap): string | undefined {
   if (!map) return undefined;
   // Narrow once into a callable getter so TS doesn't choke on the union.
-  const isMap = map instanceof Map;
+  const isMap = map instanceof globalThis.Map;
   const get = isMap
     ? (k: string): string | undefined => (map as Map<string, string>).get(k)
     : (k: string): string | undefined => (map as Record<string, string>)[k];
@@ -781,7 +781,7 @@ const CHART_TYPE_GRID: ChartTypeMeta[] = [
   { value: 'SANKEY',         label: 'Sankey',         group: 'relationship', icon: Network },
   { value: 'SUNBURST',       label: 'Sunburst',       group: 'relationship', icon: PieChart },
   { value: 'MAP_POINT',      label: 'Point Map',      group: 'geo', icon: MapPin },
-  { value: 'MAP_REGION',     label: 'Region Map',     group: 'geo', icon: Map },
+  { value: 'MAP_REGION',     label: 'Region Map',     group: 'geo', icon: MapIcon },
 ];
 
 const AGG_OPTIONS: { value: AggFn; label: string }[] = [

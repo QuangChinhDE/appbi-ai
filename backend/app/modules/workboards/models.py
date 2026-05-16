@@ -382,6 +382,45 @@ class WorkboardSyncRun(Base):
     )
 
 
+class WorkboardAutoNumberSequence(Base):
+    """Running counter for ``LayoutJson.auto_number_columns``.
+
+    Keyed by ``(workboard_id, column_name, bucket)``. ``bucket`` is the
+    date partition (``"all"`` for ``reset='never'``, ``"2026"`` for yearly,
+    ``"2026-05"`` for monthly, ``"2026-05-15"`` for daily). The write
+    service does an UPSERT-then-RETURNING to claim the next value
+    atomically so two concurrent inserts cannot collide on the same id.
+    """
+
+    __tablename__ = "workboard_auto_number_sequences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workboard_id = Column(
+        Integer,
+        ForeignKey("workboards.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    column_name = Column(String(120), nullable=False)
+    bucket = Column(String(32), nullable=False)
+    next_value = Column(Integer, nullable=False, default=1, server_default="1")
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workboard_id",
+            "column_name",
+            "bucket",
+            name="uq_wb_auto_number_sequence",
+        ),
+    )
+
+
 class WorkboardAppLoginAttempt(Base):
     """Rate-limit tracker for workspace app-user login attempts.
 

@@ -23,6 +23,7 @@ import {
   BuilderNavigatorGroup,
   BuilderNavigatorItem,
   BuilderObjectEditor,
+  BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
 import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
@@ -64,8 +65,10 @@ export default function ListScreenEditor({
   const list = screen.list || EMPTY_LIST;
   const filters = list.filters || [];
   const rowActions = list.row_actions || [];
-  const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
+  const boundTable = tables.find((table) => table.id === screen.table_id);
+  const tableCols = boundTable?.columns ?? [];
   const columnNames = tableCols.map((column) => column.name);
+  const tableMissing = !!screen.table_id && !boundTable;
   const [activeItem, setActiveItem] = useState<ActiveItem>('columns');
 
   const activeFilterIndex = activeItem.startsWith('filter:')
@@ -262,7 +265,9 @@ export default function ListScreenEditor({
         onChange={(nextId) => onChange({ ...screen, table_id: nextId })}
       />
 
-      {!screen.table_id ? (
+      {tableMissing ? (
+        <BuilderTableMissingBanner tableId={screen.table_id} />
+      ) : !screen.table_id ? (
         <BuilderEmptyHint className="text-left">
           Pick a primary data source before configuring columns, filters, or row actions.
         </BuilderEmptyHint>

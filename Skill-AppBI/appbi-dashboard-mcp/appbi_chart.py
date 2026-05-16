@@ -153,24 +153,13 @@ async def list_charts(
     summary: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """List charts. Narrow via BE-supported filters or post-filter locally.
+    """List charts. Default returns FULL records (>500KB at 40 charts).
 
-    BE-supported query params:
-      - `q`: substring search across name/type/dataset/description/tags.
-      - `chart_type`: enum filter (BAR, LINE, KPI, ...). Uppercase.
-      - `scope`: 'all' (default) | 'mine' | 'shared'.
-      - `sort`: 'updated_desc' | 'created_desc' | 'name_asc' | 'name_desc' | 'relevance'.
-      - `skip` / `limit`: pagination (max limit=500).
-
-    `dataset_id` / `dataset_table_id` are NOT understood by the backend
-    list endpoint; when supplied, this tool fetches the page and filters
-    the returned items client-side. Combine with `limit` to avoid pulling
-    every chart in the org.
-
-    Default returns the full chart records (config payload included — a list
-    of 40+ charts can exceed 500KB). Pass `summary=True` to keep only
-    id/name/chart_type/dataset_table_id/owner plus a one-line role summary,
-    which is enough to choose which chart to inspect with `get_chart`.
+    Always pass `summary=True` unless inspecting a specific chart's config.
+    `q`: substring search. `chart_type`: enum filter (uppercase).
+    `scope`: all|mine|shared. `sort`: updated_desc|created_desc|name_asc|
+    name_desc|relevance. `skip`/`limit` paginate (max 500).
+    `dataset_id`/`dataset_table_id`: client-side post-filter (BE doesn't support).
     """
     items = await _request(
         "GET",
@@ -244,17 +233,10 @@ async def get_chart_data(
     context: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run a saved chart's query and return its data + columns.
+    """Run a saved chart's query — data + columns. Honors chart's saved limit.
 
-    Use to pull the actual values a chart renders — useful when verifying
-    a dashboard's numbers without opening a browser. The chart's saved
-    `limit` (in its config) is honored server-side; this endpoint does
-    NOT accept a row cap override.
-
-    `filters_json` is a JSON-encoded array of `{field, operator, value}`
-    filter objects to apply on top of the chart's own filters (typically
-    used to simulate dashboard filter context).
-    `context` is the runtime filter context label (e.g. "dashboard").
+    `filters_json`: JSON array of [{field, operator, value}] applied on top
+    of chart's filters. `context`: filter scope label (e.g. "dashboard").
     """
     return await _request(
         "GET",
@@ -275,22 +257,12 @@ async def preview_chart_data(
     source_sample_limit: int = 50,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run a chart's query WITHOUT saving the chart.
+    """Run a chart query WITHOUT saving. Verify before create_chart.
 
-    Critical for the orchestrator flow: design `config`, preview, verify
-    the numbers look right, THEN call `create_chart` (or commit through
-    the blueprint flow). If preview fails, iterate the config in chat
-    rather than asking the backend to auto-fix — there is no AI fixer.
-
-    `chart_type` values are uppercase AppBI enums (BAR, LINE, KPI, ...).
-    `config` is the AppBI Explore shape: `chartType`, `queryMode`,
-    `roleConfig`, `generatedRoleConfig` / `customRoleConfig`,
-    `styleConfig`, `filters`, `baseFilters`. The blueprint flow builds
-    this shape for you; for ad-hoc previews, mirror the structure
-    `propose_dashboard_blueprint` returns under `blueprint_template`.
-    `context` is a string label for the runtime filter scope (typical
-    value: "dashboard"). Backend uses it to resolve filter context when
-    the chart's config has scope-keyed filter overrides.
+    `chart_type`: uppercase enum (BAR, LINE, KPI, ...).
+    `config`: Explore shape — chartType, queryMode, roleConfig,
+    generatedRoleConfig|customRoleConfig, styleConfig, filters, baseFilters.
+    `context`: filter scope label ("dashboard" typical) for scope-keyed overrides.
     """
     body = _drop_none(
         {
@@ -367,98 +339,99 @@ async def create_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create a single chart.
+    """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
 
-    **Prefer the blueprint flow** (`propose_dashboard_blueprint` →
-    `commit_dashboard_blueprint`) when you are building a dashboard.
-    Use `create_chart` only for one-off charts the user explicitly asked
-    for outside that flow (e.g. "add this single KPI tile to dashboard X").
-
-    Hard gate: every referenced semantic field must resolve to a real
-    dimension/measure in the live semantic catalog. Qualified refs such
-    as `orders.customer_name` or `creator.email` are preserved; the
-    backend chart runtime decides whether the chart stays on the legacy
-    single-table path or routes to semantic runtime with JOIN handling.
-
-    `bypass_semantic_check=True` is an escape hatch for the rare case
-    where the user wants the chart created anyway (legacy data
-    migration, synthetic test charts). Surface the warning in chat
-    before using it.
-
-    Workflow:
-      1. Profile via `get_table_profile`.
-      2. Confirm a SemanticView with the right measures exists; if not,
-         go to `propose_semantic_model` first.
-      3. `preview_chart_data` to verify the query returns sensible rows.
-      4. Author a description.
-      5. On user consent, call this with `user_confirmed=True`.
+    Every semantic field must resolve in the SemanticView. Qualified refs
+    like `orders.customer_name` are preserved (the runtime decides legacy
+    vs semantic-JOIN path). `bypass_semantic_check=True` skips that gate —
+    explain to the user first. Workflow: get_table_profile → ensure
+    SemanticView → preview_chart_data → user_confirmed=True.
     """
-    body = _drop_none(
-        {
+    # Phase-12 single-source-of-truth contract:
+    # Instead of mirroring normalization / Pydantic validation / runtime
+    # preview locally (which historically drifted from BE rules every time
+    # the contract evolved — Phase-3 `agg='auto'`, Phase-9 validator,
+    # Phase-10 hydration), we delegate the entire pre-flight to the BE's
+    # `/charts/dry-run-create` endpoint. The BE is the single gatekeeper.
+    dry_run = await _request(
+        "POST",
+        "/charts/dry-run-create",
+        json_body={
             "name": name,
             "chart_type": chart_type,
             "dataset_table_id": int(dataset_table_id),
             "config": config,
             "description": description,
-        }
+        },
     )
 
-    semantic_warnings: list[str] = []
-    if not bypass_semantic_check:
-        try:
-            semantic_warnings = await _semantic_preflight(
-                dataset_table_id=int(dataset_table_id),
-                config=config,
-                chart_type=chart_type,
-            )
-        except RuntimeError as exc:
-            semantic_warnings = [
-                f"Semantic pre-flight could not run: {exc}. "
-                "Pass bypass_semantic_check=True to proceed anyway."
-            ]
-        if semantic_warnings:
-            return {
-                "status": "blocked_by_semantic_check",
-                "warnings": semantic_warnings,
-                "fix": (
-                    "Either: (a) fix the chart so every referenced field "
-                    "exists in the semantic model; (b) extend the semantic "
-                    "model first via update_semantic_view / "
-                    "propose_semantic_model; or (c) pass "
-                    "bypass_semantic_check=True after explaining the "
-                    "tradeoff to the user."
-                ),
-            }
+    if not isinstance(dry_run, dict):
+        return {"status": "error", "error": "Unexpected dry-run response from backend."}
 
-    if not user_confirmed:
-        return _requires_confirmation(
-            "create_chart",
-            {
-                "name": name,
-                "chart_type": chart_type,
-                "dataset_table_id": int(dataset_table_id),
-                "config_summary": _summarize_chart_config(config),
-                "description_preview": (description or "")[:200],
-                "semantic_check": "passed" if not semantic_warnings else "bypassed",
-            },
-        )
-    diag = await _runtime_preview_diagnose(
-        dataset_table_id=int(dataset_table_id),
-        chart_type=chart_type,
-        config=body["config"],
-    )
-    if diag is not None:
+    normalized_config = dry_run.get("normalized_config") or config
+    changes = dry_run.get("changes") or []
+    validation_errors = dry_run.get("validation_errors") or []
+    runtime_errors = dry_run.get("runtime_errors") or []
+
+    if validation_errors:
         return {
-            "status": "blocked_by_runtime_preview",
-            "warnings": diag["errors"],
-            "raw_error": diag.get("raw_error"),
-            "root_cause": diag.get("root_cause"),
-            "resolution_options": diag.get("resolution_options"),
+            "status": "blocked_by_validation",
+            "validation_errors": validation_errors,
+            "normalized_config": normalized_config,
             "fix": (
-                "Adjust the chart config until preview_chart_data succeeds, then retry. "
-                "This guardrail prevents saving charts that later fail in Explore/runtime."
+                "Fix the validation errors above and retry. The chart config "
+                "did not pass the Pydantic/role-config gate the BE enforces."
             ),
         }
+
+    if runtime_errors and not bypass_semantic_check:
+        return {
+            "status": "blocked_by_runtime_preview",
+            "runtime_errors": runtime_errors,
+            "root_cause": dry_run.get("runtime_root_cause"),
+            "normalized_config": normalized_config,
+            "fix": (
+                "Adjust the chart config until dry-run-create returns ok=true, "
+                "then retry. This guardrail prevents saving charts that later "
+                "fail in Explore/runtime. Set bypass_semantic_check=true only "
+                "after explaining to the user that the chart will likely be "
+                "broken at view time."
+            ),
+        }
+
+    body = _drop_none(
+        {
+            "name": name,
+            "chart_type": chart_type,
+            "dataset_table_id": int(dataset_table_id),
+            "config": normalized_config,
+            "description": description,
+        }
+    )
+
+    if not user_confirmed:
+        fe_unrecognised = dry_run.get("fe_unrecognised_keys") or []
+        plan: dict[str, Any] = {
+            "name": name,
+            "chart_type": chart_type,
+            "dataset_table_id": int(dataset_table_id),
+            "config_summary": _summarize_chart_config(normalized_config),
+            "description_preview": (description or "")[:200],
+            "normalized_changes": changes,
+            "runtime_preview_sample": dry_run.get("runtime_preview_sample") or [],
+            "runtime_check": "passed" if not runtime_errors else "bypassed",
+        }
+        if fe_unrecognised:
+            plan["fe_will_ignore"] = {
+                "keys": fe_unrecognised[:20],
+                "note": (
+                    "These config keys will be saved by the BE but the Explore "
+                    "renderer does NOT consume them — the chart will look "
+                    "different from what was requested. Drop or rename these "
+                    "keys (or accept that they have no visible effect)."
+                ),
+            }
+        return _requires_confirmation("create_chart", plan)
     return await _request("POST", "/charts/", json_body=body)
 
 
@@ -816,59 +789,63 @@ async def update_chart(
         }
     )
 
-    effective_dataset_table_id = dataset_table_id
-    effective_chart_type = chart_type
-    effective_config = config
+    # Phase-12 contract: delegate normalize + validation + runtime preview
+    # to the BE single gatekeeper. Same rationale as create_chart — the
+    # update path historically drifted from BE rules whenever the contract
+    # changed. By calling `/charts/dry-run-create` with the post-update
+    # snapshot we get the BE's authoritative answer.
     if {"dataset_table_id", "chart_type", "config"} & set(changes.keys()):
         current_chart = await _request("GET", f"/charts/{int(chart_id)}")
         if not isinstance(current_chart, dict):
             return {"error": f"Chart {chart_id} not found"}
         effective_dataset_table_id = int(
-            effective_dataset_table_id
+            (dataset_table_id if dataset_table_id is not None else None)
             or current_chart.get("dataset_table_id")
             or 0
         )
         effective_chart_type = str(
-            effective_chart_type or current_chart.get("chart_type") or ""
+            chart_type or current_chart.get("chart_type") or ""
         )
         effective_config = (
-            effective_config
-            if isinstance(effective_config, dict)
-            else current_chart.get("config") or {}
+            config if isinstance(config, dict) else current_chart.get("config") or {}
         )
-        semantic_warnings = await _semantic_preflight(
-            dataset_table_id=effective_dataset_table_id,
-            config=effective_config,
-            chart_type=effective_chart_type,
+        dry_run = await _request(
+            "POST",
+            "/charts/dry-run-create",
+            json_body={
+                "name": name or current_chart.get("name") or f"Chart {chart_id}",
+                "chart_type": effective_chart_type,
+                "dataset_table_id": effective_dataset_table_id,
+                "config": effective_config,
+                "description": description if description is not None else current_chart.get("description"),
+            },
         )
-        if semantic_warnings:
+        if not isinstance(dry_run, dict):
+            return {"status": "error", "error": "Unexpected dry-run response."}
+        if dry_run.get("validation_errors"):
             return {
-                "status": "blocked_by_semantic_check",
-                "warnings": semantic_warnings,
+                "status": "blocked_by_validation",
+                "validation_errors": dry_run["validation_errors"],
+                "normalized_config": dry_run.get("normalized_config"),
                 "fix": (
-                    "Adjust the chart so every referenced field exists in the "
-                    "semantic model, or update the semantic model first, then retry."
+                    "Fix the validation errors and retry. The update payload "
+                    "did not pass the BE's role-config gate."
                 ),
             }
-        diag = await _runtime_preview_diagnose(
-            dataset_table_id=effective_dataset_table_id,
-            chart_type=effective_chart_type,
-            config=effective_config,
-        )
-        if diag is not None:
+        if dry_run.get("runtime_errors"):
             return {
                 "status": "blocked_by_runtime_preview",
-                "warnings": diag["errors"],
-                "raw_error": diag.get("raw_error"),
-                "root_cause": diag.get("root_cause"),
-                "resolution_options": diag.get("resolution_options"),
+                "runtime_errors": dry_run["runtime_errors"],
+                "root_cause": dry_run.get("runtime_root_cause"),
+                "normalized_config": dry_run.get("normalized_config"),
                 "fix": (
-                    "Adjust the final stored config until preview_chart_data succeeds, "
-                    "then retry the update."
+                    "Adjust the final stored config until dry-run-create returns "
+                    "ok=true, then retry the update."
                 ),
             }
+        normalized_config = dry_run.get("normalized_config") or effective_config
         if "config" in changes:
-            changes["config"] = effective_config
+            changes["config"] = normalized_config
 
     if not user_confirmed:
         return _requires_confirmation(
@@ -913,19 +890,11 @@ async def update_chart_description(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Save chart description fields that Claude authored.
+    """Save chart description fields (pure write, no LLM).
 
-    Fields persisted on the chart's metadata record (PUT
-    /charts/{id}/description). Provide one or more of:
-
-      - auto_description : 1-3 sentence summary of what the chart shows.
-      - insight_keywords : tags / themes for similarity search.
-      - common_questions : 3-5 natural-language questions the chart answers.
-      - query_aliases    : alternative phrasings users might use.
-
-    Sets `description_source='user'` and triggers background re-embedding.
-    For the separate semantic metadata bag (domain, intent, metrics,
-    dimensions, tags) use `upsert_chart_metadata` instead.
+    Provide any of: auto_description (1-3 sentences), insight_keywords
+    (tags), common_questions (3-5 NL questions), query_aliases (alt phrasings).
+    For semantic metadata (domain/intent/metrics/...) use upsert_chart_metadata.
     """
     body = _drop_none(
         {
@@ -1032,17 +1001,39 @@ def _normalize_chart_type(chart_type: str) -> str:
     return str(chart_type or "").strip().upper()
 
 
+_ALLOWED_METRIC_AGGS: set[str] = {
+    "sum", "avg", "count", "min", "max", "count_distinct", "auto",
+}
+
+
 def _normalize_metric(metric: Any) -> dict[str, Any] | None:
+    """Coerce a chart spec's metric into the canonical ``{field, agg, ...}``
+    shape the AppBI runtime expects.
+
+    ``agg`` falls back to ``"sum"`` when missing AND ``field`` is a bare
+    column. For semantic measures (qualified refs like ``view.field``) we
+    fall back to ``"auto"`` — the chart runtime then defers to the
+    measure's own aggregation, which is the contract Phase-3 introduced.
+    Unknown aggregation strings collapse to ``"sum"`` so the chart cannot
+    end up with a value that crashes Explore / Pydantic (Phase-9 422).
+    """
     if isinstance(metric, str):
         field = metric.strip()
-        return {"field": field, "agg": "sum"} if field else None
+        if not field:
+            return None
+        default_agg = "auto" if "." in field else "sum"
+        return {"field": field, "agg": default_agg}
     if not isinstance(metric, dict):
         return None
     field = str(metric.get("field") or "").strip()
     if not field:
         return None
-    agg = str(metric.get("agg") or metric.get("function") or "sum").strip().lower()
-    if agg not in {"sum", "avg", "count", "min", "max", "count_distinct"}:
+    raw_agg = metric.get("agg") or metric.get("function")
+    agg = str(raw_agg or "").strip().lower()
+    if not agg:
+        # Match the str-branch default: semantic refs → auto, bare → sum.
+        agg = "auto" if "." in field else "sum"
+    if agg not in _ALLOWED_METRIC_AGGS:
         agg = "sum"
     normalized = dict(metric)
     normalized["field"] = field
@@ -1088,6 +1079,25 @@ def _normalize_role_config(chart_type: str, role_config: dict[str, Any] | None) 
     elif str(role.get("tableMode") or "").lower() != "pivot":
         role["tableMode"] = "standard"
     return role
+
+
+def _normalize_chart_config_for_save(config: dict[str, Any], chart_type: str) -> dict[str, Any]:
+    """Return a copy of ``config`` with role_config + generatedRoleConfig +
+    customRoleConfig run through :func:`_normalize_role_config`.
+
+    Used by ``create_chart`` / ``update_chart`` so MCP can never write a
+    config whose ``metrics[].agg`` is missing or invalid — the recurring
+    Phase-9 / Phase-10 defect when AI hand-authored configs slipped past
+    both the field-level validator and the Pydantic ChartCreate envelope.
+    """
+    if not isinstance(config, dict):
+        return config
+    out = dict(config)
+    for key in ("roleConfig", "generatedRoleConfig", "customRoleConfig"):
+        raw = out.get(key)
+        if isinstance(raw, dict):
+            out[key] = _normalize_role_config(chart_type, raw)
+    return out
 
 
 def _get_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:

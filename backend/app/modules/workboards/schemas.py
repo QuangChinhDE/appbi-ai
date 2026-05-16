@@ -64,6 +64,8 @@ class FormField(BaseModel):
         "datetime",
         "checkbox",
         "lookup",
+        "file",
+        "image",
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -87,9 +89,33 @@ class FormField(BaseModel):
         description="Mark field required only when expression is true (overrides static `required` if both set)",
     )
     readonly_if: Optional[str] = Field(default=None, description="Force readonly when expression is true")
+    valid_if: Optional[str] = Field(
+        default=None,
+        description=(
+            "Expression that MUST evaluate truthy at submit time. Use to enforce "
+            "cross-field rules the database cannot express on its own, e.g. "
+            "`[end_date] >= [start_date]` or `[status] != 'cancelled' || [reason] != null`. "
+            "When falsy the submit is blocked with `valid_if_error` (or a default message)."
+        ),
+    )
+    valid_if_error: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="User-facing message shown when valid_if rejects the value.",
+    )
     computed_from_dataset: Optional[str] = Field(
         default=None,
         description="Field name of the dataset transformation that produces this column",
+    )
+    max_file_kb: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10240,
+        description=(
+            "For widget='file' / 'image': max size in KB the FE will accept. "
+            "BE enforces a hard ceiling at 1024 KB regardless — file upload is "
+            "base64-into-JSONB so anything larger destroys the row's payload."
+        ),
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -735,6 +761,40 @@ class MiniAppNav(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AutoNumberConfig(BaseModel):
+    """Server-generated identifier for a column.
+
+    Whenever an insert reaches this workboard with ``column`` missing or
+    blank, the write service replaces it with a value rendered from
+    ``pattern``. Two placeholders are supported inside the pattern:
+
+    * ``{N}`` / ``{N:4}`` — running sequence number, optionally
+      zero-padded to ``:N`` digits. Each AutoNumberConfig owns its own
+      counter in :class:`WorkboardAutoNumberSequence`.
+    * ``{YYYY}`` / ``{YY}`` / ``{MM}`` / ``{DD}`` — date parts of the
+      moment the insert lands.
+
+    ``reset`` controls when the running sequence rolls back to 1. ``never``
+    is the safest default — the sequence keeps growing forever.
+    """
+
+    column: str = Field(..., min_length=1, max_length=120)
+    pattern: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="e.g. 'PO-{YYYY}{MM}{DD}-{N:4}'",
+    )
+    reset: Literal["never", "daily", "monthly", "yearly"] = "never"
+    padding: int = Field(default=0, ge=0, le=12)
+    """When >0 and the pattern has no ``{N:<digits>}`` directive, the
+    sequence number gets zero-padded to this many digits."""
+    start_at: int = Field(default=1, ge=0)
+    """First sequence number issued. Bumped by the runtime on each insert."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -747,6 +807,7 @@ class LayoutJson(BaseModel):
     mini_app_nav: MiniAppNav = Field(default_factory=MiniAppNav)
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    auto_number_columns: List[AutoNumberConfig] = Field(default_factory=_builtins.list)
 
     # ignore unknown future fields rather than erroring out clients
     model_config = ConfigDict(extra="ignore")

@@ -263,30 +263,12 @@ async def propose_semantic_model(
     business_intent: str,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """**Step 1 of canonical flow** — surface the design Claude is about to
-    propose without writing anything yet.
+    """Stage 3 — plan a semantic model for a dataset. Read-only.
 
-    Use BEFORE creating any chart for a dataset that does not already
-    have a semantic model. Pulls the dataset structure (tables + columns
-    + relationships) and existing model state, returning the context
-    Claude needs to author a plan that respects what's already there.
-
-    Returns:
-      - existing_model: snapshot of any SemanticView/Explore already
-        attached to this dataset (so Claude doesn't propose duplicates).
-      - tables: list of dataset tables with id, display_name, columns.
-      - plan_template: the structured shape Claude must produce next as
-        the `plan_json` argument to `commit_semantic_model`.
-      - guidance: rules Claude must follow when writing measures.
-
-    What Claude must do with this output:
-      1. Read existing_model — if a view already covers a table, plan an
-         UPDATE (via update_semantic_view), not a duplicate create.
-      2. Profile any unfamiliar table via get_table_profile before
-         picking dimension/measure types.
-      3. Author the plan as JSON matching plan_template.
-      4. Surface open_questions_for_user in chat — wait for the human
-         to answer before calling commit_semantic_model.
+    Call BEFORE any chart for a dataset without a semantic model. Returns
+    existing_model, tables (id/display_name/columns), plan_template (the
+    shape commit_semantic_model expects), guidance. If a view already
+    covers a table, plan UPDATE not duplicate create.
     """
     intent = str(business_intent or "").strip()
     if not intent:
@@ -424,25 +406,11 @@ async def commit_semantic_model(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """**Step 2 of canonical flow** — execute a semantic model plan.
+    """Stage 3 commit — execute the semantic model plan from propose_semantic_model.
 
-    Reads `plan_json` (the JSON-encoded plan Claude authored after
-    `propose_semantic_model`), validates it client-side, then issues the
-    underlying writes:
-      1. Create or update SemanticModel for the dataset.
-      2. For each entry in `views`: create or update SemanticView
-         (matched by dataset_table_id when present, else by name).
-      3. For each entry in `explores`: create or update SemanticExplore.
-
-    The first call (without `user_confirmed=True`) returns a diff plan
-    — what will be created vs updated, total measure count, any
-    validation errors. The user reviews; only on consent do you re-call
-    with `user_confirmed=True`.
-
-    Refuses to write if any view has zero measures (dashboards built on
-    that view will produce ad-hoc metrics — exactly what we are trying
-    to prevent). Surface the error to the human and ask for measure
-    definitions before retrying.
+    `plan_json`: JSON string of the plan. Writes: model, views (create/update
+    by dataset_table_id or name), explores. First call returns diff; pass
+    user_confirmed=True to write. Refuses views with zero measures.
     """
     plan = _parse_plan_json(plan_json, "plan_json")
 
@@ -843,23 +811,12 @@ async def propose_dashboard_blueprint(
     business_intent: str,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """**Step 3 of canonical flow** — design the dashboard before writing.
+    """Stage 4 — design dashboard before write. Read-only.
 
-    Pulls the semantic model state (which measures exist, on which view,
-    reachable via which explore) and returns the catalogue Claude must
-    use when writing chart specs. Returns:
-
-      - available_measures: full list of `view.measure_name` Claude can
-        reference. Charts that use any other metric will be rejected at
-        commit time.
-      - available_dimensions: same for dimensions.
-      - explores: which set of joined views each chart can pull from.
-      - blueprint_template: the JSON shape for the next call.
-
-    Forces Claude to write `metric_definitions` that EVERY chart spec
-    references — this is the contract that prevents ad-hoc metrics. If
-    a measure Claude wants is missing, the answer is to go back to
-    `propose_semantic_model` and add it, not to invent it in the chart.
+    Returns available_measures (`view.measure_name`), available_dimensions,
+    explores (reachable view sets per chart), blueprint_template. Every
+    chart spec MUST reference these — invented measures are rejected at
+    commit. Missing measure → go back to propose_semantic_model.
     """
     intent = str(business_intent or "").strip()
     if not intent:
@@ -1035,20 +992,11 @@ async def commit_dashboard_blueprint(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """**Step 4 of canonical flow** — materialise a dashboard from a
-    blueprint authored after `propose_dashboard_blueprint`.
+    """Stage 4 commit — materialise dashboard from propose_dashboard_blueprint output.
 
-    Validates every chart against the live semantic model:
-      - dataset_table_id resolves to a SemanticView
-      - each metric `field` resolves to a measure on that bound view
-      - chart_type role_config has the required role fields
-      - the final stored config passes `preview_chart_data`
-
-    On the first call returns a diff plan with validation results and
-    refuses to write. On confirmation:
-      1. Creates each chart via POST /charts/.
-      2. Creates the dashboard with all chart placements via
-         POST /dashboards/.
+    Validates each chart: dataset_table_id→SemanticView, metric.field→view
+    measure, role_config shape, BE dry-run-create. First call returns diff;
+    user_confirmed=True creates charts then dashboard with placements.
     """
     blueprint = _parse_plan_json(blueprint_json, "blueprint_json")
     dataset_id = _require_int(blueprint, "dataset_id")
@@ -1357,28 +1305,52 @@ async def commit_dashboard_blueprint(
         }
 
     staged_specs: list[dict[str, Any]] = []
+    # Phase-12: ask the BE single gatekeeper to dry-run every chart in
+    # the blueprint. Normalize + Pydantic + runtime preview happen there
+    # so MCP cannot drift from the canonical contract. We still surface
+    # per-chart errors so the agent can fix exactly the offending spec.
     preview_validation: list[dict[str, Any]] = []
     for index, chart in enumerate(valid_specs):
-        config = _build_chart_config_from_spec(chart)
-        diag = await _runtime_preview_diagnose(
-            dataset_table_id=int(chart["dataset_table_id"]),
-            chart_type=str(chart.get("chart_type") or "").upper(),
-            config=config,
+        proposed_config = _build_chart_config_from_spec(chart)
+        chart_type_value = str(chart.get("chart_type") or "").upper()
+        title = chart.get("title") or chart.get("name") or f"chart_{index}"
+        dry_run = await _request(
+            "POST",
+            "/charts/dry-run-create",
+            json_body={
+                "name": chart.get("title") or f"Chart {index + 1}",
+                "chart_type": chart_type_value,
+                "dataset_table_id": int(chart["dataset_table_id"]),
+                "config": proposed_config,
+                "description": chart.get("why_this_chart"),
+            },
         )
-        if diag is not None:
-            preview_validation.append(
-                {
-                    "index": index,
-                    "title": chart.get("title") or chart.get("name") or f"chart_{index}",
-                    "errors": diag["errors"],
-                    "raw_error": diag.get("raw_error"),
-                    "root_cause": diag.get("root_cause"),
-                    "resolution_options": diag.get("resolution_options"),
-                    "valid": False,
-                }
-            )
+        if not isinstance(dry_run, dict):
+            preview_validation.append({
+                "index": index,
+                "title": title,
+                "errors": ["Unexpected dry-run-create response from backend."],
+                "valid": False,
+            })
             continue
-        staged_specs.append({"chart": chart, "config": config})
+        if dry_run.get("validation_errors") or dry_run.get("runtime_errors"):
+            preview_validation.append({
+                "index": index,
+                "title": title,
+                "errors": (
+                    list(dry_run.get("validation_errors") or [])
+                    + list(dry_run.get("runtime_errors") or [])
+                ),
+                "root_cause": dry_run.get("runtime_root_cause"),
+                "valid": False,
+            })
+            continue
+        # Stage the BE-normalized config so the commit POST writes exactly
+        # what dry-run validated — no second drift opportunity.
+        staged_specs.append({
+            "chart": chart,
+            "config": dry_run.get("normalized_config") or proposed_config,
+        })
 
     if preview_validation:
         return {
@@ -1510,18 +1482,10 @@ async def audit_chart_semantic_health(
     dataset_id: int | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Inventory charts whose data structure is *not* visible in the
-    Explore / dataset-model UI even though they render.
+    """Inventory charts that render but are invisible in Explore. Read-only.
 
-    Flags three failure modes:
-      - **orphan_dataset_table**: chart.dataset_table_id is NULL or the
-        table no longer exists.
-      - **no_semantic_view**: the chart's table has no SemanticView, so
-        the chart's metrics cannot resolve to anything reusable.
-      - **adhoc_metric**: a metric in the chart's config does not match
-        any measure on the bound view.
-
-    Read-only. Run before deciding which charts to repair vs delete.
+    Flags: orphan_dataset_table (NULL/missing table), no_semantic_view,
+    adhoc_metric (config metric doesn't match any view measure).
     """
     charts = await _request("GET", "/charts/")
     if not isinstance(charts, list):
@@ -1608,18 +1572,11 @@ async def repair_chart_semantic_binding(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Fix a chart whose semantic binding is broken (per
-    audit_chart_semantic_health).
+    """Fix a chart's broken semantic binding (per audit_chart_semantic_health).
 
-    What it does:
-      1. If `dataset_table_id` is provided, re-point the chart at it.
-      2. Resolve the chart's bound view + missing measures.
-      3. If `add_missing_measures=True`, append SUM measures to the
-         view for any chart metric that doesn't yet exist (Claude can
-         later edit the type/sql via update_semantic_view).
-
-    Returns a confirmation plan first; only writes on user_confirmed.
-    Does not delete or overwrite anything that was already correct.
+    Re-points chart to dataset_table_id (if given), resolves bound view,
+    appends SUM measures for missing fields (when add_missing_measures=True).
+    Confirmation plan first; writes only on user_confirmed.
     """
     chart = await _request("GET", f"/charts/{int(chart_id)}")
     if not isinstance(chart, dict):
@@ -1854,9 +1811,17 @@ def _build_chart_config_from_spec(chart_spec: dict[str, Any]) -> dict[str, Any]:
     IMPORTANT: preserve qualified semantic refs (`view.field`) when they
     are present. The backend chart runtime now decides whether the chart
     stays on the legacy single-table path or routes to semantic runtime.
+
+    All metrics + role fields go through ``_normalize_role_config`` so the
+    Explore FE never sees a metric with missing ``agg`` or a stray
+    aggregation string the renderer doesn't understand — Phase-9 422 / FE
+    crash class of bugs that surfaced for MCP-created charts only.
     """
-    role_config = dict(chart_spec.get("role_config") or {})
+    from appbi_chart import _normalize_role_config
+
     chart_type = str(chart_spec.get("chart_type") or "").upper()
+    raw_role = dict(chart_spec.get("role_config") or {})
+    role_config = _normalize_role_config(chart_type, raw_role)
     return {
         "chartType": chart_type,
         "queryMode": "generated",

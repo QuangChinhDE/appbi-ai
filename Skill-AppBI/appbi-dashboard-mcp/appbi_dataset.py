@@ -50,11 +50,8 @@ async def get_dataset(
 ) -> dict[str, Any]:
     """Fetch a dataset with its tables.
 
-    Default returns the full backend payload (columns, samples, descriptions —
-    can be 100KB-1MB+ on wide datasets). Pass `summary=True` to get only the
-    fields needed for dashboard authoring: dataset id/name plus each table's
-    id, display_name, source_kind, and column count. This typically shrinks
-    the payload by 10-100x and is what propose_dashboard_blueprint reads.
+    Default returns full payload (100KB-1MB+). Pass summary=True to shrink
+    10-100x — only id/name + per-table id/display_name/source_kind/column count.
     """
     payload = await _request("GET", f"/datasets/{int(dataset_id)}")
     if summary:
@@ -110,25 +107,12 @@ async def get_table_profile(
     histogram_bins: int = 8,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """**Primary tool for understanding a table.**
+    """Primary tool to understand a table — schema + sample + per-column stats.
 
-    Returns schema + sample rows + per-column stats (top values / histogram /
-    null %) in a single call. Use this BEFORE designing the semantic model
-    or proposing charts — Claude needs concrete evidence about cardinality,
-    types, and value distribution to make good decisions.
-
-    Token-cost defaults are tuned for *design work*, not data exploration:
-      - sample_limit=5 — enough rows to see value patterns; bump to 20+
-        only when debugging specific data quirks.
-      - stats_top_limit=3 — top categorical values per column.
-      - histogram_bins=8 — re-bin numeric histograms client-side from
-        the backend's 20 down to 8. Distribution shape stays readable.
-
-    Profile each table at most ONCE per session; reuse the result from
-    conversation context rather than re-calling. Use `get_column_summary`
-    for follow-up depth on a single column you flagged interesting.
-
-    Backend: POST /datasets/{id}/tables/{tid}/profile.
+    Use BEFORE designing semantic model or proposing charts. Call ONCE per
+    table per session; reuse from conversation context. Use get_column_summary
+    for follow-up depth on a flagged column. Defaults are design-tuned:
+    sample_limit=5, stats_top_limit=3, histogram_bins=8.
     """
     rows = _clamp_int(sample_limit, default=5, minimum=1, maximum=200)
     top = _clamp_int(stats_top_limit, default=3, minimum=1, maximum=20)
@@ -367,33 +351,16 @@ async def add_table_to_dataset(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Add a table to a dataset. Covers 3 of the 4 dataset table kinds.
+    """Add a table to a dataset.
 
-    `source_kind` values (matches backend `DatasetTable.source_kind`):
-      - physical_table : pulled directly from a datasource.
-                         Requires datasource_id + source_table_name
-                         (e.g. 'public.orders').
-      - sql_query      : datasource-backed but defined by a SQL SELECT.
-                         Requires datasource_id + source_query.
-      - derived_table  : "calculated table" — SQL that references other
-                         tables ALREADY imported into this dataset.
-                         Requires source_query; datasource_id MUST be
-                         omitted (the dataset itself is the source).
-
-    Not handled by this tool:
-      - generated_calendar (date table). The backend creates the calendar
-        table automatically when you enable it via update_dataset() with
-        settings.calendar_dimension.enabled=true. Do NOT call this tool
-        with source_kind="generated_calendar".
-
-    Conceptual note (Power-BI users): there is no separate "measure
-    table" kind in AppBI. Measures are defined on a SemanticView (see
-    appbi_semantic.create_semantic_view / propose_semantic_model), not
-    on a dedicated table.
-
-    Validation runs server-side; on the first call this tool returns a
-    plan including the resolved source path so the user can sanity-check
-    before the write.
+    `source_kind`:
+      physical_table → needs datasource_id + source_table_name ('public.orders')
+      sql_query      → needs datasource_id + source_query (SELECT ...)
+      derived_table  → needs source_query referencing tables in THIS dataset;
+                       datasource_id must be omitted.
+    Calendar tables are NOT added here — enable via update_dataset
+    settings.calendar_dimension.enabled=true. Measures live on SemanticView,
+    not a dedicated table.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -437,14 +404,10 @@ async def update_dataset_table(
 ) -> dict[str, Any]:
     """Update a dataset table's metadata.
 
-    Common uses:
-      - Override a column's inferred type via `type_overrides`
-        (e.g. {"order_date": "date"}).
-      - Set display formats via `column_formats`.
-      - Disable a table without removing it via `enabled=False`.
-      - Re-author the column transformation pipeline via `transformations`
-        (calculated columns, lookups, etc.). Replaces the existing list
-        wholesale — pass the full pipeline you want stored.
+    `type_overrides`: {col: 'date'|...} override inferred types.
+    `column_formats`: display formats per column.
+    `transformations`: REPLACES pipeline (calc columns, lookups).
+    `enabled=False`: disable without remove.
     """
     changes = _drop_none(
         {
@@ -519,21 +482,11 @@ async def update_table_description(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Save table description fields that Claude authored.
+    """Save table description fields (pure write, no LLM).
 
-    This is a PURE WRITE — the backend does not call any LLM. It just
-    persists the strings, marks `description_source='user'`, and triggers
-    a background re-embedding of the search index.
-
-    Workflow:
-      1. Call `get_table_profile` to ground yourself in the data.
-      2. Author the description, column_descriptions dict, and 3-5
-         common_questions.
-      3. Show the draft to the user and ask for any tweaks.
-      4. Call this with `user_confirmed=True` to save.
-
-    `query_aliases` are alternative names users might use ('GMV', 'doanh
-    thu' for a revenue column) — populate when known.
+    Workflow: get_table_profile → author description + 3-5 common_questions
+    → show draft to user → user_confirmed=True. `query_aliases` are
+    alternative names ('GMV', 'doanh thu' for revenue).
     """
     body = _drop_none(
         {
@@ -584,37 +537,14 @@ async def update_dataset_dictionary(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Update the dataset-level dictionary (business glossary).
+    """Replace the dataset-level dictionary (business glossary).
 
-    The backend persists every field below as part of the dataset's
-    `dictionary` JSON. Send only the fields you want to set; omitted
-    fields keep their existing values only if you also include them
-    explicitly — the backend REPLACES the whole dictionary on each call,
-    so always pass the complete intended state.
-
-    Fields:
-      - overview          : short prose describing what's in the dataset.
-      - business_purpose  : why this dataset exists / what decisions it supports.
-      - usage_guidelines  : do/don't notes for analysts and AI.
-      - ai_context        : extra context the AI assistants should know.
-      - default_filters   : list of human-readable default filter strings.
-      - warnings          : list of caveats / data-quality notes.
-      - table_notes       : per-table annotations. Each item is a dict:
-          {
-            "table_id": <int>,
-            "business_role": "fact|dimension|bridge|...",
-            "grain": "one row per ...",
-            "freshness_expectation": "daily|hourly|...",
-            "join_hint": "...",
-            "owner_note": "...",
-            "row_count_expectation": "...",
-            "important_columns": ["col_a", "col_b"],
-            "column_notes": [
-              {"column_name": "...", "description": "...",
-               "business_name": "...", "examples": ["..."],
-               "quality": {...}}
-            ]
-          }
+    REPLACES the whole `dictionary` JSON — always pass the complete
+    intended state. Fields: overview, business_purpose, usage_guidelines,
+    ai_context, default_filters (list[str]), warnings (list[str]),
+    table_notes (list[dict] with table_id, business_role, grain,
+    freshness_expectation, join_hint, owner_note, row_count_expectation,
+    important_columns, column_notes).
     """
     body = _drop_none(
         {

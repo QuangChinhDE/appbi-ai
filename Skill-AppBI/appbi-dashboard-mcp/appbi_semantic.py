@@ -105,17 +105,10 @@ async def get_dataset_model(
     summary: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Get the semantic model attached to a dataset.
+    """Get the semantic model. Returns {model_id, dataset_id, views, explores, generated}.
 
-    Returns `{model_id, dataset_id, dataset_name, views, explores, generated}`.
-    `generated=False` means no model has been built yet — call
-    `generate_dataset_model` for a heuristic starter, or design from scratch
-    via `create_semantic_view` + `create_semantic_explore`.
-
-    Pass `summary=True` to trim views/explores down to id+name+field-name
-    catalogue (drops full measure SQL, descriptions, hidden flags). Use the
-    summary when you only need the field index — propose_dashboard_blueprint
-    already exposes the same information in a richer agent-tuned shape.
+    `generated=False` = no model yet (call generate_dataset_model). Pass
+    summary=True to drop SQL/descriptions/hidden — keep just id+name+fields.
     """
     payload = await _request("GET", f"/datasets/{int(dataset_id)}/model")
     if summary:
@@ -213,43 +206,17 @@ async def create_semantic_view(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create a semantic view backing one physical/derived table.
+    """Create a semantic view over one physical/derived table.
 
-    Either `sql_table_name` (e.g. 'public.orders') or `dataset_table_id`
-    must be set. When both are present, `dataset_table_id` wins.
-
-    `dimensions` items: {name, type ('string'|'number'|'date'|'datetime'|'yesno'),
-                         sql, label, description, hidden}.
-
-    `measures` items (Phase-1 schema — fields after `hidden` are optional):
-        {
-          name, type ('count'|'sum'|'avg'|'min'|'max'|
-                      'count_distinct'|'percent_of_total'),
-          sql, label, description, hidden,
-
-          # ── optional, omit if not used ──
-          expression: str — SQL expression aggregated by `type`; takes
-              precedence over `sql`. Use for arithmetic across columns,
-              e.g. expression='${TABLE}.amount - ${TABLE}.cost'.
-          filters: list[{field, operator, value}] — Looker-style filtered
-              measure. Compiles to CASE WHEN so the aggregate only sees
-              qualifying rows. Operators: eq, ne, gt, gte, lt, lte, in,
-              not_in, between, contains, starts_with, ends_with, is_null,
-              is_not_null. Prefer this over `where_sql` whenever possible.
-          where_sql: str — raw SQL boolean fragment AND-combined with
-              `filters`. Reserved for predicates the operator list cannot
-              express (date math, regex, multi-column comparisons).
-          depends_on: list[str] — names of other measures on the SAME view
-              referenced inside `expression`. Required for cycle detection.
-              Self-reference and circular chains are rejected at commit time.
-          format: {kind ('number'|'currency'|'percent'|'duration'|'custom'),
-                   decimals (0..10), currency, prefix, suffix, pattern} —
-              display hint for charts/KPIs. Does not affect SQL.
-          folder: str — UI grouping label (e.g. 'Revenue').
-        }
-
-    Use ${TABLE} placeholder in `sql`, `expression`, and `where_sql` to
-    reference the underlying table alias.
+    Set either `sql_table_name` ('public.orders') OR `dataset_table_id`.
+    `dimensions`: {name, type, sql, label?, description?, hidden?}.
+      type ∈ string|number|date|datetime|yesno.
+    `measures`: {name, type, sql?, label?, description?, hidden?,
+                  expression?, filters?, where_sql?, depends_on?,
+                  format?, folder?}.
+      type ∈ count|sum|avg|min|max|count_distinct|percent_of_total.
+      `expression` overrides `sql`. `filters` (Looker-style) preferred
+      over `where_sql`. `${TABLE}` = underlying table alias.
     """
     body = _drop_none(
         {
@@ -281,14 +248,12 @@ async def update_semantic_view(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Patch a semantic view. `patch` may include any of:
-    name, sql_table_name, dataset_table_id, dimensions, measures, description.
+    """Patch a semantic view. `patch` keys: name, sql_table_name,
+    dataset_table_id, dimensions, measures, description.
 
-    When patching `measures`, the WHOLE measures array is replaced (not
-    merged per-measure) — read the current view first, mutate, then write
-    back. Each measure object follows the Phase-1 schema documented on
-    `create_semantic_view` (expression, filters, where_sql, depends_on,
-    format, folder are all optional)."""
+    `measures` REPLACES the whole array — read current view, mutate, write back.
+    Measure schema = same as create_semantic_view (expression/filters/where_sql/
+    depends_on/format/folder optional)."""
     if not user_confirmed:
         return _requires_confirmation(
             "update_semantic_view",
@@ -390,15 +355,11 @@ async def create_semantic_explore(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create an explore: a starting view + a list of joins.
+    """Create an explore (base view + joins). Charts target by `name`.
 
-    `joins` items: {name, view, alias?, type ('left'|'inner'|'right'|'full'),
-                    sql_on, relationship?}
-    `sql_on` uses ${view.field} placeholders, e.g.
-        '${orders.customer_id} = ${customers.id}'
-
-    Charts target explores by `name`, so pick a name the user will recognize
-    (e.g. 'orders_with_customers').
+    `joins`: [{name, view, alias?, type:'left'|'inner'|'right'|'full',
+    sql_on, relationship?}]. `sql_on` uses ${view.field} placeholders:
+    '${orders.customer_id} = ${customers.id}'.
     """
     body = _drop_none(
         {
@@ -569,17 +530,11 @@ async def generate_dataset_model(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Heuristically generate a starter semantic model for a dataset.
+    """Heuristically generate a starter semantic model (no LLM).
 
-    Scans every table's columns_cache and produces:
-      - one SemanticView per table (dimensions + measures inferred from types)
-      - one SemanticModel for the dataset
-      - SemanticExplores with auto-detected JOINs (FK heuristic)
-
-    No LLM is involved — this is a pure scan + rule-based generator. Use it
-    as a starting point Claude refines via `update_semantic_view` and
-    `update_semantic_explore`. With `force=True` it overwrites any existing
-    model.
+    Scans columns_cache → 1 SemanticView per table + Model + Explores
+    (FK-based JOINs). Refine via update_semantic_view/explore.
+    `force=True` overwrites existing model.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -620,27 +575,16 @@ async def execute_semantic_query(
     window_functions: list[dict[str, Any]] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Execute a semantic query and return data + the SQL that was run.
+    """Run a semantic query (data + SQL). Use to verify before chart create.
 
-    The engine generates SQL, joins through the explore, applies filters /
-    pivots / time grains / window functions, and returns rows. Use this
-    BEFORE creating a chart to verify the query produces the data shape
-    you expect (correct cardinality, no fan-out, sane numbers).
-
-    `dimensions` / `measures`: qualified names like 'orders.country',
-    'orders.total_revenue'.
-    `filters`: dict keyed by qualified field name; each value is a
-    `FilterCondition` object — `{"operator": "<op>", "value": <any>}` —
-    where `operator` is one of eq|ne|gt|gte|lt|lte|in|not_in|contains|
-    starts_with|ends_with. Plain field-to-value dicts will be rejected
-    with HTTP 422.
-    Example:
-        filters={"orders.country": {"operator": "eq", "value": "VN"}}
-    `sorts`: list of `{field, direction}` where direction is 'asc'|'desc'.
-    `time_grains`: {qualified_field: 'day'|'week'|'month'|'quarter'|'year'}.
-    `window_functions`: list of `{name, base_measure, partition_by,
-    order_by, type}` where type ∈ running_sum|running_avg|rank|
-    dense_rank|row_number. The output column lives under `name`.
+    `dimensions`/`measures`: qualified ('orders.country').
+    `filters`: {qualified_field: {operator, value}}. operator ∈ eq|ne|gt|
+       gte|lt|lte|in|not_in|contains|starts_with|ends_with. Plain
+       {field: value} → 422.
+    `sorts`: [{field, direction:'asc'|'desc'}].
+    `time_grains`: {field: 'day'|'week'|'month'|'quarter'|'year'}.
+    `window_functions`: [{name, base_measure, partition_by, order_by,
+       type:'running_sum'|'running_avg'|'rank'|'dense_rank'|'row_number'}].
     """
     body = _drop_none(
         {

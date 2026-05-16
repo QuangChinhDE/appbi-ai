@@ -332,14 +332,10 @@ MAP_POINT, MAP_REGION
 
 @tool("all")
 async def get_html_dashboard_spec(ctx: Context | None = None) -> dict[str, Any]:
-    """Return the full AppBI Import Plan v1 HTML specification.
+    """Return the AppBI Import Plan v1 HTML spec.
 
-    Call this before writing any HTML for the HTML-import flow. The spec
-    covers: file structure, metadata schema, layout coordinates, chart types,
-    role_config shapes, widget types, and source binding rules.
-
-    Flow: get_html_dashboard_spec → (write HTML) → analyze_html_import
-         → review chart_plans/warnings → build_dashboard_from_html
+    Call before writing HTML. Flow: this → write HTML → analyze_html_import
+    → build_dashboard_from_html.
     """
     return {"spec": _HTML_DASHBOARD_SPEC}
 
@@ -357,32 +353,12 @@ async def analyze_html_import(
     dataset_table_id: int | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Analyze an AppBI Import Plan v1 HTML and return the chart plans.
+    """Analyze an AppBI Import Plan v1 HTML; returns chart_plans + warnings.
 
-    The backend parses the embedded metadata, resolves column aliases, validates
-    role_config shapes against the dataset schema, and returns a `chart_plans`
-    list ready for review. Inspect `warnings` carefully before proceeding.
-
-    Parameters
-    ----------
-    html_content   : Full text of the AppBI Import Plan v1 HTML you authored.
-    source_mode    : "existing_dataset" (default) or "upload_excel".
-                     For upload_excel the HTML alone is analyzed — pass the
-                     Excel file at build time via build_dashboard_from_html.
-    dataset_id     : Required when source_mode = "existing_dataset".
-                     The backend reads all tables from this dataset to resolve
-                     field names and validate chart plans.
-    dataset_table_id : Alternative to dataset_id when you only have the
-                     table ID (single-table legacy path).
-
-    Returns
-    -------
-    dict with keys:
-      suggested_dashboard_name, chart_plans, calculated_fields, derived_tables,
-      ignored_blocks, warnings, ai_meta
-
-    After reviewing the result, call build_dashboard_from_html with the returned
-    analysis dict (optionally amended with layout_mode / theme_config).
+    `source_mode`: "existing_dataset" (needs dataset_id) | "upload_excel".
+    Returns: suggested_dashboard_name, chart_plans, calculated_fields,
+    derived_tables, ignored_blocks, warnings, ai_meta. Review warnings
+    before calling build_dashboard_from_html.
     """
     if not str(html_content or "").strip():
         return {"error": "html_content is required"}
@@ -466,26 +442,14 @@ async def build_dashboard_from_html(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Materialise a dashboard from the analysis returned by analyze_html_import.
+    """Materialise a dashboard from analyze_html_import output.
 
-    Parameters
-    ----------
-    analysis_json       : JSON string of the full analysis dict from analyze_html_import.
-    source_mode         : "existing_dataset" or "upload_excel".
-    dashboard_name      : Override the suggested dashboard name.
-    target_mode         : "new_dashboard" (default) or "append_to_dashboard".
-    dataset_id          : Required for existing_dataset.
-    layout_mode         : "grid" (default) or "canvas".
-                          Overrides any layout_mode embedded in the HTML metadata.
-    theme_config        : Optional theme overrides, e.g. {"background": "#0f1117"}.
-    canvas_config       : Config for canvas-mode dashboards.
-    target_dashboard_id : Required when target_mode = "append_to_dashboard".
-    included_block_ids  : Subset of block_ids to import (omit = import all).
-    user_confirmed      : Must be true before any data is written.
-
-    Returns
-    -------
-    {dashboard_id, created_chart_count, page_id, page_name, dataset_id, ...}
+    `analysis_json`: JSON string of the analysis dict.
+    `source_mode`: "existing_dataset" (needs dataset_id) | "upload_excel".
+    `target_mode`: "new_dashboard" | "append_to_dashboard" (needs target_dashboard_id).
+    `layout_mode`: "grid" | "canvas" (override HTML default).
+    `included_block_ids`: optional subset; omit = import all.
+    Returns: {dashboard_id, created_chart_count, page_id, page_name, dataset_id, ...}.
     """
     # ── Parse analysis ────────────────────────────────────────────────────
     try:

@@ -289,7 +289,9 @@ function toDate(value: unknown): Date {
   throw new FormulaError(`Cannot interpret ${String(value)} as date`);
 }
 
-const FUNCTIONS: Record<string, (args: unknown[]) => unknown> = {
+type FormulaScope = Record<string, unknown>;
+
+const FUNCTIONS: Record<string, (args: unknown[], scope?: FormulaScope) => unknown> = {
   IF: (a) => (truthy(a[0]) ? a[1] : a[2] ?? null),
   IFS: (a) => {
     if (a.length % 2 !== 0) throw new FormulaError('IFS expects an even number of arguments.');
@@ -381,7 +383,70 @@ const FUNCTIONS: Record<string, (args: unknown[]) => unknown> = {
     d.setDate(d.getDate() + Math.trunc(toNum(a[1])));
     return d.toISOString().slice(0, 10);
   },
+  // Cross-row aggregators. These look up the current page's rows from a
+  // reserved key the caller injects under `row.__rows__`. When absent
+  // (legacy callers passing a plain row) the functions return 0 — same
+  // as the BE behaviour so parity holds.
+  COL_SUM: (a, scope) =>
+    colValues(scope, a[0]).reduce<number>((s, v) => s + (toNum(v) || 0), 0),
+  COL_AVG: (a, scope) => {
+    const xs = colValues(scope, a[0])
+      .filter((v) => v !== null && v !== '' && v !== undefined)
+      .map((v) => toNum(v));
+    return xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : 0;
+  },
+  COL_MIN: (a, scope) => {
+    const xs = colValues(scope, a[0])
+      .filter((v) => v !== null && v !== '' && v !== undefined)
+      .map((v) => toNum(v));
+    return xs.length ? Math.min(...xs) : 0;
+  },
+  COL_MAX: (a, scope) => {
+    const xs = colValues(scope, a[0])
+      .filter((v) => v !== null && v !== '' && v !== undefined)
+      .map((v) => toNum(v));
+    return xs.length ? Math.max(...xs) : 0;
+  },
+  COL_COUNT: (a, scope) =>
+    colValues(scope, a[0]).filter((v) => v !== null && v !== '' && v !== undefined).length,
+  COUNTIF: (a, scope) => {
+    const col = String(a[0] ?? '');
+    const target = a[1] === null || a[1] === undefined ? '' : String(a[1]);
+    return colValues(scope, col).filter((v) => v !== null && String(v) === target).length;
+  },
+  SUMIF: (a, scope) => {
+    const where = String(a[0] ?? '');
+    const target = a[1] === null || a[1] === undefined ? '' : String(a[1]);
+    const valueCol = String(a[2] ?? '');
+    if (!where || !valueCol) return 0;
+    const rows = pageRows(scope);
+    let total = 0;
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue;
+      const obj = r as Record<string, unknown>;
+      if (String(obj[where] ?? '') !== target) continue;
+      const cell = obj[valueCol];
+      if (cell === null || cell === undefined || cell === '') continue;
+      total += toNum(cell);
+    }
+    return total;
+  },
+  THIS_ROW_INDEX: (_a, scope) => {
+    const idx = scope?.__row_index__;
+    return typeof idx === 'number' ? idx : 0;
+  },
 };
+
+function pageRows(scope: Record<string, unknown> | null | undefined): Array<Record<string, unknown>> {
+  const rows = scope?.__rows__;
+  return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
+}
+
+function colValues(scope: Record<string, unknown> | null | undefined, column: unknown): unknown[] {
+  const name = String(column ?? '').trim();
+  if (!name) return [];
+  return pageRows(scope).map((r) => (r && typeof r === 'object' ? (r as Record<string, unknown>)[name] : undefined));
+}
 
 export function functionNames(): string[] {
   return Object.keys(FUNCTIONS).sort();
@@ -475,7 +540,7 @@ function evalNode(node: Node, row: Record<string, unknown>): unknown {
     case 'call': {
       const fn = FUNCTIONS[node.name];
       const args = node.args.map((arg) => evalNode(arg, row));
-      return fn(args);
+      return fn(args, row as FormulaScope);
     }
   }
 }

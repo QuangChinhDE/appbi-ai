@@ -251,6 +251,105 @@ def _fn_date_add(value: Any, days: Any) -> str:
     return (_coerce_date(value) + timedelta(days=int(_num(days)))).isoformat()
 
 
+# ─── Cross-row aggregation helpers ────────────────────────────────────────
+#
+# These work on the *current page* of rows. The scope passes the list under
+# ``__rows__`` (set by the caller before invoking evaluate). When ``__rows__``
+# is missing — e.g. somebody calls ``evaluate(source, row)`` from another
+# code path — the function returns 0/None instead of erroring, so legacy
+# usage stays compatible.
+
+
+def _col_values(scope: Dict[str, Any], column: Any) -> List[Any]:
+    col = str(column or "").strip()
+    if not col:
+        return []
+    rows = scope.get("__rows__")
+    if not isinstance(rows, list):
+        return []
+    out: List[Any] = []
+    for row in rows:
+        if isinstance(row, dict) and col in row:
+            out.append(row[col])
+    return out
+
+
+def _fn_col_sum(scope: Dict[str, Any], column: Any) -> float:
+    return sum(_num(v) for v in _col_values(scope, column) if v not in (None, ""))
+
+
+def _fn_col_avg(scope: Dict[str, Any], column: Any) -> float:
+    values = [_num(v) for v in _col_values(scope, column) if v not in (None, "")]
+    return sum(values) / len(values) if values else 0.0
+
+
+def _fn_col_min(scope: Dict[str, Any], column: Any) -> float:
+    values = [_num(v) for v in _col_values(scope, column) if v not in (None, "")]
+    return min(values) if values else 0.0
+
+
+def _fn_col_max(scope: Dict[str, Any], column: Any) -> float:
+    values = [_num(v) for v in _col_values(scope, column) if v not in (None, "")]
+    return max(values) if values else 0.0
+
+
+def _fn_col_count(scope: Dict[str, Any], column: Any) -> int:
+    return sum(1 for v in _col_values(scope, column) if v not in (None, ""))
+
+
+def _fn_countif(scope: Dict[str, Any], column: Any, target: Any) -> int:
+    """COUNTIF("status", "done") — count rows on this page whose ``status``
+    equals ``target``. String comparison is loose so numbers + strings
+    interoperate the same way they do in Sheets."""
+    target_repr = "" if target is None else str(target)
+    count = 0
+    for v in _col_values(scope, column):
+        if v is None:
+            continue
+        if str(v) == target_repr:
+            count += 1
+    return count
+
+
+def _fn_sumif(scope: Dict[str, Any], where_column: Any, target: Any, value_column: Any) -> float:
+    """SUMIF("status", "done", "amount") — sum ``amount`` across rows whose
+    ``status`` matches ``target`` on the current page."""
+    rows = scope.get("__rows__")
+    if not isinstance(rows, list):
+        return 0.0
+    where = str(where_column or "").strip()
+    value = str(value_column or "").strip()
+    if not where or not value:
+        return 0.0
+    target_repr = "" if target is None else str(target)
+    total = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get(where, "")) != target_repr:
+            continue
+        cell = row.get(value)
+        if cell in (None, ""):
+            continue
+        total += _num(cell)
+    return total
+
+
+def _fn_this_row_index(scope: Dict[str, Any]) -> int:
+    """Zero-based position of the current row within the current page.
+    Useful for STT columns (`THIS_ROW_INDEX() + 1`)."""
+    idx = scope.get("__row_index__")
+    return int(idx) if isinstance(idx, (int, float)) else 0
+
+
+# Marks functions that need the full scope (not just the *args row values).
+# ``_eval_node`` passes scope as the first arg when it sees one of these.
+_SCOPED_FUNCTIONS = {
+    "COL_SUM", "COL_AVG", "COL_MIN", "COL_MAX", "COL_COUNT",
+    "COUNTIF", "SUMIF", "THIS_ROW_INDEX",
+}
+
+
 _FUNCTIONS: Dict[str, Callable[..., Any]] = {
     # logic
     "IF": _fn_if,
@@ -291,6 +390,16 @@ _FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "DAY": _fn_day,
     "DATEDIF": _fn_datedif,
     "DATE_ADD": _fn_date_add,
+    # cross-row (current page only). Signatures vary — the _SCOPED_FUNCTIONS
+    # set tells the evaluator to pass `scope` as the first argument.
+    "COL_SUM": _fn_col_sum,
+    "COL_AVG": _fn_col_avg,
+    "COL_MIN": _fn_col_min,
+    "COL_MAX": _fn_col_max,
+    "COL_COUNT": _fn_col_count,
+    "COUNTIF": _fn_countif,
+    "SUMIF": _fn_sumif,
+    "THIS_ROW_INDEX": _fn_this_row_index,
 }
 
 
@@ -555,6 +664,11 @@ def _eval_node(node: ast.AST, scope: Dict[str, Any]) -> Any:
         fname = node.func.id  # type: ignore[union-attr]
         fn = _FUNCTIONS[fname]
         args = [_eval_node(a, scope) for a in node.args]
+        # Cross-row aggregators need the whole scope (to reach
+        # ``scope['__rows__']``). Pass scope as the first arg; the function
+        # signature lists ``scope`` explicitly so this is type-safe.
+        if fname in _SCOPED_FUNCTIONS:
+            return fn(scope, *args)
         return fn(*args)
     if isinstance(node, (ast.List, ast.Tuple)):
         return [_eval_node(e, scope) for e in node.elts]
