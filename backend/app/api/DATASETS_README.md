@@ -533,6 +533,46 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
     `useDatasetModelJoinSuggestion` — RelationshipDialog auto-prefill
     cardinality khi user chọn xong from/to view.
 
+- **2026-05-16 (Phase-12.6)**: Multi-dialect crash + opaque-500 fix.
+  - **DA tìm được 2 bug nghiêm trọng** trong code semantic query path:
+    1. **Hardcode dialect**: `SemanticQueryEngine(db, database_type="postgresql")`
+       ở [api/datasets.py:901](datasets.py) (cũ) và
+       [routers/semantic.py:534-537](../routers/semantic.py). BE tin dataset
+       luôn là PostgreSQL bất kể datasource thật — defeating Phase-5
+       multi-dialect time macros. BigQuery / MySQL / DuckDB datasource
+       nhận SQL sai cú pháp → 500 lúc execute.
+    2. **Thiếu try/except** quanh `engine.generate_sql(...)` và
+       `DataSourceConnectionService.execute_query(...)`. Mọi engine
+       exception (unreachable view, missing field, dialect-incompatible
+       expression) → 500 generic; DA không thấy lý do thật.
+  - **Bug #3 từ DA (GROUP BY ambiguous khi multi-join)** verify ra
+    **false alarm**: engine dùng positional `GROUP BY 1, 2, 3` (không
+    cần qualify column name). Phase-1 đã enforce `Dimension.sql == name`
+    nên SELECT cũng auto-qualify qua `${TABLE}.field` template. Không
+    đụng vào.
+  - **Fix #1 — datasets.py**: refactor `_execute_semantic_dataset_query`
+    resolve datasource TRƯỚC khi tạo engine; dùng helper
+    `_dialect_for_ds_type` (live_query_service.py:67) — single source
+    of truth cho mapping ds_type → dialect (đã tồn tại, dùng bởi
+    chart_service.py + live_query_service từ Phase-5).
+  - **Fix #2 — datasets.py**: wrap 2 try/except:
+    * `generate_sql`: catch `ValueError` → 400 với VN message từ engine
+      (Phase 11 đã VN hóa); catch generic `Exception` → 500 với context
+      "Lỗi sinh SQL semantic ({dialect})". Logger ghi full stack trace
+      cho dev.
+    * `execute_query`: catch generic `Exception` → 400 với hint
+      "Kiểm tra: relationship có đúng cardinality? Cột tham chiếu có
+      tồn tại?". Lý do dùng 400 thay vì 500: 99% lỗi execute là config
+      issue (cardinality, column missing, dialect mismatch), không phải
+      bug code.
+  - **Fix #1 — routers/semantic.py**: tương tự, resolve datasource từ
+    explore's base_view → table → datasource chain. Single resolved
+    datasource cho cả dialect detection và execute_query. Loại bỏ
+    "pick first available DataSource" bug (có thể pick wrong DS).
+  - **Pattern audit**: `grep "database_type=\"postgresql\""` trong
+    `backend/app/` giờ 0 hit (ngoài comment giải thích). Mọi
+    `SemanticQueryEngine(...)` site giờ dùng dialect đúng.
+
 - **2026-05-16 (Phase-12.5)**: FE→BE qualified-field contract + UX surface.
   - **Vấn đề DA nêu**: 3 điểm — (1) FE có thể gửi metric/dimension bare
     (mất qualifier) → BE không kích semantic engine, JOIN silent miss;

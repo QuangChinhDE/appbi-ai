@@ -898,19 +898,13 @@ def _execute_semantic_dataset_query(
         if item.field
     ]
 
-    engine = SemanticQueryEngine(db, database_type="postgresql")
-    sql, _columns, _pivot_metadata = engine.generate_sql(
-        explore_name=explore.name,
-        dimensions=dimensions,
-        measures=measures,
-        filters=filters,
-        sorts=sorts,
-        limit=execute_request.limit or 500,
-        measure_agg_overrides=measure_agg_overrides or None,
-        model_id=model.id,
-        explore_id=explore.id,
-    )
-
+    # Phase-12.6: resolve datasource FIRST so the semantic engine is
+    # initialised with the correct SQL dialect. Previously this code path
+    # hardcoded ``database_type="postgresql"`` regardless of the real
+    # datasource (DA flagged 2026-05-16). With a BigQuery / MySQL / DuckDB
+    # datasource that produced syntactically wrong SQL (e.g. PostgreSQL
+    # date_trunc() instead of BigQuery DATE_TRUNC()) and a generic 500 at
+    # query time.
     datasource: Optional[DataSource] = None
     live_table = db_table
     if is_generated_calendar_table(db_table) or is_derived_table(db_table):
@@ -936,12 +930,69 @@ def _execute_semantic_dataset_query(
         raise HTTPException(status_code=404, detail="Datasource not found for semantic query.")
 
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-    _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
-        ds_type,
-        datasource.config,
-        sql,
-        limit=None,
-    )
+    # Map datasource type → SQL dialect via the shared helper that
+    # live_query_service + chart_service already use. Single source of
+    # truth for dialect mapping — when we add a new datasource type, only
+    # `_dialect_for_ds_type` needs updating.
+    from app.services.live_query_service import _dialect_for_ds_type
+    dialect = _dialect_for_ds_type(ds_type)
+
+    # Phase-12.6: wrap SQL generation + execution in explicit try/except so
+    # engine crashes (unreachable join path, missing measure, dialect-
+    # incompatible expression) surface as actionable 4xx responses with
+    # Vietnamese-friendly messages instead of a generic 500. The semantic
+    # engine itself raises ValueError with VN messages in Phase 11.
+    engine = SemanticQueryEngine(db, database_type=dialect)
+    try:
+        sql, _columns, _pivot_metadata = engine.generate_sql(
+            explore_name=explore.name,
+            dimensions=dimensions,
+            measures=measures,
+            filters=filters,
+            sorts=sorts,
+            limit=execute_request.limit or 500,
+            measure_agg_overrides=measure_agg_overrides or None,
+            model_id=model.id,
+            explore_id=explore.id,
+        )
+    except ValueError as exc:
+        # ValueError = expected semantic engine domain errors (unreachable
+        # view, missing field, circular dependency, ambiguous path). Phase
+        # 11 ensures these carry Vietnamese-friendly messages.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "Semantic SQL generation failed for dataset=%s table=%s explore=%s",
+            dataset_obj.id, db_table.id, explore.name,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
+                "Báo dev kiểm tra explore/measure config — đính kèm log nếu có."
+            ),
+        ) from exc
+
+    try:
+        _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            limit=None,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Semantic query execution failed: ds_type=%s dialect=%s sql=%s",
+            ds_type, dialect, sql[:500],
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Lỗi chạy SQL trên datasource {ds_type} (dialect {dialect}): {exc}. "
+                "Kiểm tra: relationship có đúng cardinality? Cột tham chiếu có tồn tại trên datasource? "
+                "Mở DevTools network panel để xem request body và SQL emit."
+            ),
+        ) from exc
 
     # Engine emits SQL aliases of the form `view_field` (dots → underscores)
     # for stable identifier safety. Callers (chart builder, AI tools) request

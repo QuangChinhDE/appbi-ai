@@ -530,12 +530,43 @@ def execute_semantic_query(
         base_view = db.query(SemanticView).filter(
             SemanticView.id == explore.base_view_id
         ).first()
-        
-        if base_view and base_view.sql_table_name:
-            db_type = "postgresql"
-        else:
-            db_type = "postgresql"
-        
+
+        # Phase-12.6: resolve real datasource dialect via the base view's
+        # owning table → datasource chain. Previously this hardcoded
+        # "postgresql" in BOTH branches (DA flagged 2026-05-16), defeating
+        # Phase-5 multi-dialect support: BigQuery / MySQL / DuckDB queries
+        # got PostgreSQL-flavoured SQL and crashed at execution.
+        from app.models.dataset import DatasetTable as _DatasetTable
+        from app.models.models import DataSource as _DataSource
+        from app.services.live_query_service import _dialect_for_ds_type
+
+        resolved_datasource = None
+        if base_view and base_view.dataset_table_id:
+            table_row = (
+                db.query(_DatasetTable)
+                .filter(_DatasetTable.id == base_view.dataset_table_id)
+                .first()
+            )
+            if table_row and table_row.datasource_id:
+                resolved_datasource = (
+                    db.query(_DataSource)
+                    .filter(_DataSource.id == table_row.datasource_id)
+                    .first()
+                )
+        if resolved_datasource is None:
+            # Fallback: any datasource in the system (legacy behaviour
+            # mirrored from the previous code). Better than a hard fail
+            # for ad-hoc queries that don't anchor on a dataset_table_id.
+            resolved_datasource = db.query(_DataSource).first()
+
+        ds_type_val = (
+            (resolved_datasource.type if isinstance(resolved_datasource.type, str)
+             else resolved_datasource.type.value)
+            if resolved_datasource is not None
+            else "postgresql"
+        )
+        db_type = _dialect_for_ds_type(ds_type_val)
+
         # Initialize query engine v2
         engine = SemanticQueryEngine(db, database_type=db_type)
         
@@ -555,18 +586,14 @@ def execute_semantic_query(
             measure_agg_overrides=query_request.measure_agg_overrides or None,
         )
         
-        # Determine data source (use first available)
-        from app.models.models import DataSource
-        data_source = db.query(DataSource).first()
+        # Phase-12.6: reuse the datasource already resolved above so SQL
+        # generation dialect matches execution datasource. Previously this
+        # block re-queried `DataSource.first()` independently, which could
+        # pick a DIFFERENT datasource than the one used for the dialect
+        # decision — silent inconsistency.
+        data_source = resolved_datasource
         if not data_source:
             raise HTTPException(status_code=404, detail="No data source available")
-        data_source_id = data_source.id
-        
-        # Get data source details
-        from app.models.models import DataSource
-        data_source = db.query(DataSource).filter(DataSource.id == data_source_id).first()
-        if not data_source:
-            raise HTTPException(status_code=404, detail="Data source not found")
         
         # Execute SQL using DataSourceConnectionService
         # Note: SemanticQueryEngine already adds LIMIT, so don't pass limit again
