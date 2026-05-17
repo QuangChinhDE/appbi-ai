@@ -469,10 +469,32 @@ async def create_chart(
         measure (filtered, formula, dataset-scope Phase 12, time-grain
         Phase 13.4, context-modifier Phase 14).
       * Bare `field` → routes to legacy live_query (single table, NO JOIN).
-        BE Phase-15.7 auto-promotes bare numeric dims to SUM via implicit
-        measure fallback; FE marks these `_implicit: true` upon load.
       * DO NOT manually strip qualifiers — BE handles same-base-view
         unqualify via `_strip_base_view_qualifiers` (datasets.py:743).
+
+    Implicit measure fallback (Phase 15.7 → 15.17):
+      When the metric.field points at a column that ISN'T a declared
+      semantic measure, the engine synthesises one on the fly using the
+      column's dimension entry. After Phase 15.17 the synthesis follows
+      the FE agg-validity matrix:
+
+        SUM / AVG              → numeric dim only
+        MIN / MAX              → any orderable type (numeric / date / string)
+        COUNT / COUNT_DISTINCT → any column type
+
+      Default agg when MCP omits `metric.agg`:
+        numeric dim     → SUM
+        anything else   → COUNT_DISTINCT
+
+      Mismatches (SUM on string, AVG on date, etc.) return HTTP 400 with
+      a tight message naming the agg, the column type, and which aggs
+      DO work. Pre-15.17 the same combo returned a misleading
+      "Measure không tồn tại" error — that wording is gone.
+
+      Engine emits `${TABLE}.field` for synthesised SQL (Phase 15.15) so
+      cross-table JOINs stay unambiguous even when multiple joined views
+      share a column name. Implicit measures get the FE `_implicit: true`
+      flag on load so Explore can surface the "auto" badge.
 
     Anchor table (Phase-15.10 / Hướng A):
       The FE Explore editor no longer asks the user to pick a base table
