@@ -774,6 +774,7 @@ function ExploreChartInner({
             numberFormat={tableNumberFormat}
             decimalPlaces={style.decimalPlaces}
             currencySymbol={style.currencySymbol}
+            columnLabels={labelMap}
           />
         </div>
       </div>
@@ -792,6 +793,7 @@ function ExploreChartInner({
         preAggregated={preAggregated}
         onStyleConfigChange={onStyleConfigChange}
         onSelectDataPoint={onSelectDataPoint}
+        labelMap={labelMap}
       />
     );
   }

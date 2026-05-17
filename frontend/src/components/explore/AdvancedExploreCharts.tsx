@@ -41,6 +41,9 @@ interface AdvancedExploreChartProps {
   preAggregated?: boolean;
   onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  /** Phase-15.13: same semantic label map used by ExploreChart; forwarded to
+   *  TableVisualization when rendering MATRIX so headers humanise. */
+  labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
 }
 
 interface NameValue {
@@ -893,6 +896,7 @@ export function AdvancedExploreChart({
   preAggregated = false,
   onStyleConfigChange,
   onSelectDataPoint,
+  labelMap,
 }: AdvancedExploreChartProps) {
   const title = style.chartTitle?.trim() || undefined;
   const titleFontSize = Math.max(style.chartTitleFontSize ?? style.fontSize ?? 12, 14);
@@ -964,6 +968,7 @@ export function AdvancedExploreChart({
           numberFormat={tableNumberFormat}
           decimalPlaces={style.decimalPlaces}
           currencySymbol={style.currencySymbol}
+          columnLabels={labelMap}
         />
       </ChartFrame>
     );

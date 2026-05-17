@@ -42,6 +42,45 @@ export interface TableVisualizationProps {
   numberFormat?: NumberFormat;
   decimalPlaces?: number;
   currencySymbol?: string;
+  /**
+   * Phase-15.13: column-key → friendly label. When provided, the header
+   * shows the label instead of the raw key (which is typically a
+   * qualified SQL ref like `Meetings.role_pic_bc`). Keys without an entry
+   * fall back to a humanised version of the bare segment.
+   */
+  columnLabels?: Record<string, string> | Map<string, string>;
+}
+
+/**
+ * Phase-15.13: derive a human-readable column header from a SQL key.
+ *
+ * Engine emits keys like `Meetings.role_pic_bc` or `dataset_table_320.role_pic_bc`
+ * which are great for routing but terrible for end users. When `columnLabels`
+ * does not carry an entry for the key, we strip any view/table qualifier and
+ * turn snake_case / kebab-case into Title Case ("Role Pic Bc"). The fallback
+ * intentionally keeps the original casing of all-caps tokens (e.g. "ID")
+ * and never inverts user choices — if a label was provided, it wins.
+ */
+function lookupColumnLabel(
+  key: string,
+  map: Record<string, string> | Map<string, string> | undefined,
+): string {
+  if (map) {
+    const explicit = map instanceof Map ? map.get(key) : map[key];
+    if (explicit && explicit.trim()) return explicit;
+  }
+  const bare = key.includes('.') ? key.split('.').slice(-1)[0] : key;
+  if (!bare) return key;
+  const cleaned = bare.replace(/[_-]+/g, ' ').trim();
+  if (!cleaned) return bare;
+  return cleaned
+    .split(/\s+/)
+    .map((token) => {
+      if (/^[A-Z0-9]{2,}$/.test(token)) return token;
+      if (/^id$/i.test(token)) return 'ID';
+      return token.charAt(0).toUpperCase() + token.slice(1);
+    })
+    .join(' ');
 }
 
 const MIN_COLUMN_WIDTH = 96;
@@ -151,6 +190,7 @@ export function TableVisualization({
   numberFormat = 'auto',
   decimalPlaces = 1,
   currencySymbol = '$',
+  columnLabels,
 }: TableVisualizationProps) {
   const rows = data ?? [];
   const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0]) : []);
@@ -452,7 +492,15 @@ export function TableVisualization({
                     onClick={() => handleHeaderClick(col)}
                   >
                     <div className={clsx("flex min-w-0 items-center gap-1.5", getHeaderJustifyClass(alignment))}>
-                      <span className="truncate whitespace-nowrap">{col}</span>
+                      {/* Phase-15.13: render the friendly label, not the raw
+                          qualified SQL key. Title attribute keeps the raw
+                          ref available on hover for engineering debug. */}
+                      <span
+                        className="truncate whitespace-nowrap"
+                        title={col}
+                      >
+                        {lookupColumnLabel(col, columnLabels)}
+                      </span>
                       {getSortIndicator(col)}
                     </div>
 

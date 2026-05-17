@@ -2601,8 +2601,17 @@ export function ExploreChartConfig({
               <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
                 {availableColumns.map(col => {
                   const checked = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.includes(col.name);
+                  // Phase-15.13: show the friendly column label; expose the
+                  // raw qualified key via `title` so engineering debug still
+                  // has the SQL identifier on hover.
+                  const display = colLabel(col);
+                  const viewLabel = fieldSourceLabel(col);
                   return (
-                    <label key={col.name} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-surface-2 cursor-pointer group">
+                    <label
+                      key={col.name}
+                      className="flex items-center gap-2 py-1 px-2 rounded hover:bg-surface-2 cursor-pointer group"
+                      title={col.name}
+                    >
                       <input
                         type="checkbox"
                         checked={checked}
@@ -2613,7 +2622,12 @@ export function ExploreChartConfig({
                         }}
                         className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
                       />
-                      <span className="text-xs text-text-secondary truncate flex-1">{col.name}</span>
+                      <span className="text-xs text-text-secondary truncate flex-1">
+                        {display}
+                        {viewLabel && viewLabel !== display && (
+                          <span className="ml-1.5 text-[10px] text-text-quaternary">· {viewLabel}</span>
+                        )}
+                      </span>
                       <span className="text-xs text-text-quaternary opacity-0 group-hover:opacity-100">{col.type}</span>
                     </label>
                   );
@@ -2762,7 +2776,12 @@ export function ExploreChartConfig({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold text-text-secondary">{column.name}</div>
+                      <div
+                        className="truncate text-xs font-semibold text-text-secondary"
+                        title={column.name}
+                      >
+                        {colLabel(column)}
+                      </div>
                       <div className="mt-1 text-[11px] text-text-quaternary">
                         {column.type || 'column'}
                         {currentWidth ? ` | ${Math.round(currentWidth)}px` : ' | auto width'}
@@ -2908,13 +2927,14 @@ export function ExploreChartConfig({
                                 key={`${summaryRow.label}-${column.name}`}
                                 type="button"
                                 onClick={() => toggleTableSummaryColumnSelection(index, column.name)}
+                                title={column.name}
                                 className={`rounded-full border px-2 py-1 text-[11px] font-medium transition-colors ${
                                   selected
                                     ? 'border-brand/30 bg-brand/10 text-brand'
                                     : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))]'
                                 }`}
                               >
-                                {column.name}
+                                {colLabel(column)}
                               </button>
                             );
                           })}
