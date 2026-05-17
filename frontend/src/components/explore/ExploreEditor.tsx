@@ -2451,7 +2451,7 @@ export function ExploreEditor({
             }`}>
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Configure</span>
-                {selectedTableId && (
+                {selectedDatasetId && (
                   <>
                     <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">{chartType}</span>
                     {hasActiveTransforms && (
@@ -2479,7 +2479,14 @@ export function ExploreEditor({
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {selectedTableId ? (
+              {/* Phase-15.12: was gated on selectedTableId — chicken-and-egg
+                  after Hướng A. Base table auto-derives from the FIRST field
+                  the user picks; that field gets picked inside ExploreChartConfig
+                  below; ExploreChartConfig was hidden until base table existed.
+                  Now we gate on selectedDatasetId so the picker is visible the
+                  moment a Dataset is chosen, and auto-derive can complete the
+                  flow once the user picks anything. */}
+              {selectedDatasetId ? (
                 <>
                   {sqlMode === 'custom' && (
                     <div className="border-b border-[rgb(var(--border-line))]">
@@ -2611,9 +2618,9 @@ export function ExploreEditor({
                 <div className="flex h-full min-h-[28rem] items-center justify-center p-8">
                   <div className="max-w-md text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Choose a source to unlock Configure</p>
+                    <p className="text-sm font-medium text-text-secondary">Choose a dataset to unlock Configure</p>
                     <p className="mt-1 text-xs text-text-quaternary">
-                      Pick the dataset and table in the header, then configure the chart here.
+                      Pick the dataset in the header. Base table auto-derives from the first field you pick.
                     </p>
                   </div>
                 </div>

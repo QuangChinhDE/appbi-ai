@@ -1379,6 +1379,26 @@ def _execute_semantic_chart_runtime(
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
 
+    # Phase-15.12: forward time grains from the saved role_config.
+    # When DA picks a grain in the Explore editor, FE forwards it through
+    # the preview path so the live chart renders bucketed. But the saved
+    # chart path (/charts/{id}/data → here) was silently dropping the
+    # grain — engine called without `time_grains`, so dashboards and
+    # reloaded charts ignored the bucketing the user had configured.
+    # Keys may be bare or already qualified — `qualify()` handles both.
+    # We only keep grains whose target is an active dimension; stale
+    # entries (field the user removed) would just spam the engine.
+    raw_time_grains = role_config.get("timeGrains") or {}
+    time_grains: dict[str, str] = {}
+    if isinstance(raw_time_grains, dict):
+        active_dim_set = set(dimension_refs)
+        for field, grain in raw_time_grains.items():
+            if not isinstance(field, str) or not isinstance(grain, str):
+                continue
+            qualified = qualify(field)
+            if qualified in active_dim_set:
+                time_grains[qualified] = grain
+
     # Phase-12.7: explicit try around generate_sql so the caller and API
     # endpoint see a ValueError with the engine's Vietnamese message
     # (Phase-11), not an opaque internal exception. ValueError bubbles up
@@ -1392,6 +1412,7 @@ def _execute_semantic_chart_runtime(
             filters=engine_filters,
             sorts=[],
             limit=effective_limit,
+            time_grains=time_grains or None,
             measure_agg_overrides=agg_overrides or None,
             model_id=model_id,
             explore_id=explore_id,

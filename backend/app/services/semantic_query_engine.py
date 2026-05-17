@@ -443,25 +443,52 @@ class SemanticQueryEngine:
         return self._render_sql_template(sql_template, view_alias)
     
     def _render_dimension_with_time_grain(
-        self, 
-        field_ref: str, 
-        view_alias: str, 
+        self,
+        field_ref: str,
+        view_alias: str,
         grain: str
     ) -> str:
-        """Render dimension with time grain applied"""
+        """Render dimension with time grain applied.
+
+        Phase-15.12 — added a MySQL branch. MySQL does NOT support the
+        SQL-standard ``DATE_TRUNC`` function; the prior code fell into the
+        PostgreSQL/DuckDB branch and produced a syntax error at run time.
+        We emit equivalent ``DATE_FORMAT``/``MAKEDATE`` expressions that
+        round to the start of the bucket (so subsequent GROUP BY 1 buckets
+        correctly). Week uses ``WEEKDAY`` so Monday becomes the bucket
+        start, matching ISO-8601 (which is what DATE_TRUNC('week', ...)
+        does on PG/DuckDB).
+        """
         base_sql = self._render_dimension(field_ref, view_alias)
-        
-        if self.database_type == "bigquery":
+        dialect = (self.database_type or "").lower()
+
+        if dialect == "bigquery":
             grain_map = {
                 "day": "DAY",
                 "week": "WEEK",
                 "month": "MONTH",
                 "quarter": "QUARTER",
-                "year": "YEAR"
+                "year": "YEAR",
             }
             return f"TIMESTAMP_TRUNC({base_sql}, {grain_map.get(grain, 'DAY')})"
-        else:  # PostgreSQL
-            return f"DATE_TRUNC('{grain}', {base_sql})"
+
+        if dialect == "mysql":
+            g = (grain or "day").lower()
+            if g == "day":
+                return f"DATE({base_sql})"
+            if g == "week":
+                # ISO Monday start: subtract WEEKDAY(...) days from the date.
+                return f"DATE_SUB(DATE({base_sql}), INTERVAL WEEKDAY({base_sql}) DAY)"
+            if g == "month":
+                return f"DATE_FORMAT({base_sql}, '%Y-%m-01')"
+            if g == "quarter":
+                return f"MAKEDATE(YEAR({base_sql}), 1) + INTERVAL (QUARTER({base_sql}) - 1) QUARTER"
+            if g == "year":
+                return f"MAKEDATE(YEAR({base_sql}), 1)"
+            return f"DATE({base_sql})"
+
+        # PostgreSQL + DuckDB both support DATE_TRUNC with text-literal grain.
+        return f"DATE_TRUNC('{grain}', {base_sql})"
     
     def _render_measure(
         self,
