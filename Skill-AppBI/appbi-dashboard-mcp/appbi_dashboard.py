@@ -44,11 +44,31 @@ async def list_dashboards(
     `skip` / `limit` pagination defaults match the backend (limit=50).
     Bump `limit` (no documented BE cap on this endpoint) when scanning
     a large workspace.
+
+    Returns full DashboardResponse rows including chart placements +
+    filters. For a slim list when picking a dashboard for a workboard
+    screen, use `list_accessible_dashboards_summary` instead.
     """
     items = await _request(
         "GET",
         _query_path("/dashboards/", {"skip": skip, "limit": limit}),
     )
+    return {"items": items}
+
+
+@tool("all")
+async def list_accessible_dashboards_summary(
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Phase-15.14: slim list of dashboards (id + name + description + permission).
+
+    Backed by `GET /dashboards/accessible-summary`. Use when picking a
+    dashboard to embed inside a workboard dashboard screen — the heavy
+    DashboardResponse payload is wasteful for a picker. Once a dashboard
+    is chosen, call `get_dashboard_filter_fields(dashboard_id)` to load
+    its filter columns.
+    """
+    items = await _request("GET", "/dashboards/accessible-summary")
     return {"items": items}
 
 
@@ -107,6 +127,8 @@ async def create_dashboard(
     description: str | None = None,
     charts: list[dict[str, Any]] | None = None,
     filters_config: list[dict[str, Any]] | None = None,
+    public_filters_config: list[dict[str, Any]] | None = None,
+    pages_config: list[dict[str, Any]] | None = None,
     layout_mode: str = "grid",
     theme_config: dict[str, Any] | None = None,
     canvas_config: dict[str, Any] | None = None,
@@ -116,9 +138,17 @@ async def create_dashboard(
     """Create a dashboard with optional pre-populated charts.
 
     Use this when charts already exist; for raw data use HTML import path.
+
     `charts`: [{chart_id, layout:{x,y,w,h}, parameters?, widget_type?}]
               OR [{widget_type, widget_config, layout}] for non-chart widgets.
-    `filters_config`: dashboard filters (text|number|date|dropdown).
+    `filters_config`: dashboard filters (text|number|date|dropdown). Each
+              item: {id, name, type, field:'view.col', default_value?, scope}.
+    `public_filters_config` (Phase-15.14): filter presets baked into the
+              dashboard's public-share token. Public viewers cannot change
+              these. Same shape as filters_config.
+    `pages_config` (Phase-15.14): tab pages on the dashboard. Each item:
+              {id, name, order?}. Charts pin to a page via
+              layout.pageId == page.id.
     `layout_mode`: "grid"|"canvas".
     `theme_config`: mode, accent, font, background, density (compact|normal|spacious),
                     cardStyle (soft|sharp|flat|elevated), cardRadius, cardShadow, hoverAnimation.
@@ -129,6 +159,8 @@ async def create_dashboard(
             "description": description,
             "charts": charts or [],
             "filters_config": filters_config,
+            "public_filters_config": public_filters_config,
+            "pages_config": pages_config,
             "layout_mode": layout_mode,
             "theme_config": theme_config,
             "canvas_config": canvas_config,
@@ -141,6 +173,8 @@ async def create_dashboard(
                 "name": name,
                 "chart_count": len(charts or []),
                 "filter_count": len(filters_config or []),
+                "public_filter_count": len(public_filters_config or []),
+                "page_count": len(pages_config or []),
                 "layout_mode": layout_mode,
             },
         )
@@ -297,6 +331,49 @@ async def add_widget_to_dashboard(
 
 
 @tool("all")
+async def update_widget_config(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    widget_config: dict[str, Any],
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Update the widget_config of an existing non-chart widget placement.
+
+    Phase-15.14: previously the only way to change a widget after placement
+    was delete + add, which loses the placement ID and re-randomises layout.
+    This wraps `PATCH /dashboards/{id}/widgets/{dashboard_chart_id}` so DA
+    can iterate on text / image / countdown / shape / parameter_switcher
+    widgets in place.
+
+    `dashboard_chart_id` is the placement ID (`dashboard_charts[].id`), NOT
+    the chart ID. `widget_config` shape depends on widget_type:
+      - text       → {markdown} or {template}
+      - image      → {url, alt?}
+      - countdown  → {target_date} or {target}
+      - shape      → {shape, color?} or {kind}
+      - parameter_switcher → {parameter_id, options:[{label,value}]}
+    Backend normalises legacy/alias keys.
+
+    400 = the placement is a chart (use update_chart instead).
+    """
+    if not user_confirmed:
+        return _requires_confirmation(
+            "update_widget_config",
+            {
+                "dashboard_id": int(dashboard_id),
+                "dashboard_chart_id": int(dashboard_chart_id),
+                "config_keys": sorted(widget_config.keys()),
+            },
+        )
+    return await _request(
+        "PATCH",
+        f"/dashboards/{int(dashboard_id)}/widgets/{int(dashboard_chart_id)}",
+        json_body={"widget_config": widget_config},
+    )
+
+
+@tool("all")
 async def remove_chart_from_dashboard(
     dashboard_id: int,
     dashboard_chart_id: int,
@@ -415,6 +492,76 @@ async def remove_dashboard_filter(
         "PUT",
         f"/dashboards/{int(dashboard_id)}",
         json_body={"filters_config": existing},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Write — legacy single share token
+# ---------------------------------------------------------------------------
+
+
+@tool("all")
+async def share_dashboard(
+    dashboard_id: int,
+    public_filters_config: list[dict[str, Any]] | None = None,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Phase-15.14: generate (or reuse) the legacy single share token.
+
+    This is the older single-link share mechanism — `Dashboard.share_token`
+    is set on the row itself, and the public URL becomes
+    `<BASE>/public/dashboard/<share_token>`. For multi-link sharing with
+    independent filters / appearance, prefer `create_public_link` which
+    creates rows in `dashboard_public_links` with their own tokens.
+
+    `public_filters_config`: optional preset filters baked into the share.
+    Public viewers cannot change them. Same shape as filters_config.
+
+    Returns `{share_token, public_filters_config}`. A repeated call
+    returns the existing token (idempotent) unless you flip the filter
+    list.
+    """
+    if not user_confirmed:
+        return _requires_confirmation(
+            "share_dashboard",
+            {
+                "dashboard_id": int(dashboard_id),
+                "preset_filter_count": len(public_filters_config or []),
+                "warning": (
+                    "Creates a publicly accessible URL. Anyone with the "
+                    "share token can view the dashboard."
+                ),
+            },
+        )
+    body = _drop_none({"public_filters_config": public_filters_config})
+    return await _request(
+        "POST",
+        f"/dashboards/{int(dashboard_id)}/share",
+        json_body=body or {},
+    )
+
+
+@tool("all")
+async def unshare_dashboard(
+    dashboard_id: int,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Phase-15.14: revoke the legacy single share token + clear public filters.
+
+    Destructive — any existing share URL stops working. Multi-link tokens
+    created via `create_public_link` are independent and stay active.
+    """
+    if not user_confirmed:
+        return _confirmation_required_for_destructive(
+            "unshare_dashboard",
+            {"dashboard_id": int(dashboard_id)},
+            reversible=True,  # the user can re-share to mint a new token
+        )
+    return await _request(
+        "DELETE",
+        f"/dashboards/{int(dashboard_id)}/share",
     )
 
 

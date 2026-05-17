@@ -357,12 +357,105 @@ async def search_charts(
 # ---------------------------------------------------------------------------
 
 
+async def _auto_derive_dataset_table_id(
+    dataset_id: int,
+    config: dict[str, Any],
+) -> tuple[int | None, str | None]:
+    """Phase-15.14: mimic FE Hướng A (Phase 15.10) — auto-derive the chart's
+    anchor table from the first qualified field in role_config.
+
+    The FE no longer asks the user to pick a "base table" upfront; instead
+    it watches the role_config and snaps the base to the first qualified
+    `view.field` ref's view as soon as one appears. When MCP creates a
+    chart without an explicit `dataset_table_id` we mirror that logic so
+    the saved chart loads in Explore exactly the way FE would have built
+    it interactively.
+
+    Priority order matches FE's `collectFirstView` in ExploreEditor.tsx:
+    dimension → timeField → scatterX/Y → tableRow/Column → breakdown →
+    metrics[*].field → lineMetric/benchmarkMetric/tablePivotMetric →
+    selectedColumns.
+
+    Returns `(dataset_table_id, error_message)` — exactly one is set.
+    """
+    role_config = _get_active_role_config(config)
+
+    def _first_segment(field: Any) -> str | None:
+        if isinstance(field, str) and "." in field:
+            seg = field.split(".", 1)[0].strip()
+            return seg or None
+        return None
+
+    candidates: list[str] = []
+
+    def _push(value: Any) -> None:
+        view = _first_segment(value)
+        if view and view not in candidates:
+            candidates.append(view)
+
+    for key in (
+        "dimension", "timeField", "scatterX", "scatterY",
+        "tableRowDimension", "tableColumnDimension", "breakdown",
+    ):
+        _push(role_config.get(key))
+    for metric in role_config.get("metrics") or []:
+        if isinstance(metric, dict):
+            _push(metric.get("field"))
+    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+        node = role_config.get(key)
+        if isinstance(node, dict):
+            _push(node.get("field"))
+    for col in role_config.get("selectedColumns") or []:
+        _push(col)
+
+    if not candidates:
+        return None, (
+            "Cannot auto-derive dataset_table_id: role_config has no "
+            "qualified `view.field` refs. Pass dataset_table_id explicitly, "
+            "or rewrite the role_config to use qualified refs (matches the "
+            "Phase-15.10 FE flow)."
+        )
+
+    target_view = candidates[0]
+    try:
+        model = await _request("GET", f"/datasets/{int(dataset_id)}/model")
+    except RuntimeError as exc:
+        return None, (
+            f"Could not load /datasets/{dataset_id}/model to derive the "
+            f"table for view '{target_view}': {exc}"
+        )
+    if not isinstance(model, dict):
+        return None, "Unexpected response from /datasets/{id}/model."
+
+    for view in model.get("views") or []:
+        if not isinstance(view, dict):
+            continue
+        if view.get("name") == target_view:
+            tid = view.get("dataset_table_id")
+            if tid is None:
+                return None, (
+                    f"SemanticView '{target_view}' has no dataset_table_id "
+                    "(detached view?). Bind it to a table before creating "
+                    "charts on it."
+                )
+            return int(tid), None
+
+    available = [v.get("name") for v in (model.get("views") or []) if isinstance(v, dict)]
+    return None, (
+        f"View '{target_view}' (derived from first qualified field) is not "
+        f"in dataset {dataset_id}'s semantic model. Available views: "
+        f"{available}. Either fix the role_config field refs or pass "
+        "dataset_table_id explicitly."
+    )
+
+
 @tool("report")
 async def create_chart(
     name: str,
     chart_type: str,
-    dataset_table_id: int,
     config: dict[str, Any],
+    dataset_table_id: int | None = None,
+    dataset_id: int | None = None,
     description: str | None = None,
     bypass_semantic_check: bool = False,
     user_confirmed: bool = False,
@@ -370,30 +463,72 @@ async def create_chart(
 ) -> dict[str, Any]:
     """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
 
-    Every semantic field must resolve in the SemanticView. The BE routing
-    oracle (`_role_config_needs_semantic_runtime` + `_contains_semantic_field_refs`)
-    inspects role_config field refs at execute time:
-
-      * Qualified `view.field` → routes to SemanticQueryEngine with the
-        multi-hop JOIN resolver. Required for cross-table charts AND for
-        any semantic measure (filtered, formula, dataset-scope Phase 12).
+    Field-qualifier contract (Phase 12.5):
+      * Qualified `view.field` → routes to SemanticQueryEngine + multi-hop
+        JOIN resolver. Required for cross-table charts AND for any semantic
+        measure (filtered, formula, dataset-scope Phase 12, time-grain
+        Phase 13.4, context-modifier Phase 14).
       * Bare `field` → routes to legacy live_query (single table, NO JOIN).
-
-    Field-qualifier contract for this tool (Phase 12.5):
-      * **Prefer qualified `view.field`** whenever the field is declared
-        as a semantic dimension or measure. Required when chart aggregates
-        across multiple tables, or when measure is dataset-scope.
-      * Bare names work for legacy single-table charts on raw columns
-        only (NOT semantic measures).
-      * DO NOT manually strip qualifiers. The BE handles same-base-view
+        BE Phase-15.7 auto-promotes bare numeric dims to SUM via implicit
+        measure fallback; FE marks these `_implicit: true` upon load.
+      * DO NOT manually strip qualifiers — BE handles same-base-view
         unqualify via `_strip_base_view_qualifiers` (datasets.py:743).
-        Sending bare when qualified is available demotes the query to
-        live_query and silently drops JOINs.
+
+    Anchor table (Phase-15.10 / Hướng A):
+      The FE Explore editor no longer asks the user to pick a base table
+      upfront — it auto-derives one from the first qualified field. Mirror
+      that flow here:
+      * Pass `dataset_id` (without `dataset_table_id`) → MCP picks the
+        table matching the first qualified field's view, exactly like FE.
+      * Pass `dataset_table_id` explicitly when you need to anchor on a
+        specific table (e.g. forcing a JOIN root for performance).
+      * Both omitted → error (BE save requires `dataset_table_id`).
+
+    Recent config-shape additions Claude can use:
+      * `role_config.timeGrains: {"view.field": "day|week|month|quarter|year"}`
+        (Phase 13.4) — server-side date_trunc bucketing.
+      * `role_config.tableMode: "pivot"` + `tableRowDimension`,
+        `tableColumnDimension`, `tablePivotMetric` (TABLE pivot layout).
+      * `role_config.selectedColumns: [...]` (TABLE visible-column whitelist).
+      * Measures with `expression`, `filters`, `depends_on`, `format`,
+        `context_modifiers` are first-class — declare them on the
+        SemanticView, not inline on the chart.
+
+    Render-parity guard: dry-run-create returns `fe_unrecognised_keys` —
+    config keys the BE accepts but the Explore renderer ignores. The plan
+    surface flags them so Claude can drop or rename before commit.
 
     `bypass_semantic_check=True` skips the runtime preview gate — explain
-    to the user first. Workflow: get_table_profile → ensure SemanticView
-    → preview_chart_data → user_confirmed=True.
+    to the user first.
     """
+    # Phase-15.10 / Hướng A: derive dataset_table_id when omitted.
+    if dataset_table_id is None:
+        if dataset_id is None:
+            return {
+                "status": "blocked_by_validation",
+                "validation_errors": [
+                    "dataset_table_id is required, OR pass dataset_id and "
+                    "let MCP auto-derive from the first qualified field's "
+                    "view (matches the Phase-15.10 FE Hướng A flow)."
+                ],
+            }
+        derived, derive_err = await _auto_derive_dataset_table_id(
+            dataset_id=dataset_id,
+            config=config,
+        )
+        if derive_err:
+            return {
+                "status": "blocked_by_validation",
+                "validation_errors": [derive_err],
+                "fix": (
+                    "Either pass dataset_table_id explicitly, or rewrite "
+                    "role_config to use qualified `view.field` refs that "
+                    "exist in the dataset's semantic model."
+                ),
+            }
+        assert derived is not None
+        dataset_table_id = derived
+
     # Phase-12 single-source-of-truth contract:
     # Instead of mirroring normalization / Pydantic validation / runtime
     # preview locally (which historically drifted from BE rules every time
@@ -462,6 +597,11 @@ async def create_chart(
             "name": name,
             "chart_type": chart_type,
             "dataset_table_id": int(dataset_table_id),
+            "dataset_table_source": (
+                "auto-derived (Hướng A) from first qualified field"
+                if dataset_id is not None
+                else "explicit"
+            ),
             "config_summary": _summarize_chart_config(normalized_config),
             "description_preview": (description or "")[:200],
             "normalized_changes": changes,

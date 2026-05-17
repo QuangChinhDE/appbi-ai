@@ -210,6 +210,7 @@ objects.
 | Tool | report | dataset | explore | all |
 |---|:-:|:-:|:-:|:-:|
 | list_dashboards | ✓ |   |   | ✓ |
+| list_accessible_dashboards_summary |   |   |   | ✓ |
 | get_dashboard | ✓ |   |   | ✓ |
 | get_dashboard_filter_fields | ✓ |   |   | ✓ |
 | list_public_links |   |   |   | ✓ |
@@ -218,20 +219,29 @@ objects.
 | delete_dashboard |   |   |   | ✓ |
 | add_chart_to_dashboard | ✓ |   |   | ✓ |
 | add_widget_to_dashboard |   |   |   | ✓ |
+| update_widget_config |   |   |   | ✓ |
 | remove_chart_from_dashboard |   |   |   | ✓ |
 | update_dashboard_layout | ✓ |   |   | ✓ |
 | add_dashboard_filter | ✓ |   |   | ✓ |
 | remove_dashboard_filter |   |   |   | ✓ |
+| share_dashboard |   |   |   | ✓ |
+| unshare_dashboard |   |   |   | ✓ |
 | create_public_link | ✓ |   |   | ✓ |
 | update_public_link |   |   |   | ✓ |
 | delete_public_link |   |   |   | ✓ |
+
+Phase-15.14 additions:
+- `list_accessible_dashboards_summary` — slim list (id+name+description+permission), use when picking a dashboard for a workboard screen.
+- `update_widget_config` — edit a placed widget's config in place; previously required delete + re-add.
+- `share_dashboard` / `unshare_dashboard` — legacy single share-token mechanism. Prefer `create_public_link` for multi-link sharing.
+- `create_dashboard` now accepts `public_filters_config` + `pages_config` upfront (previously had to follow up with `update_dashboard`).
 
 ### Cross-cutting
 
 | Module | Tools | Profiles |
 |---|---|---|
 | [appbi_core.py](appbi_core.py) | `health_check` | all profiles |
-| [appbi_html_import.py](appbi_html_import.py) | `get_html_dashboard_spec`, `analyze_html_import`, `build_dashboard_from_html` | `all` only |
+| [appbi_html_import.py](appbi_html_import.py) | `get_html_dashboard_spec`, `analyze_html_import`, `validate_html_import_plans`, `dry_run_build_html_dashboard_import`, `build_dashboard_from_html` | `all` only |
 | [appbi_quality.py](appbi_quality.py) | 10 quality-rule tools | `all` only |
 | [appbi_sharing.py](appbi_sharing.py) | 4 cross-resource share tools | `all` only |
 

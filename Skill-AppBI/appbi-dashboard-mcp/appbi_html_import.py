@@ -542,4 +542,115 @@ async def build_dashboard_from_html(
     }
 
 
+@tool("all")
+async def validate_html_import_plans(
+    analysis_json: str,
+    dataset_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Phase-15.14: re-validate every chart_plan against the live dataset.
+
+    Wraps `POST /dashboards/import-html/validate-plans`. Returns per-block
+    pass/fail results — call this AFTER manually editing chart_plans that
+    came back from `analyze_html_import` with warnings. The endpoint does
+    not call any LLM; it executes the actual chart query plan against the
+    dataset and surfaces real engine errors so Claude can fix them.
+
+    `analysis_json`: JSON string of the analysis dict (same shape as
+                     `analyze_html_import` returns).
+    `dataset_id`: dataset to validate against.
+
+    Returns: `{results: [{block_id, status: 'ok'|'error', error?, ...}]}`.
+    """
+    try:
+        analysis = json.loads(str(analysis_json))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {"error": f"analysis_json is not valid JSON: {exc}"}
+    if not isinstance(analysis, dict):
+        return {"error": "analysis_json must decode to an object"}
+
+    form_data = {
+        "analysis_json": json.dumps(analysis, ensure_ascii=False),
+        "dataset_id": str(int(dataset_id)),
+    }
+    try:
+        return await _form_request(
+            "POST",
+            "/dashboards/import-html/validate-plans",
+            data=form_data,
+        )
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+
+
+@tool("all")
+async def dry_run_build_html_dashboard_import(
+    analysis_json: str,
+    source_mode: str,
+    dashboard_name: str | None = None,
+    target_mode: str = "new_dashboard",
+    dataset_id: int | None = None,
+    target_dashboard_id: int | None = None,
+    included_block_ids: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Phase-15.14: preview the full materialization pipeline without writing.
+
+    Wraps `POST /dashboards/import-html/dry-run-build`. Runs the same
+    build path as `build_dashboard_from_html` inside a savepoint, then
+    rolls back. The response shape mirrors a real build (would_create
+    counts, page_id, type_changes) so Claude can show the user exactly
+    what would be created before committing.
+
+    Use this after `validate_html_import_plans` returns clean, to do a
+    final end-to-end check (calculated-field SQL, semantic uniqueness,
+    type coercion). Then call `build_dashboard_from_html` for real.
+
+    NOTE: dry-run is read-only from the user's perspective but background
+    embedding / LLM workers scheduled during build are NOT rolled back —
+    they will run against rows that no longer exist. The BE handles
+    orphan rows gracefully but the warning is surfaced in the response.
+
+    `source_mode`: "existing_dataset" | "upload_excel".
+    `target_mode`: "new_dashboard" | "append_to_dashboard".
+    """
+    try:
+        analysis = json.loads(str(analysis_json))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {"error": f"analysis_json is not valid JSON: {exc}"}
+    if not isinstance(analysis, dict):
+        return {"error": "analysis_json must decode to an object"}
+
+    normalized_source_mode = str(source_mode or "").strip().lower()
+    if normalized_source_mode not in {"existing_dataset", "upload_excel"}:
+        return {"error": "source_mode must be 'existing_dataset' or 'upload_excel'"}
+
+    normalized_target_mode = str(target_mode or "new_dashboard").strip().lower()
+    if normalized_target_mode not in {"new_dashboard", "append_to_dashboard"}:
+        return {"error": "target_mode must be 'new_dashboard' or 'append_to_dashboard'"}
+
+    form_data: dict[str, str] = {
+        "analysis_json": json.dumps(analysis, ensure_ascii=False),
+        "source_mode": normalized_source_mode,
+        "target_mode": normalized_target_mode,
+    }
+    if dashboard_name:
+        form_data["dashboard_name"] = str(dashboard_name).strip()
+    if dataset_id is not None:
+        form_data["dataset_id"] = str(int(dataset_id))
+    if target_dashboard_id is not None:
+        form_data["target_dashboard_id"] = str(int(target_dashboard_id))
+    if included_block_ids is not None:
+        form_data["included_block_ids_json"] = json.dumps(included_block_ids)
+
+    try:
+        return await _form_request(
+            "POST",
+            "/dashboards/import-html/dry-run-build",
+            data=form_data,
+        )
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+
+
 __all__: list[str] = []
