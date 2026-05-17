@@ -570,33 +570,59 @@ class SemanticQueryEngine:
                 (d for d in (view.dimensions or []) if d.get('name') == field_name),
                 None,
             )
-            if dim_def and str(dim_def.get('type') or '').lower() == 'number':
-                fallback_agg = (str(agg_override or "").lower().strip()
-                                if agg_override else "sum")
-                if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
-                    fallback_agg = "sum"
-                # Phase-15.15: must be `${TABLE}.field`, NOT bare `field`.
-                # `_render_sql_template` only substitutes `${TABLE}` placeholders
-                # — a bare column name passes through unchanged. In a single-
-                # table query BigQuery resolves the bare name against the lone
-                # FROM table; in a cross-table JOIN the same column existing
-                # on multiple joined views makes BigQuery raise "Column name
-                # X is ambiguous" (DA's `deal_value` error). Qualifying via
-                # the template ensures the engine emits `Deals.deal_value`,
-                # matching the SQL alias from `_build_from_clause`.
-                measure_def = {
-                    'name': field_name,
-                    'type': fallback_agg,
-                    'sql': '${TABLE}.' + field_name,
-                }
-            else:
+            if dim_def is None:
                 raise ValueError(
                     f"Measure '{field_name}' không tồn tại trong view '{view_name}'. "
-                    "Để aggregate cột này, hãy chọn 1 trong: "
-                    "(a) khai báo nó là dimension type=number trên view "
-                    "(BE sẽ tự sinh SUM/AVG/... ngầm), hoặc "
-                    "(b) tạo measure tên này trong tab Data Model."
+                    f"Cột này cũng không phải dimension trên view. Pick một field "
+                    "đã khai báo trong tab Data Model, hoặc bật \"Show JOIN keys\" "
+                    "nếu đang cần count một FK."
                 )
+
+            # Phase-15.17: aggregation-validity matrix mirroring the FE
+            # (Phase-15.16). FE allows DA to drop ANY column type into the
+            # Values slot and pick a sensible agg; BE must accept the same
+            # combos or DA hits "Measure X không tồn tại" on COUNT_DISTINCT
+            # of a FK (the previous fallback only fired for numeric dims).
+            #
+            #   SUM / AVG          → numeric only (string AVG = SQL error)
+            #   MIN / MAX          → any orderable type (numeric, date, string)
+            #   COUNT / COUNT_DISTINCT → any column (counts rows / distinct values)
+            #
+            # Defaults match FE `defaultMetricAggForCol`:
+            #   numeric → SUM,   anything else → COUNT_DISTINCT.
+            dim_type = str(dim_def.get('type') or '').lower()
+            is_numeric_dim = dim_type == 'number'
+
+            requested_agg = str(agg_override or '').lower().strip()
+            if requested_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
+                requested_agg = ""  # treat as no override
+            if not requested_agg:
+                requested_agg = "sum" if is_numeric_dim else "count_distinct"
+
+            NUMERIC_ONLY_AGGS = {"sum", "avg"}
+            if requested_agg in NUMERIC_ONLY_AGGS and not is_numeric_dim:
+                raise ValueError(
+                    f"Aggregation '{requested_agg.upper()}' không dùng được trên "
+                    f"cột '{field_name}' (type={dim_type or 'unknown'}). "
+                    f"Đổi sang COUNT / COUNT_DISTINCT / MIN / MAX, "
+                    f"hoặc tạo một measure '{field_name}' trên view "
+                    f"'{view_name}' với expression rõ ràng (vd `SUM(CAST({field_name} AS NUMERIC))`)."
+                )
+
+            # Phase-15.15: must be `${TABLE}.field`, NOT bare `field`.
+            # `_render_sql_template` only substitutes `${TABLE}` placeholders
+            # — a bare column name passes through unchanged. In a single-
+            # table query BigQuery resolves the bare name against the lone
+            # FROM table; in a cross-table JOIN the same column existing
+            # on multiple joined views makes BigQuery raise "Column name
+            # X is ambiguous" (DA's `deal_value` error). Qualifying via
+            # the template ensures the engine emits `Deals.deal_value`,
+            # matching the SQL alias from `_build_from_clause`.
+            measure_def = {
+                'name': field_name,
+                'type': requested_agg,
+                'sql': '${TABLE}.' + field_name,
+            }
 
         stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
         override_type = str(agg_override or "").lower().strip()
@@ -913,24 +939,38 @@ class SemanticQueryEngine:
                 (d for d in (view.dimensions or []) if d.get('name') == field_name),
                 None,
             )
-            if dim_def and str(dim_def.get('type') or '').lower() == 'number':
-                fallback_agg = (str(agg_override or "").lower().strip()
-                                if agg_override else "sum")
-                if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
-                    fallback_agg = "sum"
-                # Phase-15.15: qualify via `${TABLE}` — same fix as `_render_measure`
-                # (see comment there). Bare column refs blow up in cross-table
-                # JOINs because BigQuery / Postgres / MySQL all reject ambiguous
-                # columns when the same name exists on multiple joined tables.
-                measure_def = {
-                    'name': field_name,
-                    'type': fallback_agg,
-                    'sql': '${TABLE}.' + field_name,
-                }
-            else:
+            if dim_def is None:
                 raise ValueError(
                     f"Measure '{field_name}' không tồn tại trong view '{view_name}' (pivot)."
                 )
+
+            # Phase-15.17: same validity matrix as `_render_measure`. SUM/AVG
+            # require numeric; COUNT/COUNT_DISTINCT/MIN/MAX work on any type.
+            dim_type = str(dim_def.get('type') or '').lower()
+            is_numeric_dim = dim_type == 'number'
+
+            requested_agg = str(agg_override or '').lower().strip()
+            if requested_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
+                requested_agg = ""
+            if not requested_agg:
+                requested_agg = "sum" if is_numeric_dim else "count_distinct"
+
+            if requested_agg in {"sum", "avg"} and not is_numeric_dim:
+                raise ValueError(
+                    f"Aggregation '{requested_agg.upper()}' không dùng được trên "
+                    f"cột '{field_name}' (type={dim_type or 'unknown'}) trong pivot. "
+                    f"Đổi sang COUNT / COUNT_DISTINCT / MIN / MAX."
+                )
+
+            # Phase-15.15: qualify via `${TABLE}` — same fix as `_render_measure`
+            # (see comment there). Bare column refs blow up in cross-table
+            # JOINs because BigQuery / Postgres / MySQL all reject ambiguous
+            # columns when the same name exists on multiple joined tables.
+            measure_def = {
+                'name': field_name,
+                'type': requested_agg,
+                'sql': '${TABLE}.' + field_name,
+            }
 
         measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
         sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
