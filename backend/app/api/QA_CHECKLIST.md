@@ -161,6 +161,17 @@ Cập nhật: 2026-05-17 (Phase-15.7 — implicit measure end-to-end).
    - [ ] Drill button mới hiện "↓ Drill into: day"
    - [ ] Chart re-run, render data theo month
 
+### C6.1 Chart renders when table renders (Phase 15.8) ⭐⭐ — DA bug 2026-05-17
+1. Cùng 1 chart_id, 2 chart instance: 1 chart type TABLE, 1 chart type BAR (cùng dataset_table_id, cùng metric)
+2. Run cả hai
+3. Kỳ vọng:
+   - [ ] **TABLE hiển thị data đúng** với cột metric có số liệu
+   - [ ] **BAR cũng hiển thị data** (không phải chart trống)
+   - [ ] **Cả 2 phải hiện cùng giá trị** (nếu BAR cùng X/Y với TABLE row/measure)
+4. Mở DevTools Network → check response `/charts/{id}/data` → `data[0]` có key dạng `"view.field"` (qualified, sau remap engine)
+5. Kỳ vọng: Recharts dataKey = `"sum__view.field"` (metricKey) **must match** value sau khi `rewriteRowsForRecharts` chạy
+   - [ ] Nếu chart vẫn trống → audit `chartDataAdapter.ts` `rewriteRowsForRecharts` helper có chạy không
+
 ### C6. Filter Context với chart (Phase 14)
 1. Tạo 2 measure: `total_sales` (basic) + `pct_of_region` (filter context all_except region)
 2. Mở Explore chart BAR

@@ -64,7 +64,6 @@ import {
   Plus,
   Search,
   Sparkles,
-  X,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -200,16 +199,17 @@ export default function JsFormulaEditor({
   const columnsRef = useRef(availableColumns);
   const [search, setSearch] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  // Columns groups — collapsed by default so a 100-col table doesn't dump
-  // everything on first render. Open groups stay open while search is empty.
+  // Sidebar groups — collapsed by default so a 100-col table doesn't
+  // dump everything on first render. ``helpers`` lives in the same rail
+  // as the column groups (was previously a floating toolbar popover; the
+  // popover was removed because positioning quirks could open it
+  // unexpectedly on certain layouts).
   const [openGroups, setOpenGroups] = useState<{
     db: boolean;
     lookup: boolean;
     computed: boolean;
-  }>({ db: false, lookup: false, computed: false });
-  const [helpersOpen, setHelpersOpen] = useState(false);
-  const helpersBtnRef = useRef<HTMLButtonElement>(null);
-  const helpersPopRef = useRef<HTMLDivElement>(null);
+    helpers: boolean;
+  }>({ db: false, lookup: false, computed: false, helpers: false });
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -217,30 +217,6 @@ export default function JsFormulaEditor({
   useEffect(() => {
     columnsRef.current = availableColumns;
   }, [availableColumns]);
-
-  // Close the helpers popover on outside click / Escape.
-  useEffect(() => {
-    if (!helpersOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        helpersBtnRef.current?.contains(target) ||
-        helpersPopRef.current?.contains(target)
-      ) {
-        return;
-      }
-      setHelpersOpen(false);
-    };
-    const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setHelpersOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    document.addEventListener('keydown', keyHandler);
-    return () => {
-      document.removeEventListener('mousedown', handler);
-      document.removeEventListener('keydown', keyHandler);
-    };
-  }, [helpersOpen]);
 
   // Build the editor exactly once. Recreating on every parent render
   // would clobber the user's selection + scroll position.
@@ -406,6 +382,7 @@ export default function JsFormulaEditor({
         db: groupedColumns.db.length > 0,
         lookup: groupedColumns.lookup.length > 0,
         computed: groupedColumns.computed.length > 0,
+        helpers: true,
       };
     }
     return openGroups;
@@ -482,67 +459,6 @@ export default function JsFormulaEditor({
               {token}
             </code>
           ))}
-          <div className="relative">
-            <button
-              ref={helpersBtnRef}
-              type="button"
-              onClick={() => setHelpersOpen((v) => !v)}
-              className={cn(
-                'inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-tiny font-emphasis transition-colors',
-                helpersOpen
-                  ? 'border-brand/30 bg-brand/10 text-brand'
-                  : 'bg-surface-0 text-text-secondary hover:text-text-primary',
-              )}
-              title="Xem danh sách $helpers (Esc để đóng)"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              Helpers
-              <span className="rounded bg-surface-2 px-1 text-micro text-text-tertiary">
-                {HELPERS.length}
-              </span>
-            </button>
-            {helpersOpen && (
-              <div
-                ref={helpersPopRef}
-                className="absolute right-0 top-[calc(100%+6px)] z-20 w-[360px] rounded-md border border-[rgb(var(--border-line))] bg-surface-0 shadow-lg"
-              >
-                <div className="flex items-center gap-1.5 border-b border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
-                  <Sparkles className="h-3 w-3" />
-                  $helpers
-                  <span className="ml-auto rounded bg-surface-2 px-1 normal-case font-normal text-text-quaternary">
-                    {HELPERS.length}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setHelpersOpen(false)}
-                    className="rounded p-0.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
-                    title="Đóng (Esc)"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-                <div className="max-h-[320px] overflow-y-auto p-2 space-y-1">
-                  {HELPERS.map((h) => (
-                    <HelperRow
-                      key={h.name}
-                      helper={h}
-                      copied={copiedKey === `helper:${h.name}`}
-                      onInsert={() => {
-                        insertSnippet(h.signature);
-                        setHelpersOpen(false);
-                      }}
-                      onCopy={() => copyText(`helper:${h.name}`, h.signature)}
-                    />
-                  ))}
-                </div>
-                <div className="border-t border-[rgb(var(--border-line))] px-2 py-1 text-[10px] text-text-quaternary">
-                  Hover một mục để copy / chèn. Hoặc gõ{' '}
-                  <code className="rounded bg-surface-2 px-1">$helpers.</code>{' '}
-                  + Ctrl+Space trong editor.
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -611,26 +527,51 @@ export default function JsFormulaEditor({
                 ),
               )
             )}
-            {search.trim() && filteredHelpers.length > 0 ? (
+            {filteredHelpers.length > 0 ? (
               <section className="pt-1 mt-1 border-t border-[rgb(var(--border-line))]">
-                <div className="mb-1.5 flex items-center gap-1.5 px-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                  <Sparkles className="h-3 w-3" />
-                  Helpers
-                  <span className="ml-auto rounded bg-surface-2 px-1.5 py-0.5 text-micro normal-case tracking-normal">
+                <button
+                  type="button"
+                  onClick={
+                    search.trim()
+                      ? undefined
+                      : () =>
+                          setOpenGroups((prev) => ({
+                            ...prev,
+                            helpers: !prev.helpers,
+                          }))
+                  }
+                  className={cn(
+                    'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors',
+                    search.trim() ? 'cursor-default' : 'hover:bg-surface-2',
+                  )}
+                >
+                  {!search.trim() &&
+                    (effectiveOpen.helpers ? (
+                      <ChevronDown className="h-3 w-3 text-text-quaternary" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3 text-text-quaternary" />
+                    ))}
+                  <Sparkles className="h-3 w-3 text-text-tertiary" />
+                  <span className="text-tiny font-emphasis text-text-secondary">
+                    Helpers
+                  </span>
+                  <span className="ml-auto rounded bg-surface-2 px-1.5 py-0.5 text-micro text-text-tertiary">
                     {filteredHelpers.length}
                   </span>
-                </div>
-                <div className="space-y-1">
-                  {filteredHelpers.map((h) => (
-                    <HelperRow
-                      key={h.name}
-                      helper={h}
-                      copied={copiedKey === `helper:${h.name}`}
-                      onInsert={() => insertSnippet(h.signature)}
-                      onCopy={() => copyText(`helper:${h.name}`, h.signature)}
-                    />
-                  ))}
-                </div>
+                </button>
+                {effectiveOpen.helpers && (
+                  <div className="mt-0.5 space-y-1 pl-2">
+                    {filteredHelpers.map((h) => (
+                      <HelperRow
+                        key={h.name}
+                        helper={h}
+                        copied={copiedKey === `helper:${h.name}`}
+                        onInsert={() => insertSnippet(h.signature)}
+                        onCopy={() => copyText(`helper:${h.name}`, h.signature)}
+                      />
+                    ))}
+                  </div>
+                )}
               </section>
             ) : null}
           </div>

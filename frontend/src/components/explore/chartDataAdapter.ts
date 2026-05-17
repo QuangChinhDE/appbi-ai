@@ -70,11 +70,76 @@ function resolveMetricValueField(
   metric: MetricConfig,
   preAggregated = false,
 ): string {
-  const candidates = preAggregated
-    ? metricOutputCandidates(metric)
-    : [metric.field, ...metricOutputCandidates(metric)];
+  // For BOTH pre-aggregated AND raw paths we look up `metric.field` first
+  // because the semantic engine remaps row keys back to canonical
+  // qualified refs (chart_service.remap_semantic_engine_rows) — that's
+  // the form the FE caller asked for, so it's the most likely hit.
+  //
+  // Phase-15.8: previously the pre-aggregated path skipped metric.field
+  // entirely and only tried the metricKey() candidates, which made
+  // post-remap rows look "unrecognised" — chart adapter then fell back
+  // to metric.field anyway via the `?? metric.field` tail, but the
+  // downstream `categoricalData: data` assignment kept the raw row
+  // shape so Recharts (which expects keys = metricKey()) couldn't find
+  // any values and rendered an empty chart.
+  const candidates = [metric.field, ...metricOutputCandidates(metric)];
 
   return candidates.find((candidate) => rows.some((row) => candidate in row)) ?? metric.field;
+}
+
+/**
+ * Phase-15.8 — Bridge BE row keys to the recharts `dataKey` contract.
+ *
+ * DA bug: table OK but chart blank.
+ *
+ * Root cause: the semantic engine emits row keys in canonical qualified
+ * form (`"view.field"`), but every recharts series in
+ * `buildExploreChartModel` is keyed by `metricKey(metric)` (i.e.
+ * `"${agg}__${field}"`). When the adapter's `applyGroupByAgg` runs (raw
+ * data path) it rewrites rows to use `metricKey` as the value key — but
+ * when `preAggregated=true` (the semantic engine / saved-chart path)
+ * the adapter previously just forwarded the raw rows. Recharts then
+ * read `row["sum__view.amount"]` → undefined → blank chart.
+ *
+ * Fix: when we know the data is pre-aggregated, walk every row once and
+ * remap every metric's value field to its canonical metricKey alias.
+ * `resolveMetricValueField` handles whichever shape the BE actually
+ * emitted (qualified ref, bare, `agg__field`, …) so the rewrite is
+ * defensive against future changes to the engine's alias scheme.
+ */
+function rewriteRowsForRecharts(
+  rows: Record<string, any>[],
+  metrics: MetricConfig[],
+  preAggregated: boolean,
+): Record<string, any>[] {
+  if (!preAggregated || rows.length === 0 || metrics.length === 0) return rows;
+  // Pre-compute the value source field per metric — this is the column
+  // recharts actually needs to read from. Map<canonicalMetricKey, sourceField>.
+  const sourceByMetricKey = new Map<string, string>();
+  for (const metric of metrics) {
+    const sourceField = resolveMetricValueField(rows, metric, true);
+    const targetKey = metricKey(metric);
+    if (sourceField !== targetKey) {
+      sourceByMetricKey.set(targetKey, sourceField);
+    }
+  }
+  // No remap needed — every metric already keyed correctly. Return rows
+  // unchanged so we don't allocate a new array (hot path on dashboards
+  // with many tiles).
+  if (sourceByMetricKey.size === 0) return rows;
+
+  return rows.map((row) => {
+    const next: Record<string, any> = { ...row };
+    for (const [targetKey, sourceField] of sourceByMetricKey) {
+      // Only write the target key when the source actually has a value
+      // on this row; preserves null/undefined semantics so recharts
+      // skips missing points instead of plotting 0.
+      if (sourceField in row) {
+        next[targetKey] = row[sourceField];
+      }
+    }
+    return next;
+  });
 }
 
 function aggregateMetricValue(
@@ -456,13 +521,23 @@ export function buildExploreChartModel(args: {
     return emptyModel;
   }
 
-  const aggregated = preAggregated ? data : applyGroupByAgg(data, xField, metrics);
+  // Phase-15.8: when BE pre-aggregated the rows, their value keys are the
+  // canonical refs (`view.field`). Recharts series datakeys are
+  // `metricKey()` (i.e. `${agg}__${field}`). Rewrite once here so every
+  // chart-type path below gets recharts-compatible rows. Raw data path
+  // (applyGroupByAgg) already does this rewrite via the metricKey assign
+  // at line ~176, so it's a no-op there.
+  const aggregated = preAggregated
+    ? rewriteRowsForRecharts(data, metrics, true)
+    : applyGroupByAgg(data, xField, metrics);
   const filteredAgg = havingFilters.length > 0 ? applyFiltersToRows(aggregated, havingFilters) : aggregated;
   const limitedAgg = limitRows(filteredAgg);
 
   if (type === 'BAR_LINE') {
     const comboMetrics = dedupeMetrics(lineMetric ? [...metrics, lineMetric] : [...metrics]);
-    const comboAgg = preAggregated ? data : applyGroupByAgg(data, xField, comboMetrics);
+    const comboAgg = preAggregated
+      ? rewriteRowsForRecharts(data, comboMetrics, true)
+      : applyGroupByAgg(data, xField, comboMetrics);
     const filteredCombo = havingFilters.length > 0 ? applyFiltersToRows(comboAgg, havingFilters) : comboAgg;
     const limitedCombo = limitRows(filteredCombo);
 
