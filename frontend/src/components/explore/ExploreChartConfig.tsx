@@ -1698,37 +1698,39 @@ function TimeGrainSlot({
   onChange: (next: TimeGrain | undefined) => void;
 }) {
   if (!fieldName) return null;
-  // Phase-15.18: visible chip row replaces the previous hidden-behind-dropdown
-  // UX. PowerBI's date hierarchy auto-buckets the moment a date field is
-  // dropped on the axis; making the bucket choice always-visible — and
-  // adding an explicit "Raw" chip for the no-bucket case — gets us closer
-  // to that mental model without the hierarchy tree work.
+  // Phase-15.20: shrink the config slot to a single Date-hierarchy toggle
+  // (PowerBI-style). Picking the actual drill level (Year / Quarter /
+  // Month / Week / Day) moved to the chart preview header where DA can
+  // ↑↓ between levels at view time — that's where the action belongs in
+  // a BI tool. Config just says "is the hierarchy enabled on this chart
+  // or not?". Default level on enable = 'month'.
+  const enabled = value !== undefined;
   return (
-    <div>
-      <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1">
-        Time grain
-        <HelpTooltip text="Bucket the date axis via SQL date_trunc — engine emits đúng cú pháp dialect (DuckDB / Postgres / BigQuery / MySQL). 'Raw' = không bucket, mỗi giá trị = 1 nhóm. Default 'Month' khi pick date field mới (Phase-15.18, mimics PowerBI date hierarchy auto-bucket)." />
-      </label>
-      <div className="flex flex-wrap gap-1">
-        {[{ value: undefined as TimeGrain | undefined, label: 'Raw' }, ...TIME_GRAIN_OPTIONS].map((opt) => {
-          const active = (value ?? undefined) === opt.value;
-          return (
-            <button
-              key={opt.label}
-              type="button"
-              onClick={() => onChange(opt.value)}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                active
-                  ? 'border-brand bg-brand/10 text-brand'
-                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
-              }`}
-              title={opt.value ? `Group rows by ${opt.label.toLowerCase()}` : 'No bucketing — each distinct timestamp is its own row'}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
+    <div className="flex items-center justify-between rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="truncate text-xs font-semibold text-text-secondary">
+          Date hierarchy
+        </span>
+        <HelpTooltip text="Bật để chart bucket theo Year/Quarter/Month/Week/Day — drill controls (↑↓) hiện ở header của chart preview. Tắt = giữ raw timestamps. Khi bật mới, default level = Month (giống PowerBI auto-bucket khi drop date field)." />
       </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => onChange(enabled ? undefined : 'month')}
+        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors ${
+          enabled
+            ? 'border-brand bg-brand/80'
+            : 'border-[rgb(var(--border-line))] bg-surface-2'
+        }`}
+        title={enabled ? 'Date hierarchy on — chart bucket theo level đang chọn ở chart preview' : 'Date hierarchy off — render raw timestamps'}
+      >
+        <span
+          className={`inline-block h-3 w-3 rounded-full bg-surface-1 shadow-linear-sm transition-transform ${
+            enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
     </div>
   );
 }

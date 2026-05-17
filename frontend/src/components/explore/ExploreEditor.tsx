@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
@@ -739,6 +739,75 @@ function isSourceTimeColumn(column: ColumnMetadata): boolean {
   return (
     ['date', 'datetime', 'timestamp', 'time'].includes(loweredType) ||
     /(date|time|_at|created|updated|day|month|year|start|end|deadline)/.test(loweredName)
+  );
+}
+
+/**
+ * Phase-15.20: PowerBI-style drill controls that live in the chart preview
+ * header (NOT in the Configure panel). DA toggles "Date hierarchy" on in
+ * the config slot; once on, they drill ↑/↓ through the levels here at
+ * view time — same place PowerBI puts the drill buttons.
+ *
+ * Levels go DAY → WEEK → MONTH → QUARTER → YEAR (low to high resolution).
+ * ↓ drills DOWN (coarser → finer, year→day direction); ↑ drills UP. The
+ * arrows are disabled at the extremes so DA never lands on an invalid
+ * grain. The current level chip in the middle shows where they are.
+ */
+type TimeGrainLevel = 'day' | 'week' | 'month' | 'quarter' | 'year';
+const DRILL_LEVEL_ORDER: TimeGrainLevel[] = ['day', 'week', 'month', 'quarter', 'year'];
+const DRILL_LEVEL_LABEL: Record<TimeGrainLevel, string> = {
+  day: 'Day',
+  week: 'Week',
+  month: 'Month',
+  quarter: 'Quarter',
+  year: 'Year',
+};
+
+function ChartDrillControls({
+  fieldDisplayLabel,
+  grain,
+  disabled,
+  onChange,
+}: {
+  fieldDisplayLabel: string;
+  grain: TimeGrainLevel;
+  disabled?: boolean;
+  onChange: (next: TimeGrainLevel) => void;
+}) {
+  const idx = DRILL_LEVEL_ORDER.indexOf(grain);
+  const canFiner = idx > 0;
+  const canCoarser = idx < DRILL_LEVEL_ORDER.length - 1;
+  const baseBtn = 'inline-flex h-6 w-6 items-center justify-center rounded border border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40';
+  const liveBtn = disabled ? '' : 'hover:border-brand/40 hover:bg-brand/10 hover:text-brand';
+  return (
+    <div
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-1 py-0.5"
+      title={`Date hierarchy on ${fieldDisplayLabel}. ↓ drills to a finer level, ↑ drills to a coarser one. Toggle off in Configure to keep raw timestamps.`}
+    >
+      <button
+        type="button"
+        disabled={disabled || !canFiner}
+        onClick={() => canFiner && onChange(DRILL_LEVEL_ORDER[idx - 1])}
+        className={`${baseBtn} ${liveBtn}`}
+        title={canFiner ? `Drill down to ${DRILL_LEVEL_LABEL[DRILL_LEVEL_ORDER[idx - 1]]}` : 'Already at finest level (Day)'}
+        aria-label="Drill down"
+      >
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      <span className="px-1.5 text-[11px] font-emphasis tracking-wide text-brand">
+        {DRILL_LEVEL_LABEL[grain]}
+      </span>
+      <button
+        type="button"
+        disabled={disabled || !canCoarser}
+        onClick={() => canCoarser && onChange(DRILL_LEVEL_ORDER[idx + 1])}
+        className={`${baseBtn} ${liveBtn}`}
+        title={canCoarser ? `Drill up to ${DRILL_LEVEL_LABEL[DRILL_LEVEL_ORDER[idx + 1]]}` : 'Already at coarsest level (Year)'}
+        aria-label="Drill up"
+      >
+        <ChevronUp className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }
 
@@ -2097,6 +2166,89 @@ export function ExploreEditor({
     void handleRunQuery();
   }, [isNew, isChartLoaded, selectedDatasetId, selectedTableId, selectedTable, currentQuerySignature]);
 
+  /**
+   * Phase-15.20 — date-hierarchy drill state for the chart preview header.
+   *
+   * The Configure panel only has a yes/no toggle ("Date hierarchy"). The
+   * actual level (Day / Week / Month / Quarter / Year) is changed at view
+   * time via ↑/↓ chips next to the Chart/Table/Query tabs — matches the
+   * PowerBI drill button placement.
+   *
+   * `drillDateField` is whichever of {dimension, timeField} resolves to a
+   * date column. Most chart types use `dimension`; TIME_SERIES / RIBBON /
+   * TIMELINE use `timeField`. Both check the configColumns metadata for
+   * the source-time signal (Phase-15.18 helper).
+   */
+  const drillDateField = useMemo<string | null>(() => {
+    const rc = normalizedGeneratedRoleConfig;
+    const candidates = [rc.dimension, rc.timeField].filter(
+      (v): v is string => Boolean(v),
+    );
+    for (const fieldName of candidates) {
+      const col = configColumns.find((c) => c.name === fieldName);
+      if (col && isSourceTimeColumn(col)) return fieldName;
+    }
+    return null;
+  }, [normalizedGeneratedRoleConfig, configColumns]);
+
+  const drillGrain = useMemo<TimeGrainLevel | null>(() => {
+    if (!drillDateField) return null;
+    const value = normalizedGeneratedRoleConfig.timeGrains?.[drillDateField];
+    if (!value) return null;
+    return (DRILL_LEVEL_ORDER as readonly string[]).includes(value)
+      ? (value as TimeGrainLevel)
+      : null;
+  }, [drillDateField, normalizedGeneratedRoleConfig]);
+
+  const drillFieldDisplayLabel = useMemo(() => {
+    if (!drillDateField) return '';
+    return getFieldDisplayName(drillDateField);
+  }, [drillDateField, getFieldDisplayName]);
+
+  /**
+   * Stash the latest handleRunQuery in a ref so the drill effect below
+   * can call it without taking handleRunQuery as an effect dep — that
+   * would re-fire the effect on every render and double-run queries.
+   */
+  const handleRunQueryRef = useRef<typeof handleRunQuery>(handleRunQuery);
+  handleRunQueryRef.current = handleRunQuery;
+
+  /**
+   * Phase-15.20 — auto-run when DA drills. PowerBI re-renders on click;
+   * forcing DA to also click "Run to refresh" after every drill is bad
+   * UX. We track the drill signature; first observation is recorded
+   * silently (the standard `didAutoRunRef` path handles the initial
+   * load), subsequent changes trigger a fresh query.
+   */
+  const drillAutoRunSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!drillDateField || !drillGrain) return;
+    if (!selectedTableId) return;
+    const sig = `${drillDateField}|${drillGrain}`;
+    if (drillAutoRunSigRef.current === null) {
+      drillAutoRunSigRef.current = sig;
+      return;
+    }
+    if (drillAutoRunSigRef.current === sig) return;
+    drillAutoRunSigRef.current = sig;
+    if (!didAutoRunRef.current) return; // initial mount auto-run handles this
+    void handleRunQueryRef.current();
+  }, [drillDateField, drillGrain, selectedTableId]);
+
+  const handleDrillChange = useCallback(
+    (next: TimeGrainLevel) => {
+      if (!drillDateField) return;
+      setGeneratedRoleConfig((prev) => ({
+        ...prev,
+        timeGrains: {
+          ...(prev.timeGrains || {}),
+          [drillDateField]: next,
+        },
+      }));
+    },
+    [drillDateField],
+  );
+
   const handleSaveLook = async () => {
     if (!selectedTableId) {
       toast.error('Please select a dataset table first');
@@ -2703,6 +2855,17 @@ export function ExploreEditor({
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                {/* Phase-15.20: PowerBI-style drill controls live HERE in the
+                    chart preview header, not in the Configure panel. The
+                    config panel only carries the on/off toggle. */}
+                {drillDateField && drillGrain && previewPanelTab !== 'query' && (
+                  <ChartDrillControls
+                    fieldDisplayLabel={drillFieldDisplayLabel}
+                    grain={drillGrain}
+                    disabled={!resPerms.canEdit || isRunningQuery}
+                    onChange={handleDrillChange}
+                  />
+                )}
                 <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
                   {[
                     { key: 'chart', label: 'Chart' },
