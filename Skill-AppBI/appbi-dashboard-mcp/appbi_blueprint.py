@@ -107,10 +107,10 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
                     "filters": [
                         {
                             "field": "<str — bare column or view.col>",
-                            "operator": "eq|ne|gt|gte|lt|lte|in|not_in|between|"
-                                        "contains|starts_with|ends_with|"
+                            "operator": "eq|ne|neq|gt|gte|lt|lte|in|not_in|between|"
+                                        "contains|not_contains|starts_with|ends_with|"
                                         "is_null|is_not_null",
-                            "value": "<scalar | [a,b,...] for in/not_in | [lo,hi] for between>",
+                            "value": "<scalar | [a,b,...] for in/not_in | [lo,hi] for between | null for is_null/is_not_null>",
                         }
                     ],
                     # Raw WHERE fragment, AND-combined with `filters`. Reserve
@@ -485,10 +485,22 @@ async def commit_semantic_model(
         raise ValueError("plan must include at least one view in `views`.")
 
     validation_errors: list[str] = []
+    # Phase-15.19: keep this list aligned with `_build_where_clause` in
+    # `backend/app/services/semantic_query_engine.py` AND with FilterBuilder
+    # in `frontend/src/components/explore/FilterBuilder.tsx`. Drift between
+    # the three is what put DA's "between Jan-Dec" filter into the dropped
+    # bucket — MCP validated OK, BE engine silently ignored.
+    #
+    # `neq` is an FE-only alias that the BE endpoint canonicalises to `ne`
+    # via `_OP_ALIAS` (datasets.py + chart_service.py). We accept it here
+    # so blueprints copy-pasted from FE chart configs validate without
+    # extra normalisation work.
     _ALLOWED_FILTER_OPS = {
-        "eq", "ne", "gt", "gte", "lt", "lte",
+        "eq", "ne", "neq",
+        "gt", "gte", "lt", "lte",
         "in", "not_in", "between",
-        "contains", "starts_with", "ends_with",
+        "contains", "not_contains",
+        "starts_with", "ends_with",
         "is_null", "is_not_null",
     }
     _LIST_OPS = {"in", "not_in", "between"}

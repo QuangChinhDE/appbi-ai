@@ -508,13 +508,34 @@ async def create_chart(
 
     Recent config-shape additions Claude can use:
       * `role_config.timeGrains: {"view.field": "day|week|month|quarter|year"}`
-        (Phase 13.4) — server-side date_trunc bucketing.
+        (Phase 13.4) — server-side date_trunc bucketing. Phase 15.20
+        treats the presence of an entry as the "Date hierarchy on" flag:
+        when DA opens the saved chart, the Configure toggle shows on,
+        the chart preview gains ↑/↓ drill chips, and the stored level
+        becomes the starting drill level. SET `timeGrains[date_field] =
+        "month"` for any BAR/LINE/AREA/TIME_SERIES chart whose X is a
+        date column unless the user explicitly wants raw timestamps —
+        FE's auto-default ('month' on date-field add) only fires for
+        NEW charts in the editor, NOT for MCP-saved charts on load.
       * `role_config.tableMode: "pivot"` + `tableRowDimension`,
         `tableColumnDimension`, `tablePivotMetric` (TABLE pivot layout).
       * `role_config.selectedColumns: [...]` (TABLE visible-column whitelist).
       * Measures with `expression`, `filters`, `depends_on`, `format`,
         `context_modifiers` are first-class — declare them on the
         SemanticView, not inline on the chart.
+      * `role_config.baseFilters: [...]` — chart-level filters (DIFFERENT
+        from dashboard-level filters). Each entry:
+        `{field, operator, value}`. Operators (Phase 15.19 parity with
+        FE FilterBuilder + BE engine): eq, ne (or `neq` alias), gt,
+        gte, lt, lte, in, not_in, between, contains, not_contains,
+        starts_with, ends_with, is_null, is_not_null. `between` value
+        is `[lo, hi]`; `is_null`/`is_not_null` take no value.
+
+    DO NOT include the FE-only `_implicit: true` flag on metrics —
+    Phase 15.7 / 15.16 add it client-side when MetricSlot synthesises
+    an ad-hoc agg over a raw column, but BE ignores it. MCP creating
+    a metric just passes `{field, agg}`; the engine decides whether to
+    auto-promote at query time per the Phase 15.17 validity matrix.
 
     Render-parity guard: dry-run-create returns `fe_unrecognised_keys` —
     config keys the BE accepts but the Explore renderer ignores. The plan
