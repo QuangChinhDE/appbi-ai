@@ -575,10 +575,19 @@ class SemanticQueryEngine:
                                 if agg_override else "sum")
                 if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
                     fallback_agg = "sum"
+                # Phase-15.15: must be `${TABLE}.field`, NOT bare `field`.
+                # `_render_sql_template` only substitutes `${TABLE}` placeholders
+                # — a bare column name passes through unchanged. In a single-
+                # table query BigQuery resolves the bare name against the lone
+                # FROM table; in a cross-table JOIN the same column existing
+                # on multiple joined views makes BigQuery raise "Column name
+                # X is ambiguous" (DA's `deal_value` error). Qualifying via
+                # the template ensures the engine emits `Deals.deal_value`,
+                # matching the SQL alias from `_build_from_clause`.
                 measure_def = {
                     'name': field_name,
                     'type': fallback_agg,
-                    'sql': field_name,  # bare column; ${TABLE}.field via template
+                    'sql': '${TABLE}.' + field_name,
                 }
             else:
                 raise ValueError(
@@ -909,10 +918,14 @@ class SemanticQueryEngine:
                                 if agg_override else "sum")
                 if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
                     fallback_agg = "sum"
+                # Phase-15.15: qualify via `${TABLE}` — same fix as `_render_measure`
+                # (see comment there). Bare column refs blow up in cross-table
+                # JOINs because BigQuery / Postgres / MySQL all reject ambiguous
+                # columns when the same name exists on multiple joined tables.
                 measure_def = {
                     'name': field_name,
                     'type': fallback_agg,
-                    'sql': field_name,
+                    'sql': '${TABLE}.' + field_name,
                 }
             else:
                 raise ValueError(
