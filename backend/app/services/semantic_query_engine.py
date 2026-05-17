@@ -1189,17 +1189,52 @@ class SemanticQueryEngine:
         return rendered
     
     def _build_where_clause(self, filters: Dict[str, Any], time_grains: Dict[str, str]) -> str:
-        """Build WHERE clause from filters"""
+        """Build WHERE clause from filters.
+
+        Phase-15.19: the operator set was lagging FilterBuilder for months.
+        FE generates `between`, `is_null`, `is_not_null`, and `not_contains`
+        (defaults for date / number columns), but the engine's `if/elif`
+        chain only matched eq/ne/gt/gte/lt/lte/in/not_in/contains/
+        starts_with/ends_with — anything else fell through silently, the
+        WHERE clause came back empty, and DA saw the chart return ALL
+        rows when they'd dialled in a "between Jan and Dec" filter.
+
+        Live_query's `_build_where_clause` (live_query_service.py:558)
+        already handled these; the semantic path was the regression. We
+        intentionally mirror that contract — same operator names, same
+        BETWEEN-with-single-side-fallback, same escaping shape — so
+        switching between live_query and semantic routing produces
+        identical results for a given filter list.
+        """
         if not filters:
             return ""
-        
+
+        def _lit(raw: Any) -> str:
+            """Quote a Python value as a SQL literal. Matches
+            live_query_service._sql_literal so the same value formats
+            consistently across both paths."""
+            if raw is None:
+                return "NULL"
+            if isinstance(raw, bool):
+                return "TRUE" if raw else "FALSE"
+            if isinstance(raw, (int, float)):
+                return str(raw)
+            return "'" + str(raw).replace("'", "''") + "'"
+
+        def _value_present(raw: Any) -> bool:
+            if raw is None:
+                return False
+            if isinstance(raw, str) and not raw.strip():
+                return False
+            return True
+
         conditions = []
         for field_ref, filter_def in filters.items():
-            operator = filter_def.get('operator', 'eq')
+            operator = str(filter_def.get('operator') or 'eq').strip().lower()
             value = filter_def.get('value')
-            
+
             view_name, _ = self._parse_field_ref(field_ref)
-            
+
             # Apply time grain if specified
             if field_ref in time_grains:
                 field_sql = self._render_dimension_with_time_grain(
@@ -1207,33 +1242,84 @@ class SemanticQueryEngine:
                 )
             else:
                 field_sql = self._render_dimension(field_ref, view_name)
-            
-            # Build condition based on operator
+
+            # Null-state operators don't take a value.
+            if operator == "is_null":
+                conditions.append(f"{field_sql} IS NULL")
+                continue
+            if operator == "is_not_null":
+                conditions.append(f"{field_sql} IS NOT NULL")
+                continue
+
+            # Phase-15.19: BETWEEN with single-side fallback. FE pickers
+            # often leave one bound blank ("from X with no upper bound"
+            # or vice-versa); rather than silently dropping the filter
+            # we degrade to >= / <= so the user's intent still lands.
+            if operator == "between" and isinstance(value, list) and len(value) >= 2:
+                lo, hi = value[0], value[1]
+                if _value_present(lo) and _value_present(hi):
+                    conditions.append(f"{field_sql} BETWEEN {_lit(lo)} AND {_lit(hi)}")
+                elif _value_present(lo):
+                    conditions.append(f"{field_sql} >= {_lit(lo)}")
+                elif _value_present(hi):
+                    conditions.append(f"{field_sql} <= {_lit(hi)}")
+                # if both blank → user hasn't filled the picker yet, skip
+                continue
+
+            # IN / NOT IN accept list or comma-separated string.
+            if operator == "in":
+                if isinstance(value, list):
+                    vals = ", ".join(_lit(v) for v in value if _value_present(v))
+                elif isinstance(value, str) and value.strip():
+                    vals = ", ".join(_lit(v.strip()) for v in value.split(",") if v.strip())
+                else:
+                    vals = ""
+                if vals:
+                    conditions.append(f"{field_sql} IN ({vals})")
+                continue
+            if operator == "not_in":
+                if isinstance(value, list):
+                    vals = ", ".join(_lit(v) for v in value if _value_present(v))
+                elif isinstance(value, str) and value.strip():
+                    vals = ", ".join(_lit(v.strip()) for v in value.split(",") if v.strip())
+                else:
+                    vals = ""
+                if vals:
+                    conditions.append(f"{field_sql} NOT IN ({vals})")
+                continue
+
+            # Pattern operators need LIKE-escaping for % and _ so DA-typed
+            # literals don't accidentally turn into wildcards.
+            if operator in {"contains", "not_contains", "starts_with", "ends_with"}:
+                if value is None:
+                    continue
+                esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+                if operator == "contains":
+                    conditions.append(f"{field_sql} LIKE '%{esc}%' ESCAPE '\\'")
+                elif operator == "not_contains":
+                    conditions.append(f"{field_sql} NOT LIKE '%{esc}%' ESCAPE '\\'")
+                elif operator == "starts_with":
+                    conditions.append(f"{field_sql} LIKE '{esc}%' ESCAPE '\\'")
+                else:  # ends_with
+                    conditions.append(f"{field_sql} LIKE '%{esc}' ESCAPE '\\'")
+                continue
+
+            # Scalar comparison operators.
             if operator == "eq":
-                conditions.append(f"{field_sql} = '{value}'")
+                conditions.append(f"{field_sql} = {_lit(value)}")
             elif operator == "ne":
-                conditions.append(f"{field_sql} != '{value}'")
+                conditions.append(f"{field_sql} != {_lit(value)}")
             elif operator == "gt":
-                conditions.append(f"{field_sql} > '{value}'")
+                conditions.append(f"{field_sql} > {_lit(value)}")
             elif operator == "gte":
-                conditions.append(f"{field_sql} >= '{value}'")
+                conditions.append(f"{field_sql} >= {_lit(value)}")
             elif operator == "lt":
-                conditions.append(f"{field_sql} < '{value}'")
+                conditions.append(f"{field_sql} < {_lit(value)}")
             elif operator == "lte":
-                conditions.append(f"{field_sql} <= '{value}'")
-            elif operator == "in":
-                values_str = ", ".join([f"'{v}'" for v in value])
-                conditions.append(f"{field_sql} IN ({values_str})")
-            elif operator == "not_in":
-                values_str = ", ".join([f"'{v}'" for v in value])
-                conditions.append(f"{field_sql} NOT IN ({values_str})")
-            elif operator == "contains":
-                conditions.append(f"{field_sql} LIKE '%{value}%'")
-            elif operator == "starts_with":
-                conditions.append(f"{field_sql} LIKE '{value}%'")
-            elif operator == "ends_with":
-                conditions.append(f"{field_sql} LIKE '%{value}'")
-        
+                conditions.append(f"{field_sql} <= {_lit(value)}")
+            # Unknown operator → skip silently rather than emit broken SQL.
+            # (Filter validators upstream should catch these earlier.)
+
         if conditions:
             return "WHERE\n  " + " AND\n  ".join(conditions)
         return ""
