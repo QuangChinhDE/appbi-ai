@@ -25,6 +25,12 @@ interface ExploreSourceSelectorProps {
    * dataset and only want the user to switch tables inside it.
    */
   lockDataset?: boolean;
+  /**
+   * Phase-15.10: hide the table dropdown entirely. Used when the host derives
+   * the base table from picked fields (PowerBI-style flow) instead of asking
+   * upfront. Dataset stays visible because user still needs to pick a model.
+   */
+  hideTable?: boolean;
 }
 
 export function ExploreSourceSelector({
@@ -35,6 +41,7 @@ export function ExploreSourceSelector({
   disabled,
   variant = 'stacked',
   lockDataset = false,
+  hideTable = false,
 }: ExploreSourceSelectorProps) {
   const { data: datasets = [], isLoading: loadingDatasets } = useDatasets();
   const { data: dataset } = useDataset(selectedDatasetId);
@@ -52,14 +59,19 @@ export function ExploreSourceSelector({
 
   // Phase-11: auto-pick first table khi user mới chọn dataset (selectedTableId = null).
   // User vẫn override được bằng dropdown bên dưới.
+  //
+  // Phase-15.10: skip auto-pick when `hideTable` is true. Host derives base
+  // from picked fields in that case — setting selectedTableId here would
+  // anchor JOINs to an arbitrary first table before the user has any intent.
   useEffect(() => {
+    if (hideTable) return;
     if (selectedDatasetId == null) return;
     if (selectedTableId != null) return;
     const firstTable = dataset?.tables?.[0];
     if (firstTable?.id) {
       onTableChange(firstTable.id);
     }
-  }, [selectedDatasetId, selectedTableId, dataset?.tables, onTableChange]);
+  }, [hideTable, selectedDatasetId, selectedTableId, dataset?.tables, onTableChange]);
 
   if (variant === 'compact') {
     return (
@@ -80,7 +92,7 @@ export function ExploreSourceSelector({
           </Select>
         </div>
 
-        {selectedDatasetId && (
+        {selectedDatasetId && !hideTable && (
           <div className="min-w-[12rem] flex-1 sm:w-56 sm:flex-none">
             <Select
               size="sm"

@@ -1080,9 +1080,21 @@ export function ExploreEditor({
    * dimensions/measures from ALL reachable views (not just the selected one)
    * so cross-table fields can flow through to the backend semantic engine,
    * which already knows how to JOIN them via SemanticExplore.joins.
+   *
+   * Phase-15.10 — empty-base fallback: when no base view is selected yet
+   * (NEW chart, user has not picked any field), expose EVERY view in the
+   * dataset model so the field picker is usable upfront. The base view gets
+   * auto-derived from the first picked field's view (see effect below),
+   * after which reachability narrows to the JOIN graph rooted at that view.
    */
   const reachableSemanticViews = useMemo<DatasetModelView[]>(() => {
-    if (!datasetModel || !selectedSemanticView) return [];
+    if (!datasetModel) return [];
+    if (!selectedSemanticView) {
+      // Show all non-hidden views — base hasn't been set, so DA can pick
+      // freely. Filter out views explicitly hidden from canvas (matches
+      // ExploreColumnPanel's visibility rule).
+      return (datasetModel.views ?? []).filter((view) => !view.hidden_in_canvas);
+    }
     return getReachableViews(datasetModel, selectedSemanticView.name);
   }, [datasetModel, selectedSemanticView]);
   const reachableViewNames = useMemo<Set<string>>(
@@ -1624,12 +1636,55 @@ export function ExploreEditor({
     setQueryError(null);
   }, [chartType]);
 
-  // Auto-select first table when dataset changes
+  // Phase-15.10: auto-derive base table from the first picked field's view.
+  // PowerBI-style flow — DA picks Dataset only, then picks fields; the first
+  // field's owning view becomes the chart's base (which gives the BE engine
+  // a JOIN root and the chart save its `dataset_table_id`). Once derived,
+  // base stays sticky even if the user later swaps that field, so the JOIN
+  // tree doesn't silently re-root.
+  //
+  // Why use generatedRoleConfig (and not customRoleConfig): Hướng A is
+  // only meaningful in Builder/Generated mode. Custom SQL mode has its own
+  // flow where columns come from SQL output — no semantic views involved.
   useEffect(() => {
-    if (dataset?.tables && dataset.tables.length > 0 && !selectedTableId) {
-      setSelectedTableId(dataset.tables[0].id);
-    }
-  }, [dataset?.tables, selectedTableId]);
+    if (selectedTableId != null) return; // sticky once set
+    if (!datasetModel) return;
+    const collectFirstView = (): string | null => {
+      const rc = generatedRoleConfig;
+      const pickFromField = (f?: string | null): string | null => {
+        if (!f || !f.includes('.')) return null;
+        return f.split('.', 1)[0] || null;
+      };
+      const order = [
+        rc.dimension,
+        rc.timeField,
+        rc.scatterX,
+        rc.scatterY,
+        rc.tableRowDimension,
+        rc.tableColumnDimension,
+        rc.breakdown,
+        ...(rc.metrics ?? []).map((m) => m.field),
+        rc.lineMetric?.field ?? null,
+        rc.benchmarkMetric?.field ?? null,
+        rc.tablePivotMetric?.field ?? null,
+        ...((rc.selectedColumns ?? []) as (string | undefined)[]),
+      ];
+      for (const candidate of order) {
+        const v = pickFromField(candidate ?? null);
+        if (v) return v;
+      }
+      return null;
+    };
+    const firstView = collectFirstView();
+    if (!firstView) return;
+    const view = datasetModel.views?.find((v) => v.name === firstView);
+    if (!view?.dataset_table_id) return;
+    // Suppress the reset-on-table-change effect below — this is the FIRST
+    // base set, not a user-initiated table swap, so filters / role-config
+    // should NOT be wiped.
+    skipNextSourceResetRef.current = true;
+    setSelectedTableId(view.dataset_table_id);
+  }, [generatedRoleConfig, selectedTableId, datasetModel]);
 
   // Reset config when user manually changes the table (skip during initial chart load)
   const isInitialTableSet = useRef(false);
@@ -2191,8 +2246,8 @@ export function ExploreEditor({
                 <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
               </>
             )}
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source</span>
-            <div className="min-w-[16rem] max-w-[28rem] flex-1">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Dataset</span>
+            <div className="min-w-[14rem] max-w-[22rem] flex-1">
               <ExploreSourceSelector
                 selectedDatasetId={selectedDatasetId}
                 selectedTableId={selectedTableId}
@@ -2201,30 +2256,46 @@ export function ExploreEditor({
                 disabled={!resPerms.canEdit}
                 lockDataset={lockDatasetSelection}
                 variant="compact"
+                hideTable
               />
             </div>
-            {/* Phase-12.5: relationship summary chip — DA feedback said the
-                FE didn't surface active-relationship state. This pill makes
-                "joins are wired up" visible without leaving Explore. Click
-                forwards to the Data Model tab for full edit. */}
-            {selectedSemanticView && activeRelationshipSummary.activeViewCount > 1 && (
-              <span
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-                  activeRelationshipSummary.crossTableInUse
-                    ? 'border-success/40 bg-success/10 text-success'
-                    : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary'
-                }`}
-                title={
-                  activeRelationshipSummary.crossTableInUse
-                    ? `Chart đang dùng field từ ${activeRelationshipSummary.crossTableViews?.length ?? 0} bảng khác qua relationship: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}. Engine sẽ JOIN tự động.`
-                    : `${activeRelationshipSummary.activeViewCount} bảng đang có thể join tới base view "${selectedSemanticView.name}". Kéo field từ chúng vào chart để dùng cross-table.`
-                }
-              >
-                {activeRelationshipSummary.crossTableInUse ? '🔗' : '🔌'}
-                {activeRelationshipSummary.activeViewCount} table
-                {activeRelationshipSummary.activeViewCount === 1 ? '' : 's'} joined
-              </span>
-            )}
+            {/* Phase-15.10: base + relationship chip.
+                Replaces the old "X tables joined" chip and surfaces what the
+                old "Source" dropdown used to anchor. When no field has been
+                picked yet (selectedSemanticView null), nothing renders —
+                pick a field below and the base auto-derives from its view.
+                Once derived, the chip stays informative even for single-
+                table charts ("Base: Meetings") and grows to show JOIN count
+                or joinable potential when relationships exist. */}
+            {selectedSemanticView && (() => {
+              const baseLabel = getSemanticViewDisplayName(selectedSemanticView);
+              const crossUsed = activeRelationshipSummary.crossTableInUse;
+              const joinedCount = activeRelationshipSummary.crossTableViews?.length ?? 0;
+              const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
+              const hasJoined = crossUsed && joinedCount > 0;
+              const hasJoinable = !crossUsed && joinableCount > 0;
+              const tone = hasJoined
+                ? 'border-success/40 bg-success/10 text-success'
+                : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
+              const suffix = hasJoined
+                ? ` · 🔗 +${joinedCount} joined`
+                : hasJoinable
+                  ? ` · 🔌 +${joinableCount} joinable`
+                  : '';
+              const tip = hasJoined
+                ? `Bảng gốc: ${baseLabel}. Chart đang JOIN ${joinedCount} bảng khác qua relationship: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
+                : hasJoinable
+                  ? `Bảng gốc: ${baseLabel} (auto-derive từ field đầu tiên). ${joinableCount} bảng đang reachable qua relationship — pick field từ chúng để JOIN.`
+                  : `Bảng gốc: ${baseLabel}. Auto-derive từ field đầu tiên user pick. Đổi bằng cách clear hết field và pick lại.`;
+              return (
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
+                  title={tip}
+                >
+                  Base: {baseLabel}{suffix}
+                </span>
+              );
+            })()}
           </div>
 
           {/* Right: status + limit + run + save (+ desc note) */}
@@ -2529,8 +2600,14 @@ export function ExploreEditor({
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Choose a dataset table to start</p>
-                    <p className="mt-1 text-xs text-text-quaternary">The source selector lives in the header now.</p>
+                    <p className="text-sm font-medium text-text-secondary">
+                      {selectedDatasetId ? 'Pick a field below to start' : 'Choose a dataset to start'}
+                    </p>
+                    <p className="mt-1 text-xs text-text-quaternary">
+                      {selectedDatasetId
+                        ? 'Base table sẽ auto-derive từ field đầu tiên user pick. Field từ bảng khác sẽ auto-JOIN qua relationship.'
+                        : 'Pick dataset in the header, then drag fields from the column panel.'}
+                    </p>
                   </div>
                 </div>
               ) : !displayedQueryState ? (
