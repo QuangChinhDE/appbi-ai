@@ -1723,15 +1723,78 @@ function TimeGrainSlot({
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MetricSlot ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â PowerBI-style pill with per-field aggregation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+/**
+ * Phase-15.16: validity matrix per aggregation × column-type.
+ *
+ *   SUM / AVG          → numeric only
+ *   MIN / MAX          → any orderable type (numeric, date, string)
+ *   COUNT              → any column (it counts non-null rows of that column)
+ *   COUNT_DISTINCT     → any column
+ *
+ * The previous MetricSlot enforced this by SPLITTING the picker into two —
+ * one numeric-only "+ add value..." (defaulting to SUM) and a second
+ * "+ count any field..." (defaulting to COUNT). DA feedback: only the
+ * first picker was discoverable; the second got missed, and text columns
+ * could not be added to chart Values at all. The fix is a single unified
+ * picker that lets DA pick ANY column and picks a smart default agg —
+ * incompatible (column × agg) combinations stay reachable but light up
+ * the pill with a warning + tooltip explaining which aggs do work.
+ */
+function isMetricAggValidForCol(agg: AggFn, col: Col | undefined): boolean {
+  if (!col) return true; // unknown col — don't block; engine will surface real error
+  const numeric = isNumeric(col);
+  switch (agg) {
+    case 'sum':
+    case 'avg':
+      return numeric;
+    case 'min':
+    case 'max':
+      // Numeric, date, and string are all orderable — MIN/MAX of a string
+      // returns the alphabetically first/last value, which is useful for
+      // "first opened ticket subject", etc.
+      return true;
+    case 'count':
+    case 'count_distinct':
+      return true;
+    case 'auto':
+      return true;
+    default:
+      return true;
+  }
+}
+
+function defaultMetricAggForCol(col: Col | undefined): AggFn {
+  if (!col) return 'sum';
+  if (isMeasureField(col)) {
+    // Declared semantic measure — pass 'auto' so BE uses the measure's
+    // stored aggregation. Phase-15.7 hardened the engine to honour this.
+    return 'auto';
+  }
+  if (isNumeric(col)) return 'sum';
+  // Text / date / yesno → count_distinct is almost always what DA wants
+  // (count of unique users / orders / regions). Plain COUNT degenerates
+  // to row count once a dimension is present.
+  return 'count_distinct';
+}
+
+function describeValidAggs(col: Col | undefined): string {
+  if (!col) return '';
+  const labels = AGG_OPTIONS
+    .filter((opt) => isMetricAggValidForCol(opt.value, col))
+    .map((opt) => opt.label);
+  return labels.join(' / ');
+}
+
 function MetricSlot({
   label, required, hint, single, value, options, allOptions, declaredMeasureRefs, onChange,
 }: {
   label: string; required?: boolean; hint?: string;
   single?: boolean;
   value: MetricConfig[];
-  /** Numeric columns (allowed for SUM/AVG/MIN/MAX). */
+  /** Numeric columns (legacy — kept for the SUM-default ranking inside
+   *  the picker only). The picker itself draws from `allOptions`. */
   options: Col[];
-  /** All columns including non-numeric (allowed for COUNT/COUNT_DISTINCT). Defaults to options. */
+  /** All columns including non-numeric. Defaults to options for back-compat. */
   allOptions?: Col[];
   /** Phase-15.7: qualified refs that ARE declared semantic measures. Used
    *  to distinguish "user picked a declared measure" (no badge) from
@@ -1741,20 +1804,24 @@ function MetricSlot({
   onChange: (v: MetricConfig[]) => void;
 }) {
   const missing = required && value.length === 0;
-  const numericNames = useMemo(() => new Set(options.map((o) => o.name)), [options]);
   const fullOptions = allOptions ?? options;
+  const fullOptionsByName = useMemo(() => {
+    const map = new Map<string, Col>();
+    for (const c of fullOptions) map.set(c.name, c);
+    return map;
+  }, [fullOptions]);
 
-  const addField = (fieldName: string, agg: AggFn = 'sum') => {
+  const addField = (fieldName: string) => {
     if (!fieldName) return;
     if (value.find(m => m.field === fieldName)) return;
+    const col = fullOptionsByName.get(fieldName);
+    const agg = defaultMetricAggForCol(col);
     // Phase-15.7: implicit detect tightened. A metric is implicit when it
     // points to ANYTHING that isn't a declared semantic measure — that
     // covers (a) bare names (no qualifier) AND (b) qualified names whose
     // target view doesn't have a measure of that name (i.e. the BE will
     // synthesise SUM/AVG/... at query time via the implicit-fallback in
-    // semantic_query_engine._render_measure). Hiding the badge for
-    // explicit measures keeps the "auto" hint truthful — DA doesn't see
-    // it on measures they've actually declared.
+    // semantic_query_engine._render_measure).
     const isQualified = fieldName.includes('.');
     const isExplicit = isQualified && (declaredMeasureRefs?.has(fieldName) ?? false);
     const next: MetricConfig = isExplicit
@@ -1765,21 +1832,15 @@ function MetricSlot({
 
   const removeField = (fieldName: string) => onChange(value.filter(m => m.field !== fieldName));
 
-  // Changing agg may invalidate field type: SUM/AVG/MIN/MAX require numeric.
-  // If incompatible after switch, drop the metric silently rather than leaving
-  // a broken row that produces garbage SQL.
+  // Phase-15.16: KEEP the metric on agg change even when the new agg is
+  // not compatible with the column type. The previous behaviour was to
+  // silently drop the row, leaving DA wondering why the chart suddenly
+  // emptied out. Now the pill stays, gets a warning style, and tooltips
+  // explain which aggs are valid for the column.
   const changeAgg = (fieldName: string, agg: AggFn) =>
-    onChange(value.flatMap((m) => {
-      if (m.field !== fieldName) return [m];
-      const numericRequired = agg === 'sum' || agg === 'avg' || agg === 'min' || agg === 'max';
-      if (numericRequired && !numericNames.has(m.field)) {
-        return [];
-      }
-      return [{ ...m, agg }];
-    }));
+    onChange(value.map((m) => (m.field === fieldName ? { ...m, agg } : m)));
 
-  const available = options.filter(o => !value.find(m => m.field === o.name));
-  const availableForCount = fullOptions.filter(o => !value.find(m => m.field === o.name));
+  const available = fullOptions.filter(o => !value.find(m => m.field === o.name));
 
   return (
     <div>
@@ -1792,64 +1853,90 @@ function MetricSlot({
       {/* Metric pills */}
       {value.length > 0 && (
         <div className="space-y-1.5 mb-2">
-          {value.map(m => (
-            <div key={m.field}
-              className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-md border border-brand/30 bg-brand/10"
-            >
-              <select
-                value={m.agg}
-                onChange={e => changeAgg(m.field, e.target.value as AggFn)}
-                className="text-xs font-bold text-brand bg-transparent border-none outline-none cursor-pointer"
+          {value.map(m => {
+            const col = fullOptionsByName.get(m.field);
+            const aggValid = isMetricAggValidForCol(m.agg, col);
+            const validList = describeValidAggs(col);
+            const pillClass = aggValid
+              ? 'border-brand/30 bg-brand/10'
+              : 'border-warning/50 bg-warning/10';
+            const aggClass = aggValid ? 'text-brand' : 'text-warning';
+            const labelClass = aggValid ? 'text-brand' : 'text-warning';
+            const removeClass = aggValid
+              ? 'hover:bg-brand-hover text-brand'
+              : 'hover:bg-warning/20 text-warning';
+            return (
+              <div
+                key={m.field}
+                className={`flex items-center gap-1 pl-2 pr-1 py-1 rounded-md border ${pillClass}`}
               >
-                {AGG_OPTIONS.map(a => (
-                  <option key={a.value} value={a.value}>{a.label}</option>
-                ))}
-              </select>
-              <span className="flex-1 text-xs text-brand truncate" title={m.field}>{(() => { const o = fullOptions.find(x => x.name === m.field); return o ? colLabel(o) : m.field; })()}</span>
-              {m._implicit && (
-                <span
-                  className="rounded bg-warning/10 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
+                <select
+                  value={m.agg}
+                  onChange={e => changeAgg(m.field, e.target.value as AggFn)}
+                  className={`text-xs font-bold bg-transparent border-none outline-none cursor-pointer ${aggClass}`}
                   title={
-                    "Measure tạm — FE tự tạo từ cột raw. Để dùng lại ở chart khác, " +
-                    "vào Data Model tab và Add Measure với cùng cột + agg."
+                    aggValid
+                      ? undefined
+                      : `${m.agg.toUpperCase()} không dùng được trên cột type=${col?.type || 'unknown'}. Aggs hợp lệ: ${validList || 'không có'}.`
                   }
                 >
-                  auto
+                  {AGG_OPTIONS.map(a => {
+                    const compatible = isMetricAggValidForCol(a.value, col);
+                    return (
+                      <option key={a.value} value={a.value}>
+                        {compatible ? a.label : `${a.label} ✕`}
+                      </option>
+                    );
+                  })}
+                </select>
+                <span className={`flex-1 text-xs truncate ${labelClass}`} title={m.field}>
+                  {col ? colLabel(col) : m.field}
                 </span>
-              )}
-              <button onClick={() => removeField(m.field)}
-                className="p-0.5 rounded hover:bg-brand-hover text-brand flex-shrink-0"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          ))}
+                {!aggValid && (
+                  <span
+                    className="rounded bg-warning/20 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
+                    title={`Cảnh báo: ${m.agg.toUpperCase()} không tương thích với type=${col?.type || 'unknown'}. Đổi sang ${validList} để hết warning.`}
+                  >
+                    ⚠ Incompatible
+                  </span>
+                )}
+                {m._implicit && aggValid && (
+                  <span
+                    className="rounded bg-warning/10 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
+                    title={
+                      "Measure tạm — FE tự tạo từ cột raw. Để dùng lại ở chart khác, " +
+                      "vào Data Model tab và Add Measure với cùng cột + agg."
+                    }
+                  >
+                    auto
+                  </span>
+                )}
+                <button
+                  onClick={() => removeField(m.field)}
+                  className={`p-0.5 rounded flex-shrink-0 ${removeClass}`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Add field — SUM/AVG/etc. on numeric columns. */}
+      {/* Phase-15.16: single unified picker. All column types are pickable;
+          a smart default agg is chosen (numeric → SUM, declared measure →
+          auto, anything else → COUNT_DISTINCT). User can switch agg via
+          the dropdown afterwards; incompatible combos show a warning
+          instead of being silently dropped. */}
       {(!single || value.length === 0) && (
         <FieldPicker
           options={available}
-          placeholder={available.length === 0 ? 'all numeric fields added' : '+ add value...'}
-          emptyLabel="No numeric fields available"
+          placeholder={available.length === 0 ? 'all fields added' : '+ add value (any column)…'}
+          emptyLabel="No fields available"
           disabled={available.length === 0}
           invalid={missing}
-          onSelect={(fieldName) => addField(fieldName, 'sum')}
+          onSelect={addField}
         />
-      )}
-
-      {/* Add count — COUNT/COUNT_DISTINCT works on any column type. */}
-      {(!single || value.length === 0) && allOptions && (
-        <div className="mt-1">
-          <FieldPicker
-            options={availableForCount}
-            placeholder={availableForCount.length === 0 ? 'all fields added' : '+ count any field...'}
-            emptyLabel="No fields available"
-            disabled={availableForCount.length === 0}
-            onSelect={(fieldName) => addField(fieldName, 'count')}
-          />
-        </div>
       )}
     </div>
   );
