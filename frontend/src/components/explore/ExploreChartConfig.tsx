@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AreaChart,
@@ -1250,6 +1250,46 @@ function SectionPanel({
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SelectSlot ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+/**
+ * Phase-15.10/15.11: shared chart-config context for every FieldPicker
+ * rendered inside the same ExploreChartConfig tree.
+ *
+ * - `baseViewName` lets pickers tag cross-table fields with a JOIN cue.
+ * - `joinKeyRefs` lets pickers hide PK/FK columns by default (they exist
+ *   for relationship wiring, not for charting). A "Show JOIN keys" toggle
+ *   in each picker opens the escape hatch when power users need them.
+ *
+ * Held in context (vs. prop-drilling) because there are ~50 picker call
+ * sites and threading two more props through every SelectSlot/MetricSlot
+ * would be pure line-noise.
+ */
+const FieldPickerContext = createContext<{
+  baseViewName: string | null;
+  joinKeyRefs: Set<string>;
+}>({ baseViewName: null, joinKeyRefs: new Set() });
+
+/**
+ * Phase-15.11 — FieldPicker rewrite.
+ *
+ * Old design used 10 quick-filter chips (Suggested / Same view / Source /
+ * Calculated / Measures / Dimensions / Numeric / Dates / IDs / All). DA
+ * feedback: too many overlapping classifications and the "Source" chip
+ * collided with the top-bar "Source" selector concept. With Phase 15.10
+ * dropping the base-table picker, the natural grouping is now BY TABLE
+ * (semantic view) — same shape as PowerBI / Looker Fields panes.
+ *
+ * Behaviour:
+ *   - Search bar at top stays
+ *   - "Show JOIN keys" toggle at top-right exposes PK/FK columns that are
+ *     normally hidden (they're for relationship wiring, not charting)
+ *   - Body is grouped by view, with a sticky header per group showing
+ *     "View name · (count)" and a collapse caret
+ *   - Each group sorted: dimensions first, measures last, alphabetical
+ *     within each
+ *   - Base view (from context) renders first; remaining views alphabetical
+ *   - When user has a query, every matching group auto-expands so search
+ *     surfaces hits without manual unfolding
+ */
 function FieldPicker({
   value = '',
   options,
@@ -1269,90 +1309,112 @@ function FieldPicker({
   onSelect: (v: string) => void;
   onClear?: () => void;
 }) {
+  const { baseViewName, joinKeyRefs } = useContext(FieldPickerContext);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState<'suggested' | 'view' | 'source' | 'calculated' | 'measures' | 'dimensions' | 'numeric' | 'dates' | 'ids' | 'all'>('suggested');
+  const [showKeys, setShowKeys] = useState(false);
+  const [collapsedViews, setCollapsedViews] = useState<Set<string>>(() => new Set());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const selected = value ? options.find((option) => option.name === value) : undefined;
   const selectedMeta = selected ? fieldDisplayMeta(selected) : null;
   const q = query.trim().toLowerCase();
-  const primaryView = useMemo(() => {
-    const selectedView = selected ? (selected.viewName || fieldViewName(selected.name)) : null;
-    if (selectedView) return selectedView;
-    const counts = new Map<string, number>();
-    for (const option of options) {
-      const view = option.viewName || fieldViewName(option.name);
-      if (view) counts.set(view, (counts.get(view) ?? 0) + 1);
+
+  // Determine which options carry a JOIN-key signal. We hide them by
+  // default — DA never wants `customer_id` on the chart axis. Power users
+  // can flip "Show JOIN keys" to see them.
+  const isJoinKey = useCallback((option: Col): boolean => {
+    if (!joinKeyRefs || joinKeyRefs.size === 0) return false;
+    if (joinKeyRefs.has(option.name)) return true;
+    // Also tolerate bare names from raw preview columns: if the option has
+    // a viewName (or qualified prefix), check `view.bare`.
+    const v = option.viewName || fieldViewName(option.name);
+    if (v) {
+      const bare = option.name.includes('.') ? option.name.split('.').slice(1).join('.') : option.name;
+      if (joinKeyRefs.has(`${v}.${bare}`)) return true;
     }
-    let best: string | null = null;
-    let bestCount = 0;
-    for (const [view, count] of counts) {
-      if (count > bestCount) {
-        best = view;
-        bestCount = count;
+    return false;
+  }, [joinKeyRefs]);
+
+  // Group options by their owning view. Calculated / SQL-output / raw
+  // columns without a resolvable view fall into a synthetic "Other"
+  // bucket so they remain pickable. Hidden join-key columns are filtered
+  // upstream of the grouping unless `showKeys` is on.
+  const groups = useMemo(() => {
+    const buckets = new Map<string, { viewName: string; viewLabel: string; options: Col[] }>();
+    for (const option of options) {
+      if (!showKeys && isJoinKey(option)) continue;
+      const viewName = option.viewName || fieldViewName(option.name) || '__other__';
+      const viewLabel = (() => {
+        if (viewName === '__other__') {
+          if (option.sourceKind === 'custom' || option.viewLabel === 'SQL output') return 'SQL output';
+          if (option.sourceKind === 'calculated') return 'Calculated';
+          return 'Other';
+        }
+        const explicit = option.viewLabel || option.tableLabel;
+        if (explicit?.trim()) return explicit.trim();
+        if (!/^dataset_table_\d+$/i.test(viewName)) return humanizeIdentifier(viewName);
+        return viewName;
+      })();
+      let bucket = buckets.get(viewName);
+      if (!bucket) {
+        bucket = { viewName, viewLabel, options: [] };
+        buckets.set(viewName, bucket);
+      }
+      bucket.options.push(option);
+    }
+    // Sort within each bucket: dimensions/non-measure first, measures last,
+    // alphabetical by label inside each segment.
+    for (const bucket of buckets.values()) {
+      bucket.options.sort((a, b) => {
+        const aMeas = isMeasureField(a) ? 1 : 0;
+        const bMeas = isMeasureField(b) ? 1 : 0;
+        if (aMeas !== bMeas) return aMeas - bMeas;
+        return colLabel(a).localeCompare(colLabel(b));
+      });
+    }
+    // Order groups: base view first, then alphabetical by label.
+    const out = Array.from(buckets.values());
+    out.sort((a, b) => {
+      const aBase = baseViewName && a.viewName === baseViewName ? 0 : 1;
+      const bBase = baseViewName && b.viewName === baseViewName ? 0 : 1;
+      if (aBase !== bBase) return aBase - bBase;
+      return a.viewLabel.localeCompare(b.viewLabel);
+    });
+    return out;
+  }, [options, baseViewName, showKeys, isJoinKey]);
+
+  // Apply the search query AFTER grouping so each group keeps its identity
+  // (count, header) even when filtered. Empty groups drop out.
+  const filteredGroups = useMemo(() => {
+    if (!q) return groups;
+    const out: typeof groups = [];
+    for (const group of groups) {
+      const matches = group.options.filter((option) => {
+        const meta = fieldDisplayMeta(option);
+        const badges = fieldBadges(option).map((b) => b.label).join(' ');
+        return `${meta.label} ${option.name} ${option.type} ${meta.view ?? ''} ${fieldSourceLabel(option)} ${badges}`.toLowerCase().includes(q);
+      });
+      if (matches.length > 0) {
+        out.push({ ...group, options: matches });
       }
     }
-    return best;
-  }, [options, selected]);
-  const suggestedOptions = useMemo(
-    () => options.filter((option) => !isIdentifierLikeOption(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const sameViewOptions = useMemo(
-    () => primaryView ? options.filter((option) => (option.viewName || fieldViewName(option.name)) === primaryView).sort(compareFieldOptions) : [],
-    [options, primaryView],
-  );
-  const dimensionOptions = useMemo(
-    () => options.filter((option) => isDimensionField(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const sourceOptions = useMemo(
-    () => options.filter((option) => isSourceField(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const calculatedOptions = useMemo(
-    () => options.filter((option) => isCalculatedField(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const measureOptions = useMemo(
-    () => options.filter((option) => isMeasureField(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const numericOptions = useMemo(
-    () => options.filter((option) => isNumeric(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const dateOptions = useMemo(
-    () => options.filter((option) => isTimelike(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const idOptions = useMemo(
-    () => options.filter((option) => isIdentifierLikeOption(option)).sort(compareFieldOptions),
-    [options],
-  );
-  const allOptions = useMemo(() => [...options].sort(compareFieldOptions), [options]);
-  const quickFilters = useMemo(() => [
-    { key: 'suggested' as const, label: 'Suggested', options: suggestedOptions },
-    ...(sameViewOptions.length > 0 ? [{ key: 'view' as const, label: selected ? 'Same view' : 'Main view', options: sameViewOptions }] : []),
-    ...(sourceOptions.length > 0 ? [{ key: 'source' as const, label: 'Source', options: sourceOptions }] : []),
-    ...(calculatedOptions.length > 0 ? [{ key: 'calculated' as const, label: 'Calculated', options: calculatedOptions }] : []),
-    ...(measureOptions.length > 0 ? [{ key: 'measures' as const, label: 'Measures', options: measureOptions }] : []),
-    ...(dimensionOptions.length > 0 ? [{ key: 'dimensions' as const, label: 'Dimensions', options: dimensionOptions }] : []),
-    ...(numericOptions.length > 0 ? [{ key: 'numeric' as const, label: 'Numeric', options: numericOptions }] : []),
-    ...(dateOptions.length > 0 ? [{ key: 'dates' as const, label: 'Dates', options: dateOptions }] : []),
-    ...(idOptions.length > 0 ? [{ key: 'ids' as const, label: 'IDs', options: idOptions }] : []),
-    { key: 'all' as const, label: 'All', options: allOptions },
-  ], [allOptions, calculatedOptions, dateOptions, dimensionOptions, idOptions, measureOptions, numericOptions, sameViewOptions, selected, sourceOptions, suggestedOptions]);
-  const activeQuickFilter = quickFilters.find((filter) => filter.key === activeFilter) ?? quickFilters[0];
-  const filteredOptions = useMemo(() => {
-    const base = q ? allOptions : activeQuickFilter.options;
-    if (!q) return base;
-    return base.filter((option) => {
-      const meta = fieldDisplayMeta(option);
-      const badges = fieldBadges(option).map((badge) => badge.label).join(' ');
-      return `${meta.label} ${option.name} ${option.type} ${meta.view ?? ''} ${fieldSourceLabel(option)} ${badges}`.toLowerCase().includes(q);
+    return out;
+  }, [groups, q]);
+
+  const totalCount = filteredGroups.reduce((sum, g) => sum + g.options.length, 0);
+
+  // Auto-expand all groups while a query is active so search hits are
+  // visible without manual unfolding. Manual collapse state only applies
+  // when no query.
+  const isCollapsed = (viewName: string) => !q && collapsedViews.has(viewName);
+  const toggleGroup = (viewName: string) => {
+    setCollapsedViews((prev) => {
+      const next = new Set(prev);
+      if (next.has(viewName)) next.delete(viewName);
+      else next.add(viewName);
+      return next;
     });
-  }, [activeQuickFilter.options, allOptions, q]);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -1381,7 +1443,6 @@ function FieldPicker({
           if (disabled) return;
           setOpen((current) => !current);
           setQuery('');
-          setActiveFilter('suggested');
         }}
         className={`flex min-h-[2.35rem] w-full items-center justify-between gap-2 rounded-md border bg-surface-1 px-2.5 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
           invalid
@@ -1408,26 +1469,6 @@ function FieldPicker({
       {open && (
         <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
           <div className="border-b border-[rgb(var(--border-line))] p-2">
-            <div className="mb-2 flex flex-wrap gap-1">
-              {quickFilters.map((filter) => (
-                <button
-                  key={filter.key}
-                  type="button"
-                  onClick={() => {
-                    setActiveFilter(filter.key);
-                    setQuery('');
-                  }}
-                  className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    activeQuickFilter.key === filter.key
-                      ? 'border-brand bg-brand/10 text-brand'
-                      : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
-                  }`}
-                >
-                  {filter.label}
-                  <span className="ml-1 text-text-quaternary">{filter.options.length}</span>
-                </button>
-              ))}
-            </div>
             <div className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5">
               <Search className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
               <input
@@ -1447,13 +1488,28 @@ function FieldPicker({
                 </button>
               )}
             </div>
+            <div className="mt-2 flex items-center justify-between text-[10px] text-text-quaternary">
+              <span className="font-semibold uppercase tracking-wide">
+                {q ? `${totalCount} match${totalCount === 1 ? '' : 'es'}` : `${filteredGroups.length} table${filteredGroups.length === 1 ? '' : 's'} · ${totalCount} field${totalCount === 1 ? '' : 's'}`}
+              </span>
+              {joinKeyRefs && joinKeyRefs.size > 0 && (
+                <label
+                  className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-surface-2"
+                  title="JOIN-key columns (PK/FK) are hidden by default — they exist for relationship wiring, not for charting."
+                >
+                  <input
+                    type="checkbox"
+                    checked={showKeys}
+                    onChange={(e) => setShowKeys(e.target.checked)}
+                    className="h-3 w-3 accent-brand"
+                  />
+                  Show JOIN keys
+                </label>
+              )}
+            </div>
           </div>
 
-          <div className="max-h-64 overflow-y-auto py-1">
-            <div className="flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
-              <span>{q ? 'Search results' : activeQuickFilter.label}</span>
-              <span>{filteredOptions.length}</span>
-            </div>
+          <div className="max-h-72 overflow-y-auto py-1">
             {onClear && value && (
               <button
                 type="button"
@@ -1466,48 +1522,83 @@ function FieldPicker({
                 <span>Clear selection</span>
               </button>
             )}
-            {filteredOptions.length === 0 ? (
+            {filteredGroups.length === 0 ? (
               <div className="px-3 py-5 text-center text-xs italic text-text-quaternary">
                 {emptyLabel}
               </div>
             ) : (
-              filteredOptions.map((option) => {
-                const meta = fieldDisplayMeta(option);
-                const active = option.name === value;
-                const badges = fieldBadges(option);
+              filteredGroups.map((group) => {
+                const collapsed = isCollapsed(group.viewName);
                 return (
-                  <button
-                    key={option.name}
-                    type="button"
-                    onClick={() => {
-                      onSelect(option.name);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${
-                      active ? 'bg-brand/10' : 'hover:bg-surface-2'
-                    }`}
-                    title={option.name}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-xs font-medium ${active ? 'text-brand' : 'text-text-secondary'}`}>
-                        {meta.label}
+                  <div key={group.viewName} className="border-b border-[rgb(var(--border-line))] last:border-b-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.viewName)}
+                      className="sticky top-0 z-10 flex w-full items-center justify-between gap-2 bg-surface-2 px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-text-tertiary hover:bg-surface-3"
+                    >
+                      <span className="inline-flex items-center gap-1.5 truncate">
+                        <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                        <span className="truncate normal-case tracking-normal">{group.viewLabel}</span>
+                        {baseViewName && group.viewName === baseViewName && (
+                          <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[9px] font-medium text-brand">base</span>
+                        )}
                       </span>
-                      <span className="mt-0.5 block truncate text-[10px] text-text-quaternary">
-                        {fieldSecondaryText(option)}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 flex-wrap justify-end gap-1">
-                      {badges.map((badge) => (
-                        <span
-                          key={badge.label}
-                          className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+                      <span className="text-text-quaternary">{group.options.length}</span>
+                    </button>
+                    {!collapsed && group.options.map((option) => {
+                      const meta = fieldDisplayMeta(option);
+                      const active = option.name === value;
+                      const badges = fieldBadges(option);
+                      const optionViewName = option.viewName || fieldViewName(option.name);
+                      const isCrossTable = Boolean(
+                        baseViewName
+                        && optionViewName
+                        && optionViewName !== baseViewName
+                      );
+                      return (
+                        <button
+                          key={option.name}
+                          type="button"
+                          onClick={() => {
+                            onSelect(option.name);
+                            setOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${
+                            active ? 'bg-brand/10' : 'hover:bg-surface-2'
+                          }`}
+                          title={option.name}
                         >
-                          {badge.label}
-                        </span>
-                      ))}
-                    </span>
-                    {active && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
-                  </button>
+                          <span className="min-w-0 flex-1">
+                            <span className={`block truncate text-xs font-medium ${active ? 'text-brand' : 'text-text-secondary'}`}>
+                              {meta.label}
+                            </span>
+                            <span className="mt-0.5 block truncate text-[10px] text-text-quaternary">
+                              {fieldTypeLabel(option)}
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                            {isCrossTable && (
+                              <span
+                                className="inline-flex items-center gap-0.5 rounded-full bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info"
+                                title={`Cross-table — pick để JOIN ${optionViewName} với base ${baseViewName} qua relationship`}
+                              >
+                                JOIN
+                              </span>
+                            )}
+                            {badges.map((badge) => (
+                              <span
+                                key={badge.label}
+                                className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+                              >
+                                {badge.label}
+                              </span>
+                            ))}
+                          </span>
+                          {active && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
+                        </button>
+                      );
+                    })}
+                  </div>
                 );
               })
             )}
@@ -1954,6 +2045,18 @@ interface ExploreChartConfigProps {
    * Hiding the badge for declared measures keeps the UI honest.
    */
   declaredMeasureRefs?: Set<string>;
+  /**
+   * Phase-15.10: name of the chart's base semantic view. Forwarded into
+   * FieldPickerContext so cross-table options get a "JOIN" cue.
+   */
+  baseViewName?: string | null;
+  /**
+   * Phase-15.11: qualified refs (`view.bare_column`) of every column that
+   * participates in an active JoinDefinition on either side. FieldPickers
+   * hide these from the dropdown by default — DA never charts by raw FK
+   * IDs — and expose a "Show JOIN keys" toggle for the rare override.
+   */
+  joinKeyRefs?: Set<string>;
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
@@ -1973,6 +2076,8 @@ export function ExploreChartConfig({
   availableSeriesKeys = [],
   dimChildrenMap,
   declaredMeasureRefs,
+  baseViewName,
+  joinKeyRefs,
   onChartTypeChange,
   onRoleConfigChange,
   onStyleConfigChange,
@@ -2322,7 +2427,19 @@ export function ExploreChartConfig({
 
   const CurrentChartIcon = currentChartTypeMeta.icon;
 
+  // Phase-15.11: stable context value so child FieldPickers do not
+  // re-render on every parent render. The `joinKeyRefs` fallback to an
+  // empty Set keeps the type tight even when the prop is undefined.
+  const fieldPickerCtx = useMemo(
+    () => ({
+      baseViewName: baseViewName ?? null,
+      joinKeyRefs: joinKeyRefs ?? new Set<string>(),
+    }),
+    [baseViewName, joinKeyRefs],
+  );
+
   return (
+    <FieldPickerContext.Provider value={fieldPickerCtx}>
     <div className={`space-y-4 p-4${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
       {validationMessage && (
         <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -3914,5 +4031,6 @@ export function ExploreChartConfig({
         </SectionPanel>
       )}
     </div>
+    </FieldPickerContext.Provider>
   );
 }

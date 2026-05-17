@@ -1165,6 +1165,48 @@ export function ExploreEditor({
   }, [reachableSemanticViews]);
 
   /**
+   * Phase-15.11 — JOIN-key column refs.
+   *
+   * Columns that appear on either side of a JoinDefinition are PK/FK in
+   * practice — they exist so the engine can wire JOINs, not so DA can
+   * group/aggregate by them. Surfacing them in the chart picker pollutes
+   * Suggested with values like `id`, `customer_id`, `order_id` that are
+   * almost never the chart's intent. We collect them up-front and pass
+   * down so FieldPicker can hide them by default (with a "Show JOIN keys"
+   * escape hatch for power users).
+   *
+   * Each ref is `view_name.bare_column_name`. We pull from BOTH
+   * from_column/to_column singletons AND from_columns/to_columns arrays
+   * (composite keys). Empty / unresolved sides are skipped.
+   */
+  const joinKeyRefs = useMemo<Set<string>>(() => {
+    const out = new Set<string>();
+    if (!datasetModel) return out;
+    const explores = datasetModel.explores ?? [];
+    const baseByExplore = new Map<number, string>();
+    for (const explore of explores) {
+      if (explore.base_view_name) baseByExplore.set(explore.id, explore.base_view_name);
+    }
+    for (const explore of explores) {
+      const baseView = baseByExplore.get(explore.id);
+      for (const join of explore.joins ?? []) {
+        if (join.is_active === false) continue;
+        const fromView = join.from_view || baseView;
+        const toView = join.view; // join.view = the joined-in view
+        const pushPair = (view: string | undefined, col: string | undefined) => {
+          if (!view || !col) return;
+          out.add(`${view}.${col}`);
+        };
+        pushPair(fromView, join.from_column);
+        pushPair(toView, join.to_column);
+        for (const col of join.from_columns ?? []) pushPair(fromView, col);
+        for (const col of join.to_columns ?? []) pushPair(toView, col);
+      }
+    }
+    return out;
+  }, [datasetModel]);
+
+  /**
    * Phase-15.1 — Hierarchy map for drill-down UX.
    *
    * Maps qualified child field name → qualified parent field name, derived
@@ -1436,12 +1478,36 @@ export function ExploreEditor({
       viewLabel: 'SQL output',
     }));
   }, [customQueryState?.columns]);
+  /**
+   * Phase-15.11: dedup preview ↔ semantic columns from the same base view.
+   *
+   * Without this, the picker shows e.g. `role_pic_bc` twice: once as a
+   * physical-preview column (sourceKind='source', tag "Raw"), once as a
+   * semantic dim (`Meetings.role_pic_bc`, sourceKind='semantic', tag "Dim").
+   * They are the same column displayed under different identities — DA
+   * sees a fake duplicate. Preferring the semantic version keeps the
+   * qualified-ref contract (BE routes via SemanticQueryEngine) and hides
+   * the redundant raw row.
+   */
+  const dedupedPreviewColumns = useMemo<ColumnMetadata[]>(() => {
+    if (!previewColumns.length) return previewColumns;
+    if (!semanticColumns.length) return previewColumns;
+    const baseViewName = selectedSemanticView?.name;
+    if (!baseViewName) return previewColumns; // pre-derive state — leave alone
+    const semanticBareInBaseView = new Set<string>();
+    for (const c of semanticColumns) {
+      if (c.viewName !== baseViewName) continue;
+      const bare = c.name.includes('.') ? c.name.split('.').slice(1).join('.') : c.name;
+      semanticBareInBaseView.add(bare);
+    }
+    return previewColumns.filter((c) => !semanticBareInBaseView.has(c.name));
+  }, [previewColumns, semanticColumns, selectedSemanticView]);
   const configColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
-    : [...previewColumns, ...semanticColumns];
+    : [...dedupedPreviewColumns, ...semanticColumns];
   const filterColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
-    : [...previewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];
+    : [...dedupedPreviewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];
   const filterRows = sqlMode === 'custom'
     ? (customQueryState?.rows ?? [])
     : previewRows;
@@ -2489,6 +2555,8 @@ export function ExploreEditor({
                     availableSeriesKeys={previewSeriesKeys}
                     dimChildrenMap={dimHierarchy.childrenOf}
                     declaredMeasureRefs={declaredMeasureRefs}
+                    baseViewName={selectedSemanticView?.name ?? null}
+                    joinKeyRefs={joinKeyRefs}
                     onChartTypeChange={handleChartTypeChange}
                     onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
                     onStyleConfigChange={setChartStyleConfig}
