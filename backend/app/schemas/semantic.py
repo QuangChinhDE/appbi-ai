@@ -27,6 +27,14 @@ class DimensionDefinition(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+    # Phase-13: optional drill-down parent. Pure metadata — engine doesn't
+    # consume it; FE Explore uses it to surface "drill down to <child>"
+    # actions and to group related dimensions in the column panel.
+    # MUST point to another dimension's `name` on the SAME view (validator
+    # at view-save time enforces this). Does NOT create a new calculation
+    # mechanism — drill is purely "swap one dimension for another" at query
+    # time. Keeps Phase-1 "2 cơ chế" invariant intact.
+    parent: Optional[str] = None
 
     @field_validator("sql")
     @classmethod
@@ -94,6 +102,50 @@ class MeasureSourceColumn(BaseModel):
     field: str
 
 
+class ContextModifier(BaseModel):
+    """Phase-14: a single filter-context modifier on a Measure.
+
+    Maps loosely to DAX `CALCULATE(measure, modifier1, modifier2)`. We
+    intentionally only cover the 3 modifier kinds that compile cleanly to
+    SQL window functions:
+
+      * ``type="all"``        — emit the measure as a window aggregate
+                                with NO partition (i.e. the grand total
+                                across the result set). Used for
+                                "% of total".
+      * ``type="all_except"`` — window aggregate partitioned only by the
+                                fields listed in ``keep_fields``; every
+                                other dim is "blanked" from the context.
+                                Used for "% of region total".
+      * ``type="use_relationship"`` — pick a specific JOIN alias from the
+                                explore's join graph instead of the
+                                default path. Mirrors PowerBI's
+                                USERELATIONSHIP(). The alias must match
+                                a `JoinDefinition.alias` declared in
+                                the dataset's SemanticExplore.joins.
+                                **Phase-14 status: schema only.** The
+                                engine accepts the modifier (validates the
+                                alias exists) but does NOT yet route via
+                                that alias when compiling FROM/JOIN. A
+                                follow-up phase will wire it in once the
+                                'all' / 'all_except' paths have settled.
+
+    What we deliberately did NOT add: ``type="filter"`` (overlaps with
+    the existing ``filters[]`` + ``where_sql`` fields on MeasureDefinition
+    — adding a third spelling would re-introduce the "user doesn't know
+    which to use" problem Phase-1 fixed) and row-iterator modifiers
+    (SUMX/RANKX-equivalents — those need row context, not expressible as
+    a single SQL window).
+    """
+    type: Literal["all", "all_except", "use_relationship"]
+    # For type='all_except'. Names of dimensions on the chart's anchor
+    # view to KEEP in the partition. Other slicer dims drop out.
+    keep_fields: List[str] = Field(default_factory=list)
+    # For type='use_relationship'. The alias of a JoinDefinition on the
+    # dataset's SemanticExplore. Validator (BE save-time) checks it.
+    join_alias: Optional[str] = None
+
+
 class MeasureDefinition(BaseModel):
     """Measure definition (extended Phase-1, Phase-12).
 
@@ -138,6 +190,14 @@ class MeasureDefinition(BaseModel):
     # Phase-12 additions
     scope: Literal["view", "dataset"] = "view"
     source_columns: List[MeasureSourceColumn] = Field(default_factory=list)
+    # Phase-14: filter-context modifiers. When non-empty the engine emits
+    # the measure as a SQL window aggregate (`agg(expr) OVER (...)`)
+    # instead of a plain group aggregate. The set is intentionally small —
+    # see ContextModifier docstring for what's in and what's out.
+    # Combining modifiers: 'use_relationship' is orthogonal to all/all_except
+    # and can co-exist with either. Combining 'all' and 'all_except' on the
+    # same measure is rejected at save time (they mean the opposite thing).
+    context_modifiers: List[ContextModifier] = Field(default_factory=list)
 
     @field_validator("expression", "where_sql")
     @classmethod
@@ -168,6 +228,42 @@ class MeasureDefinition(BaseModel):
         if any(token in padded for token in forbidden):
             raise ValueError("Measure SQL fragment contains a forbidden token")
         return text
+
+    @model_validator(mode="after")
+    def _validate_context_modifiers(self):
+        # Phase-14: per-modifier shape + cross-modifier consistency.
+        if not self.context_modifiers:
+            return self
+        has_all = False
+        has_all_except = False
+        for idx, mod in enumerate(self.context_modifiers):
+            if mod.type == "all_except":
+                if not mod.keep_fields:
+                    raise ValueError(
+                        f"context_modifiers[{idx}] type='all_except' phải có "
+                        "keep_fields (danh sách dim giữ lại trong partition)."
+                    )
+                has_all_except = True
+            elif mod.type == "all":
+                if mod.keep_fields:
+                    raise ValueError(
+                        f"context_modifiers[{idx}] type='all' không nhận "
+                        "keep_fields. Dùng type='all_except' nếu muốn giữ "
+                        "một số dim."
+                    )
+                has_all = True
+            elif mod.type == "use_relationship":
+                if not (mod.join_alias or "").strip():
+                    raise ValueError(
+                        f"context_modifiers[{idx}] type='use_relationship' "
+                        "phải có join_alias trỏ vào JoinDefinition.alias."
+                    )
+        if has_all and has_all_except:
+            raise ValueError(
+                "context_modifiers không thể đồng thời có 'all' và 'all_except' "
+                "trên cùng measure — chúng có ngữ nghĩa đối lập. Pick 1."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_scope_and_source_columns(self):

@@ -468,6 +468,26 @@
   container-name: wb-editor;
 }
 
+.wb-js-formula-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.wb-js-formula-side {
+  border-top: 1px solid rgb(var(--border-line));
+}
+
+@container wb-editor (min-width: 900px) {
+  .wb-js-formula-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  }
+
+  .wb-js-formula-side {
+    border-top: 0;
+    border-left: 1px solid rgb(var(--border-line));
+  }
+}
+
 /* ── 2-column grid (label/value pairs) ─────────────────────────────── */
 .wb-grid-2 {
   display: grid;

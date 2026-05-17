@@ -159,7 +159,7 @@ async def run_workboard_runtime_smoke_test(
     workboard_id: int,
     username: str,
     pin: str,
-    list_screen_id: str,
+    table_screen_id: str,
     form_screen_id: Optional[str] = None,
     insert_values: Optional[Dict[str, Any]] = None,
     pk_columns: Optional[List[str]] = None,
@@ -167,8 +167,8 @@ async def run_workboard_runtime_smoke_test(
 ) -> Any:
     """Test the public mini-app runtime as a real app user.
 
-    This logs in through the public workspace flow, checks menu/app/list
-    rendering, optionally submits one form row, and reads the list again.
+    This logs in through the public workspace flow, checks menu/app/table
+    rendering, optionally submits one form row, and reads the table again.
     Passing ``insert_values`` writes to the backing table, so it requires
     ``user_confirmed=True``.
     """
@@ -177,7 +177,7 @@ async def run_workboard_runtime_smoke_test(
         "workspace_token": workspace_token,
         "workboard_id": workboard_id,
         "username": username,
-        "list_screen_id": list_screen_id,
+        "table_screen_id": table_screen_id,
         "form_screen_id": form_screen_id,
         "will_insert_test_row": bool(insert_values),
         "insert_values_preview": insert_values,
@@ -186,8 +186,8 @@ async def run_workboard_runtime_smoke_test(
             "POST public workspace login with app-user credentials",
             "GET authenticated workspace menu",
             "GET mini-app screen catalogue",
-            "POST list screen rows",
-            "Optional: POST form screen row and list again",
+            "POST table screen rows",
+            "Optional: POST form screen row and table again",
         ],
     }
     if insert_values and not user_confirmed:
@@ -249,18 +249,18 @@ async def run_workboard_runtime_smoke_test(
         if not ok:
             return {"ok": False, "steps": steps}
 
-        ok, status, before_list = await call(
+        ok, status, before_table = await call(
             "POST",
-            f"/public/workspaces/{workspace_token}/workboards/{workboard_id}/screens/{list_screen_id}/list",
+            f"/public/workspaces/{workspace_token}/workboards/{workboard_id}/screens/{table_screen_id}/table",
             json={"page": 1, "page_size": 20},
         )
-        before_rows = before_list.get("rows") if isinstance(before_list, dict) else []
+        before_rows = before_table.get("rows") if isinstance(before_table, dict) else []
         add_step(
-            "list_before",
+            "table_before",
             ok,
             status,
             {
-                "columns": before_list.get("columns") if isinstance(before_list, dict) else None,
+                "columns": before_table.get("columns") if isinstance(before_table, dict) else None,
                 "row_count": len(before_rows or []),
                 "sample_rows": (before_rows or [])[:3],
             },
@@ -287,12 +287,12 @@ async def run_workboard_runtime_smoke_test(
             if not ok:
                 return {"ok": False, "steps": steps}
 
-            ok, status, after_list = await call(
+            ok, status, after_table = await call(
                 "POST",
-                f"/public/workspaces/{workspace_token}/workboards/{workboard_id}/screens/{list_screen_id}/list",
+                f"/public/workspaces/{workspace_token}/workboards/{workboard_id}/screens/{table_screen_id}/table",
                 json={"page": 1, "page_size": 50},
             )
-            after_rows = after_list.get("rows") if isinstance(after_list, dict) else []
+            after_rows = after_table.get("rows") if isinstance(after_table, dict) else []
             insert_pk = (
                 insert_result.get("pk")
                 if isinstance(insert_result, dict) and isinstance(insert_result.get("pk"), dict)
@@ -309,7 +309,7 @@ async def run_workboard_runtime_smoke_test(
                     if isinstance(row, dict)
                 )
             add_step(
-                "list_after_insert",
+                "table_after_insert",
                 ok and (inserted_visible is not False),
                 status,
                 {

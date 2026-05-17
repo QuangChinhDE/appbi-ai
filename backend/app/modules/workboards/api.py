@@ -416,19 +416,42 @@ def audit_workboard(
                         screen=screen,
                         context={"column": col, "field_index": index},
                     )
-        elif kind == "list":
-            list_spec = screen.get("list") or {}
-            for col in list_spec.get("columns") or []:
-                if col and col not in cols:
+        elif kind == "table":
+            table_spec = screen.get("table") or {}
+            computed_names = {
+                str(c.get("name") or "").strip()
+                for c in (table_spec.get("computed_columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            }
+            lookup_names = {
+                str(c.get("name") or "").strip()
+                for c in (table_spec.get("lookup_columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            }
+            valid_table_cols = cols | computed_names | lookup_names
+            for col in table_spec.get("columns") or []:
+                if col and col not in valid_table_cols:
                     _add(
                         severity="error",
                         code="missing_column",
-                        detail=f"List screen displays missing column '{col}'.",
+                        detail=f"Table surfaces missing column '{col}'.",
                         screen=screen,
                         context={"column": col},
                     )
-            sort_col = list_spec.get("default_sort_column")
-            if sort_col and sort_col not in cols:
+            for col in table_spec.get("editable_columns") or []:
+                if col and col not in cols:
+                    _add(
+                        severity="error",
+                        code="non_editable_column",
+                        detail=(
+                            f"Table marks '{col}' as editable but it is not a "
+                            "physical column of the bound table."
+                        ),
+                        screen=screen,
+                        context={"column": col},
+                    )
+            sort_col = table_spec.get("default_sort_column")
+            if sort_col and sort_col not in valid_table_cols:
                 _add(
                     severity="warning",
                     code="missing_sort_column",
@@ -436,41 +459,7 @@ def audit_workboard(
                     screen=screen,
                     context={"column": sort_col},
                 )
-        elif kind == "grid":
-            grid_spec = screen.get("grid") or {}
-            computed_names = {
-                str(c.get("name") or "").strip()
-                for c in (grid_spec.get("computed_columns") or [])
-                if isinstance(c, dict) and c.get("name")
-            }
-            lookup_names = {
-                str(c.get("name") or "").strip()
-                for c in (grid_spec.get("lookup_columns") or [])
-                if isinstance(c, dict) and c.get("name")
-            }
-            valid_grid_cols = cols | computed_names | lookup_names
-            for col in grid_spec.get("columns") or []:
-                if col and col not in valid_grid_cols:
-                    _add(
-                        severity="error",
-                        code="missing_column",
-                        detail=f"Grid surfaces missing column '{col}'.",
-                        screen=screen,
-                        context={"column": col},
-                    )
-            for col in grid_spec.get("editable_columns") or []:
-                if col and col not in cols:
-                    _add(
-                        severity="error",
-                        code="non_editable_column",
-                        detail=(
-                            f"Grid marks '{col}' as editable but it is not a "
-                            "physical column of the bound table."
-                        ),
-                        screen=screen,
-                        context={"column": col},
-                    )
-            for index, lookup in enumerate(grid_spec.get("lookup_columns") or []):
+            for index, lookup in enumerate(table_spec.get("lookup_columns") or []):
                 if not isinstance(lookup, dict):
                     continue
                 from_id = lookup.get("from_table_id")
@@ -553,6 +542,88 @@ def audit_workboard(
         "issue_count": len(issues),
         "ok": not any(issue["severity"] == "error" for issue in issues),
         "issues": issues,
+    }
+
+
+@router.post("/{workboard_id}/screens/{screen_id}/test-js")
+def test_js_computed_column(
+    workboard_id: int,
+    screen_id: str,
+    body: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sandboxed live preview for ``TableComputedColumn(engine='js')``.
+
+    Builder editors call this on each keystroke (debounced) so the user
+    sees what their JS will evaluate to BEFORE saving the layout. Returns
+    one result per row provided in the body.
+
+    Request::
+
+        {
+          "code": "return row.qty * row.price",
+          "rows": [{"qty": 2, "price": 3}, {"qty": 5, "price": 4}],
+          "index_offset": 0   // optional — start ``index`` arg from here
+        }
+
+    Response::
+
+        {
+          "ok": bool,
+          "compile_error": null | "Syntax error: ...",
+          "results": [
+            {"ok": true,  "value": 6,  "error": null},
+            {"ok": false, "value": null, "error": "TypeError: ..."}
+          ]
+        }
+
+    Only requires ``workboards.view`` permission since this is read-only
+    AND the sandbox can't reach the DB / network.
+    """
+    from app.modules.workboards.services.js_evaluator import (
+        JsCompileError,
+        JsEvalError,
+        compile_js_column,
+        evaluate_js_cell,
+    )
+
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return {
+            "ok": False,
+            "compile_error": "Empty code.",
+            "results": [],
+        }
+    raw_rows = body.get("rows") or []
+    if not isinstance(raw_rows, list):
+        raise HTTPException(status_code=400, detail="`rows` must be a list of objects.")
+    rows: List[Dict[str, Any]] = [r for r in raw_rows if isinstance(r, dict)]
+    index_offset = int(body.get("index_offset") or 0)
+
+    try:
+        compiled = compile_js_column("test", code)
+    except JsCompileError as exc:
+        return {
+            "ok": False,
+            "compile_error": str(exc),
+            "results": [],
+        }
+
+    out: list[Dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        try:
+            value = evaluate_js_cell(compiled, row, rows, index_offset + idx)
+            out.append({"ok": True, "value": value, "error": None})
+        except JsEvalError as exc:
+            out.append({"ok": False, "value": None, "error": str(exc)})
+    return {
+        "ok": all(r["ok"] for r in out),
+        "compile_error": None,
+        "results": out,
     }
 
 

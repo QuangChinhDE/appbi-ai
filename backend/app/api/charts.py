@@ -996,9 +996,16 @@ def get_chart_data(
         )
         return ChartDataResponse(**result)
     except ValueError as e:
+        # Phase-12.7: ValueError from the semantic engine / chart runtime
+        # means the chart's CONFIG is invalid given the current dataset
+        # state (missing relationship, removed column, BigQuery cost guard,
+        # etc.). The chart row still exists — 400 (bad request) is the
+        # correct semantic; the previous 404 made DAs think the chart had
+        # been deleted. Phase-11 ensures the message is Vietnamese-
+        # friendly when the cause is engine-side (unreachable view).
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
         )
     except Exception as e:
         logger.exception(

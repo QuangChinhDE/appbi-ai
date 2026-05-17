@@ -1,9 +1,14 @@
 """Pydantic schemas for the Workboard module.
 
-The workboard layout is a mini-app definition: a list of screens (form /
-list / doc / dashboard), each bound to one dataset table, plus an
-adaptive navigation config. This file is the single source of truth for
-that contract — there is no legacy v1/v2 layer anymore.
+The workboard layout is a mini-app definition: a list of screens
+(``form`` / ``table`` / ``doc`` / ``dashboard``), each bound to one
+dataset table, plus an adaptive navigation config. This file is the
+single source of truth for that contract.
+
+Phase-13 (2026-05-16): the previous ``list`` (read-only) and ``grid``
+(editable) screen kinds were collapsed into a single ``table`` kind with
+a ``mode: readonly | editable`` flag. No backwards-compatibility shim —
+clients/MCP/templates emit ``kind='table'`` directly.
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -470,57 +475,51 @@ class FormScreenSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ListScreenSpec(BaseModel):
-    """A read-only list screen bound to one dataset table."""
+class TableComputedColumn(BaseModel):
+    """A read-only column whose value is evaluated server-side via the
+    QuickJS sandbox (see ``services/js_evaluator.py``).
 
-    columns: List[str] = Field(default_factory=list)
-    filters: List[ListFilter] = Field(default_factory=list)
-    page_size: int = Field(default=50, ge=10, le=500)
-    default_sort_column: Optional[str] = None
-    default_sort_direction: Literal["asc", "desc"] = "desc"
-    row_actions: List[ScreenAction] = Field(default_factory=list)
-    empty_state_message: Optional[str] = None
+    Phase-15 (2026-05-16): the Sheets-style formula engine was removed —
+    every computed column is now a JS function body. Target audience is
+    data engineers, who write JS comfortably; surface area dropped from
+    two engines to one.
 
-    model_config = ConfigDict(extra="forbid")
+    The body is wrapped as ``function(row, rows, index){ <body> }`` and
+    the scope exposes:
+      - ``row``     — current row dict (``row.<column_name>``)
+      - ``rows``    — full page (array of row dicts) for cross-row work
+      - ``index``   — zero-based row index in the page
+      - ``$helpers`` — namespace with sum/avg/min/max/count/sumIf/countIf/
+                       lookup/today/now/dayjs/format(...)
 
-
-class GridComputedColumn(BaseModel):
-    """A read-only column whose value is evaluated from a formula at render
-    time. Formulas use a small Sheets-style language with row-local
-    references (other column names) and ~25 whitelisted functions
-    (IF / SUM / CONCAT / TODAY / DATEDIF / ROUND / …).
-
-    Per-row only — references resolve against the current row's values
-    (including upstream computed/lookup columns). Cross-row aggregation
-    belongs in the grid ``totals`` map, not here.
+    The sandbox enforces a 1000ms wall-clock per row and a deny-list of
+    escape hatches (``eval`` / ``Function`` / ``require`` / ``fetch`` /
+    timers / ``globalThis``).
     """
 
     name: str = Field(..., min_length=1, max_length=120)
-    """Identifier exposed in the grid + the formula scope of later
-    computed columns. Must be unique across visible/computed/lookup
-    columns; the runtime rejects collisions to avoid ambiguity."""
-
     label: Optional[str] = Field(default=None, max_length=200)
-    formula: str = Field(default="", max_length=2000)
-    """Empty formula = draft state. The builder creates a column shell
-    before the user types a formula; the runtime renders ``None`` for
-    such columns instead of failing the screen, so autosave never
-    rejects an in-progress edit."""
+    formula: str = Field(
+        default="",
+        max_length=8000,
+        description=(
+            "JavaScript function body. Example: "
+            "``return row.qty > 0 ? row.qty * row.price : 0``."
+        ),
+    )
     format: Optional[Literal[
         "text", "number", "integer", "currency", "percent", "date", "datetime"
     ]] = None
-    """Cell formatter hint; the runtime/exporter applies it."""
 
-    model_config = ConfigDict(extra="forbid")
+    # extra='ignore' (not 'forbid') so old layouts that still carry the
+    # Phase-14 ``engine`` field round-trip without 422. The runtime will
+    # treat them as JS regardless — formula support was removed.
+    model_config = ConfigDict(extra="ignore")
 
 
-class GridLookupColumn(BaseModel):
+class TableLookupColumn(BaseModel):
     """A read-only column populated by joining one cell value against
     another dataset table — a "VLOOKUP done relationally".
-
-    Implemented as a batched ``SELECT match_column_remote, return_column
-    FROM <linked table> WHERE match_column_remote IN (...)`` on the page's
-    rows, then mapped back so each row gets the resolved value.
 
     Empty ``from_table_id`` / ``match_column_*`` / ``return_column`` mean
     the lookup is still being configured in the builder — the runtime
@@ -541,64 +540,241 @@ class GridLookupColumn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class GridScreenSpec(BaseModel):
+class TableColumnMeta(BaseModel):
+    """Per-column presentation metadata (label override, width, align,
+    format hint, merge flag). The runtime currently consumes label/format
+    from this map; width/align are FE-only hints.
+    """
+
+    label: Optional[str] = Field(default=None, max_length=200)
+    width_px: Optional[int] = Field(default=None, ge=1, le=2000)
+    format: Optional[Literal[
+        "text", "number", "integer", "currency", "percent", "date", "datetime"
+    ]] = None
+    align: Optional[Literal["left", "center", "right"]] = None
+    merge: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TableDetailPanel(BaseModel):
+    """Side-panel that opens when an end user clicks a table row.
+
+    The panel is **always present** on a table screen (it's the canonical
+    way to view/edit fields that the grid doesn't surface). The builder
+    only controls which columns are visible, the order, optional sections,
+    and which subset can be edited from inside the panel.
+
+    When ``enabled=False`` the runtime falls back to inline-only editing —
+    clicking a row does nothing. Use this for ultra-wide tables where the
+    grid itself is the whole UX and a side panel would be redundant.
+    """
+
+    enabled: bool = True
+    title: Optional[str] = Field(
+        default=None,
+        max_length=120,
+        description="Header shown at the top of the panel. Defaults to the screen title.",
+    )
+    columns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Columns shown in the panel, in display order. Empty = mirror "
+            "the table's ``columns`` list (so the panel shows every grid "
+            "column). Add columns here that the grid hides for density."
+        ),
+    )
+    editable_columns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Subset of ``columns`` editable from the panel. Empty = the "
+            "panel is read-only (user must use inline edit on the grid). "
+            "Useful pattern: grid edits the 2-3 hot columns, panel edits "
+            "everything else."
+        ),
+    )
+    sections: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Optional grouping: {section_label: [column, ...]}. Columns "
+            "listed here are rendered under the matching header; unlisted "
+            "columns go in the default 'Other' section."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
-    Like a list screen, but cells are editable inline. Used when end users
-    want bulk data-entry / quick correction over a row set narrowed by the
-    builder's pre-configured filters (e.g. ``assigned_to = {{app_user.username}}``).
-    Read filtering + per-cell write permission both flow through the same
-    ``rls`` rules the form/list screens use — ``can_update`` / ``can_delete``
-    / ``can_create`` gate inline edit, add-row, and delete respectively, and
-    ``writable_columns`` restricts which columns a given role may modify.
+    One screen kind for both viewing and editing data. There is **no**
+    read-only / editable mode flag — instead, ``editable_columns`` is the
+    single source of truth for which cells accept inline input:
+
+    * Empty ``editable_columns`` → table is read-only (cells display text
+      with a small lock icon on hover). End users still get every other
+      feature: filters, sort, pagination, computed/lookup columns, totals,
+      row actions, the detail panel.
+    * Non-empty ``editable_columns`` → listed cells become inline-editable;
+      everything else stays read-only with the lock icon. Add-row /
+      delete-row buttons appear only when at least one column is editable.
+
+    The detail side panel (``detail_panel``) opens when a row is clicked
+    and shows the full record (including columns hidden from the grid for
+    density). This replaces the old "click row → navigate to form screen"
+    pattern with an in-place side panel — no tab switching, no separate
+    screen to author and maintain.
 
     Three forms of derived data are supported:
 
     * ``computed_columns`` — per-row formula columns (Sheets-style).
     * ``lookup_columns``   — pull values from a related dataset table.
-    * ``totals``           — footer aggregations (sum / avg / min / max / count)
-      computed over the current page's filtered rows.
+    * ``totals``           — footer aggregations (sum / avg / min / max / count).
 
-    All three are **read-only** server-side: PATCH requests that try to
-    write to a computed or lookup column are stripped before the SQL UPDATE,
-    so a malicious client can't bypass the formula by sending a raw value.
+    Multi-header (``column_groups``) and row-merge (``group_by``) come from
+    the old DocScreen data-table block — reused here so users coming from
+    Google Sheets can replicate "merge cells" / "merged header" layouts.
     """
 
     columns: List[str] = Field(default_factory=list)
-    """Columns surfaced on the grid, in display order. May include the
+    """Columns surfaced on the table, in display order. May include the
     names of computed/lookup columns — they're rendered in the same row
     as regular columns but marked read-only."""
 
     editable_columns: List[str] = Field(default_factory=list)
-    """Columns the end user may edit. Must be a subset of ``columns`` and
-    must NOT include any computed/lookup column name. Empty = read-only."""
+    """Single source of truth for inline editability. Subset of ``columns``
+    that the end user may edit at the cell. Must NOT include the name of
+    any computed/lookup column. Empty list = entire table is read-only
+    inline (row click still opens the detail panel)."""
 
     filters: List[ListFilter] = Field(default_factory=list)
 
-    page_size: int = Field(default=100, ge=10, le=500)
+    page_size: int = Field(default=50, ge=10, le=500)
     default_sort_column: Optional[str] = None
     default_sort_direction: Literal["asc", "desc"] = "desc"
 
-    allow_add_row: bool = True
-    allow_delete_row: bool = True
+    row_actions: List[ScreenAction] = Field(default_factory=list)
+    """Per-row action buttons that navigate to another screen and carry
+    column values across. Independent of inline edit / detail panel."""
+
+    allow_add_row: bool = False
+    """Show the 'Add row' button. Requires at least one entry in
+    ``editable_columns`` — the dry-run validator rejects otherwise."""
+    allow_delete_row: bool = False
+    """Show the per-row delete button. Independent of ``allow_add_row``."""
 
     required_columns: List[str] = Field(default_factory=list)
     default_values: Dict[str, Any] = Field(default_factory=dict)
 
-    computed_columns: List[GridComputedColumn] = Field(default_factory=list)
-    lookup_columns: List[GridLookupColumn] = Field(default_factory=list)
+    computed_columns: List[TableComputedColumn] = Field(default_factory=list)
+    lookup_columns: List[TableLookupColumn] = Field(default_factory=list)
     totals: Dict[str, Literal["sum", "avg", "min", "max", "count"]] = Field(
         default_factory=dict,
+    )
+
+    column_groups: List[DataTableColumnGroup] = Field(
+        default_factory=list,
         description=(
-            "Per-column footer aggregation applied to the current page's "
-            "rows. Keys are column names (regular, computed, or lookup); "
-            "values are aggregation kinds."
+            "Multi-level header: one grouped header label spans several "
+            "contiguous columns. Reused from DocScreen DataTableBlock."
         ),
     )
+    group_by: List[str] = Field(
+        default_factory=list,
+        description=(
+            "When rows share a value in a group_by column, the cell on the "
+            "first row spans the rest (Google-Sheets merge). A column "
+            "listed here must NOT appear in ``editable_columns`` — merge "
+            "+ inline edit conflict."
+        ),
+    )
+    column_metadata: Dict[str, TableColumnMeta] = Field(default_factory=dict)
+
+    detail_panel: TableDetailPanel = Field(default_factory=TableDetailPanel)
+    """Side panel opened on row click. Always present unless explicitly
+    disabled via ``detail_panel.enabled=False``."""
 
     empty_state_message: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_name_collisions(self) -> "TableScreenSpec":
+        """Ensure derived column names don't collide with each other or
+        with declared DB columns.
+
+        Collision rules (strict — extra='forbid' won't catch these):
+        * Two computed columns with same name → ambiguous in formula/JS scope.
+        * Two lookup columns with same name → grid would render duplicate keys.
+        * A computed column and a lookup column with the same name → unclear
+          which one wins.
+        * A derived column (computed or lookup) shadowing a declared DB
+          column from ``columns`` is REJECTED — the user almost certainly
+          made a typo and would lose access to the original column.
+
+        Empty / draft entries (blank name) are skipped — autosave creates
+        shells before the user types a name.
+        """
+        computed_names: list[str] = []
+        for col in self.computed_columns or []:
+            name = (col.name or "").strip()
+            if not name:
+                continue
+            if name in computed_names:
+                raise ValueError(
+                    f"Computed column name '{name}' is used more than once. "
+                    f"Each computed column must have a unique name."
+                )
+            computed_names.append(name)
+
+        lookup_names: list[str] = []
+        for col in self.lookup_columns or []:
+            name = (col.name or "").strip()
+            if not name:
+                continue
+            if name in lookup_names:
+                raise ValueError(
+                    f"Lookup column name '{name}' is used more than once. "
+                    f"Each lookup column must have a unique name."
+                )
+            if name in computed_names:
+                raise ValueError(
+                    f"Lookup column '{name}' collides with a computed column "
+                    f"of the same name. Rename one."
+                )
+            lookup_names.append(name)
+
+        # Visible DB columns = anything in ``columns`` that ISN'T a derived
+        # name. Derived names ARE expected to appear in ``columns`` (the
+        # user includes them in display order) — that's fine.
+        derived = set(computed_names) | set(lookup_names)
+        # `columns` may include both DB cols and derived names; we only
+        # detect a shadow when the SAME name appears more than once in
+        # ``columns`` itself.
+        seen: set[str] = set()
+        for raw in self.columns or []:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            if name in seen:
+                raise ValueError(
+                    f"Column '{name}' appears more than once in 'columns'. "
+                    f"Remove the duplicate."
+                )
+            seen.add(name)
+
+        # ``group_by`` cells must not be inline-editable (merge + edit
+        # conflict at runtime).
+        editable_set = set(self.editable_columns or [])
+        for col in self.group_by or []:
+            if col in editable_set:
+                raise ValueError(
+                    f"Column '{col}' is in 'group_by' AND 'editable_columns'. "
+                    f"Merge + inline edit conflict — pick one."
+                )
+
+        return self
 
 
 class DocScreenSpec(BaseModel):
@@ -719,7 +895,7 @@ class Screen(BaseModel):
     """
 
     id: str = Field(..., min_length=1, max_length=64)
-    kind: Literal["form", "list", "doc", "dashboard", "grid"] = "form"
+    kind: Literal["form", "table", "doc", "dashboard"] = "form"
     title: str = Field(..., min_length=1, max_length=120)
     icon: Optional[str] = None
     description: Optional[str] = None
@@ -729,13 +905,12 @@ class Screen(BaseModel):
     show_in_nav: bool = True
 
     form: Optional[FormScreenSpec] = None
-    list: Optional[ListScreenSpec] = None
+    table: Optional[TableScreenSpec] = None
     doc: Optional[DocScreenSpec] = None
     dashboard: Optional[DashboardScreenSpec] = None
-    grid: Optional[GridScreenSpec] = None
 
     # Central column label map: {db_column_name: display_label}.
-    # Used by list/doc screens to show friendly column headers instead of raw
+    # Used by table/doc screens to show friendly column headers instead of raw
     # column names. Example: {"nh_b50_025": "PLNC Bao 50 kg; Cỡ hạt ≤ 0,25mm"}
     column_labels: Dict[str, str] = Field(default_factory=dict)
 

@@ -1196,24 +1196,13 @@ if settings.WORKBOARDS_ENABLED:
             return screen_runtime.render_form_screen(
                 db, wb, screen, identity=identity, shared_context=shared_context
             )
-        if screen.kind == "list":
+        if screen.kind == "table":
             return {
-                **screen_runtime.render_list_screen(
+                **screen_runtime.render_table_screen(
                     db, wb, screen, identity=identity
                 ),
                 "screen_id": screen.id,
-                "kind": "list",
-                "title": screen.title,
-                "icon": screen.icon,
-                "description": screen.description,
-            }
-        if screen.kind == "grid":
-            return {
-                **screen_runtime.render_grid_screen(
-                    db, wb, screen, identity=identity
-                ),
-                "screen_id": screen.id,
-                "kind": "grid",
+                "kind": "table",
                 "title": screen.title,
                 "icon": screen.icon,
                 "description": screen.description,
@@ -1529,8 +1518,8 @@ if settings.WORKBOARDS_ENABLED:
         }
 
 
-    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/list")
-    def workspace_screen_list_rows(
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/table")
+    def workspace_screen_table_rows(
         token: str,
         workboard_id: int,
         screen_id: str,
@@ -1538,6 +1527,11 @@ if settings.WORKBOARDS_ENABLED:
         request: Request,
         db: Session = Depends(get_db),
     ):
+        """Paginated rows for a table screen — includes computed/lookup
+        cells, totals, multi-header, row-merges, plus the panel-augmented
+        row payload so the detail side-panel doesn't need a second fetch
+        when opening a row already on screen.
+        """
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(
@@ -1550,7 +1544,7 @@ if settings.WORKBOARDS_ENABLED:
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         body = body or {}
         return {
-            **screen_runtime.render_list_screen(
+            **screen_runtime.render_table_screen(
                 db,
                 wb,
                 screen,
@@ -1560,7 +1554,7 @@ if settings.WORKBOARDS_ENABLED:
                 extra_filters=body.get("filters") or [],
             ),
             "screen_id": screen.id,
-            "kind": "list",
+            "kind": "table",
             "title": screen.title,
             "icon": screen.icon,
             "description": screen.description,
@@ -1612,7 +1606,7 @@ if settings.WORKBOARDS_ENABLED:
         request: Request,
         db: Session = Depends(get_db),
     ):
-        """Insert many rows in one call — used by the grid's bulk-paste UI.
+        """Insert many rows in one call — used by the table's bulk-paste UI.
 
         Each row goes through the normal ``insert_screen_row`` pipeline
         (RLS, auto-number, audit fields, validation) so the contract is
@@ -1636,8 +1630,8 @@ if settings.WORKBOARDS_ENABLED:
         screen = screen_runtime.get_screen(layout, screen_id)
         if not screen_runtime.is_screen_visible_for(screen, identity):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
-        if screen.kind != "grid":
-            raise HTTPException(status_code=400, detail="Bulk insert is only for grid screens.")
+        if screen.kind != "table":
+            raise HTTPException(status_code=400, detail="Bulk insert is only for table screens.")
         rows = body.get("rows") if isinstance(body, dict) else None
         if not isinstance(rows, list):
             raise HTTPException(status_code=400, detail="rows (list) is required.")
@@ -1748,8 +1742,8 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "update", **result}
 
 
-    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/grid")
-    def workspace_screen_grid_rows(
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/row")
+    def workspace_screen_row_detail(
         token: str,
         workboard_id: int,
         screen_id: str,
@@ -1757,7 +1751,15 @@ if settings.WORKBOARDS_ENABLED:
         request: Request,
         db: Session = Depends(get_db),
     ):
-        """Paginated rows for a grid screen — includes PK columns + grid spec."""
+        """Fetch a single row by PK for the table screen's detail panel.
+
+        Payload: ``{"pk": {pk_col: value, ...}}``. Returns ``{row, columns,
+        panel}`` where ``columns`` is the panel's column list and ``panel``
+        carries the panel spec so the FE can render sections + editable
+        masks without re-reading the layout. Honours the same RLS rules as
+        the table rendering — a row outside the viewer's scope is returned
+        as 403.
+        """
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws, db=db)
         wb = _resolve_workboard_for_workspace(
@@ -1768,23 +1770,14 @@ if settings.WORKBOARDS_ENABLED:
         screen = screen_runtime.get_screen(layout, screen_id)
         if not screen_runtime.is_screen_visible_for(screen, identity):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
-        body = body or {}
-        return {
-            **screen_runtime.render_grid_screen(
-                db,
-                wb,
-                screen,
-                identity=identity,
-                page=int(body.get("page") or 1),
-                page_size=int(body["page_size"]) if body.get("page_size") else None,
-                extra_filters=body.get("filters") or [],
-            ),
-            "screen_id": screen.id,
-            "kind": "grid",
-            "title": screen.title,
-            "icon": screen.icon,
-            "description": screen.description,
-        }
+        if screen.kind != "table" or screen.table is None:
+            raise HTTPException(status_code=400, detail="Screen is not a table.")
+        pk = (body or {}).get("pk") if isinstance(body, dict) else None
+        if not isinstance(pk, dict) or not pk:
+            raise HTTPException(status_code=400, detail="pk is required.")
+        return screen_runtime.fetch_table_row_for_panel(
+            db, wb, screen, pk, identity=identity
+        )
 
 
     @router.delete("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
@@ -1796,7 +1789,7 @@ if settings.WORKBOARDS_ENABLED:
         request: Request,
         db: Session = Depends(get_db),
     ):
-        """Delete one row via a grid screen.
+        """Delete one row via a table screen.
 
         Payload: ``{"pk": {pk_col: value, ...}}``. RLS ``can_delete`` is
         enforced server-side; the row is also confirmed against the read
@@ -1981,8 +1974,16 @@ def get_public_chart_data(
             extra_filters=combined_filters or None,
             filter_context="dashboard",
         )
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart data not found.")
+    except ValueError as exc:
+        # Phase-12.7: previously this swallowed the engine's Vietnamese
+        # message ("Bảng X chưa có relationship..." etc.) and returned a
+        # generic "Chart data not found." 404 — making DAs sharing a
+        # dashboard think the chart was missing rather than mis-
+        # configured. Forward the message verbatim with the right status.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
     except Exception as exc:
         logger.exception("Public chart data error for token=%s chart=%s", token, chart_id)
         raise HTTPException(

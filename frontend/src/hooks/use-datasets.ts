@@ -254,6 +254,13 @@ export interface ExecuteQueryRequest {
   filters?: FilterCondition[];
   order_by?: OrderBySpec[];
   limit?: number;
+  /**
+   * Phase-13.4: time-bucket dimensions on the BE. Keyed by dimension
+   * field; value is the grain. BE engine emits dialect-correct
+   * date_trunc (Phase-5 multi-dialect support). Omitting / empty =
+   * group by the raw column value.
+   */
+  time_grains?: Record<string, 'day' | 'week' | 'month' | 'quarter' | 'year'>;
 }
 
 export interface ExecuteQueryResponse {

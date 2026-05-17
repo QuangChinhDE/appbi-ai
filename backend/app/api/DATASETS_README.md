@@ -533,6 +533,196 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
     `useDatasetModelJoinSuggestion` — RelationshipDialog auto-prefill
     cardinality khi user chọn xong from/to view.
 
+- **2026-05-17 (Phase-15.7)**: Implicit measure BE-side — đóng triệt để bug
+  DA report `"Measure 'deal_value' not found in view 'dataset_table_320'"`.
+  - **Root cause**: `_classify_columns` (Phase-2) default
+    `auto_generate_measures=False` → numeric columns thành dimension
+    `type='number'` chứ KHÔNG sinh measure. Chart kéo numeric column →
+    FE gửi `{field: "view.deal_value", function: "sum"}` → engine
+    `_render_measure` line 510 reject vì measure `deal_value` không tồn
+    tại. Phase 13.2 chỉ add FE flag `_implicit` + badge "auto" — không
+    fix root cause ở BE engine.
+  - **Fix**: `_render_measure` + `_render_pivoted_measure` thêm fallback
+    branch. Khi measure lookup miss, check `view.dimensions` cho field
+    name. Nếu dim đó tồn tại và `type='number'` → synthesise ad-hoc
+    `MeasureDefinition`-shaped dict với `agg = agg_override or 'sum'`,
+    `sql = field_name`, không filter/expression/depends_on. Downstream
+    code path (filter wrap, Phase-14 window aggregate, etc.) chạy
+    unchanged.
+  - **KHÔNG vi phạm Nguyên tắc 1**: implicit measure vẫn là Measure ở
+    semantic layer — chỉ chưa persist vào DB. Same shape as declared
+    entries. PowerBI parity: drag any numeric column → it sums.
+  - **FE Phase-15.7 detect tightened**: `MetricSlot.addField` thay vì
+    chỉ mark implicit khi field bare, giờ check qualified ref có nằm
+    trong `declaredMeasureRefs` (computed từ reachable views). Qualified
+    nhưng không khớp measure declared → vẫn flag `_implicit: true` để
+    badge "auto" hiện đúng. ExploreEditor build set
+    `declaredMeasureRefs` từ semantic model, prop-drill xuống mọi
+    MetricSlot.
+  - **Error message cải thiện**: khi field thực sự không tồn tại cả ở
+    dim lẫn measure, engine raise VN: "Measure 'X' không tồn tại trong
+    view 'Y'. Để aggregate cột này, hãy chọn: (a) khai báo nó là
+    dimension type=number trên view (BE sẽ tự sinh SUM/AVG/... ngầm),
+    hoặc (b) tạo measure tên này trong tab Data Model." Hai remediation
+    paths cụ thể, DA biết ngay phải làm gì.
+  - **Tests**: 6 test mới — fallback SUM cho numeric dim, agg override
+    honored (avg/max/count_distinct), default SUM khi missing agg, dim
+    type=string không trigger fallback, explicit measure win over dim
+    cùng tên, error message helpful. Tổng 33/33 BE pytest pass.
+
+- **2026-05-17 (Phase-15)**: User journey gom 6 cốt lõi PowerBI vào 1 phase
+  duy nhất. Sau khi user feedback "không phải tìm bug vụn vặt — sp phải
+  dùng được đúng tính năng đang có", phase này không ship code mới ở engine
+  layer; chỉ surface đúng những thứ Phase 11-14 đã build sao cho DA dùng
+  được end-to-end. KHÔNG đụng MCP / Workboard.
+  - **15.1 Hierarchy + drill-down**: thêm UI `parent` dropdown trong
+    DimensionRow editor (sibling-dim picker, BE Phase-13.1 đã có schema +
+    cycle check). Thêm `DrillDownButtons` component trong chart config —
+    khi dim hiện có children, render "↓ <child>" 1-click swap dim
+    runtime. Wire vào BAR/HORIZONTAL_BAR/LINE/AREA. ExploreEditor build
+    `dimHierarchy.childrenOf` map từ reachable views, pass xuống
+    ExploreChartConfig prop `dimChildrenMap`.
+  - **15.2 Cross-table measure first-class**: thêm 2 preset trong measure
+    template dropdown (`cross_ratio`, `cross_sum`) — group "Cross-table
+    (đa bảng)" hiển thị badge PBI. Đổi label "Cross-table (dataset-scope)"
+    → "Đa bảng (cross-table — PowerBI: USERELATIONSHIP)" cho dễ nhận.
+    Surface flag "đa bảng" + "ctx" trong header MeasureRow (collapsed)
+    để DA thấy ngay measure nào span tables / dùng filter context.
+  - **15.3 Time grain mọi chart**: Phase-13.4 chỉ wire TIME_SERIES. Phase
+    15.3 wire `TimeGrainSlot` vào RIBBON, TIMELINE, BAR/HORIZONTAL_BAR,
+    LINE, AREA. Auto-detect `dimIsTime` (date/datetime type) → hiện
+    TimeGrainSlot bên cạnh dim picker. BE Phase-5 đa dialect đã sẵn.
+  - **15.4 Filter Context preset 1-click**: refactor `FilterContextModifiers`
+    (Phase-14) từ raw-checkbox UI → 4 button preset:
+    "None / % of grand total / % within ... / Use relationship". Preset
+    detector đọc context_modifiers ngược lại để highlight đúng. Custom
+    shapes fall vào Advanced disclosure. Schema Phase-14 không đổi —
+    đây thuần UX layer trên cùng.
+  - **15.5 Time intelligence smart builder**: dialog `TimeIntelligenceBuilder`
+    với 8 function (Same period last year, Prev month, Prev quarter, YTD,
+    MTD, QTD, Rolling 7-day, Rolling 30-day). DA pick base measure + date
+    dim → tự sinh expression đầy đủ với Phase-5 macro
+    (`${PREV_YEAR_START}`, `${MONTH_START}` etc.). Generated MeasureDefinition
+    push vào measures[]; user edit name/agg sau như measure thường. KHÔNG
+    tạo cơ chế thứ 3 — vẫn là Measure với expression compile sang SQL.
+    Entry trong Add Measure dropdown: "+ Time intelligence (smart)" + badge
+    PBI, trên trên các template raw cũ (Phase-3a) — legacy templates giữ
+    cho power users muốn write expression bằng tay.
+  - **15.6 Dashboard cross-filtering**: infrastructure đã có đầy đủ
+    (ChartTile `onSelectCrossFilter` + ExploreChart `onSelectDataPoint` +
+    page `handleCrossFilterChange` + DashboardCanvas/Grid pass-through).
+    Phase-15.6 thêm UX hint duy nhất: `cursor-crosshair` + tooltip "Click
+    một slice để filter chart khác" trên chart visualization wrapper khi
+    cross-filter wired. Hành vi click → filter chart khác đã work; chỉ
+    discoverable hơn.
+  - **Tests**: 27/27 BE pytest pass (không thêm test mới — Phase 15 là
+    surface layer). 0 FE TypeScript errors trên toàn codebase (exclude
+    2 workboards file broken trước).
+  - **KHÔNG đụng**: MCP tools, Workboards (per user yêu cầu — Phase 15
+    chỉ về UI/UX cho AppBI core).
+
+- **2026-05-17 (Phase-14)**: Filter context — mở rộng Measure để bao DAX
+  `CALCULATE/ALL/ALLEXCEPT/USERELATIONSHIP` use case, compile xuống SQL
+  window aggregate. Giữ Nguyên tắc 1: KHÔNG thêm cơ chế thứ 3, chỉ mở
+  rộng cơ chế Measure.
+  - **Schema**: `MeasureDefinition.context_modifiers: List[ContextModifier]`
+    optional. 3 type:
+    * `all` — `agg(...) OVER ()` cho grand total.
+    * `all_except` + `keep_fields` — `agg(...) OVER (PARTITION BY ...)`.
+    * `use_relationship` + `join_alias` — schema-only ở Phase-14 (engine
+      compile chưa wire FROM/JOIN; sẽ làm phase sau). Save được, runtime
+      dùng default join.
+    Pydantic model_validator reject mismatch: 'all' + 'all_except' cùng
+    measure, 'all_except' không có keep_fields, etc.
+  - **Engine**: `_render_measure` nhận thêm `active_dimensions` param.
+    Khi measure có modifiers + caller pass active_dimensions, engine
+    wrap aggregate thành `agg(...) OVER (PARTITION BY ...)`. Helper mới
+    `_compute_context_partition` build partition expression list từ
+    keep_fields. Helper `_measure_is_windowed` cho `_build_group_by_clause`
+    biết: nếu mọi measure đều windowed thì bỏ GROUP BY.
+  - **Validator BE save-time** (`_validate_measure_dependencies`):
+    * `all_except.keep_fields` phải là dimension declared trên measure's
+      anchor view.
+    * `use_relationship.join_alias` phải tồn tại trong JoinDefinition.alias
+      của explore nào đó trong dataset.
+  - **FE UI**: component mới `FilterContextModifiers` trong
+    ModelViewEditPanel. 3 checkbox + text input cho keep_fields (CSV) +
+    join_alias. Cảnh báo đỏ nếu user tick cả 'all' và 'all_except'.
+  - **MCP sync**: SEMANTIC_MODEL_PLAN_SHAPE thêm doc `context_modifiers`
+    + example. Validator MCP-side mirror BE check (BE-as-gatekeeper Phase-12.5
+    pattern). TOOL_SURFACE.md section "Phase-14 — filter context".
+  - **Tests**: 9 test mới — render `all` → OVER (), `all_except` →
+    PARTITION BY kept, fallback khi không có active_dimensions, validate
+    all+all_except reject, validate keep_fields required cho all_except,
+    validate join_alias required cho use_relationship, validate all
+    không nhận keep_fields, helper `_measure_is_windowed` correctness,
+    legacy measure không thay đổi byte output. Tổng 27/27 BE pytest pass.
+
+- **2026-05-17 (Phase-13)**: UX gap — 4 thứ DA quen từ PowerBI mà AppBI
+  thiếu surface. Không đụng kiến trúc; chỉ thêm metadata + FE.
+  - **13.1 Hierarchy nhẹ**: `DimensionDefinition.parent: Optional[str]`
+    — pure metadata. FE ExploreColumnPanel hiện icon `↳` + tooltip
+    "Drill-down con của <parent>" cho dim có parent. BE validator reject
+    self-reference + cycle (cùng pattern derived_table cycle check).
+  - **13.2 Implicit measure**: FE `MetricConfig._implicit: true` khi user
+    kéo raw numeric column chưa có semantic measure. UI hiện badge "auto"
+    + tooltip gợi ý "Save vào Data Model". BE không đụng (Phase-3
+    `agg='auto'` đã accept). Phase 12.5 `upgradeRoleConfigToQualified`
+    strip `_implicit` flag khi bare → qualified (vì giờ trỏ measure thật).
+  - **13.3 Cross-table measure UI polish**: Phase-12 đã có UI nhưng thiếu
+    drift detection. Phase-13.3 parse `${view.field}` placeholder trong
+    expression, diff vs source_columns, hiện warning "thiếu N entry"
+    với 1-click `+ add`. Plus empty-state example.
+  - **13.4 Time grain picker**: `ChartRoleConfig.timeGrains: Record<string, TimeGrain>`
+    + component `TimeGrainSlot`. UI dropdown bên cạnh time field (TIME_SERIES
+    chart). FE forward qua `buildExploreExecuteRequest.time_grains` —
+    BE Phase-5 macro engine emit date_trunc đa dialect.
+
+- **2026-05-17 (Phase-12.7)**: Triệt để vòng audit sau Phase 12.6 — 7 bug
+  còn sót, sửa hết.
+  - **Bug A (datasets.py)**: dead variable `live_table` trong
+    `_execute_semantic_dataset_query`. Được assign 2 nơi (line 909 và
+    via `build_live_proxy_table_for_dataset_table` unpack) nhưng KHÔNG
+    có call site sau đó. Phase 12.6 patch không xoá nên dev đọc code sẽ
+    bối rối. Fix: thay `live_table = ...` bằng `_ = ...` discard, xoá
+    `live_table = db_table` init.
+  - **Bug C (routers/semantic.py)**: outer try/except cũ trả
+    `Query execution failed: <str(e)>` 500 generic, không có logger.
+    DA hit 500 không có context. Fix: thêm `get_logger` + `logger.exception`
+    với explore name + resolved dialect; thêm `except HTTPException: raise`
+    để inner 404/400 bubble đúng status.
+  - **Bug D (routers/semantic.py)**: `data_source.type` truyền raw vào
+    `DataSourceConnectionService.execute_query` mà không unwrap enum.
+    Function compare `ds_type == DataSourceType.X.value` (string) →
+    enum input miss. Fix: unwrap enum → str trước khi pass.
+  - **Bug E (chart_service.py)**: `_execute_semantic_chart_runtime` gọi
+    `engine.generate_sql(...)` và `DataSourceConnectionService.execute_query(...)`
+    không có try/except. Exception bubble nguyên gốc → API endpoint thấy
+    `Exception` generic, không phân biệt được engine domain error
+    (ValueError) vs execute error vs code bug. Fix: wrap cả 2 — engine
+    ValueError bubble nguyên (Phase 11 VN message intact); engine
+    generic Exception convert thành ValueError với context dialect;
+    execute Exception cũng thành ValueError với checklist hint.
+  - **Bug F (charts.py `/charts/{id}/data`)**: catch ValueError thành
+    **404** thay vì 400. Sai semantic — chart row tồn tại, lỗi ở config.
+    DA hoặc dev nhầm tưởng chart bị xoá. Fix: ValueError → 400 với
+    message Phase-11 VN intact.
+  - **Bug G (public.py public chart data)**: catch ValueError thành
+    `Chart data not found.` 404 — **nuốt nguyên message**. DA xem
+    dashboard share thấy "không tìm thấy" mà không hiểu lý do
+    (thật ra là relationship missing). Fix: forward message verbatim
+    với status 400.
+  - **Bug H (FE ExploreEditor.tsx)**: Phase 12.5
+    `upgradeRoleConfigToQualified` chỉ áp dụng `generatedRoleConfig`,
+    **không cover `customRoleConfig`** (SQL mode). DA dùng custom SQL +
+    pick semantic field → bare field gửi BE → route sai sang live_query
+    → mất JOIN. Fix: add cùng pattern cho customRoleConfig effect.
+  - **Audit pattern (DA's bug #3 GROUP BY ambiguous)**: re-verify lần 2
+    — vẫn false alarm. Engine dùng positional `GROUP BY 1, 2, 3`. Không
+    đụng vào.
+  - **Tests**: 18/18 BE pytest pass; 0 FE TypeScript errors. 5 BE files
+    py_compile clean.
+
 - **2026-05-16 (Phase-12.6)**: Multi-dialect crash + opaque-500 fix.
   - **DA tìm được 2 bug nghiêm trọng** trong code semantic query path:
     1. **Hardcode dialect**: `SemanticQueryEngine(db, database_type="postgresql")`

@@ -74,6 +74,18 @@ export interface MetricConfig {
   field: string;
   agg: AggFn;
   outputField?: string;
+  /**
+   * Phase-13: implicit measure flag. True when this metric was auto-created
+   * by the FE because the user dragged a raw numeric column directly into
+   * the metric slot WITHOUT pre-defining a semantic measure. Pure FE state
+   * (BE doesn't read it) — used to show a "promote to measure" prompt and
+   * to skip the qualified-upgrade pass for raw columns.
+   *
+   * Does NOT change any SQL — BE compiles `agg(field)` the same way for
+   * implicit and explicit measures. Implicit just means "we made this up
+   * for you; consider saving it to your model".
+   */
+  _implicit?: boolean;
 }
 
 export interface ChartStyleConfig {
@@ -365,7 +377,24 @@ export interface ChartRoleConfig {
   tablePivotMetric?: MetricConfig;
   /** For TABLE type: which columns to show. undefined = show all */
   selectedColumns?: string[];
+  /**
+   * Phase-13.4: bucket time dimensions on the BE via date_trunc. Keyed by
+   * the dimension field name (qualified `view.field` or bare). Value is
+   * the grain — engine emits dialect-correct SQL (Phase-5 multi-dialect).
+   * Empty / missing key = no bucketing (raw timestamps).
+   */
+  timeGrains?: Record<string, TimeGrain>;
 }
+
+export type TimeGrain = 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+export const TIME_GRAIN_OPTIONS: { value: TimeGrain; label: string }[] = [
+  { value: 'day', label: 'Day' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'quarter', label: 'Quarter' },
+  { value: 'year', label: 'Year' },
+];
 
 export const EMPTY_ROLE_CONFIG: ChartRoleConfig = { metrics: [] };
 
@@ -1120,9 +1149,96 @@ function SelectSlot({
   );
 }
 
+/**
+ * Phase-15.1: drill-down action. When the chart's current dimension has
+ * children declared via DimensionDefinition.parent (Phase-13.1 hierarchy
+ * metadata), render compact buttons "↓ <child label>". Click swaps the
+ * chart's dimension to the child. Multiple children = multiple buttons.
+ *
+ * Pure FE: BE doesn't know about drill — it just runs the new query with
+ * the swapped dim. Preserves Phase-1 "2 cơ chế" — no new calculation,
+ * just navigation.
+ */
+function DrillDownButtons({
+  currentDim,
+  childrenMap,
+  onDrill,
+}: {
+  currentDim: string | undefined;
+  childrenMap: Map<string, string[]> | undefined;
+  onDrill: (childField: string) => void;
+}) {
+  if (!currentDim || !childrenMap) return null;
+  const children = childrenMap.get(currentDim);
+  if (!children || children.length === 0) return null;
+  return (
+    <div className="-mt-1 flex flex-wrap items-center gap-1">
+      <span className="text-[10px] text-text-quaternary">Drill into:</span>
+      {children.map((child) => {
+        // Display the child's bare segment (after the last dot) for compactness.
+        const bare = child.split('.').slice(-1)[0] ?? child;
+        return (
+          <button
+            key={child}
+            onClick={() => onDrill(child)}
+            className="rounded-md border border-brand/30 bg-brand/10 px-1.5 py-0.5 text-[10px] font-emphasis text-brand hover:bg-brand/20"
+            title={`Đổi dimension chart sang "${child}" và chạy lại query`}
+          >
+            ↓ {bare}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Phase-13.4: time grain picker shown next to a time-field SelectSlot.
+ * Lets the user request server-side bucketing (date_trunc per dialect)
+ * so chart points group by day/week/month/quarter/year instead of by
+ * raw timestamp. Renders nothing when no time field is picked yet —
+ * the grain only makes sense once we know which field to bucket.
+ *
+ * State lives in ChartRoleConfig.timeGrains[fieldName]. `none` removes
+ * the entry so legacy charts that never used grains stay byte-identical.
+ */
+function TimeGrainSlot({
+  fieldName,
+  value,
+  onChange,
+}: {
+  fieldName: string | undefined;
+  value: TimeGrain | undefined;
+  onChange: (next: TimeGrain | undefined) => void;
+}) {
+  if (!fieldName) return null;
+  const current = value ?? '';
+  return (
+    <div>
+      <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1">
+        Time grain
+        <HelpTooltip text="Bucket time field via SQL date_trunc — engine emits đúng cú pháp dialect (DuckDB / Postgres / BigQuery / MySQL). Default 'none' = group raw timestamp (mỗi giá trị = 1 nhóm)." />
+      </label>
+      <select
+        value={current}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange(v ? (v as TimeGrain) : undefined);
+        }}
+        className="w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 border-[rgb(var(--border-strong))] focus:outline-none focus:ring-1 focus:ring-brand"
+      >
+        <option value="">none (raw)</option>
+        {TIME_GRAIN_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MetricSlot ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â PowerBI-style pill with per-field aggregation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function MetricSlot({
-  label, required, hint, single, value, options, allOptions, onChange,
+  label, required, hint, single, value, options, allOptions, declaredMeasureRefs, onChange,
 }: {
   label: string; required?: boolean; hint?: string;
   single?: boolean;
@@ -1131,6 +1247,11 @@ function MetricSlot({
   options: Col[];
   /** All columns including non-numeric (allowed for COUNT/COUNT_DISTINCT). Defaults to options. */
   allOptions?: Col[];
+  /** Phase-15.7: qualified refs that ARE declared semantic measures. Used
+   *  to distinguish "user picked a declared measure" (no badge) from
+   *  "user picked a raw numeric dim that BE will auto-promote to SUM/...".
+   *  Undefined → fall back to bare-vs-qualified heuristic. */
+  declaredMeasureRefs?: Set<string>;
   onChange: (v: MetricConfig[]) => void;
 }) {
   const missing = required && value.length === 0;
@@ -1140,7 +1261,19 @@ function MetricSlot({
   const addField = (fieldName: string, agg: AggFn = 'sum') => {
     if (!fieldName) return;
     if (value.find(m => m.field === fieldName)) return;
-    const next: MetricConfig = { field: fieldName, agg };
+    // Phase-15.7: implicit detect tightened. A metric is implicit when it
+    // points to ANYTHING that isn't a declared semantic measure — that
+    // covers (a) bare names (no qualifier) AND (b) qualified names whose
+    // target view doesn't have a measure of that name (i.e. the BE will
+    // synthesise SUM/AVG/... at query time via the implicit-fallback in
+    // semantic_query_engine._render_measure). Hiding the badge for
+    // explicit measures keeps the "auto" hint truthful — DA doesn't see
+    // it on measures they've actually declared.
+    const isQualified = fieldName.includes('.');
+    const isExplicit = isQualified && (declaredMeasureRefs?.has(fieldName) ?? false);
+    const next: MetricConfig = isExplicit
+      ? { field: fieldName, agg }
+      : { field: fieldName, agg, _implicit: true };
     onChange(single ? [next] : [...value, next]);
   };
 
@@ -1187,6 +1320,17 @@ function MetricSlot({
                 ))}
               </select>
               <span className="flex-1 text-xs text-brand truncate" title={m.field}>{(() => { const o = fullOptions.find(x => x.name === m.field); return o ? colLabel(o) : m.field; })()}</span>
+              {m._implicit && (
+                <span
+                  className="rounded bg-warning/10 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
+                  title={
+                    "Measure tạm — FE tự tạo từ cột raw. Để dùng lại ở chart khác, " +
+                    "vào Data Model tab và Add Measure với cùng cột + agg."
+                  }
+                >
+                  auto
+                </span>
+              )}
               <button onClick={() => removeField(m.field)}
                 className="p-0.5 rounded hover:bg-brand-hover text-brand flex-shrink-0"
               >
@@ -1401,6 +1545,23 @@ interface ExploreChartConfigProps {
   mode?: 'full' | 'styleOnly';
   /** Series keys (metric keys or breakdown values) available for per-series color override. */
   availableSeriesKeys?: { key: string; label: string }[];
+  /**
+   * Phase-15.1: drill-down hierarchy map. Keyed by qualified parent field
+   * name; value is the list of qualified child field names declared via
+   * DimensionDefinition.parent. When the chart's dimension has children
+   * in this map, we render a "↓ Drill into <child>" button next to it.
+   * Empty / undefined = no hierarchy info; drill button hidden.
+   */
+  dimChildrenMap?: Map<string, string[]>;
+  /**
+   * Phase-15.7: set of qualified field refs that ARE declared as semantic
+   * measures on reachable views. MetricSlot uses this to decide whether
+   * a newly-added qualified ref should carry the `_implicit` flag —
+   * qualified-AND-declared = explicit, anything else (bare OR qualified
+   * pointing at a numeric dim) = implicit (BE auto-promotes via SUM).
+   * Hiding the badge for declared measures keeps the UI honest.
+   */
+  declaredMeasureRefs?: Set<string>;
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
@@ -1418,6 +1579,8 @@ export function ExploreChartConfig({
   readOnly,
   mode = 'full',
   availableSeriesKeys = [],
+  dimChildrenMap,
+  declaredMeasureRefs,
   onChartTypeChange,
   onRoleConfigChange,
   onStyleConfigChange,
@@ -1430,6 +1593,24 @@ export function ExploreChartConfig({
   const updStyle = useCallback(
     (patch: Partial<ChartStyleConfig>) => onStyleConfigChange({ ...styleConfig, ...patch }),
     [styleConfig, onStyleConfigChange]
+  );
+  // Phase-13.4: set / clear a per-field time grain. Keep timeGrains
+  // undefined when empty so legacy chart configs that never used
+  // grains stay byte-identical (no spurious diff on save).
+  const setGrain = useCallback(
+    (fieldName: string | undefined, grain: TimeGrain | undefined) => {
+      if (!fieldName) return;
+      const current = roleConfig.timeGrains ?? {};
+      const nextGrains: Record<string, TimeGrain> = { ...current };
+      if (grain) {
+        nextGrains[fieldName] = grain;
+      } else {
+        delete nextGrains[fieldName];
+      }
+      const cleaned = Object.keys(nextGrains).length > 0 ? nextGrains : undefined;
+      onRoleConfigChange({ ...roleConfig, timeGrains: cleaned });
+    },
+    [roleConfig, onRoleConfigChange],
   );
 
   const allCols  = availableColumns;
@@ -1446,6 +1627,14 @@ export function ExploreChartConfig({
   const dim = normalizedRoleConfig.dimension || '';
   const brk = normalizedRoleConfig.breakdown || '';
   const tf  = normalizedRoleConfig.timeField || '';
+  // Phase-15.3: auto-detect when the chart's X-axis dimension is a
+  // date/datetime column — let the TimeGrainSlot appear so DA can bucket
+  // without switching to TIME_SERIES chart type. LINE / AREA / BAR are
+  // the common cases where users plot a date on X without thinking of it
+  // as "time series" semantically.
+  const dimIsTime = Boolean(
+    dim && allCols.find((c) => c.name === dim && isTimelike(c)),
+  );
   const sx  = normalizedRoleConfig.scatterX  || '';
   const sy  = normalizedRoleConfig.scatterY  || '';
   const lineMetric = normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : [];
@@ -1882,6 +2071,7 @@ export function ExploreChartConfig({
                 value={tablePivotMetric}
                 options={numOrAll}
                 allOptions={allCols}
+                declaredMeasureRefs={declaredMeasureRefs}
                 onChange={value => upd({ tablePivotMetric: value[0] })}
               />
 
@@ -2457,9 +2647,9 @@ export function ExploreChartConfig({
           description="Pick the KPI value first, then add an optional benchmark metric if the card should compare against live data."
         >
           <Disclosure title={chartBindingTitle} hint={chartRoleSectionHint} defaultOpen>
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Benchmark Metric" hint="In Custom SQL mode, choose a second numeric SQL output column. Use {benchmark}, {delta}, or {deltaPercent} in the Context Template." single value={benchmarkMetric} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Benchmark Metric" hint="In Custom SQL mode, choose a second numeric SQL output column. Use {benchmark}, {delta}, or {deltaPercent} in the Context Template." single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
           </Disclosure>
         </SectionPanel>
@@ -2700,14 +2890,24 @@ export function ExploreChartConfig({
           {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
             <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <DrillDownButtons
+              currentDim={dim || undefined}
+              childrenMap={dimChildrenMap}
+              onDrill={(child) => upd({ dimension: child })} />
+            {dimIsTime && (
+              <TimeGrainSlot
+                fieldName={dim || undefined}
+                value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
+                onChange={(g) => setGrain(dim || undefined, g)} />
+            )}
+            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
           {chartType === 'GROUPED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="grouped by" required value={brk} options={dimOrAll}
               placeholder="select field"
@@ -2717,7 +2917,7 @@ export function ExploreChartConfig({
           {chartType === 'STACKED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="stack by" required value={brk} options={dimOrAll}
               placeholder="select field"
@@ -2727,9 +2927,9 @@ export function ExploreChartConfig({
           {chartType === 'BAR_LINE' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ lineMetric: v[0], breakdown: undefined })} />
           </>}
 
@@ -2737,7 +2937,17 @@ export function ExploreChartConfig({
           {chartType === 'LINE' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <DrillDownButtons
+              currentDim={dim || undefined}
+              childrenMap={dimChildrenMap}
+              onDrill={(child) => upd({ dimension: child })} />
+            {dimIsTime && (
+              <TimeGrainSlot
+                fieldName={dim || undefined}
+                value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
+                onChange={(g) => setGrain(dim || undefined, g)} />
+            )}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2747,7 +2957,17 @@ export function ExploreChartConfig({
           {chartType === 'AREA' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <DrillDownButtons
+              currentDim={dim || undefined}
+              childrenMap={dimChildrenMap}
+              onDrill={(child) => upd({ dimension: child })} />
+            {dimIsTime && (
+              <TimeGrainSlot
+                fieldName={dim || undefined}
+                value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
+                onChange={(g) => setGrain(dim || undefined, g)} />
+            )}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2758,7 +2978,11 @@ export function ExploreChartConfig({
             <SelectSlot label="Time Field (X)" required value={tf} options={timeOrAll}
               placeholder="select time field"
               onChange={v => upd({ timeField: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <TimeGrainSlot
+              fieldName={tf || undefined}
+              value={tf ? normalizedRoleConfig.timeGrains?.[tf] : undefined}
+              onChange={(g) => setGrain(tf || undefined, g)} />
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2768,14 +2992,14 @@ export function ExploreChartConfig({
           {isPieLike && <>
             <SelectSlot label="Legend" hint="slice label" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
           {chartType === 'RADAR' && <>
             <SelectSlot label="Axis" hint="category" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Values" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -2790,11 +3014,11 @@ export function ExploreChartConfig({
               placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />
             {chartType === 'BUBBLE' && (
-              <MetricSlot label="Size" hint="bubble radius" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              <MetricSlot label="Size" hint="bubble radius" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
                 onChange={v => upd({ metrics: v })} />
             )}
             {chartType === 'MAP_POINT' && (
-              <MetricSlot label="Size" hint="optional" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              <MetricSlot label="Size" hint="optional" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
                 onChange={v => upd({ metrics: v })} />
             )}
           </>}
@@ -2802,7 +3026,7 @@ export function ExploreChartConfig({
           {['FUNNEL', 'TREEMAP', 'WATERFALL', 'MAP_REGION', 'WORD_CLOUD', 'BOXPLOT'].includes(chartType) && <>
             <SelectSlot label="Category" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -2811,7 +3035,7 @@ export function ExploreChartConfig({
               onChange={v => upd({ dimension: v || undefined })} />
             <SelectSlot label="Target" hint="second dimension" required value={brk} options={dimOrAll}
               onChange={v => upd({ breakdown: v || undefined })} />
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -2819,9 +3043,13 @@ export function ExploreChartConfig({
             <SelectSlot label="Time Field" required value={tf} options={timeOrAll}
               placeholder="select time field"
               onChange={v => upd({ timeField: v || undefined, dimension: v || undefined })} />
+            <TimeGrainSlot
+              fieldName={tf || undefined}
+              value={tf ? normalizedRoleConfig.timeGrains?.[tf] : undefined}
+              onChange={(g) => setGrain(tf || undefined, g)} />
             <SelectSlot label="Ribbon" hint="ranked series" required value={brk} options={dimOrAll}
               onChange={v => upd({ breakdown: v || undefined })} />
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -2829,23 +3057,27 @@ export function ExploreChartConfig({
             <SelectSlot label="Time Field" required value={tf} options={timeOrAll}
               placeholder="select time field"
               onChange={v => upd({ timeField: v || undefined })} />
+            <TimeGrainSlot
+              fieldName={tf || undefined}
+              value={tf ? normalizedRoleConfig.timeGrains?.[tf] : undefined}
+              onChange={(g) => setGrain(tf || undefined, g)} />
             <SelectSlot label="Label" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value" hint="optional duration or size" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" hint="optional duration or size" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 
           {['GAUGE', 'BULLET'].includes(chartType) && <>
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ benchmarkMetric: v[0] })} />
           </>}
 
           {chartType === 'PODIUM' && <>
             <SelectSlot label="Rank Name" hint="category" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Rank Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+            <MetricSlot label="Rank Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
           </>}
 

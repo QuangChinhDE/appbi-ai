@@ -90,15 +90,15 @@ interface Props {
 type ScreenStatus = 'ok' | 'warn' | 'missing';
 
 function screenStatus(s: ScreenSpec): ScreenStatus {
-  if (s.kind === 'form' || s.kind === 'list') {
+  if (s.kind === 'form' || s.kind === 'table') {
     if (!s.table_id) return 'missing';
   }
   if (s.kind === 'form') {
     const fields = (s.form?.fields || []) as Array<unknown>;
     if (fields.length === 0) return 'warn';
   }
-  if (s.kind === 'list') {
-    const cols = s.list?.columns || [];
+  if (s.kind === 'table') {
+    const cols = s.table?.columns || [];
     if (cols.length === 0) return 'warn';
   }
   if (s.kind === 'doc') {
@@ -109,11 +109,6 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
     const hasManaged = typeof s.dashboard?.dashboard_id === 'number' && (s.dashboard.dashboard_id ?? 0) > 0;
     const hasManual = !!(s.dashboard?.share_token || '').trim();
     if (!hasManaged && !hasManual) return 'missing';
-  }
-  if (s.kind === 'grid') {
-    if (!s.table_id) return 'missing';
-    const cols = s.grid?.columns || [];
-    if (cols.length === 0) return 'warn';
   }
   return 'ok';
 }
@@ -307,17 +302,15 @@ export default function WorkboardBuilder({ workboard }: Props) {
     const id = `screen-${Date.now().toString(36)}`;
     const titleByKind: Record<ScreenKind, string> = {
       form: 'New form',
-      list: 'List',
+      table: 'Table',
       doc: 'Document',
       dashboard: 'Dashboard',
-      grid: 'Grid',
     };
     const iconByKind: Record<ScreenKind, string> = {
       form: 'ClipboardEdit',
-      list: 'ListChecks',
+      table: 'Table',
       doc: 'FileText',
       dashboard: 'LayoutDashboard',
-      grid: 'Grid3x3',
     };
     const base: ScreenSpec = {
       id,
@@ -331,7 +324,20 @@ export default function WorkboardBuilder({ workboard }: Props) {
       rls: [],
     };
     if (kind === 'form') base.form = { fields: [], submit_label: 'Save', initial_values: {} };
-    if (kind === 'list') base.list = { columns: [], page_size: 50, row_actions: [] };
+    if (kind === 'table') {
+      base.table = {
+        columns: [],
+        editable_columns: [],
+        filters: [],
+        page_size: 50,
+        row_actions: [],
+        allow_add_row: false,
+        allow_delete_row: false,
+        required_columns: [],
+        default_values: {},
+        detail_panel: { enabled: true },
+      };
+    }
     if (kind === 'doc') base.doc = { blocks: [], page: { size: 'A4', orientation: 'portrait', margin_mm: 15 } };
     if (kind === 'dashboard') {
       // New dashboard screens start empty — the editor lets the user pick
@@ -339,18 +345,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
       // table binding either way.
       base.dashboard = {};
       base.table_id = null;
-    }
-    if (kind === 'grid') {
-      base.grid = {
-        columns: [],
-        editable_columns: [],
-        filters: [],
-        page_size: 100,
-        allow_add_row: true,
-        allow_delete_row: true,
-        required_columns: [],
-        default_values: {},
-      };
     }
     setLayout((curr) => ({
       ...curr,
@@ -472,7 +466,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
         className="flex flex-1 min-h-0"
       >
         <Panel id="editor" order={1} minSize={30} defaultSize={55}>
-          <main className="relative h-full min-w-0 overflow-y-auto bg-surface-0">
+          <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
             {isEditor && activeScreen ? (
               <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
                 <ScreenEditor

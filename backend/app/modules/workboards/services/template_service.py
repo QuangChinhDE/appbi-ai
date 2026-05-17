@@ -565,17 +565,36 @@ def _rewrite_column_references(
                 form_cfg["initial_values"] = _rename_col_dict_keys(
                     form_cfg.get("initial_values"), old_table_id, column_map
                 )
-        list_screen = screen.get("list") if isinstance(screen.get("list"), dict) else None
-        if list_screen:
-            if "columns" in list_screen:
-                list_screen["columns"] = _rename_col_list(list_screen.get("columns"), old_table_id, column_map)
-            if "default_sort_column" in list_screen:
-                list_screen["default_sort_column"] = _rename_col(
-                    list_screen.get("default_sort_column"), old_table_id, column_map
+        table_screen = screen.get("table") if isinstance(screen.get("table"), dict) else None
+        if table_screen:
+            if "columns" in table_screen:
+                table_screen["columns"] = _rename_col_list(
+                    table_screen.get("columns"), old_table_id, column_map
                 )
-            for item in list_screen.get("filters") or []:
+            if "editable_columns" in table_screen:
+                table_screen["editable_columns"] = _rename_col_list(
+                    table_screen.get("editable_columns"), old_table_id, column_map
+                )
+            if "required_columns" in table_screen:
+                table_screen["required_columns"] = _rename_col_list(
+                    table_screen.get("required_columns"), old_table_id, column_map
+                )
+            if "default_sort_column" in table_screen:
+                table_screen["default_sort_column"] = _rename_col(
+                    table_screen.get("default_sort_column"), old_table_id, column_map
+                )
+            if "group_by" in table_screen:
+                table_screen["group_by"] = _rename_col_list(
+                    table_screen.get("group_by"), old_table_id, column_map
+                )
+            for item in table_screen.get("filters") or []:
                 if isinstance(item, dict) and "column" in item:
                     item["column"] = _rename_col(item.get("column"), old_table_id, column_map)
+            for group in table_screen.get("column_groups") or []:
+                if isinstance(group, dict) and "columns" in group:
+                    group["columns"] = _rename_col_list(
+                        group.get("columns"), old_table_id, column_map
+                    )
         _rename_doc_columns(screen.get("doc"), primary_old_table_id=old_table_id, column_map=column_map)
         for rule in screen.get("rls") or []:
             _rename_rls_rule_columns(rule, old_table_id, column_map)
@@ -622,12 +641,12 @@ def _check_missing_columns(
                     "where": "form.fields",
                     "column": col,
                 })
-        # List columns
-        for col in (((screen.get("list") or {}).get("columns")) or []):
+        # Table columns
+        for col in (((screen.get("table") or {}).get("columns")) or []):
             if col and col not in existing:
                 report.missing_columns.append({
                     "screen": screen.get("id"),
-                    "where": "list.columns",
+                    "where": "table.columns",
                     "column": col,
                 })
 

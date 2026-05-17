@@ -38,6 +38,10 @@ sqlglot==26.16.2
 # File parsing (Manual Table: CSV / Excel import)
 openpyxl==3.1.5
 
+# JS sandbox for Phase-14 computed columns (engine='js'). QuickJS-based,
+# enforces per-row timeout + isolated globals (no require / fetch / fs).
+quickjs==1.19.4
+
 # PDF generation (Dataset Quality scheduled email reports)
 reportlab==4.2.2
 

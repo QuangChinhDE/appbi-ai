@@ -7,7 +7,7 @@
  * ``backend/app/modules/workboards/schemas.py``.
  */
 
-export type ScreenKind = 'form' | 'list' | 'doc' | 'dashboard' | 'grid';
+export type ScreenKind = 'form' | 'table' | 'doc' | 'dashboard';
 
 export interface ScreenAction {
   id: string;
@@ -76,20 +76,10 @@ export interface FormScreenSpecBuilt {
   sections?: string[];
 }
 
-export interface ListFilterSpec {
+export interface TableFilterSpec {
   column: string;
   kind: 'text' | 'select' | 'date_range' | 'number_range';
   label?: string | null;
-}
-
-export interface ListScreenSpecBuilt {
-  columns: string[];
-  filters?: ListFilterSpec[];
-  page_size?: number;
-  default_sort_column?: string | null;
-  default_sort_direction?: 'asc' | 'desc';
-  row_actions?: ScreenAction[];
-  empty_state_message?: string | null;
 }
 
 export type CellFormat =
@@ -101,14 +91,15 @@ export type CellFormat =
   | 'date'
   | 'datetime';
 
-export interface GridComputedColumnSpec {
+export interface TableComputedColumnSpec {
   name: string;
   label?: string | null;
+  /** JavaScript function body — see ``services/js_evaluator.py``. */
   formula: string;
   format?: CellFormat | null;
 }
 
-export interface GridLookupColumnSpec {
+export interface TableLookupColumnSpec {
   name: string;
   label?: string | null;
   from_table_id: number;
@@ -118,22 +109,48 @@ export interface GridLookupColumnSpec {
   format?: CellFormat | null;
 }
 
-export type GridTotalsKind = 'sum' | 'avg' | 'min' | 'max' | 'count';
+export type TableTotalsKind = 'sum' | 'avg' | 'min' | 'max' | 'count';
 
-export interface GridScreenSpecBuilt {
+export interface TableColumnGroupSpec {
+  label: string;
+  columns: string[];
+}
+
+export interface TableColumnMetaSpec {
+  label?: string | null;
+  width_px?: number | null;
+  format?: CellFormat | null;
+  align?: 'left' | 'center' | 'right' | null;
+  merge?: boolean | null;
+}
+
+export interface TableDetailPanelSpec {
+  enabled?: boolean;
+  title?: string | null;
+  columns?: string[];
+  editable_columns?: string[];
+  sections?: Record<string, string[]>;
+}
+
+export interface TableScreenSpecBuilt {
   columns: string[];
   editable_columns?: string[];
-  filters?: ListFilterSpec[];
+  filters?: TableFilterSpec[];
   page_size?: number;
   default_sort_column?: string | null;
   default_sort_direction?: 'asc' | 'desc';
+  row_actions?: ScreenAction[];
   allow_add_row?: boolean;
   allow_delete_row?: boolean;
   required_columns?: string[];
   default_values?: Record<string, unknown>;
-  computed_columns?: GridComputedColumnSpec[];
-  lookup_columns?: GridLookupColumnSpec[];
-  totals?: Record<string, GridTotalsKind>;
+  computed_columns?: TableComputedColumnSpec[];
+  lookup_columns?: TableLookupColumnSpec[];
+  totals?: Record<string, TableTotalsKind>;
+  column_groups?: TableColumnGroupSpec[];
+  group_by?: string[];
+  column_metadata?: Record<string, TableColumnMetaSpec>;
+  detail_panel?: TableDetailPanelSpec;
   empty_state_message?: string | null;
 }
 
@@ -235,10 +252,9 @@ export interface ScreenSpec {
   visible_for_roles?: string[];
   show_in_nav?: boolean;
   form?: FormScreenSpecBuilt | null;
-  list?: ListScreenSpecBuilt | null;
+  table?: TableScreenSpecBuilt | null;
   doc?: DocScreenSpecBuilt | null;
   dashboard?: DashboardScreenSpecBuilt | null;
-  grid?: GridScreenSpecBuilt | null;
   rls?: ScreenRlsRuleSpec[];
   rls_default?: ScreenRlsRuleSpec | null;
 }

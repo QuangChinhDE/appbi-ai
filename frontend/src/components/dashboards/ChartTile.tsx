@@ -939,8 +939,21 @@ export function ChartTile({
         )}
       </div>
 
-      {/* Chart visualization */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      {/* Chart visualization. Phase-15.6: hint cursor + title attr when the
+          chart is wired for cross-filter, so DA discovers the click-to-
+          filter affordance instead of having to read docs. */}
+      <div
+        className={`flex-1 min-h-0 overflow-hidden ${
+          onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+            ? 'cursor-crosshair'
+            : ''
+        }`}
+        title={
+          onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+            ? 'Click một slice để filter chart khác trong dashboard'
+            : undefined
+        }
+      >
         {isLoadingData ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-brand" />

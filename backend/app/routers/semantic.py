@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_permission
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
 from app.models.user import User
 from app.schemas.semantic import (
@@ -595,15 +598,22 @@ def execute_semantic_query(
         if not data_source:
             raise HTTPException(status_code=404, detail="No data source available")
         
-        # Execute SQL using DataSourceConnectionService
+        # Execute SQL using DataSourceConnectionService.
+        # Phase-12.7: unwrap enum → str so DataSourceConnectionService gets
+        # the type as a string (it does `ds_type == DataSourceType.X.value`
+        # equality checks which would silently miss for enum input).
+        exec_ds_type = (
+            data_source.type if isinstance(data_source.type, str)
+            else data_source.type.value
+        )
         # Note: SemanticQueryEngine already adds LIMIT, so don't pass limit again
         columns, data, exec_time = DataSourceConnectionService.execute_query(
-            ds_type=data_source.type,
+            ds_type=exec_ds_type,
             config=data_source.config,
             sql_query=sql,
             limit=None  # Already included in SQL
         )
-        
+
         return SemanticQueryResponse(
             sql=sql,
             columns=columns,
@@ -613,8 +623,27 @@ def execute_semantic_query(
             pivoted_columns=pivot_metadata,
             warnings=engine.warnings
         )
-    
+
+    except HTTPException:
+        # Inner HTTPException (eg explore-not-found 404) bubbles unchanged
+        # so FastAPI uses the original status code instead of being
+        # re-wrapped as 500 by the generic handler below.
+        raise
     except ValueError as e:
+        # Phase-11 friendly VN message for unreachable views / missing
+        # fields. Keep the engine's text; surface dialect for debug ease.
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query execution failed: {str(e)}")
+        # Log full stack — DA was hitting "Query execution failed: ..."
+        # generic 500s with no debugging info. Include explore name +
+        # resolved dialect (if we got that far) so the cause is locatable
+        # from logs alone.
+        logger.exception(
+            "execute_semantic_query failed: explore=%s dialect=%s",
+            getattr(query_request, "explore", None),
+            locals().get("db_type") or "<not_resolved>",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi chạy semantic query: {e}. Báo dev kèm log nếu lặp lại.",
+        )

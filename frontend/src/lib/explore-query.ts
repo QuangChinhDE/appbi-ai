@@ -873,6 +873,33 @@ export function buildExploreExecuteRequest(args: {
     request.filters = filterPayload;
   }
 
+  // Phase-13.4: forward time grains. We only include entries whose key
+  // is referenced by SOME role-config field — otherwise legacy configs
+  // with stale grain entries (e.g. for a field that was removed) would
+  // confuse the BE engine. The grain is a hint to the engine, not a
+  // strict invariant; missing keys are silently OK.
+  if (normalized.timeGrains && Object.keys(normalized.timeGrains).length > 0) {
+    const usedFields = new Set<string>(
+      [
+        normalized.dimension,
+        normalized.breakdown,
+        normalized.timeField,
+        normalized.scatterX,
+        normalized.scatterY,
+        normalized.tableRowDimension,
+        normalized.tableColumnDimension,
+        ...(normalized.selectedColumns ?? []),
+      ].filter((v): v is string => Boolean(v)),
+    );
+    const activeGrains: Record<string, 'day' | 'week' | 'month' | 'quarter' | 'year'> = {};
+    for (const [field, grain] of Object.entries(normalized.timeGrains)) {
+      if (usedFields.has(field)) activeGrains[field] = grain;
+    }
+    if (Object.keys(activeGrains).length > 0) {
+      request.time_grains = activeGrains;
+    }
+  }
+
   if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
     if (isTablePivotConfig(normalized)) {
       const rowDimension = normalized.tableRowDimension as string;

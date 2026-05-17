@@ -175,6 +175,41 @@ Hai field mới optional, dành cho measure cần aggregate cột từ **nhiều
    - source_columns ref field không tồn tại trên view → 400
    - View khai báo trong source_columns không reachable từ base view qua join graph → engine raise tiếng Việt "Bảng X chưa có relationship tới base view Y" (user nhìn thấy ở chart preview).
 
+### Measure schema (Phase-14 — filter context / window aggregate)
+
+Phase-14 thêm field optional `context_modifiers` lên `MeasureDefinition`. Khi non-empty, engine compile measure thành SQL window aggregate (`agg(...) OVER (...)`) thay vì plain `GROUP BY` aggregate. Đây là cách AppBI cover các pattern PowerBI dùng `CALCULATE() / ALL() / ALLEXCEPT() / USERELATIONSHIP()` — nhưng chỉ bằng SQL chuẩn, không phải DAX engine riêng.
+
+3 modifier types:
+
+| Type | Compile thành | Use case |
+|---|---|---|
+| `all` | `agg(expr) OVER ()` — bỏ tất cả partition | "% of grand total" |
+| `all_except` | `agg(expr) OVER (PARTITION BY <keep_fields>)` | "% of region total" — giữ region trong partition, bỏ rest |
+| `use_relationship` | (schema-only ở Phase-14) | DAX `USERELATIONSHIP()` — pick alias join thay default. Engine wiring sẽ làm ở phase sau. |
+
+**Ví dụ — % of region total:**
+
+```json
+{
+  "name": "pct_of_region",
+  "type": "sum",
+  "sql": "amount",
+  "context_modifiers": [
+    {"type": "all_except", "keep_fields": ["region"]}
+  ]
+}
+```
+
+Engine emit: `SUM(amount) OVER (PARTITION BY orders.region)`. Khi chart slice by region + product, measure này trả về tổng theo region (không slice theo product) — DA chia cho measure plain để ra %.
+
+**Quy tắc cho AI khi tạo `context_modifiers`:**
+
+1. **Mặc định empty** — KHÔNG khai báo cho measure thường. Chỉ dùng khi DA hỏi cụ thể "% of total" / "% of region" / pattern tương đương.
+2. **'all' và 'all_except' loại trừ nhau** — BE reject 400 nếu cùng tồn tại trên 1 measure.
+3. **'all_except.keep_fields'** phải là tên dimension đã khai báo trên cùng view với measure (validator pre-check ở `commit_semantic_model`).
+4. **'use_relationship.join_alias'** phải khớp với `JoinDefinition.alias` trong explore. Hiện tại **schema-only** — measure save được, engine compile vẫn dùng default join. Phase sau wire.
+5. **Window aggregate KHÔNG cộng dồn** vào GROUP BY. Engine tự nhận ra: nếu mọi measure đều windowed, query không có GROUP BY. Mixed mode (1 plain + 1 windowed) thì GROUP BY emit theo plain measure.
+
 ### Field qualifier convention (Phase-12.5)
 
 **Rule cứng cho AI khi gọi mọi tool dạng query/chart:**

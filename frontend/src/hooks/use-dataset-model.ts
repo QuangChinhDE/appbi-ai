@@ -14,6 +14,13 @@ export interface DimensionDefinition {
   label?: string;
   description?: string;
   hidden: boolean;
+  /**
+   * Phase-13: optional drill-down parent. Names another dim on the same
+   * view (e.g. day.parent = "month", month.parent = "quarter"). Pure
+   * metadata for FE drill-down UX — engine doesn't consume it. BE
+   * validator at save time rejects self-reference and cycles.
+   */
+  parent?: string;
 }
 
 export type MeasureFilterOperator =
@@ -40,6 +47,25 @@ export interface MeasureFormat {
 export interface MeasureSourceColumn {
   view: string;
   field: string;
+}
+
+/**
+ * Phase-14: one filter-context modifier on a Measure.
+ * - `all`: ignore the chart's filter context for this measure (grand total).
+ * - `all_except`: only the listed `keep_fields` partition the window;
+ *   everything else from the chart's slicers is blanked.
+ * - `use_relationship`: route via a named JoinDefinition.alias instead of
+ *   the default join path. Schema only in Phase-14 — engine wiring lands
+ *   in a follow-up phase.
+ */
+export type ContextModifierType = 'all' | 'all_except' | 'use_relationship';
+
+export interface ContextModifier {
+  type: ContextModifierType;
+  /** For 'all_except': dim names (bare or qualified) to KEEP in the partition. */
+  keep_fields?: string[];
+  /** For 'use_relationship': JoinDefinition.alias on the explore. */
+  join_alias?: string;
 }
 
 export interface MeasureDefinition {
@@ -75,6 +101,14 @@ export interface MeasureDefinition {
    * validator checks the view/field exist in the dataset model.
    */
   source_columns?: MeasureSourceColumn[];
+  /**
+   * Phase-14: filter-context modifiers — when set, the BE engine emits the
+   * measure as a SQL window aggregate (`agg(...) OVER (...)`). Used for
+   * "% of total" / "% of region" / "use inactive relationship" patterns.
+   * Empty / undefined = legacy plain aggregate. See ContextModifier for
+   * supported types.
+   */
+  context_modifiers?: ContextModifier[];
 }
 
 export interface JoinDefinition {

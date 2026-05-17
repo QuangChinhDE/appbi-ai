@@ -106,7 +106,7 @@ _BLUEPRINT_TEMPLATE = {
                     ],
                     "submit_label": "Save",
                     # after_submit: ScreenAction object to auto-navigate after save.
-                    # e.g. {"id":"goto-list","label":"View list","go_to_screen":"list-view","carry":["id"]}
+                    # e.g. {"id":"goto-table","label":"View table","go_to_screen":"table-view","carry":["id"]}
                     "after_submit": None,
                     # initial_values: pre-fill fields with static values or placeholders.
                     # Supports {{app_user.username}}, {{app_user.role}}, {{today}}.
@@ -122,35 +122,45 @@ _BLUEPRINT_TEMPLATE = {
                     # e.g. ["Thời gian", "Hàng hóa", "Đối tác / Phương tiện"]
                     "sections": [],
                 },
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": None,
             },
             {
-                "id": "list-view",
-                "kind": "list",
-                "title": "<<list_title>>",
+                "id": "table-view",
+                "kind": "table",
+                "title": "<<table_title>>",
                 "icon": "Table",
                 "description": None,
                 "table_id": "<<dataset_table_id>>",
                 "primary_key_columns": ["id"],
                 "visible_for_roles": [],
                 "show_in_nav": True,
-                # column_labels: friendly column header map shown in the list table.
+                # column_labels: friendly column header map shown in the table.
                 # Keys are db column names; values are display labels.
                 "column_labels": {},  # e.g. {"ngay": "Ngày", "so_luong": "SL (Tấn)"}
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": {
+                "table": {
+                    # columns: ordered list of columns to display.
                     "columns": ["<<col1>>", "<<col2>>"],
-                    # filters: each filter shown above the list for quick user filtering.
+                    # editable_columns: subset of `columns` the end user may
+                    # edit inline. Empty list = pure read-only browse mode;
+                    # the row click still opens the detail panel below.
+                    # When you list any column here, the table also exposes
+                    # add-row / delete-row (if you turn allow_add_row /
+                    # allow_delete_row on).
+                    "editable_columns": [],
+                    # filters: each filter shown above the table for quick user filtering.
                     # kind options: "text" (free text search) | "select" (dropdown of distinct values)
                     #               | "date_range" (from/to date pickers) | "number_range" (min/max)
                     "filters": [],
                     "page_size": 50,   # min 10, max 500
                     "default_sort_column": None,
                     "default_sort_direction": "desc",  # "asc" | "desc"
+                    # row_actions: per-row navigate-to-screen buttons. Works
+                    # whether the table is read-only or editable.
                     "row_actions": [
                         {
                             "id": "edit",
@@ -164,6 +174,46 @@ _BLUEPRINT_TEMPLATE = {
                             "visible_for_roles": [],
                         }
                     ],
+                    # Add / delete only honoured when editable_columns has at
+                    # least one entry. Otherwise the runtime ignores them.
+                    "allow_add_row": False,
+                    "allow_delete_row": False,
+                    "required_columns": [],
+                    "default_values": {},
+                    # computed_columns: per-row Sheets-style formulas. Always
+                    # read-only at runtime. Reference other columns by name.
+                    # Cross-row aggregates: COL_SUM, COUNTIF, SUMIF, THIS_ROW_INDEX.
+                    "computed_columns": [],
+                    # lookup_columns: VLOOKUP-style joins against another
+                    # dataset table.
+                    "lookup_columns": [],
+                    # totals: footer aggregations over the current page.
+                    # Map column → "sum" | "avg" | "min" | "max" | "count".
+                    "totals": {},
+                    # column_groups: multi-level header. Each group spans
+                    # contiguous columns under one label, e.g. {"label":"Q1",
+                    # "columns":["jan","feb","mar"]}.
+                    "column_groups": [],
+                    # group_by: Google-Sheets-style row merge. When
+                    # consecutive rows share a value in a listed column, the
+                    # cell on the first row spans the run.
+                    "group_by": [],
+                    # column_metadata: per-column presentation overrides
+                    # {col: {label?, width_px?, format?, align?, merge?}}.
+                    "column_metadata": {},
+                    # detail_panel: side panel that opens on row click. Use
+                    # it to expose columns hidden from the table for density,
+                    # and to make editing available without leaving the
+                    # screen. Empty editable_columns inside the panel = the
+                    # panel is read-only (inline-edit is the only way to
+                    # change cells).
+                    "detail_panel": {
+                        "enabled": True,
+                        "title": None,
+                        "columns": [],            # empty = mirror table.columns
+                        "editable_columns": [],
+                        "sections": {},
+                    },
                     "empty_state_message": None,
                 },
                 "doc": None,
@@ -189,7 +239,7 @@ _BLUEPRINT_TEMPLATE = {
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": {
                     # page: print settings. size: "A4"|"A3"|"Letter"; orientation: "portrait"|"landscape"
                     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
@@ -247,7 +297,7 @@ _BLUEPRINT_TEMPLATE = {
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     # MANAGED mode: set dashboard_id (int). Get the id from the Dashboard module.
@@ -275,7 +325,7 @@ _BLUEPRINT_TEMPLATE = {
             "mobile_kind": "bottom_nav",
             # desktop_kind: "sidebar" (left panel) | "top_tabs" (horizontal tabs at top)
             "desktop_kind": "sidebar",
-            "items": ["entry-form", "list-view", "report-view"],
+            "items": ["entry-form", "table-view", "report-view"],
         },
     },
     "app_users_template": [
@@ -284,7 +334,7 @@ _BLUEPRINT_TEMPLATE = {
     "open_questions_for_user": [
         "Which roles should exist in the mini-app?",
         "Which fields need dropdown/lookup behavior?",
-        "Which columns should be visible in the main list screen?",
+        "Which columns should be visible in the main table screen, and which (if any) should be editable inline?",
     ],
 }
 
@@ -845,15 +895,15 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
             screen_ids.add(screen_id)
 
         kind = str(screen.get("kind") or "").strip()
-        if kind not in ("form", "list", "doc", "dashboard"):
+        if kind not in ("form", "table", "doc", "dashboard"):
             errors.append(f"screens[{index}] invalid kind: {kind!r}")
 
-        if kind in ("form", "list") and screen.get("table_id") is None:
+        if kind in ("form", "table") and screen.get("table_id") is None:
             errors.append(f"screens[{index}] kind={kind} but table_id is missing")
         if kind == "form" and not screen.get("form"):
             errors.append(f"screens[{index}] kind=form but no form spec")
-        if kind == "list" and not screen.get("list"):
-            errors.append(f"screens[{index}] kind=list but no list spec")
+        if kind == "table" and not screen.get("table"):
+            errors.append(f"screens[{index}] kind=table but no table spec")
         if kind == "doc" and not screen.get("doc"):
             errors.append(f"screens[{index}] kind=doc but no doc spec (page + blocks)")
         if kind == "dashboard":
@@ -1003,7 +1053,7 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
         if isinstance(table_id, str) and table_id.isdigit():
             table_id = int(table_id)
             screen["table_id"] = table_id
-        if kind in ("form", "list", "doc") and isinstance(table_id, int) and table_by_id and table_id not in table_by_id:
+        if kind in ("form", "table", "doc") and isinstance(table_id, int) and table_by_id and table_id not in table_by_id:
             errors.append(f"screens[{index}].table_id={table_id} is not attached to dataset {dataset_id}")
 
         # Resolve the bound table's column list once for both list/doc column checks.
@@ -1025,17 +1075,17 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
             screen["primary_key_columns"] = list(default_pk)
             warnings.append(f"screens[{index}].primary_key_columns defaulted to {default_pk}.")
 
-        list_spec = screen.get("list") or {}
-        for action_index, action in enumerate(list_spec.get("row_actions") or []):
+        table_spec = screen.get("table") or {}
+        for action_index, action in enumerate(table_spec.get("row_actions") or []):
             if isinstance(action, str):
                 errors.append(
-                    f"screens[{index}].list.row_actions[{action_index}] is a string - use ScreenAction objects."
+                    f"screens[{index}].table.row_actions[{action_index}] is a string - use ScreenAction objects."
                 )
                 continue
             target = action.get("go_to_screen") if isinstance(action, dict) else None
             if target and target not in screen_ids and target not in [s.get("id") for s in screens]:
                 errors.append(
-                    f"screens[{index}].list.row_actions[{action_index}].go_to_screen='{target}' does not match any screen id"
+                    f"screens[{index}].table.row_actions[{action_index}].go_to_screen='{target}' does not match any screen id"
                 )
 
         form_spec = screen.get("form") or {}
@@ -1266,13 +1316,21 @@ async def propose_workboard_blueprint(
             "IMPORTANT — read before filling the template": [
                 "sections: list[string] — ordered list of section heading names, e.g. ['Thời gian', 'Hàng hóa']. NOT list of objects. Fields reference a section via field.section='<name>'.",
                 "pages: list of page OBJECTS (NOT strings). Each page object: {id: int (1-based), title: str, description?: str, show_if?: str}. Fields reference a page via field.page=<id>. Empty list = single-page form.",
-                "after_submit: ScreenAction object | null — e.g. {id:'goto-list', label:'Xem danh sách', icon:'List', style:'secondary', go_to_screen:'list-view', carry:['id'], confirm_message:null, visible_for_roles:[]}. NOT a plain string.",
+                "after_submit: ScreenAction object | null — e.g. {id:'goto-table', label:'Xem danh sách', icon:'Table', style:'secondary', go_to_screen:'table-view', carry:['id'], confirm_message:null, visible_for_roles:[]}. NOT a plain string.",
                 "form.initial_values: pre-fill fields with static values or dynamic placeholders. Supports {{app_user.username}}, {{app_user.role}}, {{today}}. e.g. {'nam': '2026', 'nguoi_tao': '{{app_user.username}}'}.",
                 "widget options: 'text' | 'textarea' | 'number' | 'select' | 'date' | 'datetime' | 'checkbox' | 'lookup'. Use 'select' for static dropdowns (values come from column data). Use 'lookup' for FK dropdowns (set lookup.kind + lookup.table_id/lookup.values).",
                 "select widget: values come from the column data. Do NOT add lookup for a select widget — they're incompatible.",
                 "lookup.kind: 'static' (hardcoded list: lookup.values=[{label, value}]) | 'dataset_table' (FK: lookup.table_id + lookup.value_column + optional lookup.label_column).",
                 "lookup for text/select widgets: only use lookup when the field needs a dropdown. Omit lookup (set to null) for plain text inputs.",
-                "list.filters[]: each filter: {column:str, kind:'text'|'select'|'date_range'|'number_range', label?:str}. kind='text' = free-text search; 'select' = distinct values dropdown; 'date_range' = from/to pickers; 'number_range' = min/max inputs.",
+                "table.filters[]: each filter: {column:str, kind:'text'|'select'|'date_range'|'number_range', label?:str}. kind='text' = free-text search; 'select' = distinct values dropdown; 'date_range' = from/to pickers; 'number_range' = min/max inputs.",
+                "table.editable_columns: subset of `columns` the user may edit inline. Empty list = read-only table (the side detail_panel still opens on row click). Add columns here to enable inline edit + add-row + delete-row.",
+                "table.detail_panel.{enabled,title,columns,editable_columns,sections}: side panel shown on row click. `columns` empty = mirror table.columns. `editable_columns` empty = read-only panel. `sections` is {label: [col,...]} for grouping.",
+                "table.column_groups[]: multi-level header. Each group: {label:str, columns:[str,...]}. Columns must be contiguous in `columns` for the runtime to render the merged header.",
+                "table.group_by[]: row merge. When consecutive rows share a value in a listed column, the cell on the first row spans the run. Editable columns MUST NOT appear in group_by (merge + edit conflict).",
+                "table.column_metadata: per-column overrides {col: {label?, width_px?, format?, align?, merge?}}. Format hints flow to runtime + xlsx export.",
+                "table.computed_columns: per-row formula cells (always read-only). Cross-row aggregates: COL_SUM, COUNTIF, SUMIF, THIS_ROW_INDEX.",
+                "table.lookup_columns: VLOOKUP-style joins {name, from_table_id, match_column_local, match_column_remote, return_column, format?}.",
+                "table.totals: footer aggregation {col: 'sum'|'avg'|'min'|'max'|'count'}.",
                 "row_actions[].style: 'primary' | 'secondary' | 'ghost' | 'danger'.",
                 "system columns (id, updated_at, created_at): do NOT include these in form fields. They are managed by the runtime.",
                 "visible_for_roles: list[string] — role names that can see this screen. Empty list = all roles.",
@@ -1283,12 +1341,12 @@ async def propose_workboard_blueprint(
                 "mini_app_nav.desktop_kind: 'sidebar' (left panel) | 'top_tabs' (horizontal tabs at top). Default 'sidebar'.",
                 "branding (workboard): {app_name?:str, logo_url?:str, primary_color?:str (hex), accent_color?:str (hex), theme:'auto'|'light'|'dark'}. NOTE: `welcome_text` is a WORKSPACE-level field (set via create_workspace.branding or PATCH /workspaces/{id}); putting it on layout_json.branding is silently ignored.",
                 "audit: {created_by_column?, created_at_column?, updated_by_column?, updated_at_column?} — column names auto-filled by the write service. Set to null if the table doesn't have the column.",
-                "column_labels at the SCREEN level maps {db_column: 'Nhãn'} for friendly headers in list tables AND doc blocks. Add to EVERY screen that displays columns (form, list, doc, dashboard).",
+                "column_labels at the SCREEN level maps {db_column: 'Nhãn'} for friendly headers in table screens AND doc blocks. Add to EVERY screen that displays columns (form, table, doc, dashboard).",
                 "CALL validate_workboard_blueprint(blueprint_json=...) BEFORE commit_workboard_blueprint to catch errors early.",
             ],
             "doc / printable document screens": [
                 "kind='doc' is for PRINTABLE A4-style documents (phiếu xuất kho, hợp đồng mini, báo cáo có chữ ký). NOT for charts — use kind='dashboard' for charts.",
-                "kind='doc' requires `doc: {page, blocks[]}`. Set form=null, list=null, dashboard=null on that screen.",
+                "kind='doc' requires `doc: {page, blocks[]}`. Set form=null, table=null, dashboard=null on that screen.",
                 "doc.page: {size:'A4'|'A3'|'Letter', orientation:'portrait'|'landscape', margin_mm:0-50}.",
                 "Allowed block.type values and their fields:",
                 "  header   → {type, logo_url?, title, subtitle?, align:'left'|'center'|'right'}",
@@ -1362,7 +1420,7 @@ async def get_doc_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": {
                     "page": {"size": "A4", "orientation": "portrait", "margin_mm": 15},
                     "blocks": [
@@ -1404,7 +1462,7 @@ async def get_doc_screen_examples() -> Any:
                     "ton_sp1": "SP1", "ton_sp2": "SP2",
                 },
                 "rls": [], "rls_default": None,
-                "form": None, "list": None,
+                "form": None, "table": None,
                 "doc": {
                     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
                     "blocks": [
@@ -1450,7 +1508,7 @@ async def get_doc_screen_examples() -> Any:
                 "show_in_nav": True,
                 "column_labels": {},
                 "rls": [], "rls_default": None,
-                "form": None, "list": None,
+                "form": None, "table": None,
                 "doc": {
                     "page": {"size": "A4", "orientation": "portrait", "margin_mm": 15},
                     "blocks": [
@@ -1497,7 +1555,7 @@ async def get_doc_screen_examples() -> Any:
                 "show_in_nav": True,
                 "column_labels": {},
                 "rls": [], "rls_default": None,
-                "form": None, "list": None,
+                "form": None, "table": None,
                 "doc": {
                     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
                     "blocks": [
@@ -1543,7 +1601,7 @@ async def get_doc_screen_examples() -> Any:
                 "show_in_nav": False,
                 "column_labels": {},
                 "rls": [], "rls_default": None,
-                "form": None, "list": None,
+                "form": None, "table": None,
                 "doc": {
                     "page": {"size": "A4", "orientation": "portrait", "margin_mm": 20},
                     "blocks": [
@@ -1622,7 +1680,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "dashboard_id": 42,  # id từ /dashboards/accessible-summary
@@ -1645,7 +1703,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "dashboard_id": 42,
@@ -1677,7 +1735,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "dashboard_id": 42,
@@ -1719,7 +1777,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "dashboard_id": 17,
@@ -1745,7 +1803,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "share_token": "<<paste share_token người khác đưa>>",
@@ -1767,7 +1825,7 @@ async def get_dashboard_screen_examples() -> Any:
                 "rls": [],
                 "rls_default": None,
                 "form": None,
-                "list": None,
+                "table": None,
                 "doc": None,
                 "dashboard": {
                     "dashboard_id": 89,

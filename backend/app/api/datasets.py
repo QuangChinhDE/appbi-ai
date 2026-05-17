@@ -304,6 +304,78 @@ def _validate_measure_dependencies(
                     ),
                 )
 
+    # Phase-14: validate context_modifiers cross-references. The model_
+    # validator on MeasureDefinition already enforces shape (e.g.
+    # keep_fields required for all_except). Here we check identifiers
+    # against the actual dataset state:
+    #   * `all_except.keep_fields` — each entry must name a dimension
+    #     declared on the SAME view as the measure (the measure's anchor
+    #     view; cross-view kept-fields are out of scope to keep window
+    #     semantics tractable).
+    #   * `use_relationship.join_alias` — must match a JoinDefinition.alias
+    #     in some SemanticExplore on this dataset.
+    #
+    # Collecting alias set once is O(joins). Helps catch typos so DA
+    # doesn't only learn at chart query time.
+    explores_in_dataset = []
+    if model:
+        explores_in_dataset = list(
+            db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+        )
+    known_join_aliases: set[str] = set()
+    for explore in explores_in_dataset:
+        for join in explore.joins or []:
+            alias = str((join or {}).get("alias") or "").strip()
+            if alias:
+                known_join_aliases.add(alias)
+
+    current_view_dims = dim_names_by_view.get(current_view_name, set())
+    for measure in measures:
+        modifiers = (
+            measure.context_modifiers
+            if hasattr(measure, "context_modifiers")
+            else measure.get("context_modifiers", [])
+        ) or []
+        m_name = measure_name(measure) or "<unnamed>"
+        for idx, mod in enumerate(modifiers):
+            mod_type = str(
+                (mod.type if hasattr(mod, "type") else mod.get("type", "")) or ""
+            ).strip()
+            if mod_type == "all_except":
+                keep = (
+                    mod.keep_fields if hasattr(mod, "keep_fields")
+                    else mod.get("keep_fields", [])
+                ) or []
+                for kf in keep:
+                    kf_str = str(kf or "").strip()
+                    if not kf_str:
+                        continue
+                    # Accept bare ('region') or qualified ('view.region')
+                    bare = kf_str.split(".", 1)[-1]
+                    if current_view_dims and bare not in current_view_dims:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Measure '{m_name}': context_modifiers[{idx}].keep_fields "
+                                f"chứa '{kf_str}' không phải dimension trên view "
+                                f"'{current_view_name}'. Có sẵn: {sorted(current_view_dims)}."
+                            ),
+                        )
+            elif mod_type == "use_relationship":
+                alias = str(
+                    (mod.join_alias if hasattr(mod, "join_alias")
+                     else mod.get("join_alias", "")) or ""
+                ).strip()
+                if alias and known_join_aliases and alias not in known_join_aliases:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Measure '{m_name}': context_modifiers[{idx}].join_alias "
+                            f"'{alias}' không khớp với bất kỳ JoinDefinition.alias nào "
+                            f"trong dataset. Có sẵn: {sorted(known_join_aliases)}."
+                        ),
+                    )
+
 
 def _columns_for_table(table: Optional[DatasetTable]) -> set[str]:
     """Return the set of column names available on a DatasetTable.
@@ -379,6 +451,13 @@ def _validate_field_references(
 
     errors: list[str] = []
 
+    # Phase-13: collect dim names first so we can validate `parent` refs.
+    dim_names = {
+        str((d or {}).get("name") or "").strip()
+        for d in (dimensions or [])
+        if isinstance(d, dict) and str((d or {}).get("name") or "").strip()
+    }
+
     for index, dim in enumerate(dimensions or []):
         if not isinstance(dim, dict):
             continue
@@ -394,6 +473,43 @@ def _validate_field_references(
                 f"Dimension #{index + 1} \"{name}\": cột \"{target}\" không tồn tại trên bảng. "
                 "Kiểm tra lại tên cột hoặc tạo Calculated Column tương ứng trước."
             )
+
+        # Phase-13: parent must reference another dim on the SAME view, must
+        # not be self-reference. Cycle detection runs after the loop so we
+        # have the full chain to walk.
+        parent = str(dim.get("parent") or "").strip()
+        if parent:
+            if parent == name:
+                errors.append(
+                    f"Dimension \"{name}\": parent không thể trỏ vào chính nó."
+                )
+            elif parent not in dim_names:
+                errors.append(
+                    f"Dimension \"{name}\": parent \"{parent}\" không tồn tại "
+                    f"trên view này. Có sẵn: {sorted(dim_names)}."
+                )
+
+    # Phase-13: hierarchy cycle detection. Walk parent chain from each dim;
+    # if we revisit a node we've seen, reject. O(n) per dim, n×n worst case
+    # but hierarchies are tiny in practice (depth 3-5 max).
+    parent_by_name = {
+        str(d.get("name") or "").strip(): str(d.get("parent") or "").strip()
+        for d in (dimensions or [])
+        if isinstance(d, dict) and str(d.get("name") or "").strip()
+    }
+    for start_name in parent_by_name:
+        seen: set[str] = set()
+        current = start_name
+        while current:
+            if current in seen:
+                cycle = " → ".join([*seen, current])
+                errors.append(
+                    f"Dimension \"{start_name}\": hierarchy có vòng lặp ({cycle}). "
+                    "Bỏ parent để phá vòng."
+                )
+                break
+            seen.add(current)
+            current = parent_by_name.get(current, "")
 
     for index, measure in enumerate(measures or []):
         if not isinstance(measure, dict):
@@ -905,11 +1021,14 @@ def _execute_semantic_dataset_query(
     # datasource that produced syntactically wrong SQL (e.g. PostgreSQL
     # date_trunc() instead of BigQuery DATE_TRUNC()) and a generic 500 at
     # query time.
+    # Resolve datasource. For calendar / derived tables we call the live-
+    # proxy builder which materialises an ad-hoc SQL source; the semantic
+    # engine doesn't need the proxy table itself (it builds its own SQL
+    # from the explore), only the underlying datasource for dialect + exec.
     datasource: Optional[DataSource] = None
-    live_table = db_table
     if is_generated_calendar_table(db_table) or is_derived_table(db_table):
         try:
-            datasource, live_table = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
+            datasource, _ = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
         except DatasetTableSqlError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     elif db_table.datasource_id is not None:

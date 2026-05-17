@@ -21,12 +21,11 @@ import {
   ClipboardEdit,
   Database,
   FileText,
-  Grid3x3,
   GripVertical,
   LayoutDashboard,
-  ListChecks,
   Plus,
   Settings,
+  Table as TableIcon,
   Trash2,
 } from 'lucide-react';
 
@@ -36,18 +35,16 @@ import { resolveScreenIcon } from './ScreenIconRegistry';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   form: ClipboardEdit,
-  list: ListChecks,
+  table: TableIcon,
   doc: FileText,
   dashboard: LayoutDashboard,
-  grid: Grid3x3,
 };
 
 const KIND_LABEL: Record<ScreenKind, string> = {
   form: 'Form',
-  list: 'List',
+  table: 'Table',
   doc: 'Document',
   dashboard: 'Dashboard',
-  grid: 'Grid',
 };
 
 type ScreenStatus =
@@ -90,19 +87,16 @@ function screenSubtitle(s: ScreenSpec): string {
     const initialPart = initial > 0 ? ` · ${initial} initial value${initial === 1 ? '' : 's'}` : '';
     return `${fields} field${fields === 1 ? '' : 's'}${initialPart}`;
   }
-  if (s.kind === 'list') {
-    const cols = s.list?.columns?.length ?? 0;
-    const actions = s.list?.row_actions?.length ?? 0;
+  if (s.kind === 'table') {
+    const cols = s.table?.columns?.length ?? 0;
+    const editable = (s.table?.editable_columns || []).length;
+    const computed = s.table?.computed_columns?.length ?? 0;
+    const actions = s.table?.row_actions?.length ?? 0;
     if (cols === 0) return 'No columns yet — pick which to show.';
-    const actionsPart = actions > 0 ? ` · ${actions} row action${actions === 1 ? '' : 's'}` : '';
-    return `${cols} column${cols === 1 ? '' : 's'} · ${s.list?.page_size ?? 50} / page${actionsPart}`;
-  }
-  if (s.kind === 'grid') {
-    const cols = s.grid?.columns?.length ?? 0;
-    const computed = s.grid?.computed_columns?.length ?? 0;
-    if (cols === 0) return 'No columns yet — pick which to show.';
+    const editPart = editable > 0 ? ` · ${editable} editable` : ' · read-only';
     const formulaPart = computed > 0 ? ` · ${computed} formula${computed === 1 ? '' : 's'}` : '';
-    return `${cols} column${cols === 1 ? '' : 's'}${formulaPart}`;
+    const actionPart = actions > 0 ? ` · ${actions} row action${actions === 1 ? '' : 's'}` : '';
+    return `${cols} column${cols === 1 ? '' : 's'}${editPart}${formulaPart}${actionPart}`;
   }
   if (s.kind === 'doc') {
     const blocks = s.doc?.blocks?.length ?? 0;
@@ -126,16 +120,13 @@ function screenSubtitle(s: ScreenSpec): string {
 }
 
 function screenStatus(s: ScreenSpec): ScreenStatus {
-  if (s.kind === 'form' || s.kind === 'list' || s.kind === 'grid' || s.kind === 'doc') {
+  if (s.kind === 'form' || s.kind === 'table' || s.kind === 'doc') {
     if (!s.table_id) return { kind: 'err', label: 'No data source' };
   }
   if (s.kind === 'form' && (s.form?.fields?.length ?? 0) === 0) {
     return { kind: 'warn', label: 'Needs fields' };
   }
-  if (s.kind === 'list' && (s.list?.columns?.length ?? 0) === 0) {
-    return { kind: 'warn', label: 'Needs columns' };
-  }
-  if (s.kind === 'grid' && (s.grid?.columns?.length ?? 0) === 0) {
+  if (s.kind === 'table' && (s.table?.columns?.length ?? 0) === 0) {
     return { kind: 'warn', label: 'Needs columns' };
   }
   if (s.kind === 'doc' && (s.doc?.blocks?.length ?? 0) === 0) {
@@ -163,8 +154,7 @@ const STATUS_DOT: Record<ScreenStatus['kind'], string> = {
 
 const PALETTE: Array<{ kind: ScreenKind; icon: React.ElementType; label: string }> = [
   { kind: 'form', icon: ClipboardEdit, label: 'Form' },
-  { kind: 'list', icon: ListChecks, label: 'List' },
-  { kind: 'grid', icon: Grid3x3, label: 'Grid' },
+  { kind: 'table', icon: TableIcon, label: 'Table' },
   { kind: 'doc', icon: FileText, label: 'Document' },
   { kind: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
 ];

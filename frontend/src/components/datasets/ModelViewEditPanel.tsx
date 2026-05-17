@@ -37,6 +37,7 @@ import {
   type MeasureFilter,
   type MeasureFilterOperator,
   type MeasureFormat,
+  type ContextModifier,
 } from '@/hooks/use-dataset-model';
 import {
   useDatasetDictionary,
@@ -113,7 +114,12 @@ const FORMAT_KINDS: MeasureFormat['kind'][] = ['number', 'currency', 'percent', 
 type MeasureTemplate = {
   key: string;
   label: string;
-  group: 'basic' | 'time';
+  /**
+   * Phase-15.2: 'cross' = cross-table (dataset-scope) measure template.
+   * Promotes the Phase-12 feature out of the Advanced section so DA
+   * sees it as a first-class option alongside Basic + Time intelligence.
+   */
+  group: 'basic' | 'time' | 'cross';
   hint?: string;
   build: (n: number) => MeasureDefinition;
 };
@@ -240,6 +246,50 @@ const MEASURE_TEMPLATES: MeasureTemplate[] = [
       type: 'avg',
       sql: '<value_col>',
       expression: 'CASE WHEN ${TABLE}.<date_col> >= ${DAYS_AGO:7} AND ${TABLE}.<date_col> <= ${TODAY} THEN ${TABLE}.<value_col> END',
+      hidden: false,
+    }),
+  },
+
+  // ── Cross-table (dataset-scope) ─────────────────────────────────────────
+  // Phase-15.2: Phase-12 đã có scope='dataset' nhưng vùi trong Advanced.
+  // Đây là entry point first-class — tạo measure đa bảng (PowerBI parity:
+  // USERELATIONSHIP / CALCULATE qua nhiều table). DA chọn template này →
+  // skeleton có sẵn scope='dataset' + expression mẫu + 1 source_columns
+  // entry trống để fill. Phần còn lại edit như measure thường.
+  {
+    key: 'cross_ratio',
+    label: 'Cross-table ratio (đa bảng)',
+    group: 'cross',
+    hint: 'Tỷ lệ giữa cột từ 2 bảng khác nhau — engine tự JOIN qua relationship',
+    build: (n) => ({
+      name: `cross_ratio_${n}`,
+      label: 'Cross-table ratio',
+      type: 'sum',
+      sql: '',
+      expression: '${view_a.col_a} / NULLIF(COUNT(DISTINCT ${view_b.col_b}), 0)',
+      scope: 'dataset',
+      source_columns: [
+        { view: '', field: '' },
+        { view: '', field: '' },
+      ],
+      hidden: false,
+    }),
+  },
+  {
+    key: 'cross_sum',
+    label: 'Cross-table sum (đa bảng)',
+    group: 'cross',
+    hint: 'Tổng 1 cột từ bảng khác base view — engine JOIN tự động',
+    build: (n) => ({
+      name: `cross_sum_${n}`,
+      label: 'Cross-table sum',
+      type: 'sum',
+      sql: '',
+      expression: 'SUM(${other_view.col})',
+      scope: 'dataset',
+      source_columns: [
+        { view: '', field: '' },
+      ],
       hidden: false,
     }),
   },
@@ -552,6 +602,13 @@ function DimensionRow({
   canEdit,
   columnOptions,
   rowKey,
+  /**
+   * Phase-15.1: names of OTHER dimensions on the same view so user can
+   * pick a parent for hierarchy / drill-down (e.g. month.parent = "year").
+   * Excludes the current dim's own name to prevent self-reference at the
+   * UI level (BE validator also blocks).
+   */
+  siblingDimNames,
   onChange,
   onRemove,
 }: {
@@ -559,6 +616,7 @@ function DimensionRow({
   canEdit: boolean;
   columnOptions: string[];
   rowKey: string;
+  siblingDimNames: string[];
   onChange: (updated: DimensionDefinition) => void;
   onRemove: () => void;
 }) {
@@ -624,6 +682,28 @@ function DimensionRow({
           <div>
             <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
             <input value={dim.label || ''} onChange={(e) => onChange({ ...dim, label: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" placeholder="Display label" />
+          </div>
+          {/* Phase-15.1: drill-down parent. Pure metadata — FE Explore uses
+              it to surface a "↓ Drill into <child>" action when the chart
+              groups by this dim. BE validator rejects self-reference and
+              hierarchy cycles. Leave blank for a root-level dim. */}
+          <div>
+            <label className="text-[10px] text-text-tertiary uppercase font-medium flex items-center gap-1">
+              Parent (drill-down)
+              <span className="font-normal normal-case text-[9px] text-text-quaternary">
+                — vd Month.parent = Year, Day.parent = Month
+              </span>
+            </label>
+            <select
+              value={dim.parent ?? ''}
+              onChange={(e) => onChange({ ...dim, parent: e.target.value || undefined })}
+              className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+            >
+              <option value="">(không có — root dimension)</option>
+              {siblingDimNames.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
           </div>
           <p className="text-[10px] italic text-text-quaternary leading-4">
             Dimension chỉ là mapping cột — không phải nơi tính toán. Để tạo cột tính toán mới, hãy dùng <span className="font-medium text-text-tertiary">Add Calculated Column</span> ở bảng nguồn.
@@ -695,6 +775,700 @@ function MeasureFilterRow({
         <Trash2 className="w-3.5 h-3.5" />
       </button>
     </div>
+  );
+}
+
+// ─── Filter Context Modifiers (Phase-14) ─────────────────────────────────────
+//
+// Renders the per-measure controls that turn a plain `SUM(amount)` into a
+// SQL window aggregate (`SUM(amount) OVER (...)`). This is the "Filter
+// Context" surface user mentioned — equivalent to PowerBI's
+// CALCULATE/ALL/ALLEXCEPT/USERELATIONSHIP combo, but expressed as
+// declarative modifiers that compile to SQL window functions on the BE.
+//
+// Hard rules (enforced both here and at BE save-time):
+//   - 'all' and 'all_except' are mutually exclusive on the same measure
+//     (they mean opposite things).
+//   - 'all_except' requires at least one keep_field.
+//   - 'use_relationship' requires a join_alias matching some
+//     JoinDefinition.alias in the dataset's explore.
+//
+// What this component is NOT: a DAX editor. We deliberately keep this to
+// 3 named patterns to stay within the project's "compile down to SQL"
+// philosophy. Adding more patterns would re-introduce the same
+// "user doesn't know which mechanism to pick" problem Phase-1 closed.
+
+/**
+ * Phase-15.4 — Filter Context preset-first UI.
+ *
+ * Replaces the raw-checkbox UI (Phase-14) with 4 named presets that map
+ * to PowerBI patterns DAs already know. The Phase-14 schema underneath is
+ * unchanged — these presets just shape context_modifiers correctly so DA
+ * doesn't have to learn the modifier vocabulary. Raw modifier UI is moved
+ * to an "Advanced" disclosure for power users.
+ *
+ * Presets:
+ *   1. None (default)         — measure stays a plain aggregate
+ *   2. % of grand total       — [{type: "all"}]
+ *   3. % within ... (kept dim)— [{type: "all_except", keep_fields: [<dim>]}]
+ *   4. Use named relationship — [{type: "use_relationship", join_alias: ...}]
+ *
+ * Detection of "which preset is active" reads the current
+ * context_modifiers and matches against these shapes. Custom shapes
+ * (e.g. multiple all_except entries) flow through Advanced.
+ */
+type FilterContextPreset = 'none' | 'grand_total' | 'within_kept' | 'use_relationship' | 'custom';
+
+function detectPreset(modifiers: ContextModifier[]): FilterContextPreset {
+  if (modifiers.length === 0) return 'none';
+  const onlyTypes = new Set(modifiers.map((m) => m.type));
+  if (modifiers.length === 1) {
+    const m = modifiers[0];
+    if (m.type === 'all') return 'grand_total';
+    if (m.type === 'all_except' && (m.keep_fields?.length ?? 0) >= 1) return 'within_kept';
+    if (m.type === 'use_relationship' && (m.join_alias ?? '').trim()) return 'use_relationship';
+  }
+  // Two-modifier safe combinations:
+  if (
+    modifiers.length === 2
+    && onlyTypes.has('use_relationship')
+    && (onlyTypes.has('all') || onlyTypes.has('all_except'))
+  ) {
+    // use_relationship is orthogonal — combine with all/all_except. Treat
+    // the "main" preset as the non-use_relationship entry.
+    const main = modifiers.find((m) => m.type !== 'use_relationship');
+    if (main?.type === 'all') return 'grand_total';
+    if (main?.type === 'all_except' && (main.keep_fields?.length ?? 0) >= 1) return 'within_kept';
+  }
+  return 'custom';
+}
+
+function FilterContextModifiers({
+  measure,
+  canEdit,
+  onChange,
+}: {
+  measure: MeasureDefinition;
+  canEdit: boolean;
+  onChange: (next: MeasureDefinition) => void;
+}) {
+  const modifiers = measure.context_modifiers ?? [];
+  const preset = detectPreset(modifiers);
+  const [showAdvanced, setShowAdvanced] = useState(preset === 'custom');
+
+  const setModifiers = (next: ContextModifier[]) => {
+    onChange({
+      ...measure,
+      context_modifiers: next.length > 0 ? next : undefined,
+    });
+  };
+
+  // Pure helpers for shaping modifiers per preset. Preserve any existing
+  // use_relationship entry when switching between "main" presets — it's
+  // orthogonal.
+  const useRelEntry = modifiers.find((m) => m.type === 'use_relationship');
+  const useRelTail = useRelEntry ? [useRelEntry] : [];
+
+  const applyPreset = (next: FilterContextPreset, opts?: { keepField?: string; joinAlias?: string }) => {
+    switch (next) {
+      case 'none':
+        setModifiers([]);
+        return;
+      case 'grand_total':
+        setModifiers([{ type: 'all' }, ...useRelTail]);
+        return;
+      case 'within_kept': {
+        const existingKept = modifiers.find((m) => m.type === 'all_except')?.keep_fields ?? [];
+        const newField = opts?.keepField?.trim();
+        const next_keep = newField
+          ? [newField]  // single-field preset is the common case
+          : existingKept;
+        setModifiers([{ type: 'all_except', keep_fields: next_keep }, ...useRelTail]);
+        return;
+      }
+      case 'use_relationship': {
+        const alias = (opts?.joinAlias ?? useRelEntry?.join_alias ?? '').trim();
+        setModifiers([{ type: 'use_relationship', join_alias: alias }]);
+        return;
+      }
+      case 'custom':
+        // No-op — selecting "Advanced (custom)" means user wants to keep
+        // whatever they have and edit raw. Just flip the disclosure open.
+        setShowAdvanced(true);
+        return;
+    }
+  };
+
+  const hasAll = modifiers.some((m) => m.type === 'all');
+  const hasAllExcept = modifiers.some((m) => m.type === 'all_except');
+  const hasUseRel = modifiers.some((m) => m.type === 'use_relationship');
+  const keptField = modifiers.find((m) => m.type === 'all_except')?.keep_fields?.[0] ?? '';
+  const useRelAlias = useRelEntry?.join_alias ?? '';
+
+  const toggleAll = () => {
+    if (hasAll) {
+      setModifiers(modifiers.filter((m) => m.type !== 'all'));
+    } else {
+      const stripped = modifiers.filter((m) => m.type !== 'all_except');
+      setModifiers([...stripped, { type: 'all' }]);
+    }
+  };
+  const toggleAllExcept = () => {
+    if (hasAllExcept) {
+      setModifiers(modifiers.filter((m) => m.type !== 'all_except'));
+    } else {
+      const stripped = modifiers.filter((m) => m.type !== 'all');
+      setModifiers([...stripped, { type: 'all_except', keep_fields: [] }]);
+    }
+  };
+  const updateAllExceptKeep = (rawCsv: string) => {
+    const keep = rawCsv.split(',').map((s) => s.trim()).filter(Boolean);
+    setModifiers(
+      modifiers.map((m) => (m.type === 'all_except' ? { ...m, keep_fields: keep } : m)),
+    );
+  };
+  const toggleUseRel = () => {
+    if (hasUseRel) {
+      setModifiers(modifiers.filter((m) => m.type !== 'use_relationship'));
+    } else {
+      setModifiers([...modifiers, { type: 'use_relationship', join_alias: '' }]);
+    }
+  };
+  const updateJoinAlias = (alias: string) => {
+    setModifiers(
+      modifiers.map((m) => (m.type === 'use_relationship' ? { ...m, join_alias: alias.trim() } : m)),
+    );
+  };
+  const allExceptKeepCsv = (
+    modifiers.find((m) => m.type === 'all_except')?.keep_fields ?? []
+  ).join(', ');
+
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
+          Filter context
+        </div>
+        {preset !== 'none' && (
+          <span
+            className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-emphasis uppercase text-purple-600 dark:text-purple-400"
+            title="Measure đang dùng filter-context — engine emit SQL window aggregate (OVER PARTITION BY)"
+          >
+            {preset === 'custom' ? 'Custom' : 'Active'}
+          </span>
+        )}
+      </div>
+      <p className="text-[10px] leading-snug text-text-quaternary">
+        Chọn pattern bên dưới để bỏ qua hoặc giữ một phần filter context khi
+        chart slice. Tương đương PowerBI <code>CALCULATE/ALL/ALLEXCEPT</code>.
+        Default (None) = aggregate thường.
+      </p>
+
+      {/* Phase-15.4: preset picker — 4 button row. Hide Advanced editors
+          unless user clicks "Advanced" disclosure. */}
+      <div className="grid grid-cols-2 gap-1.5">
+        <button
+          disabled={!canEdit}
+          onClick={() => applyPreset('none')}
+          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
+            preset === 'none'
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+          title="Measure aggregate thường, group theo dim của chart như bình thường."
+        >
+          <div className="font-emphasis">None (default)</div>
+          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+            Aggregate thường, no window
+          </div>
+        </button>
+
+        <button
+          disabled={!canEdit}
+          onClick={() => applyPreset('grand_total')}
+          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
+            preset === 'grand_total'
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+          title="Emit SUM(...) OVER () — bypass mọi slicer của chart. Tương đương DAX CALCULATE(measure, ALL())."
+        >
+          <div className="font-emphasis">% of grand total</div>
+          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+            Bỏ tất cả filter — DAX ALL()
+          </div>
+        </button>
+
+        <button
+          disabled={!canEdit}
+          onClick={() => {
+            // Default to first kept field, or prompt user to fill below.
+            applyPreset('within_kept', { keepField: keptField || '' });
+          }}
+          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
+            preset === 'within_kept'
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+          title="Emit SUM(...) OVER (PARTITION BY <field>) — giữ field này trong filter, bỏ rest. Tương đương DAX ALLEXCEPT(table, table[field])."
+        >
+          <div className="font-emphasis">% within ...</div>
+          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+            Giữ 1 dim — DAX ALLEXCEPT()
+          </div>
+        </button>
+
+        <button
+          disabled={!canEdit}
+          onClick={() => applyPreset('use_relationship', { joinAlias: useRelAlias })}
+          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
+            preset === 'use_relationship'
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+          title="Dùng inactive relationship (alias join) thay default. Schema-only ở Phase-14 — sẽ wire ở phase sau."
+        >
+          <div className="font-emphasis">Use relationship</div>
+          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+            DAX USERELATIONSHIP() — schema only
+          </div>
+        </button>
+      </div>
+
+      {/* Inline param for "within ..." preset — single-field common case. */}
+      {preset === 'within_kept' && (
+        <div className="rounded-md bg-surface-2 p-1.5 space-y-1">
+          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            Giữ dim
+          </label>
+          <input
+            value={keptField}
+            onChange={(e) => applyPreset('within_kept', { keepField: e.target.value })}
+            placeholder="region"
+            disabled={!canEdit}
+            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+          />
+          <p className="text-[10px] text-text-quaternary leading-tight">
+            Tên dim sẽ ở trong PARTITION BY. Vd <code>region</code> → mỗi
+            region 1 baseline, slice khác (channel/product/...) bị bỏ.
+            Để thêm nhiều dim, mở Advanced bên dưới.
+          </p>
+        </div>
+      )}
+
+      {preset === 'use_relationship' && (
+        <div className="rounded-md bg-surface-2 p-1.5 space-y-1">
+          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            Join alias
+          </label>
+          <input
+            value={useRelAlias}
+            onChange={(e) => applyPreset('use_relationship', { joinAlias: e.target.value })}
+            placeholder="creator"
+            disabled={!canEdit}
+            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+          />
+          <p className="text-[10px] text-warning leading-tight">
+            ⚠ Schema-only ở Phase-14. Engine compile chưa wire alias —
+            follow-up phase sẽ làm. Save vẫn OK, runtime dùng default path.
+          </p>
+        </div>
+      )}
+
+      {/* Advanced — raw modifier checkboxes. Keep for power users, hidden
+          by default. Auto-opens if preset detector flagged 'custom'. */}
+      <button
+        onClick={() => setShowAdvanced((v) => !v)}
+        className="text-[10px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
+      >
+        {showAdvanced ? '▼' : '▶'} Advanced (raw modifiers)
+      </button>
+
+      {showAdvanced && (
+        <div className="space-y-1.5 border-l-2 border-[rgb(var(--border-line))] pl-2">
+          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-text-secondary">
+            <input type="checkbox" checked={hasAll} disabled={!canEdit} onChange={toggleAll} />
+            <span><code>ALL</code> — grand total</span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
+            <input type="checkbox" checked={hasAllExcept} disabled={!canEdit} onChange={toggleAllExcept} className="mt-0.5" />
+            <span className="flex-1">
+              <code>ALL EXCEPT</code> — multi-dim partition
+              {hasAllExcept && (
+                <input
+                  value={allExceptKeepCsv}
+                  onChange={(e) => updateAllExceptKeep(e.target.value)}
+                  placeholder="region, channel"
+                  disabled={!canEdit}
+                  className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                />
+              )}
+            </span>
+          </label>
+
+          <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
+            <input type="checkbox" checked={hasUseRel} disabled={!canEdit} onChange={toggleUseRel} className="mt-0.5" />
+            <span className="flex-1">
+              <code>USE RELATIONSHIP</code> — alias join
+              {hasUseRel && (
+                <input
+                  value={useRelAlias}
+                  onChange={(e) => updateJoinAlias(e.target.value)}
+                  placeholder="creator"
+                  disabled={!canEdit}
+                  className="mt-1 w-full rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                />
+              )}
+            </span>
+          </label>
+
+          {hasAll && hasAllExcept && (
+            <div className="rounded-md border border-danger/40 bg-danger/5 p-1.5 text-[10px] text-danger">
+              Không thể đồng thời <code>ALL</code> và <code>ALL EXCEPT</code> trên
+              cùng measure. Pick 1.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Time Intelligence Builder (Phase-15.5) ──────────────────────────────────
+//
+// 1-click dialog to generate a time-intelligence measure (Same period last
+// year, YTD, MTD, prev period, rolling N days). User picks:
+//   - Base measure       — which measure to wrap (e.g. "Total Amount")
+//   - Date dimension     — qualified field on a reachable view (e.g.
+//                          "calendar.date") to gate the CASE WHEN against
+//   - Time function      — preset list mapping to Phase-5 dialect-aware
+//                          macros so the generated SQL works on
+//                          DuckDB / Postgres / BigQuery / MySQL
+//
+// The dialog produces a fresh MeasureDefinition with an `expression`
+// template already substituted with the user's column choices — no more
+// "<value_col>" / "<date_col>" placeholders DA has to find and replace.
+//
+// Architecturally this is just a smarter MeasureTemplate.build() — it
+// inserts into the same `measures[]` array. KHÔNG tạo cơ chế tính toán
+// thứ 3, vẫn là Measure (Phase-1 invariant).
+
+type TimeFunctionKey =
+  | 'same_period_last_year'
+  | 'prev_month'
+  | 'prev_quarter'
+  | 'ytd'
+  | 'mtd'
+  | 'qtd'
+  | 'rolling_7d_sum'
+  | 'rolling_30d_sum';
+
+type TimeFunctionDef = {
+  key: TimeFunctionKey;
+  label: string;
+  hint: string;
+  /** Build the SQL expression. Date macros (${TODAY}, ${MONTH_START}, ...)
+   *  are resolved by Phase-5 engine per dialect. */
+  buildExpression: (args: { measureSql: string; dateRef: string }) => string;
+  /** Aggregation type the wrapper uses on the base column. */
+  aggType: MeasureDefinition['type'];
+};
+
+const TIME_FUNCTIONS: TimeFunctionDef[] = [
+  {
+    key: 'same_period_last_year',
+    label: 'Same period last year',
+    hint: 'DAX: SAMEPERIODLASTYEAR — value cho khoảng thời gian cùng kỳ năm trước',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${PREV_YEAR_START} AND ${dateRef} < \${YEAR_START} THEN ${measureSql} END`,
+  },
+  {
+    key: 'prev_month',
+    label: 'Previous month',
+    hint: 'Tổng tháng trước (full month) — DAX: PREVIOUSMONTH',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${PREV_MONTH_START} AND ${dateRef} < \${MONTH_START} THEN ${measureSql} END`,
+  },
+  {
+    key: 'prev_quarter',
+    label: 'Previous quarter',
+    hint: 'Tổng quý trước — DAX: PREVIOUSQUARTER (xấp xỉ qua macro PREV_QUARTER_START nếu engine support; tạm dùng 3 prev_months)',
+    aggType: 'sum',
+    // No PREV_QUARTER_START macro yet; approximate via 90-day window from PREV_MONTH_START.
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${DAYS_AGO:90} AND ${dateRef} < \${MONTH_START} THEN ${measureSql} END`,
+  },
+  {
+    key: 'ytd',
+    label: 'Year-to-date (YTD)',
+    hint: 'DAX: TOTALYTD — tổng từ đầu năm đến hôm nay',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${YEAR_START} AND ${dateRef} <= \${TODAY} THEN ${measureSql} END`,
+  },
+  {
+    key: 'mtd',
+    label: 'Month-to-date (MTD)',
+    hint: 'DAX: TOTALMTD — tổng từ đầu tháng đến hôm nay',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${MONTH_START} AND ${dateRef} <= \${TODAY} THEN ${measureSql} END`,
+  },
+  {
+    key: 'qtd',
+    label: 'Quarter-to-date (QTD)',
+    hint: 'Tổng từ đầu quý đến hôm nay (xấp xỉ 90 ngày — macro QUARTER_START nếu có)',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${DAYS_AGO:90} AND ${dateRef} <= \${TODAY} THEN ${measureSql} END`,
+  },
+  {
+    key: 'rolling_7d_sum',
+    label: 'Rolling 7-day sum',
+    hint: 'Tổng 7 ngày gần nhất — kết hợp time_grain=day khi consume',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${DAYS_AGO:7} AND ${dateRef} <= \${TODAY} THEN ${measureSql} END`,
+  },
+  {
+    key: 'rolling_30d_sum',
+    label: 'Rolling 30-day sum',
+    hint: 'Tổng 30 ngày gần nhất',
+    aggType: 'sum',
+    buildExpression: ({ measureSql, dateRef }) =>
+      `CASE WHEN ${dateRef} >= \${DAYS_AGO:30} AND ${dateRef} <= \${TODAY} THEN ${measureSql} END`,
+  },
+];
+
+/**
+ * Build a fresh MeasureDefinition from a TimeFunctionDef + user's column
+ * picks. Generated name uses the function key + base measure for clarity;
+ * user can rename in the row UI after creation.
+ */
+function buildTimeIntelligenceMeasure(args: {
+  func: TimeFunctionDef;
+  baseMeasureName: string;
+  baseMeasureSqlExpr: string;
+  dateFieldRef: string;
+  nameSeq: number;
+}): MeasureDefinition {
+  const { func, baseMeasureName, baseMeasureSqlExpr, dateFieldRef, nameSeq } = args;
+  const expression = func.buildExpression({
+    measureSql: baseMeasureSqlExpr,
+    dateRef: dateFieldRef,
+  });
+  return {
+    name: `${baseMeasureName}_${func.key}_${nameSeq}`,
+    label: `${baseMeasureName} — ${func.label}`,
+    description: func.hint,
+    type: func.aggType,
+    sql: '',
+    expression,
+    hidden: false,
+  };
+}
+
+function TimeIntelligenceBuilder({
+  open,
+  existingMeasures,
+  modelViews,
+  currentViewName,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  existingMeasures: MeasureDefinition[];
+  modelViews?: DatasetModelView[];
+  currentViewName: string;
+  onConfirm: (next: MeasureDefinition) => void;
+  onClose: () => void;
+}) {
+  const [funcKey, setFuncKey] = useState<TimeFunctionKey>('same_period_last_year');
+  const [baseMeasureName, setBaseMeasureName] = useState<string>('');
+  const [dateField, setDateField] = useState<string>('');
+
+  // Reset on open. Pick first reasonable defaults so the dialog is usable
+  // immediately without forcing the user through 3 dropdowns.
+  useEffect(() => {
+    if (!open) return;
+    setFuncKey('same_period_last_year');
+    const firstNumeric = existingMeasures.find(
+      (m) => ['sum', 'avg', 'count', 'count_distinct'].includes(m.type),
+    );
+    setBaseMeasureName(firstNumeric?.name ?? '');
+    // Pick first date/datetime dim across reachable views.
+    let firstDate: string | undefined;
+    for (const v of modelViews ?? []) {
+      const d = (v.dimensions ?? []).find(
+        (dd) => !dd.hidden && (dd.type === 'date' || dd.type === 'datetime'),
+      );
+      if (d) {
+        firstDate = `${v.name}.${d.name}`;
+        break;
+      }
+    }
+    setDateField(firstDate ?? '');
+  }, [open, existingMeasures, modelViews]);
+
+  if (!open) return null;
+
+  const func = TIME_FUNCTIONS.find((f) => f.key === funcKey)!;
+  const baseMeasure = existingMeasures.find((m) => m.name === baseMeasureName);
+
+  // Compute the SQL expression for the base measure as the inner value of
+  // the time-gated CASE WHEN. For column-based measures use ${TABLE}.<col>.
+  // For expression measures, pass through the expression itself (advanced
+  // users — they own the syntax).
+  const baseMeasureSqlExpr = (() => {
+    if (!baseMeasure) return '';
+    if (baseMeasure.expression && baseMeasure.expression.trim()) {
+      return baseMeasure.expression.trim();
+    }
+    const sql = (baseMeasure.sql ?? '').trim();
+    if (!sql || sql === '*') return '1'; // COUNT(*) → count rows with the date predicate as `1`
+    return sql.includes('.') || sql.startsWith('${') ? sql : `\${TABLE}.${sql}`;
+  })();
+
+  const previewExpression = baseMeasure && dateField
+    ? func.buildExpression({ measureSql: baseMeasureSqlExpr, dateRef: `\${${dateField}}` })
+    : '(pick base measure + date dim trước khi preview)';
+
+  const canConfirm = Boolean(baseMeasure && dateField);
+
+  return (
+    <AppModalShell
+      onClose={onClose}
+      title="Time intelligence — generate measure"
+      maxWidthClass="max-w-xl"
+      bodyClassName="p-0"
+      footer={(
+        <>
+          <button
+            onClick={onClose}
+            className="rounded-md px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-2"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!canConfirm}
+            onClick={() => {
+              if (!baseMeasure || !dateField) return;
+              let n = 1;
+              const existingNames = new Set(existingMeasures.map((m) => m.name));
+              while (existingNames.has(`${baseMeasure.name}_${func.key}_${n}`)) n += 1;
+              onConfirm(buildTimeIntelligenceMeasure({
+                func,
+                baseMeasureName: baseMeasure.name,
+                baseMeasureSqlExpr,
+                dateFieldRef: `\${${dateField}}`,
+                nameSeq: n,
+              }));
+              onClose();
+            }}
+            className="rounded-md bg-brand px-3 py-1.5 text-xs font-emphasis text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Generate measure
+          </button>
+        </>
+      )}
+    >
+      <div className="space-y-3 p-4">
+        <p className="text-xs leading-snug text-text-tertiary">
+          Tạo measure dạng "value theo time window" — engine emit SQL có
+          time macro <code>${'${TODAY}'}</code> / <code>${'${MONTH_START}'}</code> /
+          v.v., resolve đúng cú pháp dialect (Phase-5).
+        </p>
+
+        <div>
+          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            Time function
+          </label>
+          <select
+            value={funcKey}
+            onChange={(e) => setFuncKey(e.target.value as TimeFunctionKey)}
+            className="mt-0.5 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
+          >
+            {TIME_FUNCTIONS.map((f) => (
+              <option key={f.key} value={f.key}>{f.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[10px] text-text-quaternary leading-tight">
+            {func.hint}
+          </p>
+        </div>
+
+        <div>
+          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            Base measure
+          </label>
+          <select
+            value={baseMeasureName}
+            onChange={(e) => setBaseMeasureName(e.target.value)}
+            className="mt-0.5 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
+          >
+            <option value="">— chọn measure đã có —</option>
+            {existingMeasures.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.label || m.name} ({m.type})
+              </option>
+            ))}
+          </select>
+          {existingMeasures.length === 0 && (
+            <p className="mt-1 text-[10px] text-warning leading-tight">
+              ⚠ Chưa có measure nào trên view này. Tạo measure thường trước
+              (vd Total Amount = SUM(amount)) rồi quay lại đây.
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            Date dimension
+          </label>
+          <select
+            value={dateField}
+            onChange={(e) => setDateField(e.target.value)}
+            className="mt-0.5 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+          >
+            <option value="">— chọn date / datetime field —</option>
+            {(modelViews ?? []).flatMap((v) =>
+              (v.dimensions ?? [])
+                .filter((d) => !d.hidden && (d.type === 'date' || d.type === 'datetime'))
+                .map((d) => (
+                  <option key={`${v.name}.${d.name}`} value={`${v.name}.${d.name}`}>
+                    {v.name}.{d.name}
+                  </option>
+                )),
+            )}
+          </select>
+          <p className="mt-1 text-[10px] text-text-quaternary leading-tight">
+            Engine sẽ JOIN view này vào query nếu khác base view (Phase-12).
+          </p>
+        </div>
+
+        <div className="rounded-md bg-surface-2 p-2">
+          <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+            SQL preview
+          </div>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all text-[10px] font-mono text-text-tertiary">
+            {func.aggType.toUpperCase()}(
+            {'\n  '}
+            {previewExpression}
+            {'\n'}
+            )
+          </pre>
+        </div>
+
+        <p className="text-[10px] text-text-quaternary leading-snug">
+          Sau khi sinh, measure xuất hiện trong danh sách bên trên — có thể
+          edit name / label / agg type như measure thường. Generated
+          measure không khoá: bác sửa expression / agg sau đều OK.
+          Current view: <code>{currentViewName}</code>.
+        </p>
+      </div>
+    </AppModalShell>
   );
 }
 
@@ -785,6 +1559,29 @@ function MeasureRow({
             title={`${filters.length} filter(s)`}
           >
             ƒ {filters.length}
+          </span>
+        )}
+        {/* Phase-15.2: surface dataset-scope flag in the collapsed header so
+            DA sees at a glance which measures span multiple tables (PowerBI
+            equivalent: measure with USERELATIONSHIP / RELATED across tables).
+            No edit affordance here — toggle lives in Advanced + the
+            Cross-table preset in the Add Measure dropdown. */}
+        {measure.scope === 'dataset' && (
+          <span
+            className="text-[9px] px-1 py-0.5 rounded bg-brand/10 text-brand font-emphasis uppercase shrink-0"
+            title={`Cross-table (đa bảng): measure tham chiếu ${measure.source_columns?.length ?? 0} cột nguồn từ view khác. Engine tự JOIN.`}
+          >
+            đa bảng
+          </span>
+        )}
+        {/* Phase-14: surface filter-context flag — these measures emit
+            SQL window aggregates instead of GROUP BY aggregates. */}
+        {(measure.context_modifiers?.length ?? 0) > 0 && (
+          <span
+            className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-emphasis uppercase shrink-0"
+            title="Measure dùng filter-context modifier (OVER PARTITION BY) — tham khảo Filter Context panel ở Advanced"
+          >
+            ctx
           </span>
         )}
         <span className="text-[10px] text-text-quaternary bg-warning/10 text-warning px-1.5 py-0.5 rounded uppercase">{measure.type}</span>
@@ -1015,7 +1812,10 @@ function MeasureRow({
                 />
               </div>
 
-              {/* Phase-12: dataset-scope measure with cross-table source columns. */}
+              {/* Phase-12 / Phase-13.3: dataset-scope measure with cross-table source
+                  columns. Phase-13.3 adds expression↔source_columns drift detection
+                  so the form catches the common mistake where the SQL expression
+                  references ${view.field} but source_columns is empty / mismatched. */}
               <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
                 <label className="flex cursor-pointer items-center gap-2 text-[10px] uppercase font-medium text-text-tertiary">
                   <input
@@ -1030,13 +1830,31 @@ function MeasureRow({
                       }
                     }}
                   />
-                  Cross-table (dataset-scope) — measure đa bảng
+                  Đa bảng (cross-table — PowerBI: USERELATIONSHIP)
                 </label>
                 <p className="text-[10px] leading-snug text-text-quaternary">
-                  Khi bật: SQL expression có thể dùng <code>${'${view.field}'}</code> từ bảng khác.
+                  Khi bật: SQL expression có thể dùng <code>{'${view.field}'}</code> từ bảng khác.
                   Khai báo từng cột nguồn dưới đây để engine tự JOIN qua relationship.
                 </p>
-                {measure.scope === 'dataset' && (
+                {measure.scope === 'dataset' && (() => {
+                  // Phase-13.3: parse ${view.field} refs from expression and diff
+                  // against source_columns so the user sees what's missing.
+                  const exprRefs = new Set<string>();
+                  const exprText = measure.expression || '';
+                  const placeholderRe = /\$\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
+                  let match: RegExpExecArray | null;
+                  while ((match = placeholderRe.exec(exprText)) !== null) {
+                    exprRefs.add(`${match[1]}.${match[2]}`);
+                  }
+                  const declaredRefs = new Set(
+                    (measure.source_columns ?? [])
+                      .filter((s) => s.view && s.field)
+                      .map((s) => `${s.view}.${s.field}`),
+                  );
+                  const missing = [...exprRefs].filter((r) => !declaredRefs.has(r));
+                  const extra = [...declaredRefs].filter((r) => !exprRefs.has(r));
+
+                  return (
                   <div className="space-y-1.5">
                     {(measure.source_columns ?? []).map((src, idx) => {
                       const targetView = modelViews?.find((v) => v.name === src.view);
@@ -1110,9 +1928,76 @@ function MeasureRow({
                         + Add source column
                       </button>
                     )}
+
+                    {/* Phase-13.3: drift between expression placeholders and
+                        declared source_columns. Missing = ref in expression
+                        but not declared; extra = declared but unused. */}
+                    {missing.length > 0 && (
+                      <div className="rounded-md border border-warning/40 bg-warning/5 p-1.5 text-[10px] text-warning">
+                        <div className="font-emphasis">
+                          Thiếu {missing.length} cột nguồn trong expression:
+                        </div>
+                        <div className="mt-0.5 space-y-0.5">
+                          {missing.map((ref) => {
+                            const [v, f] = ref.split('.', 2);
+                            return (
+                              <div key={ref} className="flex items-center gap-1">
+                                <code className="font-mono">{ref}</code>
+                                {canEdit && (
+                                  <button
+                                    className="text-[10px] underline hover:no-underline"
+                                    onClick={() => {
+                                      const next = [
+                                        ...(measure.source_columns ?? []),
+                                        { view: v, field: f },
+                                      ];
+                                      onChange({ ...measure, source_columns: next });
+                                    }}
+                                    title="Thêm vào source_columns"
+                                  >
+                                    + add
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {extra.length > 0 && (
+                      <div className="rounded-md border border-text-quaternary/30 bg-surface-2 p-1.5 text-[10px] text-text-tertiary">
+                        <div>
+                          Có {extra.length} cột nguồn khai báo nhưng không dùng trong expression:
+                        </div>
+                        <div className="mt-0.5 font-mono">{extra.join(', ')}</div>
+                      </div>
+                    )}
+                    {exprRefs.size === 0 && declaredRefs.size === 0 && (
+                      <div className="rounded-md bg-surface-2 p-1.5 text-[10px] leading-snug text-text-quaternary">
+                        <div className="font-emphasis text-text-tertiary">Ví dụ:</div>
+                        <code className="block font-mono text-[10px]">
+                          SUM(${'{deals.amount}'}) / NULLIF(COUNT(DISTINCT ${'{leads.id}'}), 0)
+                        </code>
+                        <div className="mt-1">
+                          Khai báo source columns: <code>deals.amount</code>, <code>leads.id</code>.
+                          Engine sẽ tự JOIN deals và leads vào query.
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
+                  );
+                })()}
               </div>
+
+              {/* Phase-14: filter-context modifiers — compile measure to a
+                  SQL window aggregate. Kept in Advanced because most
+                  measures don't need this; "% of total" / "% of region"
+                  use cases live here. */}
+              <FilterContextModifiers
+                measure={measure}
+                canEdit={canEdit}
+                onChange={onChange}
+              />
             </div>
           )}
         </div>
@@ -1266,6 +2151,9 @@ export function ModelViewEditPanel({
   const [measureRowKeys, setMeasureRowKeys] = useState<string[]>([]);
   const [viewDescription, setViewDescription] = useState('');
   const [showMeasureTemplates, setShowMeasureTemplates] = useState(false);
+  // Phase-15.5: time-intelligence dialog state. Open when user picks the
+  // dedicated "+ Time intelligence (smart)" entry in the Add Measure menu.
+  const [showTimeIntelDialog, setShowTimeIntelDialog] = useState(false);
   const updateView = useUpdateModelView();
 
   useEffect(() => {
@@ -1672,6 +2560,11 @@ export function ModelViewEditPanel({
                 <div className="space-y-1.5">
                   {dimensions.map((dim, idx) => {
                     const rowKey = dimensionRowKeys[idx] ?? `dimension-${idx}`;
+                    // Phase-15.1: pass sibling dim names (excluding self) so
+                    // the Parent dropdown can list valid candidates.
+                    const siblingDimNames = dimensions
+                      .filter((d, i) => i !== idx && d.name)
+                      .map((d) => d.name);
                     return (
                       <DimensionRow
                         key={rowKey}
@@ -1679,6 +2572,7 @@ export function ModelViewEditPanel({
                         dim={dim}
                         canEdit={canEdit}
                         columnOptions={columnOptions}
+                        siblingDimNames={siblingDimNames}
                         onChange={(u) => setDimensions((prev) => prev.map((d, i) => (i === idx ? u : d)))}
                         onRemove={() => {
                           setDimensions((prev) => prev.filter((_, i) => i !== idx));
@@ -1730,6 +2624,26 @@ export function ModelViewEditPanel({
                           <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary border-t border-[rgb(var(--border-line))]">
                             Time intelligence
                           </div>
+                          {/* Phase-15.5: smart wizard — pick base measure +
+                              date dim, auto-fill expression. Sits above the
+                              raw-template entries (legacy) which still work
+                              for users who want to write expressions by hand. */}
+                          <button
+                            onClick={() => {
+                              setShowMeasureTemplates(false);
+                              setShowTimeIntelDialog(true);
+                            }}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 border-b border-[rgb(var(--border-line))]"
+                            title="Mở dialog chọn base measure + date dim → tự sinh expression đầy đủ. Đơn giản hơn template raw."
+                          >
+                            <div className="flex items-center gap-1">
+                              <span className="font-emphasis">+ Time intelligence (smart)</span>
+                              <span className="rounded bg-brand/10 px-1 text-[9px] font-emphasis uppercase text-brand">PBI</span>
+                            </div>
+                            <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">
+                              YoY, MTD, YTD, prev month, rolling N days — pick measure + date dim
+                            </div>
+                          </button>
                           {MEASURE_TEMPLATES.filter((t) => t.group === 'time').map((tpl) => (
                             <button
                               key={tpl.key}
@@ -1738,6 +2652,26 @@ export function ModelViewEditPanel({
                               title={tpl.hint}
                             >
                               <div>{tpl.label}</div>
+                              {tpl.hint && (
+                                <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">{tpl.hint}</div>
+                              )}
+                            </button>
+                          ))}
+                          {/* Phase-15.2: cross-table presets first-class. */}
+                          <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary border-t border-[rgb(var(--border-line))]">
+                            Cross-table (đa bảng)
+                          </div>
+                          {MEASURE_TEMPLATES.filter((t) => t.group === 'cross').map((tpl) => (
+                            <button
+                              key={tpl.key}
+                              onClick={() => handleAddMeasureFromTemplate(tpl)}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
+                              title={tpl.hint}
+                            >
+                              <div className="flex items-center gap-1">
+                                <span>{tpl.label}</span>
+                                <span className="rounded bg-brand/10 px-1 text-[9px] font-emphasis uppercase text-brand">PBI</span>
+                              </div>
                               {tpl.hint && (
                                 <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">{tpl.hint}</div>
                               )}
@@ -1836,6 +2770,22 @@ export function ModelViewEditPanel({
           aiDraft={aiDraftPayload}
           onApply={handleApplyAi}
           onClose={() => { setAiDiffOpen(false); setAiDraftPayload(null); }}
+        />
+      )}
+
+      {/* Phase-15.5: time-intelligence wizard. */}
+      {view && (
+        <TimeIntelligenceBuilder
+          open={showTimeIntelDialog}
+          existingMeasures={measures}
+          modelViews={modelViews}
+          currentViewName={view.name}
+          onConfirm={(newMeasure) => {
+            const rowKey = makeClientRowKey('measure');
+            setMeasures((prev) => [...prev, newMeasure]);
+            setMeasureRowKeys((prev) => [...prev, rowKey]);
+          }}
+          onClose={() => setShowTimeIntelDialog(false)}
         />
       )}
     </div>

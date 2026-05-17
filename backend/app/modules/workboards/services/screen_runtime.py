@@ -2,14 +2,22 @@
 
 A workboard is a mini-app: an ordered list of screens, each bound to its
 own dataset table. This module resolves the screen first, then applies
-the right read / write / RLS logic for its kind (form / list / doc).
+the right read / write / RLS logic for its kind (``form`` / ``table`` /
+``doc`` / ``dashboard``).
+
+Phase-13 (2026-05-16) collapsed the previous ``list`` (read-only) and
+``grid`` (editable) kinds into one ``table`` kind with a
+``mode: readonly | editable`` flag. No backwards-compatibility shim —
+the schema is the contract and there is only one runtime path.
 
 Public API:
 * :func:`get_screen` — fetch a Screen by id, raising 404 if missing.
 * :func:`render_form_screen` — return form spec (fields + lookup options).
-* :func:`render_list_screen` — paginated rows after RLS.
+* :func:`render_table_screen` — paginated rows after RLS, with optional
+  computed/lookup columns, totals, multi-header and row-merge.
 * :func:`render_doc_screen` — block-based rendered doc payload.
-* :func:`insert_screen_row` / :func:`update_screen_row` — write paths.
+* :func:`insert_screen_row` / :func:`update_screen_row` /
+  :func:`delete_screen_row` — write paths.
 
 Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 """
@@ -42,11 +50,12 @@ from app.modules.workboards.services.rls_service import (
     build_rls_filter,
     enforce_write_access,
 )
-from app.modules.workboards.services.formula_engine import (
-    Formula,
-    FormulaError,
-    build_dag,
-    compile_formula,
+from app.modules.workboards.services.js_evaluator import (
+    CompiledJs,
+    JsCompileError,
+    JsEvalError,
+    compile_js_column,
+    evaluate_js_cell,
 )
 from app.modules.workboards.services.write_service import (
     WorkboardWriteService,
@@ -697,38 +706,47 @@ def insert_screen_row(
     *,
     identity: CallerIdentity,
 ) -> Dict[str, Any]:
-    # Both form and grid screens are writable. Form runs field-level
-    # conditional rules (show_if / required_if) first; grid skips those —
-    # the grid spec has no field-level conditionals.
-    if screen.table_id is None or screen.kind not in ("form", "grid"):
+    # Form and table screens are writable. Form runs field-level
+    # conditional rules (show_if / required_if) first; table screens use
+    # their own column-set rules (editable_columns + computed/lookup
+    # stripping).
+    if screen.table_id is None or screen.kind not in ("form", "table"):
         raise HTTPException(status_code=400, detail="Screen is not writable.")
     if screen.kind == "form" and screen.form is None:
         raise HTTPException(status_code=400, detail="Form screen has no spec.")
-    if screen.kind == "grid":
-        if screen.grid is None:
-            raise HTTPException(status_code=400, detail="Grid screen has no spec.")
-        if not screen.grid.allow_add_row:
+    if screen.kind == "table":
+        if screen.table is None:
+            raise HTTPException(status_code=400, detail="Table screen has no spec.")
+        if not screen.table.allow_add_row:
             raise HTTPException(
-                status_code=403, detail="Adding rows is disabled on this grid."
+                status_code=403, detail="Adding rows is disabled on this table."
+            )
+        if not (screen.table.editable_columns or []):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This table has no editable columns — add at least one "
+                    "to editable_columns before turning on allow_add_row."
+                ),
             )
 
     if screen.kind == "form":
         cleaned_pre = _apply_field_conditions(screen, values, identity)
     else:
-        # Grid: merge builder default_values (with placeholders) under user
-        # values so the user can still override a default. Computed/lookup
-        # columns are never writeable from the client — strip them first
-        # so a hand-crafted payload can't slip a fake `total` past us.
-        derived = {c.name for c in (screen.grid.computed_columns or [])} | {
-            l.name for l in (screen.grid.lookup_columns or [])
+        # Table: merge builder default_values (with placeholders) under
+        # user values. Computed/lookup columns are never writeable from
+        # the client — strip them first so a hand-crafted payload can't
+        # slip a fake `total` past us.
+        derived = {c.name for c in (screen.table.computed_columns or [])} | {
+            l.name for l in (screen.table.lookup_columns or [])
         }
-        merged = _resolve_grid_defaults(screen, identity)
+        merged = _resolve_table_defaults(screen, identity)
         merged.update({
             k: v for k, v in (values or {}).items() if k not in derived
         })
         missing = [
             col
-            for col in (screen.grid.required_columns if screen.grid else [])
+            for col in (screen.table.required_columns if screen.table else [])
             if merged.get(col) in (None, "") and col not in derived
         ]
         if missing:
@@ -770,24 +788,29 @@ def update_screen_row(
     *,
     identity: CallerIdentity,
 ) -> Dict[str, Any]:
-    if screen.table_id is None or screen.kind not in ("form", "grid"):
+    if screen.table_id is None or screen.kind not in ("form", "table"):
         raise HTTPException(status_code=400, detail="Screen is not writable.")
     if screen.kind == "form" and screen.form is None:
         raise HTTPException(status_code=400, detail="Form screen has no spec.")
-    if screen.kind == "grid" and screen.grid is None:
-        raise HTTPException(status_code=400, detail="Grid screen has no spec.")
+    if screen.kind == "table" and screen.table is None:
+        raise HTTPException(status_code=400, detail="Table screen has no spec.")
 
     if screen.kind == "form":
         cleaned_pre = _apply_field_conditions(screen, values, identity)
     else:
-        # Grid: ensure the user only touches columns that are flagged
-        # ``editable_columns`` on the spec, and never a derived
-        # (computed/lookup) column even if it slipped into editable_columns
-        # in a stale layout. The RLS layer further filters by role-level
+        # Table: a column must be flagged in either the inline grid
+        # ``editable_columns`` OR the detail panel's ``editable_columns``.
+        # Computed/lookup columns are NEVER writeable regardless of how
+        # they appear in those lists. RLS further constrains by role
         # ``writable_columns`` / ``readonly_columns``.
-        editable = set((screen.grid.editable_columns if screen.grid else []) or [])
-        derived = {c.name for c in (screen.grid.computed_columns or [])} | {
-            l.name for l in (screen.grid.lookup_columns or [])
+        inline_editable = set((screen.table.editable_columns or []))
+        panel = screen.table.detail_panel
+        panel_editable: set[str] = set()
+        if panel and panel.enabled:
+            panel_editable = set((panel.editable_columns or []))
+        editable = (inline_editable | panel_editable)
+        derived = {c.name for c in (screen.table.computed_columns or [])} | {
+            l.name for l in (screen.table.lookup_columns or [])
         }
         editable -= derived
         cleaned_pre = {
@@ -812,8 +835,8 @@ def update_screen_row(
         raise HTTPException(status_code=403, detail="You don't have access to that row.")
     if rls_filters:
         # Existence check on the screen's bound table — bypass the
-        # render_list_screen kind check because update screens are forms,
-        # not lists, but they share the same RLS rule set.
+        # render_table_screen kind check because update screens are forms,
+        # but they share the same RLS rule set.
         table = _load_table(db, screen.table_id)
         datasource = _load_datasource(db, table) if table else None
         if not table or not datasource:
@@ -842,20 +865,20 @@ def update_screen_row(
     return result
 
 
-# ── Grid screen helpers ──────────────────────────────────────────────────
+# ── Table screen helpers ────────────────────────────────────────────────
 
-def _resolve_grid_defaults(
+def _resolve_table_defaults(
     screen: Screen, identity: CallerIdentity
 ) -> Dict[str, Any]:
-    """Return grid ``default_values`` with placeholders substituted.
+    """Return table ``default_values`` with placeholders substituted.
 
-    Reuses :func:`_resolve_initial_values` so a grid behaves the same as a
-    form for ``{{app_user.x}}`` / ``{{today}}`` / ``{{now}}`` defaults.
+    Reuses :func:`_resolve_initial_values` so a table behaves the same as
+    a form for ``{{app_user.x}}`` / ``{{today}}`` / ``{{now}}`` defaults.
     """
-    if screen.grid is None:
+    if screen.table is None:
         return {}
     return _resolve_initial_values(
-        dict(screen.grid.default_values or {}), identity=identity
+        dict(screen.table.default_values or {}), identity=identity
     )
 
 
@@ -867,19 +890,19 @@ def delete_screen_row(
     *,
     identity: CallerIdentity,
 ) -> Dict[str, Any]:
-    """Delete a single row through a grid screen, honouring RLS.
+    """Delete a single row through a table screen, honouring RLS.
 
     Mirrors :func:`update_screen_row`: enforce ``can_delete`` per role, then
     confirm the row passes the read-filter rules before issuing the DELETE
     so a viewer can't delete rows outside their RLS scope.
     """
-    if screen.table_id is None or screen.kind != "grid":
+    if screen.table_id is None or screen.kind != "table":
         raise HTTPException(
-            status_code=400, detail="Only grid screens support row deletion."
+            status_code=400, detail="Only table screens support row deletion."
         )
-    if screen.grid is None or not screen.grid.allow_delete_row:
+    if screen.table is None or not screen.table.allow_delete_row:
         raise HTTPException(
-            status_code=403, detail="Deleting rows is disabled on this grid."
+            status_code=403, detail="Deleting rows is disabled on this table."
         )
 
     # Enforce ``can_delete`` via the shared RLS pipeline. ``row_values={}``
@@ -923,12 +946,116 @@ def delete_screen_row(
     return result
 
 
-def _resolve_grid_lookups(
+def fetch_table_row_for_panel(
     db: Session,
-    grid_spec: Any,
+    workboard: Workboard,
+    screen: Screen,
+    pk: Dict[str, Any],
+    *,
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Fetch one row by PK, with lookup columns resolved, for the detail
+    panel. RLS is enforced — a row outside the viewer's scope returns 403.
+
+    Returns ``{row, columns, editable_columns, sections, computed_columns,
+    lookup_columns, column_labels, primary_key_columns, title}`` so the FE
+    can render the panel without re-reading the layout. Computed columns
+    are evaluated per-row only (cross-row aggregates resolve against the
+    single-row scope so COL_SUM degenerates to a sum over [row]).
+    """
+    if screen.kind != "table" or screen.table is None or screen.table_id is None:
+        raise HTTPException(status_code=400, detail="Screen is not a table.")
+    panel = screen.table.detail_panel
+    if not panel or not panel.enabled:
+        raise HTTPException(status_code=400, detail="Detail panel is disabled.")
+
+    table = _load_table(db, screen.table_id)
+    datasource = _load_datasource(db, table) if table else None
+    if not table or not datasource:
+        raise HTTPException(status_code=400, detail="Screen table missing.")
+
+    rls_filters, allowed = build_rls_filter(
+        screen.rls, screen.rls_default, identity
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You don't have access to that row.")
+
+    check_filters = [
+        {"field": k, "operator": "eq", "value": v} for k, v in (pk or {}).items()
+    ] + rls_filters
+    result = LiveQueryService.execute_preview_query(
+        datasource, table, limit=1, offset=0, filters=check_filters
+    )
+    rows = result.get("rows") or []
+    if not rows:
+        raise HTTPException(status_code=403, detail="You don't have access to that row.")
+    raw_row = rows[0]
+
+    table_spec = screen.table
+    all_db_columns: List[str] = result.get("columns") or list(raw_row.keys())
+    panel_columns = list(panel.columns or table_spec.columns or all_db_columns)
+    # Include lookup local match columns + PK so they're always available
+    # in ``row`` even when the panel hides them.
+    extra_keys = list(screen.primary_key_columns or [])
+    for lookup in table_spec.lookup_columns or []:
+        if lookup.match_column_local in all_db_columns:
+            extra_keys.append(lookup.match_column_local)
+
+    row_keys = list(dict.fromkeys([
+        *(c for c in panel_columns if c in all_db_columns),
+        *extra_keys,
+    ]))
+    row: Dict[str, Any] = {col: raw_row.get(col) for col in row_keys}
+
+    # Lookup resolution for this single row.
+    lookup_maps = _resolve_table_lookups(db, table_spec, [row])
+    for lookup in table_spec.lookup_columns or []:
+        match_value = row.get(lookup.match_column_local)
+        row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
+
+    # Per-row computed columns (cross-row aggregates degrade to single-row).
+    if table_spec.computed_columns:
+        # Detail panel always shows a single row, so cross-row aggregates
+        # in JS degrade to operating over [row] — that's fine for the
+        # panel view (it's meant to show one record's details).
+        for col in table_spec.computed_columns:
+            if not (col.formula or "").strip():
+                if col.name not in row:
+                    row[col.name] = None
+                continue
+            try:
+                compiled_js = compile_js_column(col.name, col.formula)
+            except JsCompileError as exc:
+                row[col.name] = f"#ERR: {exc}"
+                continue
+            try:
+                row[col.name] = evaluate_js_cell(compiled_js, row, [row], 0)
+            except JsEvalError as exc:
+                row[col.name] = f"#ERR: {exc}"
+
+    return {
+        "row": row,
+        "primary_key_columns": list(screen.primary_key_columns or []),
+        "columns": panel_columns,
+        "editable_columns": list(panel.editable_columns or []),
+        "sections": dict(panel.sections or {}),
+        "title": panel.title or screen.title,
+        "column_labels": dict(screen.column_labels or {}),
+        "column_metadata": {
+            k: v.model_dump() if hasattr(v, "model_dump") else v
+            for k, v in (table_spec.column_metadata or {}).items()
+        },
+        "computed_columns": [c.model_dump() for c in (table_spec.computed_columns or [])],
+        "lookup_columns": [l.model_dump() for l in (table_spec.lookup_columns or [])],
+    }
+
+
+def _resolve_table_lookups(
+    db: Session,
+    table_spec: Any,
     rows: List[Dict[str, Any]],
 ) -> Dict[str, Dict[Any, Any]]:
-    """Batch-resolve every lookup column on the grid.
+    """Batch-resolve every lookup column on the table.
 
     Returns a mapping ``{lookup_name: {match_value: return_value}}`` so the
     caller can fan the values out across rows without re-querying. One
@@ -936,7 +1063,7 @@ def _resolve_grid_lookups(
     per lookup column, regardless of how many rows are on the page.
     """
     out: Dict[str, Dict[Any, Any]] = {}
-    lookups = list(getattr(grid_spec, "lookup_columns", None) or [])
+    lookups = list(getattr(table_spec, "lookup_columns", None) or [])
     if not lookups or not rows:
         return out
 
@@ -1018,17 +1145,17 @@ def _coerce_total(value: Any) -> Optional[float]:
         return None
 
 
-def _compute_grid_totals(
-    grid_spec: Any,
+def _compute_table_totals(
+    table_spec: Any,
     rows: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Apply :class:`GridScreenSpec.totals` to the rows on the page.
+    """Apply :class:`TableScreenSpec.totals` to the rows on the page.
 
     Returns ``{column_name: aggregated_value}`` so the runtime can render
     a footer row keyed by column. ``count`` runs over non-empty cells;
     everything else coerces to ``float``.
     """
-    totals_spec: Dict[str, str] = dict(getattr(grid_spec, "totals", None) or {})
+    totals_spec: Dict[str, str] = dict(getattr(table_spec, "totals", None) or {})
     if not totals_spec or not rows:
         return {}
     out: Dict[str, Any] = {}
@@ -1060,7 +1187,7 @@ def _compute_grid_totals(
     return out
 
 
-def render_grid_screen(
+def render_table_screen(
     db: Session,
     workboard: Workboard,
     screen: Screen,
@@ -1070,20 +1197,27 @@ def render_grid_screen(
     page_size: Optional[int] = None,
     extra_filters: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Render a grid screen — paginated rows + computed/lookup cells + totals.
+    """Render a table screen — paginated rows + computed/lookup cells +
+    totals + multi-header + row-merge.
 
     Evaluation order per row:
 
     1. Pull regular columns from the source table (RLS-filtered).
-    2. Resolve every lookup column with a batched query per linked table.
+    2. Resolve every lookup column with one batched query per linked table.
     3. Evaluate computed columns in topological order so a formula can
        reference another computed column.
     4. Aggregate the totals map over the resulting (filtered) page.
-    """
-    if screen.kind != "grid" or screen.grid is None or screen.table_id is None:
-        raise HTTPException(status_code=400, detail="Screen is not a grid.")
+    5. Compute multi-header (``column_groups``) and row-merge spans
+       (``group_by``) for FE rendering.
 
-    grid_spec = screen.grid
+    The response payload is consumed by both the inline grid (cells +
+    totals + merges) and the side detail panel (a single row + the panel
+    config; the panel itself is materialised client-side).
+    """
+    if screen.kind != "table" or screen.table is None or screen.table_id is None:
+        raise HTTPException(status_code=400, detail="Screen is not a table.")
+
+    table_spec = screen.table
 
     table = _load_table(db, screen.table_id)
     datasource = _load_datasource(db, table) if table else None
@@ -1097,21 +1231,18 @@ def render_grid_screen(
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
     page = max(int(page or 1), 1)
-    configured_page_size = getattr(grid_spec, "page_size", None) or 100
-    page_size = min(max(int(page_size or configured_page_size or 100), 1), 500)
+    configured_page_size = getattr(table_spec, "page_size", None) or 50
+    page_size = min(max(int(page_size or configured_page_size or 50), 1), 500)
     offset = (page - 1) * page_size
     merged = _filter_dicts(extra_filters) + rls_filters
-    sort_column = getattr(grid_spec, "default_sort_column", None)
-    sort_direction = getattr(grid_spec, "default_sort_direction", None) or "desc"
+    sort_column = getattr(table_spec, "default_sort_column", None)
+    sort_direction = getattr(table_spec, "default_sort_direction", None) or "desc"
 
-    # Don't pass computed/lookup column names through to the SQL query —
-    # they aren't real columns and would 500 the underlying query builder.
-    computed_names = {c.name for c in (grid_spec.computed_columns or [])}
-    lookup_names = {l.name for l in (grid_spec.lookup_columns or [])}
+    computed_names = {c.name for c in (table_spec.computed_columns or [])}
+    lookup_names = {l.name for l in (table_spec.lookup_columns or [])}
     if sort_column and sort_column in (computed_names | lookup_names):
-        # Sorting by a derived column would require sorting after the
-        # in-memory eval pass, which silently breaks pagination ordering.
-        # Drop it back to default ordering instead of failing the screen.
+        # Sorting by a derived column requires post-eval sort, which would
+        # silently break pagination. Drop to default ordering.
         sort_column = None
 
     result = LiveQueryService.execute_preview_query(
@@ -1126,23 +1257,26 @@ def render_grid_screen(
     all_db_columns: List[str] = result.get("columns") or []
     pk_cols = list(screen.primary_key_columns or [])
 
-    # Display order = the builder's column list, restricted to DB columns
-    # that actually came back plus derived columns the builder declared.
-    declared_columns = list(grid_spec.columns or all_db_columns)
+    declared_columns = list(table_spec.columns or all_db_columns)
     selected_columns = [
         c
         for c in declared_columns
         if c in all_db_columns or c in computed_names or c in lookup_names
     ] or all_db_columns
 
-    # Keep PK columns in the row payload even if the builder hid them, so
-    # the runtime can issue PATCH/DELETE keyed by PK.
+    # PK columns stay in the row payload so the runtime can issue PATCH /
+    # DELETE / detail-panel-fetch keyed by PK even when hidden from the grid.
     row_keys = list({*pk_cols, *(c for c in selected_columns if c in all_db_columns)})
-    # Pull lookups' local match columns too — needed for the lookup step
-    # even if the builder kept them hidden from the display list.
-    for lookup in grid_spec.lookup_columns or []:
+    for lookup in table_spec.lookup_columns or []:
         if lookup.match_column_local in all_db_columns:
             row_keys.append(lookup.match_column_local)
+    # Include any extra column referenced only by the detail panel so the
+    # current-page rows already carry the data needed by the side panel.
+    panel = table_spec.detail_panel
+    if panel and panel.enabled:
+        for col in (panel.columns or selected_columns):
+            if col in all_db_columns and col not in row_keys:
+                row_keys.append(col)
     row_keys = list(dict.fromkeys(row_keys))
 
     base_rows: List[Dict[str, Any]] = [
@@ -1151,70 +1285,54 @@ def render_grid_screen(
     ]
 
     # ── Lookup resolution ────────────────────────────────────────────
-    lookup_maps = _resolve_grid_lookups(db, grid_spec, base_rows)
+    lookup_maps = _resolve_table_lookups(db, table_spec, base_rows)
     for row in base_rows:
-        for lookup in grid_spec.lookup_columns or []:
+        for lookup in table_spec.lookup_columns or []:
             match_value = row.get(lookup.match_column_local)
             row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
 
-    # ── Computed columns ─────────────────────────────────────────────
-    if grid_spec.computed_columns:
-        # Allowed names = regular columns + lookup columns (already on row).
-        external = set(all_db_columns) | lookup_names
-        compiled: Dict[str, Formula] = {}
-        compile_errors: Dict[str, str] = {}
-        # Columns whose formula is still blank (builder draft state) — render
-        # as ``None`` instead of a compile-error string so the user sees the
-        # column shell while they type.
-        draft_names: set[str] = set()
-        for col in grid_spec.computed_columns:
+    # ── Computed columns (JS sandbox, one pass) ──────────────────────
+    # Each column compiles ONCE, then evaluates once per row. Compile
+    # errors AND per-row eval errors surface as ``#ERR: ...`` in the
+    # cell so the rest of the grid stays readable.
+    if table_spec.computed_columns:
+        js_compiled: Dict[str, CompiledJs] = {}
+        js_compile_err: Dict[str, str] = {}
+        js_draft: set[str] = set()
+        for col in table_spec.computed_columns:
             if not (col.formula or "").strip():
-                draft_names.add(col.name)
+                js_draft.add(col.name)
                 continue
             try:
-                compiled[col.name] = compile_formula(
-                    col.formula, allowed_columns=external | computed_names
-                )
-            except FormulaError as exc:
-                compile_errors[col.name] = str(exc)
-        try:
-            order = build_dag(compiled, external_columns=external)
-        except FormulaError as exc:
-            # Fall back to declared order; cycles/missing refs are flagged
-            # as cell-level errors below so the rest of the grid still renders.
-            order = list(compiled.keys())
-            logger.warning("Grid DAG fallback (screen=%s): %s", screen.id, exc)
+                js_compiled[col.name] = compile_js_column(col.name, col.formula)
+            except JsCompileError as exc:
+                js_compile_err[col.name] = str(exc)
 
-        # Cross-row aggregators (COL_SUM / COUNTIF / SUMIF / THIS_ROW_INDEX)
-        # need to see the page's full row set. We inject it under reserved
-        # ``__rows__`` / ``__row_index__`` keys — these names start with
-        # ``__`` so they cannot collide with a real column reference (the
-        # formula parser rejects identifiers starting with ``_``).
         for index, row in enumerate(base_rows):
-            row["__rows__"] = base_rows
-            row["__row_index__"] = index
-            for name in order:
-                formula = compiled.get(name)
-                if formula is None:
-                    row[name] = f"#ERR: {compile_errors.get(name, 'unknown')}"
+            for col in table_spec.computed_columns:
+                name = col.name
+                if name in js_draft:
+                    if name not in row:
+                        row[name] = None
+                    continue
+                if name in js_compile_err:
+                    row[name] = f"#ERR: {js_compile_err[name]}"
+                    continue
+                compiled_js = js_compiled.get(name)
+                if compiled_js is None:
+                    row[name] = "#ERR: js not compiled"
                     continue
                 try:
-                    row[name] = formula.evaluate(row)
-                except FormulaError as exc:
+                    row[name] = evaluate_js_cell(compiled_js, row, base_rows, index)
+                except JsEvalError as exc:
                     row[name] = f"#ERR: {exc}"
-            for failed_name, msg in compile_errors.items():
-                if failed_name not in row:
-                    row[failed_name] = f"#ERR: {msg}"
-            for draft_name in draft_names:
-                if draft_name not in row:
-                    row[draft_name] = None
-        # Strip the internal scope keys so they don't leak in the API response.
-        for row in base_rows:
-            row.pop("__rows__", None)
-            row.pop("__row_index__", None)
 
     # ── Footer totals ────────────────────────────────────────────────
-    totals_row = _compute_grid_totals(grid_spec, base_rows) or None
+    totals_row = _compute_table_totals(table_spec, base_rows) or None
+
+    # ── Multi-header + row merges ────────────────────────────────────
+    column_groups = _normalize_column_groups(selected_columns, table_spec.column_groups)
+    merges = _compute_merges(base_rows, list(table_spec.group_by or []), selected_columns)
 
     return {
         "columns": selected_columns,
@@ -1222,67 +1340,10 @@ def render_grid_screen(
         "rows": base_rows,
         "page": page,
         "page_size": page_size,
-        "grid_view": grid_spec.model_dump(),
+        "table_view": table_spec.model_dump(),
         "totals_row": totals_row,
-        "column_labels": screen.column_labels or {},
-    }
-
-
-# ── List screen ───────────────────────────────────────────────────────────
-
-def render_list_screen(
-    db: Session,
-    workboard: Workboard,
-    screen: Screen,
-    *,
-    identity: CallerIdentity,
-    page: int = 1,
-    page_size: Optional[int] = None,
-    extra_filters: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    if screen.kind != "list" or screen.list is None or screen.table_id is None:
-        raise HTTPException(status_code=400, detail="Screen is not a list.")
-
-    table = _load_table(db, screen.table_id)
-    datasource = _load_datasource(db, table) if table else None
-    if not table or not datasource:
-        return {"columns": [], "rows": [], "page": page, "page_size": page_size}
-
-    rls_filters, allowed = build_rls_filter(
-        screen.rls, screen.rls_default, identity
-    )
-    if not allowed:
-        return {"columns": [], "rows": [], "page": page, "page_size": page_size}
-
-    page = max(int(page or 1), 1)
-    configured_page_size = getattr(screen.list, "page_size", None) or 50
-    page_size = min(max(int(page_size or configured_page_size or 50), 1), 500)
-    offset = (page - 1) * page_size
-    merged = _filter_dicts(extra_filters) + rls_filters
-    sort_column = getattr(screen.list, "default_sort_column", None)
-    sort_direction = getattr(screen.list, "default_sort_direction", None) or "desc"
-
-    result = LiveQueryService.execute_preview_query(
-        datasource,
-        table,
-        limit=page_size,
-        offset=offset,
-        filters=merged,
-        sort_column=sort_column,
-        sort_direction=sort_direction,
-    )
-    all_columns: List[str] = result.get("columns") or []
-    selected_columns = [c for c in (screen.list.columns or []) if c in all_columns] or all_columns
-    rows = [
-        {column: row.get(column) for column in selected_columns}
-        for row in (result.get("rows") or [])
-    ]
-    return {
-        "columns": selected_columns,
-        "rows": rows,
-        "page": page,
-        "page_size": page_size,
-        "list_view": screen.list.model_dump(),
+        "column_groups": column_groups,
+        "merges": merges,
         "column_labels": screen.column_labels or {},
     }
 

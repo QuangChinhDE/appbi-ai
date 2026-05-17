@@ -24,11 +24,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ClipboardEdit,
   FileText,
-  Grid3x3,
   LayoutDashboard,
   LayoutGrid,
-  ListChecks,
   Search,
+  Table as TableIcon,
   X,
 } from 'lucide-react';
 
@@ -36,29 +35,26 @@ import type { ScreenKind, ScreenSpec } from './types';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   form: ClipboardEdit,
-  list: ListChecks,
+  table: TableIcon,
   doc: FileText,
   dashboard: LayoutDashboard,
-  grid: Grid3x3,
 };
 
 const KIND_LABEL: Record<ScreenKind, string> = {
   form: 'Form',
-  list: 'List',
+  table: 'Table',
   doc: 'Document',
   dashboard: 'Dashboard',
-  grid: 'Grid',
 };
 
 type ScreenStatusKind = 'ok' | 'warn' | 'err';
 
 function statusFor(s: ScreenSpec): ScreenStatusKind {
-  if (s.kind === 'form' || s.kind === 'list' || s.kind === 'grid' || s.kind === 'doc') {
+  if (s.kind === 'form' || s.kind === 'table' || s.kind === 'doc') {
     if (!s.table_id) return 'err';
   }
   if (s.kind === 'form' && (s.form?.fields?.length ?? 0) === 0) return 'warn';
-  if (s.kind === 'list' && (s.list?.columns?.length ?? 0) === 0) return 'warn';
-  if (s.kind === 'grid' && (s.grid?.columns?.length ?? 0) === 0) return 'warn';
+  if (s.kind === 'table' && (s.table?.columns?.length ?? 0) === 0) return 'warn';
   if (s.kind === 'doc' && (s.doc?.blocks?.length ?? 0) === 0) return 'warn';
   if (s.kind === 'dashboard') {
     const hasManaged =

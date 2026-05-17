@@ -256,6 +256,16 @@ export function ExploreColumnPanel({
             {dimensionFields.map((field) => {
               const dim = field.dimension!;
               const reachable = isReachable(field.view.name);
+              // Phase-13: indent rows that have a parent dim. Pure visual
+              // signal — engine doesn't care; just helps DA scan a
+              // Year → Quarter → Month hierarchy at a glance.
+              const hasParent = Boolean(dim.parent);
+              const titleParts = [
+                dim.description,
+                dim.sql,
+                dim.name,
+                hasParent ? `↳ thuộc ${dim.parent}` : null,
+              ].filter(Boolean) as string[];
               return (
                 <FieldRow
                   key={`d-${field.view.id}-${dim.name}`}
@@ -265,9 +275,18 @@ export function ExploreColumnPanel({
                   fromViewLabel={viewLabel(field.view)}
                   onRequestRelationship={onRequestRelationship}
                   hoverColorClass="hover:bg-brand/10 hover:text-brand"
-                  title={dim.description ?? dim.sql ?? dim.name}
+                  title={titleParts.join(' • ')}
                   onClick={() => onSelectDimension?.(dim, field.view.name)}
                 >
+                  {hasParent && (
+                    <span
+                      aria-hidden
+                      className="ml-2 text-text-quaternary"
+                      title={`Drill-down con của ${dim.parent}`}
+                    >
+                      ↳
+                    </span>
+                  )}
                   <DimensionIcon type={dim.type} />
                   <span className="truncate">{field.label}</span>
                 </FieldRow>

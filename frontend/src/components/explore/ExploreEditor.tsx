@@ -169,7 +169,11 @@ function upgradeMetricToQualified(
 ): MetricConfig | undefined {
   if (!metric) return metric;
   const next = upgradeFieldToQualified(metric.field, qualifiedByBare);
-  return next === metric.field ? metric : { ...metric, field: next ?? metric.field };
+  if (next === metric.field) return metric;
+  // Phase-13: an upgrade means the field maps to a declared semantic
+  // measure — no longer implicit. Strip the flag to keep state honest.
+  const { _implicit, ...rest } = metric;
+  return { ...rest, field: next ?? metric.field };
 }
 
 function upgradeRoleConfigToQualified(
@@ -891,6 +895,58 @@ export function ExploreEditor({
   }, [reachableSemanticViews]);
 
   /**
+   * Phase-15.7 — Set of qualified field refs that ARE declared measures
+   * on reachable semantic views. Anything qualified that's NOT in this
+   * set must be an "implicit measure" — a numeric dim the BE auto-promotes
+   * to SUM(field) at query time (see semantic_query_engine.py implicit
+   * fallback). FE uses this to surface the "auto" badge consistently for
+   * both bare AND qualified implicit picks.
+   */
+  const declaredMeasureRefs = useMemo<Set<string>>(() => {
+    const out = new Set<string>();
+    for (const view of reachableSemanticViews) {
+      for (const measure of view.measures ?? []) {
+        if (measure.hidden) continue;
+        out.add(`${view.name}.${measure.name}`);
+      }
+    }
+    return out;
+  }, [reachableSemanticViews]);
+
+  /**
+   * Phase-15.1 — Hierarchy map for drill-down UX.
+   *
+   * Maps qualified child field name → qualified parent field name, derived
+   * from `DimensionDefinition.parent` (Phase-13.1 metadata). Used by
+   * `ExploreChartConfig` to surface a "↓ Drill into <child>" action when
+   * the chart's dimension has children declared on its view.
+   *
+   * Pure metadata. The engine doesn't see this — drill-down just swaps the
+   * chart's `dimension` field for the child and re-runs the query. Keeps
+   * Phase-1 "2 cơ chế" invariant: no new calculation mechanism, only a
+   * navigation shortcut.
+   */
+  const dimHierarchy = useMemo<{
+    parentOf: Map<string, string>;
+    childrenOf: Map<string, string[]>;
+  }>(() => {
+    const parentOf = new Map<string, string>();
+    const childrenOf = new Map<string, string[]>();
+    for (const view of reachableSemanticViews) {
+      for (const dim of view.dimensions ?? []) {
+        if (!dim.parent) continue;
+        const child = `${view.name}.${dim.name}`;
+        const parent = `${view.name}.${dim.parent}`;
+        parentOf.set(child, parent);
+        const list = childrenOf.get(parent) ?? [];
+        list.push(child);
+        childrenOf.set(parent, list);
+      }
+    }
+    return { parentOf, childrenOf };
+  }, [reachableSemanticViews]);
+
+  /**
    * Phase-12.5 — Bare-to-qualified field name registry.
    *
    * Maps `"amount"` → `"deals.amount"` whenever the bare name appears on
@@ -1382,10 +1438,26 @@ export function ExploreEditor({
     }
   }, [queryLimit, sqlMode]);
 
+  /**
+   * Phase-12.7 — apply the qualified-upgrade pass to customRoleConfig too.
+   *
+   * Phase-12.5 only covered `generatedRoleConfig` (line ~1368 effect). DAs
+   * who switched to custom SQL mode and picked semantic fields kept losing
+   * JOINs because their roleConfig fields stayed bare. Same `qualifiedByBare`
+   * map applies — if a bare ref has exactly one qualified match in the
+   * reachable graph, upgrade it.
+   *
+   * `semanticReady` gate also applies here for the same race-condition
+   * reason: do not seed on previewColumns alone.
+   */
   useEffect(() => {
+    if (!semanticReady) return;
     if (!customConfigColumns?.length) return;
-    setCustomRoleConfig((prev) => pruneRoleConfigToColumns(chartType, prev, customConfigColumns));
-  }, [chartType, customConfigColumns]);
+    setCustomRoleConfig((prev) => {
+      const pruned = pruneRoleConfigToColumns(chartType, prev, customConfigColumns);
+      return upgradeRoleConfigToQualified(pruned, qualifiedByBare);
+    });
+  }, [chartType, customConfigColumns, semanticReady, qualifiedByBare]);
 
   useEffect(() => {
     if (skipNextSourceResetRef.current) {
@@ -2129,6 +2201,8 @@ export function ExploreEditor({
                     validationMessage={activeValidationMessage}
                     readOnly={!resPerms.canEdit}
                     availableSeriesKeys={previewSeriesKeys}
+                    dimChildrenMap={dimHierarchy.childrenOf}
+                    declaredMeasureRefs={declaredMeasureRefs}
                     onChartTypeChange={handleChartTypeChange}
                     onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
                     onStyleConfigChange={setChartStyleConfig}

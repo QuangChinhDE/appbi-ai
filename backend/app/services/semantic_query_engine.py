@@ -400,10 +400,16 @@ class SemanticQueryEngine:
                     select_parts.append(f"{pivot_sql} AS {alias}")
                     column_names.append(alias)
         else:
-            # Regular measures
+            # Regular measures. Phase-14: pass active_dimensions so any
+            # context_modifiers on the measure can compile to a window
+            # aggregate against the right partition set.
             for measure_field in measures:
                 agg_over = (measure_agg_overrides or {}).get(measure_field)
-                measure_sql = self._render_measure(measure_field, agg_override=agg_over)
+                measure_sql = self._render_measure(
+                    measure_field,
+                    agg_override=agg_over,
+                    active_dimensions=non_pivot_dims,
+                )
                 alias = self._safe_alias(measure_field)
                 select_parts.append(f"{measure_sql} AS {alias}")
                 column_names.append(alias)
@@ -463,6 +469,7 @@ class SemanticQueryEngine:
         *,
         agg_override: Optional[str] = None,
         _stack: Optional[Set[str]] = None,
+        active_dimensions: Optional[List[str]] = None,
     ) -> str:
         """Render measure SQL with aggregation.
 
@@ -477,6 +484,17 @@ class SemanticQueryEngine:
           * ``filters`` / ``where_sql``: produce a ``CASE WHEN <cond> THEN
             <value> ELSE NULL END`` wrapper so the aggregation only sees
             qualifying rows (Looker-style filtered measures).
+
+        Phase-14: when ``context_modifiers`` is non-empty AND a list of
+        ``active_dimensions`` (qualified `view.field`) is provided by the
+        caller, the measure is rendered as a window aggregate
+        (``agg(expr) OVER (PARTITION BY ...)``) so the modifier can mask
+        the chart's filter context. The function still returns a single
+        SQL fragment — the GROUP-BY emitter excludes window-aggregated
+        measures via a sibling helper (``measure_is_windowed``). When
+        ``active_dimensions`` is None, modifiers are silently ignored
+        and the measure renders as a plain aggregate (legacy behaviour
+        for callers like ratio formulas that don't know the query dims).
         """
         stack = set(_stack or set())
         if field_ref in stack:
@@ -489,7 +507,60 @@ class SemanticQueryEngine:
 
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
         if not measure_def:
-            raise ValueError(f"Measure '{field_name}' not found in view '{view_name}'")
+            # ── Implicit measure fallback (Phase-15.7) ──
+            #
+            # Mirrors PowerBI's "drag any numeric column → it sums". When
+            # `_classify_columns` runs with auto_generate_measures=False
+            # (the default since Phase-2), numeric columns become
+            # dimensions with type='number' and NO matching measure entry
+            # gets emitted. Without this fallback, every Explore drag of
+            # a raw numeric column fails with:
+            #   "Measure 'X' not found in view 'Y'"
+            # which is what DA hit (see "Measure 'deal_value' not found"
+            # report).
+            #
+            # Logic: when the field IS a declared dimension of type 'number'
+            # on the view (i.e. user dragged a real numeric column, not a
+            # typo'd name), synthesise an ad-hoc measure def that the rest
+            # of this function can render the same way as a real one:
+            #
+            #   { name: <field>, type: <agg_override or 'sum'>, sql: <field> }
+            #
+            # The synthesised measure has NO `filters`, `where_sql`,
+            # `expression`, or `depends_on` — it's the simplest possible
+            # `AGG(view.field)` aggregation. If the user later wants a
+            # filtered / formula variant, they declare a real measure in
+            # the Data Model and the lookup above will find it instead.
+            #
+            # KHÔNG vi phạm Nguyên tắc 1 ("2 cơ chế"). Implicit measure
+            # vẫn là Measure — chỉ là chưa được persist vào SemanticView
+            # tại thời điểm này. The synthesised dict has the exact shape
+            # `view.measures[]` entries use, so all downstream code paths
+            # (filter wrap, window aggregate for Phase-14 modifiers, etc.)
+            # work unchanged. Validator / persistence is unaffected: this
+            # never gets written back to the DB.
+            dim_def = next(
+                (d for d in (view.dimensions or []) if d.get('name') == field_name),
+                None,
+            )
+            if dim_def and str(dim_def.get('type') or '').lower() == 'number':
+                fallback_agg = (str(agg_override or "").lower().strip()
+                                if agg_override else "sum")
+                if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
+                    fallback_agg = "sum"
+                measure_def = {
+                    'name': field_name,
+                    'type': fallback_agg,
+                    'sql': field_name,  # bare column; ${TABLE}.field via template
+                }
+            else:
+                raise ValueError(
+                    f"Measure '{field_name}' không tồn tại trong view '{view_name}'. "
+                    "Để aggregate cột này, hãy chọn 1 trong: "
+                    "(a) khai báo nó là dimension type=number trên view "
+                    "(BE sẽ tự sinh SUM/AVG/... ngầm), hoặc "
+                    "(b) tạo measure tên này trong tab Data Model."
+                )
 
         stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
         override_type = str(agg_override or "").lower().strip()
@@ -535,23 +606,123 @@ class SemanticQueryEngine:
                 gated = f"CASE WHEN {filter_sql} THEN {base_sql} END"
             base_sql = gated
 
+        # Build the aggregate function call (no OVER yet).
         if measure_type == "count":
-            return f"COUNT({base_sql})"
+            agg_sql = f"COUNT({base_sql})"
         elif measure_type == "sum":
-            return f"SUM({base_sql})"
+            agg_sql = f"SUM({base_sql})"
         elif measure_type == "avg":
-            return f"AVG({base_sql})"
+            agg_sql = f"AVG({base_sql})"
         elif measure_type == "min":
-            return f"MIN({base_sql})"
+            agg_sql = f"MIN({base_sql})"
         elif measure_type == "max":
-            return f"MAX({base_sql})"
+            agg_sql = f"MAX({base_sql})"
         elif measure_type == "count_distinct":
-            return f"COUNT(DISTINCT {base_sql})"
+            agg_sql = f"COUNT(DISTINCT {base_sql})"
         elif measure_type == "percent_of_total":
-            # Percentage of total using window function
+            # Phase-1: built-in % of grand total via window aggregate over
+            # the inner aggregate. Already self-contained; context_modifiers
+            # are skipped to avoid double-wrapping.
             return f"SUM({base_sql}) / SUM(SUM({base_sql})) OVER () * 100"
         else:
-            return f"SUM({base_sql})"  # Default fallback
+            agg_sql = f"SUM({base_sql})"  # Default fallback
+
+        # Phase-14: context_modifiers turn the aggregate into a window
+        # aggregate. Only applies when the caller passed active_dimensions
+        # (i.e. we know the query shape). Modifiers that don't change the
+        # window (currently only `use_relationship`, which affects JOIN
+        # path resolution rather than the OVER clause) are ignored here.
+        modifiers = list(measure_def.get('context_modifiers') or [])
+        if modifiers and active_dimensions is not None:
+            partition_clause = self._compute_context_partition(
+                modifiers, active_dimensions, view_name,
+            )
+            if partition_clause is not None:
+                # `None` partition_clause means "no window override needed".
+                # An empty string means OVER () — grand total.
+                over_body = f"PARTITION BY {partition_clause}" if partition_clause else ""
+                return f"{agg_sql} OVER ({over_body})"
+
+        return agg_sql
+
+    def _compute_context_partition(
+        self,
+        modifiers: List[Dict[str, Any]],
+        active_dimensions: List[str],
+        host_view_name: str,
+    ) -> Optional[str]:
+        """Phase-14: derive the PARTITION BY expression list for a measure
+        with context_modifiers. Returns:
+
+          * a comma-separated SQL string of dim references — partition by
+            exactly those dims;
+          * ``""`` (empty string) — render as ``OVER ()`` (grand total);
+          * ``None`` — no window override needed (no all / all_except in
+            the modifier set).
+
+        ``use_relationship`` is handled elsewhere (join path resolver) and
+        does not influence the partition clause.
+        """
+        has_all = any(m.get("type") == "all" for m in modifiers)
+        all_except_keep: Optional[set] = None
+        for m in modifiers:
+            if m.get("type") == "all_except":
+                all_except_keep = {
+                    str(f or "").strip()
+                    for f in (m.get("keep_fields") or [])
+                    if str(f or "").strip()
+                }
+                break
+
+        if has_all:
+            return ""  # OVER () — grand total
+
+        if all_except_keep is not None:
+            # Resolve each kept field to qualified ref (default to host_view
+            # when bare) and render via the same path SELECT uses.
+            keep_qualified: List[str] = []
+            for raw in all_except_keep:
+                ref = raw if "." in raw else f"{host_view_name}.{raw}"
+                if ref not in active_dimensions:
+                    # Defensive: kept field isn't in the query — skip
+                    # silently rather than emit invalid SQL.
+                    continue
+                view_alias, _ = self._parse_field_ref(ref)
+                keep_qualified.append(self._render_dimension(ref, view_alias))
+            # If none of the keep_fields are active, fall through to grand
+            # total — semantically equivalent for the user's intent.
+            return ", ".join(keep_qualified) if keep_qualified else ""
+
+        return None
+
+    def _measure_is_windowed(
+        self,
+        field_ref: str,
+        active_dimensions: List[str],
+    ) -> bool:
+        """Phase-14: tell the GROUP BY emitter whether this measure renders
+        as a window aggregate (and thus should NOT block the query from
+        being a non-grouped SELECT when it's the only "aggregate").
+
+        Returns True only when context_modifiers actually produce a window —
+        i.e. there's an 'all' or 'all_except' entry. 'use_relationship'
+        alone does not windowize.
+        """
+        try:
+            view_name, field_name = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name)
+        if not view:
+            return False
+        measure_def = next((m for m in view.measures if m.get('name') == field_name), None)
+        if not measure_def:
+            return False
+        for m in measure_def.get('context_modifiers') or []:
+            t = m.get('type')
+            if t in ("all", "all_except"):
+                return True
+        return False
 
     def _render_measure_filter_clause(
         self, measure_def: Dict[str, Any], view_name: str
@@ -698,8 +869,29 @@ class SemanticQueryEngine:
         
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
         if not measure_def:
-            raise ValueError(f"Measure '{field_name}' not found")
-        
+            # Phase-15.7: same implicit measure fallback as `_render_measure`
+            # (see longer comment there). Pivot tables also let DA drag any
+            # numeric column into the pivoted-measure slot; without this the
+            # pivot fails with the same "measure not found" error.
+            dim_def = next(
+                (d for d in (view.dimensions or []) if d.get('name') == field_name),
+                None,
+            )
+            if dim_def and str(dim_def.get('type') or '').lower() == 'number':
+                fallback_agg = (str(agg_override or "").lower().strip()
+                                if agg_override else "sum")
+                if fallback_agg not in {"count", "sum", "avg", "min", "max", "count_distinct"}:
+                    fallback_agg = "sum"
+                measure_def = {
+                    'name': field_name,
+                    'type': fallback_agg,
+                    'sql': field_name,
+                }
+            else:
+                raise ValueError(
+                    f"Measure '{field_name}' không tồn tại trong view '{view_name}' (pivot)."
+                )
+
         measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
         sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
         base_sql = self._render_sql_template(sql_template, view_name)
@@ -967,22 +1159,41 @@ class SemanticQueryEngine:
         return ""
     
     def _build_group_by_clause(
-        self, 
-        dimensions: List[str], 
+        self,
+        dimensions: List[str],
         measures: List[str],
         pivots: List[str],
         time_grains: Dict[str, str]
     ) -> str:
-        """Build GROUP BY clause"""
+        """Build GROUP BY clause.
+
+        Phase-14: when EVERY measure compiles to a window aggregate (i.e.
+        the measure has context_modifiers all/all_except), there are no
+        plain aggregates to group — emit no GROUP BY. Mixed mode (some
+        plain measures + some windowed) still needs GROUP BY because the
+        plain ones force grouping; windowed aggregates ignore GROUP BY by
+        SQL definition. Pure-window queries without dimensions would
+        produce N rows of the same window value otherwise, but in
+        practice pure-window queries always carry at least one dim too.
+        """
         if not measures:
             return ""
-        
+
         # Non-pivoted dimensions
         non_pivot_dims = [d for d in dimensions if d not in pivots]
-        
+
         if not non_pivot_dims:
             return ""
-        
+
+        # Phase-14: if all measures are windowed (no plain aggregate left),
+        # we don't need GROUP BY at all.
+        non_pivot_active = non_pivot_dims  # alias for clarity in window check
+        all_windowed = all(
+            self._measure_is_windowed(m, non_pivot_active) for m in measures
+        )
+        if all_windowed:
+            return ""
+
         # Use positional GROUP BY
         group_by_positions = [str(i+1) for i in range(len(non_pivot_dims))]
         return f"GROUP BY {', '.join(group_by_positions)}"

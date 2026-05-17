@@ -1342,18 +1342,36 @@ def _execute_semantic_chart_runtime(
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
 
+    # Phase-12.7: explicit try around generate_sql so the caller and API
+    # endpoint see a ValueError with the engine's Vietnamese message
+    # (Phase-11), not an opaque internal exception. ValueError bubbles up
+    # — the chart API layer maps it to 400.
     engine = SemanticQueryEngine(db, database_type=dialect)
-    sql, _engine_columns, _pivot_metadata = engine.generate_sql(
-        explore_name=explore_name,
-        dimensions=dimension_refs,
-        measures=measure_refs,
-        filters=engine_filters,
-        sorts=[],
-        limit=effective_limit,
-        measure_agg_overrides=agg_overrides or None,
-        model_id=model_id,
-        explore_id=explore_id,
-    )
+    try:
+        sql, _engine_columns, _pivot_metadata = engine.generate_sql(
+            explore_name=explore_name,
+            dimensions=dimension_refs,
+            measures=measure_refs,
+            filters=engine_filters,
+            sorts=[],
+            limit=effective_limit,
+            measure_agg_overrides=agg_overrides or None,
+            model_id=model_id,
+            explore_id=explore_id,
+        )
+    except ValueError:
+        # Already carries a friendly VN message; let it propagate so the
+        # API layer can turn it into a 400 with that text intact.
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Semantic chart SQL generation failed: explore=%s dialect=%s",
+            explore_name, dialect,
+        )
+        raise ValueError(
+            f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
+            "Báo dev kiểm tra explore + measure config."
+        ) from exc
 
     # Cache: namespace under a stable identifier derived from the explore +
     # canonical refs so cross-table results don't collide with single-table
@@ -1391,13 +1409,28 @@ def _execute_semantic_chart_runtime(
 
     timeout = 60 if ds_type == "bigquery" else 30
     start = time.time()
-    _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
-        ds_type,
-        datasource.config,
-        sql,
-        timeout_seconds=timeout,
-        skip_bigquery_cost_check=True,
-    )
+    # Phase-12.7: wrap execute so connection errors / dialect mismatch /
+    # missing physical column at the datasource surface as a ValueError
+    # with debugging context, not a generic 500. ValueError because the
+    # chart API endpoint maps ValueError → 4xx with the message intact.
+    try:
+        _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=timeout,
+            skip_bigquery_cost_check=True,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
+            ds_type, dialect, sql[:500],
+        )
+        raise ValueError(
+            f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+            "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+            "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+        ) from exc
     elapsed_ms = (time.time() - start) * 1000
 
     alias_map = _build_semantic_alias_map(dimension_refs + measure_refs)

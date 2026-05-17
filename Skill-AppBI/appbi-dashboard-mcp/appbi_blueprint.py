@@ -154,6 +154,36 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
                             "field": "<str — bare column / dimension name on that view>",
                         }
                     ],
+                    # ── Phase-14 extensions: filter-context modifiers ──
+                    # Turn the measure into a SQL window aggregate so it
+                    # bypasses chart filter context. Omit entirely for a
+                    # plain GROUP-BY aggregate (legacy default).
+                    #
+                    # Use cases:
+                    #   - "% of grand total"      → [{type: "all"}]
+                    #   - "% of region total"     → [{type: "all_except",
+                    #                                 keep_fields: ["region"]}]
+                    #   - Use an inactive join    → [{type: "use_relationship",
+                    #                                 join_alias: "creator"}]
+                    #
+                    # Hard rules (validator rejects on commit_semantic_model):
+                    #   * 'all' and 'all_except' cannot coexist on the same
+                    #     measure (opposite semantics).
+                    #   * 'all_except' requires keep_fields (≥1 entry).
+                    #   * 'use_relationship' requires join_alias matching a
+                    #     JoinDefinition.alias on the dataset's explore.
+                    #
+                    # 'use_relationship' is SCHEMA-ONLY in Phase-14 — the
+                    # engine accepts the modifier but does not yet route via
+                    # that alias when compiling FROM/JOIN. Safe to save; it
+                    # will become effective when wired in a follow-up phase.
+                    "context_modifiers": [
+                        {
+                            "type": "all|all_except|use_relationship",
+                            "keep_fields": ["<str — only for all_except>"],
+                            "join_alias": "<str — only for use_relationship>",
+                        }
+                    ],
                 }
             ],
         }
@@ -684,6 +714,68 @@ async def commit_semantic_model(
                                     "not surfaced as a dimension, BE will still "
                                     "accept it if columns_cache has it.)"
                                 )
+
+            # ── Phase-14: context_modifiers pre-validation ──
+            # Mirror the BE `_validate_context_modifiers` (Pydantic) +
+            # cross-ref checks in datasets.py so Claude / DA hit errors at
+            # MCP plan-commit time instead of round-tripping through BE.
+            cmods = m.get("context_modifiers") or []
+            if cmods:
+                seen_all = False
+                seen_all_except = False
+                for ci, cmod in enumerate(cmods):
+                    if not isinstance(cmod, dict):
+                        validation_errors.append(
+                            f"{loc}.context_modifiers[{ci}] must be an object."
+                        )
+                        continue
+                    ct = str(cmod.get("type") or "").strip()
+                    if ct == "all":
+                        if cmod.get("keep_fields"):
+                            validation_errors.append(
+                                f"{loc}.context_modifiers[{ci}] type='all' "
+                                "không nhận keep_fields. Dùng 'all_except' "
+                                "nếu muốn giữ một số dim."
+                            )
+                        seen_all = True
+                    elif ct == "all_except":
+                        keep = cmod.get("keep_fields") or []
+                        if not keep:
+                            validation_errors.append(
+                                f"{loc}.context_modifiers[{ci}] type='all_except' "
+                                "phải có ít nhất 1 keep_fields."
+                            )
+                        else:
+                            # Each kept field must be a declared dimension on
+                            # this view (BE checks `current_view_dims`).
+                            known_dims_here = dim_names_by_view.get(view_name, set())
+                            if known_dims_here:
+                                for kf in keep:
+                                    kf_bare = str(kf or "").strip().split(".", 1)[-1]
+                                    if kf_bare and kf_bare not in known_dims_here:
+                                        validation_errors.append(
+                                            f"{loc}.context_modifiers[{ci}].keep_fields "
+                                            f"chứa '{kf}' không phải dimension trên "
+                                            f"view '{view_name}'. Có sẵn: "
+                                            f"{sorted(known_dims_here)}."
+                                        )
+                        seen_all_except = True
+                    elif ct == "use_relationship":
+                        if not (cmod.get("join_alias") or "").strip():
+                            validation_errors.append(
+                                f"{loc}.context_modifiers[{ci}] type='use_relationship' "
+                                "phải có join_alias trỏ vào JoinDefinition.alias."
+                            )
+                    else:
+                        validation_errors.append(
+                            f"{loc}.context_modifiers[{ci}].type '{ct}' invalid. "
+                            "Allowed: all | all_except | use_relationship."
+                        )
+                if seen_all and seen_all_except:
+                    validation_errors.append(
+                        f"{loc}.context_modifiers không thể đồng thời có 'all' và "
+                        "'all_except' — chúng có ngữ nghĩa đối lập."
+                    )
 
     # Cycle detection across the whole plan using qualified node names
     # (view.measure). Mirrors backend cycle check so two measures with the

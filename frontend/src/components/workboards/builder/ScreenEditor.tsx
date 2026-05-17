@@ -12,9 +12,8 @@ import React, { useState } from 'react';
 import {
   ClipboardEdit,
   FileText,
-  Grid3x3,
   LayoutDashboard,
-  ListChecks,
+  Table as TableIcon,
   Trash2,
 } from 'lucide-react';
 
@@ -24,10 +23,9 @@ import { CheckboxMultiSelect, MultiColumnPicker } from './BuilderValueControls';
 import { buildAppUserRoleOptions, normalizeAppUserRole } from './appUserRoles';
 import type { ScreenSpec } from './types';
 import FormScreenEditor from './FormScreenEditor';
-import ListScreenEditor from './ListScreenEditor';
 import DocScreenEditor from './DocScreenEditor';
 import DashboardScreenEditor from './DashboardScreenEditor';
-import GridScreenEditor from './GridScreenEditor';
+import TableScreenEditor from './TableScreenEditor';
 import IconPicker from './IconPicker';
 import RlsEditor from './RlsEditor';
 
@@ -63,18 +61,16 @@ type TabId = 'content' | 'permission' | 'settings';
 
 const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   form: 'Form',
-  list: 'List',
+  table: 'Table',
   doc: 'Document',
   dashboard: 'Dashboard',
-  grid: 'Grid',
 };
 
 const KIND_ICONS: Record<ScreenSpec['kind'], React.ElementType> = {
   form: ClipboardEdit,
-  list: ListChecks,
+  table: TableIcon,
   doc: FileText,
   dashboard: LayoutDashboard,
-  grid: Grid3x3,
 };
 
 export default function ScreenEditor({
@@ -97,10 +93,10 @@ export default function ScreenEditor({
   }, [focusFieldColumn]);
 
   const fieldCount = screen.kind === 'form' ? (screen.form?.fields?.length ?? 0) : undefined;
-  const columnCount = screen.kind === 'list' ? (screen.list?.columns?.length ?? 0) : undefined;
+  const tableColCount =
+    screen.kind === 'table' ? (screen.table?.columns?.length ?? 0) : undefined;
   const blockCount = screen.kind === 'doc' ? (screen.doc?.blocks?.length ?? 0) : undefined;
-  const gridColCount = screen.kind === 'grid' ? (screen.grid?.columns?.length ?? 0) : undefined;
-  const contentCount = fieldCount ?? columnCount ?? blockCount ?? gridColCount;
+  const contentCount = fieldCount ?? tableColCount ?? blockCount;
   const ruleCount = (screen.rls || []).length;
   const KindIcon = KIND_ICONS[screen.kind];
 
@@ -155,13 +151,8 @@ export default function ScreenEditor({
               onFocusFieldHandled={onFocusFieldHandled}
             />
           )}
-          {screen.kind === 'list' && (
-            <ListScreenEditor
-              screen={screen}
-              allScreens={allScreens}
-              tables={tables}
-              onChange={onChange}
-            />
+          {screen.kind === 'table' && (
+            <TableScreenEditor screen={screen} tables={tables} onChange={onChange} />
           )}
           {screen.kind === 'doc' && (
             <DocScreenEditor
@@ -173,9 +164,6 @@ export default function ScreenEditor({
           )}
           {screen.kind === 'dashboard' && (
             <DashboardScreenEditor screen={screen} onChange={onChange} />
-          )}
-          {screen.kind === 'grid' && (
-            <GridScreenEditor screen={screen} tables={tables} onChange={onChange} />
           )}
         </>
       )}
