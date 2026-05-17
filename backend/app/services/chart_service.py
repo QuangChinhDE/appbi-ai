@@ -239,6 +239,43 @@ def _strip_nonsemantic_base_view_refs_from_role_config(
     return next_config if changed else role_config
 
 
+def _build_debug_response(runtime_result: dict) -> Optional[dict]:
+    """Phase-15.9: shape the `_debug` payload from a chart runtime result
+    into the public `ChartDebugInfo` schema. Folds in legacy top-level
+    fields (`execution_time_ms`, `warnings`) so the inspector tab has
+    everything in one object.
+
+    Returns None when the result has no debug info (cache hit or older
+    cached payload predating Phase-15.9). FE treats None as "inspector
+    unavailable" rather than rendering an empty panel.
+    """
+    if not isinstance(runtime_result, dict):
+        return None
+    raw_debug = runtime_result.get("_debug")
+    if not isinstance(raw_debug, dict):
+        # Older cached results predate _debug. Surface what we can from
+        # the legacy top-level keys so the inspector isn't totally blank
+        # for cached hits.
+        exec_ms = runtime_result.get("execution_time_ms")
+        warnings = runtime_result.get("warnings") or []
+        if exec_ms is None and not warnings:
+            return None
+        return {
+            "execution_time_ms": exec_ms,
+            "warnings": list(warnings),
+        }
+    return {
+        "sql_emitted": raw_debug.get("sql_emitted"),
+        "dialect": raw_debug.get("dialect"),
+        "routing": raw_debug.get("routing"),
+        "row_count": raw_debug.get("row_count"),
+        # Promote top-level fields onto the same debug object — the FE
+        # tab shouldn't have to walk multiple shapes.
+        "execution_time_ms": runtime_result.get("execution_time_ms"),
+        "warnings": list(runtime_result.get("warnings") or []),
+    }
+
+
 def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
     """Map engine SQL alias (`view_field`) → canonical caller ref (`view.field`).
 
@@ -1446,6 +1483,18 @@ def _execute_semantic_chart_runtime(
         # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
         # chart UI can banner them. List is empty in the happy path.
         "warnings": list(getattr(engine, "warnings", []) or []),
+        # Phase-15.9: debug payload for the Explore "Query" tab. The FE
+        # inspector shows DA exactly what BE ran — picks up renamed
+        # views, ambiguous joins, etc. without needing server logs.
+        # `sql` is the post-templating SemanticQueryEngine output (after
+        # macro resolution + JOIN rendering); pasting it into a DB
+        # console reproduces the chart's data 1:1.
+        "_debug": {
+            "sql_emitted": sql,
+            "dialect": dialect,
+            "routing": "semantic_engine",
+            "row_count": len(rows),
+        },
     }
 
     if cache_enabled:
@@ -1872,10 +1921,16 @@ class ChartService:
                 filter_context=filter_context,
             )
 
+            # Phase-15.9: forward _debug payload (sql_emitted + dialect +
+            # routing + row_count + warnings) so the Explore "Query" tab
+            # can show DA the BE-side pipeline. Strip leading underscore
+            # before serialising — schema field is `debug`. Legacy keys
+            # `execution_time_ms` + `warnings` are folded in here too.
             return {
                 "chart": db_chart,
                 "data": result["data"],
                 "pre_aggregated": result["pre_aggregated"],
+                "debug": _build_debug_response(result),
             }
 
         # Fallback: check config for legacy dataset_table source
@@ -1910,10 +1965,16 @@ class ChartService:
                 filter_context=filter_context,
             )
 
+            # Phase-15.9: forward _debug payload (sql_emitted + dialect +
+            # routing + row_count + warnings) so the Explore "Query" tab
+            # can show DA the BE-side pipeline. Strip leading underscore
+            # before serialising — schema field is `debug`. Legacy keys
+            # `execution_time_ms` + `warnings` are folded in here too.
             return {
                 "chart": db_chart,
                 "data": result["data"],
                 "pre_aggregated": result["pre_aggregated"],
+                "debug": _build_debug_response(result),
             }
 
         raise ValueError("Chart has no data source configured")

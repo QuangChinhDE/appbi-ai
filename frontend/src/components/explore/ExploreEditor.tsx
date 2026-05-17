@@ -53,6 +53,167 @@ import { getReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
 
+/**
+ * Phase-15.9 — Query inspector tab.
+ *
+ * Renders the pipeline that produced the current preview, in 4 stacked
+ * sections, so DA can debug "chart blank but table OK", "wrong dialect
+ * emitted", "engine took the wrong join path", etc. without server logs.
+ *
+ * Sections (top to bottom):
+ *   1. Status strip — routing path (semantic engine vs live_query),
+ *      dialect, exec time, row count
+ *   2. Engine warnings (if any)
+ *   3. SQL block (BE-emitted preferred, FE-built fallback) with copy-
+ *      to-clipboard
+ *   4. Hints — quick tips for the current chart type
+ *
+ * The component is self-contained: no hooks beyond local state, no
+ * network calls. Receives a frozen snapshot via `state`.
+ */
+function QueryInspector({
+  state,
+  chartType,
+}: {
+  state: ExploreQueryState;
+  chartType: ChartType;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  // Prefer BE-emitted SQL — it's the authoritative output (after time-
+  // macro resolution, JOIN rendering, dialect-correct quoting). Fall
+  // back to FE-built preview when the BE didn't surface it (cache hit
+  // on a legacy response, or live_query path predating Phase-15.9).
+  const debug = state.debug;
+  const sql = debug?.sql_emitted || state.sql || '';
+  const sqlSource = debug?.sql_emitted ? 'backend' : 'frontend-preview';
+
+  const routing = debug?.routing || (sqlSource === 'backend' ? 'unknown' : 'preview');
+  const dialect = debug?.dialect || '—';
+  const execMs = debug?.execution_time_ms ?? state.executionTimeMs;
+  const rowCount = debug?.row_count ?? state.rows.length;
+  const warnings = debug?.warnings?.length ? debug.warnings : (state.warnings || []);
+
+  const onCopy = () => {
+    if (!sql) return;
+    navigator.clipboard.writeText(sql).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
+
+  const routingLabel = routing === 'semantic_engine'
+    ? 'Semantic engine (multi-hop JOIN)'
+    : routing === 'live_query'
+      ? 'Live query (single table)'
+      : routing === 'preview'
+        ? 'FE preview (chưa run BE)'
+        : routing;
+  const routingBadgeClass = routing === 'semantic_engine'
+    ? 'border-brand/40 bg-brand/10 text-brand'
+    : routing === 'live_query'
+      ? 'border-purple-500/40 bg-purple-500/10 text-purple-600 dark:text-purple-400'
+      : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
+
+  return (
+    <div className="h-full overflow-auto rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+      <div className="flex h-full flex-col gap-3 overflow-auto rounded-[20px] bg-surface-1 p-4">
+        {/* ── Status strip ──────────────────────────────────────── */}
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-emphasis ${routingBadgeClass}`}
+            title={
+              routing === 'semantic_engine'
+                ? 'BE route qua SemanticQueryEngine — handle JOIN, time macros, window aggregate.'
+                : routing === 'live_query'
+                  ? 'BE route qua live_query (single-table SQL build). KHÔNG handle JOIN — nếu chart cần JOIN, kéo qualified field "view.field" để upgrade.'
+                  : 'Route chưa xác định — BE chưa surface debug info.'
+            }
+          >
+            {routingLabel}
+          </span>
+          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
+            Dialect: <code className="font-mono">{dialect}</code>
+          </span>
+          {execMs != null && (
+            <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
+              Exec: <code className="font-mono">{execMs.toFixed(1)} ms</code>
+            </span>
+          )}
+          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
+            Rows: <code className="font-mono">{rowCount}</code>
+          </span>
+          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
+            Chart: <code className="font-mono">{chartType}</code>
+          </span>
+          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
+            Pre-agg: <code className="font-mono">{String(state.chartPreAggregated)}</code>
+          </span>
+        </div>
+
+        {/* ── Warnings ──────────────────────────────────────────── */}
+        {warnings.length > 0 && (
+          <div className="rounded-md border border-warning/40 bg-warning/5 p-2 text-[11px] leading-snug text-warning">
+            <div className="mb-1 font-emphasis">Engine warnings ({warnings.length})</div>
+            {warnings.map((w, i) => (
+              <div key={i}>⚠ {w}</div>
+            ))}
+          </div>
+        )}
+
+        {/* ── SQL block ─────────────────────────────────────────── */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+              SQL — {sqlSource === 'backend' ? 'emit từ BE' : 'preview build FE'}
+            </div>
+            {sql && (
+              <button
+                onClick={onCopy}
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1"
+              >
+                {copied ? '✓ Đã copy' : 'Copy SQL'}
+              </button>
+            )}
+          </div>
+          {sql ? (
+            <pre className="overflow-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] font-mono leading-relaxed text-text-secondary">
+              {sql}
+            </pre>
+          ) : (
+            <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] italic text-text-quaternary">
+              Chưa có SQL — chạy chart trước (nút Run).
+            </div>
+          )}
+        </div>
+
+        {/* ── Hints ─────────────────────────────────────────────── */}
+        <div className="mt-1 rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-2 text-[10px] leading-snug text-text-quaternary">
+          <div className="mb-1 font-emphasis uppercase tracking-wide text-text-tertiary">Debug tips</div>
+          <ul className="list-disc space-y-0.5 pl-4">
+            <li>
+              <strong>Chart trống mà Table OK</strong>: check <code>Routing</code> — nếu là <em>live_query</em>
+              khi đang dùng measure đa bảng, qualify field thành <code>view.field</code> để upgrade sang semantic engine.
+            </li>
+            <li>
+              <strong>Số lệch giữa preview và saved chart</strong>: copy SQL trên + chạy thẳng trên DB
+              của bác — kết quả phải khớp. Nếu khớp, vấn đề ở FE adapter (mở DevTools console xem warning).
+            </li>
+            <li>
+              <strong>Engine warning</strong>: thường là ambiguous join path. Mark 1 relationship inactive
+              ở tab Data Model để chốt đường engine sẽ dùng.
+            </li>
+            <li>
+              <strong>Dialect sai</strong>: nếu thấy dialect không match với datasource (vd dataset là
+              BigQuery nhưng dialect = postgresql), báo dev — đây là Phase 12.6 bug.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 type QueryMode = 'generated' | 'custom';
 
@@ -107,6 +268,20 @@ interface ExploreQueryState {
   executionTimeMs?: number;
   /** Phase-3b: semantic engine warnings (ambiguous join paths, etc.) */
   warnings?: string[];
+  /**
+   * Phase-15.9: BE-side pipeline metadata for the "Query" inspector tab.
+   * Populated from `ChartDataResponse.debug` (saved-chart path) or the
+   * preview endpoint's `debug` field. Undefined for legacy / cached
+   * responses — the inspector falls back to FE-built SQL + warnings.
+   */
+  debug?: {
+    sql_emitted?: string;
+    dialect?: string;
+    routing?: string;
+    execution_time_ms?: number;
+    row_count?: number;
+    warnings?: string[];
+  };
 }
 
 function normalizeSavedQueryMode(config: Record<string, any> | null | undefined): QueryMode {
@@ -661,7 +836,14 @@ export function ExploreEditor({
   // isConfigOpen removed - chart config panel is always visible in right panel
   const [isFiltersOpen, setIsFiltersOpen] = useState(!isDashboardModal);
   const [isDescDrawerOpen, setIsDescDrawerOpen] = useState(false);
-  const [previewPanelTab, setPreviewPanelTab] = useState<'chart' | 'table'>('chart');
+  /**
+   * Phase-15.9: 'query' tab shows DA the BE-side pipeline that produced
+   * the current preview — SQL emitted, dialect detected (Phase-12.6),
+   * routing path (semantic engine vs live_query), exec time, row count,
+   * engine warnings. Helps DA debug "table shows X but chart shows Y"
+   * by checking whether the SQL ran on the path they expected.
+   */
+  const [previewPanelTab, setPreviewPanelTab] = useState<'chart' | 'table' | 'query'>('chart');
   const [queryLimit, setQueryLimit] = useState(100);
   const [sqlMode, setSqlMode] = useState<QueryMode>('generated');
   const [customSqlDraft, setCustomSqlDraft] = useState('');
@@ -2315,11 +2497,14 @@ export function ExploreEditor({
                   {[
                     { key: 'chart', label: 'Chart' },
                     { key: 'table', label: 'Table' },
+                    // Phase-15.9: "Query" tab — shows SQL + routing + warnings
+                    // so DA can debug pipeline issues without server logs.
+                    { key: 'query', label: 'Query' },
                   ].map((tab) => (
                     <button
                       key={tab.key}
                       type="button"
-                      onClick={() => setPreviewPanelTab(tab.key as 'chart' | 'table')}
+                      onClick={() => setPreviewPanelTab(tab.key as 'chart' | 'table' | 'query')}
                       className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
                         previewPanelTab === tab.key
                           ? 'bg-surface-1 text-text-primary shadow-linear-sm'
@@ -2394,10 +2579,12 @@ export function ExploreEditor({
                     </div>
                   </div>
                 </div>
-              ) : (
+              ) : previewPanelTab === 'table' ? (
                 <div className="h-full overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2">
                   <DatasetTableGrid columns={displayedQueryState.columns} rows={displayedQueryState.rows} />
                 </div>
+              ) : (
+                <QueryInspector state={displayedQueryState} chartType={chartType} />
               )}
             </div>
           </div>

@@ -336,11 +336,35 @@ class ChartResponse(ChartBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class ChartDebugInfo(BaseModel):
+    """Phase-15.9: debug payload for the Explore "Query" tab.
+
+    Optional metadata that helps DA understand HOW a chart's data was
+    produced — which SQL ran, against which dialect, via which BE
+    routing path (semantic engine vs legacy live_query), and what the
+    engine warned about. Not consumed by the chart renderer; purely for
+    the inspector tab. Omitted entirely on cache hits or when the BE
+    can't safely surface the SQL (e.g. raw DataSourceConnectionService
+    error paths). Callers MUST treat every field as optional.
+    """
+    sql_emitted: Optional[str] = None
+    dialect: Optional[str] = None  # 'postgresql' | 'bigquery' | 'mysql' | 'duckdb'
+    routing: Optional[str] = None  # 'semantic_engine' | 'live_query'
+    execution_time_ms: Optional[float] = None
+    row_count: Optional[int] = None
+    warnings: List[str] = Field(default_factory=list)
+
+
 class ChartDataResponse(BaseModel):
     """Schema for chart data response."""
     chart: ChartResponse
     data: List[Dict[str, Any]]
     pre_aggregated: bool = False
+    # Phase-15.9: surface query + routing info so the Explore "Query" tab
+    # can show DA what BE actually ran. Always optional — old clients
+    # ignore the field, new clients display it. Never contains the raw
+    # rows (those live in `data`); only metadata + the rendered SQL.
+    debug: Optional[ChartDebugInfo] = None
 
 
 # Dashboard Schemas

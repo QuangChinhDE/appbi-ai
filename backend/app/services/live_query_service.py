@@ -1343,6 +1343,16 @@ class LiveQueryService:
             "data": rows,
             "pre_aggregated": pre_aggregated,
             "execution_time_ms": round(execution_time_ms, 1),
+            # Phase-15.9: debug payload for the Explore "Query" tab.
+            # Mirrors the shape used by `_execute_semantic_chart_runtime`
+            # so the FE inspector can render uniformly regardless of
+            # routing path.
+            "_debug": {
+                "sql_emitted": sql,
+                "dialect": dialect,
+                "routing": "live_query",
+                "row_count": len(rows),
+            },
         }
 
         # Store in cache
@@ -1463,6 +1473,13 @@ class LiveQueryService:
             "data": rows,
             "pre_aggregated": pre_aggregated,
             "execution_time_ms": round(execution_time_ms, 1),
+            # Phase-15.9: debug payload for the Explore "Query" tab.
+            "_debug": {
+                "sql_emitted": sql,
+                "dialect": dialect,
+                "routing": "live_query",
+                "row_count": len(rows),
+            },
         }
 
         if cache_enabled:
