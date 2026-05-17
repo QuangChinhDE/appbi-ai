@@ -1752,6 +1752,70 @@ export function ExploreEditor({
     setSelectedTableId(view.dataset_table_id);
   }, [generatedRoleConfig, selectedTableId, datasetModel]);
 
+  /**
+   * Phase-15.18 — Auto-default time grain to 'month' when a date field is
+   * picked as dimension / timeField.
+   *
+   * DA feedback: "time grain vẫn chưa work, tôi tưởng giống như date
+   * hierarchy trên PBI nhỉ?" — they expected PowerBI's date-hierarchy
+   * auto-bucket behaviour (drop date → see monthly aggregation
+   * immediately, drill up to year / down to day later). Without this
+   * effect the dropdown defaulted to "Raw" (no bucket), DA never noticed
+   * the picker, and charts rendered one bar per raw timestamp.
+   *
+   * Sentinel design: we remember which fields we've already auto-defaulted
+   * in `grainAutoDefaultedRef`. If DA later explicitly clears the grain
+   * back to "Raw" (TimeGrainSlot calls onChange(undefined) → setGrain
+   * deletes the entry), the ref still says "we touched this field" so we
+   * do NOT re-apply on the next render. New fields get the default; old
+   * fields keep DA's choice.
+   *
+   * Existing charts opt out via `isNew`: a saved chart that ran fine
+   * before without a grain keeps showing raw timestamps after deploy.
+   * Otherwise we'd silently change the visual output of every legacy
+   * date chart on next load.
+   */
+  const grainAutoDefaultedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isNew) return;
+    const candidateFields = [
+      generatedRoleConfig.dimension,
+      generatedRoleConfig.timeField,
+    ].filter((f): f is string => Boolean(f));
+    if (candidateFields.length === 0) return;
+    const isTimeField = (name: string) => {
+      const col = [...previewColumns, ...semanticColumns].find((c) => c.name === name);
+      return col ? isSourceTimeColumn(col) : false;
+    };
+    const fieldsNeedingDefault = candidateFields.filter(
+      (name) =>
+        !grainAutoDefaultedRef.current.has(name)
+        && isTimeField(name),
+    );
+    if (fieldsNeedingDefault.length === 0) return;
+    for (const name of fieldsNeedingDefault) {
+      grainAutoDefaultedRef.current.add(name);
+    }
+    setGeneratedRoleConfig((prev) => {
+      const nextGrains = { ...(prev.timeGrains || {}) };
+      let changed = false;
+      for (const name of fieldsNeedingDefault) {
+        if (nextGrains[name] === undefined) {
+          nextGrains[name] = 'month';
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, timeGrains: nextGrains };
+    });
+  }, [
+    isNew,
+    generatedRoleConfig.dimension,
+    generatedRoleConfig.timeField,
+    previewColumns,
+    semanticColumns,
+  ]);
+
   // Reset config when user manually changes the table (skip during initial chart load)
   const isInitialTableSet = useRef(false);
   useEffect(() => {

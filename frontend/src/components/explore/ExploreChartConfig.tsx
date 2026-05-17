@@ -1698,26 +1698,37 @@ function TimeGrainSlot({
   onChange: (next: TimeGrain | undefined) => void;
 }) {
   if (!fieldName) return null;
-  const current = value ?? '';
+  // Phase-15.18: visible chip row replaces the previous hidden-behind-dropdown
+  // UX. PowerBI's date hierarchy auto-buckets the moment a date field is
+  // dropped on the axis; making the bucket choice always-visible — and
+  // adding an explicit "Raw" chip for the no-bucket case — gets us closer
+  // to that mental model without the hierarchy tree work.
   return (
     <div>
       <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1">
         Time grain
-        <HelpTooltip text="Bucket time field via SQL date_trunc — engine emits đúng cú pháp dialect (DuckDB / Postgres / BigQuery / MySQL). Default 'none' = group raw timestamp (mỗi giá trị = 1 nhóm)." />
+        <HelpTooltip text="Bucket the date axis via SQL date_trunc — engine emits đúng cú pháp dialect (DuckDB / Postgres / BigQuery / MySQL). 'Raw' = không bucket, mỗi giá trị = 1 nhóm. Default 'Month' khi pick date field mới (Phase-15.18, mimics PowerBI date hierarchy auto-bucket)." />
       </label>
-      <select
-        value={current}
-        onChange={(e) => {
-          const v = e.target.value;
-          onChange(v ? (v as TimeGrain) : undefined);
-        }}
-        className="w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 border-[rgb(var(--border-strong))] focus:outline-none focus:ring-1 focus:ring-brand"
-      >
-        <option value="">none (raw)</option>
-        {TIME_GRAIN_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
+      <div className="flex flex-wrap gap-1">
+        {[{ value: undefined as TimeGrain | undefined, label: 'Raw' }, ...TIME_GRAIN_OPTIONS].map((opt) => {
+          const active = (value ?? undefined) === opt.value;
+          return (
+            <button
+              key={opt.label}
+              type="button"
+              onClick={() => onChange(opt.value)}
+              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                active
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
+              }`}
+              title={opt.value ? `Group rows by ${opt.label.toLowerCase()}` : 'No bucketing — each distinct timestamp is its own row'}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
