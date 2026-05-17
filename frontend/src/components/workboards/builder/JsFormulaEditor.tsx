@@ -198,6 +198,8 @@ export default function JsFormulaEditor({
   const onChangeRef = useRef(onChange);
   const columnsRef = useRef(availableColumns);
   const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   // Sidebar groups — collapsed by default so a 100-col table doesn't
   // dump everything on first render. ``helpers`` lives in the same rail
@@ -469,6 +471,20 @@ export default function JsFormulaEditor({
           <div
             ref={containerRef}
             className="h-[440px] min-h-[360px] overflow-auto"
+            // Defensive focus: when the click lands on the container
+            // padding / scrollbar / gap-between-lines (i.e. NOT directly
+            // on CodeMirror's [contenteditable]), the browser falls back
+            // to the next focusable element in tab order — which would
+            // be the search input in the columns rail. We intercept that
+            // case and force focus into the CM view.
+            onMouseDown={(event) => {
+              const view = viewRef.current;
+              if (!view) return;
+              if (!view.dom.contains(event.target as Node)) {
+                event.preventDefault();
+                view.focus();
+              }
+            }}
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-tiny text-text-tertiary">
             <span>
@@ -480,25 +496,62 @@ export default function JsFormulaEditor({
           </div>
         </div>
 
-        {/* Columns rail — collapse by default, search box on top */}
+        {/* Columns rail — collapse by default. Search input is rendered
+            ONLY when the user explicitly opens it; otherwise the rail
+            contains no <input>, so a click landing on the editor's
+            padding/scrollbar can never have its focus stolen by an
+            adjacent focusable. */}
         <aside className="flex min-h-[300px] flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
           <div className="border-b border-[rgb(var(--border-line))] p-2">
-            <div className="flex items-center gap-1.5 px-1 pb-2 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
+            <div className="flex items-center gap-1.5 px-1 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
               <Database className="h-3 w-3" />
               Columns
-              <span className="ml-auto rounded bg-surface-2 px-1 normal-case font-normal text-text-quaternary">
+              <span className="rounded bg-surface-2 px-1 normal-case font-normal text-text-quaternary">
                 {availableColumns.length}
               </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (searchOpen) {
+                    setSearchOpen(false);
+                    setSearch('');
+                  } else {
+                    setSearchOpen(true);
+                    // Focus the input on the next frame, after it
+                    // appears in the DOM.
+                    requestAnimationFrame(() => searchInputRef.current?.focus());
+                  }
+                }}
+                className={cn(
+                  'ml-auto inline-flex h-6 w-6 items-center justify-center rounded border transition-colors',
+                  searchOpen
+                    ? 'border-brand/30 bg-brand/10 text-brand'
+                    : 'border-[rgb(var(--border-line))] bg-surface-0 text-text-tertiary hover:text-text-primary',
+                )}
+                title={searchOpen ? 'Đóng tìm kiếm' : 'Tìm cột / helper'}
+              >
+                <Search className="h-3 w-3" />
+              </button>
             </div>
-            <label className="relative block">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                className="h-8 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-8 pr-2 text-caption text-text-primary outline-none transition-colors placeholder:text-text-quaternary focus:border-brand"
-                placeholder="Tìm cột…"
-              />
-            </label>
+            {searchOpen ? (
+              <label className="relative mt-2 block">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
+                <input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      setSearchOpen(false);
+                      setSearch('');
+                      viewRef.current?.focus();
+                    }
+                  }}
+                  className="h-8 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-8 pr-2 text-caption text-text-primary outline-none transition-colors placeholder:text-text-quaternary focus:border-brand"
+                  placeholder="Tìm cột / helper… (Esc đóng)"
+                />
+              </label>
+            ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-1.5">
             {totalColumnsAfterSearch === 0 ? (
