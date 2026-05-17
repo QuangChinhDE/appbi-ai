@@ -27,6 +27,7 @@ import {
   Ribbon,
   Rows3,
   ScatterChart,
+  Search,
   Table,
   Table2,
   Timer,
@@ -993,11 +994,72 @@ function pruneTableHyperlinkRules(rules: TableHyperlinkRule[]): TableHyperlinkRu
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Column helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-type Col = { name: string; type: string; label?: string };
+type Col = {
+  name: string;
+  type: string;
+  label?: string;
+  fieldKind?: 'source' | 'calculated' | 'dimension' | 'measure' | 'date';
+  sourceKind?: 'source' | 'calculated' | 'semantic' | 'custom';
+  viewName?: string;
+  viewLabel?: string;
+  tableId?: number;
+  tableLabel?: string;
+};
+
+function fieldBareName(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 ? name.slice(dot + 1) : name;
+}
+
+function humanizeIdentifier(value: string): string {
+  const text = value.replace(/[_-]+/g, ' ').trim();
+  if (!text) return value;
+  return text
+    .split(/\s+/)
+    .map((token) => {
+      if (/^[A-Z0-9]{2,}$/.test(token)) return token;
+      if (/^id$/i.test(token)) return 'ID';
+      return token.charAt(0).toUpperCase() + token.slice(1);
+    })
+    .join(' ');
+}
 
 /** Display text for a Col option in pickers. Falls back to the raw name. */
 function colLabel(c: Col): string {
-  return (c.label && c.label.trim()) ? c.label : c.name;
+  return (c.label && c.label.trim()) ? c.label : fieldBareName(c.name);
+}
+
+function fieldViewName(name: string): string | null {
+  if (!name.includes('.')) return null;
+  return name.split('.', 1)[0] || null;
+}
+
+function fieldSourceLabel(c: Col): string {
+  const explicit = c.viewLabel || c.tableLabel;
+  if (explicit?.trim()) return explicit.trim();
+  const view = c.viewName || fieldViewName(c.name);
+  if (view && !/^dataset_table_\d+$/i.test(view)) return humanizeIdentifier(view);
+  if (c.sourceKind === 'custom') return 'SQL output';
+  if (c.sourceKind === 'semantic') return 'Semantic model';
+  return 'Current table';
+}
+
+function fieldTypeLabel(c: Col): string {
+  const type = (c.type || 'field').trim();
+  return type ? type.toUpperCase() : 'FIELD';
+}
+
+function fieldDisplayMeta(c: Col): { label: string; view: string | null; typeLabel: string } {
+  return {
+    label: colLabel(c),
+    view: fieldViewName(c.name),
+    typeLabel: fieldTypeLabel(c),
+  };
+}
+
+function fieldSecondaryText(c: Col): string {
+  const meta = fieldDisplayMeta(c);
+  return `${meta.typeLabel} - ${fieldSourceLabel(c)}`;
 }
 
 function isNumeric(c: Col): boolean {
@@ -1012,6 +1074,73 @@ function isTimelike(c: Col): boolean {
     ['date', 'datetime', 'timestamp', 'time'].includes((c.type ?? '').toLowerCase()) ||
     /(date|time|_at|created|updated|day|month|year|start|end|deadline)/.test(n)
   );
+}
+
+function isSourceField(c: Col): boolean {
+  return c.sourceKind === 'source' || (!c.sourceKind && !c.fieldKind);
+}
+
+function isCalculatedField(c: Col): boolean {
+  return c.sourceKind === 'calculated' || c.fieldKind === 'calculated';
+}
+
+function isMeasureField(c: Col): boolean {
+  return c.fieldKind === 'measure';
+}
+
+function isDimensionField(c: Col): boolean {
+  return c.fieldKind === 'dimension' || (!isMeasureField(c) && !isNumeric(c) && !isTimelike(c));
+}
+
+function fieldBadges(c: Col): Array<{ label: string; className: string }> {
+  const badges: Array<{ label: string; className: string }> = [];
+  if (isCalculatedField(c)) {
+    badges.push({ label: 'Calculated', className: 'bg-brand/10 text-brand' });
+  } else if (isSourceField(c)) {
+    badges.push({ label: 'Source', className: 'bg-surface-2 text-text-tertiary' });
+  }
+
+  if (isMeasureField(c)) {
+    badges.push({ label: 'Measure', className: 'bg-warning/10 text-warning' });
+  } else if (c.fieldKind === 'date' || isTimelike(c)) {
+    badges.push({ label: 'Date', className: 'bg-info/10 text-info' });
+  } else if (isDimensionField(c)) {
+    badges.push({ label: 'Dim', className: 'bg-success/10 text-success' });
+  }
+
+  if (badges.length === 0) {
+    badges.push({ label: fieldTypeLabel(c), className: 'bg-surface-2 text-text-quaternary' });
+  }
+  return badges;
+}
+
+function isIdentifierLikeOption(c: Col): boolean {
+  const bare = fieldBareName(c.name).toLowerCase();
+  return (
+    bare === 'id' ||
+    bare === 'hid' ||
+    bare === 'uuid' ||
+    bare === 'guid' ||
+    bare === 'token' ||
+    bare === 'key' ||
+    bare.endsWith('_id') ||
+    /(^|_)(uuid|guid|token|hash|key)$/.test(bare)
+  );
+}
+
+function preferredFieldRank(c: Col): number {
+  if (isIdentifierLikeOption(c)) return 90;
+  const bare = fieldBareName(c.name).toLowerCase();
+  if (['name', 'display_name', 'title', 'type', 'status', 'category', 'email', 'owner', 'stage'].includes(bare)) return 0;
+  if (isTimelike(c)) return 5;
+  if (isNumeric(c)) return 10;
+  return 20;
+}
+
+function compareFieldOptions(a: Col, b: Col): number {
+  const rank = preferredFieldRank(a) - preferredFieldRank(b);
+  if (rank !== 0) return rank;
+  return colLabel(a).localeCompare(colLabel(b), undefined, { sensitivity: 'base' });
 }
 
 function normalizeColorInput(value: string, fallback: string): string {
@@ -1121,6 +1250,274 @@ function SectionPanel({
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SelectSlot ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+function FieldPicker({
+  value = '',
+  options,
+  placeholder,
+  emptyLabel = 'No matching fields',
+  disabled,
+  invalid,
+  onSelect,
+  onClear,
+}: {
+  value?: string;
+  options: Col[];
+  placeholder: string;
+  emptyLabel?: string;
+  disabled?: boolean;
+  invalid?: boolean;
+  onSelect: (v: string) => void;
+  onClear?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<'suggested' | 'view' | 'source' | 'calculated' | 'measures' | 'dimensions' | 'numeric' | 'dates' | 'ids' | 'all'>('suggested');
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const selected = value ? options.find((option) => option.name === value) : undefined;
+  const selectedMeta = selected ? fieldDisplayMeta(selected) : null;
+  const q = query.trim().toLowerCase();
+  const primaryView = useMemo(() => {
+    const selectedView = selected ? (selected.viewName || fieldViewName(selected.name)) : null;
+    if (selectedView) return selectedView;
+    const counts = new Map<string, number>();
+    for (const option of options) {
+      const view = option.viewName || fieldViewName(option.name);
+      if (view) counts.set(view, (counts.get(view) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const [view, count] of counts) {
+      if (count > bestCount) {
+        best = view;
+        bestCount = count;
+      }
+    }
+    return best;
+  }, [options, selected]);
+  const suggestedOptions = useMemo(
+    () => options.filter((option) => !isIdentifierLikeOption(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const sameViewOptions = useMemo(
+    () => primaryView ? options.filter((option) => (option.viewName || fieldViewName(option.name)) === primaryView).sort(compareFieldOptions) : [],
+    [options, primaryView],
+  );
+  const dimensionOptions = useMemo(
+    () => options.filter((option) => isDimensionField(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const sourceOptions = useMemo(
+    () => options.filter((option) => isSourceField(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const calculatedOptions = useMemo(
+    () => options.filter((option) => isCalculatedField(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const measureOptions = useMemo(
+    () => options.filter((option) => isMeasureField(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const numericOptions = useMemo(
+    () => options.filter((option) => isNumeric(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const dateOptions = useMemo(
+    () => options.filter((option) => isTimelike(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const idOptions = useMemo(
+    () => options.filter((option) => isIdentifierLikeOption(option)).sort(compareFieldOptions),
+    [options],
+  );
+  const allOptions = useMemo(() => [...options].sort(compareFieldOptions), [options]);
+  const quickFilters = useMemo(() => [
+    { key: 'suggested' as const, label: 'Suggested', options: suggestedOptions },
+    ...(sameViewOptions.length > 0 ? [{ key: 'view' as const, label: selected ? 'Same view' : 'Main view', options: sameViewOptions }] : []),
+    ...(sourceOptions.length > 0 ? [{ key: 'source' as const, label: 'Source', options: sourceOptions }] : []),
+    ...(calculatedOptions.length > 0 ? [{ key: 'calculated' as const, label: 'Calculated', options: calculatedOptions }] : []),
+    ...(measureOptions.length > 0 ? [{ key: 'measures' as const, label: 'Measures', options: measureOptions }] : []),
+    ...(dimensionOptions.length > 0 ? [{ key: 'dimensions' as const, label: 'Dimensions', options: dimensionOptions }] : []),
+    ...(numericOptions.length > 0 ? [{ key: 'numeric' as const, label: 'Numeric', options: numericOptions }] : []),
+    ...(dateOptions.length > 0 ? [{ key: 'dates' as const, label: 'Dates', options: dateOptions }] : []),
+    ...(idOptions.length > 0 ? [{ key: 'ids' as const, label: 'IDs', options: idOptions }] : []),
+    { key: 'all' as const, label: 'All', options: allOptions },
+  ], [allOptions, calculatedOptions, dateOptions, dimensionOptions, idOptions, measureOptions, numericOptions, sameViewOptions, selected, sourceOptions, suggestedOptions]);
+  const activeQuickFilter = quickFilters.find((filter) => filter.key === activeFilter) ?? quickFilters[0];
+  const filteredOptions = useMemo(() => {
+    const base = q ? allOptions : activeQuickFilter.options;
+    if (!q) return base;
+    return base.filter((option) => {
+      const meta = fieldDisplayMeta(option);
+      const badges = fieldBadges(option).map((badge) => badge.label).join(' ');
+      return `${meta.label} ${option.name} ${option.type} ${meta.view ?? ''} ${fieldSourceLabel(option)} ${badges}`.toLowerCase().includes(q);
+    });
+  }, [activeQuickFilter.options, allOptions, q]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((current) => !current);
+          setQuery('');
+          setActiveFilter('suggested');
+        }}
+        className={`flex min-h-[2.35rem] w-full items-center justify-between gap-2 rounded-md border bg-surface-1 px-2.5 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+          invalid
+            ? 'border-danger/40 bg-danger/10 text-danger'
+            : open
+              ? 'border-brand/50 ring-1 ring-brand/30'
+              : 'border-[rgb(var(--border-strong))] hover:bg-surface-2'
+        }`}
+        title={selected?.name}
+      >
+        <span className="min-w-0 flex-1">
+          <span className={`block truncate font-medium ${selected ? 'text-text-secondary' : 'text-text-quaternary'}`}>
+            {selectedMeta?.label ?? placeholder}
+          </span>
+          {selected && (
+            <span className="mt-0.5 block truncate text-[10px] text-text-quaternary">
+              {fieldSecondaryText(selected)}
+            </span>
+          )}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-text-quaternary transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+          <div className="border-b border-[rgb(var(--border-line))] p-2">
+            <div className="mb-2 flex flex-wrap gap-1">
+              {quickFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  onClick={() => {
+                    setActiveFilter(filter.key);
+                    setQuery('');
+                  }}
+                  className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    activeQuickFilter.key === filter.key
+                      ? 'border-brand bg-brand/10 text-brand'
+                      : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
+                  }`}
+                >
+                  {filter.label}
+                  <span className="ml-1 text-text-quaternary">{filter.options.length}</span>
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5">
+              <Search className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search fields..."
+                className="min-w-0 flex-1 bg-transparent text-xs text-text-secondary outline-none placeholder:text-text-quaternary"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="rounded p-0.5 text-text-quaternary hover:bg-surface-3 hover:text-text-secondary"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="max-h-64 overflow-y-auto py-1">
+            <div className="flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
+              <span>{q ? 'Search results' : activeQuickFilter.label}</span>
+              <span>{filteredOptions.length}</span>
+            </div>
+            {onClear && value && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClear();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs text-text-tertiary hover:bg-surface-2 hover:text-text-secondary"
+              >
+                <span>Clear selection</span>
+              </button>
+            )}
+            {filteredOptions.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs italic text-text-quaternary">
+                {emptyLabel}
+              </div>
+            ) : (
+              filteredOptions.map((option) => {
+                const meta = fieldDisplayMeta(option);
+                const active = option.name === value;
+                const badges = fieldBadges(option);
+                return (
+                  <button
+                    key={option.name}
+                    type="button"
+                    onClick={() => {
+                      onSelect(option.name);
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${
+                      active ? 'bg-brand/10' : 'hover:bg-surface-2'
+                    }`}
+                    title={option.name}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate text-xs font-medium ${active ? 'text-brand' : 'text-text-secondary'}`}>
+                        {meta.label}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[10px] text-text-quaternary">
+                        {fieldSecondaryText(option)}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 flex-wrap justify-end gap-1">
+                      {badges.map((badge) => (
+                        <span
+                          key={badge.label}
+                          className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+                        >
+                          {badge.label}
+                        </span>
+                      ))}
+                    </span>
+                    {active && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SelectSlot({
   label, required, hint, value, options, placeholder = 'none', onChange,
 }: {
@@ -1135,16 +1532,14 @@ function SelectSlot({
         {required && <span className="text-danger">*</span>}
         {hint && <HelpTooltip text={hint} />}
       </label>
-      <select
+      <FieldPicker
         value={value}
-        onChange={e => onChange(e.target.value)}
-        className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand ${
-          missing ? 'border-danger/40 bg-danger/10' : 'border-[rgb(var(--border-strong))]'
-        }`}
-      >
-        <option value="">{placeholder}</option>
-        {options.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
-      </select>
+        options={options}
+        placeholder={placeholder}
+        invalid={missing}
+        onSelect={onChange}
+        onClear={() => onChange('')}
+      />
     </div>
   );
 }
@@ -1343,30 +1738,27 @@ function MetricSlot({
 
       {/* Add field — SUM/AVG/etc. on numeric columns. */}
       {(!single || value.length === 0) && (
-        <select
-          value=""
-          onChange={e => addField(e.target.value, 'sum')}
+        <FieldPicker
+          options={available}
+          placeholder={available.length === 0 ? 'all numeric fields added' : '+ add value...'}
+          emptyLabel="No numeric fields available"
           disabled={available.length === 0}
-          className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60 ${
-            missing ? 'border-danger/40 bg-danger/10 text-danger' : 'border-dashed border-[rgb(var(--border-strong))] text-text-quaternary'
-          }`}
-        >
-          <option value="">{available.length === 0 ? 'all numeric fields added' : '+ add value...'}</option>
-          {available.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
-        </select>
+          invalid={missing}
+          onSelect={(fieldName) => addField(fieldName, 'sum')}
+        />
       )}
 
       {/* Add count — COUNT/COUNT_DISTINCT works on any column type. */}
       {(!single || value.length === 0) && allOptions && (
-        <select
-          value=""
-          onChange={e => addField(e.target.value, 'count')}
-          disabled={availableForCount.length === 0}
-          className="mt-1 w-full px-2 py-1.5 text-xs border border-dashed border-[rgb(var(--border-strong))] rounded-md bg-surface-1 text-text-quaternary focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <option value="">{availableForCount.length === 0 ? 'all fields added' : '+ count any field...'}</option>
-          {availableForCount.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
-        </select>
+        <div className="mt-1">
+          <FieldPicker
+            options={availableForCount}
+            placeholder={availableForCount.length === 0 ? 'all fields added' : '+ count any field...'}
+            emptyLabel="No fields available"
+            disabled={availableForCount.length === 0}
+            onSelect={(fieldName) => addField(fieldName, 'count')}
+          />
+        </div>
       )}
     </div>
   );

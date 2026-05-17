@@ -177,6 +177,17 @@ export interface ColumnMetadata {
    *  (semantic dimension/measure label or column dictionary). When absent,
    *  UIs should fall back to `name`. */
   label?: string;
+  /** Optional UI-only field classification for Explore pickers. */
+  fieldKind?: 'source' | 'calculated' | 'dimension' | 'measure' | 'date';
+  /** Optional UI-only source classification for Explore pickers. */
+  sourceKind?: 'source' | 'calculated' | 'semantic' | 'custom';
+  /** Canonical semantic view name when the field is qualified. */
+  viewName?: string;
+  /** Human-readable semantic view / table label for display. */
+  viewLabel?: string;
+  /** Dataset table id/label for raw preview columns. */
+  tableId?: number;
+  tableLabel?: string;
 }
 
 export interface TablePreviewRequest {

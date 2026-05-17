@@ -9,7 +9,6 @@ import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Sett
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
-import { ExploreColumnPanel } from '@/components/explore/ExploreColumnPanel';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
@@ -49,9 +48,8 @@ import {
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
-import { useDatasetModel, type DimensionDefinition, type MeasureDefinition, type DatasetModelView, useAddJoin, type AddJoinParams } from '@/hooks/use-dataset-model';
+import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import { getReachableViews } from '@/lib/dataset-model-graph';
-import { RelationshipDialog } from '@/components/datasets/RelationshipDialog';
 
 type ChartType = ExploreChartType;
 
@@ -94,7 +92,6 @@ const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ChartType>([
   'SUNBURST',
   'RIBBON',
 ]);
-
 function getMaxQueryLimit(mode: QueryMode): number {
   return mode === 'custom' ? 5000 : 10000;
 }
@@ -131,6 +128,35 @@ function metricMatchesColumns(metric: MetricConfig | null | undefined, columnNam
   ].filter((value): value is string => Boolean(value));
 
   return candidates.some((candidate) => columnNames.has(candidate));
+}
+
+function bareFieldName(fieldRef: string): string {
+  return fieldRef.includes('.') ? fieldRef.split('.').slice(-1)[0] : fieldRef;
+}
+
+function humanizeFieldName(fieldRef: string): string {
+  const bare = bareFieldName(fieldRef).replace(/[_-]+/g, ' ').trim();
+  if (!bare) return fieldRef;
+  return bare
+    .split(/\s+/)
+    .map((token) => {
+      if (/^[A-Z0-9]{2,}$/.test(token)) return token;
+      if (/^id$/i.test(token)) return 'ID';
+      return token.charAt(0).toUpperCase() + token.slice(1);
+    })
+    .join(' ');
+}
+
+function isIdentifierLikeField(fieldRef: string): boolean {
+  const bare = bareFieldName(fieldRef).toLowerCase();
+  return (
+    bare === 'id' ||
+    bare.endsWith('_id') ||
+    bare.endsWith(' id') ||
+    bare.includes('uuid') ||
+    bare.endsWith('_key') ||
+    bare.endsWith(' key')
+  );
 }
 
 /**
@@ -334,16 +360,6 @@ function getApiErrorMessage(error: any, fallback: string): string {
   return fallback;
 }
 
-function semanticAlias(fieldRef: string): string {
-  return fieldRef.replace(/[^A-Za-z0-9_]/g, '_');
-}
-
-function measureAggForRole(measure: MeasureDefinition): MetricConfig['agg'] {
-  return ['sum', 'avg', 'count', 'min', 'max', 'count_distinct'].includes(measure.type)
-    ? measure.type as MetricConfig['agg']
-    : 'sum';
-}
-
 function syncRoleConfigWithColumns(
   chartType: ChartType,
   roleConfig: ChartRoleConfig,
@@ -354,17 +370,20 @@ function syncRoleConfigWithColumns(
 
   const columnNames = new Set(columns.map((column) => column.name));
   const numericColumns = columns.filter((column) => column.type === 'number');
+  const metricCandidateColumns = numericColumns.filter((column) => !isIdentifierLikeField(column.name));
   const categoricalColumns = columns.filter((column) => column.type !== 'number');
   const timeColumns = columns.filter((column) => column.type === 'date' || column.type === 'datetime');
   const fallbackDimension = categoricalColumns[0]?.name ?? columns[0]?.name;
-  const fallbackMetric = numericColumns.find((column) => column.name !== fallbackDimension)?.name
+  const fallbackMetric = metricCandidateColumns.find((column) => column.name !== fallbackDimension)?.name
+    ?? numericColumns.find((column) => column.name !== fallbackDimension)?.name
     ?? numericColumns[0]?.name;
   const pickDimensionOtherThan = (...excluded: Array<string | undefined>) => (
     categoricalColumns.find((column) => !excluded.includes(column.name))?.name
       ?? columns.find((column) => !excluded.includes(column.name))?.name
   );
   const pickMetricOtherThan = (...excluded: Array<string | undefined>) => (
-    numericColumns.find((column) => !excluded.includes(column.name))?.name
+    metricCandidateColumns.find((column) => !excluded.includes(column.name))?.name
+      ?? numericColumns.find((column) => !excluded.includes(column.name))?.name
       ?? fallbackMetric
   );
 
@@ -479,8 +498,15 @@ function syncRoleConfigWithColumns(
     next.metrics = [next.metrics[0]];
   }
 
-  if (chartType === 'BAR_LINE' && !next.lineMetric && numericColumns[1]) {
-    next.lineMetric = { field: numericColumns[1].name, agg: 'sum' };
+  if (chartType === 'BAR_LINE' && !next.lineMetric) {
+    const excluded = new Set<string>([
+      next.dimension,
+      ...next.metrics.map((metric) => metric.field),
+    ].filter((value): value is string => Boolean(value)));
+    const lineMetricCandidate = metricCandidateColumns.find((column) => !excluded.has(column.name));
+    if (lineMetricCandidate) {
+      next.lineMetric = { field: lineMetricCandidate.name, agg: 'sum' };
+    }
   }
 
   return next;
@@ -656,21 +682,12 @@ export function ExploreEditor({
   type ParamRow = ChartParameterCreate & { _key: string };
   const [paramRows, setParamRows] = useState<ParamRow[]>([]);
 
-  // Phase-11: pending relationship from "cần join" badge in ExploreColumnPanel.
-  // When set, opens RelationshipDialog pre-filled with these view names so the
-  // user can add the missing JOIN without leaving the chart builder.
-  const [pendingRelationship, setPendingRelationship] = useState<{
-    fromViewName: string;
-    toViewName: string;
-  } | null>(null);
-
   const createChart = useCreateChart();
   const updateChart = useUpdateChart();
   const upsertMetadata = useUpsertChartMetadata();
   const replaceParams = useReplaceChartParameters();
   const executeDatasetQuery = useExecuteDatasetTableQueryMutation();
   const previewChartData = usePreviewChartData();
-  const addJoin = useAddJoin();
 
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
@@ -847,7 +864,29 @@ export function ExploreEditor({
     [previewError],
   );
   const selectedTable = dataset?.tables?.find((table) => table.id === selectedTableId) ?? null;
-  const selectedTableDisplayName = selectedTable?.display_name || 'Selected table';
+  const selectedTableDisplayName = selectedTable?.display_name || selectedTable?.source_table_name || 'Selected table';
+  const tableDisplayById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const table of dataset?.tables ?? []) {
+      map.set(table.id, table.display_name || table.source_table_name || `Table ${table.id}`);
+    }
+    return map;
+  }, [dataset?.tables]);
+  const getSemanticViewDisplayName = useCallback((view: DatasetModelView): string => (
+    view.table_display_name
+    || (view.dataset_table_id ? tableDisplayById.get(view.dataset_table_id) : undefined)
+    || (/^dataset_table_\d+$/i.test(view.name) ? 'Dataset table' : humanizeFieldName(view.name))
+  ), [tableDisplayById]);
+  const calculatedColumnNames = useMemo(() => {
+    const out = new Set<string>();
+    for (const step of selectedTable?.transformations ?? []) {
+      if (!step.enabled) continue;
+      if (step.type !== 'js_formula' && step.type !== 'add_column') continue;
+      const newField = String(step.params?.newField || '').trim();
+      if (newField) out.add(newField);
+    }
+    return out;
+  }, [selectedTable?.transformations]);
   const hasActiveTransforms = Boolean(selectedTable?.transformations?.some((step) => step.enabled));
   const selectedSemanticView = useMemo(
     () => datasetModel?.views?.find((view) => view.dataset_table_id === selectedTableId) ?? null,
@@ -872,6 +911,7 @@ export function ExploreEditor({
     if (reachableSemanticViews.length === 0) return [];
     const out: ColumnMetadata[] = [];
     for (const view of reachableSemanticViews) {
+      const viewLabel = getSemanticViewDisplayName(view);
       for (const dim of view.dimensions ?? []) {
         if (dim.hidden) continue;
         out.push({
@@ -879,20 +919,37 @@ export function ExploreEditor({
           type: dim.type === 'number' ? 'number' : dim.type,
           label: (dim.label && dim.label.trim()) ? dim.label : dim.name,
           nullable: true,
+          sourceKind: 'semantic',
+          fieldKind: dim.type === 'date' || dim.type === 'datetime' ? 'date' : 'dimension',
+          viewName: view.name,
+          viewLabel,
+          tableId: view.dataset_table_id,
+          tableLabel: viewLabel,
         });
       }
       for (const measure of view.measures ?? []) {
         if (measure.hidden) continue;
+        const isCalculatedMeasure = Boolean(
+          measure.expression
+          || measure.depends_on?.length
+          || measure.type === 'percent_of_total'
+        );
         out.push({
           name: `${view.name}.${measure.name}`,
           type: 'number',
           label: (measure.label && measure.label.trim()) ? measure.label : measure.name,
           nullable: true,
+          sourceKind: isCalculatedMeasure ? 'calculated' : 'semantic',
+          fieldKind: 'measure',
+          viewName: view.name,
+          viewLabel,
+          tableId: view.dataset_table_id,
+          tableLabel: viewLabel,
         });
       }
     }
     return out;
-  }, [reachableSemanticViews]);
+  }, [getSemanticViewDisplayName, reachableSemanticViews]);
 
   /**
    * Phase-15.7 — Set of qualified field refs that ARE declared measures
@@ -957,8 +1014,8 @@ export function ExploreEditor({
    * semantic engine with JOIN resolver.
    *
    * Ambiguous cases (same bare name on multiple views) are SKIPPED — leaving
-   * the value bare. UI flags those via the "⚠ cần join" badge in
-   * ExploreColumnPanel so the user picks the qualified form explicitly.
+   * the value bare. The configure picker keeps qualified refs available so the
+   * user can pick the exact view.field explicitly.
    */
   const qualifiedByBare = useMemo<Map<string, string>>(() => {
     const occurrences = new Map<string, string[]>();
@@ -1091,13 +1148,36 @@ export function ExploreEditor({
   );
   const previewColumns = useMemo<ColumnMetadata[]>(() => {
     const raw = previewData?.columns ?? [];
-    if (semanticLabelByColumnName.size === 0) return raw;
     return raw.map((col) => {
-      if (col.label && col.label.trim()) return col;
+      const sourceKind = calculatedColumnNames.has(col.name) ? 'calculated' : 'source';
+      const fieldKind = isSourceTimeColumn(col)
+        ? 'date'
+        : sourceKind === 'calculated'
+          ? 'calculated'
+          : 'source';
+      const commonMeta = {
+        sourceKind,
+        fieldKind,
+        tableId: selectedTableId ?? undefined,
+        tableLabel: selectedTableDisplayName,
+        viewName: selectedSemanticView?.name,
+        viewLabel: selectedSemanticView ? getSemanticViewDisplayName(selectedSemanticView) : selectedTableDisplayName,
+      } satisfies Partial<ColumnMetadata>;
+      if (col.label && col.label.trim()) {
+        return { ...col, ...commonMeta };
+      }
       const friendly = semanticLabelByColumnName.get(col.name);
-      return friendly ? { ...col, label: friendly } : col;
+      return friendly ? { ...col, ...commonMeta, label: friendly } : { ...col, ...commonMeta };
     });
-  }, [previewData?.columns, semanticLabelByColumnName]);
+  }, [
+    calculatedColumnNames,
+    getSemanticViewDisplayName,
+    previewData?.columns,
+    selectedSemanticView,
+    selectedTableDisplayName,
+    selectedTableId,
+    semanticLabelByColumnName,
+  ]);
   const previewRows = previewData?.rows ?? [];
   const executeRequest = useMemo(
     () => buildExploreExecuteRequest({
@@ -1152,7 +1232,16 @@ export function ExploreEditor({
     : generatedLastRunSignature;
   const isQueryDirty = activeQueryState !== null && currentQuerySignature !== activeLastRunSignature;
   const isRunningQuery = executeDatasetQuery.isPending || previewChartData.isPending;
-  const customConfigColumns = customQueryState?.columns ?? null;
+  const customConfigColumns = useMemo<ColumnMetadata[] | null>(() => {
+    if (!customQueryState?.columns) return null;
+    return customQueryState.columns.map((column) => ({
+      ...column,
+      sourceKind: 'custom',
+      fieldKind: isSourceTimeColumn(column) ? 'date' : 'source',
+      tableLabel: 'SQL output',
+      viewLabel: 'SQL output',
+    }));
+  }, [customQueryState?.columns]);
   const configColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
     : [...previewColumns, ...semanticColumns];
@@ -1166,6 +1255,22 @@ export function ExploreEditor({
     ? (customConfigColumns ?? [])
     : previewColumns;
   const displayedQueryState = activeQueryState;
+  const fieldDisplayByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const column of configColumns) {
+      const label = column.label?.trim() || humanizeFieldName(column.name);
+      map.set(column.name, label);
+    }
+    return map;
+  }, [configColumns]);
+  const getFieldDisplayName = useCallback(
+    (field: string) => fieldDisplayByName.get(field) ?? humanizeFieldName(field),
+    [fieldDisplayByName],
+  );
+  const formatFieldListDisplay = useCallback(
+    (fields: string[]) => fields.map(getFieldDisplayName).join(', '),
+    [getFieldDisplayName],
+  );
 
   const tableDisplayColumns = useMemo(() => {
     if (!TABLE_LIKE_CHART_TYPES.has(chartType)) {
@@ -1259,37 +1364,41 @@ export function ExploreEditor({
     if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
       if (normalizedRoleConfig.tableMode === 'pivot') {
         return [
-          normalizedRoleConfig.tableRowDimension ? { label: 'Rows', value: normalizedRoleConfig.tableRowDimension } : null,
-          normalizedRoleConfig.tableColumnDimension ? { label: 'Columns', value: normalizedRoleConfig.tableColumnDimension } : null,
-          normalizedRoleConfig.tablePivotMetric ? { label: 'Value', value: normalizedRoleConfig.tablePivotMetric.field } : null,
-        ].filter((item): item is { label: string; value: string } => item !== null);
+          normalizedRoleConfig.tableRowDimension ? { label: 'Rows', value: normalizedRoleConfig.tableRowDimension, displayValue: getFieldDisplayName(normalizedRoleConfig.tableRowDimension) } : null,
+          normalizedRoleConfig.tableColumnDimension ? { label: 'Columns', value: normalizedRoleConfig.tableColumnDimension, displayValue: getFieldDisplayName(normalizedRoleConfig.tableColumnDimension) } : null,
+          normalizedRoleConfig.tablePivotMetric ? { label: 'Value', value: normalizedRoleConfig.tablePivotMetric.field, displayValue: getFieldDisplayName(normalizedRoleConfig.tablePivotMetric.field) } : null,
+        ].filter((item): item is { label: string; value: string; displayValue: string } => item !== null);
       }
 
       const selectedCount = normalizedRoleConfig.selectedColumns?.length ?? configColumns.length;
-      return selectedCount > 0 ? [{ label: 'Columns', value: `${selectedCount} selected` }] : [];
+      return selectedCount > 0 ? [{ label: 'Columns', value: `${selectedCount} selected`, displayValue: `${selectedCount} selected` }] : [];
     }
 
     if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return [
-        normalizedRoleConfig.scatterX ? { label: 'X', value: normalizedRoleConfig.scatterX } : null,
-        normalizedRoleConfig.scatterY ? { label: 'Y', value: normalizedRoleConfig.scatterY } : null,
-        normalizedRoleConfig.dimension ? { label: 'Label', value: normalizedRoleConfig.dimension } : null,
+        normalizedRoleConfig.scatterX ? { label: 'X', value: normalizedRoleConfig.scatterX, displayValue: getFieldDisplayName(normalizedRoleConfig.scatterX) } : null,
+        normalizedRoleConfig.scatterY ? { label: 'Y', value: normalizedRoleConfig.scatterY, displayValue: getFieldDisplayName(normalizedRoleConfig.scatterY) } : null,
+        normalizedRoleConfig.dimension ? { label: 'Label', value: normalizedRoleConfig.dimension, displayValue: getFieldDisplayName(normalizedRoleConfig.dimension) } : null,
         chartType !== 'SCATTER' && normalizedRoleConfig.metrics[0]
-          ? { label: 'Size', value: normalizedRoleConfig.metrics[0].field }
+          ? { label: 'Size', value: normalizedRoleConfig.metrics[0].field, displayValue: getFieldDisplayName(normalizedRoleConfig.metrics[0].field) }
           : null,
-      ].filter((item): item is { label: string; value: string } => item !== null);
+      ].filter((item): item is { label: string; value: string; displayValue: string } => item !== null);
     }
 
     return [
-      normalizedRoleConfig.timeField ? { label: 'Time', value: normalizedRoleConfig.timeField } : null,
-      normalizedRoleConfig.dimension && chartType !== 'TIME_SERIES' && chartType !== 'RIBBON' ? { label: 'X', value: normalizedRoleConfig.dimension } : null,
+      normalizedRoleConfig.timeField ? { label: 'Time', value: normalizedRoleConfig.timeField, displayValue: getFieldDisplayName(normalizedRoleConfig.timeField) } : null,
+      normalizedRoleConfig.dimension && chartType !== 'TIME_SERIES' && chartType !== 'RIBBON' ? { label: 'X', value: normalizedRoleConfig.dimension, displayValue: getFieldDisplayName(normalizedRoleConfig.dimension) } : null,
       normalizedRoleConfig.metrics.length > 0
-        ? { label: 'Y', value: normalizedRoleConfig.metrics.map((metric) => metric.field).join(', ') }
+        ? {
+            label: 'Y',
+            value: normalizedRoleConfig.metrics.map((metric) => metric.field).join(', '),
+            displayValue: formatFieldListDisplay(normalizedRoleConfig.metrics.map((metric) => metric.field)),
+          }
         : null,
-      normalizedRoleConfig.lineMetric ? { label: 'Line', value: normalizedRoleConfig.lineMetric.field } : null,
-      normalizedRoleConfig.breakdown ? { label: 'Breakdown', value: normalizedRoleConfig.breakdown } : null,
-    ].filter((item): item is { label: string; value: string } => item !== null);
-  }, [chartType, configColumns.length, normalizedRoleConfig]);
+      normalizedRoleConfig.lineMetric ? { label: 'Line', value: normalizedRoleConfig.lineMetric.field, displayValue: getFieldDisplayName(normalizedRoleConfig.lineMetric.field) } : null,
+      normalizedRoleConfig.breakdown ? { label: 'Breakdown', value: normalizedRoleConfig.breakdown, displayValue: getFieldDisplayName(normalizedRoleConfig.breakdown) } : null,
+    ].filter((item): item is { label: string; value: string; displayValue: string } => item !== null);
+  }, [chartType, configColumns.length, formatFieldListDisplay, getFieldDisplayName, normalizedRoleConfig]);
 
   const configBuilderSourceStats = useMemo(() => {
     if (!previewColumns.length) {
@@ -1331,55 +1440,6 @@ export function ExploreEditor({
     setGeneratedLastRunSignature('');
     setCustomLastRunSignature('');
     setQueryError(null);
-  }, [chartType]);
-
-  const handleSelectSemanticDimension = useCallback((dim: DimensionDefinition, viewName: string) => {
-    const field = `${viewName}.${dim.name}`;
-    setGeneratedRoleConfig((prev) => {
-      const current = normalizeRoleConfig(chartType, prev);
-      if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
-        const selected = current.selectedColumns ?? [];
-        return {
-          ...current,
-          selectedColumns: selected.includes(field) ? selected : [...selected, field],
-        };
-      }
-      if (!current.dimension) {
-        return { ...current, dimension: field };
-      }
-      if (!current.breakdown && current.dimension !== field && BREAKDOWN_REQUIRED_CHART_TYPES.has(chartType)) {
-        return { ...current, breakdown: field };
-      }
-      return { ...current, dimension: field };
-    });
-    setSqlMode('generated');
-  }, [chartType]);
-
-  const handleSelectSemanticMeasure = useCallback((measure: MeasureDefinition, viewName: string) => {
-    const field = `${viewName}.${measure.name}`;
-    const metric: MetricConfig = {
-      field,
-      agg: measureAggForRole(measure),
-      outputField: semanticAlias(field),
-    };
-    setGeneratedRoleConfig((prev) => {
-      const current = normalizeRoleConfig(chartType, prev);
-      const existing = current.metrics.some((item) => item.field === field);
-      const metrics = existing ? current.metrics : [...current.metrics, metric];
-      if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
-        const selected = current.selectedColumns ?? [];
-        return {
-          ...current,
-          metrics,
-          selectedColumns: selected.includes(field) ? selected : [...selected, field],
-        };
-      }
-      if (SINGLE_METRIC_CHART_TYPES.has(chartType)) {
-        return { ...current, metrics: [metric] };
-      }
-      return { ...current, metrics };
-    });
-    setSqlMode('generated');
   }, [chartType]);
 
   // Auto-select first table when dataset changes
@@ -2090,8 +2150,9 @@ export function ExploreEditor({
                     <span
                       key={`setup-${item.label}-${item.value}`}
                       className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[10px] text-text-secondary"
+                      title={item.value}
                     >
-                      <span className="font-semibold">{item.label}:</span> {item.value}
+                      <span className="font-semibold">{item.label}:</span> {item.displayValue}
                     </span>
                   ))}
                 </div>
@@ -2158,34 +2219,6 @@ export function ExploreEditor({
                             </div>
                           )}
                         </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {sqlMode === 'generated' && selectedDatasetId && (
-                    <div className="border-b border-[rgb(var(--border-line))] bg-surface-1">
-                      <div className="flex items-center justify-between px-5 py-3">
-                        <div>
-                          <p className="text-sm font-medium text-text-secondary">Semantic fields</p>
-                          <p className="mt-0.5 text-xs text-text-tertiary">
-                            Pick governed dimensions and measures from the dataset model.
-                          </p>
-                        </div>
-                        {selectedSemanticView && (
-                          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-tertiary">
-                            {selectedSemanticView.table_display_name || selectedSemanticView.name}
-                          </span>
-                        )}
-                      </div>
-                      <div className="max-h-72 overflow-y-auto border-t border-[rgb(var(--border-line))]">
-                        <ExploreColumnPanel
-                          datasetId={selectedDatasetId}
-                          reachableViewNames={reachableViewNames}
-                          baseViewName={selectedSemanticView?.name ?? null}
-                          onSelectDimension={handleSelectSemanticDimension}
-                          onSelectMeasure={handleSelectSemanticMeasure}
-                          onRequestRelationship={setPendingRelationship}
-                        />
                       </div>
                     </div>
                   )}
@@ -2381,30 +2414,6 @@ export function ExploreEditor({
         />
       )}
 
-      {/* Phase-11: inline RelationshipDialog opened from "cần join" badge. */}
-      {pendingRelationship && datasetModel && selectedDatasetId && (() => {
-        const fromView = datasetModel.views.find((v) => v.name === pendingRelationship.fromViewName);
-        const toView = datasetModel.views.find((v) => v.name === pendingRelationship.toViewName);
-        if (!fromView || !toView) return null;
-        return (
-          <RelationshipDialog
-            isOpen
-            onClose={() => setPendingRelationship(null)}
-            onSave={async (value) => {
-              await addJoin.mutateAsync({
-                datasetId: selectedDatasetId,
-                ...value,
-              } as AddJoinParams);
-              toast.success(`Đã thêm relationship ${fromView.name} → ${toView.name}.`);
-              setPendingRelationship(null);
-            }}
-            datasetId={selectedDatasetId}
-            views={datasetModel.views}
-            initialValue={{ fromViewId: fromView.id, toViewId: toView.id }}
-            isSaving={addJoin.isPending}
-          />
-        );
-      })()}
     </div>
   );
 }

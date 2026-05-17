@@ -244,6 +244,12 @@ export interface ColumnMetadata {
    *  (semantic dimension/measure label or column dictionary). When absent,
    *  UIs should fall back to `name`. */
   label?: string;
+  fieldKind?: 'source' | 'calculated' | 'dimension' | 'measure' | 'date';
+  sourceKind?: 'source' | 'calculated' | 'semantic' | 'custom';
+  viewName?: string;
+  viewLabel?: string;
+  tableId?: number;
+  tableLabel?: string;
 }
 
 // Dataset Transformations v2 (Power Query-style)
