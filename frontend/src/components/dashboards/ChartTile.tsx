@@ -53,7 +53,7 @@ interface ChartTileProps {
   onMoveToPage?: (pageId: string) => void;
 }
 
-/** Debounce a value — avoids cascading API calls on rapid filter changes. */
+/** Debounce a value to avoid cascading API calls on rapid filter changes. */
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -350,7 +350,7 @@ export function ChartTile({
   const [detailModalInitialTab, setDetailModalInitialTab] = useState<'appearance' | 'data'>('data');
   const titleInputRef = useRef<HTMLInputElement>(null);
 
-  // Per-tile HAVING filter state (post-aggregation) — persisted in dashboard layout
+  // Per-tile HAVING filter state (post-aggregation), persisted in dashboard layout
   const [havingFilters, setHavingFilters] = useState<BaseFilter[]>(
     () => (Array.isArray(currentLayout?.havingFilters) ? currentLayout.havingFilters : []),
   );
@@ -713,8 +713,8 @@ export function ChartTile({
                 title={
                   `This chart cannot apply ${skippedGlobalFilters.length} global filter`
                   + `${skippedGlobalFilters.length !== 1 ? 's' : ''}`
-                  + ` — no matching field in the chart's data model:\n• `
-                  + skippedGlobalFilters.map(getFilterDisplayLabel).join('\n• ')
+                  + ` - no matching field in the chart's data model:\n- `
+                  + skippedGlobalFilters.map(getFilterDisplayLabel).join('\n- ')
                 }
               >
                 <AlertTriangle className="h-3 w-3" />
@@ -732,7 +732,7 @@ export function ChartTile({
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
 
-            {/* HAVING badge stays separate — has active state + opens inline editor */}
+            {/* HAVING badge stays separate; it has active state and opens the inline editor. */}
             {canEdit && exploreConfig && havingOptions.length > 0 && (
               <button
                 onMouseDown={e => e.stopPropagation()}
@@ -751,7 +751,7 @@ export function ChartTile({
               </button>
             )}
 
-            {/* Single overflow menu — gathers View, Appearance, Rename, Move to page */}
+            {/* Single overflow menu for View, Appearance, Rename, and Move to page. */}
             <div className="relative flex-shrink-0">
               <button
                 onMouseDown={e => e.stopPropagation()}
@@ -904,11 +904,11 @@ export function ChartTile({
               className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             >
               <option value="gt">&gt; greater than</option>
-              <option value="gte">Ã¢â€°Â¥ greater or equal</option>
+              <option value="gte">&gt;= greater or equal</option>
               <option value="lt">&lt; less than</option>
-              <option value="lte">Ã¢â€°Â¤ less or equal</option>
+              <option value="lte">&lt;= less or equal</option>
               <option value="eq">= equals</option>
-              <option value="neq">Ã¢â€°Â  not equals</option>
+              <option value="neq">!= not equals</option>
             </select>
             <input
               type="number"
@@ -940,7 +940,7 @@ export function ChartTile({
       </div>
 
       {/* Chart visualization. Phase-15.6: hint cursor + title attr when the
-          chart is wired for cross-filter, so DA discovers the click-to-
+          chart is wired for cross-filter, so users discover the click-to-
           filter affordance instead of having to read docs. */}
       <div
         className={`flex-1 min-h-0 overflow-hidden ${
@@ -950,7 +950,7 @@ export function ChartTile({
         }`}
         title={
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
-            ? 'Click một slice để filter chart khác trong dashboard'
+            ? 'Click a data point to filter other charts in this dashboard'
             : undefined
         }
       >

@@ -21,7 +21,7 @@ import {
 import { DateInput } from '@/components/ui/DateInput';
 
 // ─── Type badge helpers ────────────────────────────────────────
-const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: '📅', dropdown: '≡' };
+const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: 'D', dropdown: '=' };
 const TYPE_CLR: Record<FilterType, string> = {
   text:     'text-sky-500',
   number:   'text-brand',
@@ -473,7 +473,7 @@ export function DashboardFilterBar({
                           <div className="py-1 border-b border-[rgb(var(--border-line))]">
                             <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-teal-600">
                               <Calendar className="w-3 h-3" />
-                              Filter theo Ngày
+                              Date filters
                             </div>
                             {renderColumnGroups(dateGroups)}
                           </div>
@@ -482,7 +482,7 @@ export function DashboardFilterBar({
                           <div className="py-1">
                             <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
                               <Filter className="w-3 h-3" />
-                              Filter theo Trường
+                              Field filters
                             </div>
                             {renderColumnGroups(fieldGroups)}
                           </div>
@@ -864,7 +864,7 @@ function MultiSelectBody({
             type="text"
             value={search}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search values…"
+            placeholder="Search values..."
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -888,7 +888,7 @@ function MultiSelectBody({
         {filteredValues.length === 0 ? (
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
-              ? (showConflictBanner ? 'No matching values' : 'Loading values…')
+              ? (showConflictBanner ? 'No matching values' : 'Loading values...')
               : 'No match'}
           </p>
         ) : (
@@ -973,7 +973,7 @@ function NumberBody({
           type="number"
           value={typeof f.value === 'number' ? f.value : f.value ?? ''}
           onChange={e => onUpdateValue(e.target.value === '' ? '' : Number(e.target.value))}
-          placeholder="Enter value…"
+          placeholder="Enter value..."
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       )}
@@ -1031,12 +1031,12 @@ function DateBody({
               <DateInput
                 value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
                 onChange={d => onUpdateValue([d, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
-                placeholder="Từ ngày DD/MM/YYYY"
+                placeholder="From date DD/MM/YYYY"
               />
               <DateInput
                 value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
                 onChange={d => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', d])}
-                placeholder="Đến ngày DD/MM/YYYY"
+                placeholder="To date DD/MM/YYYY"
               />
             </div>
           ) : (

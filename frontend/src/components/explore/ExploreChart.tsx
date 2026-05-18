@@ -635,7 +635,7 @@ function ExploreChartInner({
       '#64748b',
       '#475569',
     ];
-    const labels = ['QUÁN QUÂN', 'Á QUÂN', 'HẠNG 3', 'HẠNG 4', 'HẠNG 5'];
+    const labels = ['Winner', 'Runner-up', 'Rank 3', 'Rank 4', 'Rank 5'];
     const display = ranked.length >= 3 ? [ranked[1], ranked[0], ranked[2], ...ranked.slice(3)] : ranked;
     const fmt = (v: any) => formatNumber(Number(v) || 0, style);
     return (
@@ -659,7 +659,7 @@ function ExploreChartInner({
                 }}
               >
                 <div className="text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color }}>
-                  {labels[rank] || `HẠNG ${rank + 1}`}
+                  {labels[rank] || `Rank ${rank + 1}`}
                 </div>
                 <div className="mt-2 text-sm font-semibold text-text-primary text-center break-words">
                   {String(e?.[nameField] ?? '--')}

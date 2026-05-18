@@ -1580,7 +1580,7 @@ function FieldPicker({
                             {isCrossTable && (
                               <span
                                 className="inline-flex items-center gap-0.5 rounded-full bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info"
-                                title={`Cross-table — pick để JOIN ${optionViewName} với base ${baseViewName} qua relationship`}
+                                title={`Cross-table: pick to join ${optionViewName} to base ${baseViewName} through a relationship.`}
                               >
                                 JOIN
                               </span>
@@ -1668,7 +1668,7 @@ function DrillDownButtons({
             key={child}
             onClick={() => onDrill(child)}
             className="rounded-md border border-brand/30 bg-brand/10 px-1.5 py-0.5 text-[10px] font-emphasis text-brand hover:bg-brand/20"
-            title={`Đổi dimension chart sang "${child}" và chạy lại query`}
+            title={`Switch the chart dimension to "${child}" and rerun the query.`}
           >
             ↓ {bare}
           </button>
@@ -1711,7 +1711,7 @@ function TimeGrainSlot({
         <span className="truncate text-xs font-semibold text-text-secondary">
           Date hierarchy
         </span>
-        <HelpTooltip text="Bật để chart bucket theo Year/Quarter/Month/Week/Day — drill controls (↑↓) hiện ở header của chart preview. Tắt = giữ raw timestamps. Khi bật mới, default level = Month (giống PowerBI auto-bucket khi drop date field)." />
+        <HelpTooltip text="Enable date hierarchy to bucket this chart by Year, Quarter, Month, Week, or Day. Drill controls appear in the chart preview header. Disable it to keep raw timestamps. New date hierarchies default to Month, similar to Power BI auto-bucketing when a date field is added." />
       </div>
       <button
         type="button"
@@ -1723,7 +1723,7 @@ function TimeGrainSlot({
             ? 'border-brand bg-brand/80'
             : 'border-[rgb(var(--border-line))] bg-surface-2'
         }`}
-        title={enabled ? 'Date hierarchy on — chart bucket theo level đang chọn ở chart preview' : 'Date hierarchy off — render raw timestamps'}
+        title={enabled ? 'Date hierarchy on: the chart is bucketed by the level selected in the preview header.' : 'Date hierarchy off: render raw timestamps.'}
       >
         <span
           className={`inline-block h-3 w-3 rounded-full bg-surface-1 shadow-linear-sm transition-transform ${
@@ -1890,7 +1890,7 @@ function MetricSlot({
                   title={
                     aggValid
                       ? undefined
-                      : `${m.agg.toUpperCase()} không dùng được trên cột type=${col?.type || 'unknown'}. Aggs hợp lệ: ${validList || 'không có'}.`
+                      : `${m.agg.toUpperCase()} is not available for type=${col?.type || 'unknown'} columns. Valid aggregations: ${validList || 'none'}.`
                   }
                 >
                   {AGG_OPTIONS.map(a => {
@@ -1908,7 +1908,7 @@ function MetricSlot({
                 {!aggValid && (
                   <span
                     className="rounded bg-warning/20 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
-                    title={`Cảnh báo: ${m.agg.toUpperCase()} không tương thích với type=${col?.type || 'unknown'}. Đổi sang ${validList} để hết warning.`}
+                    title={`Warning: ${m.agg.toUpperCase()} is incompatible with type=${col?.type || 'unknown'}. Switch to ${validList} to clear this warning.`}
                   >
                     ⚠ Incompatible
                   </span>
@@ -1917,8 +1917,8 @@ function MetricSlot({
                   <span
                     className="rounded bg-warning/10 px-1 text-[10px] font-emphasis uppercase tracking-wide text-warning"
                     title={
-                      "Measure tạm — FE tự tạo từ cột raw. Để dùng lại ở chart khác, " +
-                      "vào Data Model tab và Add Measure với cùng cột + agg."
+                      "Temporary measure: created from a raw column in this chart. To reuse it in other charts, " +
+                      "add a measure in Data Model with the same column and aggregation."
                     }
                   >
                     auto
@@ -1944,7 +1944,7 @@ function MetricSlot({
       {(!single || value.length === 0) && (
         <FieldPicker
           options={available}
-          placeholder={available.length === 0 ? 'all fields added' : '+ add value (any column)…'}
+          placeholder={available.length === 0 ? 'all fields added' : '+ add value (any column)...'}
           emptyLabel="No fields available"
           disabled={available.length === 0}
           invalid={missing}

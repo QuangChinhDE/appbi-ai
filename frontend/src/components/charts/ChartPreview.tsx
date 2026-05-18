@@ -995,7 +995,7 @@ function PodiumDisplay({
     if (format === 'percent') return `${(n * 100).toFixed(dp)}%`;
     return n.toLocaleString();
   };
-  const labels = ['QUÁN QUÂN', 'Á QUÂN', 'HẠNG 3', 'HẠNG 4', 'HẠNG 5'];
+  const labels = ['Winner', 'Runner-up', 'Rank 3', 'Rank 4', 'Rank 5'];
   // Order for podium display: place #1 in the center
   const display = entries.length >= 3
     ? [entries[1], entries[0], entries[2], ...entries.slice(3)]
@@ -1023,7 +1023,7 @@ function PodiumDisplay({
               className="text-[10px] font-bold uppercase tracking-[0.2em]"
               style={{ color }}
             >
-              {labels[rank] || `HẠNG ${rank + 1}`}
+              {labels[rank] || `Rank ${rank + 1}`}
             </div>
             <div className="mt-2 text-sm font-semibold text-text-primary text-center break-words">
               {String(e?.[nameField] ?? '--')}

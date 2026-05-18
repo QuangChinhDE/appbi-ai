@@ -197,14 +197,14 @@ export default function ExplorePage() {
     setIsDeletingChart(true);
     try {
       await deleteChart.mutateAsync(chartToDelete.id);
-      toast.success(`Đã xoá biểu đồ "${chartToDelete.name}"`);
+      toast.success(`Deleted chart "${chartToDelete.name}"`);
       setChartToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        toast.error(`Không thể xoá: ${detail || error.message}`);
+        toast.error(`Could not delete: ${detail || error.message}`);
         setChartToDelete(null);
       }
     } finally {
@@ -621,7 +621,7 @@ export default function ExplorePage() {
       {chartToDelete && (
         <DeleteConstraintModal
           itemName={chartToDelete.name}
-          itemTypeLabel="biểu đồ"
+          itemTypeLabel="chart"
           constraints={deleteConstraints}
           isDeleting={isDeletingChart}
           onConfirm={confirmDeleteChart}
@@ -654,10 +654,10 @@ export default function ExplorePage() {
         isOpen={isBulkDeleteOpen}
         onClose={() => setIsBulkDeleteOpen(false)}
         onConfirm={handleBulkDelete}
-        title={`Xoá ${selectedIds.size} biểu đồ?`}
-        description="Hành động này không thể hoàn tác. Tất cả biểu đồ đã chọn sẽ bị xoá vĩnh viễn."
-        confirmLabel="Xoá"
-        cancelLabel="Huỷ"
+        title={`Delete ${selectedIds.size} chart${selectedIds.size === 1 ? '' : 's'}?`}
+        description="This action cannot be undone. All selected charts will be permanently deleted."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
         variant="danger"
       />
     </>

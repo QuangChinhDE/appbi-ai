@@ -107,7 +107,7 @@ function QueryInspector({
     : routing === 'live_query'
       ? 'Live query (single table)'
       : routing === 'preview'
-        ? 'FE preview (chưa run BE)'
+        ? 'Frontend preview (backend has not run yet)'
         : routing;
   const routingBadgeClass = routing === 'semantic_engine'
     ? 'border-brand/40 bg-brand/10 text-brand'
@@ -124,10 +124,10 @@ function QueryInspector({
             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-emphasis ${routingBadgeClass}`}
             title={
               routing === 'semantic_engine'
-                ? 'BE route qua SemanticQueryEngine — handle JOIN, time macros, window aggregate.'
+                ? 'Backend route: SemanticQueryEngine handles joins, time macros, and window aggregates.'
                 : routing === 'live_query'
-                  ? 'BE route qua live_query (single-table SQL build). KHÔNG handle JOIN — nếu chart cần JOIN, kéo qualified field "view.field" để upgrade.'
-                  : 'Route chưa xác định — BE chưa surface debug info.'
+                  ? 'Backend route: live_query builds SQL for a single table. It does not handle joins; use a qualified field such as "view.field" to route joined charts through the semantic engine.'
+                  : 'Route is not available yet; backend debug information was not returned.'
             }
           >
             {routingLabel}
@@ -165,14 +165,14 @@ function QueryInspector({
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
             <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-              SQL — {sqlSource === 'backend' ? 'emit từ BE' : 'preview build FE'}
+              SQL - {sqlSource === 'backend' ? 'backend emitted' : 'frontend preview'}
             </div>
             {sql && (
               <button
                 onClick={onCopy}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1"
               >
-                {copied ? '✓ Đã copy' : 'Copy SQL'}
+                {copied ? 'Copied' : 'Copy SQL'}
               </button>
             )}
           </div>
@@ -182,7 +182,7 @@ function QueryInspector({
             </pre>
           ) : (
             <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] italic text-text-quaternary">
-              Chưa có SQL — chạy chart trước (nút Run).
+              No SQL yet. Run the chart first.
             </div>
           )}
         </div>
@@ -192,20 +192,18 @@ function QueryInspector({
           <div className="mb-1 font-emphasis uppercase tracking-wide text-text-tertiary">Debug tips</div>
           <ul className="list-disc space-y-0.5 pl-4">
             <li>
-              <strong>Chart trống mà Table OK</strong>: check <code>Routing</code> — nếu là <em>live_query</em>
-              khi đang dùng measure đa bảng, qualify field thành <code>view.field</code> để upgrade sang semantic engine.
+              <strong>Chart is empty but the table has data</strong>: check <code>Routing</code>. If it shows <em>live_query</em>
+              while the chart uses joined data, switch the field to a qualified <code>view.field</code> reference so the query routes through the semantic engine.
             </li>
             <li>
-              <strong>Số lệch giữa preview và saved chart</strong>: copy SQL trên + chạy thẳng trên DB
-              của bác — kết quả phải khớp. Nếu khớp, vấn đề ở FE adapter (mở DevTools console xem warning).
+              <strong>Preview and saved chart totals differ</strong>: copy the SQL above and run it directly on the database.
+              The result should match. If it does, check the frontend adapter and browser console warnings.
             </li>
             <li>
-              <strong>Engine warning</strong>: thường là ambiguous join path. Mark 1 relationship inactive
-              ở tab Data Model để chốt đường engine sẽ dùng.
+              <strong>Engine warning</strong>: this is often an ambiguous join path. Mark one relationship inactive in Data Model to make the query path explicit.
             </li>
             <li>
-              <strong>Dialect sai</strong>: nếu thấy dialect không match với datasource (vd dataset là
-              BigQuery nhưng dialect = postgresql), báo dev — đây là Phase 12.6 bug.
+              <strong>Wrong dialect</strong>: if the dialect does not match the datasource, for example BigQuery data with <code>postgresql</code> dialect, report it as a runtime routing issue.
             </li>
           </ul>
         </div>
@@ -2596,10 +2594,10 @@ export function ExploreEditor({
                   ? ` · 🔌 +${joinableCount} joinable`
                   : '';
               const tip = hasJoined
-                ? `Bảng gốc: ${baseLabel}. Chart đang JOIN ${joinedCount} bảng khác qua relationship: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
+                ? `Base view: ${baseLabel}. This chart joins ${joinedCount} related view${joinedCount === 1 ? '' : 's'} through relationships: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
                 : hasJoinable
-                  ? `Bảng gốc: ${baseLabel} (auto-derive từ field đầu tiên). ${joinableCount} bảng đang reachable qua relationship — pick field từ chúng để JOIN.`
-                  : `Bảng gốc: ${baseLabel}. Auto-derive từ field đầu tiên user pick. Đổi bằng cách clear hết field và pick lại.`;
+                  ? `Base view: ${baseLabel}. ${joinableCount} related view${joinableCount === 1 ? '' : 's'} can be joined through relationships. Pick a field from one of them to join it.`
+                  : `Base view: ${baseLabel}. The base view is derived from the first field you pick. Clear all fields and pick again to change it.`;
               return (
                 <span
                   className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
@@ -2854,6 +2852,7 @@ export function ExploreEditor({
                             onChange={setFilters}
                             columns={filterColumns}
                             dataRows={filterRows}
+                            datasetId={selectedDatasetId}
                             readOnly={!resPerms.canEdit}
                           />
                         )}
@@ -2938,7 +2937,7 @@ export function ExploreEditor({
                     </p>
                     <p className="mt-1 text-xs text-text-quaternary">
                       {selectedDatasetId
-                        ? 'Base table sẽ auto-derive từ field đầu tiên user pick. Field từ bảng khác sẽ auto-JOIN qua relationship.'
+                        ? 'The base table will be derived from the first field you pick. Fields from related tables join automatically through relationships.'
                         : 'Pick dataset in the header, then drag fields from the column panel.'}
                     </p>
                   </div>

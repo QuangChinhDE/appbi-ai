@@ -5,7 +5,7 @@
  *
  * Cross-table flow (Phase-11): when a field's owning view is NOT reachable
  * from the chart's base view via existing JOIN graph, the row stays clickable
- * but renders a "⚠ cần join" badge. Clicking the badge calls
+ * but renders a "Need join" badge. Clicking the badge calls
  * `onRequestRelationship` with the source/target view names so the parent can
  * open the RelationshipDialog pre-filled.
  */
@@ -72,7 +72,7 @@ interface ExploreColumnPanelProps {
   onSelectDimension?: (dim: DimensionDefinition, viewName: string) => void;
   onSelectMeasure?: (measure: MeasureDefinition, viewName: string) => void;
   /**
-   * Fired when the user clicks the "⚠ cần join" badge on an unreachable field.
+   * Fired when the user clicks the "Need join" badge on an unreachable field.
    * Parent should open RelationshipDialog pre-filled with these view names.
    */
   onRequestRelationship?: (params: { fromViewName: string; toViewName: string }) => void;
@@ -112,7 +112,7 @@ export function ExploreColumnPanel({
   }, [model?.views]);
 
   // Phase-13: empty-state — dataset has multiple views but no joins between
-  // them. Surface a banner so DA understand chart đa bảng cần relationship.
+  // them. Surface a banner so users understand multi-table charts need a relationship.
   const hasMultipleViewsWithoutJoins = useMemo(() => {
     if (!model || views.length < 2) return false;
     const totalJoins = (model.explores ?? []).reduce(
@@ -222,7 +222,7 @@ export function ExploreColumnPanel({
                   ? 'border-brand bg-brand/10 text-brand'
                   : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
               }`}
-              title={isReachable(v.name) ? undefined : 'View này chưa có join tới base view'}
+              title={isReachable(v.name) ? undefined : 'This view is not joined to the base view.'}
             >
               {viewLabel(v)}
               {!isReachable(v.name) && <span className="ml-1 text-warning">⚠</span>}
@@ -233,10 +233,10 @@ export function ExploreColumnPanel({
 
       {hasMultipleViewsWithoutJoins && (
         <div className="mx-4 mb-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-tiny leading-snug text-warning">
-          <div className="font-emphasis">Dataset chưa có relationship nào.</div>
+          <div className="font-emphasis">No relationships defined.</div>
           <div className="opacity-90">
-            Chart đa bảng chỉ work khi có ít nhất 1 join. Mở tab <em>Data Model</em> hoặc bấm
-            badge <em>⚠ cần join</em> trên field để define relationship.
+            Multi-table charts require at least one join. Open <em>Data Model</em> or click the
+            <em> Need join</em> badge on a field to define a relationship.
           </div>
         </div>
       )}
@@ -264,7 +264,7 @@ export function ExploreColumnPanel({
                 dim.description,
                 dim.sql,
                 dim.name,
-                hasParent ? `↳ thuộc ${dim.parent}` : null,
+                hasParent ? `Child of ${dim.parent}` : null,
               ].filter(Boolean) as string[];
               return (
                 <FieldRow
@@ -282,7 +282,7 @@ export function ExploreColumnPanel({
                     <span
                       aria-hidden
                       className="ml-2 text-text-quaternary"
-                      title={`Drill-down con của ${dim.parent}`}
+                      title={`Drill-down child of ${dim.parent}`}
                     >
                       ↳
                     </span>
@@ -376,11 +376,11 @@ function FieldRow({
               toViewName: fromViewName,
             })
           }
-          title={`Thiếu join từ "${baseViewName}" → "${fromViewLabel}". Bấm để tạo relationship.`}
+          title={`Missing join from "${baseViewName}" to "${fromViewLabel}". Click to create a relationship.`}
           className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-tiny font-emphasis text-warning hover:bg-warning/20"
         >
           <AlertTriangle className="h-2.5 w-2.5" />
-          cần join
+          Need join
         </button>
       )}
     </div>

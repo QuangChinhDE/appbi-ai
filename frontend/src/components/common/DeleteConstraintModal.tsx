@@ -23,7 +23,7 @@ interface DeleteConstraintModalProps {
 }
 
 const TYPE_LABELS: Record<string, { label: string; cls: string }> = {
-  chart: { label: 'Biểu đồ', cls: 'bg-info/12 text-info' },
+  chart: { label: 'Chart', cls: 'bg-info/12 text-info' },
   dashboard: { label: 'Dashboard', cls: 'bg-brand/12 text-brand' },
   dataset: { label: 'Dataset', cls: 'bg-warning/12 text-warning' },
   lookup: { label: 'LOOKUP', cls: 'bg-warning/12 text-warning' },
@@ -60,11 +60,11 @@ export function DeleteConstraintModal({
               </div>
               <div>
                 <h2 className="text-small font-strong text-text-primary">
-                  Không thể xóa {itemTypeLabel}
+                  Cannot delete {itemTypeLabel}
                 </h2>
                 <p className="text-caption text-text-secondary mt-0.5">
                   <span className="font-emphasis text-text-primary">&ldquo;{itemName}&rdquo;</span>{' '}
-                  đang được sử dụng bởi {constraints.length} mục:
+                  is used by {constraints.length} item{constraints.length === 1 ? '' : 's'}:
                 </p>
               </div>
             </div>
@@ -78,7 +78,7 @@ export function DeleteConstraintModal({
                   <ConstraintBadge type={c.type} />
                   {c.type === 'lookup' ? (
                     <span className="text-text-primary">
-                      Bảng <strong>{c.table_name}</strong>, cột <strong>{c.column}</strong>
+                      Table <strong>{c.table_name}</strong>, column <strong>{c.column}</strong>
                     </span>
                   ) : (
                     <span className="text-text-primary">{c.name}</span>
@@ -88,12 +88,12 @@ export function DeleteConstraintModal({
             </ul>
 
             <p className="text-tiny text-text-tertiary mb-4">
-              Hãy xóa hoặc cập nhật các ràng buộc trên trước khi xóa {itemTypeLabel} này.
+              Remove or update these dependencies before deleting this {itemTypeLabel}.
             </p>
 
             <div className="flex justify-end">
               <Button variant="secondary" size="sm" onClick={onClose}>
-                Đóng
+                Close
               </Button>
             </div>
           </div>
@@ -105,19 +105,19 @@ export function DeleteConstraintModal({
               </div>
               <div>
                 <h2 className="text-small font-strong text-text-primary">
-                  Xóa {itemTypeLabel}?
+                  Delete {itemTypeLabel}?
                 </h2>
                 <p className="text-caption text-text-secondary mt-0.5">
-                  Bạn có chắc muốn xóa{' '}
+                  Are you sure you want to delete{' '}
                   <span className="font-emphasis text-text-primary">&ldquo;{itemName}&rdquo;</span>?{' '}
-                  Hành động này không thể hoàn tác.
+                  This action cannot be undone.
                 </p>
               </div>
             </div>
 
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={onClose} disabled={isDeleting}>
-                Hủy
+                Cancel
               </Button>
               <Button
                 variant="danger"
@@ -126,7 +126,7 @@ export function DeleteConstraintModal({
                 disabled={isDeleting}
                 leadingIcon={isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : undefined}
               >
-                Xóa {itemTypeLabel}
+                Delete {itemTypeLabel}
               </Button>
             </div>
           </div>

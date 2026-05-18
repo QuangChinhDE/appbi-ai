@@ -141,7 +141,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
       const wasBusy = prev === 'queued' || prev === 'processing';
       if (wasBusy && next === 'succeeded') toast.success('AI description ready.');
       if (wasBusy && next === 'failed')    toast.error(data.generation_error || 'AI generation failed.');
-      if (wasBusy && next === 'stale')     toast.warning('Chart changed — review AI description.');
+      if (wasBusy && next === 'stale')     toast.warning('Chart changed - review AI description.');
     }
     lastStatusRef.current = next;
   }, [data]);
@@ -253,7 +253,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
             <div className="flex items-center gap-2 rounded-lg bg-brand/10 px-3 py-2.5 text-xs text-brand">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
               <span>
-                {status === 'queued' ? 'Queued — waiting for AI...' : 'AI is analysing this chart...'}
+                {status === 'queued' ? 'Queued - waiting for AI...' : 'AI is analyzing this chart...'}
                 <span className="ml-1 text-brand">Panel refreshes automatically.</span>
               </span>
             </div>
@@ -288,7 +288,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Bot className="h-3 w-3" />
                   Description
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— used in chart search</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">- used in chart search</span>
                 </label>
                 <textarea
                   rows={4}
@@ -305,7 +305,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Tag className="h-3 w-3" />
                   Search Keywords
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— enriches vector index</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">- enriches vector index</span>
                 </label>
                 <div className="mb-1.5 flex min-h-[28px] flex-wrap gap-1">
                   {keywords.map((kw, i) => (
@@ -326,7 +326,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       value={kwInput}
                       onChange={(e) => setKwInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
-                      placeholder="Add keyword, press Enter…"
+                      placeholder="Add keyword, press Enter..."
                       className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     />
                     <button onClick={addKeyword} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
@@ -339,7 +339,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <HelpCircle className="h-3 w-3" />
                   Suggested Questions
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— suggested questions</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">- suggested questions</span>
                 </label>
                 <div className="mb-1.5 space-y-1">
                   {questions.map((q, i) => (
@@ -361,7 +361,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       value={qInput}
                       onChange={(e) => setQInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addQuestion())}
-                      placeholder="Add question, press Enter…"
+                      placeholder="Add question, press Enter..."
                       className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     />
                     <button onClick={addQuestion} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
@@ -393,7 +393,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       className="inline-flex items-center gap-1 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Check className="h-3 w-3" />
-                      {updateMut.isPending ? 'Saving…' : 'Save'}
+                      {updateMut.isPending ? 'Saving...' : 'Save'}
                     </button>
                   </div>
                 </div>
