@@ -47,6 +47,12 @@ import appbi_chart  # noqa: F401
 # Stage 5 — Dashboard (granular placement / filter / public-link tools)
 import appbi_dashboard  # noqa: F401
 
+# Stage 5 — HTML Import: visual-first dashboard build (server-validates a
+# self-contained HTML mock against the source profile, then materialises
+# Dataset + Charts + Dashboard in one transaction). Complements the
+# blueprint flow; some DAs prefer authoring an HTML layout vs JSON plan.
+import appbi_html_import  # noqa: F401
+
 # Blueprint — the canonical design-then-commit flow (Stages 3 + 4)
 import appbi_blueprint  # noqa: F401
 
