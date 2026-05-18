@@ -57,6 +57,7 @@ from typing import Any
 from appbi_core import (
     APPBI_LONG_TIMEOUT_SECONDS,
     Context,
+    _append_session_log,
     _drop_none,
     _request,
     _requires_confirmation,
@@ -1123,6 +1124,22 @@ async def commit_semantic_model(
             result = await _request("POST", "/semantic/explores", json_body=body)
             written_explores.append({"name": explore.get("name"), "id": result.get("id"), "action": "created"})
 
+    _append_session_log(
+        "dataset",
+        "commit_semantic_model",
+        {
+            "dataset_id": dataset_id,
+            "model_id": model_id,
+            "views": [
+                f"{v.get('name')} ({v.get('action')}, id={v.get('id')})"
+                for v in written_views
+            ],
+            "explores": [
+                f"{e.get('name')} ({e.get('action')}, id={e.get('id')})"
+                for e in written_explores
+            ],
+        },
+    )
     return {
         "status": "committed",
         "dataset_id": dataset_id,
@@ -1818,9 +1835,35 @@ async def commit_dashboard_blueprint(
             ),
         }
 
+    dashboard_id = dashboard_result.get("id") if isinstance(dashboard_result, dict) else None
+    _append_session_log(
+        "charts",
+        "commit_dashboard_blueprint",
+        {
+            "dashboard_id": dashboard_id,
+            "dashboard_name": dashboard_meta.get("name"),
+            "charts_created": [
+                f"{c.get('title')} ({c.get('chart_type')}, id={c.get('id')})"
+                for c in created_charts
+            ],
+            "placement_count": len(placements),
+        },
+    )
+    _append_session_log(
+        "report",
+        "commit_dashboard_blueprint",
+        {
+            "dashboard_id": dashboard_id,
+            "dashboard_name": dashboard_meta.get("name"),
+            "placements": [
+                f"chart_id={p.get('chart_id')} layout={p.get('layout')}"
+                for p in placements
+            ],
+        },
+    )
     return {
         "status": "committed",
-        "dashboard_id": dashboard_result.get("id") if isinstance(dashboard_result, dict) else None,
+        "dashboard_id": dashboard_id,
         "dashboard_name": dashboard_meta.get("name"),
         "created_charts": created_charts,
         "placement_count": len(placements),
@@ -2052,6 +2095,309 @@ async def repair_chart_semantic_binding(
             "passes. Open the chart in Explore to confirm the dataset "
             "and measure list look right."
         ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2-confirm orchestration: Stage 1+2 then Stage 3+4
+# Bundle individual stage commits behind two user_confirmed flags so a
+# from-scratch dashboard build is "confirm twice → done" instead of the
+# default "confirm 4-7 times".
+# ---------------------------------------------------------------------------
+
+
+@tool("report")
+async def propose_dataset_workspace(
+    business_intent: str,
+    datasource_id: int | None = None,
+    existing_dataset_id: int | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Stage 1+2 read-only plan. Returns plan_template for
+    `commit_dataset_workspace`.
+
+    Pass `existing_dataset_id` to reuse a dataset (the commit step then
+    only adds missing tables). Pass `datasource_id` to scope source-table
+    suggestions to that datasource.
+    """
+    intent = str(business_intent or "").strip()
+    if not intent:
+        raise ValueError("business_intent is required.")
+
+    existing: dict[str, Any] | None = None
+    if existing_dataset_id is not None:
+        try:
+            existing = await _request(
+                "GET", f"/datasets/{int(existing_dataset_id)}"
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "Failed to load dataset %s: %s", existing_dataset_id, exc
+            )
+
+    sources: list[dict[str, Any]] = []
+    if datasource_id is not None:
+        try:
+            sources = await _request(
+                "GET", f"/data-sources/{int(datasource_id)}/tables"
+            ) or []
+        except RuntimeError as exc:
+            logger.warning(
+                "Failed to list source tables for %s: %s", datasource_id, exc
+            )
+
+    return {
+        "business_intent": intent,
+        "existing_dataset": existing,
+        "available_source_tables": sources[:50],
+        "plan_template": {
+            "dataset": {
+                "name": "<str — required if existing_dataset_id not set>",
+                "description": "<str — optional>",
+            },
+            "existing_dataset_id": "<int — pass instead of `dataset` to reuse>",
+            "tables": [
+                {
+                    "display_name": "<str>",
+                    "source_kind": "physical_table|sql_query|derived_table",
+                    "datasource_id": "<int — required for physical_table / sql_query>",
+                    "source_table_name": "<str — schema.table for physical_table>",
+                    "source_query": "<str — SQL for sql_query / derived_table>",
+                }
+            ],
+        },
+        "next_step": (
+            "Author the plan, then call "
+            "commit_dataset_workspace(plan, user_confirmed=true). After "
+            "that returns, call get_table_profile for each table, then "
+            "propose_semantic_model + propose_dashboard_blueprint, then "
+            "commit_full_dashboard(...). Total user confirmations: 2."
+        ),
+    }
+
+
+@tool("report")
+async def commit_dataset_workspace(
+    plan: dict[str, Any] | str,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Stage 1+2 atomic commit — ONE confirmation covers dataset + tables.
+
+    `plan` shape (from `propose_dataset_workspace.plan_template`):
+      dataset: {name, description?} OR existing_dataset_id: <int>
+      tables:  [{display_name, source_kind, datasource_id?,
+                 source_table_name?, source_query?}, ...]
+
+    Rollback: any table-add failure rolls back already-added tables AND
+    a freshly-created dataset (existing datasets are NEVER deleted).
+    """
+    plan_dict = _parse_plan_json(plan, "plan") if isinstance(plan, str) else plan
+    if not isinstance(plan_dict, dict):
+        raise ValueError("plan must be an object.")
+
+    existing_dataset_id = plan_dict.get("existing_dataset_id")
+    dataset_meta = plan_dict.get("dataset") or {}
+    tables = plan_dict.get("tables") or []
+    if not isinstance(tables, list) or not tables:
+        raise ValueError("plan.tables must be a non-empty list.")
+    if existing_dataset_id is None and not dataset_meta.get("name"):
+        raise ValueError(
+            "Either plan.existing_dataset_id or plan.dataset.name is required."
+        )
+
+    if not user_confirmed:
+        return _requires_confirmation(
+            "commit_dataset_workspace",
+            {
+                "dataset_action": (
+                    f"reuse id={existing_dataset_id}"
+                    if existing_dataset_id is not None
+                    else f"create '{dataset_meta.get('name')}'"
+                ),
+                "table_count": len(tables),
+                "tables": [
+                    {
+                        "display_name": t.get("display_name"),
+                        "source_kind": t.get("source_kind"),
+                    }
+                    for t in tables
+                ],
+            },
+        )
+
+    # Phase A — dataset
+    created_dataset = False
+    if existing_dataset_id is not None:
+        dataset_id = int(existing_dataset_id)
+        dataset_result: dict[str, Any] = {"id": dataset_id, "reused": True}
+    else:
+        body = _drop_none(
+            {
+                "name": dataset_meta.get("name"),
+                "description": dataset_meta.get("description"),
+            }
+        )
+        dataset_result = await _request("POST", "/datasets/", json_body=body)
+        dataset_id = int(dataset_result.get("id"))
+        created_dataset = True
+        _append_session_log(
+            "dataset",
+            "commit_dataset_workspace.create_dataset",
+            {
+                "dataset_id": dataset_id,
+                "name": dataset_meta.get("name"),
+            },
+        )
+
+    # Phase B — tables (rollback on any failure)
+    created_table_ids: list[int] = []
+    for index, t in enumerate(tables):
+        body = _drop_none(
+            {
+                "display_name": t.get("display_name"),
+                "source_kind": t.get("source_kind", "physical_table"),
+                "datasource_id": t.get("datasource_id"),
+                "source_table_name": t.get("source_table_name"),
+                "source_query": t.get("source_query"),
+                "enabled": t.get("enabled", True),
+            }
+        )
+        try:
+            table_result = await _request(
+                "POST", f"/datasets/{dataset_id}/tables", json_body=body
+            )
+        except RuntimeError as exc:
+            # Rollback
+            for tid in reversed(created_table_ids):
+                try:
+                    await _request(
+                        "DELETE",
+                        f"/datasets/{dataset_id}/tables/{tid}",
+                        expect_json=False,
+                    )
+                except RuntimeError:
+                    pass
+            if created_dataset:
+                try:
+                    await _request(
+                        "DELETE",
+                        f"/datasets/{dataset_id}",
+                        expect_json=False,
+                    )
+                except RuntimeError:
+                    pass
+            return {
+                "status": "rolled_back",
+                "failed_at_table_index": index,
+                "failed_table": t.get("display_name"),
+                "error": str(exc),
+            }
+        created_table_ids.append(int(table_result.get("id")))
+
+    _append_session_log(
+        "dataset",
+        "commit_dataset_workspace",
+        {
+            "dataset_id": dataset_id,
+            "dataset_action": "created" if created_dataset else "reused",
+            "tables_added": [
+                f"{t.get('display_name')} (id={tid})"
+                for t, tid in zip(tables, created_table_ids)
+            ],
+        },
+    )
+    return {
+        "status": "committed",
+        "dataset_id": dataset_id,
+        "dataset_created": created_dataset,
+        "table_ids": created_table_ids,
+        "next_step": (
+            "Call get_table_profile for each new table to learn columns. "
+            "Then propose_semantic_model + propose_dashboard_blueprint. "
+            "Then commit_full_dashboard — your second and final confirm."
+        ),
+    }
+
+
+@tool("report")
+async def commit_full_dashboard(
+    semantic_plan: dict[str, Any] | str,
+    dashboard_blueprint: dict[str, Any] | str,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Stage 3+4 atomic commit — ONE confirmation covers semantic + dashboard.
+
+    `semantic_plan`     — from propose_semantic_model.plan_template
+    `dashboard_blueprint` — from propose_dashboard_blueprint.blueprint_template
+
+    On semantic-commit failure: nothing else is attempted, return the
+    structured error so Claude can fix the plan and retry.
+    On dashboard-commit failure: the semantic model is LEFT IN PLACE
+    (it's reusable). Claude can retry only the blueprint via
+    commit_dashboard_blueprint.
+
+    This is the 2nd of 2 confirmations in the canonical from-scratch
+    flow. After this returns "committed", the dashboard is live and
+    visible across Explore / Dataset Model / Dashboard list.
+    """
+    semantic = (
+        _parse_plan_json(semantic_plan, "semantic_plan")
+        if isinstance(semantic_plan, str)
+        else semantic_plan
+    )
+    blueprint = (
+        _parse_plan_json(dashboard_blueprint, "dashboard_blueprint")
+        if isinstance(dashboard_blueprint, str)
+        else dashboard_blueprint
+    )
+    if not isinstance(semantic, dict) or not isinstance(blueprint, dict):
+        raise ValueError("Both plans must be objects.")
+
+    if not user_confirmed:
+        sem_views = (semantic.get("views") or [])
+        bp_charts = (blueprint.get("charts") or [])
+        sem_measure_count = sum(
+            len((v or {}).get("measures") or []) for v in sem_views
+        )
+        return _requires_confirmation(
+            "commit_full_dashboard",
+            {
+                "semantic_views": [v.get("name") for v in sem_views],
+                "semantic_measure_count": sem_measure_count,
+                "dashboard_name": (blueprint.get("dashboard") or {}).get("name"),
+                "chart_count": len(bp_charts),
+                "chart_titles": [c.get("title") for c in bp_charts[:8]],
+            },
+        )
+
+    # Phase A — semantic (delegate, but pre-confirmed)
+    sem_result = await commit_semantic_model(
+        plan_json=semantic, user_confirmed=True, ctx=ctx
+    )
+    if isinstance(sem_result, dict) and sem_result.get("status") not in (
+        "committed",
+        None,
+    ):
+        return {
+            "status": "blocked_at_semantic",
+            "semantic_result": sem_result,
+        }
+
+    # Phase B — dashboard blueprint
+    bp_result = await commit_dashboard_blueprint(
+        blueprint_json=blueprint, user_confirmed=True, ctx=ctx
+    )
+    return {
+        "status": (
+            "committed"
+            if isinstance(bp_result, dict)
+            and bp_result.get("status") == "committed"
+            else "partial"
+        ),
+        "semantic_result": sem_result,
+        "dashboard_result": bp_result,
     }
 
 

@@ -15,9 +15,11 @@ Design principles:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -100,37 +102,37 @@ in AppBI** — Dashboard view, Explore, Dataset model, chart list. Charts
 that render in the dashboard but disappear from Explore are a recurring
 defect; the canonical workflow below is designed to prevent it.
 
-## Canonical workflow (the only correct way for full dashboards)
+## Canonical workflow — 2 confirmations from scratch → dashboard
 
-  Stage 1 — Source         (read-only)
-    list_data_sources, inspect_source_schema, inspect_source_table,
-    run_source_query
+The default path bundles per-stage commits into TWO user confirmations:
 
-  Stage 2 — Dataset        (lay the table groundwork)
-    list_datasets, create_dataset, add_table_to_dataset,
-    get_table_profile, update_table_description
+  Confirm 1 — Data workspace (Stage 1+2)
+    propose_dataset_workspace(business_intent, datasource_id?,
+                              existing_dataset_id?)   [read-only]
+    commit_dataset_workspace(plan, user_confirmed=true)
+        → atomic: create_dataset (or reuse) + add_table_to_dataset × N,
+          rollback on any failure.
 
-  Stage 3 — Semantic       (THIS STAGE IS NON-NEGOTIABLE before any chart)
+  Between confirms — read-only context gathering:
+    get_table_profile per new table (~10-15K tokens — once each)
     propose_semantic_model(dataset_id, business_intent)
-        → returns existing model + tables + plan_template
-    (Author plan_json. Surface open_questions_for_user.)
-    commit_semantic_model(plan_json, user_confirmed=true)
-        → writes SemanticView rows whose `measures` are the canonical
-          place metrics live. Without this, charts show numbers but the
-          measure list in Explore stays empty.
-
-  Stage 4 — Dashboard blueprint (design before execute)
     propose_dashboard_blueprint(dataset_id, business_intent)
-        → returns available_measures from Stage 3 + blueprint_template
-    (Author blueprint_json: charts whose metric `field` values match
-     available_measures. Surface open_questions_for_user.)
-    commit_dashboard_blueprint(blueprint_json, user_confirmed=true)
-        → validates every metric against the live semantic model, then
-          creates charts + dashboard + placements in one go.
 
-  Stage 5 — Optional polish    (after the blueprint shipped)
-    add_chart_to_dashboard / add_dashboard_filter / create_public_link
-    update_chart_description (Claude-authored prose)
+  Confirm 2 — Full dashboard (Stage 3+4)
+    commit_full_dashboard(semantic_plan, dashboard_blueprint,
+                          user_confirmed=true)
+        → atomic: commit_semantic_model + commit_dashboard_blueprint.
+          After this returns committed, the dashboard is live across
+          Explore / Dataset Model / Dashboard list.
+
+  Stage 5 — Optional polish (no extra confirm if you keep it minimal)
+    add_dashboard_filter / create_public_link / update_chart_description
+
+Granular per-stage tools (create_dataset, add_table_to_dataset,
+commit_semantic_model, commit_dashboard_blueprint, create_chart, …)
+remain available for incremental edits to existing artifacts. Use them
+only when the user is iterating on a specific thing, not for a fresh
+end-to-end build.
 
 ## Mandatory rules
 
@@ -164,25 +166,18 @@ defect; the canonical workflow below is designed to prevent it.
    writes nothing. Present the plan in plain language; wait for an
    explicit yes/duyệt before calling again with `user_confirmed=true`.
 
-5. **Profile + log per-chat artifacts.** Call `get_table_profile` once
-   per table (~10-15K tokens per 30-col table — never re-call). Use
+5. **Profile + session logs.** Call `get_table_profile` once per table
+   (~10-15K tokens per 30-col table — never re-call). Use
    `get_column_summary` for one-column drill-downs.
 
-   Persist what you and the DA confirm into a per-chat folder so a
-   resumed session can recover without re-profiling:
-     a. Call `get_mcp_logs_dir()` once. Inside it, create a session
-        folder `chat_<YYYYMMDD_HHMMSS>/` on the first write.
-     b. Maintain 3 files using Claude's native Write tool:
-        - `dataset.md` — column index (Qualified Key | Display | Type
-          | PK/FK | Sample) per table, plus a "Cross-table name
-          conflicts" list. Add measures + joins after Stage 3 commits.
-        - `charts.md` — one entry per committed chart: title,
-          chart_type, dataset_table_id, role_config keys/values.
-        - `report.md` — final dashboard id, url, placement list.
-     c. On session resume, list the logs folder newest-first and
-        confirm with the DA which chat to continue before reusing.
-   Reference qualified keys from `dataset.md` when authoring measures,
-   joins, and chart role_config — never guess from memory.
+   Every successful commit/mutation is auto-logged to
+   `<MCP_DIR>/logs/chat_<YYYYMMDD_HHMMSS>/{dataset,charts,report}.md`
+   by the MCP itself — no Claude action required. Call
+   `get_mcp_logs_dir()` to find the active folder when you want to
+   read prior decisions, or to APPEND a richer column index (Qualified
+   Key | Display | Type | PK/FK | Sample + cross-table name conflicts)
+   to `dataset.md` after Stage 2 — this richer context survives context
+   compaction and helps prevent guessing qualified keys later.
 
 6. **Discovery first.** Always start with `list_datasets` and
    `list_data_sources`. Reuse existing datasets and semantic models when
@@ -264,6 +259,72 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
         return fn
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# Session log — auto-appended after every successful commit/mutation.
+#
+# Lazy: the chat folder is created on the FIRST log entry, so an MCP process
+# that only runs read-only tools never pollutes logs/.
+# Per-process: one folder per MCP boot. Claude Desktop reloads spawn a fresh
+# folder; this is intentional — boundary between conversations is fuzzy from
+# the MCP's vantage, and "one folder per boot" stays predictable.
+# ---------------------------------------------------------------------------
+
+
+_SESSION_LOG_DIR: Path | None = None
+_SESSION_LOG_LOCK = threading.Lock()
+_SESSION_LOG_FILES = {"dataset": "dataset.md", "charts": "charts.md", "report": "report.md"}
+
+
+def _session_log_dir() -> Path:
+    """Return (and lazily create) the per-process chat-log folder."""
+    global _SESSION_LOG_DIR
+    if _SESSION_LOG_DIR is not None:
+        return _SESSION_LOG_DIR
+    with _SESSION_LOG_LOCK:
+        if _SESSION_LOG_DIR is not None:
+            return _SESSION_LOG_DIR
+        logs_root = Path(__file__).resolve().parent / "logs"
+        logs_root.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        chat_dir = logs_root / f"chat_{stamp}"
+        chat_dir.mkdir(parents=True, exist_ok=True)
+        _SESSION_LOG_DIR = chat_dir
+        logger.info("session log folder: %s", chat_dir)
+        return chat_dir
+
+
+def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> None:
+    """Append a Markdown entry to the appropriate stage log file.
+
+    Never raises — log failures are swallowed so they cannot break a commit.
+    """
+    file_name = _SESSION_LOG_FILES.get(stage)
+    if file_name is None:
+        return
+    try:
+        path = _session_log_dir() / file_name
+        ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines = [f"\n## {ts} — {action}\n"]
+        for key, value in payload.items():
+            if value is None or value == [] or value == {}:
+                continue
+            if isinstance(value, (list, tuple)):
+                lines.append(f"- **{key}** ({len(value)}):")
+                for item in value[:25]:
+                    lines.append(f"  - {item}")
+                if len(value) > 25:
+                    lines.append(f"  - … ({len(value) - 25} more)")
+            elif isinstance(value, dict):
+                lines.append(f"- **{key}**: {value}")
+            else:
+                lines.append(f"- **{key}**: {value}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fp:
+            fp.write("\n".join(lines) + "\n")
+    except Exception as exc:  # noqa: BLE001 — log MUST NOT break the commit
+        logger.warning("session log append failed (%s/%s): %s", stage, action, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +522,8 @@ __all__ = [
     "_clamp_int",
     "_coerce_bool",
     "_drop_none",
+    "_append_session_log",
+    "_session_log_dir",
     "APPBI_API_BASE_URL",
     "APPBI_LONG_TIMEOUT_SECONDS",
 ]

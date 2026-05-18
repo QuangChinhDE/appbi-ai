@@ -39,6 +39,7 @@ from typing import Any
 from appbi_core import (
     APPBI_LONG_TIMEOUT_SECONDS,
     Context,
+    _append_session_log,
     _clamp_int,
     _confirmation_required_for_destructive,
     _drop_none,
@@ -793,7 +794,20 @@ async def create_chart(
                 ),
             }
         return _requires_confirmation("create_chart", plan)
-    return await _request("POST", "/charts/", json_body=body)
+    result = await _request("POST", "/charts/", json_body=body)
+    chart_id = result.get("id") if isinstance(result, dict) else None
+    _append_session_log(
+        "charts",
+        "create_chart",
+        {
+            "chart_id": chart_id,
+            "title": name,
+            "chart_type": chart_type,
+            "dataset_table_id": dataset_table_id,
+            "role_config": _summarize_chart_config(normalized_config),
+        },
+    )
+    return result
 
 
 async def _semantic_preflight(

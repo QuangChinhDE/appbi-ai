@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from appbi_core import (
     Context,
+    _append_session_log,
     _clamp_int,
     _drop_none,
     _query_path,
@@ -285,7 +286,17 @@ async def create_dataset(
             {"name": name, "description": description},
         )
     body = _drop_none({"name": name, "description": description})
-    return await _request("POST", "/datasets/", json_body=body)
+    result = await _request("POST", "/datasets/", json_body=body)
+    _append_session_log(
+        "dataset",
+        "create_dataset",
+        {
+            "dataset_id": result.get("id") if isinstance(result, dict) else None,
+            "name": name,
+            "description": (description or "")[:120],
+        },
+    )
+    return result
 
 
 @tool("dataset")
@@ -398,9 +409,22 @@ async def add_table_to_dataset(
             "enabled": enabled,
         }
     )
-    return await _request(
+    result = await _request(
         "POST", f"/datasets/{int(dataset_id)}/tables", json_body=body
     )
+    _append_session_log(
+        "dataset",
+        "add_table_to_dataset",
+        {
+            "dataset_id": int(dataset_id),
+            "table_id": result.get("id") if isinstance(result, dict) else None,
+            "display_name": display_name,
+            "source_kind": source_kind,
+            "source_table_name": source_table_name,
+            "source_query_preview": (source_query or "")[:120] if source_query else None,
+        },
+    )
+    return result
 
 
 @tool("dataset")

@@ -15,6 +15,7 @@ from typing import Any
 
 from appbi_core import (
     Context,
+    _append_session_log,
     _confirmation_required_for_destructive,
     _drop_none,
     _query_path,
@@ -162,7 +163,20 @@ async def create_dashboard(
                 "layout_mode": layout_mode,
             },
         )
-    return await _request("POST", "/dashboards/", json_body=body)
+    result = await _request("POST", "/dashboards/", json_body=body)
+    dashboard_id = result.get("id") if isinstance(result, dict) else None
+    _append_session_log(
+        "report",
+        "create_dashboard",
+        {
+            "dashboard_id": dashboard_id,
+            "name": name,
+            "layout_mode": layout_mode,
+            "initial_chart_count": len(charts or []),
+            "filter_count": len(filters_config or []),
+        },
+    )
+    return result
 
 
 @tool("all")
@@ -268,9 +282,19 @@ async def add_chart_to_dashboard(
             "widget_type": "chart",
         }
     )
-    return await _request(
+    result = await _request(
         "POST", f"/dashboards/{int(dashboard_id)}/charts", json_body=body
     )
+    _append_session_log(
+        "report",
+        "add_chart_to_dashboard",
+        {
+            "dashboard_id": int(dashboard_id),
+            "chart_id": int(chart_id),
+            "layout": layout,
+        },
+    )
+    return result
 
 
 @tool("all")
