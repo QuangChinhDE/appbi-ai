@@ -293,19 +293,35 @@ async def update_dataset(
     dataset_id: int,
     name: str | None = None,
     description: str | None = None,
+    settings: dict[str, Any] | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Update a dataset's name and/or description."""
+    """Update a dataset's name / description / settings.
+
+    Enable a date table via `settings`:
+      {"calendar_dimension": {"enabled": True, "start_date": "2020-01-01",
+       "end_date": "2030-12-31", "table_name": "calendar_dim"}}
+    Backend materialises a `generated_calendar` dataset table automatically.
+    Don't use `add_table_to_dataset` for calendar — only this endpoint.
+    """
     if not user_confirmed:
         return _requires_confirmation(
             "update_dataset",
             {
                 "dataset_id": int(dataset_id),
-                "changes": _drop_none({"name": name, "description": description}),
+                "changes": _drop_none({
+                    "name": name,
+                    "description": description,
+                    "settings_keys": sorted((settings or {}).keys()) or None,
+                }),
             },
         )
-    body = _drop_none({"name": name, "description": description})
+    body = _drop_none({
+        "name": name,
+        "description": description,
+        "settings": settings,
+    })
     return await _request(
         "PUT", f"/datasets/{int(dataset_id)}", json_body=body
     )

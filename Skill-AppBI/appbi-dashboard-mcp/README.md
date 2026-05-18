@@ -300,8 +300,6 @@ bound/base view. Joined-view fields like `orders.customer_name` are not safe to
 save even if the semantic explore can conceptually reach them, because the
 stored chart config is executed against bare column names at render time.
 
-See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the design rationale.
-
 ---
 
 ## Preview-then-confirm
