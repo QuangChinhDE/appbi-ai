@@ -27,28 +27,106 @@ import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedEx
 const MAX_CHART_POINTS = 2000;
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ X-axis smart helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-/** Number of items beyond which bars are rendered in a scrollable container. */
-const SCROLL_THRESHOLD = 40;
-/** Minimum px allocated per bar/category when the chart is scrollable. */
-const MIN_ITEM_WIDTH = 38;
+/**
+ * Phase-15.22 — never hide an axis label.
+ *
+ * DA report: the X-axis was auto-hiding labels when the chart preview area
+ * shrank ("preserveStartEnd" tick interval). Recharts' default behaviour is
+ * to skip overlapping ticks; that's fine on a big screen but in a small
+ * dashboard tile every other category vanishes and DA can't read the chart.
+ *
+ * PowerBI / Looker / Metabase pattern: ALWAYS show every label. When they
+ * collide, rotate aggressively before falling back to horizontal scroll.
+ * Long individual values get truncated with an ellipsis + native browser
+ * tooltip on hover for the full text.
+ *
+ * SCROLL_THRESHOLD dropped from 40 → 25 because rotated labels eat
+ * horizontal room earlier than upright ones. MIN_ITEM_WIDTH bumped from
+ * 38 → 48 for the same reason — gives rotated text room to breathe.
+ */
+const SCROLL_THRESHOLD = 25;
+const MIN_ITEM_WIDTH = 48;
 
 /**
- * Return XAxis props that adapt angle, height and tick interval to the number
- * of data points so labels never overlap regardless of screen size.
+ * Return XAxis props that adapt angle and height to the number of data
+ * points. Phase-15.22 pins interval=0 so EVERY tick label renders.
  */
 function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
-  const angle   = count > 60 ? -45 : count > 25 ? -30 : 0;
-  const height  = count > 25 ? 60 : 30;
+  let angle = 0;
+  let height = 30;
+  if (count > 60) {
+    angle = -60;
+    height = 100;
+  } else if (count > 25) {
+    angle = -45;
+    height = 80;
+  } else if (count > 12) {
+    angle = -30;
+    height = 60;
+  }
   const textAnchor: 'end' | 'middle' = angle !== 0 ? 'end' : 'middle';
-  // When scrollable we show every tick; otherwise thin out high-cardinality axes.
-  const interval = count > SCROLL_THRESHOLD
-    ? 0
-    : count > 80
-      ? Math.ceil(count / 30)
-      : count > 40
-        ? Math.ceil(count / 40)
-        : 'preserveStartEnd';
-  return { angle, height, textAnchor, interval, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
+  return { angle, height, textAnchor, interval: 0 as const, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
+}
+
+/**
+ * Phase-15.22 — custom axis tick component that truncates long labels and
+ * exposes the full text via an SVG `<title>` (native browser tooltip on
+ * hover). The previous default tick truncated at the SVG clipping
+ * boundary, leaving "Custome…" mid-character; this controls truncation
+ * cleanly with an ellipsis at a sensible character budget.
+ *
+ * Recharts passes `x`, `y`, `payload` automatically when this is wired
+ * into an XAxis/YAxis `tick={<CustomAxisTick ... />}` prop. Static props
+ * (angle / textAnchor / orientation / formatter) are passed in by the
+ * caller and merged with Recharts' injected positioning.
+ */
+interface CustomAxisTickProps {
+  x?: number;
+  y?: number;
+  payload?: { value: any };
+  angle: number;
+  textAnchor: 'end' | 'middle' | 'start';
+  fontSize: number;
+  formatter?: (v: any) => string;
+  orientation: 'x' | 'y';
+}
+
+function CustomAxisTick({
+  x = 0, y = 0, payload, angle, textAnchor, fontSize, formatter,
+  orientation,
+}: CustomAxisTickProps) {
+  const raw = formatter
+    ? formatter(payload?.value)
+    : String(payload?.value ?? '');
+  // Character budget per orientation/angle. Horizontal X axis has the
+  // tightest room (bar-width wide). Rotated labels can be longer because
+  // they extend downward into the reserved height. Y axis labels live
+  // in the side margin — also generous.
+  const maxChars = orientation === 'y'
+    ? 22
+    : angle === 0
+      ? 12
+      : 20;
+  const display = raw.length > maxChars ? raw.slice(0, maxChars - 1) + '…' : raw;
+  const truncated = display !== raw;
+  const dy = orientation === 'x' ? fontSize : fontSize * 0.35;
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text
+        x={0}
+        y={0}
+        dy={dy}
+        textAnchor={textAnchor}
+        transform={angle !== 0 ? `rotate(${angle})` : undefined}
+        fontSize={fontSize}
+        fill="currentColor"
+        className="text-text-tertiary"
+      >
+        {display}
+        {truncated && <title>{raw}</title>}
+      </text>
+    </g>
+  );
 }
 
 /**
@@ -517,10 +595,17 @@ function ExploreChartInner({
     return (
       <XAxis
         dataKey={dataKey}
-        tick={{ fontSize, angle, textAnchor } as any}
+        tick={(
+          <CustomAxisTick
+            angle={angle}
+            textAnchor={textAnchor}
+            fontSize={fontSize}
+            formatter={dateLike ? formatDateAxisValue : undefined}
+            orientation="x"
+          />
+        ) as any}
         height={height}
-        interval={interval as any}
-        tickFormatter={dateLike ? formatDateAxisValue : undefined}
+        interval={interval}
         label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset, fontSize } : undefined}
       />
     );
@@ -987,7 +1072,23 @@ function ExploreChartInner({
     const innerChart = (
       <BarChart data={displayData} layout="vertical" onClick={handleCategoricalChartClick}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-        <YAxis dataKey={xField} type="category" tick={{ fontSize }} width={120}
+        {/* Phase-15.22: category labels on horizontal bar live on YAxis.
+            Same interval=0 + truncate-with-tooltip treatment as XAxis on
+            other types. width=160 (up from 120) gives room for typical
+            customer/region names. */}
+        <YAxis
+          dataKey={xField}
+          type="category"
+          tick={(
+            <CustomAxisTick
+              angle={0}
+              textAnchor="end"
+              fontSize={fontSize}
+              orientation="y"
+            />
+          ) as any}
+          interval={0}
+          width={160}
           label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
         <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)}
           label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
