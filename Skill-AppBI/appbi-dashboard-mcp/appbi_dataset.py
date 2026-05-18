@@ -354,13 +354,11 @@ async def add_table_to_dataset(
     """Add a table to a dataset.
 
     `source_kind`:
-      physical_table → needs datasource_id + source_table_name ('public.orders')
-      sql_query      → needs datasource_id + source_query (SELECT ...)
-      derived_table  → needs source_query referencing tables in THIS dataset;
-                       datasource_id must be omitted.
-    Calendar tables are NOT added here — enable via update_dataset
-    settings.calendar_dimension.enabled=true. Measures live on SemanticView,
-    not a dedicated table.
+      physical_table → datasource_id + source_table_name ('public.orders')
+      sql_query      → datasource_id + source_query (SELECT ...)
+      derived_table  → source_query referencing dataset tables; NO datasource_id.
+    Calendar tables: use update_dataset settings.calendar_dimension.
+    Measures: live on SemanticView, not a table.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -539,12 +537,10 @@ async def update_dataset_dictionary(
 ) -> dict[str, Any]:
     """Replace the dataset-level dictionary (business glossary).
 
-    REPLACES the whole `dictionary` JSON — always pass the complete
-    intended state. Fields: overview, business_purpose, usage_guidelines,
-    ai_context, default_filters (list[str]), warnings (list[str]),
-    table_notes (list[dict] with table_id, business_role, grain,
+    REPLACES the whole `dictionary` JSON — pass complete state.
+    `table_notes[i]`: {table_id, business_role, grain,
     freshness_expectation, join_hint, owner_note, row_count_expectation,
-    important_columns, column_notes).
+    important_columns, column_notes}.
     """
     body = _drop_none(
         {

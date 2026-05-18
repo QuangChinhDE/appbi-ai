@@ -39,15 +39,9 @@ async def list_dashboards(
     limit: int = 50,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """List every dashboard the authenticated user can view.
+    """List dashboards (full rows incl. placements + filters).
 
-    `skip` / `limit` pagination defaults match the backend (limit=50).
-    Bump `limit` (no documented BE cap on this endpoint) when scanning
-    a large workspace.
-
-    Returns full DashboardResponse rows including chart placements +
-    filters. For a slim list when picking a dashboard for a workboard
-    screen, use `list_accessible_dashboards_summary` instead.
+    Use `list_accessible_dashboards_summary` for a slim picker payload.
     """
     items = await _request(
         "GET",
@@ -60,13 +54,9 @@ async def list_dashboards(
 async def list_accessible_dashboards_summary(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Phase-15.14: slim list of dashboards (id + name + description + permission).
+    """Slim dashboard list: {id, name, description, permission}.
 
-    Backed by `GET /dashboards/accessible-summary`. Use when picking a
-    dashboard to embed inside a workboard dashboard screen — the heavy
-    DashboardResponse payload is wasteful for a picker. Once a dashboard
-    is chosen, call `get_dashboard_filter_fields(dashboard_id)` to load
-    its filter columns.
+    Use for pickers (avoids full DashboardResponse payload).
     """
     items = await _request("GET", "/dashboards/accessible-summary")
     return {"items": items}
@@ -137,21 +127,19 @@ async def create_dashboard(
 ) -> dict[str, Any]:
     """Create a dashboard with optional pre-populated charts.
 
-    Use this when charts already exist; for raw data use HTML import path.
+    Use when charts already exist (else: HTML import path).
 
     `charts`: [{chart_id, layout:{x,y,w,h}, parameters?, widget_type?}]
-              OR [{widget_type, widget_config, layout}] for non-chart widgets.
-    `filters_config`: dashboard filters (text|number|date|dropdown). Each
-              item: {id, name, type, field:'view.col', default_value?, scope}.
-    `public_filters_config` (Phase-15.14): filter presets baked into the
-              dashboard's public-share token. Public viewers cannot change
-              these. Same shape as filters_config.
-    `pages_config` (Phase-15.14): tab pages on the dashboard. Each item:
-              {id, name, order?}. Charts pin to a page via
-              layout.pageId == page.id.
+      OR non-chart [{widget_type, widget_config, layout}].
+    `filters_config`: [{id, name, type:text|number|date|dropdown,
+      field:'view.col', default_value?, scope}].
+    `public_filters_config`: same shape, baked into the public-share
+      token (viewers can't change).
+    `pages_config`: [{id, name, order?}] for tab pages; charts pin via
+      layout.pageId.
     `layout_mode`: "grid"|"canvas".
-    `theme_config`: mode, accent, font, background, density (compact|normal|spacious),
-                    cardStyle (soft|sharp|flat|elevated), cardRadius, cardShadow, hoverAnimation.
+    `theme_config` keys: mode, accent, font, background, density,
+      cardStyle, cardRadius, cardShadow, hoverAnimation.
     """
     body = _drop_none(
         {
@@ -338,24 +326,16 @@ async def update_widget_config(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Update the widget_config of an existing non-chart widget placement.
+    """Edit a non-chart widget placement in place (no delete+re-add).
 
-    Phase-15.14: previously the only way to change a widget after placement
-    was delete + add, which loses the placement ID and re-randomises layout.
-    This wraps `PATCH /dashboards/{id}/widgets/{dashboard_chart_id}` so DA
-    can iterate on text / image / countdown / shape / parameter_switcher
-    widgets in place.
-
-    `dashboard_chart_id` is the placement ID (`dashboard_charts[].id`), NOT
-    the chart ID. `widget_config` shape depends on widget_type:
-      - text       → {markdown} or {template}
-      - image      → {url, alt?}
-      - countdown  → {target_date} or {target}
-      - shape      → {shape, color?} or {kind}
-      - parameter_switcher → {parameter_id, options:[{label,value}]}
-    Backend normalises legacy/alias keys.
-
-    400 = the placement is a chart (use update_chart instead).
+    `dashboard_chart_id` is the placement id (`dashboard_charts[].id`),
+    not chart id. `widget_config` shape by widget_type:
+      text → {markdown} or {template}
+      image → {url, alt?}
+      countdown → {target_date} or {target}
+      shape → {shape, color?} or {kind}
+      parameter_switcher → {parameter_id, options:[{label,value}]}
+    400 if placement is a chart (use update_chart).
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -507,20 +487,11 @@ async def share_dashboard(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Phase-15.14: generate (or reuse) the legacy single share token.
+    """Legacy single share-token (URL = <BASE>/public/dashboard/<token>).
 
-    This is the older single-link share mechanism — `Dashboard.share_token`
-    is set on the row itself, and the public URL becomes
-    `<BASE>/public/dashboard/<share_token>`. For multi-link sharing with
-    independent filters / appearance, prefer `create_public_link` which
-    creates rows in `dashboard_public_links` with their own tokens.
-
-    `public_filters_config`: optional preset filters baked into the share.
-    Public viewers cannot change them. Same shape as filters_config.
-
-    Returns `{share_token, public_filters_config}`. A repeated call
-    returns the existing token (idempotent) unless you flip the filter
-    list.
+    Idempotent — repeated calls return the existing token unless
+    filter list changes. For multi-link sharing with independent
+    filters/appearance prefer `create_public_link`.
     """
     if not user_confirmed:
         return _requires_confirmation(

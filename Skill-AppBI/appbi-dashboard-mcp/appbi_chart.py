@@ -176,13 +176,12 @@ async def list_charts(
     summary: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """List charts. Default returns FULL records (>500KB at 40 charts).
+    """List charts. ALWAYS pass `summary=True` unless inspecting a config
+    (full records are >500KB at 40 charts).
 
-    Always pass `summary=True` unless inspecting a specific chart's config.
-    `q`: substring search. `chart_type`: enum filter (uppercase).
-    `scope`: all|mine|shared. `sort`: updated_desc|created_desc|name_asc|
-    name_desc|relevance. `skip`/`limit` paginate (max 500).
-    `dataset_id`/`dataset_table_id`: client-side post-filter (BE doesn't support).
+    `q` substring; `chart_type` enum; `scope` all|mine|shared;
+    `sort` updated_desc|created_desc|name_asc|name_desc|relevance.
+    `dataset_id`/`dataset_table_id` are client-side post-filters.
     """
     items = await _request(
         "GET",
@@ -283,15 +282,12 @@ async def preview_chart_data(
     """Run a chart query WITHOUT saving. Verify before create_chart.
 
     `chart_type`: uppercase enum (BAR, LINE, KPI, ...).
-    `config`: Explore shape — chartType, queryMode, roleConfig,
-    generatedRoleConfig|customRoleConfig, styleConfig, filters, baseFilters.
-    `context`: filter scope label ("dashboard" typical) for scope-keyed overrides.
+    `config`: Explore shape — chartType, queryMode, roleConfig (or
+    generatedRoleConfig/customRoleConfig), styleConfig, filters, baseFilters.
+    `context`: filter scope label ("dashboard" typical).
 
-    Field-qualifier contract (Phase 12.5): same as `create_chart` — use
-    qualified `view.field` for semantic measures and cross-table dims,
-    bare names only for legacy single-table raw columns. Mixing bare and
-    qualified refs for the same logical field WILL produce silently wrong
-    routing (live_query vs semantic engine choose different paths).
+    Use qualified `view.field` for semantic/cross-table; bare for legacy
+    single-table raw columns. Don't mix shapes — routing diverges.
     """
     body = _drop_none(
         {
@@ -463,96 +459,42 @@ async def create_chart(
 ) -> dict[str, Any]:
     """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
 
-    Field-qualifier contract (Phase 12.5):
-      * Qualified `view.field` → routes to SemanticQueryEngine + multi-hop
-        JOIN resolver. Required for cross-table charts AND for any semantic
-        measure (filtered, formula, dataset-scope Phase 12, time-grain
-        Phase 13.4, context-modifier Phase 14).
-      * Bare `field` → routes to legacy live_query (single table, NO JOIN).
-      * DO NOT manually strip qualifiers — BE handles same-base-view
-        unqualify via `_strip_base_view_qualifiers` (datasets.py:743).
-      * Phase-15.25 makes the routing oracle robust to missing
-        `semanticBinding` (e.g. when an MCP-saved chart was deserialised
-        before binding hydration completed): ANY dotted ref now routes
-        semantic regardless of binding state. Pre-15.25 the routing
-        early-exited when `baseViewName` was empty, silently dropping
-        joined-view dim queries to the live builder and returning a
-        single null-bucket row. Caveat: this only matters when MCP
-        creates the chart with `dataset_table_id` set but the table's
-        SemanticView name resolves later. Best practice still: ensure
-        the chart's table has a registered SemanticView before save.
+    Field refs:
+      * Qualified `view.field` → semantic engine + JOIN (required for
+        cross-table, declared measures, time grains, context modifiers).
+      * Bare `field` → legacy live_query, single table, NO JOIN.
 
-    Implicit measure fallback (Phase 15.7 → 15.17):
-      When the metric.field points at a column that ISN'T a declared
-      semantic measure, the engine synthesises one on the fly using the
-      column's dimension entry. After Phase 15.17 the synthesis follows
-      the FE agg-validity matrix:
+    Anchor table: pass `dataset_id` to auto-derive `dataset_table_id`
+    from the first qualified field's view (matches FE Hướng A). Pass
+    `dataset_table_id` to anchor explicitly. Both omitted → 400.
 
-        SUM / AVG              → numeric dim only
-        MIN / MAX              → any orderable type (numeric / date / string)
-        COUNT / COUNT_DISTINCT → any column type
+    Agg-validity matrix (engine auto-promotes raw cols to a measure):
+      SUM / AVG          → numeric only
+      MIN / MAX          → any orderable (numeric / date / string)
+      COUNT / COUNT_DISTINCT → any column
+    Default agg when `metric.agg` omitted: numeric→SUM else→COUNT_DISTINCT.
 
-      Default agg when MCP omits `metric.agg`:
-        numeric dim     → SUM
-        anything else   → COUNT_DISTINCT
+    `role_config` keys:
+      * `timeGrains: {"view.date_field": "day|week|month|quarter|year"}`
+        — bucketed via date_trunc. Set this for any date-axis chart
+        (BAR/LINE/AREA/TIME_SERIES) — FE's auto-default fires only for
+        NEW charts in the editor, NOT MCP-saved charts on load.
+      * `tableMode: "pivot"` + `tableRowDimension`, `tableColumnDimension`,
+        `tablePivotMetric` for TABLE pivot layout. `selectedColumns: [...]`
+        whitelists TABLE columns.
+      * `baseFilters: [{field, operator, value}]` — CHART-level filters
+        (different from dashboard-level). Operators: eq/ne/neq/gt/gte/
+        lt/lte/in/not_in/between/contains/not_contains/starts_with/
+        ends_with/is_null/is_not_null. `between` value=[lo,hi];
+        is_null/is_not_null take no value.
+      * Measures with expression/filters/depends_on/format/
+        context_modifiers belong on the SemanticView, NOT inline on chart.
 
-      Mismatches (SUM on string, AVG on date, etc.) return HTTP 400 with
-      a tight message naming the agg, the column type, and which aggs
-      DO work. Pre-15.17 the same combo returned a misleading
-      "Measure không tồn tại" error — that wording is gone.
+    Do NOT pass `_implicit: true` on metrics — FE-only badge marker.
 
-      Engine emits `${TABLE}.field` for synthesised SQL (Phase 15.15) so
-      cross-table JOINs stay unambiguous even when multiple joined views
-      share a column name. Implicit measures get the FE `_implicit: true`
-      flag on load so Explore can surface the "auto" badge.
-
-    Anchor table (Phase-15.10 / Hướng A):
-      The FE Explore editor no longer asks the user to pick a base table
-      upfront — it auto-derives one from the first qualified field. Mirror
-      that flow here:
-      * Pass `dataset_id` (without `dataset_table_id`) → MCP picks the
-        table matching the first qualified field's view, exactly like FE.
-      * Pass `dataset_table_id` explicitly when you need to anchor on a
-        specific table (e.g. forcing a JOIN root for performance).
-      * Both omitted → error (BE save requires `dataset_table_id`).
-
-    Recent config-shape additions Claude can use:
-      * `role_config.timeGrains: {"view.field": "day|week|month|quarter|year"}`
-        (Phase 13.4) — server-side date_trunc bucketing. Phase 15.20
-        treats the presence of an entry as the "Date hierarchy on" flag:
-        when DA opens the saved chart, the Configure toggle shows on,
-        the chart preview gains ↑/↓ drill chips, and the stored level
-        becomes the starting drill level. SET `timeGrains[date_field] =
-        "month"` for any BAR/LINE/AREA/TIME_SERIES chart whose X is a
-        date column unless the user explicitly wants raw timestamps —
-        FE's auto-default ('month' on date-field add) only fires for
-        NEW charts in the editor, NOT for MCP-saved charts on load.
-      * `role_config.tableMode: "pivot"` + `tableRowDimension`,
-        `tableColumnDimension`, `tablePivotMetric` (TABLE pivot layout).
-      * `role_config.selectedColumns: [...]` (TABLE visible-column whitelist).
-      * Measures with `expression`, `filters`, `depends_on`, `format`,
-        `context_modifiers` are first-class — declare them on the
-        SemanticView, not inline on the chart.
-      * `role_config.baseFilters: [...]` — chart-level filters (DIFFERENT
-        from dashboard-level filters). Each entry:
-        `{field, operator, value}`. Operators (Phase 15.19 parity with
-        FE FilterBuilder + BE engine): eq, ne (or `neq` alias), gt,
-        gte, lt, lte, in, not_in, between, contains, not_contains,
-        starts_with, ends_with, is_null, is_not_null. `between` value
-        is `[lo, hi]`; `is_null`/`is_not_null` take no value.
-
-    DO NOT include the FE-only `_implicit: true` flag on metrics —
-    Phase 15.7 / 15.16 add it client-side when MetricSlot synthesises
-    an ad-hoc agg over a raw column, but BE ignores it. MCP creating
-    a metric just passes `{field, agg}`; the engine decides whether to
-    auto-promote at query time per the Phase 15.17 validity matrix.
-
-    Render-parity guard: dry-run-create returns `fe_unrecognised_keys` —
-    config keys the BE accepts but the Explore renderer ignores. The plan
-    surface flags them so Claude can drop or rename before commit.
-
-    `bypass_semantic_check=True` skips the runtime preview gate — explain
-    to the user first.
+    `dry-run-create` validates + previews before commit; its
+    `fe_unrecognised_keys` flags BE-accepted-but-FE-ignored keys.
+    `bypass_semantic_check=True` skips the runtime gate (warn user first).
     """
     # Phase-15.10 / Hướng A: derive dataset_table_id when omitted.
     if dataset_table_id is None:

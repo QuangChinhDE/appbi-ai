@@ -548,19 +548,11 @@ async def validate_html_import_plans(
     dataset_id: int,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Phase-15.14: re-validate every chart_plan against the live dataset.
+    """Re-validate every chart_plan against the live dataset.
 
-    Wraps `POST /dashboards/import-html/validate-plans`. Returns per-block
-    pass/fail results — call this AFTER manually editing chart_plans that
-    came back from `analyze_html_import` with warnings. The endpoint does
-    not call any LLM; it executes the actual chart query plan against the
-    dataset and surfaces real engine errors so Claude can fix them.
-
-    `analysis_json`: JSON string of the analysis dict (same shape as
-                     `analyze_html_import` returns).
-    `dataset_id`: dataset to validate against.
-
-    Returns: `{results: [{block_id, status: 'ok'|'error', error?, ...}]}`.
+    Use after manually editing chart_plans from analyze_html_import.
+    Pure validation (no BE LLM); surfaces real engine errors.
+    Returns `{results: [{block_id, status:'ok'|'error', error?, ...}]}`.
     """
     try:
         analysis = json.loads(str(analysis_json))
@@ -594,25 +586,16 @@ async def dry_run_build_html_dashboard_import(
     included_block_ids: list[str] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Phase-15.14: preview the full materialization pipeline without writing.
+    """Preview the full build pipeline without writing (savepoint+rollback).
 
-    Wraps `POST /dashboards/import-html/dry-run-build`. Runs the same
-    build path as `build_dashboard_from_html` inside a savepoint, then
-    rolls back. The response shape mirrors a real build (would_create
-    counts, page_id, type_changes) so Claude can show the user exactly
-    what would be created before committing.
-
-    Use this after `validate_html_import_plans` returns clean, to do a
-    final end-to-end check (calculated-field SQL, semantic uniqueness,
-    type coercion). Then call `build_dashboard_from_html` for real.
-
-    NOTE: dry-run is read-only from the user's perspective but background
-    embedding / LLM workers scheduled during build are NOT rolled back —
-    they will run against rows that no longer exist. The BE handles
-    orphan rows gracefully but the warning is surfaced in the response.
+    Response mirrors a real build (would_create counts, page_id,
+    type_changes). Use after validate_html_import_plans returns clean.
 
     `source_mode`: "existing_dataset" | "upload_excel".
     `target_mode`: "new_dashboard" | "append_to_dashboard".
+
+    Caveat: background embedding/LLM workers scheduled during build
+    are NOT rolled back (BE handles the orphans).
     """
     try:
         analysis = json.loads(str(analysis_json))

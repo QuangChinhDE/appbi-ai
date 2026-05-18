@@ -175,22 +175,11 @@ async def get_distinct_field_values(
     filters_json: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Get distinct values for a qualified semantic field (e.g. 'orders.country').
+    """Distinct values for a qualified semantic field (e.g. 'orders.country').
 
-    Phase-15.21 made this the canonical source for dropdown filter values
-    end-to-end: the FE's FilterBuilder lazy-fetches this endpoint when DA
-    opens a `Is any of` / `Is not any of` picker on a cross-table field,
-    and Claude should use the same call when authoring filter presets
-    for a dashboard / public link.
-
-    `filters_json` is a JSON-encoded list of dashboard filter objects to
-    cascade — pass when you want distinct values restricted by other
-    active filters (e.g. "show only regions whose country = Vietnam").
-
-    Profile note: registered in BOTH `explore` (Stage 3 semantic design)
-    AND `report` (Stage 4-5 dashboard authoring) because filter dropdowns
-    are needed throughout — pre-Phase 15.23 it was explore-only, which
-    forced report-profile sessions to fall back to all-profile.
+    Use for dropdown filter values (FE's "Is any of" picker fetches this
+    same endpoint). `filters_json` cascades distinct values through
+    other active dashboard filters.
     """
     return await _request(
         "GET",
@@ -219,31 +208,21 @@ async def create_semantic_view(
 ) -> dict[str, Any]:
     """Create a semantic view over one physical/derived table.
 
-    Set either `sql_table_name` ('public.orders') OR `dataset_table_id`.
-    `dimensions`: {name, type, sql, label?, description?, hidden?}.
-      type ∈ string|number|date|datetime|yesno.
-    `measures`: {name, type, sql?, label?, description?, hidden?,
-                  expression?, filters?, where_sql?, depends_on?,
-                  format?, folder?, scope?, source_columns?}.
-      type ∈ count|sum|avg|min|max|count_distinct|percent_of_total.
-      `expression` overrides `sql`. `filters` (Looker-style) preferred
-      over `where_sql`. `${TABLE}` = underlying table alias.
+    Set either `sql_table_name` OR `dataset_table_id`.
 
-      Phase-12 cross-table measure (Power BI parity):
-        scope='view' (default) — measure aggregates columns from THIS view.
-        scope='dataset' — measure pulls columns from other views joined
-                          into the dataset. Required: source_columns =
-                          [{view, field}, ...] listing each referenced
-                          column. Engine auto-JOINs via the dataset join
-                          graph. Example: measure `revenue_per_lead` in
-                          view `analytics`:
-                            scope: "dataset"
-                            expression: "${deals.amount} / NULLIF(COUNT(${leads.id}), 0)"
-                            source_columns:
-                              - {view: "deals", field: "amount"}
-                              - {view: "leads", field: "id"}
-        BE rejects mismatch: scope='view' + non-empty source_columns,
-        or scope='dataset' + empty source_columns → 400.
+    `dimensions[i]`: {name, type, sql, label?, description?, hidden?}.
+      type ∈ string|number|date|datetime|yesno.
+
+    `measures[i]`: {name, type, sql?, label?, description?, hidden?,
+      expression?, filters?, where_sql?, depends_on?, format?, folder?,
+      scope?, source_columns?}.
+      type ∈ count|sum|avg|min|max|count_distinct|percent_of_total.
+      `expression` overrides `sql`. `${TABLE}` = view alias.
+
+    Cross-table measure: scope='dataset' + source_columns=[{view,field}].
+    Engine auto-JOINs via dataset graph. Ex: revenue_per_lead =
+    `${deals.amount} / NULLIF(COUNT(${leads.id}), 0)` with source_columns
+    referencing both views. scope='view' (default) = single-view agg.
     """
     body = _drop_none(
         {
@@ -278,12 +257,9 @@ async def update_semantic_view(
     """Patch a semantic view. `patch` keys: name, sql_table_name,
     dataset_table_id, dimensions, measures, description.
 
-    `measures` REPLACES the whole array — read current view, mutate, write back.
-    Measure schema = same as create_semantic_view (expression/filters/where_sql/
-    depends_on/format/folder/scope/source_columns all optional).
-
-    Phase-12: see create_semantic_view docstring for scope='dataset' usage —
-    same rules apply on update."""
+    `measures`/`dimensions` REPLACE the array — read, mutate, write back.
+    Measure schema = same as create_semantic_view.
+    """
     if not user_confirmed:
         return _requires_confirmation(
             "update_semantic_view",
@@ -605,25 +581,20 @@ async def execute_semantic_query(
     window_functions: list[dict[str, Any]] | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Run a semantic query (data + SQL). Use to verify before chart create.
+    """Run a semantic query (data + SQL). Verify before chart create.
 
-    `dimensions`/`measures`: REQUIRED qualified `view.field` form. Bare
-    names route to the wrong view's resolver and silently produce data
-    from the base view's columns only — NO JOIN, wrong numbers. The
-    engine raises a VN error like:
-        Bảng "X" chưa có relationship tới base view "Y". Mở tab Data Model...
-    when a qualified ref points to an unreachable view; treat that as a
-    hint to either add a `set_view_relationship` or pick a different
-    measure / dimension.
+    `dimensions`/`measures`: qualified `view.field` REQUIRED (bare → wrong
+    base-only result, no JOIN). Unreachable view → engine raises VN error
+    pointing at Data Model tab.
     `filters`: {qualified_field: {operator, value}}. operator ∈ eq|ne|gt|
-       gte|lt|lte|in|not_in|contains|starts_with|ends_with. Plain
-       {field: value} → 422.
+      gte|lt|lte|in|not_in|between|contains|not_contains|starts_with|
+      ends_with|is_null|is_not_null. `between` value=[lo,hi]; null ops
+      take no value. Plain {field: value} → 422.
     `sorts`: [{field, direction:'asc'|'desc'}].
-    `time_grains`: {field: 'day'|'week'|'month'|'quarter'|'year'}.
-       USE THIS for time-series instead of grouping on raw timestamps —
-       BE buckets via date_trunc per dialect (Phase-5 multi-dialect).
+    `time_grains`: {field: 'day'|'week'|'month'|'quarter'|'year'} → BE
+      date_trunc, multi-dialect.
     `window_functions`: [{name, base_measure, partition_by, order_by,
-       type:'running_sum'|'running_avg'|'rank'|'dense_rank'|'row_number'}].
+      type:'running_sum'|'running_avg'|'rank'|'dense_rank'|'row_number'}].
     """
     body = _drop_none(
         {
