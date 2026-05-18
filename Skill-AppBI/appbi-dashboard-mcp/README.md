@@ -240,8 +240,7 @@ Phase-15.14 additions:
 
 | Module | Tools | Profiles |
 |---|---|---|
-| [appbi_core.py](appbi_core.py) | `health_check`, `get_mcp_logs_dir` | all profiles |
-| [appbi_html_import.py](appbi_html_import.py) | `get_html_dashboard_spec`, `analyze_html_import`, `validate_html_import_plans`, `dry_run_build_html_dashboard_import`, `build_dashboard_from_html` | `all` only |
+| [appbi_core.py](appbi_core.py) | `health_check` | all profiles |
 | [appbi_quality.py](appbi_quality.py) | 10 quality-rule tools | `all` only |
 | [appbi_sharing.py](appbi_sharing.py) | 4 cross-resource share tools | `all` only |
 
@@ -329,12 +328,11 @@ confirmation.
 | Chart suggestions | `ai_chart_preview` (backend LLM) | Claude designs config |
 | Quality rule suggestions | `ai_suggest_quality_rule` (backend LLM) | Claude proposes rules |
 | Mutation safety | Mixed | Every write needs `user_confirmed` |
-| HTML import flow | Yes | Yes (`appbi_html_import`, `all` profile only) — complements blueprint |
-| Tool surface | ~159 tools, all-or-nothing | ~99 tools, profile-trimmable to ~30 |
+| HTML import flow | Yes | Removed — superseded by the blueprint flow (`propose_dashboard_blueprint` → `commit_dashboard_blueprint`) |
+| Tool surface | ~159 tools, all-or-nothing | ~94 tools, profile-trimmable to ~30 |
 
-The blueprint flow (JSON) and HTML import flow (visual) coexist — pick the
-one matching the DA's authoring preference. Both go through server-side
-validation before any write.
+The blueprint flow covers the same "design → materialise" pattern with strict
+JSON validation, so HTML-mockup ingestion is no longer needed here.
 
 ---
 
@@ -390,7 +388,6 @@ later cause chart/runtime failures.
 | `appbi_blueprint.py` | Stage 3+4 design-and-commit flow. |
 | `appbi_chart.py` | Stage 4 — chart CRUD. |
 | `appbi_dashboard.py` | Stage 5 — dashboard assembly, filters, public links. |
-| `appbi_html_import.py` | Stage 5 (Flow A) — visual-first dashboard build from an AppBI Import Plan v1 HTML mockup. |
 | `appbi_quality.py` | Optional — data-quality rule CRUD. |
 | `appbi_sharing.py` | Cross-resource sharing. |
 | `run-mcp.ps1` / `run-mcp.sh` | Generic launcher; accepts profile via parameter or `APPBI_MCP_PROFILE`. |

@@ -194,24 +194,12 @@ defect; the canonical workflow below is designed to prevent it.
    12 cols × 80px): KPI=3×2, LINE/BAR/AREA/PIE=6×4, TABLE/PIVOT=12×5,
    SCATTER=6×5, COMBO=12×4. Min w≥3, h≥2 (smaller clips axes).
 
-8. **HTML Import (Flow A — alternative to blueprint for visual mockups).**
-   When the DA supplies an HTML mockup or wants to author a self-contained
-   `.html` file laying out charts visually, use the import-html flow:
-   `get_html_dashboard_spec()` → write AppBI Import Plan v1 HTML →
-   `analyze_html_import()` → review chart_plans + warnings →
-   `build_dashboard_from_html()`. The backend validates every chart plan
-   server-side before materialising Dataset + Charts + Dashboard in one
-   transaction. Use it when there are ≥4 charts AND a visual layout
-   matters, or when source is an uploaded Excel. The blueprint flow
-   (`propose_dashboard_blueprint` → `commit_dashboard_blueprint`) remains
-   the default for plain JSON-driven builds.
-
-9. **Auditing legacy data.** If the user reports "the dashboard exists
+8. **Auditing legacy data.** If the user reports "the dashboard exists
    but Explore looks empty", run `audit_chart_semantic_health` to
    inventory broken charts, then `repair_chart_semantic_binding` per
    chart. Do not rebuild from scratch unless the user asks.
 
-10. **Stay inside these stages.** AI Chat sessions, AI Agent reports,
+9. **Stay inside these stages.** AI Chat sessions, AI Agent reports,
    Workboards are NOT part of this MCP. If the user asks for them, say
    they are not available here.
 """.strip()

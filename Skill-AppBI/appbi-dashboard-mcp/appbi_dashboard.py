@@ -1,12 +1,9 @@
 """Stage 5 — Dashboard.
 
 Tools for assembling charts into dashboards: layout, filters, public links.
-Sibling flows for full dashboard creation:
-  - Flow A (visual): see `appbi_html_import` — author HTML mockup,
-    analyze → build via server-validated import-html endpoints.
-  - Flow B (JSON):   `propose_dashboard_blueprint` →
-    `commit_dashboard_blueprint` from `appbi_blueprint`.
-These granular tools handle incremental edits to an existing dashboard.
+Prefer the blueprint flow (`propose_dashboard_blueprint` →
+`commit_dashboard_blueprint`) for multi-chart builds — these granular tools
+are for incremental edits to an existing dashboard.
 
 Filters: AppBI uses a hybrid model where dashboard filters are stored as a
 JSON array on the dashboard itself (`filters_config`). There is no separate
