@@ -137,18 +137,25 @@ def _role_config_needs_semantic_runtime(
     Cross-view fields require JOIN resolution. Same-view qualified semantic
     measures/dimensions also need the semantic engine because they may be
     formulas, filtered measures, or aliases rather than physical columns.
+
+    Phase-15.25 — previously this returned False early when
+    `base_view_name` was empty. That silently wiped out the dotted-ref
+    detection below, so an MCP-created chart whose `semanticBinding`
+    hadn't been hydrated (binding={}, baseViewName="") routed every
+    qualified-ref query to the legacy live builder — which can't JOIN.
+    DA's symptom: chart with a joined-view dim (e.g. calendar
+    `year_quarter`) came back with 1 aggregated row because the SELECT
+    silently dropped the joined column and every output cell collapsed
+    to the same null bucket. Now: any dotted `view.field` ref ALWAYS
+    routes semantic regardless of binding state, because the live
+    builder cannot honour them either way.
     """
     base = (base_view_name or "").strip()
-    if not base:
-        return False
 
-    semantic_fields = _binding_semantic_fields(binding)
-    semantic_measures = _binding_semantic_measure_fields(binding)
-    # Phase-3 fix: even when the binding doesn't enumerate semantic fields
-    # explicitly, ANY metric in the role_config carrying a `view.field`
-    # qualified reference is by definition a semantic measure (live charts
-    # never qualify physical columns this way). Route those through the
-    # engine so measure formulas / filtered measures are compiled.
+    # Metric with qualified field always needs semantic — measure formulas,
+    # filtered measures, dataset-scope, and context-modifier measures all
+    # depend on the semantic engine. Live builder has no idea what
+    # `view.metric_name` means.
     if role_config:
         for metric in role_config.get("metrics") or []:
             if isinstance(metric, dict):
@@ -161,14 +168,24 @@ def _role_config_needs_semantic_runtime(
                 field = str(metric.get("field") or "").strip()
                 if field and "." in field:
                     return True
+
+    semantic_fields = _binding_semantic_fields(binding)
+    semantic_measures = _binding_semantic_measure_fields(binding)
     for ref in _collect_role_config_field_refs(role_config):
         if "." not in ref:
             continue
         view_part, _ = ref.split(".", 1)
-        if view_part.strip() and view_part.strip() != base:
+        # When base is unknown OR the ref lives on a different view → the
+        # live builder cannot serve this; only the semantic engine can.
+        # Defensive: treat unknown-base as "definitely needs JOIN" so the
+        # routing never silently drops to live_query for qualified refs.
+        if not base or (view_part.strip() and view_part.strip() != base):
             return True
+        # Same-view qualified ref → semantic anyway if it's a declared
+        # measure/dim (formula, filter, alias rather than a raw column).
         if ref in semantic_fields or ref in semantic_measures:
             return True
+
     return False
 
 

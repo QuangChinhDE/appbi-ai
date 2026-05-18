@@ -471,6 +471,16 @@ async def create_chart(
       * Bare `field` → routes to legacy live_query (single table, NO JOIN).
       * DO NOT manually strip qualifiers — BE handles same-base-view
         unqualify via `_strip_base_view_qualifiers` (datasets.py:743).
+      * Phase-15.25 makes the routing oracle robust to missing
+        `semanticBinding` (e.g. when an MCP-saved chart was deserialised
+        before binding hydration completed): ANY dotted ref now routes
+        semantic regardless of binding state. Pre-15.25 the routing
+        early-exited when `baseViewName` was empty, silently dropping
+        joined-view dim queries to the live builder and returning a
+        single null-bucket row. Caveat: this only matters when MCP
+        creates the chart with `dataset_table_id` set but the table's
+        SemanticView name resolves later. Best practice still: ensure
+        the chart's table has a registered SemanticView before save.
 
     Implicit measure fallback (Phase 15.7 → 15.17):
       When the metric.field points at a column that ISN'T a declared
