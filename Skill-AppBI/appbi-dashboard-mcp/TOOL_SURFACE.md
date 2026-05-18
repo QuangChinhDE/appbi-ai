@@ -91,7 +91,7 @@ Mục tiêu: dựng layer ngữ nghĩa (views, joins, measures, dimensions) đ�
 | `get_semantic_explore` | 🟢 | Chi tiết explore | `GET /semantic/explores/{id}` |
 | `get_semantic_explore_by_name` | 🟢 | Lookup explore theo name | `GET /semantic/explores/by-name/{name}` |
 | `get_dataset_model` | 🟢 | Model gắn với 1 dataset. `summary=True` để bỏ measure SQL + descriptions. | `GET /datasets/{id}/model` |
-| `get_distinct_field_values` | 🟢 | Distinct values của 1 semantic field (cho dropdown filter) | `GET /datasets/{id}/semantic-model/distinct-values` |
+| `get_distinct_field_values` | 🟢 | Distinct values của 1 semantic field — cho dropdown filter (Phase 15.21 FE FilterBuilder lazy-fetches qua endpoint này). Profile: `report` + `explore` + `all`. | `GET /datasets/{id}/model/distinct-values` |
 | `preview_join` | 🟢 | **(BACKEND P1 mới)** Preview join 2 table (sample rows) trước khi tạo explore | `POST /datasets/{id}/tables/{tid}/join-preview` |
 
 ### Ghi

@@ -167,7 +167,7 @@ def _summarize_dataset_model(payload: Any) -> dict[str, Any]:
     }
 
 
-@tool("explore")
+@tool({"report", "explore"})
 async def get_distinct_field_values(
     dataset_id: int,
     field: str,
@@ -177,9 +177,20 @@ async def get_distinct_field_values(
 ) -> dict[str, Any]:
     """Get distinct values for a qualified semantic field (e.g. 'orders.country').
 
-    Used to populate dropdown filter values. `filters_json` is a JSON-encoded
-    list of dashboard filter objects to cascade — pass when you want
-    distinct values restricted by other active filters.
+    Phase-15.21 made this the canonical source for dropdown filter values
+    end-to-end: the FE's FilterBuilder lazy-fetches this endpoint when DA
+    opens a `Is any of` / `Is not any of` picker on a cross-table field,
+    and Claude should use the same call when authoring filter presets
+    for a dashboard / public link.
+
+    `filters_json` is a JSON-encoded list of dashboard filter objects to
+    cascade — pass when you want distinct values restricted by other
+    active filters (e.g. "show only regions whose country = Vietnam").
+
+    Profile note: registered in BOTH `explore` (Stage 3 semantic design)
+    AND `report` (Stage 4-5 dashboard authoring) because filter dropdowns
+    are needed throughout — pre-Phase 15.23 it was explore-only, which
+    forced report-profile sessions to fall back to all-profile.
     """
     return await _request(
         "GET",

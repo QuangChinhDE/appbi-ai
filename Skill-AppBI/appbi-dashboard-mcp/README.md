@@ -155,7 +155,7 @@ created here — use `update_dataset` as above.
 | get_semantic_explore | ✓ | ✓ | ✓ | ✓ |
 | get_semantic_explore_by_name | ✓ |   | ✓ | ✓ |
 | get_dataset_model | ✓ | ✓ | ✓ | ✓ |
-| get_distinct_field_values |   |   | ✓ | ✓ |
+| get_distinct_field_values | ✓ |   | ✓ | ✓ |
 | create_semantic_view |   |   | ✓ | ✓ |
 | update_semantic_view |   |   | ✓ | ✓ |
 | delete_semantic_view |   |   | ✓ | ✓ |
