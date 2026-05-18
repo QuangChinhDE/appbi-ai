@@ -334,18 +334,176 @@ async def search_charts(
 # ---------------------------------------------------------------------------
 # Chart contract helpers
 # ---------------------------------------------------------------------------
-#
-# The previously exposed `get_supported_chart_types`, `build_chart_config`,
-# and `validate_chart_config` tools have been removed. Their logic lives on
-# in this module as private helpers used by the blueprint flow and
-# `create_chart`'s pre-flight check. Claude no longer needs round-trip MCP
-# calls to inspect chart metadata — the blueprint flow surfaces the same
-# information in `propose_dashboard_blueprint` (available_measures /
-# available_dimensions / explores), and `create_chart` validates the
-# config server-side before writing.
-#
-# If you need the chart type catalogue at runtime, import
-# `SUPPORTED_CHART_TYPES` and `CHART_ROLE_REQUIREMENTS` directly.
+
+
+# Phase-15.27: semantic label for each role_config key — DA-friendly name
+# Claude needs to map "x-axis" in user intent → the right key (`dimension`,
+# `timeField`, `scatterX`, or `tableRowDimension`). Without this map Claude
+# can guess wrong (e.g. invent `x_axis: "..."` which BE silently ignores
+# and FE renders a null column — the exact bug DA reported).
+_ROLE_SEMANTICS: dict[str, str] = {
+    "dimension": "X-axis category (qualified view.field). Categorical or date for BAR/LINE/AREA. For pie/donut this is the slice/legend.",
+    "timeField": "X-axis date for time-series-specific layouts (TIME_SERIES / RIBBON / TIMELINE).",
+    "breakdown": "Series breakdown / legend grouping (creates one series per distinct value).",
+    "metrics": "Y-axis values. List of {field, agg} where agg ∈ sum|avg|count|count_distinct|min|max. Numeric only for sum/avg.",
+    "lineMetric": "Second-axis line metric on BAR_LINE: {field, agg}.",
+    "benchmarkMetric": "Reference / target metric on KPI / GAUGE / BULLET: {field, agg}.",
+    "scatterX": "Numeric X-axis for SCATTER / BUBBLE / MAP_POINT.",
+    "scatterY": "Numeric Y-axis for SCATTER / BUBBLE / MAP_POINT.",
+    "tableMode": "TABLE layout flag: 'standard' (raw rows) or 'pivot' (matrix).",
+    "tableRowDimension": "MATRIX/TABLE-pivot: row-axis dimension (qualified view.field).",
+    "tableColumnDimension": "MATRIX/TABLE-pivot: column-axis dimension. Each distinct value becomes a new column.",
+    "tablePivotMetric": "MATRIX/TABLE-pivot: aggregated value at each (row,col) cell: {field, agg}.",
+    "selectedColumns": "TABLE-standard: subset of available columns to display. Empty = show all.",
+    "timeGrains": "{qualified_date_field: 'day'|'week'|'month'|'quarter'|'year'} — server-side date_trunc bucketing.",
+    "baseFilters": "[{field, operator, value}] — chart-level filters (different from dashboard-level).",
+}
+
+
+def _example_for_role(role: str, *, chart_type: str) -> Any:
+    """Return a placeholder example value for a role_config slot."""
+    if role == "metrics":
+        return [{"field": "view.amount", "agg": "sum"}]
+    if role in {"lineMetric", "benchmarkMetric", "tablePivotMetric"}:
+        return {"field": "view.value", "agg": "sum"}
+    if role == "scatterX":
+        return "view.x_numeric"
+    if role == "scatterY":
+        return "view.y_numeric"
+    if role == "timeField":
+        return "view.date_field"
+    if role == "tableMode":
+        return "pivot" if chart_type == "MATRIX" else "standard"
+    if role in {"tableRowDimension", "tableColumnDimension"}:
+        return "view.category"
+    if role == "selectedColumns":
+        return ["view.col_a", "view.col_b"]
+    if role == "timeGrains":
+        return {"view.date_field": "month"}
+    if role == "baseFilters":
+        return [{"field": "view.status", "operator": "eq", "value": "active"}]
+    # default: dimension, breakdown, etc. — categorical qualified ref
+    return "view.field"
+
+
+def _build_chart_type_schema(chart_type: str) -> dict[str, Any]:
+    """Materialise the per-chart-type config template — required +
+    optional role_config slots with semantic labels and a runnable
+    example skeleton. Reads from `CHART_ROLE_REQUIREMENTS` so any
+    requirement change here automatically flows through to the
+    `get_chart_type_schema` tool output."""
+    spec = CHART_ROLE_REQUIREMENTS.get(chart_type)
+    if not spec:
+        return {
+            "chart_type": chart_type,
+            "supported": False,
+            "error": f"Unsupported chart_type {chart_type!r}. Use SUPPORTED_CHART_TYPES.",
+        }
+
+    # Split tokens like "metrics[0]" → ("metrics", "first item only")
+    def _expand(token: str) -> tuple[str, str | None]:
+        token = token.strip()
+        if "=" in token:  # e.g. "tableMode=pivot" → pinned value
+            key, _, value = token.partition("=")
+            return key.strip(), f"MUST be '{value.strip()}'"
+        if "[" in token and token.endswith("]"):
+            key = token.split("[", 1)[0]
+            return key, f"single item only (use {key}[0])"
+        return token, None
+
+    required: list[dict[str, Any]] = []
+    for raw in spec.get("required", []) or []:
+        key, note = _expand(raw)
+        required.append({
+            "role": key,
+            "semantic": _ROLE_SEMANTICS.get(key, f"role_config.{key}"),
+            "constraint": note,
+            "example_value": _example_for_role(key, chart_type=chart_type),
+        })
+
+    optional: list[dict[str, Any]] = []
+    for raw in spec.get("optional", []) or []:
+        key, note = _expand(raw)
+        optional.append({
+            "role": key,
+            "semantic": _ROLE_SEMANTICS.get(key, f"role_config.{key}"),
+            "constraint": note,
+            "example_value": _example_for_role(key, chart_type=chart_type),
+        })
+
+    # Assemble a runnable skeleton. Honour any `MUST be 'X'` constraint
+    # (e.g. MATRIX requires tableMode='pivot') by using the pinned value.
+    role_config_example: dict[str, Any] = {}
+    for raw in spec.get("required", []) or []:
+        key, note = _expand(raw)
+        if note and note.startswith("MUST be "):
+            role_config_example[key] = note[len("MUST be '"):].rstrip("'")
+        else:
+            role_config_example[key] = _example_for_role(key, chart_type=chart_type)
+
+    flags = {
+        "breakdown_supported": chart_type in BREAKDOWN_SUPPORTED_CHART_TYPES,
+        "single_metric": chart_type in SINGLE_METRIC_CHART_TYPES,
+        "no_dimension": chart_type in NO_DIMENSION_METRIC_CHART_TYPES,
+        "scatter_like": chart_type in SCATTER_LIKE_CHART_TYPES,
+        "two_dimension": chart_type in TWO_DIMENSION_CHART_TYPES,
+        "pie_like": chart_type in PIE_LIKE_CHART_TYPES,
+    }
+
+    return {
+        "chart_type": chart_type,
+        "supported": True,
+        "required": required,
+        "optional": optional,
+        "constraints": flags,
+        "notes": spec.get("notes"),
+        "example_create_chart_payload": {
+            "name": f"My {chart_type.lower().replace('_', ' ')} chart",
+            "chart_type": chart_type,
+            "dataset_id": "<int — let MCP auto-derive dataset_table_id from first qualified field>",
+            "config": {
+                "chartType": chart_type,
+                "queryMode": "generated",
+                "generatedRoleConfig": role_config_example,
+                "roleConfig": role_config_example,
+            },
+        },
+    }
+
+
+@tool({"report", "explore"})
+async def get_chart_type_schema(
+    chart_type: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Authoritative role_config template per chart type.
+
+    Call this BEFORE constructing a chart config when you're not 100%
+    sure of the required role_config keys for the chart_type. Returns
+    semantic labels (so "x-axis" maps to the right key like `dimension`
+    vs `timeField` vs `scatterX`) and a runnable example skeleton.
+
+    Pass `chart_type=None` to get the full catalogue (all 30+ types).
+    Pass `chart_type="BAR"` etc. for a single type's schema.
+
+    Combined with `dry-run-create` (which `create_chart` calls under the
+    hood), this is the canonical FE↔BE↔MCP contract: schema tool tells
+    you what to send, dry-run tells you whether it's valid + previews.
+    """
+    if chart_type:
+        normalised = chart_type.strip().upper()
+        return _build_chart_type_schema(normalised)
+    return {
+        "chart_types": sorted(CHART_ROLE_REQUIREMENTS.keys()),
+        "schemas": {
+            ct: _build_chart_type_schema(ct)
+            for ct in sorted(CHART_ROLE_REQUIREMENTS.keys())
+        },
+        "note": (
+            "Use `get_chart_type_schema(chart_type='BAR')` for a single "
+            "type when you don't need the full catalogue — cheaper payload."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +616,13 @@ async def create_chart(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
+
+    Unsure which role_config keys this chart_type needs? Call
+    `get_chart_type_schema(chart_type=...)` first — it returns the
+    required + optional roles with semantic labels (e.g. tells you
+    BAR's "x-axis" key is `dimension`, not `x_axis` or `xAxis`) and a
+    runnable example skeleton. Combined with `dry-run-create` (called
+    under the hood here), that's the full FE↔BE↔MCP contract.
 
     Field refs:
       * Qualified `view.field` → semantic engine + JOIN (required for
