@@ -377,6 +377,23 @@ function upgradeMetricToQualified(
   return { ...rest, field: next ?? metric.field };
 }
 
+function upgradeTimeGrainsToQualified(
+  timeGrains: ChartRoleConfig['timeGrains'],
+  qualifiedByBare: Map<string, string>,
+): ChartRoleConfig['timeGrains'] {
+  if (!timeGrains) return timeGrains;
+  let changed = false;
+  const next: NonNullable<ChartRoleConfig['timeGrains']> = {};
+  for (const [field, grain] of Object.entries(timeGrains)) {
+    const upgraded = upgradeFieldToQualified(field, qualifiedByBare) ?? field;
+    changed = changed || upgraded !== field;
+    if (next[upgraded] === undefined || upgraded === field) {
+      next[upgraded] = grain;
+    }
+  }
+  return changed ? next : timeGrains;
+}
+
 function upgradeRoleConfigToQualified(
   roleConfig: ChartRoleConfig,
   qualifiedByBare: Map<string, string>,
@@ -398,7 +415,19 @@ function upgradeRoleConfigToQualified(
     selectedColumns: roleConfig.selectedColumns?.map(
       (col) => upgradeFieldToQualified(col, qualifiedByBare) ?? col,
     ),
+    timeGrains: upgradeTimeGrainsToQualified(roleConfig.timeGrains, qualifiedByBare),
   };
+}
+
+function retainTimeGrainsForColumns(
+  timeGrains: ChartRoleConfig['timeGrains'],
+  columnNames: Set<string>,
+): ChartRoleConfig['timeGrains'] {
+  if (!timeGrains) return undefined;
+  const next = Object.fromEntries(
+    Object.entries(timeGrains).filter(([field]) => columnNames.has(field)),
+  ) as NonNullable<ChartRoleConfig['timeGrains']>;
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 function normalizeTableDisplayColumns(
@@ -589,6 +618,7 @@ function syncRoleConfigWithColumns(
         ? normalized.tablePivotMetric
         : undefined,
     selectedColumns: normalized.selectedColumns?.filter((column) => columnNames.has(column)),
+    timeGrains: retainTimeGrainsForColumns(normalized.timeGrains, columnNames),
   };
 
   if (next.selectedColumns && next.selectedColumns.length === 0) {
@@ -724,6 +754,7 @@ function pruneRoleConfigToColumns(
         ? normalized.tablePivotMetric
         : undefined,
     selectedColumns: normalized.selectedColumns?.filter((column) => columnNames.has(column)),
+    timeGrains: retainTimeGrainsForColumns(normalized.timeGrains, columnNames),
   };
 
   if (next.selectedColumns && next.selectedColumns.length === 0) {

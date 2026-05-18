@@ -853,6 +853,8 @@ def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
         return True
     if any(has_ref(getattr(item, "field", None)) for item in (execute_request.order_by or [])):
         return True
+    if any(has_ref(item) for item in (execute_request.time_grains or {}).keys()):
+        return True
     return False
 
 
@@ -928,12 +930,18 @@ def _strip_base_view_qualifiers(
         OrderBySpec(field=_strip(ob.field, semantic_dimensions) or ob.field, direction=ob.direction)
         for ob in (execute_request.order_by or [])
     ]
+    next_time_grains = {
+        (_strip(field, semantic_dimensions) or field): grain
+        for field, grain in (execute_request.time_grains or {}).items()
+        if field
+    }
 
     needs_change = (
         next_dimensions != (execute_request.dimensions or [])
         or [item.model_dump() for item in next_measures] != [item.model_dump() for item in (execute_request.measures or [])]
         or [item.model_dump() for item in next_filters] != [item.model_dump() for item in (execute_request.filters or [])]
         or [item.model_dump() for item in next_order_by] != [item.model_dump() for item in (execute_request.order_by or [])]
+        or next_time_grains != (execute_request.time_grains or {})
     )
     if not needs_change:
         return execute_request
@@ -943,6 +951,7 @@ def _strip_base_view_qualifiers(
         measures=next_measures,
         filters=next_filters,
         order_by=next_order_by,
+        time_grains=next_time_grains or None,
         limit=execute_request.limit,
     )
 
@@ -1013,6 +1022,13 @@ def _execute_semantic_dataset_query(
         for item in (execute_request.order_by or [])
         if item.field
     ]
+    active_dimension_set = set(dimensions)
+    time_grains = {
+        qualified: grain
+        for field, grain in (execute_request.time_grains or {}).items()
+        for qualified in [qualify(field)]
+        if qualified in active_dimension_set
+    }
 
     # Phase-12.6: resolve datasource FIRST so the semantic engine is
     # initialised with the correct SQL dialect. Previously this code path
@@ -1070,6 +1086,7 @@ def _execute_semantic_dataset_query(
             filters=filters,
             sorts=sorts,
             limit=execute_request.limit or 500,
+            time_grains=time_grains or None,
             measure_agg_overrides=measure_agg_overrides or None,
             model_id=model.id,
             explore_id=explore.id,
@@ -3591,6 +3608,7 @@ def execute_dataset_table_query(
             filters=filters,
             order_by=order_by,
             limit=execute_request.limit,
+            time_grains=execute_request.time_grains or None,
         )
 
         columns = list(rows[0].keys()) if rows else []

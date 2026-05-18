@@ -273,6 +273,7 @@ class ExecuteQueryRequest(BaseModel):
     measures: Optional[List[AggregationSpec]] = None
     filters: Optional[List[FilterCondition]] = None
     order_by: Optional[List[OrderBySpec]] = None
+    time_grains: Optional[Dict[str, Literal["day", "week", "month", "quarter", "year"]]] = None
     limit: int = Field(default=1000, ge=1, le=10000)
 
 

@@ -76,6 +76,37 @@ def _dialect_for_ds_type(ds_type: str) -> str:
     }.get(ds_type_val, "postgresql")
 
 
+def _render_time_grain_expression(field_sql: str, grain: str, dialect: str) -> str:
+    """Return a dialect-aware bucket expression for a date/time field."""
+    g = (grain or "day").lower()
+    if g not in {"day", "week", "month", "quarter", "year"}:
+        g = "day"
+
+    if dialect == "bigquery":
+        grain_map = {
+            "day": "DAY",
+            "week": "WEEK",
+            "month": "MONTH",
+            "quarter": "QUARTER",
+            "year": "YEAR",
+        }
+        return f"TIMESTAMP_TRUNC({field_sql}, {grain_map[g]})"
+
+    if dialect == "mysql":
+        if g == "day":
+            return f"DATE({field_sql})"
+        if g == "week":
+            return f"DATE_SUB(DATE({field_sql}), INTERVAL WEEKDAY({field_sql}) DAY)"
+        if g == "month":
+            return f"DATE_FORMAT({field_sql}, '%Y-%m-01')"
+        if g == "quarter":
+            return f"MAKEDATE(YEAR({field_sql}), 1) + INTERVAL (QUARTER({field_sql}) - 1) QUARTER"
+        if g == "year":
+            return f"MAKEDATE(YEAR({field_sql}), 1)"
+
+    return f"DATE_TRUNC('{g}', {field_sql})"
+
+
 def _should_cache_live_query(ds_type: str) -> bool:
     """Google Sheets is externally mutable, so source freshness beats TTL cache."""
     ds_type_val = ds_type if isinstance(ds_type, str) else ds_type.value
@@ -882,12 +913,14 @@ def build_live_dataset_query(
     order_by: list[dict],
     limit: int,
     dialect: str,
+    time_grains: dict[str, str] | None = None,
 ) -> str:
     """Build a dataset execute query that mirrors the synced DuckDB path."""
     qi = _quote_identifier
     dims = [d for d in (dimensions or []) if d]
     metrics = [m for m in (measures or []) if m.get("field")]
     orders = [o for o in (order_by or []) if o.get("field")]
+    grains = time_grains or {}
     row_order_alias = "__appbi_row_order"
     group_order_alias = "__appbi_group_order"
     quoted_row_order_alias = qi(row_order_alias, dialect)
@@ -900,8 +933,13 @@ def build_live_dataset_query(
 
     for dim in dims:
         quoted_dim = qi(dim, dialect)
-        select_parts.append(quoted_dim)
-        group_by_parts.append(quoted_dim)
+        dim_expr = (
+            _render_time_grain_expression(quoted_dim, grains[dim], dialect)
+            if dim in grains
+            else quoted_dim
+        )
+        select_parts.append(f"{dim_expr} AS {quoted_dim}" if dim in grains else quoted_dim)
+        group_by_parts.append(dim_expr)
         output_columns.append(quoted_dim)
 
     for metric in metrics:
@@ -1511,6 +1549,7 @@ class LiveQueryService:
         filters: list | None,
         order_by: list[dict] | None = None,
         limit: int = 1000,
+        time_grains: dict[str, str] | None = None,
     ) -> list[dict]:
         """Execute dataset table query directly against the live source."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -1528,6 +1567,7 @@ class LiveQueryService:
             "dimensions": list(dimensions or []),
             "measures": list(measures or []),
             "order_by": list(order_by or []),
+            "time_grains": dict(time_grains or {}),
             "limit": int(limit),
             "transformations": getattr(db_table, "transformations", None) or [],
             "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
@@ -1551,6 +1591,7 @@ class LiveQueryService:
             order_by=list(order_by or []),
             limit=limit,
             dialect=dialect,
+            time_grains=dict(time_grains or {}),
         )
 
         if ds_type == "bigquery":
