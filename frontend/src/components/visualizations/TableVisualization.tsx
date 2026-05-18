@@ -193,7 +193,11 @@ export function TableVisualization({
   columnLabels,
 }: TableVisualizationProps) {
   const rows = data ?? [];
-  const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0]) : []);
+  // Phase-15.24: `rows[0] ?? {}` guard. BE can return a row that
+  // serialises to `null` when every column is null (rare but observed
+  // on TABLE charts post Hướng A). `Object.keys(null)` throws TypeError
+  // which surfaces as Next.js's generic "client-side exception" toast.
+  const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0] ?? {}) : []);
   const colsKey = useMemo(() => cols.join('\u0000'), [cols]);
   const sanitizedColumnWidths = useMemo(() => sanitizeColumnWidths(columnWidths), [columnWidths]);
   const hyperlinkRuleByColumn = useMemo(() => buildHyperlinkRuleMap(hyperlinkRules), [hyperlinkRules]);

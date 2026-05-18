@@ -325,7 +325,17 @@ function buildPivotTableModel(args: {
   const metric = roleConfig.tablePivotMetric;
 
   if (!rowField || !columnField || !metric || data.length === 0) {
-    const columns = roleConfig.selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []);
+    // Phase-15.24: guards against (a) `selectedColumns: []` (empty array
+    // passes through `??` since it isn't nullish — collapses to undefined
+    // so the row-keys fallback fires) and (b) `data[0]` being null (BE
+    // can legitimately return a row of all-nulls which serialises to
+    // `null`; `Object.keys(null)` throws TypeError and surfaces as the
+    // "Application error: a client-side exception has occurred" toast
+    // DA reported for the TABLE chart preview).
+    const explicit = roleConfig.selectedColumns && roleConfig.selectedColumns.length > 0
+      ? roleConfig.selectedColumns
+      : undefined;
+    const columns = explicit ?? (data.length > 0 ? Object.keys(data[0] ?? {}) : []);
     return {
       rows: data,
       columns,
@@ -403,7 +413,15 @@ export function buildExploreChartModel(args: {
     ? buildPivotTableModel({ data, roleConfig: normalizedRoleConfig, preAggregated })
     : null;
   const tableData = pivotTableModel?.rows ?? data;
-  const tableColumns = pivotTableModel?.columns ?? (selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []));
+  // Phase-15.24: same guards as buildPivotTableModel — empty selectedColumns
+  // collapses to undefined so the row-keys fallback fires, and `data[0] ?? {}`
+  // protects against null rows that would otherwise throw in Object.keys.
+  const tableColumnsExplicit = selectedColumns && selectedColumns.length > 0
+    ? selectedColumns
+    : undefined;
+  const tableColumns = pivotTableModel?.columns
+    ?? tableColumnsExplicit
+    ?? (data.length > 0 ? Object.keys(data[0] ?? {}) : []);
 
   const emptyModel: ExploreChartModel = {
     roleConfig: normalizedRoleConfig,

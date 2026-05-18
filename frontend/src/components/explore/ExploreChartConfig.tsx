@@ -526,8 +526,20 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
     ? 'pivot'
     : 'standard';
 
+  // Phase-15.24: collapse `selectedColumns: []` (empty array) to undefined
+  // so downstream consumers (chart adapter, TableVisualization) reliably
+  // hit the "show every column" fallback. The Visible Columns toggle
+  // (ExploreChartConfig:2694) writes `[]` for "deselect all" which used
+  // to leak through `??` chains as a literal empty list and render a
+  // zero-column TABLE — DA's intent was "use defaults" anyway.
+  const rawSelectedColumns = roleConfig?.selectedColumns;
+  const selectedColumns = Array.isArray(rawSelectedColumns) && rawSelectedColumns.length === 0
+    ? undefined
+    : rawSelectedColumns;
+
   return {
     ...(roleConfig ?? EMPTY_ROLE_CONFIG),
+    selectedColumns,
     metrics: normalizedMetrics,
     breakdown,
     tableMode,

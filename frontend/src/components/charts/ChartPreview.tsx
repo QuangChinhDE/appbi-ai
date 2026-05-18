@@ -848,7 +848,8 @@ export function ChartPreview({
 
   // Render Table
   if (chartType === ChartType.TABLE) {
-    const columns = data.length > 0 ? Object.keys(data[0]) : [];
+    // Phase-15.24: `data[0] ?? {}` guard against null rows from the BE.
+    const columns = data.length > 0 ? Object.keys(data[0] ?? {}) : [];
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}

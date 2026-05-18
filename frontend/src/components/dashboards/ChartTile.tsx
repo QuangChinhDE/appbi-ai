@@ -462,10 +462,12 @@ export function ChartTile({
   // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
   React.useEffect(() => {
     if (chartData?.data?.length && onDataLoaded) {
+      // Phase-15.24: `chartData.data[0] ?? {}` guards against null rows.
+      const firstRow = chartData.data[0] ?? {};
       const dimensionFields = exploreConfig
         ? getRoleConfigDimensionFields(exploreConfig.chartType, exploreConfig.roleConfig)
-            .filter(field => field in chartData.data[0])
-        : Object.keys(chartData.data[0]);
+            .filter(field => field in firstRow)
+        : Object.keys(firstRow);
       onDataLoaded(chartId, chartData.data, { dimensionFields });
     }
   }, [chartData?.data, onDataLoaded, chartId, exploreConfig]);
