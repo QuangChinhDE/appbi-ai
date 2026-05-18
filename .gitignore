@@ -75,6 +75,9 @@ install-docker-and-run.sh
 .env.bak.*
 Skill-AppBI/old/
 Skill-AppBI/*.zip
+# MCP per-chat working logs — keep folder, ignore session subfolders
+Skill-AppBI/appbi-dashboard-mcp/logs/*
+!Skill-AppBI/appbi-dashboard-mcp/logs/.gitkeep
 dashboard_example/
 demo_dataset/
 example/

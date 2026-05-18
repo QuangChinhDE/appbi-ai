@@ -230,6 +230,27 @@ class MeasureDefinition(BaseModel):
         return text
 
     @model_validator(mode="after")
+    def _validate_sql_or_expression_required(self):
+        # Phase-15.29: non-count measures MUST declare the value being
+        # aggregated, either via `sql` (column form) or `expression`
+        # (advanced form). Without it, the engine falls back to '*' which
+        # produces invalid SQL (e.g. SUM(*)) for any agg ≠ count, or
+        # silently resolves to a column matching the measure name —
+        # surfacing as the "MCP-created measure has sql=<measure_name>"
+        # bug DA hit on 2026-05-18.
+        if self.type != "count":
+            has_sql = bool((self.sql or "").strip())
+            has_expr = bool((self.expression or "").strip())
+            if not has_sql and not has_expr:
+                raise ValueError(
+                    f"measure '{self.name}' type='{self.type}' requires "
+                    "either `sql` (the column to aggregate, e.g. "
+                    "'${TABLE}.amount') or `expression` (advanced SQL). "
+                    "Only `type='count'` may omit both — it counts rows."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_context_modifiers(self):
         # Phase-14: per-modifier shape + cross-modifier consistency.
         if not self.context_modifiers:

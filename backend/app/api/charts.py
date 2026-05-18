@@ -567,6 +567,9 @@ _FE_ROLE_CONFIG_KEYS: set[str] = {
     "dimension", "metrics", "breakdown", "lineMetric", "benchmarkMetric",
     "timeField", "scatterX", "scatterY", "tableMode", "tableRowDimension",
     "tableColumnDimension", "tablePivotMetric", "selectedColumns",
+    # Phase-15.12: time_grains forwarded to SemanticQueryEngine from role_config.
+    # Without this entry the dry-run reports false-positive "fe_unrecognised_keys".
+    "timeGrains",
 }
 
 _FE_METRIC_KEYS: set[str] = {

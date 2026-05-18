@@ -345,7 +345,7 @@ _ROLE_SEMANTICS: dict[str, str] = {
     "dimension": "X-axis category (qualified view.field). Categorical or date for BAR/LINE/AREA. For pie/donut this is the slice/legend.",
     "timeField": "X-axis date for time-series-specific layouts (TIME_SERIES / RIBBON / TIMELINE).",
     "breakdown": "Series breakdown / legend grouping (creates one series per distinct value).",
-    "metrics": "Y-axis values. List of {field, agg} where agg ∈ sum|avg|count|count_distinct|min|max. Numeric only for sum/avg.",
+    "metrics": "Y-axis values. List of {field, agg}. agg ∈ sum|avg|count|count_distinct|min|max for raw column refs; use 'auto' when field is a DECLARED semantic measure (the measure already has its own stored aggregation — wrapping again double-aggregates).",
     "lineMetric": "Second-axis line metric on BAR_LINE: {field, agg}.",
     "benchmarkMetric": "Reference / target metric on KPI / GAUGE / BULLET: {field, agg}.",
     "scatterX": "Numeric X-axis for SCATTER / BUBBLE / MAP_POINT.",
@@ -356,7 +356,13 @@ _ROLE_SEMANTICS: dict[str, str] = {
     "tablePivotMetric": "MATRIX/TABLE-pivot: aggregated value at each (row,col) cell: {field, agg}.",
     "selectedColumns": "TABLE-standard: subset of available columns to display. Empty = show all.",
     "timeGrains": "{qualified_date_field: 'day'|'week'|'month'|'quarter'|'year'} — server-side date_trunc bucketing.",
-    "baseFilters": "[{field, operator, value}] — chart-level filters (different from dashboard-level).",
+}
+
+# Top-level config keys (NOT role_config). Surfaced separately so Claude
+# doesn't confuse them with roles — `baseFilters` sits next to roleConfig
+# in the chart config object, not inside it.
+_TOP_LEVEL_CONFIG_NOTES: dict[str, str] = {
+    "baseFilters": "[{field, operator, value}] — chart-scoped filters (independent of dashboard filters). Lives at config.baseFilters, NOT inside roleConfig.",
 }
 
 
@@ -380,8 +386,6 @@ def _example_for_role(role: str, *, chart_type: str) -> Any:
         return ["view.col_a", "view.col_b"]
     if role == "timeGrains":
         return {"view.date_field": "month"}
-    if role == "baseFilters":
-        return [{"field": "view.status", "operator": "eq", "value": "active"}]
     # default: dimension, breakdown, etc. — categorical qualified ref
     return "view.field"
 
@@ -457,6 +461,9 @@ def _build_chart_type_schema(chart_type: str) -> dict[str, Any]:
         "optional": optional,
         "constraints": flags,
         "notes": spec.get("notes"),
+        # Top-level config keys (sibling of roleConfig). Documented here so
+        # Claude doesn't mistakenly nest these inside roleConfig.
+        "top_level_config_notes": _TOP_LEVEL_CONFIG_NOTES,
         "example_create_chart_payload": {
             "name": f"My {chart_type.lower().replace('_', ' ')} chart",
             "chart_type": chart_type,
@@ -466,6 +473,8 @@ def _build_chart_type_schema(chart_type: str) -> dict[str, Any]:
                 "queryMode": "generated",
                 "generatedRoleConfig": role_config_example,
                 "roleConfig": role_config_example,
+                # Optional siblings of roleConfig (NOT inside it):
+                # "baseFilters": [{"field":"view.status","operator":"eq","value":"active"}],
             },
         },
     }
@@ -637,7 +646,12 @@ async def create_chart(
       SUM / AVG          → numeric only
       MIN / MAX          → any orderable (numeric / date / string)
       COUNT / COUNT_DISTINCT → any column
-    Default agg when `metric.agg` omitted: numeric→SUM else→COUNT_DISTINCT.
+      AUTO ("AS-IS")     → DECLARED measure refs only — uses the measure's
+                            own stored aggregation. Use this when `field`
+                            points to a semantic measure; passing SUM/COUNT/
+                            etc. instead wraps the measure again → double-agg.
+    Default agg when `metric.agg` omitted: numeric→SUM, else→COUNT_DISTINCT,
+    declared measure ref→AUTO.
 
     `role_config` keys:
       * `timeGrains: {"view.date_field": "day|week|month|quarter|year"}`

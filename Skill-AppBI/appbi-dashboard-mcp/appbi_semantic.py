@@ -444,13 +444,16 @@ async def add_dataset_model_join(
     join_type: str = "left",
     relationship: str = "many_to_one",
     alias: str | None = None,
+    is_active: bool = True,
+    cross_filter: str = "single",
+    force: bool = False,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Add or update a relationship between two views inside one dataset's model.
+    """Add/update a relationship between 2 views in a dataset's model.
 
-    Wraps `POST /datasets/{id}/model/joins`. Use this instead of editing
-    explore joins directly when working with the dataset-scoped visual model.
+    is_active (default True), cross_filter ∈ {"single","both"} (default
+    single), force (bypass cycle warnings, default False).
     """
     if not user_confirmed:
         join_from = from_columns or ([from_column] if from_column else [])
@@ -465,6 +468,9 @@ async def add_dataset_model_join(
                 "join_type": join_type,
                 "relationship": relationship,
                 "alias": alias,
+                "is_active": is_active,
+                "cross_filter": cross_filter,
+                "force": force,
             },
         )
     body = _drop_none(
@@ -478,6 +484,9 @@ async def add_dataset_model_join(
             "join_type": join_type,
             "relationship": relationship,
             "alias": alias,
+            "is_active": is_active,
+            "cross_filter": cross_filter,
+            "force": force if force else None,
         }
     )
     return await _request(

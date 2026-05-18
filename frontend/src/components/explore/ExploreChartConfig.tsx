@@ -827,6 +827,7 @@ const CHART_TYPE_GRID: ChartTypeMeta[] = [
 ];
 
 const AGG_OPTIONS: { value: AggFn; label: string }[] = [
+  { value: 'auto',           label: 'AS-IS' },
   { value: 'sum',            label: 'SUM' },
   { value: 'avg',            label: 'AVG' },
   { value: 'count',          label: 'COUNT' },
@@ -1782,7 +1783,10 @@ function isMetricAggValidForCol(agg: AggFn, col: Col | undefined): boolean {
     case 'count_distinct':
       return true;
     case 'auto':
-      return true;
+      // AS-IS only makes sense for a declared semantic measure (it already
+      // has its own stored aggregation). For a bare column, there's nothing
+      // to "use as-is" — the engine would silently fall back to SUM.
+      return isMeasureField(col);
     default:
       return true;
   }

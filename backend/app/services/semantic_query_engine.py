@@ -653,7 +653,46 @@ class SemanticQueryEngine:
             )
 
         # `expression` (advanced) wins over `sql` (form). Both are SQL templates.
-        sql_template = expression_template or measure_def.get('sql') or '*'
+        # Phase-15.29: for non-count measures, both empty is now caught at
+        # schema-validation time. We keep the count→'*' default here (legacy
+        # measures that pre-date the validator still need to render); any
+        # non-count measure that slipped through historically will fail loudly
+        # at SQL execution rather than silently aggregating the wrong column.
+        raw_template = expression_template or measure_def.get('sql')
+        if not raw_template:
+            if measure_type == "count":
+                sql_template = '*'
+            else:
+                raise ValueError(
+                    f"Measure '{measure_def.get('name','?')}' type='{measure_type}' "
+                    "has no `sql` or `expression`. Cannot compile aggregate without "
+                    "a column reference. Fix the measure definition (set "
+                    "sql='${TABLE}.<column>') or change type to 'count'."
+                )
+        else:
+            sql_template = raw_template
+
+        # Phase-15.30: Path-C guard. An expression with an aggregate call
+        # but no depends_on would get wrapped in this method's outer
+        # aggregate (e.g. AVG(SUM(...)/COUNT(...))) and yield wrong numbers.
+        # Catch it here and fail loud — the schema/MCP layers also reject
+        # this, but the engine is the last line of defence for legacy rows.
+        if expression_template and not depends_on:
+            expr_upper = expression_template.upper()
+            if any(
+                f"{fn}(" in expr_upper
+                for fn in ("SUM", "AVG", "COUNT", "MIN", "MAX")
+            ):
+                raise ValueError(
+                    f"Measure '{measure_def.get('name','?')}' expression "
+                    "contains an aggregate function but depends_on is empty. "
+                    "The engine would wrap this in an outer aggregate "
+                    f"({measure_type.upper()}(...)) producing double-aggregation. "
+                    "Fix by (a) removing the inner aggregate so `type` "
+                    "applies it once, or (b) splitting into named measures "
+                    "and listing them in depends_on (ratio-measure pattern)."
+                )
+
         base_sql = self._render_sql_template(sql_template, view_name)
 
         # Filtered measure: wrap `base_sql` in CASE WHEN so the aggregate only

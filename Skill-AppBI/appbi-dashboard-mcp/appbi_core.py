@@ -164,27 +164,35 @@ defect; the canonical workflow below is designed to prevent it.
    writes nothing. Present the plan in plain language; wait for an
    explicit yes/duyệt before calling again with `user_confirmed=true`.
 
-5. **Profile before you design — and only ONCE per table per session.**
-   Call `get_table_profile` on every relevant table before proposing a
-   semantic model. The response contains schema + sample rows + per-
-   column stats and is expensive (~10-15K tokens for a 30-column
-   table). DO NOT re-call it for the same table later in the
-   conversation — re-read the earlier response from context. If you
-   need deeper detail on one column, use `get_column_summary` (much
-   cheaper). Defaults are tuned for design work (5 sample rows, 3 top
-   values, 8 histogram bins); only override when the user explicitly
-   asks to inspect raw data.
+5. **Profile + log per-chat artifacts.** Call `get_table_profile` once
+   per table (~10-15K tokens per 30-col table — never re-call). Use
+   `get_column_summary` for one-column drill-downs.
+
+   Persist what you and the DA confirm into a per-chat folder so a
+   resumed session can recover without re-profiling:
+     a. Call `get_mcp_logs_dir()` once. Inside it, create a session
+        folder `chat_<YYYYMMDD_HHMMSS>/` on the first write.
+     b. Maintain 3 files using Claude's native Write tool:
+        - `dataset.md` — column index (Qualified Key | Display | Type
+          | PK/FK | Sample) per table, plus a "Cross-table name
+          conflicts" list. Add measures + joins after Stage 3 commits.
+        - `charts.md` — one entry per committed chart: title,
+          chart_type, dataset_table_id, role_config keys/values.
+        - `report.md` — final dashboard id, url, placement list.
+     c. On session resume, list the logs folder newest-first and
+        confirm with the DA which chat to continue before reusing.
+   Reference qualified keys from `dataset.md` when authoring measures,
+   joins, and chart role_config — never guess from memory.
 
 6. **Discovery first.** Always start with `list_datasets` and
    `list_data_sources`. Reuse existing datasets and semantic models when
    the user's intent matches; ask the user to choose rather than
    creating a duplicate.
 
-7. **HTML Import (analyze_html_import / build_dashboard_from_html) is
-   a parallel path** for one-shot bulk creation when the user supplies
-   an HTML mockup. It does not bypass the semantic-model requirement —
-   the import endpoint also expects views/measures to exist for the
-   dataset it targets. Prefer the blueprint flow for everything else.
+7. **Chart layout.** Omit `layout` and commit_dashboard_blueprint
+   stacks full-width (always safe). When specifying (react-grid-layout,
+   12 cols × 80px): KPI=3×2, LINE/BAR/AREA/PIE=6×4, TABLE/PIVOT=12×5,
+   SCATTER=6×5, COMBO=12×4. Min w≥3, h≥2 (smaller clips axes).
 
 8. **Auditing legacy data.** If the user reports "the dashboard exists
    but Explore looks empty", run `audit_chart_semantic_health` to
@@ -423,6 +431,20 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
         "appbi_base_url": APPBI_API_BASE_URL,
         "user": me,
     }
+
+
+@tool({"report", "dataset", "explore"})
+async def get_mcp_logs_dir(ctx: Context | None = None) -> dict[str, Any]:
+    """Return the absolute path to the MCP session-log folder.
+
+    Lives next to the MCP install (machine-stable across DA machines).
+    Use Claude's native Write/Read on subpaths like
+    {logs_dir}/chat_<YYYYMMDD_HHMMSS>/dataset.md to persist what was
+    confirmed with the user in this conversation.
+    """
+    logs = Path(__file__).resolve().parent / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    return {"logs_dir": str(logs)}
 
 
 # Re-export for stage modules to import.

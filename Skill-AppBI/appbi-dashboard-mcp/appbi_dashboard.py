@@ -1,13 +1,9 @@
 """Stage 5 — Dashboard.
 
 Tools for assembling charts into dashboards: layout, filters, public links.
-
-The HTML import flow from the legacy MCP is intentionally absent — this MCP
-This module focuses on programmatic dashboard assembly via the granular
-endpoints below, not by emitting an HTML artifact.
-
-HTML import note: `appbi_html_import` is available in this MCP for mockup-driven
-or bulk builds. This module is the granular path for assembling existing charts.
+Prefer the blueprint flow (`propose_dashboard_blueprint` →
+`commit_dashboard_blueprint`) for multi-chart builds — these granular tools
+are for incremental edits to an existing dashboard.
 
 Filters: AppBI uses a hybrid model where dashboard filters are stored as a
 JSON array on the dashboard itself (`filters_config`). There is no separate
@@ -249,10 +245,9 @@ async def add_chart_to_dashboard(
 ) -> dict[str, Any]:
     """Place an existing chart on a dashboard.
 
-    `layout` keys: {i?, x, y, w, h} (react-grid-layout). Width is 1-12
-    columns. Use {x: 0, y: 0, w: 6, h: 4} for a half-width chart in the
-    top-left corner.
-
+    `layout` {i?,x,y,w,h} react-grid-layout 12-col × 80px. Defaults:
+    KPI=3×2, LINE/BAR/AREA/PIE=6×4, TABLE/PIVOT=12×5, SCATTER=6×5,
+    COMBO=12×4. Min w≥3, h≥2.
     `parameters` is optional runtime parameter overrides for THIS placement.
     """
     if not user_confirmed:

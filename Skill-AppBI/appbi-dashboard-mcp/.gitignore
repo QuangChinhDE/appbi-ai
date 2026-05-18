@@ -1,0 +1,11 @@
+# Per-chat working logs (created at runtime by Claude via get_mcp_logs_dir).
+# Keep the folder marker (.gitkeep) but never commit session subfolders.
+logs/*
+!logs/.gitkeep
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local secrets — never commit
+.env

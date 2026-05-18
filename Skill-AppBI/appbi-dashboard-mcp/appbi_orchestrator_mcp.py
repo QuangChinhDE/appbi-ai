@@ -19,10 +19,6 @@ the recurring defect users report. `appbi_blueprint` exposes:
   - audit_chart_semantic_health (legacy data triage, read-only)
   - repair_chart_semantic_binding (per-chart fix)
 
-For one-shot bulk creation from an HTML mockup, `appbi_html_import` is
-still available (analyze → build). It does not bypass the semantic-model
-requirement.
-
 This MCP is the successor to `appbi-import-source-mcp`. Distinguishing
 properties:
 
@@ -50,9 +46,6 @@ import appbi_chart  # noqa: F401
 
 # Stage 5 — Dashboard (granular placement / filter / public-link tools)
 import appbi_dashboard  # noqa: F401
-
-# Stage 5 — Dashboard (HTML Import — bulk creation from mockup)
-import appbi_html_import  # noqa: F401
 
 # Blueprint — the canonical design-then-commit flow (Stages 3 + 4)
 import appbi_blueprint  # noqa: F401

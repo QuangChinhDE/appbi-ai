@@ -91,16 +91,34 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
                 }
             ],
             "measures": [
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # MEASURE — REQUIRED fields. The 3-line minimal form below is
+                # what 95% of measures look like. Optional fields come after.
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 {
+                    # REQUIRED — unique within this view, snake_case.
                     "name": "<str — e.g. total_revenue>",
+                    # REQUIRED — what aggregation to apply.
                     "type": "count|sum|avg|min|max|count_distinct|percent_of_total",
-                    "sql": "${TABLE}.<col>  (column to aggregate; ignored if expression set)",
-                    "label": "<str>",
-                    "description": "<str — business meaning>",
+                    # REQUIRED for every type EXCEPT "count" — the column to
+                    # aggregate. Use ${TABLE}.<actual_column_name> referencing
+                    # a real column on this view's dataset_table. The MCP
+                    # pre-flight (Phase-15.29) rejects non-count measures
+                    # without sql; the BE Pydantic validator rejects them
+                    # too. DO NOT use the measure name as the column name
+                    # unless that column literally exists in the source data.
+                    "sql": "${TABLE}.<actual_column_name_in_source>",
+                    "label": "<str — human readable, optional>",
+                    "description": "<str — business meaning, optional>",
                     "folder": "<str — optional UI grouping, e.g. 'Revenue'>",
-                    # ── Phase-1 extensions (all optional, omit if not used) ──
-                    # Use `expression` for arithmetic across columns; takes
-                    # precedence over `sql`. e.g. "${TABLE}.amount - ${TABLE}.cost"
+                    # `expression` 2 modes (non-count: sql OR expression required):
+                    #   Mode 1 row-level (depends_on=[]): "${TABLE}.a - ${TABLE}.b"
+                    #     → SUM(a-b). Aggregates inside expression are FORBIDDEN
+                    #     in this mode (would double-aggregate).
+                    #   Mode 2 ratio/measure-formula (depends_on set):
+                    #     expression: "${revenue} / NULLIF(${deal_won}, 0)"
+                    #     depends_on: ["revenue","deal_won"]
+                    #     → engine inlines each measure's full aggregate SQL.
                     "expression": "<str — optional SQL expression, overrides sql>",
                     # Structured filters → CASE WHEN wrapper (Looker-style
                     # filtered measure). Example: revenue from paid orders only.
@@ -216,6 +234,52 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
 _BLUEPRINT_MAX_CHARTS = 20
 
 
+# Safe layout defaults per chart_type (react-grid-layout: 12 cols × 80px row).
+# Picked from the FE dashboard defaults + manual QA on truncation behaviour.
+_LAYOUT_DEFAULTS: dict[str, tuple[int, int]] = {
+    "KPI": (3, 2),
+    "TABLE": (12, 5),
+    "PIVOT_TABLE": (12, 5),
+    "SCATTER": (6, 5),
+    "MAP_POINT": (6, 5),
+    "COMBO": (12, 4),
+}
+_LAYOUT_DEFAULT_FALLBACK = (6, 4)  # LINE, BAR, AREA, PIE, etc.
+_LAYOUT_MIN_W = 3
+_LAYOUT_MIN_H = 2
+
+
+def _normalize_chart_layout(
+    layout: Any,
+    chart_type: str,
+    index: int,
+) -> dict[str, int]:
+    """Return a layout dict that always renders without clipped axes.
+
+    Falls back to a full-width stack when `layout` is missing/invalid.
+    Clamps to per-chart-type minimums when Claude underspecifies. Charts
+    render badly below ~w:3 (axis labels overlap) or ~h:2 (legend cuts
+    into plot area), and we cannot recover from that downstream.
+    """
+    default_w, default_h = _LAYOUT_DEFAULTS.get(
+        (chart_type or "").upper(), _LAYOUT_DEFAULT_FALLBACK
+    )
+    if not isinstance(layout, dict):
+        return {"x": 0, "y": index * default_h, "w": 12, "h": default_h}
+    try:
+        x = max(0, min(11, int(layout.get("x", 0))))
+        y = max(0, int(layout.get("y", index * default_h)))
+        w = int(layout.get("w", default_w))
+        h = int(layout.get("h", default_h))
+    except (TypeError, ValueError):
+        return {"x": 0, "y": index * default_h, "w": 12, "h": default_h}
+    w = max(_LAYOUT_MIN_W, min(12, w))
+    if x + w > 12:
+        w = 12 - x
+    h = max(_LAYOUT_MIN_H, h)
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
 def _measure_chart_compatibility(measure: dict[str, Any]) -> dict[str, Any]:
     """Decide whether a semantic measure can be referenced directly in a chart.
 
@@ -304,6 +368,8 @@ DASHBOARD_BLUEPRINT_SHAPE = {
                     }
                 ],
             },
+            # layout (optional): omit to stack full-width safely. Defaults:
+            # KPI=3×2, LINE/BAR/AREA/PIE=6×4, TABLE/PIVOT=12×5, SCATTER=6×5.
             "layout": {"x": 0, "y": 0, "w": 6, "h": 4},
             "why_this_chart": "<str — why this visualization for this question>",
         }
@@ -327,10 +393,12 @@ async def propose_semantic_model(
 ) -> dict[str, Any]:
     """Stage 3 — plan a semantic model for a dataset. Read-only.
 
-    Call BEFORE any chart for a dataset without a semantic model. Returns
-    existing_model, tables (id/display_name/columns), plan_template (the
-    shape commit_semantic_model expects), guidance. If a view already
-    covers a table, plan UPDATE not duplicate create.
+    Returns existing_model, tables, plan_template, guidance. UPDATE
+    instead of duplicate-create when a view already covers a table.
+
+    Measures: non-count types MUST set sql='${TABLE}.<real_column>' OR
+    expression. Setting sql=<measure_name> is rejected. See plan_template
+    for `expression` modes (row-level vs ratio-of-measures).
     """
     intent = str(business_intent or "").strip()
     if not intent:
@@ -567,6 +635,60 @@ async def commit_semantic_model(
                 continue
             m_name = m.get("name") or f"#{m_idx}"
             loc = f"views[{index}] '{view_name}'.measures '{m_name}'"
+
+            # Phase-15.29: non-count measures must declare the column being
+            # aggregated. Caught here so Claude gets a clear error before
+            # the BE rejection. Mirrors MeasureDefinition validator.
+            m_type = (m.get("type") or "").strip().lower()
+            m_sql = (m.get("sql") or "").strip()
+            m_expr = (m.get("expression") or "").strip()
+            if m_type and m_type != "count" and not m_sql and not m_expr:
+                validation_errors.append(
+                    f"{loc} type='{m_type}' but neither `sql` nor `expression` is "
+                    f"set. Add sql='${{TABLE}}.<column>' (the column to "
+                    "aggregate) — required for any agg ≠ count. Examples: "
+                    "sum/avg/min/max/count_distinct/percent_of_total."
+                )
+            # Heuristic warning: sql == measure name often means Claude "picked
+            # the easy path" and assumed there's a column matching the measure
+            # name. Almost always wrong unless the dataset actually has such
+            # a column. Surfaces as a non-blocking note (BE will still reject
+            # if the column doesn't exist).
+            if m_sql and "${" not in m_sql and m_sql == m_name:
+                validation_errors.append(
+                    f"{loc}.sql='{m_sql}' equals the measure name. This usually "
+                    f"means the measure name was reused as a column reference. "
+                    f"Use sql='${{TABLE}}.<actual_column_in_view>' instead."
+                )
+
+            # Phase-15.30: Path-C trap. An expression containing an aggregate
+            # function (SUM/AVG/COUNT/MIN/MAX/COUNT_DISTINCT) WITHOUT a
+            # `depends_on` list means the engine will WRAP this expression
+            # in the measure's outer `type` aggregate — producing nonsense
+            # like AVG(SUM(...)/COUNT(...)). This is the recurring "ratio
+            # measure looks wrong" bug. Either:
+            #   • inline raw column refs (${TABLE}.col) and let `type` wrap
+            #     them with the single right aggregate, OR
+            #   • split the formula into named measures and reference them
+            #     via depends_on (Mode 2).
+            if m_expr and not (m.get("depends_on") or []):
+                expr_upper = m_expr.upper()
+                contains_agg = any(
+                    f"{fn}(" in expr_upper
+                    for fn in ("SUM", "AVG", "COUNT", "MIN", "MAX")
+                )
+                if contains_agg:
+                    validation_errors.append(
+                        f"{loc}.expression contains an aggregate function "
+                        f"(SUM/AVG/COUNT/MIN/MAX) but depends_on is empty. "
+                        "The engine will wrap this with the outer "
+                        f"{m_type or 'agg'} again → double-aggregation bug. "
+                        "Either: (1) remove the aggregate from expression "
+                        "and let `type` apply it ONCE, or "
+                        "(2) extract each aggregated piece into its own "
+                        "measure and use Mode 2 (expression with measure "
+                        "refs + depends_on)."
+                    )
 
             # filters
             for f_idx, f in enumerate(m.get("filters") or []):
@@ -1640,7 +1762,11 @@ async def commit_dashboard_blueprint(
                 "chart_type": body["chart_type"],
             }
         )
-        layout = chart.get("layout") or {"x": 0, "y": index * 4, "w": 12, "h": 4}
+        layout = _normalize_chart_layout(
+            chart.get("layout"),
+            body["chart_type"],
+            index,
+        )
         if chart_id is not None:
             placements.append(
                 {
