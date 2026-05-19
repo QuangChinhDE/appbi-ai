@@ -806,7 +806,10 @@ then pick the right discovery pair. Mixing them (calling
 `inspect_source_schema` on a Google Sheets datasource) returns empty or
 errors.
 
-## Measure tools (appbi_measure_library) — pick by aggregation kind
+## Measure tools (appbi_measure_library) — 3-tier design hierarchy
+
+**Tier 1** — Standard pattern, typed params (default for 90% of cases):
+
 | User intent | Tool |
 |---|---|
 | "tổng X", total / sum | `add_sum_measure` |
@@ -816,6 +819,31 @@ errors.
 | "nhỏ nhất / lớn nhất" | `add_min_max_measure` (kind='min' or 'max') |
 | "tỷ lệ A/B", A per B | `add_ratio_measure` (both A and B must be existing measures) |
 | "% trên tổng" | `add_percent_of_total_measure` |
+
+**Tier 2** — Standard pattern + advanced field (escape hatch on the same tool):
+Pass `extra={...}` to any Tier-1 tool to add a BE-recognized advanced
+field without giving up the typed-param surface. Whitelisted keys:
+  • `where_sql`       — raw WHERE fragment (reserve for predicates
+                        the structured `filters` list can't express).
+  • `description`     — business prose, separate from `label`.
+  • `hidden`          — bool; measure exists but hidden from pickers.
+  • `context_modifiers` (Phase-14) — list of {type, ...}:
+      type="all"           → "% of grand total" via OVER ().
+      type="all_except"    → "% of region total" with keep_fields=[...].
+      type="use_relationship" → pick a specific JOIN alias.
+  • `scope`           — "view" (default) | "dataset" (Phase-12
+                        cross-table measure).
+  • `source_columns`  — [{view, field}, …], REQUIRED with scope="dataset".
+
+Example: add_sum_measure(..., extra={"where_sql": "status != 'cancelled'",
+                                       "hidden": True})
+
+**Tier 3** — Non-standard shape, raw passthrough:
+For shapes that don't fit ANY Tier-1 tool — custom `expression` (e.g.
+weighted average, window function), multiple context_modifiers
+combined, custom `format.pattern`, or any BE field not in the Tier-2
+whitelist — use `add_advanced_measure(view_id, measure_spec={...})`
+with the full MeasureDefinition shape.
 
 ## Chart tools (appbi_chart_library) — pick by intent
 | User intent / shape | Tool |
