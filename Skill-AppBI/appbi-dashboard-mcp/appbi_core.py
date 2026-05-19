@@ -259,15 +259,34 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
     Profile `all` (default when env unset) registers everything — equivalent
     to legacy `@mcp.tool()` behavior.
     """
+    import functools
+
     if isinstance(profiles, str):
         tag_set = {profiles}
     else:
         tag_set = set(profiles)
 
     def decorator(fn):
-        if "all" in ACTIVE_PROFILES or tag_set & ACTIVE_PROFILES:
-            return mcp.tool()(fn)
-        return fn
+        if not ("all" in ACTIVE_PROFILES or tag_set & ACTIVE_PROFILES):
+            return fn
+
+        @functools.wraps(fn)
+        async def wrapped(*args, **kwargs):
+            # Any BackendError that escapes the tool body becomes a
+            # structured envelope Claude can branch on per status_code.
+            # Tools that catch RuntimeError internally for retry/fallback
+            # still work — BackendError is a RuntimeError subclass, and
+            # this wrapper only catches what was NOT handled below.
+            try:
+                return await fn(*args, **kwargs)
+            except BackendError as exc:
+                logger.info(
+                    "tool %s -> backend_error %s on %s %s",
+                    fn.__name__, exc.status_code, exc.method, exc.path,
+                )
+                return _backend_error_envelope(exc)
+
+        return mcp.tool()(wrapped)
 
     return decorator
 
@@ -465,6 +484,100 @@ def _render_dashboard_html_preview(
 # ---------------------------------------------------------------------------
 
 
+class BackendError(RuntimeError):
+    """Structured backend-error exception.
+
+    Subclasses RuntimeError so existing `except RuntimeError` blocks in
+    stage modules (rollback paths, optional reads, fallback chains) keep
+    working unchanged. The @tool decorator catches BackendError specifically
+    and converts it to a structured envelope Claude can branch on per
+    status code.
+    """
+
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        status_code: int,
+        detail: Any,
+    ) -> None:
+        self.method = method
+        self.path = path
+        self.status_code = int(status_code)
+        self.detail = detail
+        super().__init__(f"{method} {path} failed ({status_code}): {detail}")
+
+
+def _action_hint_for_status(code: int) -> str:
+    """Per-status guidance shown back to Claude in the error envelope."""
+    if code in (401, 403):
+        return (
+            "Auth failed. Check APPBI_PAT env on the MCP host. Do NOT retry "
+            "until the user verifies / refreshes the token — repeated 401s "
+            "can lock the token."
+        )
+    if code == 404:
+        return (
+            "Resource not found. The id you passed likely doesn't exist (or "
+            "you don't have access). Call the corresponding list_* tool to "
+            "find the correct id, then retry."
+        )
+    if code == 409:
+        return (
+            "Conflict / cascade guard fired. Read `detail` for the list of "
+            "affected charts/measures. Either revise the plan or, if the "
+            "user explicitly accepts the breakage, retry with force=true."
+        )
+    if code == 422:
+        return (
+            "Pydantic validation rejected the payload. `detail` lists the "
+            "offending fields. Fix the shape and retry — do NOT call other "
+            "tools or invent new fields."
+        )
+    if code == 400:
+        return (
+            "Backend rejected the input. Read `detail` for what's wrong, "
+            "fix the offending field, and retry. Do NOT retry blindly with "
+            "the same payload — you'll get the same error."
+        )
+    if code in (502, 503, 504):
+        return (
+            "Backend temporarily unavailable (gateway / overload). MCP "
+            "already auto-retried once. If you see this envelope, the "
+            "second attempt also failed — surface to the user and stop."
+        )
+    if 500 <= code < 600:
+        return (
+            "Backend crashed with an internal error. This is NOT an MCP / "
+            "Claude problem. Surface the message to the user and ask them "
+            "to check the AppBI BE logs. Do NOT retry without operator "
+            "input. If `detail` is empty, the BE crashed silently — "
+            "engineering should investigate the trace on the server."
+        )
+    return f"Unexpected status {code} — surface `detail` to the user."
+
+
+def _backend_error_envelope(exc: BackendError) -> dict[str, Any]:
+    """Structured response Claude receives instead of an opaque exception.
+
+    Lives in the @tool decorator wrapper — see `tool(...)` below.
+    """
+    return {
+        "status": "backend_error",
+        "method": exc.method,
+        "path": exc.path,
+        "status_code": exc.status_code,
+        "detail": exc.detail,
+        "claude_should": _action_hint_for_status(exc.status_code),
+    }
+
+
+# Status codes worth auto-retrying once before raising — transient
+# infra blips (gateway, overload, slow upstream). Genuine 4xx and 500
+# are deterministic responses; retrying them is noise.
+_TRANSIENT_STATUS = {502, 503, 504}
+
+
 async def _request(
     method: str,
     path: str,
@@ -476,9 +589,16 @@ async def _request(
 ) -> Any:
     """Call the AppBI backend with the configured PAT.
 
-    Raises RuntimeError on any non-2xx response, with the backend's `detail`
-    field surfaced when present so MCP clients see a useful error.
+    Raises `BackendError` (subclass of RuntimeError) on any non-2xx
+    response, with method/path/status_code/detail attached as fields so
+    the @tool decorator can build a structured envelope for Claude.
+
+    Auto-retries ONCE on transient statuses (502/503/504) and on
+    network timeouts (httpx.TimeoutException) — deterministic 4xx/500
+    are not retried.
     """
+    import asyncio  # local to avoid widening top-level imports
+
     url = f"{APPBI_API_BASE_URL}{path}"
     headers = {
         "Authorization": f"Bearer {APPBI_PAT}",
@@ -488,29 +608,40 @@ async def _request(
         float(timeout_seconds) if timeout_seconds is not None else APPBI_TIMEOUT_SECONDS
     )
 
-    async with httpx.AsyncClient(
-        timeout=effective_timeout,
-        verify=APPBI_VERIFY_TLS,
-        follow_redirects=True,
-    ) as client:
-        response = await client.request(
-            method,
-            url,
-            headers=headers,
-            params=_clean_params(params),
-            json=json_body,
-        )
+    async def _attempt() -> "httpx.Response":
+        async with httpx.AsyncClient(
+            timeout=effective_timeout,
+            verify=APPBI_VERIFY_TLS,
+            follow_redirects=True,
+        ) as client:
+            return await client.request(
+                method,
+                url,
+                headers=headers,
+                params=_clean_params(params),
+                json=json_body,
+            )
+
+    try:
+        response = await _attempt()
+        if response.status_code in _TRANSIENT_STATUS:
+            await asyncio.sleep(1.0)
+            response = await _attempt()
+    except httpx.TimeoutException as exc:
+        logger.warning("Timeout on %s %s, retrying once: %s", method, path, exc)
+        try:
+            response = await _attempt()
+        except httpx.TimeoutException as exc2:
+            raise BackendError(method, path, 504, f"Timeout after retry: {exc2}") from exc2
 
     if response.status_code >= 400:
         detail: Any = response.text
         try:
             payload = response.json()
-            detail = payload.get("detail", payload)
+            detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
         except Exception:
             pass
-        raise RuntimeError(
-            f"{method} {path} failed ({response.status_code}): {detail}"
-        )
+        raise BackendError(method, path, response.status_code, detail)
 
     if not expect_json or not response.content:
         return None
@@ -751,6 +882,8 @@ __all__ = [
     "_append_session_log",
     "_session_log_dir",
     "_render_dashboard_html_preview",
+    "BackendError",
+    "_backend_error_envelope",
     "APPBI_API_BASE_URL",
     "APPBI_LONG_TIMEOUT_SECONDS",
 ]

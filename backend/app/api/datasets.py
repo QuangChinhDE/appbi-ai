@@ -5142,6 +5142,26 @@ def get_table_profile(
                     detail={"code": exc.code, "message": str(exc)},
                 )
             raise HTTPException(status_code=400, detail=str(exc))
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Proxy-build can raise SQLAlchemy / runtime errors that aren't
+            # DatasetTableSqlError (source connection refused, malformed
+            # derived source_query, missing calendar dep…). Without this
+            # catch any of those escape as a body-less 500. Convert to a
+            # structured 400 so MCP / FE clients see what actually failed.
+            logger.exception(
+                "Proxy build failed for dataset=%s table=%s",
+                dataset_id, table_id,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Could not build a live preview for this "
+                    f"{'calendar' if is_generated_calendar_table(db_table) else 'derived'} "
+                    f"table: {type(exc).__name__}: {exc}"
+                ),
+            )
     else:
         datasource = db.query(DataSource).filter(
             DataSource.id == db_table.datasource_id
@@ -5164,22 +5184,39 @@ def get_table_profile(
         logger.warning("Profile preview failed for table %d: %s", table_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
-    rows = result.get("rows") or []
-    columns = result.get("columns") or []
-    column_metadata: List[DatasetColumnMetadata] = []
-    for i, col in enumerate(columns):
-        col_type = _infer_column_type(col, i, rows)
-        column_metadata.append(
-            DatasetColumnMetadata(name=col, type=col_type, nullable=True)
-        )
+    try:
+        rows = result.get("rows") or []
+        columns = result.get("columns") or []
+        column_metadata: List[DatasetColumnMetadata] = []
+        for i, col in enumerate(columns):
+            col_type = _infer_column_type(col, i, rows)
+            column_metadata.append(
+                DatasetColumnMetadata(name=col, type=col_type, nullable=True)
+            )
 
-    from app.services.type_override_service import _override_type as _ovr_type
-    type_overrides = db_table.type_overrides or {}
-    for col_meta in column_metadata:
-        if col_meta.name in type_overrides:
-            resolved = _ovr_type(type_overrides[col_meta.name])
-            if resolved:
-                col_meta.type = resolved
+        from app.services.type_override_service import _override_type as _ovr_type
+        type_overrides = db_table.type_overrides or {}
+        for col_meta in column_metadata:
+            if col_meta.name in type_overrides:
+                resolved = _ovr_type(type_overrides[col_meta.name])
+                if resolved:
+                    col_meta.type = resolved
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Column-metadata building can fail on legacy data (type_overrides
+        # referencing renamed columns, broken _infer_column_type for an
+        # unexpected value shape, or the type_override_service import path
+        # missing on an old deployment). Surface a structured 400 instead
+        # of a blank 500.
+        logger.exception(
+            "Column metadata build failed for dataset=%s table=%s",
+            dataset_id, table_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not build column metadata: {type(exc).__name__}: {exc}",
+        )
 
     def _serialize(val):
         if isinstance(val, (datetime, date)):
