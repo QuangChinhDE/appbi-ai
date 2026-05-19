@@ -639,6 +639,17 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
 _DESIGN_CHEATSHEET = """
 # Pattern → tool routing
 
+## Source discovery — pick by `get_data_source(id).type`
+| Source type | List tables/tabs | Inspect one |
+|---|---|---|
+| BigQuery / Postgres / MySQL / Snowflake / DuckDB / SQL Server | `inspect_source_schema(id)` | `inspect_source_table(id, schema, table)` |
+| Google Sheets | `list_gsheet_tabs(id)` | `read_gsheet_rows(id, sheet_name, limit=20)` |
+
+Call `get_data_source(data_source_id)` first to read the `type` field,
+then pick the right discovery pair. Mixing them (calling
+`inspect_source_schema` on a Google Sheets datasource) returns empty or
+errors.
+
 ## Measure tools (appbi_measure_library) — pick by aggregation kind
 | User intent | Tool |
 |---|---|

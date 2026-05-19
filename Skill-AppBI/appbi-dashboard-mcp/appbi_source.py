@@ -14,6 +14,7 @@ from typing import Any
 from appbi_core import (
     Context,
     _clamp_int,
+    _query_path,
     _request,
     tool,
 )
@@ -157,6 +158,60 @@ async def validate_source_sql(
         "sql_query": str(sql_query),
     }
     return await _request("POST", "/datasources/validate-sql", json_body=body)
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets source — special-case read endpoints
+# ---------------------------------------------------------------------------
+# `inspect_source_schema` / `inspect_source_table` are the right tools for
+# SQL-flavoured sources (BigQuery, Postgres, MySQL, Snowflake, …). For a
+# Google Sheets datasource the spreadsheet has TABS rather than tables and
+# the BE exposes a dedicated path under `/datasources/{id}/gsheets/...` —
+# the two tools below are the gsheets equivalent of "list tables" and
+# "inspect table" so Claude can discover what's available before creating
+# a dataset.
+
+
+@tool({"report", "dataset"})
+async def list_gsheet_tabs(
+    data_source_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """List the tabs (sheets) in a Google Sheets datasource's spreadsheet.
+
+    Use this INSTEAD of `inspect_source_schema` when
+    `get_data_source(id).type` is `google_sheets`. Each tab name is the
+    `source_table_name` you pass to `add_table_to_dataset` or
+    `commit_dataset_workspace.plan.tables[].source_table_name`.
+
+    Returns: `{spreadsheet_id, sheets: [<tab_name>, …]}`.
+    """
+    return await _request(
+        "GET", f"/datasources/{int(data_source_id)}/gsheets/sheets"
+    )
+
+
+@tool({"report", "dataset"})
+async def read_gsheet_rows(
+    data_source_id: int,
+    sheet_name: str,
+    limit: int = 20,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Read the first `limit` rows of a Google Sheets tab.
+
+    Use after `list_gsheet_tabs` to learn the columns + sample values of
+    a tab before adding it to a dataset. The first row of the sheet must
+    be a header row — column names come from there.
+
+    Returns: `{spreadsheet_id, sheet_name, columns: [...], rows: [...],
+    row_count}`.
+    """
+    path = _query_path(
+        f"/datasources/{int(data_source_id)}/gsheets/{sheet_name}/rows",
+        {"limit": int(limit)},
+    )
+    return await _request("GET", path)
 
 
 __all__: list[str] = []
