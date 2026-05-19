@@ -870,7 +870,7 @@ async def add_table_chart(
 ) -> dict[str, Any]:
     """TABLE — raw row-listing. `selected_columns` whitelists what to show
     (omit = show all). Qualified refs like `view.col`."""
-    role: dict[str, Any] = {"tableMode": "standard"}
+    role: dict[str, Any] = {}
     if selected_columns:
         role["selectedColumns"] = [c.strip() for c in selected_columns]
     return await _post_chart("TABLE", dataset_table_id, role, title, layout,
