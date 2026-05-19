@@ -613,7 +613,7 @@ async def _auto_derive_dataset_table_id(
     )
 
 
-@tool("report")
+@tool("all")
 async def create_chart(
     name: str,
     chart_type: str,
@@ -625,7 +625,12 @@ async def create_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create one chart. Prefer commit_dashboard_blueprint for dashboards.
+    """Create one chart.
+
+    **For a new dashboard build, do NOT use this** — declare charts in
+    `commit_dataset_workspace.plan.planned_charts` and materialise via
+    `build_dashboard_from_design`. This granular tool is for adding a
+    single chart to an EXISTING dashboard.
 
     Unsure which role_config keys this chart_type needs? Call
     `get_chart_type_schema(chart_type=...)` first — it returns the

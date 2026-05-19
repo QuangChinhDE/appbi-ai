@@ -266,19 +266,19 @@ async def list_source_tables_for_dataset(
 # ---------------------------------------------------------------------------
 
 
-@tool({"report", "dataset"})
+@tool("dataset")
 async def create_dataset(
     name: str,
     description: str | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create an empty dataset. Tables are added separately via
-    `add_table_to_dataset`.
+    """Create an empty dataset. Tables added via `add_table_to_dataset`.
 
-    Preview-then-confirm: returns a plan on the first call. Only writes
-    after the user explicitly approves and you call again with
-    `user_confirmed=True`.
+    **For a new dashboard build, use `commit_dataset_workspace` instead** —
+    it bundles dataset + tables + semantic + chart-design log into one
+    user confirmation. This granular tool is for incremental edits to an
+    existing setup.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -366,7 +366,7 @@ async def delete_dataset(
 # ---------------------------------------------------------------------------
 
 
-@tool({"report", "dataset"})
+@tool("dataset")
 async def add_table_to_dataset(
     dataset_id: int,
     display_name: str,
@@ -379,6 +379,10 @@ async def add_table_to_dataset(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Add a table to a dataset.
+
+    **For a new dashboard build, use `commit_dataset_workspace` instead** —
+    it adds all tables in one user confirmation. This granular tool is
+    for incremental edits to an existing dataset.
 
     `source_kind`:
       physical_table → datasource_id + source_table_name ('public.orders')
@@ -509,7 +513,7 @@ async def remove_table_from_dataset(
 # ---------------------------------------------------------------------------
 
 
-@tool({"report", "dataset"})
+@tool("dataset")
 async def update_table_description(
     dataset_id: int,
     table_id: int,

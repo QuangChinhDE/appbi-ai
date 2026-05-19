@@ -534,7 +534,7 @@ async def propose_semantic_model(
     }
 
 
-@tool({"report", "explore"})
+@tool("explore")
 async def commit_semantic_model(
     plan_json: str,
     user_confirmed: bool = False,
@@ -1358,7 +1358,7 @@ async def propose_dashboard_blueprint(
     }
 
 
-@tool("report")
+@tool("all")
 async def commit_dashboard_blueprint(
     blueprint_json: str,
     user_confirmed: bool = False,
@@ -2323,7 +2323,7 @@ async def commit_dataset_workspace(
             }
         created_table_ids.append(int(table_result.get("id")))
 
-    _append_session_log(
+    dataset_log_path = _append_session_log(
         "dataset",
         "commit_dataset_workspace",
         {
@@ -2419,7 +2419,19 @@ async def commit_dataset_workspace(
         "semantic_committed": bool(semantic_result),
         "semantic_result": semantic_result,
         "planned_chart_count": len(resolved_charts),
+        "auto_logged_to": [
+            p for p in [dataset_log_path, design_log_path] if p
+        ],
         "design_log_path": design_log_path,
+        "instruction_for_claude": (
+            "Phase 1 of 2 committed. Tell the user briefly: "
+            f"(a) dataset_id={dataset_id}, (b) tables created, "
+            f"(c) semantic committed, (d) {len(resolved_charts)} chart "
+            "designs locked into the log file. Then move directly to "
+            "Phase 2: call build_dashboard_from_design() with "
+            "user_confirmed=false to render the HTML preview, present "
+            "it to the user, and wait for the second confirmation."
+        ),
         "next_step": (
             "Phase 1 complete. Call build_dashboard_from_design() next — "
             "it reads the logged chart specs and builds the dashboard "
@@ -2615,7 +2627,7 @@ async def build_dashboard_from_design(
     dashboard_id = (
         dashboard_result.get("id") if isinstance(dashboard_result, dict) else None
     )
-    _append_session_log(
+    charts_log_path = _append_session_log(
         "charts",
         "build_dashboard_from_design",
         {
@@ -2626,7 +2638,7 @@ async def build_dashboard_from_design(
             ],
         },
     )
-    _append_session_log(
+    report_log_path = _append_session_log(
         "report",
         "build_dashboard_from_design",
         {
@@ -2643,6 +2655,16 @@ async def build_dashboard_from_design(
         "created_charts": created_charts,
         "placement_count": len(placements),
         "html_preview_path": str(preview_path),
+        "auto_logged_to": [
+            p for p in [charts_log_path, report_log_path] if p
+        ],
+        "instruction_for_claude": (
+            "Phase 2 of 2 committed. Tell the user briefly: "
+            f"(a) dashboard_id={dashboard_id}, "
+            f"(b) {len(placements)} charts placed, "
+            f"(c) HTML preview at {preview_path}, "
+            "(d) auto-log files written. The 2-confirm workflow is complete."
+        ),
         "next_step": (
             "Dashboard is live in AppBI. Open html_preview_path to compare "
             "the design with what was committed."
@@ -2650,7 +2672,7 @@ async def build_dashboard_from_design(
     }
 
 
-@tool("report")
+@tool("all")
 async def commit_full_dashboard(
     semantic_plan: dict[str, Any] | str,
     dashboard_blueprint: dict[str, Any] | str,

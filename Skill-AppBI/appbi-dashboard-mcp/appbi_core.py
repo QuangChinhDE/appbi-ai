@@ -306,14 +306,18 @@ def _session_log_dir() -> Path:
         return chat_dir
 
 
-def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> None:
+def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> str | None:
     """Append a Markdown entry to the appropriate stage log file.
+
+    Returns the absolute path of the file written (so tool responses can
+    surface `auto_logged_to` for Claude to mention to the user), or None
+    on failure / unknown stage.
 
     Never raises — log failures are swallowed so they cannot break a commit.
     """
     file_name = _SESSION_LOG_FILES.get(stage)
     if file_name is None:
-        return
+        return None
     try:
         path = _session_log_dir() / file_name
         ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -334,8 +338,10 @@ def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> Non
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fp:
             fp.write("\n".join(lines) + "\n")
+        return str(path)
     except Exception as exc:  # noqa: BLE001 — log MUST NOT break the commit
         logger.warning("session log append failed (%s/%s): %s", stage, action, exc)
+        return None
 
 
 def _render_dashboard_html_preview(
@@ -548,6 +554,15 @@ def _requires_confirmation(action: str, plan: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "requires_confirmation",
         "action": action,
+        "claude_must_stop_here": True,
+        "instruction_for_claude": (
+            f"HARD STOP. Show the `plan` object above to the user verbatim "
+            f"(or summarise faithfully in Vietnamese). Wait for an EXPLICIT "
+            f"'OK / duyệt / yes / ok đi' before re-calling `{action}` with "
+            f"`user_confirmed=true`. Do NOT call other tools, do NOT make "
+            f"assumptions on the user's behalf. If the user wants changes, "
+            f"revise the plan and request confirmation again."
+        ),
         "message": (
             "No changes were made. Present this plan to the user in plain "
             "language and call the tool again with user_confirmed=true only "

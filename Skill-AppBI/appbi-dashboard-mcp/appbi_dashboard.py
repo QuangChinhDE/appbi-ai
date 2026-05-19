@@ -108,7 +108,7 @@ async def list_public_links(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool("all")
 async def create_dashboard(
     name: str,
     description: str | None = None,
@@ -124,7 +124,10 @@ async def create_dashboard(
 ) -> dict[str, Any]:
     """Create a dashboard with optional pre-populated charts.
 
-    Use when charts already exist (else: HTML import path).
+    **For a new dashboard build, use `build_dashboard_from_design`
+    instead** — it reads the Phase 1 design log and creates charts +
+    dashboard together. This granular tool is for assembling a
+    dashboard from charts that already exist.
 
     `charts`: [{chart_id, layout:{x,y,w,h}, parameters?, widget_type?}]
       OR non-chart [{widget_type, widget_config, layout}].
@@ -248,7 +251,7 @@ async def delete_dashboard(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool("all")
 async def add_chart_to_dashboard(
     dashboard_id: int,
     chart_id: int,
@@ -257,7 +260,11 @@ async def add_chart_to_dashboard(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Place an existing chart on a dashboard.
+    """Place an existing chart on an existing dashboard.
+
+    **For a new dashboard build, do NOT use this** —
+    `build_dashboard_from_design` creates charts AND places them. This
+    granular tool is for adding a single chart to a dashboard later.
 
     `layout` {i?,x,y,w,h} react-grid-layout 12-col × 80px. Defaults:
     KPI=3×2, LINE/BAR/AREA/PIE=6×4, TABLE/PIVOT=12×5, SCATTER=6×5,
