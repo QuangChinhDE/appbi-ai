@@ -51,6 +51,7 @@ backend is the executor; this module is the contract between them.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from typing import Any
 
@@ -59,8 +60,10 @@ from appbi_core import (
     Context,
     _append_session_log,
     _drop_none,
+    _render_dashboard_html_preview,
     _request,
     _requires_confirmation,
+    _session_log_dir,
     logger,
     tool,
 )
@@ -2182,15 +2185,25 @@ async def commit_dataset_workspace(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Stage 1+2 atomic commit — ONE confirmation covers dataset + tables.
+    """CONFIRM 1 of 2 — commit the full design.
 
-    `plan` shape (from `propose_dataset_workspace.plan_template`):
+    Commits dataset + tables + semantic model AND logs the planned chart
+    list so Phase 2 (`build_dashboard_from_design`) can materialise
+    without re-designing.
+
+    `plan` shape:
       dataset: {name, description?} OR existing_dataset_id: <int>
       tables:  [{display_name, source_kind, datasource_id?,
                  source_table_name?, source_query?}, ...]
+      semantic (optional): full plan_json for commit_semantic_model.
+      planned_charts (optional): list of chart specs to log for Phase 2.
+        Each entry: {title, chart_type, role_config, layout?,
+        dataset_table_name OR dataset_table_index}. MCP resolves the
+        table reference to a real dataset_table_id post-create.
+      dashboard_meta (optional): {name, description?} logged for Phase 2.
 
-    Rollback: any table-add failure rolls back already-added tables AND
-    a freshly-created dataset (existing datasets are NEVER deleted).
+    Rollback: table-add failure rolls back added tables + freshly-created
+    dataset. Semantic commit failure leaves dataset+tables in place.
     """
     plan_dict = _parse_plan_json(plan, "plan") if isinstance(plan, str) else plan
     if not isinstance(plan_dict, dict):
@@ -2199,6 +2212,10 @@ async def commit_dataset_workspace(
     existing_dataset_id = plan_dict.get("existing_dataset_id")
     dataset_meta = plan_dict.get("dataset") or {}
     tables = plan_dict.get("tables") or []
+    semantic_plan = plan_dict.get("semantic")
+    planned_charts = plan_dict.get("planned_charts") or []
+    dashboard_meta_in = plan_dict.get("dashboard_meta") or {}
+
     if not isinstance(tables, list) or not tables:
         raise ValueError("plan.tables must be a non-empty list.")
     if existing_dataset_id is None and not dataset_meta.get("name"):
@@ -2207,6 +2224,10 @@ async def commit_dataset_workspace(
         )
 
     if not user_confirmed:
+        sem_views = (semantic_plan or {}).get("views") or []
+        sem_measure_count = sum(
+            len((v or {}).get("measures") or []) for v in sem_views
+        )
         return _requires_confirmation(
             "commit_dataset_workspace",
             {
@@ -2223,6 +2244,13 @@ async def commit_dataset_workspace(
                     }
                     for t in tables
                 ],
+                "semantic_views": [v.get("name") for v in sem_views],
+                "semantic_measure_count": sem_measure_count,
+                "planned_chart_count": len(planned_charts),
+                "planned_chart_titles": [
+                    c.get("title") for c in planned_charts[:8]
+                ],
+                "dashboard_name": dashboard_meta_in.get("name"),
             },
         )
 
@@ -2307,15 +2335,317 @@ async def commit_dataset_workspace(
             ],
         },
     )
+
+    # Phase C — semantic model (optional, only when provided)
+    semantic_result: dict[str, Any] | None = None
+    if semantic_plan:
+        try:
+            semantic_result = await commit_semantic_model(
+                plan_json=semantic_plan, user_confirmed=True, ctx=ctx
+            )
+            if (
+                isinstance(semantic_result, dict)
+                and semantic_result.get("status") not in ("committed", None)
+            ):
+                return {
+                    "status": "committed_with_semantic_error",
+                    "dataset_id": dataset_id,
+                    "table_ids": created_table_ids,
+                    "semantic_result": semantic_result,
+                }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "committed_with_semantic_error",
+                "dataset_id": dataset_id,
+                "table_ids": created_table_ids,
+                "semantic_error": str(exc),
+            }
+
+    # Phase D — log planned_charts (NOT created yet; Phase 2 materialises).
+    # Resolve table refs from display_name/index → real dataset_table_id.
+    name_to_id = {
+        t.get("display_name"): tid
+        for t, tid in zip(tables, created_table_ids)
+    }
+    resolved_charts: list[dict[str, Any]] = []
+    for idx, chart in enumerate(planned_charts):
+        if not isinstance(chart, dict):
+            continue
+        resolved = dict(chart)
+        if "dataset_table_id" not in resolved:
+            ref_name = resolved.pop("dataset_table_name", None)
+            ref_idx = resolved.pop("dataset_table_index", None)
+            if ref_name and ref_name in name_to_id:
+                resolved["dataset_table_id"] = name_to_id[ref_name]
+            elif isinstance(ref_idx, int) and 0 <= ref_idx < len(created_table_ids):
+                resolved["dataset_table_id"] = created_table_ids[ref_idx]
+        resolved_charts.append(resolved)
+
+    design_log_path: str | None = None
+    if resolved_charts or dashboard_meta_in:
+        try:
+            design_path = _session_log_dir() / "charts_design.json"
+            payload = {
+                "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                "dataset_id": dataset_id,
+                "table_ids": created_table_ids,
+                "table_name_to_id": name_to_id,
+                "dashboard_meta": dashboard_meta_in,
+                "planned_charts": resolved_charts,
+            }
+            design_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            design_log_path = str(design_path)
+            _append_session_log(
+                "charts",
+                "commit_dataset_workspace.log_planned_charts",
+                {
+                    "chart_count": len(resolved_charts),
+                    "design_log_path": design_log_path,
+                    "titles": [c.get("title") for c in resolved_charts[:8]],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to log planned charts: %s", exc)
+
     return {
         "status": "committed",
         "dataset_id": dataset_id,
         "dataset_created": created_dataset,
         "table_ids": created_table_ids,
+        "table_name_to_id": name_to_id,
+        "semantic_committed": bool(semantic_result),
+        "semantic_result": semantic_result,
+        "planned_chart_count": len(resolved_charts),
+        "design_log_path": design_log_path,
         "next_step": (
-            "Call get_table_profile for each new table to learn columns. "
-            "Then propose_semantic_model + propose_dashboard_blueprint. "
-            "Then commit_full_dashboard — your second and final confirm."
+            "Phase 1 complete. Call build_dashboard_from_design() next — "
+            "it reads the logged chart specs and builds the dashboard "
+            "WITHOUT re-designing. That call is your second (final) confirm."
+            if resolved_charts
+            else "Phase 1 complete. Author chart specs, then call "
+            "commit_full_dashboard or build_dashboard_from_design."
+        ),
+    }
+
+
+@tool("report")
+async def build_dashboard_from_design(
+    dashboard_meta_override: dict[str, Any] | None = None,
+    design_log_path: str | None = None,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """CONFIRM 2 of 2 — build the dashboard from Phase 1 logged design.
+
+    Reads `charts_design.json` from the active session log folder (or an
+    explicit path) and materialises every chart + the dashboard. Does
+    NOT re-design — pulls everything from the log so the result matches
+    what the DA approved in Phase 1.
+
+    Without `user_confirmed`: renders the HTML preview file
+    (`dashboard_preview.html` in the same log folder) and returns its
+    path + a summary plan. The DA opens the .html in a browser to
+    verify the layout before committing.
+
+    With `user_confirmed=True`: writes the charts + dashboard to AppBI
+    and re-renders the preview alongside the final URL.
+
+    Args:
+      dashboard_meta_override — optional {name, description} that
+        overrides the logged dashboard_meta. Use sparingly.
+      design_log_path — optional absolute path to a charts_design.json
+        from a previous session. Defaults to the active session's log.
+    """
+    # Locate design file
+    from pathlib import Path as _Path
+    if design_log_path:
+        design_file = _Path(design_log_path)
+    else:
+        design_file = _session_log_dir() / "charts_design.json"
+
+    if not design_file.exists():
+        return {
+            "status": "no_design_found",
+            "checked_path": str(design_file),
+            "hint": (
+                "Call commit_dataset_workspace first with a `planned_charts` "
+                "list — that writes the design log this tool reads. Or pass "
+                "design_log_path explicitly if reusing a prior session."
+            ),
+        }
+
+    try:
+        design = json.loads(design_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {
+            "status": "design_unreadable",
+            "checked_path": str(design_file),
+            "error": str(exc),
+        }
+
+    planned_charts = design.get("planned_charts") or []
+    dashboard_meta = dict(design.get("dashboard_meta") or {})
+    if dashboard_meta_override:
+        dashboard_meta.update(dashboard_meta_override)
+    if not dashboard_meta.get("name"):
+        dashboard_meta["name"] = "Dashboard"
+
+    if not planned_charts:
+        return {
+            "status": "empty_design",
+            "checked_path": str(design_file),
+            "hint": "Logged design has no planned_charts. Update Phase 1.",
+        }
+
+    # Always (re)write the HTML preview so DA can open it.
+    preview_path = design_file.parent / "dashboard_preview.html"
+    try:
+        preview_path.write_text(
+            _render_dashboard_html_preview(dashboard_meta, planned_charts),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Failed to render dashboard preview: %s", exc)
+
+    if not user_confirmed:
+        return _requires_confirmation(
+            "build_dashboard_from_design",
+            {
+                "design_path": str(design_file),
+                "html_preview_path": str(preview_path),
+                "dashboard_name": dashboard_meta.get("name"),
+                "chart_count": len(planned_charts),
+                "chart_titles": [c.get("title") for c in planned_charts[:8]],
+                "hint": (
+                    "Open html_preview_path in a browser to verify the "
+                    "layout. Call again with user_confirmed=True to write "
+                    "the charts + dashboard to AppBI."
+                ),
+            },
+        )
+
+    # Materialise — for each chart, POST to /charts/. Then POST to
+    # /dashboards/ with placements. Rollback any created chart on
+    # dashboard failure.
+    created_charts: list[dict[str, Any]] = []
+    creation_errors: list[dict[str, Any]] = []
+    placements: list[dict[str, Any]] = []
+
+    for index, chart in enumerate(planned_charts):
+        if not isinstance(chart, dict):
+            continue
+        chart_type = str(chart.get("chart_type") or "").upper()
+        dataset_table_id = chart.get("dataset_table_id")
+        if not dataset_table_id:
+            creation_errors.append({
+                "index": index,
+                "title": chart.get("title"),
+                "error": "dataset_table_id missing — Phase 1 did not resolve table reference",
+            })
+            continue
+        config = _build_chart_config_from_spec(chart)
+        body = _drop_none({
+            "name": chart.get("title") or f"Chart {index + 1}",
+            "description": chart.get("why_this_chart") or chart.get("description"),
+            "chart_type": chart_type,
+            "dataset_table_id": int(dataset_table_id),
+            "config": config,
+        })
+        try:
+            chart_result = await _request("POST", "/charts/", json_body=body)
+        except RuntimeError as exc:
+            creation_errors.append({
+                "index": index,
+                "title": body["name"],
+                "error": str(exc),
+            })
+            continue
+        chart_id = chart_result.get("id") if isinstance(chart_result, dict) else None
+        created_charts.append({
+            "id": chart_id,
+            "title": body["name"],
+            "chart_type": chart_type,
+        })
+        layout = _normalize_chart_layout(
+            chart.get("layout"), chart_type, index
+        )
+        if chart_id is not None:
+            placements.append({
+                "chart_id": chart_id,
+                "layout": layout,
+                "widget_type": "chart",
+            })
+
+    if creation_errors:
+        cleanup = await _rollback_created_charts(created_charts)
+        return {
+            "status": "partial_failure",
+            "created_charts": created_charts,
+            "creation_errors": creation_errors,
+            "dashboard_created": False,
+            "cleanup": cleanup,
+            "html_preview_path": str(preview_path),
+        }
+
+    dashboard_body = _drop_none({
+        "name": dashboard_meta.get("name"),
+        "description": dashboard_meta.get("description"),
+        "charts": placements,
+        "layout_mode": dashboard_meta.get("layout_mode") or "grid",
+        "theme_config": dashboard_meta.get("theme_config"),
+    })
+
+    try:
+        dashboard_result = await _request(
+            "POST", "/dashboards/", json_body=dashboard_body
+        )
+    except RuntimeError as exc:
+        cleanup = await _rollback_created_charts(created_charts)
+        return {
+            "status": "dashboard_failed",
+            "created_charts": created_charts,
+            "dashboard_error": str(exc),
+            "cleanup": cleanup,
+            "html_preview_path": str(preview_path),
+        }
+
+    dashboard_id = (
+        dashboard_result.get("id") if isinstance(dashboard_result, dict) else None
+    )
+    _append_session_log(
+        "charts",
+        "build_dashboard_from_design",
+        {
+            "dashboard_id": dashboard_id,
+            "charts_created": [
+                f"{c.get('title')} ({c.get('chart_type')}, id={c.get('id')})"
+                for c in created_charts
+            ],
+        },
+    )
+    _append_session_log(
+        "report",
+        "build_dashboard_from_design",
+        {
+            "dashboard_id": dashboard_id,
+            "dashboard_name": dashboard_meta.get("name"),
+            "placement_count": len(placements),
+            "html_preview_path": str(preview_path),
+        },
+    )
+    return {
+        "status": "committed",
+        "dashboard_id": dashboard_id,
+        "dashboard_name": dashboard_meta.get("name"),
+        "created_charts": created_charts,
+        "placement_count": len(placements),
+        "html_preview_path": str(preview_path),
+        "next_step": (
+            "Dashboard is live in AppBI. Open html_preview_path to compare "
+            "the design with what was committed."
         ),
     }
 

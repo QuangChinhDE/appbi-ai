@@ -102,30 +102,41 @@ in AppBI** — Dashboard view, Explore, Dataset model, chart list. Charts
 that render in the dashboard but disappear from Explore are a recurring
 defect; the canonical workflow below is designed to prevent it.
 
-## Canonical workflow — 2 confirmations from scratch → dashboard
+## Canonical workflow — 2 confirmations, NO redesign between phases
 
-The default path bundles per-stage commits into TWO user confirmations:
+Design EVERYTHING upfront in one pass, confirm twice. Phase 2 reads the
+Phase 1 design log — DO NOT call propose_* or draft chart specs again
+between phases, that's the redundant-token pattern this flow exists to
+eliminate.
 
-  Confirm 1 — Data workspace (Stage 1+2)
-    propose_dataset_workspace(business_intent, datasource_id?,
-                              existing_dataset_id?)   [read-only]
-    commit_dataset_workspace(plan, user_confirmed=true)
-        → atomic: create_dataset (or reuse) + add_table_to_dataset × N,
-          rollback on any failure.
+  Pre-Phase 1 (read-only) — gather context for the full design:
+    list_data_sources, inspect_source_schema, inspect_source_table
+    list_datasets, get_dataset, get_table_profile (if dataset exists)
+    Use these to author the full plan below before any confirm.
 
-  Between confirms — read-only context gathering:
-    get_table_profile per new table (~10-15K tokens — once each)
-    propose_semantic_model(dataset_id, business_intent)
-    propose_dashboard_blueprint(dataset_id, business_intent)
+  Confirm 1 — commit_dataset_workspace(plan, user_confirmed=true)
+    plan should be COMPLETE, including:
+      dataset / existing_dataset_id
+      tables: [{display_name, source_kind, ...}]
+      semantic: full plan_json (views + measures + joins + explores)
+      planned_charts: [{title, chart_type, role_config, layout?,
+                        dataset_table_name OR dataset_table_index}]
+      dashboard_meta: {name, description?}
+    → Atomic: dataset + tables + semantic written; planned_charts
+      LOGGED to logs/chat_*/charts_design.json with real table IDs
+      resolved. Charts + dashboard NOT created yet.
 
-  Confirm 2 — Full dashboard (Stage 3+4)
-    commit_full_dashboard(semantic_plan, dashboard_blueprint,
-                          user_confirmed=true)
-        → atomic: commit_semantic_model + commit_dashboard_blueprint.
-          After this returns committed, the dashboard is live across
-          Explore / Dataset Model / Dashboard list.
+  Confirm 2 — build_dashboard_from_design(user_confirmed=true)
+    No new design work. Reads logs/chat_*/charts_design.json and
+    materialises charts + dashboard.
+    Two-step preview-then-confirm built in:
+      1st call (user_confirmed=false): renders an HTML preview to
+        logs/chat_*/dashboard_preview.html and returns its path. DA
+        opens it in a browser to verify layout BEFORE writes.
+      2nd call (user_confirmed=true): writes charts + dashboard,
+        returns dashboard_id and the same HTML preview path.
 
-  Stage 5 — Optional polish (no extra confirm if you keep it minimal)
+  Stage 5 — Optional polish (no extra confirm if minimal):
     add_dashboard_filter / create_public_link / update_chart_description
 
 Granular per-stage tools (create_dataset, add_table_to_dataset,
@@ -327,6 +338,122 @@ def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> Non
         logger.warning("session log append failed (%s/%s): %s", stage, action, exc)
 
 
+def _render_dashboard_html_preview(
+    dashboard_meta: dict[str, Any],
+    planned_charts: list[dict[str, Any]],
+) -> str:
+    """Render a static HTML mockup of a planned dashboard.
+
+    NO real chart data — just layout boxes + chart specs (title, type,
+    role config). Lets the DA visually verify the design in a browser
+    BEFORE committing charts to AppBI.
+
+    Layout: react-grid-layout style 12-col grid mapped to CSS grid. Each
+    chart cell shows title + type badge + the role_config keys it uses.
+    """
+    name = str(dashboard_meta.get("name") or "Dashboard").strip()
+    description = str(dashboard_meta.get("description") or "").strip()
+
+    def _esc(s: Any) -> str:
+        return (
+            str(s)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    cells: list[str] = []
+    for idx, chart in enumerate(planned_charts):
+        layout = chart.get("layout") or {}
+        x = max(0, min(11, int(layout.get("x", 0))))
+        y = max(0, int(layout.get("y", idx * 4)))
+        w = max(1, min(12, int(layout.get("w", 6))))
+        h = max(1, int(layout.get("h", 4)))
+        chart_type = _esc(chart.get("chart_type") or "?")
+        title = _esc(chart.get("title") or f"Chart {idx + 1}")
+        role = chart.get("role_config") or {}
+        role_lines: list[str] = []
+        for key in ("dimension", "timeField", "breakdown", "scatterX",
+                     "scatterY", "tableRowDimension", "tableColumnDimension"):
+            val = role.get(key)
+            if val:
+                role_lines.append(f"<b>{_esc(key)}:</b> {_esc(val)}")
+        metrics = role.get("metrics") or []
+        if metrics:
+            metric_strs = [
+                f"{_esc(m.get('agg', '?'))}({_esc(m.get('field', '?'))})"
+                for m in metrics if isinstance(m, dict)
+            ]
+            role_lines.append("<b>metrics:</b> " + " · ".join(metric_strs))
+        for single_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+            sm = role.get(single_key)
+            if isinstance(sm, dict) and sm.get("field"):
+                role_lines.append(
+                    f"<b>{_esc(single_key)}:</b> "
+                    f"{_esc(sm.get('agg', '?'))}({_esc(sm.get('field'))})"
+                )
+        selected = role.get("selectedColumns") or []
+        if selected:
+            role_lines.append(
+                f"<b>selectedColumns:</b> {_esc(', '.join(map(str, selected[:6])))}"
+            )
+        # CSS grid is 1-indexed; react-grid-layout x is 0-indexed.
+        style = (
+            f"grid-column: {x + 1} / span {w};"
+            f"grid-row: {y + 1} / span {h};"
+        )
+        cells.append(
+            f'<div class="chart" style="{style}">'
+            f'<div class="title">{title}</div>'
+            f'<div class="type">{chart_type}</div>'
+            f'<div class="role">{"<br>".join(role_lines) or "<i>no config</i>"}</div>'
+            f"</div>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="vi"><head><meta charset="UTF-8">
+<title>{_esc(name)} — preview</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 24px; background: #f3f4f6; color: #111; }}
+  h1 {{ margin: 0 0 4px 0; font-size: 22px; }}
+  .desc {{ color: #555; margin-bottom: 16px; }}
+  .meta {{ color: #888; font-size: 12px; margin-bottom: 16px; }}
+  .grid {{
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    grid-auto-rows: 80px;
+    gap: 12px;
+  }}
+  .chart {{
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }}
+  .title {{ font-weight: 600; font-size: 13px; margin-bottom: 4px; }}
+  .type {{
+    display: inline-block; align-self: flex-start;
+    background: #6366f1; color: #fff;
+    padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 700; letter-spacing: .5px;
+    margin-bottom: 6px;
+  }}
+  .role {{ font-size: 11px; color: #374151; line-height: 1.5; }}
+</style></head><body>
+<h1>{_esc(name)}</h1>
+<div class="desc">{_esc(description)}</div>
+<div class="meta">Preview rendered from logged design — {len(planned_charts)} charts. Real data is NOT included; this is a layout + spec mockup.</div>
+<div class="grid">
+{chr(10).join(cells)}
+</div></body></html>
+"""
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -524,6 +651,7 @@ __all__ = [
     "_drop_none",
     "_append_session_log",
     "_session_log_dir",
+    "_render_dashboard_html_preview",
     "APPBI_API_BASE_URL",
     "APPBI_LONG_TIMEOUT_SECONDS",
 ]
