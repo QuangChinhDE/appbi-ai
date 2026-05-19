@@ -53,7 +53,10 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 from typing import Any
+
+_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 from appbi_core import (
     APPBI_LONG_TIMEOUT_SECONDS,
@@ -639,6 +642,24 @@ async def commit_semantic_model(
                 continue
             m_name = m.get("name") or f"#{m_idx}"
             loc = f"views[{index}] '{view_name}'.measures '{m_name}'"
+
+            # Phase-15.36: measure name must be a SQL-safe identifier.
+            # The AppBI FE rejects bad names on save (regex
+            # /^[a-zA-Z_][a-zA-Z0-9_]*$/), so a measure that slips into
+            # the DB with a space (e.g. 'AVG Goal') blocks every later
+            # edit of the view from the UI. BE itself doesn't enforce —
+            # catch it here on the MCP write path.
+            trimmed_name = str(m_name).strip()
+            if trimmed_name and not _IDENT_RE.match(trimmed_name):
+                suggestion = re.sub(r"[^a-zA-Z0-9_]+", "_", trimmed_name).strip("_").lower() or "measure"
+                if not _IDENT_RE.match(suggestion):
+                    suggestion = "_" + suggestion
+                validation_errors.append(
+                    f"{loc}.name {trimmed_name!r} is not a valid identifier. "
+                    f"Use letters / digits / underscore only (no spaces, "
+                    f"no accents). Suggested: {suggestion!r}. Put the "
+                    "human-readable text in `label`, not `name`."
+                )
 
             # Phase-15.29: non-count measures must declare the column being
             # aggregated. Caught here so Claude gets a clear error before

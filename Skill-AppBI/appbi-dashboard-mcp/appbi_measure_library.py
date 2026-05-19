@@ -12,6 +12,7 @@ is the only safe path.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from appbi_core import (
@@ -27,6 +28,38 @@ from appbi_core import (
 # ---------------------------------------------------------------------------
 # Internal builders
 # ---------------------------------------------------------------------------
+
+_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_measure_name(name: str) -> str:
+    """Reject measure names that aren't valid SQL/identifier-safe tokens.
+
+    BE doesn't enforce this, but the FE rejects on save — so a measure
+    Claude creates with a space (e.g. 'AVG Goal') goes into the DB fine
+    and then BLOCKS every subsequent edit of the host view from the
+    AppBI UI. Catch it here so Claude never plants that landmine.
+
+    Returns the trimmed name on success; raises ValueError with an
+    auto-suggested fix on failure.
+    """
+    trimmed = (name or "").strip()
+    if not trimmed:
+        raise ValueError("measure name is required.")
+    if _IDENT_RE.match(trimmed):
+        return trimmed
+    # Auto-suggest a snake_case fix so Claude can re-call with it
+    suggestion = re.sub(r"[^a-zA-Z0-9_]+", "_", trimmed).strip("_").lower() or "measure"
+    if not _IDENT_RE.match(suggestion):
+        suggestion = "_" + suggestion
+    raise ValueError(
+        f"measure name {trimmed!r} is invalid — must start with a letter "
+        f"or underscore and contain only letters, digits, underscores "
+        f"(no spaces, no accents, no special chars). The AppBI FE blocks "
+        f"every save on a view that holds a bad-named measure, so we "
+        f"reject it here too. Suggested fix: {suggestion!r}. "
+        f"Use `label` for the human-readable display name."
+    )
 
 
 async def _fetch_view(view_id: int) -> dict[str, Any]:
@@ -134,7 +167,7 @@ async def add_sum_measure(
     `${TABLE}.` prefix — this tool wraps it correctly).
     """
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "sum",
         "sql": "${TABLE}." + column.strip(),
         "label": label,
@@ -160,7 +193,7 @@ async def add_avg_measure(
 ) -> dict[str, Any]:
     """Add an AVG measure aggregating `column`."""
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "avg",
         "sql": "${TABLE}." + column.strip(),
         "label": label,
@@ -187,7 +220,7 @@ async def add_count_measure(
     count, e.g. won_deal_count = COUNT rows where status='won').
     """
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "count",
         "label": label,
         "folder": folder,
@@ -209,7 +242,7 @@ async def add_count_distinct_measure(
 ) -> dict[str, Any]:
     """Add a COUNT DISTINCT measure (unique non-null values of `column`)."""
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "count_distinct",
         "sql": "${TABLE}." + column.strip(),
         "label": label,
@@ -241,7 +274,7 @@ async def add_min_max_measure(
     if kind not in ("min", "max"):
         raise ValueError("kind must be 'min' or 'max'.")
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": kind,
         "sql": "${TABLE}." + column.strip(),
         "label": label,
@@ -279,7 +312,7 @@ async def add_ratio_measure(
     num = numerator_measure.strip()
     den = denominator_measure.strip()
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "avg",  # cosmetic — formula path bypasses outer agg
         "expression": "${" + num + "} / NULLIF(${" + den + "}, 0)",
         "depends_on": [num, den],
@@ -308,7 +341,7 @@ async def add_percent_of_total_measure(
     chart's result set.
     """
     measure = _drop_none({
-        "name": name.strip(),
+        "name": _validate_measure_name(name),
         "type": "percent_of_total",
         "sql": "${TABLE}." + column.strip(),
         "label": label,
