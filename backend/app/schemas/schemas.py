@@ -182,8 +182,24 @@ class ChartCreate(ChartBase):
         }
 
         def _check_metric(metric, where: str) -> None:
+            # Phase-15.41: previously `if not isinstance(metric, dict): return`
+            # silently let a bare string slip through, so a list of strings
+            # like ["deals.revenue"] passed validation but rendered empty
+            # at chart time (the FE expects {field, agg} objects). Reject
+            # the shape now so callers know to wrap each ref in a dict.
             if not isinstance(metric, dict):
-                return
+                raise ValueError(
+                    f"config.{where} must be an object with `field` + `agg`, "
+                    f"got {type(metric).__name__}={metric!r}. Wrap bare "
+                    "string refs like {'field': 'view.col', 'agg': 'sum'}."
+                )
+            raw_field = metric.get("field")
+            if raw_field is None or not str(raw_field).strip():
+                raise ValueError(
+                    f"config.{where}.field is required — must be a non-empty "
+                    "string (qualified `view.field` for semantic measures, "
+                    "or a bare column for live-table charts)."
+                )
             raw_agg = metric.get("agg")
             if raw_agg is None:
                 # Missing agg → FE renders `undefined.toUpperCase()` and
@@ -203,8 +219,16 @@ class ChartCreate(ChartBase):
             container = self.config.get(container_key)
             if not isinstance(container, dict):
                 continue
-            for index, metric in enumerate(container.get("metrics") or []):
-                _check_metric(metric, f"{container_key}.metrics[{index}]")
+            # Phase-15.41: reject metrics-as-non-list and metrics-as-list-of-strings.
+            raw_metrics = container.get("metrics")
+            if raw_metrics is not None:
+                if not isinstance(raw_metrics, list):
+                    raise ValueError(
+                        f"config.{container_key}.metrics must be a list of "
+                        f"{{field, agg}} objects, got {type(raw_metrics).__name__}."
+                    )
+                for index, metric in enumerate(raw_metrics):
+                    _check_metric(metric, f"{container_key}.metrics[{index}]")
             for solo_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
                 metric = container.get(solo_key)
                 if metric is not None:
@@ -264,8 +288,19 @@ class ChartUpdate(BaseModel):
         }
 
         def _check_metric(metric, where: str) -> None:
+            # Phase-15.41: same hardening as ChartCreate — reject non-dict
+            # metric entries (bare strings) and missing field.
             if not isinstance(metric, dict):
-                return
+                raise ValueError(
+                    f"config.{where} must be an object with `field` + `agg`, "
+                    f"got {type(metric).__name__}={metric!r}. Wrap bare "
+                    "string refs like {'field': 'view.col', 'agg': 'sum'}."
+                )
+            raw_field = metric.get("field")
+            if raw_field is None or not str(raw_field).strip():
+                raise ValueError(
+                    f"config.{where}.field is required — non-empty string."
+                )
             raw_agg = metric.get("agg")
             if raw_agg is None:
                 raise ValueError(
@@ -283,8 +318,15 @@ class ChartUpdate(BaseModel):
             container = self.config.get(container_key)
             if not isinstance(container, dict):
                 continue
-            for index, metric in enumerate(container.get("metrics") or []):
-                _check_metric(metric, f"{container_key}.metrics[{index}]")
+            raw_metrics = container.get("metrics")
+            if raw_metrics is not None:
+                if not isinstance(raw_metrics, list):
+                    raise ValueError(
+                        f"config.{container_key}.metrics must be a list of "
+                        f"{{field, agg}} objects, got {type(raw_metrics).__name__}."
+                    )
+                for index, metric in enumerate(raw_metrics):
+                    _check_metric(metric, f"{container_key}.metrics[{index}]")
             for solo_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
                 metric = container.get(solo_key)
                 if metric is not None:

@@ -58,8 +58,38 @@ def _norm_layout(layout: dict[str, Any] | None, chart_type: str) -> dict[str, in
     return {"x": x, "y": y, "w": w, "h": h}
 
 
+_ALLOWED_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
+
+
 def _metric(field: str, agg: str = "auto") -> dict[str, str]:
-    return {"field": field.strip(), "agg": (agg or "auto").strip()}
+    """Build a `{field, agg}` dict with strict validation.
+
+    Rules (Phase-15.41, matches `_normalize_metric` in appbi_chart.py):
+      - `field` is required, non-empty string.
+      - `agg='auto'` ONLY makes sense for qualified `view.field` refs
+        (declared semantic measures with stored aggregation). For a
+        BARE field (no `.`), `auto` is silently equivalent to `sum`
+        on most BE paths but can also be silently dropped or surprise
+        users with the wrong number. We upgrade auto→sum so the chart
+        builder never depends on a fallback that varies by deployment.
+      - Unknown agg → ValueError (caller fix). Don't downgrade silently
+        to `sum`: Claude should know its agg was wrong.
+    """
+    field_str = str(field or "").strip()
+    if not field_str:
+        raise ValueError("metric `field` is required (non-empty string).")
+    raw_agg = str(agg or "auto").strip().lower()
+    if raw_agg == "auto" and "." not in field_str:
+        # Bare field can't reach a semantic measure's stored agg, so
+        # 'auto' is ambiguous here. Upgrade to 'sum' explicitly.
+        raw_agg = "sum"
+    if raw_agg not in _ALLOWED_AGGS:
+        raise ValueError(
+            f"metric agg={agg!r} is not supported — use one of "
+            f"{sorted(_ALLOWED_AGGS)}. Use 'auto' only for qualified "
+            "view.field refs to declared semantic measures."
+        )
+    return {"field": field_str, "agg": raw_agg}
 
 
 def _metrics_list(
