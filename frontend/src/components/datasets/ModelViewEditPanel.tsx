@@ -2271,11 +2271,29 @@ export function ModelViewEditPanel({
       modelMeasureRefs.add(`${currentViewName}.${name}`);
     }
 
+    // Pre-existing measures keep their original name from the BE as the
+    // row key suffix (`${view.id}:measure:${origIndex}:${originalName}`).
+    // Skip the identifier-regex check on those rows when the user has NOT
+    // renamed them — the BE already accepted that name on creation, so
+    // re-validating now would block unrelated edits (e.g. deleting a
+    // different measure) just because a legacy measure has a space in
+    // its name. New measures and renamed measures still get validated.
+    const isLegacyUnchanged = (idx: number, name: string): boolean => {
+      const key = measureRowKeys[idx];
+      if (!key || key.startsWith('new-measure')) return false;
+      // Parse the originalName tail — everything after the 3rd ':'.
+      const tail = key.split(':').slice(3).join(':');
+      return tail === name;
+    };
+
     measures.forEach((m, i) => {
       const trimmedName = (m.name || '').trim();
       if (!trimmedName) {
         errors.push(`Measure #${i + 1}: name is required`);
-      } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)) {
+      } else if (
+        !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)
+        && !isLegacyUnchanged(i, trimmedName)
+      ) {
         errors.push(`Measure "${trimmedName}": name must start with a letter or underscore and contain only letters, digits, or underscores`);
       } else if (seen.has(trimmedName)) {
         errors.push(`Duplicate measure name "${trimmedName}"`);
