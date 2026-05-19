@@ -141,16 +141,37 @@ async def _post_chart(
     })
     chart_result = await _request("POST", "/charts/", json_body=body)
     chart_id = chart_result.get("id") if isinstance(chart_result, dict) else None
+    # BE chart resource doesn't include dataset_id directly, but the
+    # table does. Look up once so the log routes to logs/dataset_<id>/.
+    log_ds_id: int | None = None
+    if isinstance(chart_result, dict):
+        cand = chart_result.get("dataset_id")
+        if isinstance(cand, int):
+            log_ds_id = cand
+    if log_ds_id is None:
+        try:
+            table_meta = await _request(
+                "GET", f"/dataset-tables/{int(dataset_table_id)}",
+            )
+            if isinstance(table_meta, dict):
+                cand = table_meta.get("dataset_id")
+                if isinstance(cand, int):
+                    log_ds_id = cand
+        except Exception:  # noqa: BLE001 — best-effort lookup
+            log_ds_id = None
     log_path = _append_session_log(
         "charts",
         f"add_{chart_type.lower()}_chart",
         {
+            "dataset_id": log_ds_id,
             "chart_id": chart_id,
             "title": title,
             "chart_type": chart_type,
             "dataset_table_id": int(dataset_table_id),
+            "see_dataset_md": "↳ source measures + tables for this chart live in dataset.md (same folder)",
             "role_config_keys": sorted(role_config.keys()),
         },
+        dataset_id=log_ds_id,
     )
     placement_result: dict[str, Any] | None = None
     if dashboard_id is not None and chart_id is not None:
@@ -168,10 +189,13 @@ async def _post_chart(
             "report",
             f"add_{chart_type.lower()}_chart.placement",
             {
+                "dataset_id": log_ds_id,
                 "dashboard_id": int(dashboard_id),
                 "chart_id": int(chart_id),
+                "see_charts_md": "↳ this chart's config lives in charts.md (same folder)",
                 "layout": layout_resolved,
             },
+            dataset_id=log_ds_id,
         )
     return {
         "status": "committed",

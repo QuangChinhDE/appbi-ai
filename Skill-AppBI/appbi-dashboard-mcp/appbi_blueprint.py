@@ -1864,26 +1864,32 @@ async def commit_dashboard_blueprint(
         "charts",
         "commit_dashboard_blueprint",
         {
+            "dataset_id": dataset_id,
             "dashboard_id": dashboard_id,
             "dashboard_name": dashboard_meta.get("name"),
+            "see_dataset_md": "↳ measures/tables for these charts live in dataset.md (same folder)",
             "charts_created": [
                 f"{c.get('title')} ({c.get('chart_type')}, id={c.get('id')})"
                 for c in created_charts
             ],
             "placement_count": len(placements),
         },
+        dataset_id=dataset_id,
     )
     _append_session_log(
         "report",
         "commit_dashboard_blueprint",
         {
+            "dataset_id": dataset_id,
             "dashboard_id": dashboard_id,
             "dashboard_name": dashboard_meta.get("name"),
+            "see_charts_md": "↳ chart configs placed on this dashboard live in charts.md (same folder)",
             "placements": [
                 f"chart_id={p.get('chart_id')} layout={p.get('layout')}"
                 for p in placements
             ],
         },
+        dataset_id=dataset_id,
     )
     return {
         "status": "committed",
@@ -2514,7 +2520,7 @@ async def commit_dataset_workspace(
     design_log_path: str | None = None
     if resolved_charts or dashboard_meta_in:
         try:
-            design_path = _session_log_dir() / "charts_design.json"
+            design_path = _session_log_dir(dataset_id) / "charts_design.json"
             payload = {
                 "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
                 "dataset_id": dataset_id,
@@ -2577,6 +2583,7 @@ async def commit_dataset_workspace(
 
 @tool("report")
 async def build_dashboard_from_design(
+    dataset_id: int | None = None,
     dashboard_meta_override: dict[str, Any] | None = None,
     design_log_path: str | None = None,
     user_confirmed: bool = False,
@@ -2603,12 +2610,39 @@ async def build_dashboard_from_design(
       design_log_path — optional absolute path to a charts_design.json
         from a previous session. Defaults to the active session's log.
     """
-    # Locate design file
+    # Locate design file. Order of preference:
+    #   1. explicit design_log_path
+    #   2. logs/dataset_<id>/charts_design.json when dataset_id given
+    #   3. latest dataset_*/charts_design.json across all known datasets
     from pathlib import Path as _Path
     if design_log_path:
         design_file = _Path(design_log_path)
+    elif dataset_id is not None:
+        design_file = _session_log_dir(dataset_id) / "charts_design.json"
     else:
-        design_file = _session_log_dir() / "charts_design.json"
+        # Fallback: scan logs/dataset_*/ folders, pick the newest
+        # charts_design.json. Helps resumed conversations where Claude
+        # didn't track dataset_id explicitly.
+        logs_root = _Path(__file__).resolve().parent / "logs"
+        candidates = sorted(
+            logs_root.glob("dataset_*/charts_design.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            return {
+                "status": "no_design_found",
+                "hint": (
+                    "Pass dataset_id explicitly so the right design log "
+                    "is read, or pass design_log_path. No "
+                    "logs/dataset_*/charts_design.json was found."
+                ),
+            }
+        design_file = candidates[0]
+        logger.info(
+            "build_dashboard_from_design: dataset_id omitted, picked "
+            "newest design log: %s", design_file,
+        )
 
     if not design_file.exists():
         return {
@@ -2759,26 +2793,36 @@ async def build_dashboard_from_design(
     dashboard_id = (
         dashboard_result.get("id") if isinstance(dashboard_result, dict) else None
     )
+    # Route logs to the dataset folder: design.json was written with the
+    # dataset_id during Phase 1; reuse it here so the same dataset's
+    # dataset.md / charts.md / report.md sit together.
+    log_ds_id = design.get("dataset_id") if isinstance(design.get("dataset_id"), int) else dataset_id
     charts_log_path = _append_session_log(
         "charts",
         "build_dashboard_from_design",
         {
+            "dataset_id": log_ds_id,
             "dashboard_id": dashboard_id,
+            "see_dataset_md": "↳ measures + tables for this dashboard live in dataset.md (same folder)",
             "charts_created": [
                 f"{c.get('title')} ({c.get('chart_type')}, id={c.get('id')})"
                 for c in created_charts
             ],
         },
+        dataset_id=log_ds_id,
     )
     report_log_path = _append_session_log(
         "report",
         "build_dashboard_from_design",
         {
+            "dataset_id": log_ds_id,
             "dashboard_id": dashboard_id,
             "dashboard_name": dashboard_meta.get("name"),
+            "see_charts_md": "↳ chart configs placed on this dashboard live in charts.md (same folder)",
             "placement_count": len(placements),
             "html_preview_path": str(preview_path),
         },
+        dataset_id=log_ds_id,
     )
     return {
         "status": "committed",

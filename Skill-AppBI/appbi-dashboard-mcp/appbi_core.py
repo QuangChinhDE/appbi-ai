@@ -294,54 +294,108 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
 # ---------------------------------------------------------------------------
 # Session log — auto-appended after every successful commit/mutation.
 #
-# Lazy: the chat folder is created on the FIRST log entry, so an MCP process
-# that only runs read-only tools never pollutes logs/.
-# Per-process: one folder per MCP boot. Claude Desktop reloads spawn a fresh
-# folder; this is intentional — boundary between conversations is fuzzy from
-# the MCP's vantage, and "one folder per boot" stays predictable.
+# Keyed by `dataset_id`, NOT by MCP process boot timestamp. Before this
+# refactor (Phase 15.40) every MCP restart spawned a fresh `chat_<ts>/`
+# folder, so the Phase 1 commit and Phase 2 commit of the same flow
+# could land in different folders if Claude Desktop reloaded between
+# them. Per-dataset folders are stable across process restarts and
+# across multiple conversations on the same dataset — `dataset.md` /
+# `charts.md` / `report.md` accumulate as a real history.
 # ---------------------------------------------------------------------------
 
 
-_SESSION_LOG_DIR: Path | None = None
-_SESSION_LOG_LOCK = threading.Lock()
 _SESSION_LOG_FILES = {"dataset": "dataset.md", "charts": "charts.md", "report": "report.md"}
+_LEGACY_PROCESS_BOOT_DIR: Path | None = None
+_LEGACY_LOCK = threading.Lock()
 
 
-def _session_log_dir() -> Path:
-    """Return (and lazily create) the per-process chat-log folder."""
-    global _SESSION_LOG_DIR
-    if _SESSION_LOG_DIR is not None:
-        return _SESSION_LOG_DIR
-    with _SESSION_LOG_LOCK:
-        if _SESSION_LOG_DIR is not None:
-            return _SESSION_LOG_DIR
-        logs_root = Path(__file__).resolve().parent / "logs"
-        logs_root.mkdir(parents=True, exist_ok=True)
-        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        chat_dir = logs_root / f"chat_{stamp}"
-        chat_dir.mkdir(parents=True, exist_ok=True)
-        _SESSION_LOG_DIR = chat_dir
-        logger.info("session log folder: %s", chat_dir)
-        return chat_dir
+def _session_log_dir(dataset_id: int | None = None) -> Path:
+    """Return (and create) the log folder for a given dataset.
+
+    - dataset_id is int  → logs/dataset_<id>/
+    - dataset_id is None → logs/_unbound/<MCP_BOOT_TS>/  (last-resort
+      bucket for orphan writes; surfaces in the response as a warning
+      so the caller knows to pass dataset_id next time)
+    """
+    logs_root = Path(__file__).resolve().parent / "logs"
+    logs_root.mkdir(parents=True, exist_ok=True)
+    if dataset_id is not None:
+        folder = logs_root / f"dataset_{int(dataset_id)}"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+    # Orphan bucket: per-process so unbound writes from different MCP
+    # boots don't all pile into one folder, but still survive a restart
+    # within the same process.
+    global _LEGACY_PROCESS_BOOT_DIR
+    if _LEGACY_PROCESS_BOOT_DIR is not None:
+        return _LEGACY_PROCESS_BOOT_DIR
+    with _LEGACY_LOCK:
+        if _LEGACY_PROCESS_BOOT_DIR is None:
+            stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _LEGACY_PROCESS_BOOT_DIR = logs_root / "_unbound" / f"chat_{stamp}"
+            _LEGACY_PROCESS_BOOT_DIR.mkdir(parents=True, exist_ok=True)
+            logger.warning(
+                "session log: dataset_id was not provided — falling back "
+                "to %s. Pass dataset_id to the log call so writes route "
+                "to the dataset's own folder.",
+                _LEGACY_PROCESS_BOOT_DIR,
+            )
+    return _LEGACY_PROCESS_BOOT_DIR
 
 
-def _append_session_log(stage: str, action: str, payload: dict[str, Any]) -> str | None:
+def _extract_dataset_id(payload: dict[str, Any] | None) -> int | None:
+    """Best-effort dataset_id extraction from a log payload."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("dataset_id", "datasetId"):
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def _append_session_log(
+    stage: str,
+    action: str,
+    payload: dict[str, Any],
+    *,
+    dataset_id: int | None = None,
+) -> str | None:
     """Append a Markdown entry to the appropriate stage log file.
 
-    Returns the absolute path of the file written (so tool responses can
-    surface `auto_logged_to` for Claude to mention to the user), or None
-    on failure / unknown stage.
+    Routing rule:
+      stage="dataset" → dataset.md in logs/dataset_<id>/
+      stage="charts"  → charts.md  in logs/dataset_<id>/
+      stage="report"  → report.md  in logs/dataset_<id>/
 
+    If `dataset_id` is missing, the function tries to read it from
+    `payload["dataset_id"]`. If still missing, writes to the orphan
+    `_unbound/chat_<ts>/` bucket and logs a warning.
+
+    Each entry header carries a `dataset_id=…` line so the three files
+    stay cross-referenceable: a chart entry points at its dataset,
+    a report entry points at the charts it placed.
+
+    Returns the absolute path of the file written, or None on failure.
     Never raises — log failures are swallowed so they cannot break a commit.
     """
     file_name = _SESSION_LOG_FILES.get(stage)
     if file_name is None:
         return None
     try:
-        path = _session_log_dir() / file_name
+        ds_id = dataset_id if dataset_id is not None else _extract_dataset_id(payload)
+        path = _session_log_dir(ds_id) / file_name
         ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         lines = [f"\n## {ts} — {action}\n"]
-        for key, value in payload.items():
+        if ds_id is not None:
+            lines.append(f"- **dataset_id**: {ds_id}")
+        for key, value in (payload or {}).items():
+            # dataset_id already surfaced in the header line above —
+            # avoid duplicating it in the body.
+            if key in ("dataset_id", "datasetId"):
+                continue
             if value is None or value == [] or value == {}:
                 continue
             if isinstance(value, (list, tuple)):

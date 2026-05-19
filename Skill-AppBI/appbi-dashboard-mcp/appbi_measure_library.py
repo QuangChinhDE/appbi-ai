@@ -105,15 +105,29 @@ async def _append_measure(
     result = await _request(
         "PUT", f"/semantic/views/{int(view_id)}", json_body=_drop_none(body)
     )
+    # Look up dataset_id so the log lands in logs/dataset_<id>/dataset.md
+    log_ds_id: int | None = None
+    table_id = view.get("dataset_table_id")
+    if isinstance(table_id, int):
+        try:
+            table_meta = await _request("GET", f"/dataset-tables/{int(table_id)}")
+            if isinstance(table_meta, dict):
+                cand = table_meta.get("dataset_id")
+                if isinstance(cand, int):
+                    log_ds_id = cand
+        except Exception:  # noqa: BLE001 — best-effort
+            log_ds_id = None
     log_path = _append_session_log(
         "dataset",
         action_name,
         {
+            "dataset_id": log_ds_id,
             "view_id": int(view_id),
             "view_name": view.get("name"),
             "measure_name": new_name,
             "measure_type": new_measure.get("type"),
         },
+        dataset_id=log_ds_id,
     )
     return {
         "status": "committed",
