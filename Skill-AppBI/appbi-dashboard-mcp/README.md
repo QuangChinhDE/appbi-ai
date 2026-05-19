@@ -60,10 +60,10 @@ script.
 
 | Profile | When to use | Tool count |
 |---|---|---|
-| `all` | Default. Everything is registered. Use for debugging or one-off tasks that mix flows. | ~99 |
-| `report` | Creating a **new** dashboard/report end-to-end (Source → Dataset → Semantic → Charts → Dashboard → public link). Skips delete/edit-of-existing tools. | 35 |
-| `dataset` | Creating or editing a Dataset: import physical/SQL/calculated tables, enable date table, write descriptions, run auto-generate model. | 30 |
-| `explore` | Creating or editing semantic models / views / explores (Stage 3 design work). | 33 |
+| `all` | Default. Everything is registered. Use for debugging or one-off tasks that mix flows. | ~95 |
+| `report` | Creating a **new** dashboard/report end-to-end (Source → Dataset → Semantic → Charts → Dashboard → public link). Includes the 2-confirm workspace flow + the measure library (7) + chart library (32). | ~75 |
+| `dataset` | Creating or editing a Dataset: import physical/SQL/calculated tables, enable date table, write descriptions, run auto-generate model. | ~25 |
+| `explore` | Creating or editing semantic models / views / explores (Stage 3 design work). | ~30 |
 
 Profiles can be combined with a comma, e.g. `APPBI_MCP_PROFILE=dataset,explore`.
 
@@ -113,6 +113,12 @@ Tools tagged `all` only show up when the profile is `all`.
 | get_watermark_candidates |   | ✓ |   | ✓ |
 | run_source_query |   | ✓ |   | ✓ |
 | validate_source_sql |   | ✓ |   | ✓ |
+| list_gsheet_tabs | ✓ | ✓ |   | ✓ |
+| read_gsheet_rows | ✓ | ✓ |   | ✓ |
+
+Google Sheets datasources use `list_gsheet_tabs` / `read_gsheet_rows`
+instead of `inspect_source_schema` / `inspect_source_table` — call
+`get_data_source(id).type` to branch.
 
 ### Stage 2 — Dataset ([appbi_dataset.py](appbi_dataset.py))
 
@@ -165,8 +171,9 @@ created here — use `update_dataset` as above.
 | create_semantic_explore |   |   | ✓ | ✓ |
 | update_semantic_explore |   |   | ✓ | ✓ |
 | delete_semantic_explore |   |   | ✓ | ✓ |
-| add_dataset_model_join |   |   | ✓ | ✓ |
-| remove_dataset_model_join |   |   | ✓ | ✓ |
+| add_dataset_model_join | ✓ |   | ✓ | ✓ |
+| remove_dataset_model_join | ✓ |   | ✓ | ✓ |
+| suggest_dataset_model_join | ✓ |   | ✓ | ✓ |
 | generate_dataset_model |   | ✓³ | ✓ | ✓ |
 | execute_semantic_query | ✓ |   | ✓ | ✓ |
 
@@ -178,12 +185,20 @@ objects.
 
 ### Blueprint (Stages 3+4) ([appbi_blueprint.py](appbi_blueprint.py))
 
+The **2-confirm workspace flow** is the canonical path for a brand-new
+dashboard. The legacy `propose_*_blueprint` / `commit_*_blueprint` tools
+remain for incremental work on existing artifacts.
+
 | Tool | report | dataset | explore | all |
 |---|:-:|:-:|:-:|:-:|
+| propose_dataset_workspace | ✓ |   |   | ✓ |
+| commit_dataset_workspace (**Confirm 1**) | ✓ |   |   | ✓ |
+| build_dashboard_from_design (**Confirm 2**) | ✓ |   |   | ✓ |
+| commit_full_dashboard |   |   |   | ✓ |
 | propose_semantic_model | ✓ |   | ✓ | ✓ |
-| commit_semantic_model | ✓ |   | ✓ | ✓ |
+| commit_semantic_model |   |   | ✓ | ✓ |
 | propose_dashboard_blueprint | ✓ |   |   | ✓ |
-| commit_dashboard_blueprint | ✓ |   |   | ✓ |
+| commit_dashboard_blueprint |   |   |   | ✓ |
 | audit_chart_semantic_health |   |   |   | ✓ |
 | repair_chart_semantic_binding |   |   |   | ✓ |
 
@@ -198,12 +213,34 @@ objects.
 | get_chart_description |   |   |   | ✓ |
 | list_chart_parameters |   |   |   | ✓ |
 | search_charts |   |   |   | ✓ |
-| create_chart | ✓ |   |   | ✓ |
+| get_chart_type_schema | ✓ |   | ✓ | ✓ |
+| create_chart |   |   |   | ✓ |
 | update_chart |   |   |   | ✓ |
 | delete_chart |   |   |   | ✓ |
 | update_chart_description | ✓ |   |   | ✓ |
 | upsert_chart_metadata |   |   |   | ✓ |
 | replace_chart_parameters |   |   |   | ✓ |
+
+#### Chart pattern library ([appbi_chart_library.py](appbi_chart_library.py))
+
+32 thin wrappers, one per chart type — Claude picks by user intent. All
+tagged `report`. Every wrapper now routes through `/charts/dry-run-create`
+so validation + runtime-preview + fe_unrecognised_keys warnings fire
+before commit (same gate as `create_chart`).
+
+Categories: KPI/GAUGE/BULLET/PODIUM · BAR family · LINE/AREA/TIME_SERIES/
+RIBBON/TIMELINE · PIE/DONUT/POLAR_AREA/TREEMAP/FUNNEL/WORD_CLOUD ·
+HEATMAP/SANKEY/SUNBURST · SCATTER/BUBBLE/RADAR/BOXPLOT ·
+MAP_POINT/MAP_REGION · TABLE/MATRIX.
+
+#### Measure pattern library ([appbi_measure_library.py](appbi_measure_library.py))
+
+7 thin wrappers appending one measure to an existing SemanticView (read-
+modify-write). All tagged `report`:
+
+`add_sum_measure`, `add_avg_measure`, `add_count_measure`,
+`add_count_distinct_measure`, `add_min_max_measure`,
+`add_ratio_measure`, `add_percent_of_total_measure`.
 
 ### Stage 5 — Dashboard ([appbi_dashboard.py](appbi_dashboard.py))
 
@@ -240,9 +277,13 @@ Phase-15.14 additions:
 
 | Module | Tools | Profiles |
 |---|---|---|
-| [appbi_core.py](appbi_core.py) | `health_check` | all profiles |
-| [appbi_quality.py](appbi_quality.py) | 10 quality-rule tools | `all` only |
+| [appbi_core.py](appbi_core.py) | `health_check`, `get_design_recommendations`, `get_mcp_logs_dir` | report / dataset / explore |
+| [appbi_quality.py](appbi_quality.py) | 9 quality-rule tools | `all` only |
 | [appbi_sharing.py](appbi_sharing.py) | 4 cross-resource share tools | `all` only |
+
+`get_design_recommendations()` returns the Markdown cheatsheet mapping
+user intent (VN/EN phrasings) → exact library tool name. Call it at the
+start of a design session or whenever unsure which `add_*` tool fits.
 
 If you need any of these during a focused profile session, either start a
 secondary `all` session or extend the tag set in the source file (see
@@ -282,17 +323,23 @@ identical `create_chart` call as any other.
 Source  →  Dataset  →  Semantic Model  →  Charts  →  Dashboard
 ```
 
-The recommended path for a full dashboard:
+**Recommended (2-confirm) path for a fresh dashboard:**
 
-1. `propose_semantic_model(dataset_id, business_intent)`
-2. `commit_semantic_model(plan_json, user_confirmed=true)`
-3. `propose_dashboard_blueprint(dataset_id, business_intent)`
-4. `commit_dashboard_blueprint(blueprint_json, user_confirmed=true)`
+1. `propose_dataset_workspace(business_intent, ...)` — read-only plan template.
+2. `commit_dataset_workspace(plan, user_confirmed=true)` — **Confirm 1**:
+   writes dataset + tables + semantic + relationships, logs planned charts.
+3. `build_dashboard_from_design()` — renders HTML preview.
+4. `build_dashboard_from_design(user_confirmed=true)` — **Confirm 2**: creates
+   charts + dashboard from the logged design.
 
-For one-off ad-hoc charts:
+**Incremental edits on existing artifacts:**
 
-1. `preview_chart_data(...)`
-2. `create_chart(..., user_confirmed=true)`
+- One chart: pick the right `add_*_chart` from the library (e.g.
+  `add_bar_chart`) or `create_chart` for raw `config` control.
+- New measure on an existing view: `add_sum_measure` /
+  `add_ratio_measure` / etc.
+- Add semantic view: `propose_semantic_model` → `commit_semantic_model`.
+- Add dashboard filter / public link: granular Stage-5 tools.
 
 **Saved-chart limitation:** persist only measures/dimensions from the chart's
 bound/base view. Joined-view fields like `orders.customer_name` are not safe to
@@ -381,12 +428,14 @@ later cause chart/runtime failures.
 | File | Role |
 |---|---|
 | `appbi_orchestrator_mcp.py` | Entry point — imports every stage module so its tools register. |
-| `appbi_core.py` | FastMCP instance, `_request`, `_requires_confirmation`, profile decorator. |
-| `appbi_source.py` | Stage 1 — read-only source inspection. |
-| `appbi_dataset.py` | Stage 2 — dataset + table CRUD, descriptions. |
+| `appbi_core.py` | FastMCP instance, `_request`, `_requires_confirmation`, profile decorator, master instructions, design cheatsheet, session-log helpers. |
+| `appbi_source.py` | Stage 1 — read-only source inspection (SQL + Google Sheets). |
+| `appbi_dataset.py` | Stage 2 — dataset + table CRUD, descriptions, dictionary. |
 | `appbi_semantic.py` | Stage 3 — semantic view / model / explore CRUD, joins, queries. |
-| `appbi_blueprint.py` | Stage 3+4 design-and-commit flow. |
-| `appbi_chart.py` | Stage 4 — chart CRUD. |
+| `appbi_measure_library.py` | Stage 3 — 7 pattern tools that append one measure to an existing view. |
+| `appbi_blueprint.py` | Stage 3+4 — 2-confirm workspace flow + legacy blueprint flow + audit/repair. |
+| `appbi_chart.py` | Stage 4 — chart CRUD (uses BE `/charts/dry-run-create` as single gatekeeper). |
+| `appbi_chart_library.py` | Stage 4 — 32 pattern tools, one per chart type (also dry-run-gated). |
 | `appbi_dashboard.py` | Stage 5 — dashboard assembly, filters, public links. |
 | `appbi_quality.py` | Optional — data-quality rule CRUD. |
 | `appbi_sharing.py` | Cross-resource sharing. |

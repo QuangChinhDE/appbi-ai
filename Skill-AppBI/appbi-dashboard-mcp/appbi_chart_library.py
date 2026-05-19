@@ -138,20 +138,12 @@ async def _post_chart(
     base_filters: list[dict[str, Any]] | None = None,
     dashboard_id: int | None = None,
 ) -> dict[str, Any]:
-    """Internal: build chart-create body, optionally place on a dashboard."""
-    if not user_confirmed:
-        return _requires_confirmation(
-            f"add_{chart_type.lower()}_chart",
-            {
-                "chart_type": chart_type,
-                "title": title,
-                "dataset_table_id": int(dataset_table_id),
-                "role_config_keys": sorted(role_config.keys()),
-                "role_config": role_config,
-                "layout": _norm_layout(layout, chart_type),
-                "dashboard_id": dashboard_id,
-            },
-        )
+    """Internal: dry-run → confirm → create, optionally placing on a dashboard.
+
+    Routes through `/charts/dry-run-create` so every library tool gets the
+    same single-gatekeeper guarantees as `create_chart`: Pydantic validation,
+    runtime-preview check, `fe_unrecognised_keys` warnings.
+    """
     config = {
         "chartType": chart_type,
         "queryMode": "generated",
@@ -162,12 +154,76 @@ async def _post_chart(
         "filters": [],
         "baseFilters": base_filters or [],
     }
+
+    dry_run = await _request(
+        "POST",
+        "/charts/dry-run-create",
+        json_body={
+            "name": title,
+            "chart_type": chart_type,
+            "dataset_table_id": int(dataset_table_id),
+            "config": config,
+            "description": description,
+        },
+    )
+    if not isinstance(dry_run, dict):
+        return {"status": "error", "error": "Unexpected dry-run response from backend."}
+
+    normalized_config = dry_run.get("normalized_config") or config
+    validation_errors = dry_run.get("validation_errors") or []
+    runtime_errors = dry_run.get("runtime_errors") or []
+    fe_unrecognised = dry_run.get("fe_unrecognised_keys") or []
+
+    if validation_errors:
+        return {
+            "status": "blocked_by_validation",
+            "validation_errors": validation_errors,
+            "normalized_config": normalized_config,
+            "fix": (
+                "Adjust the inputs and retry. The chart config did not pass "
+                "the BE Pydantic/role-config gate."
+            ),
+        }
+    if runtime_errors:
+        return {
+            "status": "blocked_by_runtime_preview",
+            "runtime_errors": runtime_errors,
+            "root_cause": dry_run.get("runtime_root_cause"),
+            "normalized_config": normalized_config,
+            "fix": (
+                "Adjust the chart config until dry-run-create returns ok=true. "
+                "This guardrail prevents saving charts that break in Explore."
+            ),
+        }
+
+    if not user_confirmed:
+        plan: dict[str, Any] = {
+            "chart_type": chart_type,
+            "title": title,
+            "dataset_table_id": int(dataset_table_id),
+            "role_config_keys": sorted(role_config.keys()),
+            "role_config": role_config,
+            "layout": _norm_layout(layout, chart_type),
+            "dashboard_id": dashboard_id,
+            "normalized_changes": dry_run.get("changes") or [],
+            "runtime_preview_sample": dry_run.get("runtime_preview_sample") or [],
+        }
+        if fe_unrecognised:
+            plan["fe_will_ignore"] = {
+                "keys": fe_unrecognised[:20],
+                "note": (
+                    "BE will save these keys but the FE renderer doesn't read "
+                    "them — chart will look different. Drop or rename them."
+                ),
+            }
+        return _requires_confirmation(f"add_{chart_type.lower()}_chart", plan)
+
     body = _drop_none({
         "name": title,
         "description": description,
         "chart_type": chart_type,
         "dataset_table_id": int(dataset_table_id),
-        "config": config,
+        "config": normalized_config,
     })
     chart_result = await _request("POST", "/charts/", json_body=body)
     chart_id = chart_result.get("id") if isinstance(chart_result, dict) else None

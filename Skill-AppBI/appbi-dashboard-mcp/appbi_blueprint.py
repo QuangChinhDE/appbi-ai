@@ -2169,7 +2169,7 @@ async def propose_dataset_workspace(
     if datasource_id is not None:
         try:
             sources = await _request(
-                "GET", f"/data-sources/{int(datasource_id)}/tables"
+                "GET", f"/datasets/datasources/{int(datasource_id)}/tables"
             ) or []
         except RuntimeError as exc:
             logger.warning(

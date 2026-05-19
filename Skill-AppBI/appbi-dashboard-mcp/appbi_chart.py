@@ -641,61 +641,37 @@ async def create_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create one chart.
+    """Create one chart. For a NEW dashboard build, prefer
+    `commit_dataset_workspace.plan.planned_charts` + `build_dashboard_from_design`
+    — this tool is for incremental edits on an existing dashboard.
 
-    **For a new dashboard build, do NOT use this** — declare charts in
-    `commit_dataset_workspace.plan.planned_charts` and materialise via
-    `build_dashboard_from_design`. This granular tool is for adding a
-    single chart to an EXISTING dashboard.
+    Prefer the `add_*_chart` library (e.g. add_bar_chart, add_kpi_chart)
+    when intent maps to a single chart type — they take typed params and
+    bake in the role_config. Use `create_chart` only when you need raw
+    `config` access. Unsure of role_config shape? Call
+    `get_chart_type_schema(chart_type=...)` first.
 
-    Unsure which role_config keys this chart_type needs? Call
-    `get_chart_type_schema(chart_type=...)` first — it returns the
-    required + optional roles with semantic labels (e.g. tells you
-    BAR's "x-axis" key is `dimension`, not `x_axis` or `xAxis`) and a
-    runnable example skeleton. Combined with `dry-run-create` (called
-    under the hood here), that's the full FE↔BE↔MCP contract.
+    Anchor: pass `dataset_table_id` OR `dataset_id` (auto-derives from
+    first qualified `view.field` ref). Both omitted → 400.
 
-    Field refs:
-      * Qualified `view.field` → semantic engine + JOIN (required for
-        cross-table, declared measures, time grains, context modifiers).
-      * Bare `field` → legacy live_query, single table, NO JOIN.
+    Field refs: qualified `view.field` → semantic engine + JOIN; bare
+    `field` → legacy live_query (single table, no JOIN).
 
-    Anchor table: pass `dataset_id` to auto-derive `dataset_table_id`
-    from the first qualified field's view (matches FE Hướng A). Pass
-    `dataset_table_id` to anchor explicitly. Both omitted → 400.
+    Aggregation (`metric.agg`):
+      sum/avg → numeric · min/max → any orderable · count/count_distinct → any
+      auto → DECLARED measure only (uses stored agg; avoids double-agg).
+    Default when omitted: numeric→sum, else→count_distinct, semantic ref→auto.
 
-    Agg-validity matrix (engine auto-promotes raw cols to a measure):
-      SUM / AVG          → numeric only
-      MIN / MAX          → any orderable (numeric / date / string)
-      COUNT / COUNT_DISTINCT → any column
-      AUTO ("AS-IS")     → DECLARED measure refs only — uses the measure's
-                            own stored aggregation. Use this when `field`
-                            points to a semantic measure; passing SUM/COUNT/
-                            etc. instead wraps the measure again → double-agg.
-    Default agg when `metric.agg` omitted: numeric→SUM, else→COUNT_DISTINCT,
-    declared measure ref→AUTO.
+    role_config keys: `timeGrains: {field: day|week|month|quarter|year}` for
+    date-axis charts; `tableMode='pivot'` + tableRowDimension/
+    tableColumnDimension/tablePivotMetric for pivot tables; `selectedColumns`
+    whitelists TABLE columns. `baseFilters` sits NEXT TO roleConfig (not
+    inside) — operators: eq/ne/gt/gte/lt/lte/in/not_in/between/contains/
+    starts_with/ends_with/is_null/is_not_null.
 
-    `role_config` keys:
-      * `timeGrains: {"view.date_field": "day|week|month|quarter|year"}`
-        — bucketed via date_trunc. Set this for any date-axis chart
-        (BAR/LINE/AREA/TIME_SERIES) — FE's auto-default fires only for
-        NEW charts in the editor, NOT MCP-saved charts on load.
-      * `tableMode: "pivot"` + `tableRowDimension`, `tableColumnDimension`,
-        `tablePivotMetric` for TABLE pivot layout. `selectedColumns: [...]`
-        whitelists TABLE columns.
-      * `baseFilters: [{field, operator, value}]` — CHART-level filters
-        (different from dashboard-level). Operators: eq/ne/neq/gt/gte/
-        lt/lte/in/not_in/between/contains/not_contains/starts_with/
-        ends_with/is_null/is_not_null. `between` value=[lo,hi];
-        is_null/is_not_null take no value.
-      * Measures with expression/filters/depends_on/format/
-        context_modifiers belong on the SemanticView, NOT inline on chart.
-
-    Do NOT pass `_implicit: true` on metrics — FE-only badge marker.
-
-    `dry-run-create` validates + previews before commit; its
-    `fe_unrecognised_keys` flags BE-accepted-but-FE-ignored keys.
-    `bypass_semantic_check=True` skips the runtime gate (warn user first).
+    Semantic measures (expression/filters/depends_on/format) belong on the
+    SemanticView, not inline on chart. `bypass_semantic_check=True` skips
+    the runtime gate (warn user first).
     """
     # Phase-15.10 / Hướng A: derive dataset_table_id when omitted.
     if dataset_table_id is None:
