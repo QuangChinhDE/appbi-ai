@@ -1669,19 +1669,27 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* Column to aggregate (form mode). COUNT counts rows so column is N/A. */}
-          {measure.type !== 'count' && (
-            <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Column to aggregate</label>
-              <input
-                list={colsListId}
-                value={measure.sql || ''}
-                onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="Pick a column"
-              />
-            </div>
-          )}
+          {/* Column to aggregate (form mode).
+              COUNT: column is OPTIONAL. Blank → COUNT(*) (all rows).
+              Filled → COUNT(col) (non-null only). These return different
+              numbers when the column has NULLs, so we expose the choice. */}
+          <div>
+            <label className="text-[10px] text-text-tertiary uppercase font-medium">
+              Column to aggregate
+              {measure.type === 'count' && (
+                <span className="ml-1 normal-case text-text-quaternary font-normal">
+                  (optional — blank = COUNT(*), filled = COUNT(col) non-null only)
+                </span>
+              )}
+            </label>
+            <input
+              list={colsListId}
+              value={measure.sql || ''}
+              onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
+              className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+              placeholder={measure.type === 'count' ? 'Leave blank for COUNT(*)' : 'Pick a column'}
+            />
+          </div>
 
           {/* Filter builder */}
           <div>

@@ -293,6 +293,7 @@ async def add_avg_measure(
 async def add_count_measure(
     view_id: int,
     name: str,
+    column: str | None = None,
     label: str | None = None,
     filters: list[dict[str, Any]] | None = None,
     folder: str | None = None,
@@ -300,15 +301,30 @@ async def add_count_measure(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Add a COUNT-of-rows measure (counts qualifying rows; no column).
+    """Add a COUNT measure. `column` is OPTIONAL.
 
-    Use `filters` to count only rows matching a condition (filtered
-    count, e.g. won_deal_count = COUNT rows where status='won').
+    Two distinct SQL semantics:
+      column=None        → COUNT(*)         counts ALL rows (incl. NULLs).
+      column='customer_id' → COUNT(col)     counts ONLY non-null rows of
+                                            that column.
+
+    These return different numbers when the column has NULLs. Pick the
+    one you actually want — don't reach for COUNT DISTINCT unless you
+    need unique values (use `add_count_distinct_measure`).
+
+    `filters` add a CASE WHEN gate so the COUNT only sees matching rows
+    (e.g. won_deal_count = COUNT(*) WHERE status='won').
+
     See `add_sum_measure` for `extra` shape.
     """
-    measure = _drop_none({
+    measure: dict[str, Any] = {
         "name": _validate_measure_name(name),
         "type": "count",
+    }
+    if column and column.strip():
+        measure["sql"] = "${TABLE}." + column.strip()
+    measure = _drop_none({
+        **measure,
         "label": label,
         "folder": folder,
         "filters": filters or None,
