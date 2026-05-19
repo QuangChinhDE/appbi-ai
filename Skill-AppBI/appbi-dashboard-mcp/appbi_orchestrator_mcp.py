@@ -47,6 +47,13 @@ import appbi_chart  # noqa: F401
 # Stage 5 — Dashboard (granular placement / filter / public-link tools)
 import appbi_dashboard  # noqa: F401
 
+# Pattern libraries — one tool per measure kind / chart type. Claude picks
+# by user intent ("tổng" / "tỷ lệ" / "xu hướng…") and the tool has the
+# exact config baked in, removing the trial-and-error config errors that
+# burn the most tokens.
+import appbi_measure_library  # noqa: F401
+import appbi_chart_library  # noqa: F401
+
 # Blueprint — the canonical design-then-commit flow (Stages 3 + 4)
 import appbi_blueprint  # noqa: F401
 

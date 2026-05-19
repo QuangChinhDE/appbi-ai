@@ -636,6 +636,79 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
     }
 
 
+_DESIGN_CHEATSHEET = """
+# Pattern → tool routing
+
+## Measure tools (appbi_measure_library) — pick by aggregation kind
+| User intent | Tool |
+|---|---|
+| "tổng X", total / sum | `add_sum_measure` |
+| "trung bình X", average | `add_avg_measure` |
+| "đếm dòng", count rows | `add_count_measure` |
+| "đếm duy nhất", # unique values | `add_count_distinct_measure` |
+| "nhỏ nhất / lớn nhất" | `add_min_max_measure` (kind='min' or 'max') |
+| "tỷ lệ A/B", A per B | `add_ratio_measure` (both A and B must be existing measures) |
+| "% trên tổng" | `add_percent_of_total_measure` |
+
+## Chart tools (appbi_chart_library) — pick by intent
+| User intent / shape | Tool |
+|---|---|
+| "1 con số", KPI tile | `add_kpi_chart` |
+| "1 con số vs target trên dial" | `add_gauge_chart` |
+| "1 con số vs target dạng bar" | `add_bullet_chart` |
+| Top-N ranking (1st/2nd/3rd) | `add_podium_chart` |
+| "so sánh nhóm" (vertical bars) | `add_bar_chart` |
+| Label dài → horizontal bars | `add_horizontal_bar_chart` |
+| "nhóm con cạnh nhau" (clustered) | `add_grouped_bar_chart` |
+| "tỷ trọng từng nhóm con stacked" | `add_stacked_bar_chart` |
+| "doanh thu + %tăng trưởng" (combo) | `add_bar_line_chart` |
+| "đóng góp dương/âm vào tổng" | `add_waterfall_chart` |
+| "xu hướng theo thời gian" (line) | `add_line_chart` (set `time_grain`) |
+| Line nhưng tô màu nền | `add_area_chart` |
+| Time-series explicit timeField | `add_time_series_chart` |
+| Ranked time series | `add_ribbon_chart` |
+| Sự kiện theo thời gian, mỗi loại 1 row | `add_timeline_chart` |
+| "tỷ trọng từng phần" (≤6 slices) | `add_pie_chart` |
+| Pie có lỗ ở giữa | `add_donut_chart` |
+| Pie với slice radii khác nhau | `add_polar_area_chart` |
+| Hình chữ nhật lồng nhau theo size | `add_treemap_chart` |
+| Phễu chuyển đổi (lead → close) | `add_funnel_chart` |
+| Mây từ khoá theo size | `add_word_cloud_chart` |
+| Lưới màu (row × col) | `add_heatmap_chart` |
+| "luồng A → B" | `add_sankey_chart` |
+| Vòng cây phân cấp 2 mức | `add_sunburst_chart` |
+| "tương quan 2 chỉ số" | `add_scatter_chart` |
+| Scatter + size cho chỉ số 3 | `add_bubble_chart` |
+| Spider chart đa chiều | `add_radar_chart` |
+| Phân phối theo quartile / outlier | `add_boxplot_chart` |
+| Bản đồ điểm (long/lat) | `add_map_point_chart` |
+| Bản đồ vùng (choropleth) | `add_map_region_chart` |
+| Bảng cột thường | `add_table_chart` |
+| Bảng pivot (row × col → giá trị) | `add_pivot_table_chart` |
+
+## Workflow note
+For a NEW dashboard, prefer the 2-confirm flow:
+1. `propose_dataset_workspace` → author full plan including `planned_charts`
+2. `commit_dataset_workspace` (CONFIRM 1) → atomic write of data + semantic + design log
+3. `build_dashboard_from_design` (CONFIRM 2) → atomic write of charts + dashboard
+
+The individual `add_*` tools above are for INCREMENTAL edits to an
+existing dashboard, or for ad-hoc charts outside a structured build.
+""".strip()
+
+
+@tool({"report", "dataset", "explore"})
+async def get_design_recommendations(ctx: Context | None = None) -> dict[str, Any]:
+    """Return the measure / chart pattern → tool routing cheatsheet.
+
+    Call this when starting a design session, or whenever unsure which
+    add_* tool fits the user's described intent. Output is a single
+    Markdown table mapping common Vietnamese / English phrasings to the
+    exact tool name in the library.
+    """
+    return {"cheatsheet": _DESIGN_CHEATSHEET}
+
+
 @tool({"report", "dataset", "explore"})
 async def get_mcp_logs_dir(ctx: Context | None = None) -> dict[str, Any]:
     """Return the absolute path to the MCP session-log folder.
