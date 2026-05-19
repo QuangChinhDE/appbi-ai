@@ -580,6 +580,22 @@ async def _auto_derive_dataset_table_id(
             "Phase-15.10 FE flow)."
         )
 
+    # Phase-15.39: auto-derive is for SINGLE-table charts. The moment
+    # fields reference more than one view (cross-table chart powered by
+    # dataset relationships), the right anchor is ambiguous — picking
+    # the dimension's view vs the metric's view changes which JOIN
+    # graph fires. Refuse and force the caller to be explicit instead
+    # of silently anchoring to the wrong fact/dim table.
+    if len({c for c in candidates if c}) > 1:
+        return None, (
+            f"Cannot auto-derive dataset_table_id: role_config fields "
+            f"reference multiple views {candidates!r}. This looks like a "
+            "CROSS-TABLE chart — pass dataset_table_id explicitly so the "
+            "caller decides which view is the anchor. (The metric's view "
+            "is usually the right answer — that's the fact table; the "
+            "dimension's view joins in via the dataset relationship.)"
+        )
+
     target_view = candidates[0]
     try:
         model = await _request("GET", f"/datasets/{int(dataset_id)}/model")

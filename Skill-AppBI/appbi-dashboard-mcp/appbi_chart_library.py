@@ -62,14 +62,38 @@ def _metric(field: str, agg: str = "auto") -> dict[str, str]:
     return {"field": field.strip(), "agg": (agg or "auto").strip()}
 
 
-def _metrics_list(items: list[dict[str, Any]] | list[str]) -> list[dict[str, Any]]:
-    """Accept ['view.col', ...] or [{field, agg}, ...]."""
+def _metrics_list(
+    items: list[dict[str, Any]] | list[str],
+    *,
+    chart_type: str,
+    role_name: str = "metrics",
+) -> list[dict[str, Any]]:
+    """Accept ['view.col', ...] or [{field, agg}, ...]. Enforce count.
+
+    Phase-15.39: reject empty list immediately at MCP edge so we don't
+    rely on BE-side error for the common 'forgot to pass metrics' case.
+    Order in the resulting list mirrors caller order — used downstream
+    by the FE renderer for legend ordering, so this function MUST be
+    list-order preserving.
+    """
+    if not items:
+        raise ValueError(
+            f"{chart_type}: `{role_name}` cannot be empty — at least "
+            f"one {{field, agg}} entry is required. For declared "
+            "semantic measures use agg='auto'."
+        )
     out: list[dict[str, Any]] = []
-    for it in items or []:
+    for it in items:
         if isinstance(it, str):
             out.append(_metric(it))
         elif isinstance(it, dict):
-            out.append(_metric(it.get("field", ""), it.get("agg", "auto")))
+            field = str(it.get("field", "")).strip()
+            if not field:
+                raise ValueError(
+                    f"{chart_type}: every `{role_name}[i]` needs a "
+                    "non-empty `field` (e.g. 'deals.revenue')."
+                )
+            out.append(_metric(field, it.get("agg", "auto")))
     return out
 
 
@@ -274,7 +298,10 @@ async def add_bar_chart(
     dataset-model relationship connects them (see
     `add_dataset_model_join` / `suggest_dataset_model_join`).
     """
-    role: dict[str, Any] = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
+    role: dict[str, Any] = {
+        "dimension": dimension.strip(),
+        "metrics": _metrics_list(metrics, chart_type="BAR"),
+    }
     if breakdown:
         role["breakdown"] = breakdown.strip()
     return await _post_chart("BAR", dataset_table_id, role, title, layout,
@@ -294,7 +321,10 @@ async def add_horizontal_bar_chart(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """HORIZONTAL_BAR — horizontal bars by category. Best for long category labels."""
-    role = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
+    role = {
+        "dimension": dimension.strip(),
+        "metrics": _metrics_list(metrics, chart_type="HORIZONTAL_BAR"),
+    }
     return await _post_chart("HORIZONTAL_BAR", dataset_table_id, role, title, layout,
                               description, user_confirmed, dashboard_id=dashboard_id)
 
@@ -364,7 +394,7 @@ async def add_bar_line_chart(
     """BAR_LINE — combo: bars + secondary-axis line. Common for revenue + growth %."""
     role = {
         "dimension": dimension.strip(),
-        "metrics": _metrics_list(bar_metrics),
+        "metrics": _metrics_list(bar_metrics, chart_type="BAR_LINE", role_name="bar_metrics"),
         "lineMetric": _metric(line_metric_field, line_metric_agg),
     }
     return await _post_chart("BAR_LINE", dataset_table_id, role, title, layout,
@@ -415,7 +445,10 @@ async def add_line_chart(
     metrics=[{field:"sales.revenue"}]) work when a dataset-model
     relationship connects the views.
     """
-    role: dict[str, Any] = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
+    role: dict[str, Any] = {
+        "dimension": dimension.strip(),
+        "metrics": _metrics_list(metrics, chart_type="LINE"),
+    }
     if breakdown:
         role["breakdown"] = breakdown.strip()
     if time_grain:
@@ -439,7 +472,10 @@ async def add_area_chart(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """AREA — line chart with filled area. Good for cumulative / proportion-over-time."""
-    role: dict[str, Any] = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
+    role: dict[str, Any] = {
+        "dimension": dimension.strip(),
+        "metrics": _metrics_list(metrics, chart_type="AREA"),
+    }
     if breakdown:
         role["breakdown"] = breakdown.strip()
     if time_grain:
@@ -465,7 +501,7 @@ async def add_time_series_chart(
     """TIME_SERIES — explicit time-axis chart (distinct from LINE)."""
     role: dict[str, Any] = {
         "timeField": time_field.strip(),
-        "metrics": _metrics_list(metrics),
+        "metrics": _metrics_list(metrics, chart_type="TIME_SERIES"),
         "timeGrains": {time_field.strip(): time_grain},
     }
     if breakdown:
@@ -787,7 +823,10 @@ async def add_radar_chart(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """RADAR — spider/radar plot. Pass multiple metrics for multiple series."""
-    role = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
+    role = {
+        "dimension": dimension.strip(),
+        "metrics": _metrics_list(metrics, chart_type="RADAR"),
+    }
     return await _post_chart("RADAR", dataset_table_id, role, title, layout,
                               description, user_confirmed, dashboard_id=dashboard_id)
 

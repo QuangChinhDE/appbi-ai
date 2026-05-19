@@ -5,6 +5,101 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
+# Canonical per-chart-type required + optional role_config keys.
+# Mirrors the FE chart-role registry and the MCP CHART_ROLE_REQUIREMENTS so
+# ChartCreate / ChartUpdate validators can reject configs that miss required
+# roles BEFORE they hit the DB. Without this, e.g. a BAR chart with no
+# `dimension` slips past Pydantic and only fails at render time.
+#
+# Token grammar:
+#   "key"          → key must be present in role_config and non-empty
+#   "key[0]"       → role_config[key] must be a non-empty list (≥1 entry)
+#   "key=value"    → role_config[key] must equal exactly `value`
+#
+# Optional keys are advisory only — not enforced, listed for downstream
+# tooling (MCP / FE) that wants to surface "what else can I set here".
+CHART_REQUIRED_ROLE_KEYS: Dict[str, Dict[str, List[str]]] = {
+    "TABLE":          {"required": [],                                                                                                         "optional": ["selectedColumns"]},
+    "MATRIX":         {"required": ["tableMode=pivot", "tableRowDimension", "tableColumnDimension", "tablePivotMetric"],                       "optional": []},
+    "KPI":            {"required": ["metrics[0]"],                                                                                              "optional": ["benchmarkMetric"]},
+    "GAUGE":          {"required": ["metrics[0]"],                                                                                              "optional": ["benchmarkMetric"]},
+    "BULLET":         {"required": ["metrics[0]"],                                                                                              "optional": ["benchmarkMetric"]},
+    "PODIUM":         {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "BAR":            {"required": ["dimension", "metrics[0]"],                                                                                 "optional": ["breakdown"]},
+    "HORIZONTAL_BAR": {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "GROUPED_BAR":    {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
+    "STACKED_BAR":    {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
+    "BAR_LINE":       {"required": ["dimension", "metrics[0]", "lineMetric"],                                                                   "optional": []},
+    "WATERFALL":      {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "LINE":           {"required": ["dimension", "metrics[0]"],                                                                                 "optional": ["breakdown", "timeGrains"]},
+    "AREA":           {"required": ["dimension", "metrics[0]"],                                                                                 "optional": ["breakdown", "timeGrains"]},
+    "TIME_SERIES":    {"required": ["timeField", "metrics[0]"],                                                                                 "optional": ["breakdown", "timeGrains"]},
+    "RIBBON":         {"required": ["timeField", "breakdown", "metrics[0]"],                                                                    "optional": ["timeGrains"]},
+    "TIMELINE":       {"required": ["timeField", "dimension"],                                                                                  "optional": ["metrics"]},
+    "PIE":            {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "DONUT":          {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "POLAR_AREA":     {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "RADAR":          {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "TREEMAP":        {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "FUNNEL":         {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "WORD_CLOUD":     {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "SCATTER":        {"required": ["scatterX", "scatterY"],                                                                                    "optional": ["dimension"]},
+    "BUBBLE":         {"required": ["scatterX", "scatterY", "metrics[0]"],                                                                      "optional": ["dimension"]},
+    "MAP_POINT":      {"required": ["scatterX", "scatterY"],                                                                                    "optional": ["dimension", "metrics"]},
+    "MAP_REGION":     {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "HEATMAP":        {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
+    "BOXPLOT":        {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
+    "SANKEY":         {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
+    "SUNBURST":       {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
+}
+
+
+def _is_present(role_config: Dict[str, Any], token: str) -> Optional[str]:
+    """Return None if role_config satisfies the requirement token, else the
+    human-readable reason it's missing.
+
+    Tokens: "key" / "key[0]" / "key=value" — see CHART_REQUIRED_ROLE_KEYS.
+    """
+    if "=" in token:
+        key, _, expected = token.partition("=")
+        value = role_config.get(key.strip())
+        if str(value).strip() != expected.strip():
+            return f"{key.strip()} must equal {expected.strip()!r} (got {value!r})"
+        return None
+    if "[" in token and token.endswith("]"):
+        key = token.split("[", 1)[0]
+        value = role_config.get(key)
+        if not isinstance(value, list) or len(value) == 0:
+            return f"{key} must be a non-empty list"
+        return None
+    value = role_config.get(token)
+    if value is None or (isinstance(value, (str, list, dict)) and len(value) == 0):
+        return f"{token} is required"
+    return None
+
+
+def check_chart_required_role_keys(
+    chart_type: str,
+    role_config: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Return a list of human-readable missing-requirement messages.
+
+    Empty list = config satisfies BE chart-type contract.
+    Unknown chart_type: returns []. ChartCreate already checks the enum
+    upstream, so we don't double-error here.
+    """
+    spec = CHART_REQUIRED_ROLE_KEYS.get(str(chart_type).upper())
+    if not spec:
+        return []
+    role_config = role_config if isinstance(role_config, dict) else {}
+    errors: List[str] = []
+    for token in spec.get("required", []):
+        reason = _is_present(role_config, token)
+        if reason:
+            errors.append(reason)
+    return errors
+
+
 class ChartConfigBase(BaseModel):
     """
     Base chart configuration model.

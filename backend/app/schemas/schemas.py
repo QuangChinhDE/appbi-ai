@@ -209,6 +209,36 @@ class ChartCreate(ChartBase):
                 metric = container.get(solo_key)
                 if metric is not None:
                     _check_metric(metric, f"{container_key}.{solo_key}")
+
+        # Phase-15.39: enforce per-chart-type required role_config keys.
+        # ChartCreate previously accepted (e.g.) a BAR chart with no
+        # `dimension` — Pydantic shrugged, save succeeded, render-time
+        # crashed. The CHART_REQUIRED_ROLE_KEYS canonical map fixes that
+        # by checking the role-config container (the first one that's
+        # actually populated) against the chart_type's contract.
+        from app.schemas.chart_config import check_chart_required_role_keys
+
+        # Pick the populated container — generatedRoleConfig and
+        # roleConfig are usually mirrors; customRoleConfig is the
+        # advanced opt-out. Validate against the first non-empty one.
+        role_to_check: Optional[Dict[str, Any]] = None
+        for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
+            container = self.config.get(container_key)
+            if isinstance(container, dict) and container:
+                role_to_check = container
+                break
+        # Skip when caller chose customSql or semanticBinding instead of
+        # the role-config path — those are explicit raw-SQL paths and
+        # don't have role-config requirements.
+        if role_to_check is not None and not self.config.get("customSql"):
+            missing = check_chart_required_role_keys(
+                str(self.chart_type), role_to_check
+            )
+            if missing:
+                raise ValueError(
+                    f"chart_type={self.chart_type!r} is missing required "
+                    f"role_config: {'; '.join(missing)}"
+                )
         return self
 
 
@@ -259,6 +289,29 @@ class ChartUpdate(BaseModel):
                 metric = container.get(solo_key)
                 if metric is not None:
                     _check_metric(metric, f"{container_key}.{solo_key}")
+
+        # Phase-15.39: enforce per-chart-type required role_config keys on
+        # updates too. Only when the caller actually passed a chart_type;
+        # a config-only PATCH can't be checked without knowing the type
+        # (route handler should disallow that anyway).
+        if self.chart_type is not None:
+            from app.schemas.chart_config import check_chart_required_role_keys
+
+            role_to_check: Optional[Dict[str, Any]] = None
+            for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
+                container = self.config.get(container_key)
+                if isinstance(container, dict) and container:
+                    role_to_check = container
+                    break
+            if role_to_check is not None and not self.config.get("customSql"):
+                missing = check_chart_required_role_keys(
+                    str(self.chart_type), role_to_check
+                )
+                if missing:
+                    raise ValueError(
+                        f"chart_type={self.chart_type!r} is missing required "
+                        f"role_config: {'; '.join(missing)}"
+                    )
         return self
 
 
