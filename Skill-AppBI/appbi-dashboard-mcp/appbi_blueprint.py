@@ -2217,14 +2217,30 @@ async def commit_dataset_workspace(
       tables:  [{display_name, source_kind, datasource_id?,
                  source_table_name?, source_query?}, ...]
       semantic (optional): full plan_json for commit_semantic_model.
+      relationships (optional): list of dataset-model joins to create
+        AFTER semantic commit, so cross-table charts work end-to-end.
+        Each entry references views by NAME (resolved to ids post-commit):
+          {from_view_name, to_view_name,
+           from_column (or from_columns: [...]),
+           to_column   (or to_columns:   [...]),
+           join_type?: "left"|"inner"|"right"|"full"  (default "left"),
+           relationship?: "many_to_one"|"one_to_many"|"one_to_one"|
+                          "many_to_many"               (default "many_to_one"),
+           alias?, is_active?, cross_filter?: "single"|"both", force?: bool}
+        Use `suggest_dataset_model_join` first to learn the right type.
       planned_charts (optional): list of chart specs to log for Phase 2.
         Each entry: {title, chart_type, role_config, layout?,
-        dataset_table_name OR dataset_table_index}. MCP resolves the
-        table reference to a real dataset_table_id post-create.
+        dataset_table_name OR dataset_table_index}. role_config fields
+        CAN reference cross-table refs (e.g. dimension="owner.name",
+        metrics=[{field: "deals.revenue"}]) as long as `relationships`
+        above connects those views — engine joins via the dataset model.
       dashboard_meta (optional): {name, description?} logged for Phase 2.
 
     Rollback: table-add failure rolls back added tables + freshly-created
     dataset. Semantic commit failure leaves dataset+tables in place.
+    Relationship-add failures are logged + surfaced but don't roll back
+    dataset/tables/semantic (relationships can be added later via
+    add_dataset_model_join).
     """
     plan_dict = _parse_plan_json(plan, "plan") if isinstance(plan, str) else plan
     if not isinstance(plan_dict, dict):
@@ -2234,6 +2250,7 @@ async def commit_dataset_workspace(
     dataset_meta = plan_dict.get("dataset") or {}
     tables = plan_dict.get("tables") or []
     semantic_plan = plan_dict.get("semantic")
+    relationships = plan_dict.get("relationships") or []
     planned_charts = plan_dict.get("planned_charts") or []
     dashboard_meta_in = plan_dict.get("dashboard_meta") or {}
 
@@ -2267,6 +2284,12 @@ async def commit_dataset_workspace(
                 ],
                 "semantic_views": [v.get("name") for v in sem_views],
                 "semantic_measure_count": sem_measure_count,
+                "relationships": [
+                    f"{r.get('from_view_name')}.{r.get('from_column')} → "
+                    f"{r.get('to_view_name')}.{r.get('to_column')} "
+                    f"({r.get('relationship', 'many_to_one')})"
+                    for r in relationships
+                ],
                 "planned_chart_count": len(planned_charts),
                 "planned_chart_titles": [
                     c.get("title") for c in planned_charts[:8]
@@ -2382,6 +2405,92 @@ async def commit_dataset_workspace(
                 "semantic_error": str(exc),
             }
 
+    # Phase C.5 — relationships (dataset-model joins). View IDs only
+    # exist after Phase C committed semantic, so this MUST run after.
+    # Relationships reference views by NAME in the plan; we resolve to
+    # the freshly-committed view IDs from the dataset model graph.
+    relationship_results: list[dict[str, Any]] = []
+    relationship_errors: list[dict[str, Any]] = []
+    if relationships:
+        try:
+            model = await _request("GET", f"/datasets/{dataset_id}/model")
+            view_name_to_id = {
+                str(v.get("name")): int(v.get("id"))
+                for v in (model.get("views") or [])
+                if v.get("id") is not None
+            }
+        except Exception as exc:  # noqa: BLE001
+            view_name_to_id = {}
+            relationship_errors.append({
+                "stage": "load_model",
+                "error": str(exc),
+            })
+
+        for r_idx, rel in enumerate(relationships):
+            if not isinstance(rel, dict):
+                relationship_errors.append({"index": r_idx, "error": "not an object"})
+                continue
+            from_name = str(rel.get("from_view_name") or "").strip()
+            to_name = str(rel.get("to_view_name") or "").strip()
+            from_id = view_name_to_id.get(from_name)
+            to_id = view_name_to_id.get(to_name)
+            if not from_id or not to_id:
+                relationship_errors.append({
+                    "index": r_idx,
+                    "error": (
+                        f"could not resolve from_view_name={from_name!r} or "
+                        f"to_view_name={to_name!r} — known views: "
+                        f"{sorted(view_name_to_id)}"
+                    ),
+                })
+                continue
+            body = _drop_none({
+                "from_view_id": from_id,
+                "to_view_id": to_id,
+                "from_column": rel.get("from_column"),
+                "to_column": rel.get("to_column"),
+                "from_columns": rel.get("from_columns"),
+                "to_columns": rel.get("to_columns"),
+                "join_type": rel.get("join_type") or "left",
+                "relationship": rel.get("relationship") or "many_to_one",
+                "alias": rel.get("alias"),
+                "is_active": rel.get("is_active", True),
+                "cross_filter": rel.get("cross_filter") or "single",
+                "force": rel.get("force", False) if rel.get("force") else None,
+            })
+            try:
+                join_res = await _request(
+                    "POST", f"/datasets/{dataset_id}/model/joins", json_body=body
+                )
+                relationship_results.append({
+                    "from": f"{from_name}.{rel.get('from_column')}",
+                    "to": f"{to_name}.{rel.get('to_column')}",
+                    "relationship": body["relationship"],
+                    "id": (join_res or {}).get("id") if isinstance(join_res, dict) else None,
+                })
+            except Exception as exc:  # noqa: BLE001
+                relationship_errors.append({
+                    "index": r_idx,
+                    "from": from_name, "to": to_name,
+                    "error": str(exc),
+                })
+
+        if relationship_results or relationship_errors:
+            _append_session_log(
+                "dataset",
+                "commit_dataset_workspace.relationships",
+                {
+                    "created": [
+                        f"{r['from']} → {r['to']} ({r['relationship']})"
+                        for r in relationship_results
+                    ],
+                    "errors": [
+                        f"#{e.get('index', '?')}: {e.get('error')}"
+                        for e in relationship_errors
+                    ],
+                },
+            )
+
     # Phase D — log planned_charts (NOT created yet; Phase 2 materialises).
     # Resolve table refs from display_name/index → real dataset_table_id.
     name_to_id = {
@@ -2439,6 +2548,8 @@ async def commit_dataset_workspace(
         "table_name_to_id": name_to_id,
         "semantic_committed": bool(semantic_result),
         "semantic_result": semantic_result,
+        "relationships_committed": relationship_results,
+        "relationship_errors": relationship_errors,
         "planned_chart_count": len(resolved_charts),
         "auto_logged_to": [
             p for p in [dataset_log_path, design_log_path] if p

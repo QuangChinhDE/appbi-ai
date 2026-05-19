@@ -770,6 +770,28 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
 _DESIGN_CHEATSHEET = """
 # Pattern → tool routing
 
+## Multi-table chart capability — read first
+
+Charts in this MCP are NOT bound to a single table. A chart is anchored
+to one `dataset_table_id` for query routing, but its `dimension` /
+`metric_field` / `breakdown` / etc. CAN reference fields on OTHER views
+of the same dataset (qualified `other_view.field`) as long as a
+RELATIONSHIP exists between those views in the dataset model.
+
+Recipe:
+1. `suggest_dataset_model_join(dataset_id, from_view_id, to_view_id,
+   from_column, to_column)` — read-only, returns the recommended
+   relationship type + warnings.
+2. `add_dataset_model_join(...)` — write the relationship. OR include
+   the relationship in `commit_dataset_workspace.plan.relationships`
+   so it ships with Confirm 1.
+3. Use qualified refs in chart roles, e.g.
+   `add_bar_chart(dataset_table_id=<deals.id>, dimension="owner.name",
+                  metrics=[{field:"deals.revenue", agg:"sum"}], ...)`.
+   Engine auto-joins deals ↔ owner via the relationship.
+
+Without a relationship, cross-view refs return empty / error.
+
 ## Source discovery — pick by `get_data_source(id).type`
 | Source type | List tables/tabs | Inspect one |
 |---|---|---|

@@ -267,7 +267,13 @@ async def add_bar_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """BAR — vertical bars by category. `metrics` can be ['view.col', ...] or [{field, agg}, ...]."""
+    """BAR — vertical bars by category. `metrics` can be ['view.col', ...] or [{field, agg}, ...].
+
+    `dimension` / `metrics[].field` / `breakdown` MAY reference fields on
+    views OTHER than the anchor `dataset_table_id` view, as long as a
+    dataset-model relationship connects them (see
+    `add_dataset_model_join` / `suggest_dataset_model_join`).
+    """
     role: dict[str, Any] = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
     if breakdown:
         role["breakdown"] = breakdown.strip()
@@ -403,7 +409,12 @@ async def add_line_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """LINE — trend over a category/date axis. Set `time_grain` if `dimension` is a date."""
+    """LINE — trend over a category/date axis. Set `time_grain` if `dimension` is a date.
+
+    Cross-table refs (e.g. dimension="calendar.month",
+    metrics=[{field:"sales.revenue"}]) work when a dataset-model
+    relationship connects the views.
+    """
     role: dict[str, Any] = {"dimension": dimension.strip(), "metrics": _metrics_list(metrics)}
     if breakdown:
         role["breakdown"] = breakdown.strip()
@@ -869,7 +880,12 @@ async def add_table_chart(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """TABLE — raw row-listing. `selected_columns` whitelists what to show
-    (omit = show all). Qualified refs like `view.col`."""
+    (omit = show all). Qualified refs like `view.col`.
+
+    `selected_columns` can mix fields from MULTIPLE views (e.g. a sales
+    table whose row lists `deals.amount`, `owner.name`,
+    `customer.region`) when the dataset model has the relationships.
+    """
     role: dict[str, Any] = {}
     if selected_columns:
         role["selectedColumns"] = [c.strip() for c in selected_columns]
@@ -891,7 +907,13 @@ async def add_pivot_table_chart(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """MATRIX — pivot table. Rows=row_dimension, cols=column_dimension, cell=metric."""
+    """MATRIX — pivot table. Rows=row_dimension, cols=column_dimension, cell=metric.
+
+    `row_dimension` / `column_dimension` / `value_metric_field` MAY
+    reference fields across views (e.g. rows=customer.region,
+    cols=calendar.month, metric=sales.revenue) when the dataset has
+    relationships between those views.
+    """
     role = {
         "tableMode": "pivot",
         "tableRowDimension": row_dimension.strip(),

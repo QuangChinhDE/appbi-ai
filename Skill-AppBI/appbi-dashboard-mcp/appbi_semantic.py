@@ -432,7 +432,45 @@ async def delete_semantic_explore(
 # ---------------------------------------------------------------------------
 
 
-@tool("explore")
+@tool({"report", "explore"})
+async def suggest_dataset_model_join(
+    dataset_id: int,
+    from_view_id: int,
+    to_view_id: int,
+    from_column: str | None = None,
+    to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Inspect two views + the join columns and recommend a relationship.
+
+    Read-only — does NOT create the join. Returns the suggested
+    `{join_type, relationship}` and any warnings (e.g. cardinality
+    mismatch, NULL leakage). Call this BEFORE `add_dataset_model_join`
+    so Claude picks the right relationship type instead of guessing.
+
+    `from_column`/`to_column` for single-key joins, or
+    `from_columns`/`to_columns` lists for composite-key joins.
+    """
+    body = _drop_none(
+        {
+            "from_view_id": int(from_view_id),
+            "to_view_id": int(to_view_id),
+            "from_column": from_column,
+            "to_column": to_column,
+            "from_columns": from_columns,
+            "to_columns": to_columns,
+        }
+    )
+    return await _request(
+        "POST",
+        f"/datasets/{int(dataset_id)}/model/joins/suggestion",
+        json_body=body,
+    )
+
+
+@tool({"report", "explore"})
 async def add_dataset_model_join(
     dataset_id: int,
     from_view_id: int,
@@ -494,7 +532,7 @@ async def add_dataset_model_join(
     )
 
 
-@tool("explore")
+@tool({"report", "explore"})
 async def remove_dataset_model_join(
     dataset_id: int,
     from_view_id: int,
