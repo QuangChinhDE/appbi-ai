@@ -5,11 +5,37 @@ chart_type. Claude picks the tool by intent ("xu hướng theo thời gian" →
 add_line_chart, "tỷ trọng" → add_pie_chart …) and never authors raw
 roleConfig / generatedRoleConfig keys.
 
+## Qualified vs bare field refs — read this BEFORE you call any tool
+
+Every `dimension`, `metric_field`, `breakdown`, `scatterX/Y`, etc. param
+accepts EITHER:
+  - **Qualified** `view.field`  (e.g. "deals.revenue", "owner.name") —
+    routes through the semantic engine, joins across views in the dataset
+    model when relationships exist, resolves declared measures with their
+    stored aggregation (`agg='auto'`). USE THIS BY DEFAULT.
+  - **Bare** `field` (e.g. "revenue") — locks the chart to the legacy
+    single-table path on the anchor `dataset_table_id`. The engine never
+    walks the join graph for a bare ref, so cross-table refs become
+    impossible AFTER the fact. Pattern tools auto-upgrade `agg='auto'`
+    to `agg='sum'` for bare refs (the silent-fallback path).
+
+If the dataset has joined views set up (Phase 15.38 relationships) and
+you author a chart with bare refs, you SILENTLY OPT OUT of the join
+graph. The chart works but only sees columns on the anchor table. To
+unlock cross-table data the chart needs qualified refs.
+
+**Rule**: when in doubt, qualify. The audit field `refs_audit` returned
+in the confirmation `plan` shows how many qualified vs bare refs the
+chart will save with — use it to decide before confirming.
+
 Every tool:
   - takes the fields its chart_type actually needs (typed params)
-  - normalises agg via `agg='auto'` for declared measure refs
+  - normalises agg via `agg='auto'` for declared measure refs (qualified
+    only; bare 'auto' upgrades to 'sum' — see `_metric` rule)
   - validates layout via the shared _normalize_chart_layout helper
   - returns auto_logged_to + dashboard placement hint
+  - returns `refs_audit` showing qualified/bare counts so Claude can
+    decide whether the chart is locked to single-table
 """
 from __future__ import annotations
 
@@ -59,6 +85,59 @@ def _norm_layout(layout: dict[str, Any] | None, chart_type: str) -> dict[str, in
 
 
 _ALLOWED_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
+
+
+# Role-config keys whose value is a string field ref (single-ref slots).
+_SINGLE_REF_ROLE_KEYS = (
+    "dimension", "breakdown", "timeField",
+    "scatterX", "scatterY",
+    "tableRowDimension", "tableColumnDimension",
+)
+# Role-config keys whose value is a {field, agg} dict.
+_SINGLE_METRIC_ROLE_KEYS = ("lineMetric", "benchmarkMetric", "tablePivotMetric")
+
+
+def _audit_role_refs(role_config: dict[str, Any]) -> dict[str, Any]:
+    """Count qualified `view.field` vs bare `field` references.
+
+    A chart that uses bare refs only opts out of the dataset join graph —
+    the BE semantic engine never walks relationships for bare names. Show
+    this in the confirmation `plan` so the agent decides explicitly
+    whether the chart should be single-table or cross-table BEFORE save.
+    """
+    refs: list[str] = []
+    for key in _SINGLE_REF_ROLE_KEYS:
+        value = role_config.get(key)
+        if isinstance(value, str) and value.strip():
+            refs.append(value.strip())
+    for metric in role_config.get("metrics") or []:
+        if isinstance(metric, dict):
+            field = str(metric.get("field") or "").strip()
+            if field:
+                refs.append(field)
+    for key in _SINGLE_METRIC_ROLE_KEYS:
+        metric = role_config.get(key)
+        if isinstance(metric, dict):
+            field = str(metric.get("field") or "").strip()
+            if field:
+                refs.append(field)
+    for col in role_config.get("selectedColumns") or []:
+        if isinstance(col, str) and col.strip():
+            refs.append(col.strip())
+
+    qualified = [r for r in refs if "." in r]
+    bare = [r for r in refs if "." not in r]
+    views_referenced = sorted({r.split(".", 1)[0] for r in qualified})
+    return {
+        "total_refs": len(refs),
+        "qualified_count": len(qualified),
+        "bare_count": len(bare),
+        "qualified_refs": qualified,
+        "bare_refs": bare,
+        "views_referenced": views_referenced,
+        "is_cross_table": len(views_referenced) > 1,
+        "is_locked_to_single_table": len(bare) > 0 and len(qualified) == 0,
+    }
 
 
 def _metric(field: str, agg: str = "auto") -> dict[str, str]:
@@ -155,6 +234,12 @@ async def _post_chart(
         "baseFilters": base_filters or [],
     }
 
+    # Audit refs BEFORE the BE round-trip so Claude sees the
+    # qualified/bare picture even when the chart is rejected — helps
+    # diagnose "why did BE block this" (often the chart was authored
+    # against bare refs that don't resolve against the anchor table).
+    refs_audit = _audit_role_refs(role_config)
+
     dry_run = await _request(
         "POST",
         "/charts/dry-run-create",
@@ -167,7 +252,11 @@ async def _post_chart(
         },
     )
     if not isinstance(dry_run, dict):
-        return {"status": "error", "error": "Unexpected dry-run response from backend."}
+        return {
+            "status": "error",
+            "error": "Unexpected dry-run response from backend.",
+            "refs_audit": refs_audit,
+        }
 
     normalized_config = dry_run.get("normalized_config") or config
     validation_errors = dry_run.get("validation_errors") or []
@@ -179,6 +268,7 @@ async def _post_chart(
             "status": "blocked_by_validation",
             "validation_errors": validation_errors,
             "normalized_config": normalized_config,
+            "refs_audit": refs_audit,
             "fix": (
                 "Adjust the inputs and retry. The chart config did not pass "
                 "the BE Pydantic/role-config gate."
@@ -190,6 +280,7 @@ async def _post_chart(
             "runtime_errors": runtime_errors,
             "root_cause": dry_run.get("runtime_root_cause"),
             "normalized_config": normalized_config,
+            "refs_audit": refs_audit,
             "fix": (
                 "Adjust the chart config until dry-run-create returns ok=true. "
                 "This guardrail prevents saving charts that break in Explore."
@@ -207,7 +298,26 @@ async def _post_chart(
             "dashboard_id": dashboard_id,
             "normalized_changes": dry_run.get("changes") or [],
             "runtime_preview_sample": dry_run.get("runtime_preview_sample") or [],
+            "refs_audit": refs_audit,
         }
+        if refs_audit["is_locked_to_single_table"]:
+            plan["refs_warning"] = (
+                f"All {refs_audit['bare_count']} field ref(s) are BARE — chart "
+                "will save on the legacy single-table path locked to "
+                f"dataset_table_id={int(dataset_table_id)}. Cross-table refs "
+                "via dataset relationships are NOT possible after save. If "
+                "you intended this chart to pull from joined views, qualify "
+                "the refs as `other_view.field` and retry. If single-table is "
+                "intentional, confirm to proceed."
+            )
+        elif refs_audit["bare_count"] > 0 and refs_audit["qualified_count"] > 0:
+            plan["refs_warning"] = (
+                f"Mixed refs: {refs_audit['qualified_count']} qualified, "
+                f"{refs_audit['bare_count']} bare ({refs_audit['bare_refs']}). "
+                "Bare refs resolve against the anchor table only — they "
+                "won't join even if other refs would. Consider qualifying "
+                "the bare ones for consistency."
+            )
         if fe_unrecognised:
             plan["fe_will_ignore"] = {
                 "keys": fe_unrecognised[:20],
@@ -290,6 +400,7 @@ async def _post_chart(
         "title": title,
         "placement": placement_result,
         "auto_logged_to": log_path,
+        "refs_audit": refs_audit,
     }
 
 

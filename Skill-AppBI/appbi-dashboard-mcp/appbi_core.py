@@ -773,15 +773,31 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
 _DESIGN_CHEATSHEET = """
 # Pattern → tool routing
 
-## Multi-table chart capability — read first
+## Qualified refs by default — schema topology rule
 
-Charts in this MCP are NOT bound to a single table. A chart is anchored
-to one `dataset_table_id` for query routing, but its `dimension` /
-`metric_field` / `breakdown` / etc. CAN reference fields on OTHER views
-of the same dataset (qualified `other_view.field`) as long as a
-RELATIONSHIP exists between those views in the dataset model.
+Chart creation has TWO routing paths inside the BE semantic engine:
+  - Qualified `view.field` (e.g. "deals.revenue", "owner.name")
+    → semantic / multi-table / JOIN-aware path. Engine walks the
+      dataset relationship graph, resolves declared measures with their
+      stored aggregation (agg='auto'), supports cross-table refs.
+  - Bare `field` (e.g. "revenue")
+    → legacy single-table path on the anchor `dataset_table_id` only.
+      Engine NEVER walks the join graph for bare refs. Cross-table is
+      impossible after save. agg='auto' silently degrades to 'sum'.
 
-Recipe:
+**Default to qualified.** Even on single-table charts, qualifying with
+`base_view.field` future-proofs the chart: later when the user adds a
+join, the same chart can reference the joined view without rebuild.
+Bare refs box the chart into the legacy path forever.
+
+Every `add_*_chart` tool returns a `refs_audit` field showing how many
+qualified vs bare refs the chart will save with. If it shows
+`is_locked_to_single_table: true`, you opted out of the join graph —
+fine when single-table is intentional, but the typical multi-table BI
+case needs qualified refs.
+
+## Multi-table chart recipe
+
 1. `suggest_dataset_model_join(dataset_id, from_view_id, to_view_id,
    from_column, to_column)` — read-only, returns the recommended
    relationship type + warnings.
@@ -790,8 +806,10 @@ Recipe:
    so it ships with Confirm 1.
 3. Use qualified refs in chart roles, e.g.
    `add_bar_chart(dataset_table_id=<deals.id>, dimension="owner.name",
-                  metrics=[{field:"deals.revenue", agg:"sum"}], ...)`.
-   Engine auto-joins deals ↔ owner via the relationship.
+                  metrics=[{field:"deals.revenue", agg:"auto"}], ...)`.
+   Engine auto-joins deals ↔ owner via the relationship. The chart's
+   `refs_audit.is_cross_table` returns true so you know multi-table
+   routing is engaged.
 
 Without a relationship, cross-view refs return empty / error.
 
