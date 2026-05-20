@@ -10,7 +10,7 @@ import { DashboardWidget } from './DashboardWidget';
 import { DashboardChart, DashboardPageConfig, DashboardThemeConfig } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
-import { Loader2 } from 'lucide-react';
+import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
@@ -145,10 +145,18 @@ export function DashboardGrid({
 
   if (dashboardCharts.length === 0) {
     return (
-      <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2">
-        <p className="text-caption text-text-tertiary">
-          {emptyMessage ?? 'No charts in this dashboard. Click "Add Chart" to get started.'}
-        </p>
+      <div className="bi-empty-state bi-fade-in flex h-72 flex-col items-center justify-center gap-3 text-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-1 shadow-linear-sm">
+          <LayoutDashboard className="h-7 w-7 text-brand/70" strokeWidth={1.5} />
+        </div>
+        <div>
+          <h3 className="text-base font-semibold text-text-primary">
+            {emptyMessage ? '' : 'Bắt đầu xây dashboard'}
+          </h3>
+          <p className="mt-1 max-w-sm text-[13px] text-text-tertiary">
+            {emptyMessage ?? 'Chưa có chart nào trên dashboard này. Click "Add Chart" ở thanh trên để chèn KPI, biểu đồ hoặc widget.'}
+          </p>
+        </div>
       </div>
     );
   }
@@ -176,7 +184,7 @@ export function DashboardGrid({
             {/* Drag handle for react-grid-layout — required so widgets are draggable */}
             {canEdit && (
               <div
-                className="drag-handle absolute inset-x-0 top-0 z-10 h-5 cursor-move bg-transparent"
+                className="drag-handle bi-drag-grip absolute inset-x-0 top-0 z-10 h-5 bg-transparent"
                 title="Drag to move"
               />
             )}

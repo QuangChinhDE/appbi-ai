@@ -28,6 +28,20 @@ const TYPE_CLR: Record<FilterType, string> = {
   date:     'text-teal-500',
   dropdown: 'text-text-tertiary',
 };
+// Pill-style badge (replaces cramped monospace single-char). Used in card
+// headers + linked-field rows. Dropdown rows keep the compact char.
+const TYPE_PILL: Record<FilterType, string> = {
+  text:     'bg-sky-50 text-sky-600 ring-1 ring-sky-100',
+  number:   'bg-brand-soft text-brand ring-1 ring-brand/15',
+  date:     'bg-teal-50 text-teal-600 ring-1 ring-teal-100',
+  dropdown: 'bg-surface-2 text-text-tertiary ring-1 ring-[rgb(var(--border-line))]',
+};
+const TYPE_LABEL: Record<FilterType, string> = {
+  text:     'Text',
+  number:   'Num',
+  date:     'Date',
+  dropdown: 'List',
+};
 
 interface DashboardFilterBarProps {
   columns: ColumnInfo[];
@@ -680,12 +694,12 @@ function FilterCard({
   });
 
   return (
-    <div className="border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
+    <div className="bi-fade-in border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
       {/* Card header */}
       <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className={`text-xs font-mono ${TYPE_CLR[f.type]}`}>
-            {TYPE_BADGE[f.type]}
+          <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={`Type: ${TYPE_LABEL[f.type]}`}>
+            {TYPE_LABEL[f.type]}
           </span>
           <span className="text-sm font-semibold text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
           {contextLabel && (

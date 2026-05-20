@@ -647,10 +647,15 @@ export function AddChartModal({
                       showChartTypeLabel={false}
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center rounded-[20px] border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-center">
+                    <div className="bi-empty-state bi-fade-in flex h-full flex-col items-center justify-center gap-3 text-center">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-1 shadow-linear-sm">
+                        <BarChart3 className="h-6 w-6 text-brand/70" strokeWidth={1.5} />
+                      </div>
                       <div>
-                        <BarChart3 className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
-                        <p className="text-sm text-text-tertiary">Select a chart to preview it here.</p>
+                        <p className="text-[13px] font-semibold text-text-primary">Chọn 1 chart để xem trước</p>
+                        <p className="mt-0.5 text-xs text-text-tertiary">
+                          Click vào 1 chart ở danh sách bên trái — preview render đầy đủ với data + parameters trước khi add.
+                        </p>
                       </div>
                     </div>
                   )}

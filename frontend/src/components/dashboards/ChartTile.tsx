@@ -644,9 +644,15 @@ export function ChartTile({
   }
 
   if (isLoadingChart) {
-    return renderStatusCard(
-      <div className="flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-brand" />
+    return (
+      <div className="dashboard-tile relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 flex flex-col gap-3">
+        <div className="bi-skeleton h-4 w-2/5" />
+        <div className="bi-skeleton flex-1 w-full" />
+        <div className="flex gap-2">
+          <div className="bi-skeleton h-2.5 w-16" />
+          <div className="bi-skeleton h-2.5 w-12" />
+          <div className="bi-skeleton h-2.5 w-20" />
+        </div>
       </div>
     );
   }
@@ -661,7 +667,7 @@ export function ChartTile({
   }
 
   return (
-    <div className={`dashboard-tile relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
+    <div className={`dashboard-tile bi-card-hover relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
       isCrossFilterSource
         ? 'border-warning/40 ring-1 ring-warning'
         : 'border-[rgb(var(--border-line))]'
@@ -773,12 +779,12 @@ export function ChartTile({
                     onClick={() => { setIsTileMenuOpen(false); setIsMovePageOpen(false); }}
                   />
                   <div
-                    className="absolute right-0 z-50 mt-1.5 w-48 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg"
+                    className="bi-fade-in absolute right-0 z-50 mt-1.5 w-52 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 shadow-linear-lg"
                     onMouseDown={e => e.stopPropagation()}
                   >
                     <button
                       onClick={() => { openDetailModal('data'); setIsTileMenuOpen(false); }}
-                      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                     >
                       <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                       View details
@@ -788,7 +794,7 @@ export function ChartTile({
                       target="_blank"
                       rel="noreferrer"
                       onClick={() => setIsTileMenuOpen(false)}
-                      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                     >
                       <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                       Open in Explore
@@ -796,7 +802,7 @@ export function ChartTile({
                     {allowAppearanceEdit && (
                       <button
                         onClick={() => { openDetailModal('appearance'); setIsTileMenuOpen(false); }}
-                        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                       >
                         <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                         Edit appearance
@@ -805,7 +811,7 @@ export function ChartTile({
                     {canEdit && (
                       <button
                         onClick={() => { startEditingTitle(); setIsTileMenuOpen(false); }}
-                        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                       >
                         <Pencil className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                         Rename title
@@ -816,7 +822,7 @@ export function ChartTile({
                         <div className="my-1 border-t border-[rgb(var(--border-line))]" />
                         <button
                           onClick={() => setIsMovePageOpen(v => !v)}
-                          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                         >
                           <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                           <span className="flex-1 text-left">Move to page</span>
