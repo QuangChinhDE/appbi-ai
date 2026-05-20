@@ -895,16 +895,31 @@ class DataSourceConnectionService:
             query = _apply_optional_limit(sql_query, limit)
 
             if not skip_cost_check:
-                estimated_bytes = DataSourceConnectionService._estimate_bigquery_bytes(config, query)
-                max_bytes = settings.BQ_MAX_BYTES_SCANNED
-                if estimated_bytes > max_bytes:
-                    gb_est = estimated_bytes / (1024**3)
-                    gb_max = max_bytes / (1024**3)
-                    raise ValueError(
-                        f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
-                        "Add filters or reduce selected columns before running it."
-                    )
-            
+                # Phase-15.59b — cost-check dry-run hits the SAME
+                # ambiguous-column failure as the real query (BigQuery
+                # validates syntax during dry-run). If the dry-run
+                # fails specifically with "ambiguous", swallow it here
+                # and skip the cost check — the dedup retry path below
+                # will catch + retry the real query and may succeed.
+                try:
+                    estimated_bytes = DataSourceConnectionService._estimate_bigquery_bytes(config, query)
+                    max_bytes = settings.BQ_MAX_BYTES_SCANNED
+                    if estimated_bytes > max_bytes:
+                        gb_est = estimated_bytes / (1024**3)
+                        gb_max = max_bytes / (1024**3)
+                        raise ValueError(
+                            f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                            "Add filters or reduce selected columns before running it."
+                        )
+                except Exception as cost_err:
+                    if "ambiguous" in str(cost_err).lower():
+                        logger.info(
+                            "[bq_dedup] cost-check dry-run hit ambiguous; "
+                            "skipping cost check so retry-with-dedup can run."
+                        )
+                    else:
+                        raise
+
             logger.info(f"Executing BigQuery query on project {project_id}")
             # Phase-15.58 — log the actual SQL string so DA can grep
             # backend logs when BigQuery rejects with cryptic errors
