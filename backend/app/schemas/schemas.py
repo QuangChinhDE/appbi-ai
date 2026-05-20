@@ -565,6 +565,13 @@ class DashboardResponse(DashboardBase):
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None
+    # Phase-15.56 — draft layout overlay. Set when the editor has
+    # unsaved layout changes. Public viewers always see live `layout`
+    # in dashboard_charts; the editor reads this field to render
+    # the pending layout instead. Save / publish copies these onto
+    # live rows and clears the field.
+    draft_layouts: Optional[Dict[int, Dict[str, Any]]] = None
+    has_draft: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

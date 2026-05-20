@@ -158,6 +158,19 @@ class Dashboard(Base):
     share_token = Column(String(64), nullable=True, unique=True, index=True)
     public_filters_config = Column(JSON, nullable=True, default=list)
 
+    # Phase-15.56 — draft snapshot. When set, editors see this overlay
+    # on top of the live columns; public viewers still read the live
+    # columns. Clicking "Lưu / Publish" applies the snapshot onto the
+    # live columns + dashboard_charts rows, then clears this field.
+    # Shape: {
+    #   name?, description?, filters_config?, pages_config?, layout_mode?,
+    #   theme_config?, canvas_config?, public_filters_config?,
+    #   dashboard_charts?: [
+    #     {id?, chart_id?, widget_type, widget_config, layout, parameters}
+    #   ]
+    # }
+    draft_snapshot = Column(JSON, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

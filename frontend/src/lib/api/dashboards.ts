@@ -109,6 +109,29 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // Phase-15.56 — draft / publish workflow. Layout edits write to
+  // draft_snapshot; public viewers stay on the last-published layout
+  // until publishDraft() copies the snapshot onto the live rows.
+  updateDraftLayout: async (
+    dashboardId: number,
+    chartLayouts: Array<{ id: number; layout: Record<string, any> }>
+  ): Promise<Dashboard> => {
+    const response = await apiClient.put(`/dashboards/${dashboardId}/draft-layout`, {
+      chart_layouts: chartLayouts,
+    });
+    return response.data;
+  },
+
+  publishDraft: async (dashboardId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/publish`);
+    return response.data;
+  },
+
+  discardDraft: async (dashboardId: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`);
+    return response.data;
+  },
+
   analyzeHtmlImport: async (input: DashboardHtmlImportAnalyzeInput): Promise<DashboardHtmlImportAnalyzeResponse> => {
     const formData = new FormData();
     formData.append('html_content', input.htmlContent);

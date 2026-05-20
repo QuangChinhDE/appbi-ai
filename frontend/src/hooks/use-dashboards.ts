@@ -123,6 +123,46 @@ export const useUpdateDashboardLayout = () => {
   });
 };
 
+// Phase-15.56 — Draft layout mutations. Layout edits go into the
+// dashboard's draft_snapshot instead of touching live rows; public
+// viewers stay on the last-published layout until publish() is called.
+export const useUpdateDashboardDraftLayout = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      dashboardId,
+      chartLayouts,
+    }: {
+      dashboardId: number;
+      chartLayouts: Array<{ id: number; layout: Record<string, any> }>;
+    }) => dashboardApi.updateDraftLayout(dashboardId, chartLayouts),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
+    },
+  });
+};
+
+export const usePublishDashboard = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (dashboardId: number) => dashboardApi.publishDraft(dashboardId),
+    onSuccess: (_, dashboardId) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    },
+  });
+};
+
+export const useDiscardDashboardDraft = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (dashboardId: number) => dashboardApi.discardDraft(dashboardId),
+    onSuccess: (_, dashboardId) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    },
+  });
+};
+
 export const useShareDashboard = () => {
   const queryClient = useQueryClient();
   return useMutation({

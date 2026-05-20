@@ -586,6 +586,12 @@ export interface Dashboard {
   layout_mode?: DashboardLayoutMode;
   theme_config?: DashboardThemeConfig | null;
   canvas_config?: DashboardCanvasConfig | null;
+  // Phase-15.56 — draft layout overlay. When `has_draft` is true, the
+  // editor renders `draft_layouts[dashboard_chart_id]` instead of the
+  // live `layout` on each DashboardChart. Public viewers never see
+  // these fields — public endpoint strips them.
+  draft_layouts?: Record<number, Record<string, any>> | null;
+  has_draft?: boolean;
 }
 
 export interface DashboardCreate {

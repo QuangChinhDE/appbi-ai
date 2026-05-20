@@ -6,6 +6,7 @@ import secrets
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Optional
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -1393,21 +1394,43 @@ async def fix_html_import_chart_plan(
         raise HTTPException(status_code=500, detail=f"AI fix failed: {exc}") from exc
 
 
+def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> Dashboard:
+    """Attach draft overlay fields on the ORM instance so the
+    DashboardResponse Pydantic model (from_attributes=True) picks them
+    up. The fields are NOT real DB columns — they're transient view
+    attributes the editor needs to know whether a draft is pending."""
+    dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
+    snapshot = dash.draft_snapshot or {}
+    layouts_map = snapshot.get("layouts") if isinstance(snapshot, dict) else None
+    # Coerce keys to int so the FE map lookup matches dashboard_chart.id
+    normalized_layouts: Optional[Dict[int, Dict[str, Any]]] = None
+    if isinstance(layouts_map, dict) and layouts_map:
+        normalized_layouts = {}
+        for k, v in layouts_map.items():
+            try:
+                normalized_layouts[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+    setattr(dash, "draft_layouts", normalized_layouts)
+    setattr(dash, "has_draft", bool(normalized_layouts))
+    return dash
+
+
 @router.get("/{dashboard_id}", response_model=DashboardResponse)
 def get_dashboard(
     dashboard_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a dashboard by ID."""
+    """Get a dashboard by ID. Editor sees draft_layouts + has_draft so
+    it can render the pending state separately from the published one."""
     dashboard = DashboardService.get_by_id(db, dashboard_id)
     if not dashboard:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Dashboard with ID {dashboard_id} not found"
         )
-    dashboard.user_permission = require_view_access(db, current_user, dashboard, "dashboards")
-    return dashboard
+    return _serialize_dashboard_with_draft(db, dashboard, current_user)
 
 
 @router.post("/", response_model=DashboardResponse, status_code=status.HTTP_201_CREATED)
@@ -1586,6 +1609,102 @@ def update_dashboard_layout(
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ============ Draft / Publish (Phase-15.56) ============
+#
+# Layout edits in the editor write to `draft_snapshot.layouts` (a dict
+# keyed by dashboard_chart_id). Public viewers continue reading the live
+# `layout` column on DashboardChart rows — they only see the new layout
+# AFTER the editor clicks "Publish".
+#
+# Other mutations (add chart, rename, theme, widget edit) keep auto-
+# saving to the live columns. The most disruptive class of edit — fast
+# drag/resize on the grid — is the one that benefits most from draft
+# isolation, so we scope the column to layout for now.
+
+
+@router.put("/{dashboard_id}/draft-layout", response_model=DashboardResponse)
+def update_dashboard_draft_layout(
+    dashboard_id: int,
+    request: DashboardUpdateLayoutRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stage layout edits to draft_snapshot WITHOUT touching live rows.
+
+    Replaces (not merges) the `layouts` map in draft_snapshot. Public
+    viewers stay on the last-published layout until the editor calls
+    POST /publish.
+    """
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    layouts_map: Dict[int, Dict[str, Any]] = {}
+    for entry in request.chart_layouts:
+        layouts_map[int(entry.id)] = entry.layout.model_dump(exclude_none=True)
+    snapshot = dict(dash.draft_snapshot or {})
+    snapshot["layouts"] = layouts_map
+    dash.draft_snapshot = snapshot
+    flag_modified(dash, "draft_snapshot")
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+@router.post("/{dashboard_id}/publish", response_model=DashboardResponse)
+def publish_dashboard_draft(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Apply draft_snapshot onto live columns + dashboard_chart rows,
+    then clear the snapshot. Public viewers see the new state on their
+    next fetch."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    snapshot = dash.draft_snapshot or {}
+    layouts_map = snapshot.get("layouts") or {}
+    # Apply layout changes onto the live DashboardChart rows.
+    if layouts_map:
+        rows = (
+            db.query(DashboardChart)
+            .filter(DashboardChart.dashboard_id == dashboard_id)
+            .all()
+        )
+        for row in rows:
+            new_layout = layouts_map.get(str(row.id)) or layouts_map.get(row.id)
+            if new_layout:
+                # Merge — preserve fields the draft didn't touch (pageId, etc.)
+                merged = {**(row.layout or {}), **new_layout}
+                row.layout = merged
+                flag_modified(row, "layout")
+    dash.draft_snapshot = None
+    flag_modified(dash, "draft_snapshot")
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+@router.post("/{dashboard_id}/discard-draft", response_model=DashboardResponse)
+def discard_dashboard_draft(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Throw away any pending draft. Live state is untouched."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    dash.draft_snapshot = None
+    flag_modified(dash, "draft_snapshot")
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
 
 
 # ============ Public Link Sharing ============

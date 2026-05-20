@@ -12,6 +12,9 @@ import {
   useAddChartToDashboard,
   useRemoveChartFromDashboard,
   useUpdateDashboardLayout,
+  useUpdateDashboardDraftLayout,
+  usePublishDashboard,
+  useDiscardDashboardDraft,
 } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
@@ -182,7 +185,22 @@ export default function DashboardDetailPage() {
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
-  const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  const { data: serverDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  // Phase-15.56 — apply draft_layouts overlay on top of the live
+  // dashboard_charts so the editor renders the pending layout. Public
+  // viewers go through a different endpoint and never see this overlay.
+  const dashboard = React.useMemo(() => {
+    if (!serverDashboard) return serverDashboard;
+    const drafts = serverDashboard.draft_layouts;
+    if (!drafts || Object.keys(drafts).length === 0) return serverDashboard;
+    return {
+      ...serverDashboard,
+      dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
+        const override = drafts[dc.id];
+        return override ? { ...dc, layout: { ...dc.layout, ...override } } : dc;
+      }),
+    };
+  }, [serverDashboard]);
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
       (dashboard?.dashboard_charts ?? [])
@@ -215,6 +233,12 @@ export default function DashboardDetailPage() {
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
   const updateLayoutMutation = useUpdateDashboardLayout();
+  // Phase-15.56 — layout edits go into draft_snapshot instead of live
+  // rows so public viewers stay on the published layout until the
+  // editor explicitly clicks "Lưu".
+  const updateDraftLayoutMutation = useUpdateDashboardDraftLayout();
+  const publishDashboardMutation = usePublishDashboard();
+  const discardDraftMutation = useDiscardDashboardDraft();
   const dashboardPages = React.useMemo(
     () => normalizeDashboardPages(localPagesConfig ?? dashboard?.pages_config),
     [dashboard?.pages_config, localPagesConfig],
@@ -303,13 +327,16 @@ export default function DashboardDetailPage() {
   //
   //
 
-  // Auto-save layout with debounce
+  // Layout drafts (Phase-15.56). User can drag/resize freely; edits go
+  // into draft_snapshot on the server (debounced 1s) instead of live
+  // rows. Public viewers stay on the last-published layout. The "Lưu"
+  // button in the toolbar calls /publish to copy draft -> live.
   const debouncedSaveLayout = useDebounce(
     async (layouts: Layout[]) => {
       if (!dashboard) return;
 
       const chartLayouts = layouts.map((item) => ({
-        id: Number(item.i), // dashboard_chart_id
+        id: Number(item.i),
         layout: {
           ...(dashboard.dashboard_charts?.find((dashboardChart) => dashboardChart.id === Number(item.i))?.layout ?? {}),
           x: item.x,
@@ -320,13 +347,12 @@ export default function DashboardDetailPage() {
       }));
 
       try {
-        await updateLayoutMutation.mutateAsync({
+        await updateDraftLayoutMutation.mutateAsync({
           dashboardId,
           chartLayouts,
         });
-        setHasUnsavedChanges(false);
       } catch (error) {
-        console.error('Failed to save layout:', error);
+        console.error('Failed to save draft layout:', error);
       }
     },
     1000 // 1 second debounce
@@ -365,13 +391,13 @@ export default function DashboardDetailPage() {
       });
       setHasUnsavedChanges(true);
       try {
-        await updateLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
-        setHasUnsavedChanges(false);
+        // Phase-15.56 — Canvas drag goes into draft too.
+        await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
       } catch (err) {
-        console.error('Failed to save canvas layout:', err);
+        console.error('Failed to save canvas draft layout:', err);
       }
     },
-    [dashboard, dashboardId, updateLayoutMutation],
+    [dashboard, dashboardId, updateDraftLayoutMutation],
   );
 
   const handleAddWidget = useCallback(
@@ -1361,8 +1387,56 @@ export default function DashboardDetailPage() {
                   {hasUnsavedChanges && (
                     <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-[510] text-text-quaternary">
                       <Loader2 className="h-3 w-3 animate-spin" />
-                      <span className="hidden sm:inline">Saving</span>
+                      <span className="hidden sm:inline">Đang lưu nháp</span>
                     </span>
+                  )}
+                  {/* Phase-15.56 — draft / publish controls. Visible only
+                      when the server reports a pending draft layout. */}
+                  {canEditResource && dashboard?.has_draft && (
+                    <div className="ml-2 flex shrink-0 items-center gap-1.5">
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide text-warning"
+                        title="Có thay đổi bố cục chưa xuất bản. Người xem qua share link vẫn thấy phiên bản cũ."
+                      >
+                        Bản nháp
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await publishDashboardMutation.mutateAsync(dashboardId);
+                            setHasUnsavedChanges(false);
+                            toast.success('Đã xuất bản — share link cập nhật phiên bản mới.');
+                          } catch (e) {
+                            toast.error('Không xuất bản được — thử lại.');
+                          }
+                        }}
+                        disabled={publishDashboardMutation.isPending}
+                        className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
+                        title="Áp dụng bản nháp lên public share link"
+                      >
+                        {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        Lưu
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!confirm('Huỷ thay đổi bố cục chưa lưu?')) return;
+                          try {
+                            await discardDraftMutation.mutateAsync(dashboardId);
+                            setHasUnsavedChanges(false);
+                            toast.success('Đã quay lại phiên bản gần nhất.');
+                          } catch (e) {
+                            toast.error('Không huỷ được — thử lại.');
+                          }
+                        }}
+                        disabled={discardDraftMutation.isPending}
+                        className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        title="Bỏ thay đổi, quay về bố cục đã xuất bản"
+                      >
+                        Huỷ
+                      </button>
+                    </div>
                   )}
                 </>
               )}
