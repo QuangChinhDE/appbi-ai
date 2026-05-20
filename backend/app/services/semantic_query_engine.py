@@ -24,6 +24,15 @@ from app.schemas.semantic import (
 import re
 
 
+class AmbiguousFieldError(ValueError):
+    """Raised when a bare field reference (no view prefix) matches multiple
+    views in the dataset. The chart layer catches this to surface a
+    user-friendly error instead of the cryptic BigQuery "Column X is
+    ambiguous" message.
+    """
+    pass
+
+
 class SemanticQueryEngine:
     """
     Advanced SQL generation engine for semantic queries
@@ -262,12 +271,29 @@ class SemanticQueryEngine:
         ``${deals.amount} / COUNT(${leads.id})`` would only join the parent
         view's table; the engine would then fail to resolve ${deals.amount}
         because the ``deals`` view was never registered in views_cache.
+
+        Phase-15.53: if any field_ref is BARE (no view prefix), we can't
+        know which view owns it without loading every candidate first.
+        Load the explore's full view set so `_parse_field_ref` (which
+        scans views_cache) can resolve or report a clean ambiguity.
         """
+        has_bare = any('.' not in ref for ref in field_refs if ref)
         node_ids: set[str] = set()
         for field_ref in field_refs:
             if '.' in field_ref:
                 node_id, _ = self._parse_field_ref(field_ref)
                 node_ids.add(node_id)
+
+        if has_bare and self._resolver is not None:
+            # Pull every view the resolver can reach from the base view —
+            # that is, every view the explore could possibly JOIN. Loading
+            # them all means `_parse_field_ref` sees the full candidate
+            # set when resolving a bare `name` reference.
+            try:
+                for v in self._resolver.reachable_nodes():
+                    node_ids.add(v)
+            except Exception:  # noqa: BLE001 — best effort, fall through
+                pass
 
         # First pass: load every directly-referenced view.
         for node_id in node_ids:
@@ -1429,12 +1455,51 @@ class SemanticQueryEngine:
         return ""
     
     def _parse_field_ref(self, field_ref: str) -> Tuple[str, str]:
-        """Parse 'view.field' into (view_name, field_name)"""
-        if '.' not in field_ref:
-            raise ValueError(f"Invalid field reference: {field_ref} (must be view.field)")
-        
-        parts = field_ref.split('.', 1)
-        return parts[0], parts[1]
+        """Parse 'view.field' into (view_name, field_name).
+
+        Phase-15.53: auto-qualify bare refs. When `field_ref` has no
+        view prefix (e.g. `"name"` instead of `"sdr_owner.name"`), we
+        scan the loaded views_cache and:
+          • find ONE matching dim/measure → silently qualify
+          • find MULTIPLE matches across joined views → raise
+            AmbiguousFieldError with a hint listing all candidates so
+            the caller (chart service) can surface a clean error to the
+            UI (the BigQuery "Column name is ambiguous" message left
+            DAs stuck — they didn't know it meant "qualify with a
+            table prefix").
+          • find ZERO matches → raise ValueError as before.
+
+        Chart configs created by MCP or the FE picker still emit bare
+        refs occasionally; this normalises them so query compilation
+        no longer crashes downstream on multi-table datasets.
+        """
+        if '.' in field_ref:
+            parts = field_ref.split('.', 1)
+            return parts[0], parts[1]
+
+        # Bare field — try to resolve against loaded views.
+        candidates: List[str] = []
+        for view_name, view in self.views_cache.items():
+            in_dims = any((d or {}).get('name') == field_ref for d in (view.dimensions or []))
+            in_measures = any((m or {}).get('name') == field_ref for m in (view.measures or []))
+            if in_dims or in_measures:
+                candidates.append(view_name)
+
+        if len(candidates) == 1:
+            return candidates[0], field_ref
+        if len(candidates) > 1:
+            qualified_hints = ", ".join(f"'{v}.{field_ref}'" for v in candidates)
+            raise AmbiguousFieldError(
+                f"Field '{field_ref}' xuất hiện ở nhiều bảng đã JOIN: "
+                f"{', '.join(candidates)}. Mở chart và đổi reference "
+                f"sang một trong: {qualified_hints} để engine biết "
+                "lấy từ bảng nào."
+            )
+        raise ValueError(
+            f"Invalid field reference: {field_ref} (must be view.field, "
+            f"và không tìm thấy field '{field_ref}' trong bất kỳ view nào "
+            f"của dataset)."
+        )
     
     def _render_sql_template(self, template: str, view_alias: str) -> str:
         """Render a SQL template with semantic placeholders.
