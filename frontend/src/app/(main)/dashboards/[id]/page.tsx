@@ -206,9 +206,7 @@ export default function DashboardDetailPage() {
     };
   }, [serverDashboard]);
 
-  // Phase-15.56 dev hint — leave a 1-line log so DA can verify the
-  // draft endpoint is wiring through. Remove this in a follow-up phase
-  // once we're confident the workflow is stable.
+  // Phase-15.56 dev hint — basic fetch log (no canEditResource yet).
   React.useEffect(() => {
     if (!serverDashboard) return;
     // eslint-disable-next-line no-console
@@ -218,6 +216,8 @@ export default function DashboardDetailPage() {
       draft_layouts_keys: serverDashboard.draft_layouts
         ? Object.keys(serverDashboard.draft_layouts)
         : null,
+      user_permission: serverDashboard.user_permission,
+      layout_mode: serverDashboard.layout_mode,
     });
   }, [serverDashboard]);
   const dashboardDatasetIds = React.useMemo(
@@ -248,6 +248,16 @@ export default function DashboardDetailPage() {
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
   const canEditResource = resPerms.canEdit;
+  // Phase-15.56 — log permission state so DA can verify the editor
+  // actually has edit access (drag handlers only bind when canEditResource).
+  React.useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[draft] perms', {
+      user_permission: dashboard?.user_permission,
+      canEdit: canEditResource,
+      canShare,
+    });
+  }, [dashboard?.user_permission, canEditResource, canShare]);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
@@ -378,6 +388,8 @@ export default function DashboardDetailPage() {
   );
 
   const handleLayoutChange = (newLayout: Layout[]) => {
+    // eslint-disable-next-line no-console
+    console.log('[draft] handleLayoutChange fired', { items: newLayout.length });
     setHasUnsavedChanges(true);
     debouncedSaveLayout(newLayout);
   };
