@@ -313,26 +313,18 @@
 
   /* Resize handles — react-grid-layout / react-resizable add a class per
    * direction. 4 corners only (NW/NE/SW/SE); each stretches both width
-   * and height. Handles are completely hidden until the user hovers
-   * a tile, then a tiny dot appears in each corner — only revealing
-   * a full L-bracket affordance when the cursor is directly on the
-   * handle hit-zone. Keeps the editor calm at rest. */
+   * and height. NOTHING visible at rest — not even on tile hover. The
+   * L-bracket only paints when the cursor is directly inside the 18×18
+   * corner hit-zone, so the dashboard stays clean until the user
+   * intentionally reaches for a corner to resize. */
   .react-resizable-handle {
     background-image: none !important;
     position: absolute;
-    opacity: 0;
-    transition: opacity 140ms ease;
-    pointer-events: none;
-  }
-  .react-grid-item:hover .react-resizable-handle,
-  .group:hover .react-resizable-handle {
-    opacity: 1;
     pointer-events: auto;
   }
 
-  /* Corner hit-zone — 18×18 invisible area. The visual is just a 6×6
-   * dot until cursor lands on the handle, then the dot expands into
-   * an L-bracket. Generous hit-zone, minimal visual noise. */
+  /* Corner hit-zone — 18×18 invisible until hover. Generous target so
+   * the cursor doesn't have to land on a tiny dot. */
   .react-resizable-handle-se,
   .react-resizable-handle-sw,
   .react-resizable-handle-ne,
@@ -345,25 +337,7 @@
   .react-resizable-handle-ne { right: 0; top: 0; cursor: nesw-resize; }
   .react-resizable-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
 
-  /* The dot — visible on tile hover */
-  .react-resizable-handle-se::before,
-  .react-resizable-handle-sw::before,
-  .react-resizable-handle-ne::before,
-  .react-resizable-handle-nw::before {
-    content: '';
-    position: absolute;
-    width: 6px;
-    height: 6px;
-    background: rgb(var(--text-quaternary));
-    border-radius: 50%;
-    transition: opacity 140ms ease, background-color 140ms ease;
-  }
-  .react-resizable-handle-se::before { right: 4px; bottom: 4px; }
-  .react-resizable-handle-sw::before { left: 4px; bottom: 4px; }
-  .react-resizable-handle-ne::before { right: 4px; top: 4px; }
-  .react-resizable-handle-nw::before { left: 4px; top: 4px; }
-
-  /* The L-bracket — only on direct hover. Replaces the dot. */
+  /* L-bracket — only on direct hover. No dot at rest. */
   .react-resizable-handle-se::after,
   .react-resizable-handle-sw::after,
   .react-resizable-handle-ne::after,
@@ -376,6 +350,7 @@
     border-style: solid;
     opacity: 0;
     transition: opacity 120ms ease;
+    pointer-events: none;
   }
   .react-resizable-handle-se::after {
     right: 3px; bottom: 3px;
@@ -400,9 +375,6 @@
     border-left-width: 2px; border-top-width: 2px;
     border-bottom: 0; border-right: 0;
     border-top-left-radius: 3px;
-  }
-  .react-resizable-handle:hover::before {
-    opacity: 0;
   }
   .react-resizable-handle:hover::after {
     opacity: 1;
@@ -439,39 +411,19 @@
     line-height: 1.4;
   }
 
-  /* Canvas resize handles — 4 corners only, mirror Grid handle behaviour.
-   * Dot at rest, L-bracket on direct hover. Hidden when tile not hovered. */
+  /* Canvas resize handles — 4 corners, mirror Grid behaviour: invisible
+   * until cursor hits the 18×18 corner zone, then paint a brand L-bracket. */
   .canvas-resize-handle {
     position: absolute;
     z-index: 11;
     width: 18px;
     height: 18px;
-    opacity: 0;
-    transition: opacity 140ms ease;
-    pointer-events: none;
-  }
-  .group:hover .canvas-resize-handle {
-    opacity: 1;
     pointer-events: auto;
   }
   .canvas-resize-nw { left: -2px; top: -2px; cursor: nwse-resize; }
   .canvas-resize-ne { right: -2px; top: -2px; cursor: nesw-resize; }
   .canvas-resize-sw { left: -2px; bottom: -2px; cursor: nesw-resize; }
   .canvas-resize-se { right: -2px; bottom: -2px; cursor: nwse-resize; }
-
-  .canvas-resize-handle::before {
-    content: '';
-    position: absolute;
-    width: 6px;
-    height: 6px;
-    background: rgb(var(--text-quaternary));
-    border-radius: 50%;
-    transition: opacity 140ms ease;
-  }
-  .canvas-resize-nw::before { left: 6px; top: 6px; }
-  .canvas-resize-ne::before { right: 6px; top: 6px; }
-  .canvas-resize-sw::before { left: 6px; bottom: 6px; }
-  .canvas-resize-se::before { right: 6px; bottom: 6px; }
 
   .canvas-resize-handle::after {
     content: '';
@@ -482,6 +434,7 @@
     border-style: solid;
     opacity: 0;
     transition: opacity 120ms ease;
+    pointer-events: none;
   }
   .canvas-resize-nw::after {
     left: 4px; top: 4px;
@@ -506,9 +459,6 @@
     border-right-width: 2px; border-bottom-width: 2px;
     border-top: 0; border-left: 0;
     border-bottom-right-radius: 3px;
-  }
-  .canvas-resize-handle:hover::before {
-    opacity: 0;
   }
   .canvas-resize-handle:hover::after {
     opacity: 1;
