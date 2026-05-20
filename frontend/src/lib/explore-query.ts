@@ -1058,13 +1058,36 @@ export function buildExploreSqlPreview(args: {
     .map(formatSqlFilter)
     .filter((value): value is string => Boolean(value));
 
+  // Phase-15.60 — detect cross-table picks (qualified refs `view.field`
+  // pointing to more than one distinct view). FE preview can only stub
+  // the base table FROM; real JOIN chain is built by the BE engine at
+  // execute time. Surface a heads-up so DA doesn't think the preview
+  // SQL is what BE will run.
+  const viewsReferenced = new Set<string>();
+  for (const ref of [...(request.dimensions ?? []), ...((request.measures ?? []).map((m) => m.field))]) {
+    if (typeof ref === 'string' && ref.includes('.')) {
+      viewsReferenced.add(ref.split('.', 1)[0]);
+    }
+  }
+  const isCrossTable = viewsReferenced.size > 1;
+
   const sqlLines = [
     `-- Explore query for "${table.display_name || table.source_table_name || 'table'}"`,
     ...(TABLE_LIKE_CHART_TYPES.has(chartType) && isTablePivotConfig(normalizedRoleConfig)
       ? [`-- Pivot mode fetches grouped cells for up to ${TABLE_PIVOT_COLUMN_LIMIT} dynamic columns.`]
       : []),
+    ...(isCrossTable
+      ? [
+          `-- ⚠ Preview chỉ hiện base table. Khi Run, BE engine sẽ tự`,
+          `-- JOIN các bảng sau theo relationship đã định nghĩa:`,
+          `--   ${[...viewsReferenced].join(', ')}`,
+        ]
+      : []),
     `SELECT\n${selectParts.join(',\n')}`,
     `FROM ${sourceSql}`,
+    ...(isCrossTable
+      ? [`-- [JOIN chain sẽ được BE engine bổ sung khi Run]`]
+      : []),
   ];
 
   if (whereParts.length > 0) {
