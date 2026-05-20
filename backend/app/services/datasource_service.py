@@ -935,24 +935,26 @@ class DataSourceConnectionService:
                 query_job = client.query(query)
                 results = query_job.result(timeout=timeout_seconds)
             except Exception as first_err:
-                # Phase-15.58 — retry-with-dedup for the "Column X is
-                # ambiguous" failure pattern (BigQuery 400). Happens
-                # when the source SQL has a JOIN that yields 2+ output
-                # columns sharing a name. The subquery wrapper
-                # `(source_sql) AS _appbi_live` then refuses to give
-                # the outer SELECT access to those columns.
-                #
-                # Fix: probe the source query's schema via LIMIT 0
-                # (free in BigQuery — no bytes scanned for an empty
-                # result), then rewrite the outer SELECT to expand
-                # `*` into `col_1, col_2, dup AS dup_2, dup AS dup_3`
-                # so each column has a unique alias.
+                # Phase-15.58/59 — retry-with-dedup for ambiguous-column
+                # failure. Try 2 strategies in order:
+                #   1. LiveQueryService path: wrapper `(source) AS _appbi_live`
+                #      → probe source schema + rewrite outer SELECT *.
+                #   2. Semantic engine path: full SELECT with explicit
+                #      column list. Dump SQL for human review — engine
+                #      bug, can't auto-fix without breaking semantics.
                 err_msg = str(first_err)
                 if "ambiguous" not in err_msg.lower():
                     raise
-                logger.info("[bq_dedup] retrying after ambiguous-column error")
+                logger.warning(
+                    "[bq_dedup] ambiguous-column error received. SQL=%s",
+                    (query or "").replace("\n", " ")[:2000],
+                )
                 rewritten = _bigquery_dedup_outer_select(client, query)
                 if rewritten is None:
+                    logger.error(
+                        "[bq_dedup] dedup rewrite skipped — pattern not matched. "
+                        "Likely semantic-engine emit bug. Re-raising original error."
+                    )
                     raise
                 logger.info(f"[bq_sql_retry] {rewritten[:1500]}")
                 query_job = client.query(rewritten)
