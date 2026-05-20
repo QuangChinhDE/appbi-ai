@@ -2212,41 +2212,30 @@ async def commit_dataset_workspace(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """CONFIRM 1 of 2 — commit the full design.
-
-    Commits dataset + tables + semantic model AND logs the planned chart
-    list so Phase 2 (`build_dashboard_from_design`) can materialise
-    without re-designing.
+    """CONFIRM 1 of 2 — commit dataset + tables + semantic; log planned
+    charts for Phase 2 (`build_dashboard_from_design`).
 
     `plan` shape:
-      dataset: {name, description?} OR existing_dataset_id: <int>
-      tables:  [{display_name, source_kind, datasource_id?,
-                 source_table_name?, source_query?}, ...]
-      semantic (optional): full plan_json for commit_semantic_model.
-      relationships (optional): list of dataset-model joins to create
-        AFTER semantic commit, so cross-table charts work end-to-end.
-        Each entry references views by NAME (resolved to ids post-commit):
-          {from_view_name, to_view_name,
-           from_column (or from_columns: [...]),
-           to_column   (or to_columns:   [...]),
-           join_type?: "left"|"inner"|"right"|"full"  (default "left"),
-           relationship?: "many_to_one"|"one_to_many"|"one_to_one"|
-                          "many_to_many"               (default "many_to_one"),
-           alias?, is_active?, cross_filter?: "single"|"both", force?: bool}
-        Use `suggest_dataset_model_join` first to learn the right type.
-      planned_charts (optional): list of chart specs to log for Phase 2.
-        Each entry: {title, chart_type, role_config, layout?,
-        dataset_table_name OR dataset_table_index}. role_config fields
-        CAN reference cross-table refs (e.g. dimension="owner.name",
-        metrics=[{field: "deals.revenue"}]) as long as `relationships`
-        above connects those views — engine joins via the dataset model.
-      dashboard_meta (optional): {name, description?} logged for Phase 2.
+      dataset OR existing_dataset_id (one required)
+        dataset: {name, description?}
+      tables[]: {display_name, source_kind, datasource_id?,
+                 source_table_name?, source_query?}
+      semantic?: full plan_json for commit_semantic_model.
+      relationships?[]: dataset-model joins (created AFTER semantic so
+        view IDs resolve). Each: {from_view_name, to_view_name,
+        from_column|from_columns, to_column|to_columns,
+        join_type?='left', relationship?='many_to_one',
+        alias?, is_active?=True, cross_filter?='single', force?=False}.
+        Use `suggest_dataset_model_join` first to pick relationship type.
+      planned_charts?[]: chart specs logged for Phase 2. Each: {title,
+        chart_type, role_config, layout?, dataset_table_name OR
+        dataset_table_index}. role_config may use cross-view qualified
+        refs (e.g. dimension='owner.name') if `relationships` connects
+        the views.
+      dashboard_meta?: {name, description?} logged for Phase 2.
 
-    Rollback: table-add failure rolls back added tables + freshly-created
-    dataset. Semantic commit failure leaves dataset+tables in place.
-    Relationship-add failures are logged + surfaced but don't roll back
-    dataset/tables/semantic (relationships can be added later via
-    add_dataset_model_join).
+    Rollback: table-add failure → rollback added tables + new dataset.
+    Semantic / relationship failure → kept; can retry separately.
     """
     plan_dict = _parse_plan_json(plan, "plan") if isinstance(plan, str) else plan
     if not isinstance(plan_dict, dict):
@@ -2589,26 +2578,17 @@ async def build_dashboard_from_design(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """CONFIRM 2 of 2 — build the dashboard from Phase 1 logged design.
+    """CONFIRM 2 of 2 — materialise the dashboard from Phase 1's logged
+    `charts_design.json`. No re-design — pulls everything from the log.
 
-    Reads `charts_design.json` from the active session log folder (or an
-    explicit path) and materialises every chart + the dashboard. Does
-    NOT re-design — pulls everything from the log so the result matches
-    what the DA approved in Phase 1.
+    Without user_confirmed: renders HTML preview at
+    `dashboard_preview.html` in the same log folder, returns its path
+    for browser review.
+    With user_confirmed=True: creates charts + dashboard in AppBI.
 
-    Without `user_confirmed`: renders the HTML preview file
-    (`dashboard_preview.html` in the same log folder) and returns its
-    path + a summary plan. The DA opens the .html in a browser to
-    verify the layout before committing.
-
-    With `user_confirmed=True`: writes the charts + dashboard to AppBI
-    and re-renders the preview alongside the final URL.
-
-    Args:
-      dashboard_meta_override — optional {name, description} that
-        overrides the logged dashboard_meta. Use sparingly.
-      design_log_path — optional absolute path to a charts_design.json
-        from a previous session. Defaults to the active session's log.
+    `dashboard_meta_override` — optional {name, description} overriding
+    the logged meta. `design_log_path` — explicit path for resumed
+    sessions; defaults to the active log folder.
     """
     # Locate design file. Order of preference:
     #   1. explicit design_log_path

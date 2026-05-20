@@ -1,9 +1,26 @@
 """Stage 3 — pattern-driven measure builders.
 
-7 thin wrappers that each create ONE kind of measure on an existing
-SemanticView, with the config baked in correctly. Claude picks the tool
-by intent ("tổng" → add_sum_measure, "tỷ lệ" → add_ratio_measure …) and
-never has to author raw {type, sql, expression, depends_on} fields.
+8 wrappers, each creates ONE kind of measure on an existing SemanticView
+with the config baked in correctly. Claude picks the tool by intent
+("tổng" → add_sum_measure, "tỷ lệ" → add_ratio_measure …) and never
+has to author raw {type, sql, expression, depends_on} fields.
+
+Tools (Phase 15.42 3-tier hierarchy):
+  Tier 1 — typed-param standard patterns:
+    add_sum_measure              SUM(col)
+    add_avg_measure              AVG(col)
+    add_count_measure            COUNT(*) on the view (count rows). Use
+                                 `filters` for conditional counting.
+    add_count_distinct_measure   COUNT(DISTINCT col)
+    add_min_max_measure          MIN/MAX(col), kind='min'|'max'
+    add_ratio_measure            Mode-2 ratio: ${num}/NULLIF(${den}, 0)
+    add_percent_of_total_measure SUM/SUM(SUM) OVER() * 100
+  Tier 2 — same tools with `extra={...}` for advanced BE fields
+    (where_sql, hidden, description, context_modifiers, scope='dataset' +
+    source_columns).
+  Tier 3 — add_advanced_measure(view_id, measure_spec) for shapes no
+    Tier-1 tool fits (custom expression, multiple context_modifiers,
+    custom format.pattern).
 
 Every tool follows preview-then-confirm via `user_confirmed`. On commit
 the tool GETs the current view, appends the new measure, PUTs the full
@@ -236,17 +253,13 @@ async def add_sum_measure(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Add a SUM measure aggregating `column` on the view.
+    """SUM(`column`). `column` is the bare column name (this tool wraps
+    `${TABLE}.` for you).
 
-    `column` is the bare column name in the view's source table (no
-    `${TABLE}.` prefix — this tool wraps it correctly).
-
-    `extra` (optional) — escape hatch to advanced BE-recognized fields
-    that don't fit the typed-param surface. Whitelisted keys:
-    `where_sql`, `description`, `hidden`, `context_modifiers` (Phase-14
-    % of total / all_except / use_relationship), `scope` ('view' default
-    or 'dataset'), `source_columns` (required with scope='dataset').
-    For any other shape use `add_advanced_measure`.
+    `extra` (optional, Tier 2 escape hatch) whitelisted keys:
+    `where_sql`, `description`, `hidden`, `context_modifiers`,
+    `scope` ('view'|'dataset'), `source_columns` (req with dataset).
+    For shapes outside this whitelist use `add_advanced_measure`.
     """
     measure = _drop_none({
         "name": _validate_measure_name(name),
@@ -293,7 +306,6 @@ async def add_avg_measure(
 async def add_count_measure(
     view_id: int,
     name: str,
-    column: str | None = None,
     label: str | None = None,
     filters: list[dict[str, Any]] | None = None,
     folder: str | None = None,
@@ -301,30 +313,15 @@ async def add_count_measure(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Add a COUNT measure. `column` is OPTIONAL.
-
-    Two distinct SQL semantics:
-      column=None        → COUNT(*)         counts ALL rows (incl. NULLs).
-      column='customer_id' → COUNT(col)     counts ONLY non-null rows of
-                                            that column.
-
-    These return different numbers when the column has NULLs. Pick the
-    one you actually want — don't reach for COUNT DISTINCT unless you
-    need unique values (use `add_count_distinct_measure`).
-
-    `filters` add a CASE WHEN gate so the COUNT only sees matching rows
-    (e.g. won_deal_count = COUNT(*) WHERE status='won').
-
-    See `add_sum_measure` for `extra` shape.
+    """COUNT(*) on the view (count rows). Use `filters` to count
+    conditionally (e.g. status='won'); for "rows where col IS NOT NULL"
+    add a filter with operator='is_not_null'. For unique non-null
+    counts use `add_count_distinct_measure`. See `add_sum_measure`
+    for `extra`.
     """
-    measure: dict[str, Any] = {
+    measure = _drop_none({
         "name": _validate_measure_name(name),
         "type": "count",
-    }
-    if column and column.strip():
-        measure["sql"] = "${TABLE}." + column.strip()
-    measure = _drop_none({
-        **measure,
         "label": label,
         "folder": folder,
         "filters": filters or None,
@@ -473,56 +470,17 @@ async def add_advanced_measure(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Last-resort tool — add a measure with the full raw BE
-    `MeasureDefinition` shape. PREFER the typed library tools
-    (add_sum_measure, add_avg_measure, add_count_measure,
-    add_count_distinct_measure, add_min_max_measure, add_ratio_measure,
-    add_percent_of_total_measure) for standard cases — they validate
-    inputs and prevent the recurring 'measure config drift' bugs.
+    """Tier 3 — raw passthrough for measure shapes no typed tool fits
+    (custom expression, multiple context_modifiers, custom format.pattern,
+    BE fields outside Tier-2 `extra` whitelist). Prefer the typed tools
+    when possible.
 
-    Use this tool only when the measure shape doesn't fit ANY library
-    pattern, e.g.:
-      • Custom `expression` that's not a simple ratio (e.g. weighted
-        average, multi-step calculation, window over partition).
-      • Multiple `context_modifiers` combined on one measure.
-      • Custom `format.pattern` for a non-standard display format.
-      • Any other BE-recognized field not exposed in typed params or
-        the library tools' `extra={}` whitelist.
+    `measure_spec` = full MeasureDefinition shape:
+      name (snake_case, required), type, sql OR expression,
+      filters[], where_sql, depends_on[], format, folder, label,
+      description, hidden, scope, source_columns[], context_modifiers[].
 
-    `measure_spec` shape (full MeasureDefinition — see BE schema):
-      {
-        "name": "<snake_case identifier, required>",
-        "type": "sum|avg|count|count_distinct|min|max|percent_of_total",
-        "sql": "${TABLE}.<col>"  OR  "expression": "<SQL>",
-        "filters": [{field, operator, value}, ...],
-        "where_sql": "<raw WHERE fragment>",
-        "depends_on": ["<other_measure>", ...],
-        "format": {kind, decimals?, currency?, prefix?, suffix?, pattern?},
-        "folder": "<UI grouping>",
-        "label": "<display name>",
-        "description": "<business meaning>",
-        "hidden": false,
-        "scope": "view|dataset",
-        "source_columns": [{view, field}, ...],   # required if scope=dataset
-        "context_modifiers": [{type: "all"|"all_except"|"use_relationship",
-                                keep_fields?: [...], join_alias?: "..."}, ...],
-      }
-
-    Validation:
-      • `name` runs through the same identifier-regex guard as the
-        typed tools (Phase-15.36: spaces / accents / digit-prefix
-        rejected) so the FE can still save the host view.
-      • Non-count measures must have `sql` OR `expression` (Phase-15.29
-        BE Pydantic validator catches it too — surfaced here for early
-        feedback).
-      • For ratio-style measures (expression + named measure refs),
-        prefer `add_ratio_measure` which builds Mode-2 correctly.
-
-    This tool is intentionally minimal: it doesn't try to normalize
-    your shape. You pass the BE shape, MCP passes it through the same
-    read-modify-write semantic-view update path. If the BE rejects it,
-    you'll see the BackendError envelope with `claude_should` telling
-    you what to fix.
+    Validates: name regex, type present, non-count needs sql OR expression.
     """
     if not isinstance(measure_spec, dict):
         raise ValueError("measure_spec must be a dict.")

@@ -830,13 +830,13 @@ errors.
 
 | User intent | Tool |
 |---|---|
-| "tổng X", total / sum | `add_sum_measure` |
-| "trung bình X", average | `add_avg_measure` |
-| "đếm dòng", count rows | `add_count_measure` |
-| "đếm duy nhất", # unique values | `add_count_distinct_measure` |
-| "nhỏ nhất / lớn nhất" | `add_min_max_measure` (kind='min' or 'max') |
-| "tỷ lệ A/B", A per B | `add_ratio_measure` (both A and B must be existing measures) |
-| "% trên tổng" | `add_percent_of_total_measure` |
+| "tổng X", total / sum | `add_sum_measure(column=...)` |
+| "trung bình X", average | `add_avg_measure(column=...)` |
+| "đếm dòng" / "đếm bản ghi" (COUNT rows) | `add_count_measure` — counts rows; use `filters` to count conditionally (e.g. won_deals = COUNT WHERE status='won') |
+| "đếm giá trị duy nhất", # unique non-null | `add_count_distinct_measure(column=...)` |
+| "nhỏ nhất / lớn nhất" | `add_min_max_measure(column=..., kind='min' or 'max')` |
+| "tỷ lệ A/B", A per B | `add_ratio_measure(numerator='A', denominator='B')` — both must already exist |
+| "% trên tổng" | `add_percent_of_total_measure(column=...)` |
 
 **Tier 2** — Standard pattern + advanced field (escape hatch on the same tool):
 Pass `extra={...}` to any Tier-1 tool to add a BE-recognized advanced
@@ -864,6 +864,12 @@ whitelist — use `add_advanced_measure(view_id, measure_spec={...})`
 with the full MeasureDefinition shape.
 
 ## Chart tools (appbi_chart_library) — pick by intent
+
+For every tool below: pass `view.field` (qualified) to `dimension` /
+`metric_field` / `breakdown` / etc. by default — bare `field` locks
+the chart to single-table (see "Schema topology rule" above). Each
+tool returns `refs_audit` so you can verify before confirming.
+
 | User intent / shape | Tool |
 |---|---|
 | "1 con số", KPI tile | `add_kpi_chart` |

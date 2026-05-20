@@ -416,6 +416,30 @@ async def add_table_to_dataset(
     result = await _request(
         "POST", f"/datasets/{int(dataset_id)}/tables", json_body=body
     )
+    # Phase-15.45: surface columns_cache state so callers immediately
+    # know whether the table has resolvable columns. For sql_query /
+    # derived tables, BE tries to infer the schema on create but the
+    # inference can silently fall through (logger.warning, no raise),
+    # leaving columns_cache empty. A measure / chart authored against
+    # such a table fails downstream with "column not found" instead of
+    # signalling the real cause here.
+    columns_state: dict[str, Any] = {}
+    if isinstance(result, dict):
+        cache = result.get("columns_cache")
+        cached_cols = (cache or {}).get("columns") if isinstance(cache, dict) else None
+        col_count = len(cached_cols) if isinstance(cached_cols, list) else 0
+        columns_state = {
+            "columns_cached": col_count,
+            "columns_ready": col_count > 0,
+        }
+        if col_count == 0 and source_kind in ("sql_query", "derived_table"):
+            columns_state["columns_warning"] = (
+                f"columns_cache is empty after creating this {source_kind} "
+                "table. BE schema inference may have failed silently. "
+                "Before authoring measures/charts on this table call "
+                "`get_table_profile(dataset_id, table_id)` — it live-runs "
+                "the query and returns the actual columns."
+            )
     _append_session_log(
         "dataset",
         "add_table_to_dataset",
@@ -426,8 +450,11 @@ async def add_table_to_dataset(
             "source_kind": source_kind,
             "source_table_name": source_table_name,
             "source_query_preview": (source_query or "")[:120] if source_query else None,
+            "columns_cached": columns_state.get("columns_cached"),
         },
     )
+    if isinstance(result, dict):
+        result["_columns_state"] = columns_state
     return result
 
 

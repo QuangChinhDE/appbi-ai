@@ -362,32 +362,26 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* Column being aggregated (form mode).
-              COUNT: column is OPTIONAL — blank → COUNT(*) (all rows),
-              filled → COUNT(col) (non-null rows). These are different
-              numbers when the column has NULLs, so we expose it. */}
-          <div>
-            <label className="text-[10px] text-text-tertiary uppercase">
-              Column to aggregate
-              {measure.type === 'count' && (
-                <span className="ml-1 normal-case text-text-quaternary">
-                  (optional — blank = COUNT(*), filled = COUNT(col) non-null only)
-                </span>
-              )}
-            </label>
-            <input
-              list={`__cols_for_${measure.name}`}
-              value={measure.sql || ''}
-              onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
-              className="w-full text-xs px-2 py-1 border rounded font-mono"
-              placeholder={measure.type === 'count' ? 'Leave blank for COUNT(*)' : 'Pick a column'}
-            />
-            <datalist id={`__cols_for_${measure.name}`}>
-              {columnOptions.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
-          </div>
+          {/* Column being aggregated (form mode). COUNT counts rows
+              (= COUNT(*)) so column is N/A — use filters or
+              count_distinct for any column-specific counting. */}
+          {measure.type !== 'count' && (
+            <div>
+              <label className="text-[10px] text-text-tertiary uppercase">Column to aggregate</label>
+              <input
+                list={`__cols_for_${measure.name}`}
+                value={measure.sql || ''}
+                onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
+                className="w-full text-xs px-2 py-1 border rounded font-mono"
+                placeholder="Pick a column"
+              />
+              <datalist id={`__cols_for_${measure.name}`}>
+                {columnOptions.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </div>
+          )}
 
           {/* Filters builder */}
           <div>
