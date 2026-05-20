@@ -959,13 +959,13 @@ function FilterContextModifiers({
         )}
       </div>
       <p className="text-[10px] leading-snug text-text-quaternary">
-        Chọn pattern bên dưới để bỏ qua hoặc giữ một phần filter context khi
-        chart slice. Tương đương PowerBI <code>CALCULATE/ALL/ALLEXCEPT</code>.
-        Default (None) = aggregate thường.
+        Cách measure phản ứng khi chart slice theo dim. Mặc định: aggregate
+        bình thường theo từng nhóm chart.
       </p>
 
-      {/* Phase-15.4: preset picker — 4 button row. Hide Advanced editors
-          unless user clicks "Advanced" disclosure. */}
+      {/* Preset picker — 4 button row. Business-language labels;
+          PowerBI/DAX equivalents are surfaced only in tooltips for users
+          who already know that vocabulary. */}
       <div className="grid grid-cols-2 gap-1.5">
         <button
           disabled={!canEdit}
@@ -975,11 +975,11 @@ function FilterContextModifiers({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Measure aggregate thường, group theo dim của chart như bình thường."
+          title="Measure aggregate bình thường, group theo dim của chart."
         >
-          <div className="font-emphasis">None (default)</div>
+          <div className="font-emphasis">Mặc định</div>
           <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Aggregate thường, no window
+            Theo từng nhóm chart, không bỏ filter nào
           </div>
         </button>
 
@@ -991,11 +991,11 @@ function FilterContextModifiers({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Emit SUM(...) OVER () — bypass mọi slicer của chart. Tương đương DAX CALCULATE(measure, ALL())."
+          title="SUM(...) OVER () — luôn dùng tổng cả bảng bất kể chart slice gì. PowerBI: CALCULATE + ALL()."
         >
-          <div className="font-emphasis">% of grand total</div>
+          <div className="font-emphasis">So với tổng toàn bộ</div>
           <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Bỏ tất cả filter — DAX ALL()
+            Bỏ qua mọi slice của chart, lấy tổng cả bảng
           </div>
         </button>
 
@@ -1010,11 +1010,11 @@ function FilterContextModifiers({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Emit SUM(...) OVER (PARTITION BY <field>) — giữ field này trong filter, bỏ rest. Tương đương DAX ALLEXCEPT(table, table[field])."
+          title="SUM(...) OVER (PARTITION BY field) — giữ 1 dim, bỏ các slice khác. PowerBI: ALLEXCEPT(table, field)."
         >
-          <div className="font-emphasis">% within ...</div>
+          <div className="font-emphasis">So với tổng nhóm</div>
           <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Giữ 1 dim — DAX ALLEXCEPT()
+            Giữ 1 dim (vd region), bỏ các slice còn lại
           </div>
         </button>
 
@@ -1026,11 +1026,11 @@ function FilterContextModifiers({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Dùng inactive relationship (alias join) thay default. Schema-only ở Phase-14 — sẽ wire ở phase sau."
+          title="Dùng inactive relationship (alias join) thay default. PowerBI: USERELATIONSHIP. Schema-only — engine chưa wire."
         >
-          <div className="font-emphasis">Use relationship</div>
+          <div className="font-emphasis">Dùng quan hệ khác</div>
           <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            DAX USERELATIONSHIP() — schema only
+            Chọn alias join thay default (advanced)
           </div>
         </button>
       </div>
@@ -1075,25 +1075,26 @@ function FilterContextModifiers({
         </div>
       )}
 
-      {/* Advanced — raw modifier checkboxes. Keep for power users, hidden
-          by default. Auto-opens if preset detector flagged 'custom'. */}
+      {/* Tuỳ chỉnh chi tiết — raw modifier checkboxes. Keep for power
+          users, hidden by default. Auto-opens if preset detector flagged
+          'custom' (a shape no preset matches). */}
       <button
         onClick={() => setShowAdvanced((v) => !v)}
         className="text-[10px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
       >
-        {showAdvanced ? '▼' : '▶'} Advanced (raw modifiers)
+        {showAdvanced ? '▼' : '▶'} Tuỳ chỉnh chi tiết
       </button>
 
       {showAdvanced && (
         <div className="space-y-1.5 border-l-2 border-[rgb(var(--border-line))] pl-2">
           <label className="flex cursor-pointer items-center gap-2 text-[11px] text-text-secondary">
             <input type="checkbox" checked={hasAll} disabled={!canEdit} onChange={toggleAll} />
-            <span><code>ALL</code> — grand total</span>
+            <span>Lấy tổng toàn bộ — bỏ mọi filter</span>
           </label>
           <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
             <input type="checkbox" checked={hasAllExcept} disabled={!canEdit} onChange={toggleAllExcept} className="mt-0.5" />
             <span className="flex-1">
-              <code>ALL EXCEPT</code> — multi-dim partition
+              Giữ nhiều dim (multi-partition)
               {hasAllExcept && (
                 <input
                   value={allExceptKeepCsv}
@@ -1109,7 +1110,7 @@ function FilterContextModifiers({
           <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
             <input type="checkbox" checked={hasUseRel} disabled={!canEdit} onChange={toggleUseRel} className="mt-0.5" />
             <span className="flex-1">
-              <code>USE RELATIONSHIP</code> — alias join
+              Dùng quan hệ alias (use relationship)
               {hasUseRel && (
                 <input
                   value={useRelAlias}
@@ -1124,8 +1125,8 @@ function FilterContextModifiers({
 
           {hasAll && hasAllExcept && (
             <div className="rounded-md border border-danger/40 bg-danger/5 p-1.5 text-[10px] text-danger">
-              Không thể đồng thời <code>ALL</code> và <code>ALL EXCEPT</code> trên
-              cùng measure. Pick 1.
+              Không thể đồng thời chọn "lấy tổng toàn bộ" và "giữ nhiều dim" —
+              hai pattern này mâu thuẫn nhau. Pick 1.
             </div>
           )}
         </div>
@@ -1474,6 +1475,45 @@ function TimeIntelligenceBuilder({
 
 // ─── MeasureRow ───────────────────────────────────────────────────────────────
 
+/**
+ * Validate one measure against the same rules MeasureRow paints red.
+ * Shared between the row (inline error display) and the panel footer
+ * (Save button disable). Returns Vietnamese error messages keyed by
+ * field name — empty object means the measure is save-able.
+ *
+ * The `mode` arg is the editor mode chosen in the row toggle. We
+ * cannot infer it from the measure alone (a low-code measure with
+ * just `sql` set looks identical to a SQL one without `expression`),
+ * so the panel passes the same heuristic the row uses when computing
+ * the default mode.
+ */
+function validateMeasure(measure: MeasureDefinition): Record<string, string> {
+  const mode: 'lowcode' | 'sql' = (
+    measure.expression
+      || measure.where_sql
+      || (measure.depends_on?.length ?? 0) > 0
+      || measure.scope === 'dataset'
+  ) ? 'sql' : 'lowcode';
+
+  const out: Record<string, string> = {};
+  const trimmedName = (measure.name || '').trim();
+  if (!trimmedName) {
+    out.name = 'SQL name là bắt buộc';
+  } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)) {
+    out.name = 'SQL name chỉ chứa chữ, số, dấu gạch dưới; không bắt đầu bằng số';
+  }
+  if (mode === 'lowcode' && measure.type !== 'count' && !(measure.sql || '').trim()) {
+    out.column = 'Chọn 1 cột để tính (hoặc đổi sang chế độ SQL nếu cần expression)';
+  }
+  if (mode === 'sql' && !(measure.expression || '').trim() && !(measure.sql || '').trim()) {
+    out.expression = 'Cần SQL expression hoặc cột nguồn';
+  }
+  if (measure.scope === 'dataset' && (measure.source_columns?.length ?? 0) === 0) {
+    out.source_columns = 'Đa bảng bật mà chưa khai báo cột nguồn';
+  }
+  return out;
+}
+
 function MeasureRow({
   measure,
   canEdit,
@@ -1500,8 +1540,19 @@ function MeasureRow({
   onRemove: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(() => rowKey.startsWith('new-measure') || Boolean(defaultOpen));
-  const [showAdvanced, setShowAdvanced] = useState(Boolean(measure.expression || measure.where_sql));
   const [editingLabel, setEditingLabel] = useState(false);
+
+  // Auto-detect mode: anything with a custom SQL expression, raw WHERE,
+  // depends_on chain, or cross-table source columns is inherently a
+  // "SQL mode" measure — start there so the user doesn't lose visibility
+  // of fields the measure already uses.
+  const isSqlMeasure = Boolean(
+    measure.expression
+      || measure.where_sql
+      || (measure.depends_on?.length ?? 0) > 0
+      || measure.scope === 'dataset',
+  );
+  const [mode, setMode] = useState<'lowcode' | 'sql'>(isSqlMeasure ? 'sql' : 'lowcode');
 
   const filters = measure.filters ?? [];
   const updateFilters = (next: MeasureFilter[]) => onChange({ ...measure, filters: next });
@@ -1518,6 +1569,17 @@ function MeasureRow({
     measure.name,
     viewName ? `${viewName}.${measure.name}` : '',
   ].filter(Boolean));
+
+  // Inline validation — paint each input red + surface a summary at the
+  // bottom of the form. validateMeasure() is shared with the panel
+  // footer so the Save button uses the SAME ruleset (no drift between
+  // "looks invalid in the row" and "still save-able from the footer").
+  const errors = validateMeasure(measure);
+  const hasErrors = Object.keys(errors).length > 0;
+  const errClass = (key: string) =>
+    errors[key]
+      ? 'border-danger/60 bg-danger/5 focus:ring-danger/40'
+      : 'border-[rgb(var(--border-line))] focus:ring-brand';
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -1569,7 +1631,7 @@ function MeasureRow({
         {measure.scope === 'dataset' && (
           <span
             className="text-[9px] px-1 py-0.5 rounded bg-brand/10 text-brand font-emphasis uppercase shrink-0"
-            title={`Cross-table (đa bảng): measure tham chiếu ${measure.source_columns?.length ?? 0} cột nguồn từ view khác. Engine tự JOIN.`}
+            title={`Tính qua nhiều bảng: measure tham chiếu ${measure.source_columns?.length ?? 0} cột nguồn từ view khác. Engine tự JOIN.`}
           >
             đa bảng
           </span>
@@ -1579,9 +1641,17 @@ function MeasureRow({
         {(measure.context_modifiers?.length ?? 0) > 0 && (
           <span
             className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-emphasis uppercase shrink-0"
-            title="Measure dùng filter-context modifier (OVER PARTITION BY) — tham khảo Filter Context panel ở Advanced"
+            title="Measure dùng filter context — engine emit SQL OVER (PARTITION BY)"
           >
-            ctx
+            ngữ cảnh
+          </span>
+        )}
+        {hasErrors && (
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded bg-danger/10 text-danger font-emphasis uppercase shrink-0"
+            title={Object.values(errors).join('\n')}
+          >
+            {Object.keys(errors).length} lỗi
           </span>
         )}
         <span className="text-[10px] text-text-quaternary bg-warning/10 text-warning px-1.5 py-0.5 rounded uppercase">{measure.type}</span>
@@ -1603,7 +1673,7 @@ function MeasureRow({
         )}
       </div>
       {isExpanded && canEdit && (
-        <div className="px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5">
+        <div className="px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5" data-measure-invalid={hasErrors ? 'true' : 'false'}>
           {/* Datalists shared across this row's inputs */}
           <datalist id={colsListId}>
             {columnOptions.map((c) => <option key={c} value={c} />)}
@@ -1611,6 +1681,49 @@ function MeasureRow({
           <datalist id={measuresListId}>
             {measureNames.filter((n) => !selfMeasureRefs.has(n)).map((n) => <option key={n} value={n} />)}
           </datalist>
+
+          {/* Mode toggle — Low-code (default) vs SQL.
+              Low-code: column picker + aggregation dropdown. Hide raw SQL.
+              SQL: expression textarea + raw WHERE + depends_on + cross-table.
+              Switching from SQL -> Low-code keeps the data but flags any
+              SQL-only fields (expression/where_sql) as visible-via-summary. */}
+          <div className="flex items-center justify-between gap-2 -mx-1 -mt-1 border-b border-[rgb(var(--border-line))] pb-2">
+            <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setMode('lowcode')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                  mode === 'lowcode'
+                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                    : 'text-text-tertiary hover:text-text-secondary'
+                }`}
+                title="Chế độ Low-code — chọn cột + aggregation từ dropdown"
+              >
+                Low-code
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('sql')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                  mode === 'sql'
+                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                    : 'text-text-tertiary hover:text-text-secondary'
+                }`}
+                title="Chế độ SQL — viết biểu thức tuỳ ý, hỗ trợ raw WHERE và đa bảng"
+              >
+                SQL nâng cao
+              </button>
+            </div>
+            {mode === 'lowcode' ? (
+              <span className="text-[10px] text-text-quaternary">
+                Đủ cho 90% measure thông thường (SUM/AVG/COUNT theo cột).
+              </span>
+            ) : (
+              <span className="text-[10px] text-text-quaternary">
+                Cho measure có biểu thức tuỳ chỉnh, cross-table, hoặc time-intelligence.
+              </span>
+            )}
+          </div>
 
           {/* Identity — Label first (primary), Aggregation alongside */}
           <div className="grid grid-cols-2 gap-2">
@@ -1653,10 +1766,13 @@ function MeasureRow({
               <input
                 value={measure.name}
                 onChange={(e) => onChange({ ...measure, name: e.target.value })}
-                className="w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                className={`w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('name')}`}
                 placeholder="sql_identifier"
                 title="Internal SQL identifier. Letters, digits and underscores only."
               />
+              {errors.name && (
+                <p className="mt-0.5 text-[10px] text-danger">{errors.name}</p>
+              )}
             </div>
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Folder</label>
@@ -1669,19 +1785,24 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* Column to aggregate (form mode). COUNT counts rows
-              (= COUNT(*)) so column is N/A — use filters or
-              count_distinct for any column-specific counting. */}
-          {measure.type !== 'count' && (
+          {/* Column to aggregate — Low-code mode only. COUNT counts rows
+              (= COUNT(*)) so column is N/A; use filters or count_distinct
+              for column-specific counting. In SQL mode the SQL expression
+              field replaces this — column picker is hidden to keep one
+              source of truth. */}
+          {mode === 'lowcode' && measure.type !== 'count' && (
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Column to aggregate</label>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Cột để tính</label>
               <input
                 list={colsListId}
                 value={measure.sql || ''}
                 onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="Pick a column"
+                className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('column')}`}
+                placeholder="Chọn cột (vd. num_calls)"
               />
+              {errors.column && (
+                <p className="mt-0.5 text-[10px] text-danger">{errors.column}</p>
+              )}
             </div>
           )}
 
@@ -1763,42 +1884,44 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* Advanced toggle */}
-          <button
-            onClick={() => setShowAdvanced((v) => !v)}
-            className="text-[10px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
-          >
-            {showAdvanced ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-            Advanced (SQL expression, raw WHERE, depends on)
-          </button>
-
-          {showAdvanced && (
-            <div className="space-y-2 pl-3 border-l border-[rgb(var(--border-line))]">
+          {/* SQL mode block — only visible in SQL nâng cao mode. Low-code
+              hides these fields entirely so the form has ONE place to
+              configure aggregation. Data is preserved when toggling — we
+              keep the field values, just stop rendering. */}
+          {mode === 'sql' && (
+            <div className="space-y-2 rounded-md border border-brand/20 bg-brand/5 p-2.5">
+              <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-brand">
+                <span>SQL nâng cao</span>
+                <span className="text-text-quaternary normal-case font-normal">— biểu thức tuỳ chỉnh, ưu tiên hơn 'Cột để tính'</span>
+              </div>
               <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">
-                  SQL expression (overrides column)
+                  Biểu thức SQL
                 </label>
                 <input
                   value={measure.expression || ''}
                   onChange={(e) => onChange({ ...measure, expression: e.target.value || undefined })}
-                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                  placeholder="e.g. revenue - cost"
+                  className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('expression')}`}
+                  placeholder="vd: revenue - cost"
                 />
+                {errors.expression && (
+                  <p className="mt-0.5 text-[10px] text-danger">{errors.expression}</p>
+                )}
               </div>
               <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">
-                  Raw WHERE (added to filters)
+                  Điều kiện WHERE bổ sung
                 </label>
                 <input
                   value={measure.where_sql || ''}
                   onChange={(e) => onChange({ ...measure, where_sql: e.target.value || undefined })}
                   className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                  placeholder="e.g. status <> 'cancelled'"
+                  placeholder="vd: status <> 'cancelled'"
                 />
               </div>
               <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">
-                  Depends on (other measures)
+                  Phụ thuộc (measure khác)
                 </label>
                 <input
                   list={measuresListId}
@@ -1810,15 +1933,15 @@ function MeasureRow({
                     })
                   }
                   className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                  placeholder="e.g. revenue, calendar.days"
+                  placeholder="vd: revenue, calendar.days"
                 />
               </div>
 
-              {/* Phase-12 / Phase-13.3: dataset-scope measure with cross-table source
-                  columns. Phase-13.3 adds expression↔source_columns drift detection
-                  so the form catches the common mistake where the SQL expression
-                  references ${view.field} but source_columns is empty / mismatched. */}
-              <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
+              {/* Cross-table source columns. Drift detection (Phase-13.3)
+                  catches the common mistake where the SQL expression
+                  references ${view.field} but source_columns is empty
+                  or mismatched. */}
+              <div className={`space-y-1.5 rounded-md border p-2 ${errors.source_columns ? 'border-danger/50 bg-danger/5' : 'border-dashed border-[rgb(var(--border-line))]'}`}>
                 <label className="flex cursor-pointer items-center gap-2 text-[10px] uppercase font-medium text-text-tertiary">
                   <input
                     type="checkbox"
@@ -1832,12 +1955,15 @@ function MeasureRow({
                       }
                     }}
                   />
-                  Đa bảng (cross-table — PowerBI: USERELATIONSHIP)
+                  Tính qua nhiều bảng (cross-table)
                 </label>
                 <p className="text-[10px] leading-snug text-text-quaternary">
-                  Khi bật: SQL expression có thể dùng <code>{'${view.field}'}</code> từ bảng khác.
-                  Khai báo từng cột nguồn dưới đây để engine tự JOIN qua relationship.
+                  Khi bật: biểu thức SQL có thể tham chiếu <code>{'${view.field}'}</code> từ bảng khác.
+                  Khai báo từng cột nguồn dưới đây để engine tự JOIN.
                 </p>
+                {errors.source_columns && (
+                  <p className="text-[10px] text-danger">{errors.source_columns}</p>
+                )}
                 {measure.scope === 'dataset' && (() => {
                   // Phase-13.3: parse ${view.field} refs from expression and diff
                   // against source_columns so the user sees what's missing.
@@ -1991,15 +2117,35 @@ function MeasureRow({
                 })()}
               </div>
 
-              {/* Phase-14: filter-context modifiers — compile measure to a
-                  SQL window aggregate. Kept in Advanced because most
-                  measures don't need this; "% of total" / "% of region"
-                  use cases live here. */}
-              <FilterContextModifiers
-                measure={measure}
-                canEdit={canEdit}
-                onChange={onChange}
-              />
+            </div>
+          )}
+
+          {/* Filter Context — visible in BOTH modes. "% of total" / "%
+              within group" are useful for plain SUM/AVG measures too,
+              so we don't gate them on SQL mode. The raw-modifier
+              checkboxes inside ("Tuỳ chỉnh chi tiết" disclosure) stay
+              hidden by default so beginners aren't overwhelmed. */}
+          <FilterContextModifiers
+            measure={measure}
+            canEdit={canEdit}
+            onChange={onChange}
+          />
+
+          {/* Validation summary banner. Shows when this row has any
+              errors so the user sees a count at the bottom of the form
+              instead of having to scroll up. The parent ViewMeasuresTab
+              reads data-measure-invalid on the wrapper to disable Save. */}
+          {hasErrors && (
+            <div className="bi-fade-in rounded-md border border-danger/40 bg-danger/5 px-2.5 py-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-danger">
+                <span>⚠</span>
+                <span>Measure này có {Object.keys(errors).length} lỗi — sửa trước khi lưu:</span>
+              </div>
+              <ul className="mt-1 ml-4 list-disc text-[10px] text-danger/90 leading-snug">
+                {Object.entries(errors).map(([k, msg]) => (
+                  <li key={k}>{msg}</li>
+                ))}
+              </ul>
             </div>
           )}
         </div>
@@ -2428,7 +2574,16 @@ export function ModelViewEditPanel({
 
   // ── Unified save ──────────────────────────────────────────────────────────
   const isSavingAny = updateDict.isPending || updateView.isPending;
-  const canSave = activeTab === 'dictionary' ? dictDirty : modelIsDirty;
+  // Block save when ANY measure row produces validation errors. Uses
+  // the same validateMeasure() helper the row inputs use so the Save
+  // button stays in lockstep with the visible red borders.
+  const measureErrorCount = useMemo(
+    () => measures.reduce((sum, m) => sum + Object.keys(validateMeasure(m)).length, 0),
+    [measures],
+  );
+  const measuresHaveErrors = measureErrorCount > 0;
+  const canSave = (activeTab === 'dictionary' ? dictDirty : modelIsDirty)
+    && !(contentMode === 'measures' && measuresHaveErrors);
 
   const handleSave = () => {
     if (activeTab === 'dictionary') handleSaveDict();
@@ -2758,11 +2913,17 @@ export function ModelViewEditPanel({
       {/* Footer — single Save */}
       {canEdit && (
         <div className="flex items-center gap-2 shrink-0 border-t border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
-          <span className="text-[11px] text-text-quaternary flex-1 truncate">
+          <span className={`text-[11px] flex-1 truncate ${
+            contentMode === 'measures' && measuresHaveErrors ? 'text-danger font-medium' : 'text-text-quaternary'
+          }`}>
             {activeTab === 'dictionary'
               ? (dictDirty ? 'Unsaved dictionary changes' : 'Dictionary up to date')
               : contentMode === 'measures'
-                ? (modelIsDirty ? 'Unsaved measure changes' : 'Measures up to date')
+                ? (
+                    measuresHaveErrors
+                      ? `⚠ ${measureErrorCount} lỗi trong measures — sửa trước khi lưu`
+                      : (modelIsDirty ? 'Unsaved measure changes' : 'Measures up to date')
+                  )
                 : (modelIsDirty ? 'Unsaved field changes' : 'Fields up to date')}
           </span>
           <button
