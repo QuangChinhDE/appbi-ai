@@ -24,6 +24,86 @@ from app.services.google_data_access_service import get_google_credentials_for_u
 logger = get_logger(__name__)
 
 
+def _bigquery_dedup_outer_select(client, original_query: str) -> Optional[str]:
+    """Rewrite outer SELECT to dedupe columns when source SQL has
+    duplicate-named outputs (vd JOIN trả về 2 cột `name`).
+
+    Strategy:
+      1. Probe the source's INNERMOST subquery via LIMIT 0 to learn
+         every output column name (free — no bytes scanned).
+      2. If no duplicates, return None (signals "real error, not a
+         dedup case").
+      3. Otherwise, rewrite outer `SELECT *` to an explicit list with
+         unique aliases: `col_a, col_b, dup AS dup, dup AS dup_2, ...`.
+
+    Pattern recognised: `SELECT * FROM ((<source>) AS _appbi_live)
+    [WHERE ...] LIMIT N`. The dataset-level executor in
+    `live_query_service.build_live_dataset_query` always emits this
+    shape when no explicit dims/measures are picked.
+
+    Returns the rewritten SQL, or None if we can't safely rewrite
+    (caller should re-raise the original error).
+    """
+    # Find the source CTE/subquery between `FROM (` and `) AS _appbi_live`.
+    # Use a balanced-paren parse from the rightmost `) AS _appbi_live`.
+    marker = ") AS _appbi_live"
+    idx = original_query.find(marker)
+    if idx == -1:
+        return None
+    # Walk backwards to find the matching `(` for the source subquery.
+    depth = 1
+    pos = idx - 1
+    while pos >= 0 and depth > 0:
+        c = original_query[pos]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            depth -= 1
+            if depth == 0:
+                break
+        pos -= 1
+    if depth != 0 or pos < 0:
+        return None
+    source_sql = original_query[pos + 1 : idx]  # raw source SQL inside parens
+
+    # Probe schema via dry-run (no bytes scanned, no execution). The
+    # dry-run query job reports `schema` of the OUTPUT columns even
+    # when actual execution would fail with ambiguous — because the
+    # ambiguity is detected at query compilation BEFORE result framing.
+    # If dry-run itself errors, we accept the original failure.
+    try:
+        from google.cloud import bigquery as _bq
+        job_config = _bq.QueryJobConfig(dry_run=True, use_query_cache=False)
+        probe_job = client.query(source_sql, job_config=job_config)
+        # dry-run job has `.schema` directly without `.result()`.
+        cols = [f.name for f in (probe_job.schema or [])]
+        if not cols:
+            return None
+    except Exception:
+        return None
+
+    seen: dict[str, int] = {}
+    has_dup = False
+    expanded: list[str] = []
+    for col in cols:
+        seen[col] = seen.get(col, 0) + 1
+        if seen[col] == 1:
+            expanded.append(f"`{col}`")
+        else:
+            has_dup = True
+            alias = f"{col}_{seen[col]}"
+            expanded.append(f"`{col}` AS `{alias}`")
+    if not has_dup:
+        return None  # No duplicates — original error was something else.
+
+    explicit_select = ", ".join(expanded)
+    # Replace the leading "SELECT *" with the explicit list. Be precise:
+    # only the OUTERMOST SELECT, not any nested ones.
+    if not original_query.lstrip().upper().startswith("SELECT *"):
+        return None
+    return original_query.replace("SELECT *", f"SELECT {explicit_select}", 1)
+
+
 def _coerce_sheet_value(value: Any, declared_type: str) -> Any:
     if value is None:
         return None
@@ -836,10 +916,32 @@ class DataSourceConnectionService:
                 sql_preview = sql_preview[:1500] + " ... [truncated]"
             logger.info(f"[bq_sql] {sql_preview}")
 
-            query_job = client.query(query)
-            
-            # Apply timeout when fetching results
-            results = query_job.result(timeout=timeout_seconds)
+            try:
+                query_job = client.query(query)
+                results = query_job.result(timeout=timeout_seconds)
+            except Exception as first_err:
+                # Phase-15.58 — retry-with-dedup for the "Column X is
+                # ambiguous" failure pattern (BigQuery 400). Happens
+                # when the source SQL has a JOIN that yields 2+ output
+                # columns sharing a name. The subquery wrapper
+                # `(source_sql) AS _appbi_live` then refuses to give
+                # the outer SELECT access to those columns.
+                #
+                # Fix: probe the source query's schema via LIMIT 0
+                # (free in BigQuery — no bytes scanned for an empty
+                # result), then rewrite the outer SELECT to expand
+                # `*` into `col_1, col_2, dup AS dup_2, dup AS dup_3`
+                # so each column has a unique alias.
+                err_msg = str(first_err)
+                if "ambiguous" not in err_msg.lower():
+                    raise
+                logger.info("[bq_dedup] retrying after ambiguous-column error")
+                rewritten = _bigquery_dedup_outer_select(client, query)
+                if rewritten is None:
+                    raise
+                logger.info(f"[bq_sql_retry] {rewritten[:1500]}")
+                query_job = client.query(rewritten)
+                results = query_job.result(timeout=timeout_seconds)
             
             # Get column names
             columns = [field.name for field in results.schema]
