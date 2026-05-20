@@ -4298,6 +4298,99 @@ def update_dataset_view(
     }
 
 
+@router.delete(
+    "/{dataset_id}/model/views/{view_id}/measures/{measure_name}",
+    summary="Delete a single measure from a semantic view (bypasses batch validation)",
+)
+def delete_dataset_view_measure(
+    dataset_id: int,
+    view_id: int,
+    measure_name: str,
+    force: bool = Query(False, description="Bypass cascade guard (charts using this measure)."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase-15.64 — surgical DELETE for a single measure.
+
+    The PUT update_dataset_view path re-validates the entire measures
+    array on every save. When a legacy measure has an invalid shape
+    (e.g. pre-Phase-12 scope/source_columns drift), Pydantic blocks the
+    whole PUT and the user gets stuck — they can't even delete the bad
+    measure because the validator rejects the surrounding ones too.
+
+    This endpoint sidesteps Pydantic entirely: read measures JSON list,
+    drop the entry whose name matches, write back. Cascade-rename guard
+    still runs (so we don't silently break charts), but per-measure
+    shape validation is skipped — we trust the operation because the
+    user is REMOVING data, not adding new bad data.
+    """
+    from app.models.semantic import SemanticView
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    if not view:
+        raise HTTPException(status_code=404, detail="View not found")
+
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table and view.dataset_table_id is not None:
+        raise HTTPException(status_code=403, detail="View does not belong to this dataset")
+    if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
+        raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
+
+    target = (measure_name or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="measure_name is required")
+
+    existing = list(view.measures or [])
+    new_list = [
+        m for m in existing
+        if not (isinstance(m, dict) and str((m or {}).get("name") or "").strip() == target)
+    ]
+    if len(new_list) == len(existing):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Measure '{target}' không tồn tại trên view '{view.name}'.",
+        )
+
+    # Cascade guard: charts still using this measure would break. Same
+    # rule as the PUT path — force=true to bypass after user confirms.
+    if not force:
+        hits = _find_chart_refs_to_measures(db, view.name, {target}, dataset_id)
+        if hits:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "MEASURE_CASCADE",
+                    "message": (
+                        f"{len(hits)} chart đang dùng measure '{target}'. "
+                        "Xác nhận để vẫn xoá (chart sẽ phải sửa lại sau) "
+                        "bằng cách gọi lại với ?force=true."
+                    ),
+                    "dropped": [target],
+                    "affected_charts": hits,
+                },
+            )
+
+    view.measures = new_list
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(view, "measures")
+    db.commit()
+    db.refresh(view)
+    return {
+        "id": view.id,
+        "name": view.name,
+        "deleted_measure": target,
+        "measures": view.measures or [],
+    }
+
+
 @router.get(
     "/{dataset_id}/lineage/column/{table_id}/{column_name}",
     summary="List every semantic object that depends on a column (Phase-4)",

@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import {
   useUpdateModelView,
+  useDeleteModelMeasure,
   type DatasetModelView,
   type DimensionDefinition,
   type MeasureDefinition,
@@ -2442,6 +2443,10 @@ export function ModelViewEditPanel({
   // dedicated "+ Time intelligence (smart)" entry in the Add Measure menu.
   const [showTimeIntelDialog, setShowTimeIntelDialog] = useState(false);
   const updateView = useUpdateModelView();
+  // Phase-15.64 — surgical DELETE for existing measures (bypasses the
+  // full-batch PUT validation that blocks deletes when ANY measure has
+  // legacy invalid shape).
+  const deleteMeasureMutation = useDeleteModelMeasure();
 
   useEffect(() => {
     if (triggerAddMeasure && triggerAddMeasure > 0) setShowMeasureTemplates(true);
@@ -3019,7 +3024,66 @@ export function ModelViewEditPanel({
                             modelViews={modelViews}
                             defaultOpen={singleMeasureMode || Boolean(focusMeasureName && m.name === focusMeasureName)}
                             onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
-                            onRemove={() => {
+                            onRemove={async () => {
+                              // Phase-15.64 — if the measure exists on the
+                              // server already, use the surgical DELETE
+                              // endpoint instead of the full-batch PUT.
+                              // The PUT path re-validates every measure
+                              // and would block delete when ANY other
+                              // measure has legacy invalid shape. The
+                              // DELETE endpoint trusts the operation
+                              // (user is REMOVING data, not adding bad).
+                              const measureName = String(m.name || '').trim();
+                              const existsOnServer = Boolean(
+                                measureName
+                                && (view?.measures ?? []).some(
+                                  (sm: any) => String(sm?.name || '').trim() === measureName
+                                ),
+                              );
+                              if (existsOnServer && view?.id != null) {
+                                try {
+                                  await deleteMeasureMutation.mutateAsync({
+                                    datasetId,
+                                    viewId: view.id,
+                                    measureName,
+                                  });
+                                  toast.success(`Đã xoá measure "${measureName}".`);
+                                } catch (err: any) {
+                                  const detail = err?.response?.data?.detail;
+                                  // Cascade prompt → ask + retry with force.
+                                  if (
+                                    err?.response?.status === 409
+                                    && detail?.code === 'MEASURE_CASCADE'
+                                  ) {
+                                    const hits = (detail?.affected_charts || []).length;
+                                    if (confirm(`${hits} chart đang dùng measure "${measureName}". Vẫn xoá?`)) {
+                                      try {
+                                        await deleteMeasureMutation.mutateAsync({
+                                          datasetId,
+                                          viewId: view.id,
+                                          measureName,
+                                          force: true,
+                                        });
+                                        toast.success(`Đã xoá measure "${measureName}" (force).`);
+                                      } catch (forceErr: any) {
+                                        toast.error(
+                                          forceErr?.response?.data?.detail?.message
+                                          || forceErr?.response?.data?.detail
+                                          || 'Xoá không thành công.',
+                                        );
+                                        return;
+                                      }
+                                    } else {
+                                      return;
+                                    }
+                                  } else {
+                                    toast.error(
+                                      detail?.message || detail || 'Xoá không thành công.',
+                                    );
+                                    return;
+                                  }
+                                }
+                              }
                               setMeasures((prev) => prev.filter((_, i) => i !== idx));
                               setMeasureRowKeys((prev) => prev.filter((_, i) => i !== idx));
                             }}

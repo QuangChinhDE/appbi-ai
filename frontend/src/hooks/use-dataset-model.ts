@@ -379,6 +379,38 @@ export function useUpdateModelView() {
 }
 
 /**
+ * Phase-15.64 — Delete a single measure via the surgical DELETE endpoint
+ * that bypasses batch validation. Use this from the measure-row delete
+ * button instead of building a PUT with the bad measure omitted — the
+ * PUT path re-validates every measure in the batch and would reject the
+ * save if any other measure has legacy invalid shape.
+ */
+export function useDeleteModelMeasure() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      viewId,
+      measureName,
+      force = false,
+    }: {
+      datasetId: number;
+      viewId: number;
+      measureName: string;
+      force?: boolean;
+    }) => {
+      const response = await api.delete(
+        `/datasets/${datasetId}/model/views/${viewId}/measures/${encodeURIComponent(measureName)}${force ? '?force=true' : ''}`,
+      );
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
+    },
+  });
+}
+
+/**
  * Update model relationships
  */
 export function useUpdateModelExplore() {
