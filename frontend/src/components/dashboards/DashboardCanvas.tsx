@@ -8,6 +8,9 @@ import type { DashboardChart, DashboardCanvasConfig, DashboardPageConfig } from 
 import type { DashboardFilter, BaseFilter } from '@/lib/filters';
 import { ensureCanvasCoords } from '@/lib/dashboard-layout-convert';
 
+type ResizeDir = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+type DragMode = { kind: 'move' } | { kind: 'resize'; dir: ResizeDir };
+
 type DragState = {
   id: number;
   startX: number;
@@ -16,8 +19,11 @@ type DragState = {
   origY: number;
   origW: number;
   origH: number;
-  mode: 'move' | 'resize';
+  mode: DragMode;
 };
+
+const MIN_W = 80;
+const MIN_H = 60;
 
 interface DashboardCanvasProps {
   dashboardId: number;
@@ -101,7 +107,7 @@ export function DashboardCanvas({
   }, [hydrated, canvasHeight]);
 
   const onPointerDown = useCallback(
-    (e: React.PointerEvent, dc: DashboardChart, mode: 'move' | 'resize') => {
+    (e: React.PointerEvent, dc: DashboardChart, mode: DragMode) => {
       if (!canEdit) return;
       const target = e.currentTarget as HTMLElement;
       target.setPointerCapture(e.pointerId);
@@ -125,21 +131,52 @@ export function DashboardCanvas({
       if (!drag) return;
       const dx = (e.clientX - drag.startX) / scale;
       const dy = (e.clientY - drag.startY) / scale;
-      if (drag.mode === 'move') {
+      if (drag.mode.kind === 'move') {
         const xPx = Math.max(0, snapVal(drag.origX + dx));
         const yPx = Math.max(0, snapVal(drag.origY + dy));
         setLocalOverrides((m) => ({
           ...m,
           [drag.id]: { xPx, yPx, wPx: drag.origW, hPx: drag.origH },
         }));
-      } else {
-        const wPx = Math.max(80, snapVal(drag.origW + dx));
-        const hPx = Math.max(60, snapVal(drag.origH + dy));
-        setLocalOverrides((m) => ({
-          ...m,
-          [drag.id]: { xPx: drag.origX, yPx: drag.origY, wPx, hPx },
-        }));
+        return;
       }
+      // Resize: each of 8 directions affects x/y/w/h differently.
+      // Anchor the OPPOSITE edge of the dragged handle so the chart
+      // stretches naturally toward the cursor — same behaviour as
+      // Looker / PowerBI canvas tiles.
+      const dir = drag.mode.dir;
+      const grow = {
+        left:   dir === 'w' || dir === 'nw' || dir === 'sw',
+        right:  dir === 'e' || dir === 'ne' || dir === 'se',
+        top:    dir === 'n' || dir === 'nw' || dir === 'ne',
+        bottom: dir === 's' || dir === 'sw' || dir === 'se',
+      };
+
+      let xPx = drag.origX;
+      let yPx = drag.origY;
+      let wPx = drag.origW;
+      let hPx = drag.origH;
+
+      if (grow.right) {
+        wPx = Math.max(MIN_W, snapVal(drag.origW + dx));
+      } else if (grow.left) {
+        // Pull the left edge: anchor right edge (origX + origW), clamp width.
+        const newW = Math.max(MIN_W, snapVal(drag.origW - dx));
+        wPx = newW;
+        xPx = Math.max(0, drag.origX + drag.origW - newW);
+      }
+      if (grow.bottom) {
+        hPx = Math.max(MIN_H, snapVal(drag.origH + dy));
+      } else if (grow.top) {
+        const newH = Math.max(MIN_H, snapVal(drag.origH - dy));
+        hPx = newH;
+        yPx = Math.max(0, drag.origY + drag.origH - newH);
+      }
+
+      setLocalOverrides((m) => ({
+        ...m,
+        [drag.id]: { xPx, yPx, wPx, hPx },
+      }));
     },
     [drag, snap, scale],
   );
@@ -195,13 +232,13 @@ export function DashboardCanvas({
           return (
             <div
               key={dc.id}
-              className="absolute"
+              className="group absolute"
               style={{ left: x, top: y, width: w, height: h, zIndex: z }}
             >
               {canEdit && (
                 <div
                   className="absolute inset-x-0 top-0 z-10 h-6 cursor-move bg-transparent"
-                  onPointerDown={(e) => onPointerDown(e, dc, 'move')}
+                  onPointerDown={(e) => onPointerDown(e, dc, { kind: 'move' })}
                   title="Drag to move"
                 />
               )}
@@ -274,11 +311,51 @@ export function DashboardCanvas({
               </ChartErrorBoundary>
               )}
               {canEdit && (
-                <div
-                  className="absolute -bottom-1 -right-1 z-10 h-4 w-4 cursor-se-resize rounded-sm border border-[rgb(var(--border-strong))] bg-surface-1"
-                  onPointerDown={(e) => onPointerDown(e, dc, 'resize')}
-                  title="Drag to resize"
-                />
+                <>
+                  {/* 4 corners — small L-bracket grips. Cursor-coded by
+                      direction (nw/ne/sw/se). */}
+                  <div
+                    className="canvas-resize-handle canvas-resize-nw"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'nw' })}
+                    title="Resize"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-ne"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'ne' })}
+                    title="Resize"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-sw"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'sw' })}
+                    title="Resize"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-se"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'se' })}
+                    title="Resize"
+                  />
+                  {/* 4 edges — thin strips with centred pill grips. */}
+                  <div
+                    className="canvas-resize-handle canvas-resize-n"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'n' })}
+                    title="Resize height"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-s"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 's' })}
+                    title="Resize height"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-e"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'e' })}
+                    title="Resize width"
+                  />
+                  <div
+                    className="canvas-resize-handle canvas-resize-w"
+                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'w' })}
+                    title="Resize width"
+                  />
+                </>
               )}
             </div>
           );

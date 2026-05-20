@@ -98,7 +98,9 @@ export function DashboardGrid({
   themeConfig = null,
   disableLazy = false,
 }: DashboardGridProps) {
-  // Convert backend layout to react-grid-layout format
+  // Convert backend layout to react-grid-layout format.
+  // resizeHandles enables all 8 directions (4 corners + 4 edges) — matches
+  // Looker/PowerBI parity; default is 'se' only which DA called out.
   const layouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
     return {
@@ -109,6 +111,7 @@ export function DashboardGrid({
       h: layout.h || 4,
       minW: 2,
       minH: 2,
+      resizeHandles: ['se', 'sw', 'ne', 'nw', 'e', 'w', 's', 'n'] as Array<'se' | 'sw' | 'ne' | 'nw' | 'e' | 'w' | 's' | 'n'>,
     };
   });
 
