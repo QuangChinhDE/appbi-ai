@@ -53,6 +53,7 @@ import appbi_dashboard  # noqa: F401
 # burn the most tokens.
 import appbi_measure_library  # noqa: F401
 import appbi_chart_library  # noqa: F401
+import appbi_dashboard_library  # noqa: F401
 
 # Blueprint — the canonical design-then-commit flow (Stages 3 + 4)
 import appbi_blueprint  # noqa: F401

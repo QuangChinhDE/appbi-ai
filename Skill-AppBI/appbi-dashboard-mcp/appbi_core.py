@@ -905,6 +905,23 @@ tool returns `refs_audit` so you can verify before confirming.
 | Bảng cột thường | `add_table_chart` |
 | Bảng pivot (row × col → giá trị) | `add_pivot_table_chart` |
 
+## Dashboard config tools (appbi_dashboard_library) — presets
+
+Each tool below resolves a named preset → typed config dict and
+PATCHes `/dashboards/{id}`. Mirrors what the FE bakes into
+DashboardThemeModal / PublicLinkAppearance / DashboardFilterBar so a
+dashboard built via Claude looks identical to one a human builds in
+the UI. All accept Tier-2 `extra={...}` for whitelisted overrides.
+
+| Intent | Tool |
+|---|---|
+| Inventory every preset name | `list_dashboard_presets(category?)` |
+| Apply theme (light/dark/elevated/compact…) | `apply_theme_preset` |
+| Filter ngày với preset (last_30_days, this_quarter…) | `add_date_filter_recipe` |
+| Filter dropdown multi-select | `add_dropdown_filter_recipe` |
+| Public share style (briefing/editorial/minimal) | `set_public_link_appearance` |
+| Tab pages từ list tên | `set_dashboard_pages` |
+
 ## Workflow — pick by safety profile
 
 **File-first (1 confirm, DA reviews real file)** — recommended when:
