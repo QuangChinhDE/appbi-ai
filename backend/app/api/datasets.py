@@ -4079,6 +4079,42 @@ def update_dataset_view(
 
     rename_map_raw = update_data.pop("rename_map", None) if isinstance(update_data, dict) else None
 
+    # Phase-15.63 — DELETE/EDIT escape hatch for invalid legacy measures.
+    # If MCP (or any older client) wrote a measure with a shape that fails
+    # the current Pydantic model_validator (e.g. scope='dataset' missing
+    # source_columns), the FE would PUT the full measures array on every
+    # save — including the bad measure unchanged — and Pydantic would
+    # re-reject the WHOLE batch, leaving the user unable to delete or
+    # even edit OTHER measures.
+    #
+    # Fix: validate ONLY measures that are new or modified vs the persisted
+    # view. Unchanged measures pass through as-is. This lets users delete
+    # bad data without first hand-editing it, and keeps the strict
+    # validator for new/edited measures.
+    incoming_measures = update_data.get("measures")
+    skipped_unchanged: list[dict] = []
+    if isinstance(incoming_measures, list):
+        # Index existing measures by name for O(1) compare.
+        existing_by_name: dict[str, Any] = {}
+        for m in (view.measures or []):
+            if isinstance(m, dict):
+                n = str(m.get("name") or "").strip()
+                if n:
+                    existing_by_name[n] = m
+        kept_for_validation: list[Any] = []
+        for m in incoming_measures:
+            if not isinstance(m, dict):
+                kept_for_validation.append(m)
+                continue
+            n = str(m.get("name") or "").strip()
+            prev = existing_by_name.get(n) if n else None
+            if prev is not None and prev == m:
+                # Bit-identical to persisted version — pass through.
+                skipped_unchanged.append(m)
+            else:
+                kept_for_validation.append(m)
+        update_data["measures"] = kept_for_validation
+
     try:
         validated = SemanticViewUpdate(**update_data)
     except ValidationError as exc:
@@ -4104,8 +4140,32 @@ def update_dataset_view(
     if "dimensions" in update_payload and update_payload["dimensions"] is not None:
         update_payload["dimensions"] = [dim.model_dump() for dim in validated.dimensions or []]
     if "measures" in update_payload and update_payload["measures"] is not None:
-        _validate_measure_dependencies(db, dataset_id, view.name, update_payload["measures"])
-        update_payload["measures"] = [measure.model_dump() for measure in validated.measures or []]
+        # Phase-15.63 — re-merge the legacy-shape measures we skipped from
+        # Pydantic validation. They keep their original (possibly invalid)
+        # shape so the user's PUT round-trip preserves them; new/edited
+        # measures use the validated dicts.
+        validated_dicts = [measure.model_dump() for measure in validated.measures or []]
+        # Rebuild in the order the client sent, mapping by name to either
+        # the unchanged passthrough or the freshly-validated version.
+        validated_by_name = {
+            str((m or {}).get("name") or "").strip(): m
+            for m in validated_dicts if isinstance(m, dict)
+        }
+        skipped_by_name = {
+            str((m or {}).get("name") or "").strip(): m
+            for m in skipped_unchanged if isinstance(m, dict)
+        }
+        merged: list[dict] = []
+        for m in (incoming_measures or []):
+            if not isinstance(m, dict):
+                continue
+            n = str(m.get("name") or "").strip()
+            if n in validated_by_name:
+                merged.append(validated_by_name[n])
+            elif n in skipped_by_name:
+                merged.append(skipped_by_name[n])
+        _validate_measure_dependencies(db, dataset_id, view.name, merged)
+        update_payload["measures"] = merged
 
     # Phase-2: ensure every dimension/measure points at a column that actually
     # exists on the bound table. Catches silent failures where the data layer
@@ -4127,7 +4187,20 @@ def update_dataset_view(
             if update_payload.get("measures") is not None
             else (view.measures or [])
         )
-        _validate_field_references(table, final_dims, final_measures)
+        # Phase-15.63 — skip column-existence check for measures that came
+        # through the unchanged-passthrough fast lane. They may reference
+        # legacy columns the table has since renamed; blocking the PUT
+        # would lock the user out of deleting/editing OTHER measures.
+        skipped_names = {
+            str(m.get("name") or "").strip()
+            for m in skipped_unchanged
+            if isinstance(m, dict) and str(m.get("name") or "").strip()
+        }
+        validatable_measures = [
+            m for m in final_measures
+            if not (isinstance(m, dict) and str(m.get("name") or "").strip() in skipped_names)
+        ]
+        _validate_field_references(table, final_dims, validatable_measures)
 
     # Phase-6: optional rename_map carried alongside the measures patch.
     # Format: {"old_name": "new_name"}. When present, the cascade guard
