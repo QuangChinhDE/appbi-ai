@@ -54,6 +54,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -2866,6 +2867,222 @@ async def build_dashboard_from_design(
             "Dashboard is live in AppBI. Open html_preview_path to compare "
             "the design with what was committed."
         ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# File-first flow (Phase 15.47) — Claude writes a single spec.json
+# artifact, DA reviews it as a real file, then commit_from_spec_file
+# orchestrates both megas with ONE confirmation. Trades the 2-confirm
+# preview-before-write for a 1-confirm review-the-file-before-write.
+# ---------------------------------------------------------------------------
+
+
+@tool("report")
+async def propose_report_spec(
+    business_intent: str,
+    dataset_id: int | None = None,
+    datasource_id: int | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Read-only. Returns a JSON spec template + suggested file path so
+    Claude can write a single spec.json artifact for DA review.
+
+    Workflow:
+      1. Call this for the template + context.
+      2. Author the full spec (dataset + tables + semantic +
+         relationships + planned_charts + dashboard).
+      3. Write it as JSON to `suggested_spec_path` via Claude's
+         native Write tool.
+      4. Ask the DA to open the file, review/edit, say "OK commit".
+      5. Call `commit_from_spec_file(spec_file_path=...)` — one
+         confirmation, end-to-end build.
+    """
+    intent = str(business_intent or "").strip()
+    if not intent:
+        raise ValueError("business_intent is required.")
+    # Reuse propose_dataset_workspace's context-gathering by calling it
+    # directly. Note: this propose is read-only, so calling internal
+    # propose is cheap (no writes).
+    ws = await propose_dataset_workspace(
+        business_intent=intent,
+        datasource_id=datasource_id,
+        existing_dataset_id=dataset_id,
+        ctx=ctx,
+    )
+    logs_root = Path(__file__).resolve().parent / "logs"
+    if dataset_id is not None:
+        suggested_path = logs_root / f"dataset_{int(dataset_id)}" / "spec.json"
+    else:
+        suggested_path = logs_root / "_proposal" / "spec.json"
+    return {
+        "business_intent": intent,
+        "existing_dataset": ws.get("existing_dataset"),
+        "available_source_tables": ws.get("available_source_tables") or [],
+        "suggested_spec_path": str(suggested_path),
+        "spec_template": {
+            # Same shape as commit_dataset_workspace.plan + the
+            # build_dashboard_from_design.dashboard_meta_override.
+            "dataset": {
+                "name": "<str — required if existing_dataset_id not set>",
+                "description": "<str — optional>",
+            },
+            "existing_dataset_id": "<int — set instead of `dataset` to reuse>",
+            "tables": [
+                {
+                    "display_name": "<str>",
+                    "source_kind": "physical_table|sql_query|derived_table",
+                    "datasource_id": "<int — for physical_table / sql_query>",
+                    "source_table_name": "<str — schema.table>",
+                    "source_query": "<str — SQL for sql_query / derived_table>",
+                }
+            ],
+            "semantic": "<full plan_json — see propose_semantic_model.plan_template>",
+            "relationships": [
+                {
+                    "from_view_name": "<str>",
+                    "to_view_name": "<str>",
+                    "from_column": "<str>",
+                    "to_column": "<str>",
+                    "join_type": "left|inner|right|full",
+                    "relationship": "many_to_one|one_to_many|one_to_one|many_to_many",
+                }
+            ],
+            "planned_charts": [
+                {
+                    "title": "<str>",
+                    "chart_type": "<BAR|LINE|KPI|...>",
+                    "role_config": "<role_config dict, prefer qualified view.field refs>",
+                    "dataset_table_name": "<str — matches tables[].display_name>",
+                    "layout": {"x": 0, "y": 0, "w": 6, "h": 4},
+                }
+            ],
+            "dashboard_meta": {
+                "name": "<str>",
+                "description": "<str>",
+            },
+        },
+        "next_step": (
+            "Author the spec, Write it to suggested_spec_path, ask the "
+            "DA to review/edit the file, then call commit_from_spec_file."
+        ),
+    }
+
+
+@tool("report")
+async def commit_from_spec_file(
+    spec_file_path: str,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """File-first 1-confirm build. Reads spec.json + runs Phase 1
+    (commit_dataset_workspace) + Phase 2 (build_dashboard_from_design)
+    back-to-back. ONE confirmation because the DA already reviewed
+    the file.
+
+    spec.json shape: same as commit_dataset_workspace.plan plus an
+    optional dashboard_meta override read in Phase 2.
+
+    On Phase 1 failure → halts (no Phase 2). On Phase 2 failure →
+    Phase 1 commits stay (data + semantic + relationships), can retry
+    just Phase 2 manually.
+    """
+    spec_path = Path(spec_file_path)
+    if not spec_path.exists():
+        return {
+            "status": "spec_not_found",
+            "checked_path": str(spec_path),
+            "hint": (
+                "Write the spec JSON to this path first (use Claude's "
+                "Write tool). Get the template + suggested path from "
+                "propose_report_spec."
+            ),
+        }
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {
+            "status": "spec_unreadable",
+            "checked_path": str(spec_path),
+            "error": str(exc),
+        }
+    if not isinstance(spec, dict):
+        return {
+            "status": "spec_invalid",
+            "error": "spec.json must decode to a JSON object.",
+        }
+
+    # Quick shape check before any BE round-trip
+    missing: list[str] = []
+    if not spec.get("existing_dataset_id") and not (spec.get("dataset") or {}).get("name"):
+        missing.append("dataset.name OR existing_dataset_id")
+    if not (spec.get("tables") or []):
+        missing.append("tables (non-empty list)")
+    if missing:
+        return {
+            "status": "spec_incomplete",
+            "missing": missing,
+            "spec_path": str(spec_path),
+        }
+
+    chart_count = len(spec.get("planned_charts") or [])
+    if not user_confirmed:
+        return _requires_confirmation(
+            "commit_from_spec_file",
+            {
+                "spec_path": str(spec_path),
+                "dataset_action": (
+                    f"reuse id={spec['existing_dataset_id']}"
+                    if spec.get("existing_dataset_id") is not None
+                    else f"create '{(spec.get('dataset') or {}).get('name')}'"
+                ),
+                "table_count": len(spec.get("tables") or []),
+                "semantic_present": bool(spec.get("semantic")),
+                "relationship_count": len(spec.get("relationships") or []),
+                "planned_chart_count": chart_count,
+                "dashboard_name": (spec.get("dashboard_meta") or {}).get("name"),
+                "note": (
+                    "DA should have already reviewed the file. This is a "
+                    "1-confirm end-to-end build — Phase 1 and Phase 2 "
+                    "run back-to-back."
+                ),
+            },
+        )
+
+    # Phase 1
+    ws_result = await commit_dataset_workspace(
+        plan=spec, user_confirmed=True, ctx=ctx
+    )
+    if not (isinstance(ws_result, dict) and ws_result.get("status") == "committed"):
+        return {
+            "status": "halted_at_phase1",
+            "phase1_result": ws_result,
+            "hint": (
+                "Phase 1 failed. Read phase1_result for the cause, fix "
+                "spec.json, re-call commit_from_spec_file."
+            ),
+        }
+
+    # Phase 2 — read dataset_id from Phase 1 result; dashboard_meta is
+    # already logged so override only if spec explicitly provides one
+    # (rare; usually omit).
+    dataset_id = ws_result.get("dataset_id")
+    bp_result = await build_dashboard_from_design(
+        dataset_id=dataset_id,
+        dashboard_meta_override=spec.get("dashboard_meta") if spec.get("dashboard_meta") else None,
+        user_confirmed=True,
+        ctx=ctx,
+    )
+
+    return {
+        "status": (
+            "committed"
+            if isinstance(bp_result, dict) and bp_result.get("status") == "committed"
+            else "phase1_ok_phase2_failed"
+        ),
+        "spec_path": str(spec_path),
+        "phase1_result": ws_result,
+        "phase2_result": bp_result,
     }
 
 

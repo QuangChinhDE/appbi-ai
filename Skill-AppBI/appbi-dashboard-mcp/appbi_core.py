@@ -905,14 +905,25 @@ tool returns `refs_audit` so you can verify before confirming.
 | Bảng cột thường | `add_table_chart` |
 | Bảng pivot (row × col → giá trị) | `add_pivot_table_chart` |
 
-## Workflow note
-For a NEW dashboard, prefer the 2-confirm flow:
-1. `propose_dataset_workspace` → author full plan including `planned_charts`
-2. `commit_dataset_workspace` (CONFIRM 1) → atomic write of data + semantic + design log
-3. `build_dashboard_from_design` (CONFIRM 2) → atomic write of charts + dashboard
+## Workflow — pick by safety profile
 
-The individual `add_*` tools above are for INCREMENTAL edits to an
-existing dashboard, or for ad-hoc charts outside a structured build.
+**File-first (1 confirm, DA reviews real file)** — recommended when:
+the DA wants to read/edit the spec as a file before any BE write.
+  1. `propose_report_spec(intent, dataset_id?, datasource_id?)` →
+     template + suggested_spec_path.
+  2. Claude Write tool → spec.json at suggested path.
+  3. DA opens the file, reviews / edits, says "OK commit".
+  4. `commit_from_spec_file(spec_path, user_confirmed=true)` runs
+     Phase 1 + Phase 2 back-to-back, ONE confirmation.
+
+**Inline 2-confirm** — when DA is happy reviewing the preview-text
+in the tool response (no file needed):
+  1. `propose_dataset_workspace` → author plan inline.
+  2. `commit_dataset_workspace` (CONFIRM 1) → data + semantic + design log.
+  3. `build_dashboard_from_design` (CONFIRM 2) → charts + dashboard.
+
+**Incremental** — for adding/editing a single chart or measure on an
+existing dashboard: use the individual `add_*` tools above.
 """.strip()
 
 
