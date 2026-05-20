@@ -1394,15 +1394,17 @@ async def fix_html_import_chart_plan(
         raise HTTPException(status_code=500, detail=f"AI fix failed: {exc}") from exc
 
 
-def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> Dashboard:
-    """Attach draft overlay fields on the ORM instance so the
-    DashboardResponse Pydantic model (from_attributes=True) picks them
-    up. The fields are NOT real DB columns — they're transient view
-    attributes the editor needs to know whether a draft is pending."""
+def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
+    """Build a DashboardResponse explicitly so the draft fields
+    (draft_layouts + has_draft) actually flow through to the JSON. The
+    earlier setattr-on-ORM approach hit issues — Pydantic v2 + SQLAlchemy
+    relationship loading can race in ways where the transient attrs
+    don't survive `model_validate`. Building the dict ourselves is the
+    bullet-proof path; the cost is one extra serialization but the
+    endpoint is editor-only and already cheap."""
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     snapshot = dash.draft_snapshot or {}
     layouts_map = snapshot.get("layouts") if isinstance(snapshot, dict) else None
-    # Coerce keys to int so the FE map lookup matches dashboard_chart.id
     normalized_layouts: Optional[Dict[int, Dict[str, Any]]] = None
     if isinstance(layouts_map, dict) and layouts_map:
         normalized_layouts = {}
@@ -1411,9 +1413,20 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
                 normalized_layouts[int(k)] = v
             except (TypeError, ValueError):
                 continue
-    setattr(dash, "draft_layouts", normalized_layouts)
-    setattr(dash, "has_draft", bool(normalized_layouts))
-    return dash
+    # Round-trip via from_attributes for the live fields, then override.
+    base = DashboardResponse.model_validate(dash, from_attributes=True)
+    enriched = base.model_copy(update={
+        "draft_layouts": normalized_layouts,
+        "has_draft": bool(normalized_layouts),
+    })
+    logger.info(
+        "draft_serialize dashboard_id=%s snapshot_keys=%s layouts_count=%s has_draft=%s",
+        dash.id,
+        list(snapshot.keys()) if isinstance(snapshot, dict) else type(snapshot).__name__,
+        len(normalized_layouts) if normalized_layouts else 0,
+        bool(normalized_layouts),
+    )
+    return enriched
 
 
 @router.get("/{dashboard_id}", response_model=DashboardResponse)

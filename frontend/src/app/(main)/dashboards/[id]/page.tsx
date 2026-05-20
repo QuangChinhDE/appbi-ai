@@ -196,10 +196,29 @@ export default function DashboardDetailPage() {
     return {
       ...serverDashboard,
       dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
-        const override = drafts[dc.id];
+        // BE sends draft_layouts keyed by dashboard_chart.id as a
+        // string-number (JSON dict keys are always strings). Try both
+        // forms so the override matches regardless of how the client
+        // ended up coercing.
+        const override = drafts[dc.id] ?? drafts[String(dc.id) as any];
         return override ? { ...dc, layout: { ...dc.layout, ...override } } : dc;
       }),
     };
+  }, [serverDashboard]);
+
+  // Phase-15.56 dev hint — leave a 1-line log so DA can verify the
+  // draft endpoint is wiring through. Remove this in a follow-up phase
+  // once we're confident the workflow is stable.
+  React.useEffect(() => {
+    if (!serverDashboard) return;
+    // eslint-disable-next-line no-console
+    console.log('[draft] dashboard fetched', {
+      id: serverDashboard.id,
+      has_draft: serverDashboard.has_draft,
+      draft_layouts_keys: serverDashboard.draft_layouts
+        ? Object.keys(serverDashboard.draft_layouts)
+        : null,
+    });
   }, [serverDashboard]);
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
