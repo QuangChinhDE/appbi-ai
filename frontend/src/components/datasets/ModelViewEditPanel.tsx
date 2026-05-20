@@ -1094,7 +1094,7 @@ function FilterContextModifiers({
           <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
             <input type="checkbox" checked={hasAllExcept} disabled={!canEdit} onChange={toggleAllExcept} className="mt-0.5" />
             <span className="flex-1">
-              Giữ nhiều dim (multi-partition)
+              Giữ nhiều dim
               {hasAllExcept && (
                 <input
                   value={allExceptKeepCsv}
@@ -1110,7 +1110,7 @@ function FilterContextModifiers({
           <label className="flex cursor-pointer items-start gap-2 text-[11px] text-text-secondary">
             <input type="checkbox" checked={hasUseRel} disabled={!canEdit} onChange={toggleUseRel} className="mt-0.5" />
             <span className="flex-1">
-              Dùng quan hệ alias (use relationship)
+              Dùng quan hệ alias
               {hasUseRel && (
                 <input
                   value={useRelAlias}
@@ -1715,7 +1715,9 @@ function MeasureRow({
             {Object.keys(errors).length} lỗi
           </span>
         )}
-        <span className="text-[10px] text-text-quaternary bg-warning/10 text-warning px-1.5 py-0.5 rounded uppercase">{measure.type}</span>
+        {/* Type badge removed — Aggregation dropdown in the form makes it
+            redundant. Header now only surfaces things the form doesn't
+            already show prominently (errors, đa bảng, ngữ cảnh). */}
         {canEdit && (
           <>
             <button
@@ -1787,14 +1789,18 @@ function MeasureRow({
               </button>
             </div>
             <span className="text-[10px] text-text-quaternary text-right max-w-[55%] leading-tight">
-              {mode === 'lowcode' && 'Đủ cho 90% measure (SUM/AVG/COUNT theo cột).'}
-              {mode === 'sql' && 'Biểu thức trên cột thô — engine wrap aggregation (SUM/AVG/...) lên trên.'}
-              {mode === 'formula' && 'Công thức trên measure khác đã agg sẵn — engine KHÔNG wrap aggregation nữa.'}
+              {mode === 'lowcode' && 'Đủ cho 90% measure thông thường'}
+              {mode === 'sql' && 'Cho measure cần biểu thức tuỳ chỉnh trên cột'}
+              {mode === 'formula' && 'Cho công thức trên measure khác (vd tỷ lệ, %)'}
             </span>
           </div>
 
-          {/* Identity — Label first (primary), Aggregation alongside */}
-          <div className="grid grid-cols-2 gap-2">
+          {/* Identity — Label always, Aggregation only when relevant.
+              Formula mode bypasses the wrapping agg entirely (engine
+              returns the expression as-is), so showing a dropdown with
+              "không áp dụng" was just clutter. Label gets the full row
+              in formula mode. */}
+          <div className={mode === 'formula' ? '' : 'grid grid-cols-2 gap-2'}>
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
               <input
@@ -1811,31 +1817,23 @@ function MeasureRow({
                 placeholder="Display name"
               />
             </div>
-            <div>
-              <div className="flex items-center gap-1 mb-0.5">
+            {mode !== 'formula' && (
+              <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">Aggregation</label>
-                {mode === 'formula' && (
-                  <span className="text-[9px] text-text-quaternary italic" title="Engine bỏ qua khi dùng Công thức — formula trả về giá trị cuối cùng, không cần wrap.">
-                    không áp dụng
-                  </span>
-                )}
+                <select
+                  value={measure.type}
+                  onChange={(e) => onChange({ ...measure, type: e.target.value as MeasureDefinition['type'] })}
+                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+                  title={
+                    mode === 'lowcode'
+                      ? 'Hàm SUM/AVG/COUNT/... áp dụng lên cột bên dưới.'
+                      : 'Hàm wrap lên biểu thức SQL. Vd Sum + expression="revenue - cost" → SUM(revenue - cost).'
+                  }
+                >
+                  {MEASURE_TYPES.map((t) => <option key={t} value={t}>{MEASURE_TYPE_LABEL[t]}</option>)}
+                </select>
               </div>
-              <select
-                value={measure.type}
-                disabled={mode === 'formula'}
-                onChange={(e) => onChange({ ...measure, type: e.target.value as MeasureDefinition['type'] })}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed"
-                title={
-                  mode === 'lowcode'
-                    ? 'Hàm SUM/AVG/COUNT/... áp dụng lên cột bên dưới.'
-                    : mode === 'sql'
-                      ? 'Hàm wrap lên biểu thức SQL. Vd type=Sum + expression="revenue - cost" → SUM(revenue - cost).'
-                      : 'Bỏ qua trong Công thức — formula trả giá trị cuối.'
-                }
-              >
-                {MEASURE_TYPES.map((t) => <option key={t} value={t}>{MEASURE_TYPE_LABEL[t]}</option>)}
-              </select>
-            </div>
+            )}
           </div>
           {/* SQL name (secondary) + Folder */}
           <div className="grid grid-cols-2 gap-2">
@@ -1921,14 +1919,12 @@ function MeasureRow({
             )}
           </div>
 
-          {/* Format */}
+          {/* Format — only meaningful for non-count types. COUNT measures
+              return row counts; currency/percent/duration don't apply.
+              Hiding cuts visual noise on the most common measure type. */}
+          {measure.type !== 'count' && measure.type !== 'count_distinct' && (
           <div>
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Format</label>
-              <span className="text-[9px] italic text-text-quaternary" title="Display hint stored on the measure. Charts apply their own number format; this hint is exposed to chart pickers and AI consumers.">
-                display hint
-              </span>
-            </div>
+            <label className="text-[10px] text-text-tertiary uppercase font-medium" title="Cách chart hiển thị số liệu — number / currency / percent / duration. Chart vẫn có thể override.">Format</label>
             <div className="mt-0.5 grid grid-cols-3 gap-2">
               <select
                 value={fmt.kind}
@@ -1966,6 +1962,7 @@ function MeasureRow({
               )}
             </div>
           </div>
+          )}
 
           {/* Expression-required modes (sql + formula). Each mode shows
               only the sub-fields its compile path uses:
@@ -1979,8 +1976,8 @@ function MeasureRow({
                 <span>{mode === 'sql' ? 'SQL nâng cao' : 'Công thức'}</span>
                 <span className="text-text-quaternary normal-case font-normal">
                   {mode === 'sql'
-                    ? '— biểu thức trên cột thô. Engine wrap Aggregation lên trên.'
-                    : '— công thức trên measure khác. Aggregation bị bỏ qua, formula trả giá trị cuối.'}
+                    ? '— biểu thức trên cột thô, Aggregation sẽ wrap bên ngoài'
+                    : '— công thức trên các measure khác'}
                 </span>
               </div>
               <div>
@@ -2060,7 +2057,7 @@ function MeasureRow({
                       }
                     }}
                   />
-                  Tính qua nhiều bảng (cross-table)
+                  Tính qua nhiều bảng
                 </label>
                 <p className="text-[10px] leading-snug text-text-quaternary">
                   Khi bật: biểu thức SQL có thể tham chiếu <code>{'${view.field}'}</code> từ bảng khác.
@@ -2226,16 +2223,18 @@ function MeasureRow({
             </div>
           )}
 
-          {/* Filter Context — visible in ALL 3 modes. "% of total" / "%
-              within group" are useful for plain SUM/AVG measures too,
-              so we don't gate them on SQL mode. The raw-modifier
-              checkboxes inside ("Tuỳ chỉnh chi tiết" disclosure) stay
-              hidden by default so beginners aren't overwhelmed. */}
-          <FilterContextModifiers
-            measure={measure}
-            canEdit={canEdit}
-            onChange={onChange}
-          />
+          {/* Filter Context — only for aggregations that produce a numeric
+              total. COUNT / COUNT DISTINCT measure rows or entities, so
+              "% of total" / "% within group" produces confusing window
+              semantics (a row count divided by a row count is just 1.0
+              per group). Hide entirely for those types. */}
+          {measure.type !== 'count' && measure.type !== 'count_distinct' && (
+            <FilterContextModifiers
+              measure={measure}
+              canEdit={canEdit}
+              onChange={onChange}
+            />
+          )}
 
           {/* SQL compile preview — shows the user what the engine will
               actually produce. Faithful to semantic_query_engine.py

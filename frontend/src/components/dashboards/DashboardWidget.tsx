@@ -52,9 +52,12 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   const fontSize = Number(config.fontSize ?? 14);
   const color = config.color || undefined;
   const fontWeight = config.bold ? 600 : 400;
+  // Border + bg + radius come from the outer tile wrapper (DashboardGrid /
+  // DashboardCanvas) so widgets and charts share the same card chrome.
+  // Only the inner padding + typography lives here.
   return (
     <div
-      className="dashboard-tile h-full w-full overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4"
+      className="h-full w-full overflow-hidden p-4"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
       <MarkdownText text={rendered} />
@@ -116,10 +119,13 @@ function CountdownWidget({ config }: { config: any }) {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   const pad = (n: number) => String(n).padStart(2, '0');
+  // Outer tile (DashboardGrid) provides border+bg+radius. Countdown keeps
+  // its accent border as an INNER ring so the colored signal stays clear
+  // without doubling the chrome.
   return (
     <div
-      className="dashboard-tile flex h-full w-full items-center justify-center rounded-xl border bg-surface-1 p-4"
-      style={{ borderColor: accent, borderWidth: 2 }}
+      className="flex h-full w-full items-center justify-center p-4"
+      style={{ boxShadow: `inset 0 0 0 2px ${accent}`, borderRadius: 'inherit' }}
     >
       <div className="text-center">
         {label && (
@@ -154,13 +160,14 @@ function ImageWidget({ config }: { config: any }) {
   const alt = String(config.alt ?? '');
   if (!url) {
     return (
-      <div className="dashboard-tile flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
+      <div className="flex h-full items-center justify-center bg-surface-2 text-xs text-text-tertiary">
         Image URL not set
       </div>
     );
   }
+  // Outer tile handles border + radius. Image just fills the canvas.
   return (
-    <div className="dashboard-tile h-full w-full overflow-hidden rounded-xl bg-surface-1">
+    <div className="h-full w-full overflow-hidden">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={url} alt={alt} className="h-full w-full" style={{ objectFit: fit }} />
     </div>

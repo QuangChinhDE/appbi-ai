@@ -243,7 +243,13 @@ export function DashboardCanvas({
                 />
               )}
               {dc.widget_type && dc.widget_type !== 'chart' ? (
-                <div className="relative h-full w-full group">
+                <div
+                  className={`relative h-full w-full group ${
+                    dc.widget_type === 'shape'
+                      ? ''
+                      : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
+                  }`}
+                >
                   <DashboardWidget widget={dc} />
                   {canEdit && (
                     <div className="absolute right-2 top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -312,48 +318,28 @@ export function DashboardCanvas({
               )}
               {canEdit && (
                 <>
-                  {/* 4 corners — small L-bracket grips. Cursor-coded by
-                      direction (nw/ne/sw/se). */}
+                  {/* 4 corners only. Each stretches both width and height.
+                      Edges removed per DA feedback — too noisy and easy to
+                      hit edge instead of corner. */}
                   <div
                     className="canvas-resize-handle canvas-resize-nw"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'nw' })}
-                    title="Resize"
+                    title="Kéo để resize"
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-ne"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'ne' })}
-                    title="Resize"
+                    title="Kéo để resize"
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-sw"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'sw' })}
-                    title="Resize"
+                    title="Kéo để resize"
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-se"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'se' })}
-                    title="Resize"
-                  />
-                  {/* 4 edges — thin strips with centred pill grips. */}
-                  <div
-                    className="canvas-resize-handle canvas-resize-n"
-                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'n' })}
-                    title="Resize height"
-                  />
-                  <div
-                    className="canvas-resize-handle canvas-resize-s"
-                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 's' })}
-                    title="Resize height"
-                  />
-                  <div
-                    className="canvas-resize-handle canvas-resize-e"
-                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'e' })}
-                    title="Resize width"
-                  />
-                  <div
-                    className="canvas-resize-handle canvas-resize-w"
-                    onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'w' })}
-                    title="Resize width"
+                    title="Kéo để resize"
                   />
                 </>
               )}

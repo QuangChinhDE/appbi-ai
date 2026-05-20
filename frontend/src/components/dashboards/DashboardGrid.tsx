@@ -99,8 +99,10 @@ export function DashboardGrid({
   disableLazy = false,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format.
-  // resizeHandles enables all 8 directions (4 corners + 4 edges) — matches
-  // Looker/PowerBI parity; default is 'se' only which DA called out.
+  // resizeHandles: 4 corners only. Edges removed per DA feedback —
+  // 8 handles is noisy and users accidentally hit an edge when they
+  // wanted a corner. Each corner stretches BOTH width and height,
+  // so 4 handles cover every resize direction without confusion.
   const layouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
     return {
@@ -111,7 +113,7 @@ export function DashboardGrid({
       h: layout.h || 4,
       minW: 2,
       minH: 2,
-      resizeHandles: ['se', 'sw', 'ne', 'nw', 'e', 'w', 's', 'n'] as Array<'se' | 'sw' | 'ne' | 'nw' | 'e' | 'w' | 's' | 'n'>,
+      resizeHandles: ['se', 'sw', 'ne', 'nw'] as Array<'se' | 'sw' | 'ne' | 'nw'>,
     };
   });
 
@@ -182,8 +184,21 @@ export function DashboardGrid({
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
+        // Visual-only widgets (Shape, Line/Divider) intentionally render
+        // as solid blocks without a card frame — wrapping them in
+        // `dashboard-tile bi-card-hover` would defeat the purpose
+        // (Shape becomes a coloured pill inside a white frame).
+        const isVisualWidget = isWidget && (
+          dc.widget_type === 'shape'
+        );
         const tile = isWidget ? (
-          <div className="group relative h-full w-full">
+          <div
+            className={`group relative h-full w-full ${
+              isVisualWidget
+                ? ''
+                : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
+            }`}
+          >
             {/* Drag handle for react-grid-layout — required so widgets are draggable */}
             {canEdit && (
               <div
