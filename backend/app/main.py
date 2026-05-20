@@ -1,9 +1,11 @@
 """
 Main FastAPI application.
 """
+import json
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -97,6 +99,83 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Rate limiting
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Phase-15.62 — Resilient error envelope.
+# FastAPI default HTTPException handler calls json.dumps(detail) and
+# crashes with "Object of type X is not JSON serializable" when a
+# caller passes a non-primitive (raw Exception object, custom class,
+# etc.) as detail. The original 4xx/5xx then becomes a generic 500
+# with a useless traceback, and the actual error message vanishes
+# from the response — DA only sees "500" with no context.
+#
+# This handler:
+#   1. Tries the normal path (json.dumps the detail).
+#   2. If serialization fails, falls back to repr/str + logs the bug
+#      so we can fix the offending call site, but the client still
+#      receives the intended status code + a readable message.
+_logger = logging.getLogger("app.error_envelope")
+
+
+def _safe_detail(value):
+    """Recursively coerce `value` into something json.dumps can handle."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _safe_detail(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_safe_detail(item) for item in value]
+    if isinstance(value, BaseException):
+        return f"{type(value).__name__}: {value}"
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler_safe(request: Request, exc: HTTPException):
+    detail = exc.detail
+    try:
+        safe = json.loads(json.dumps(detail))
+    except (TypeError, ValueError):
+        safe = _safe_detail(detail)
+        _logger.warning(
+            "[error_envelope] HTTPException raised with non-JSON detail "
+            "(status=%s, path=%s, type=%s). Sanitised before response.",
+            exc.status_code,
+            request.url.path,
+            type(detail).__name__,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": safe},
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort 500 with the error class + message — instead of an
+    empty body that gives DA nothing to act on. Full stack trace still
+    goes to backend logs via logger.exception."""
+    _logger.exception(
+        "[error_envelope] Unhandled %s at %s",
+        type(exc).__name__,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": {
+                "error_class": type(exc).__name__,
+                "message": str(exc) or "Unknown server error",
+                "hint": "Check backend logs for the full stack trace.",
+            }
+        },
+    )
+
 
 # Include API router
 app.include_router(api_router, prefix="/api/v1")

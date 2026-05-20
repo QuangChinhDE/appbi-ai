@@ -4082,7 +4082,23 @@ def update_dataset_view(
     try:
         validated = SemanticViewUpdate(**update_data)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        # Phase-15.62 — Pydantic v2 .errors() embeds the raw exception
+        # object in ctx['error'] when a @model_validator raised ValueError.
+        # FastAPI's default json.dumps then crashes with "Object of type
+        # ValueError is not JSON serializable" → 500 with empty body.
+        # Stringify ctx values so the response stays a clean 422 with the
+        # field-level validation messages the FE expects.
+        cleaned: list[dict] = []
+        for err in exc.errors():
+            entry = dict(err)
+            ctx = entry.get("ctx")
+            if isinstance(ctx, dict):
+                entry["ctx"] = {
+                    k: (str(v) if isinstance(v, BaseException) else v)
+                    for k, v in ctx.items()
+                }
+            cleaned.append(entry)
+        raise HTTPException(status_code=422, detail=cleaned) from exc
 
     update_payload = validated.model_dump(exclude_unset=True)
     if "dimensions" in update_payload and update_payload["dimensions"] is not None:
