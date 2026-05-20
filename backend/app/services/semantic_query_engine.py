@@ -21,7 +21,10 @@ from app.schemas.semantic import (
     TopNDefinition,
     PivotedColumn
 )
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 class AmbiguousFieldError(ValueError):
@@ -214,7 +217,20 @@ class SemanticQueryEngine:
             sql_parts.append(limit_clause)
         
         sql = "\n".join(sql_parts)
-        
+
+        # Phase-15.58 — log compiled SQL + input role refs so DA can
+        # grep `semantic_emit` in backend logs to verify whether a
+        # "Column X is ambiguous" came from un-aliased SQL emission
+        # vs upstream chart config drift.
+        logger.info(
+            "semantic_emit explore=%s dims=%s measures=%s pivots=%s sql=%s",
+            explore_name,
+            list(dimensions),
+            list(measures),
+            list(pivots),
+            sql.replace("\n", " ")[:1500],
+        )
+
         return sql, column_names, pivot_metadata
 
     def _set_model_scope(self, model: Optional[SemanticModel]) -> None:

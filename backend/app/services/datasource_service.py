@@ -826,7 +826,16 @@ class DataSourceConnectionService:
                     )
             
             logger.info(f"Executing BigQuery query on project {project_id}")
-            
+            # Phase-15.58 — log the actual SQL string so DA can grep
+            # backend logs when BigQuery rejects with cryptic errors
+            # like "Column name is ambiguous". A 2-second snippet of
+            # the SQL (first 1500 chars) is enough to spot a missing
+            # table alias without dumping multi-KB queries.
+            sql_preview = (query or "").strip().replace("\n", " ")
+            if len(sql_preview) > 1500:
+                sql_preview = sql_preview[:1500] + " ... [truncated]"
+            logger.info(f"[bq_sql] {sql_preview}")
+
             query_job = client.query(query)
             
             # Apply timeout when fetching results
