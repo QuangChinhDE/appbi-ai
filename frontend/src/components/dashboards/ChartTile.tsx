@@ -155,7 +155,7 @@ function expandLinkedFilterTargets(filter: BaseFilter): BaseFilter[] {
   return targets.length > 0 ? targets : [{ ...filter, linkedFields: undefined }];
 }
 
-export function ChartTile({
+function ChartTileBase({
   chartId,
   dashboardChartId,
   dashboardId,
@@ -1057,3 +1057,48 @@ export function ChartTile({
     </div>
   );
 }
+
+// Phase-15.57 — memoize the tile so layout-only updates from
+// react-grid-layout (drag/resize) don't trigger a full re-render of
+// every tile. The custom comparator skips when only `currentLayout`
+// changes (the grid library moves the tile via transform; React doesn't
+// need to re-evaluate the tile body). All other prop changes — filter
+// arrays, chart id, parameters — fall through to a real re-render.
+function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolean {
+  if (prev.chartId !== next.chartId) return false;
+  if (prev.dashboardChartId !== next.dashboardChartId) return false;
+  if (prev.dashboardId !== next.dashboardId) return false;
+  if (prev.canEdit !== next.canEdit) return false;
+  if (prev.allowAppearanceEdit !== next.allowAppearanceEdit) return false;
+  if (prev.isRemoving !== next.isRemoving) return false;
+  if (prev.isCrossFilterSource !== next.isCrossFilterSource) return false;
+  if (prev.currentPageId !== next.currentPageId) return false;
+  // Layout reference change is fine — we render the same DOM either way;
+  // the parent grid moves the wrapper via CSS transform. Skip deep
+  // compare to keep this hot path cheap.
+  if (prev.onRemove !== next.onRemove) return false;
+  if (prev.onDataLoaded !== next.onDataLoaded) return false;
+  if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;
+  if (prev.onMoveToPage !== next.onMoveToPage) return false;
+  // Arrays + objects: shallow-compare references first, fall back to
+  // length check to catch the common "new empty array literal" identity
+  // mismatch without paying for a deep compare.
+  if (prev.dashboardFilters !== next.dashboardFilters
+      && (prev.dashboardFilters?.length ?? 0) !== (next.dashboardFilters?.length ?? 0)) return false;
+  if (prev.globalFilters !== next.globalFilters
+      && (prev.globalFilters?.length ?? 0) !== (next.globalFilters?.length ?? 0)) return false;
+  if (prev.crossFilters !== next.crossFilters
+      && (prev.crossFilters?.length ?? 0) !== (next.crossFilters?.length ?? 0)) return false;
+  if (prev.availablePages !== next.availablePages
+      && (prev.availablePages?.length ?? 0) !== (next.availablePages?.length ?? 0)) return false;
+  if (prev.instanceParameters !== next.instanceParameters) {
+    // Cheap key-count check; if both are dicts with same key count assume
+    // unchanged. Parent uses stable references for the common case.
+    const a = Object.keys(prev.instanceParameters ?? {}).length;
+    const b = Object.keys(next.instanceParameters ?? {}).length;
+    if (a !== b) return false;
+  }
+  return true;
+}
+
+export const ChartTile = React.memo(ChartTileBase, chartTilePropsEqual);

@@ -126,6 +126,13 @@ export const useUpdateDashboardLayout = () => {
 // Phase-15.56 — Draft layout mutations. Layout edits go into the
 // dashboard's draft_snapshot instead of touching live rows; public
 // viewers stay on the last-published layout until publish() is called.
+//
+// Phase-15.57: do NOT invalidate the dashboard query on success — that
+// triggers a full refetch every 1s while the user drags, re-rendering
+// 100+ chart tiles mid-drag and making the whole grid feel laggy.
+// Instead, merge the server-returned draft fields into the cached
+// dashboard object via setQueryData. The dashboard payload otherwise
+// hasn't changed (layout overlay is purely local view state).
 export const useUpdateDashboardDraftLayout = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -136,8 +143,18 @@ export const useUpdateDashboardDraftLayout = () => {
       dashboardId: number;
       chartLayouts: Array<{ id: number; layout: Record<string, any> }>;
     }) => dashboardApi.updateDraftLayout(dashboardId, chartLayouts),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
+    onSuccess: (response, variables) => {
+      queryClient.setQueryData<Dashboard>(
+        ['dashboards', variables.dashboardId],
+        (old) =>
+          old
+            ? {
+                ...old,
+                draft_layouts: response.draft_layouts ?? null,
+                has_draft: !!response.has_draft,
+              }
+            : old,
+      );
     },
   });
 };
