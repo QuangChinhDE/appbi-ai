@@ -476,12 +476,26 @@ class SemanticQueryEngine:
         """Render dimension SQL"""
         view_name, field_name = self._parse_field_ref(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
-        
+
         dim_def = next((d for d in view.dimensions if d['name'] == field_name), None)
         if not dim_def:
             raise ValueError(f"Dimension '{field_name}' not found in view '{view_name}'")
-        
+
+        # Phase-15.61 — auto-qualify bare-identifier custom SQL with
+        # ${TABLE}. Old dim definitions may have `sql = "name"` (bare
+        # column name) instead of `sql = "${TABLE}.name"`. In multi-
+        # view queries (JOINs) BigQuery rejects the unqualified column
+        # as ambiguous when 2+ joined views share a column name. Detect
+        # the bare-identifier case and prepend the placeholder so the
+        # template still routes through view_alias substitution.
         sql_template = dim_def.get('sql') or f"${{TABLE}}.{field_name}"
+        if (
+            sql_template
+            and "${TABLE}" not in sql_template
+            and "${" not in sql_template  # also skip ${view.field} templates
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
+        ):
+            sql_template = f"${{TABLE}}.{sql_template.strip()}"
         return self._render_sql_template(sql_template, view_alias)
     
     def _render_dimension_with_time_grain(
