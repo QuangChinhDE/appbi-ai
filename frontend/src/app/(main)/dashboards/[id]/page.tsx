@@ -176,6 +176,10 @@ export default function DashboardDetailPage() {
   const dashboardContentRef = React.useRef<HTMLDivElement>(null);
   const chartsFetching = useIsFetching({ queryKey: ['charts'] });
   const [pendingDeletePageId, setPendingDeletePageId] = useState<string | null>(null);
+  // Phase-15.56 — confirm-discard modal uses the shared ConfirmDialog
+  // so the warning sits in the app's noti style instead of the browser's
+  // native confirm() (which DA called out as inconsistent).
+  const [isDiscardConfirmOpen, setIsDiscardConfirmOpen] = useState(false);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
@@ -206,20 +210,6 @@ export default function DashboardDetailPage() {
     };
   }, [serverDashboard]);
 
-  // Phase-15.56 dev hint — basic fetch log (no canEditResource yet).
-  React.useEffect(() => {
-    if (!serverDashboard) return;
-    // eslint-disable-next-line no-console
-    console.log('[draft] dashboard fetched', {
-      id: serverDashboard.id,
-      has_draft: serverDashboard.has_draft,
-      draft_layouts_keys: serverDashboard.draft_layouts
-        ? Object.keys(serverDashboard.draft_layouts)
-        : null,
-      user_permission: serverDashboard.user_permission,
-      layout_mode: serverDashboard.layout_mode,
-    });
-  }, [serverDashboard]);
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
       (dashboard?.dashboard_charts ?? [])
@@ -248,16 +238,6 @@ export default function DashboardDetailPage() {
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
   const canEditResource = resPerms.canEdit;
-  // Phase-15.56 — log permission state so DA can verify the editor
-  // actually has edit access (drag handlers only bind when canEditResource).
-  React.useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[draft] perms', {
-      user_permission: dashboard?.user_permission,
-      canEdit: canEditResource,
-      canShare,
-    });
-  }, [dashboard?.user_permission, canEditResource, canShare]);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
@@ -388,8 +368,6 @@ export default function DashboardDetailPage() {
   );
 
   const handleLayoutChange = (newLayout: Layout[]) => {
-    // eslint-disable-next-line no-console
-    console.log('[draft] handleLayoutChange fired', { items: newLayout.length });
     setHasUnsavedChanges(true);
     debouncedSaveLayout(newLayout);
   };
@@ -1451,16 +1429,7 @@ export default function DashboardDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={async () => {
-                          if (!confirm('Huỷ thay đổi bố cục chưa lưu?')) return;
-                          try {
-                            await discardDraftMutation.mutateAsync(dashboardId);
-                            setHasUnsavedChanges(false);
-                            toast.success('Đã quay lại phiên bản gần nhất.');
-                          } catch (e) {
-                            toast.error('Không huỷ được — thử lại.');
-                          }
-                        }}
+                        onClick={() => setIsDiscardConfirmOpen(true)}
                         disabled={discardDraftMutation.isPending}
                         className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title="Bỏ thay đổi, quay về bố cục đã xuất bản"
@@ -1824,6 +1793,26 @@ export default function DashboardDetailPage() {
           description="This will remove the chart tile from the dashboard. The chart itself will not be deleted."
           confirmLabel="Remove"
           variant="danger"
+        />
+
+        {/* Phase-15.56 — Confirm discard draft layout */}
+        <ConfirmDialog
+          isOpen={isDiscardConfirmOpen}
+          onClose={() => setIsDiscardConfirmOpen(false)}
+          onConfirm={async () => {
+            try {
+              await discardDraftMutation.mutateAsync(dashboardId);
+              setHasUnsavedChanges(false);
+              toast.success('Đã quay lại phiên bản gần nhất.');
+            } catch (e) {
+              toast.error('Không huỷ được — thử lại.');
+            }
+          }}
+          title="Huỷ thay đổi bố cục?"
+          description="Bản nháp hiện tại sẽ bị xoá. Dashboard quay về bố cục đã xuất bản gần nhất. Hành động này không hoàn tác được."
+          confirmLabel="Huỷ thay đổi"
+          cancelLabel="Giữ lại"
+          variant="warning"
         />
 
         {/* Share Dialog (team members) */}

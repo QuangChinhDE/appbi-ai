@@ -418,6 +418,13 @@ async def update_dashboard_layout(
 
     `chart_layouts` items: {id (DashboardChart ID), layout: {x, y, w, h}}.
     Use after a re-arrangement that touches several charts.
+
+    Phase-15.56 — writes into the dashboard's DRAFT snapshot, not the
+    live layout. Public share viewers stay on the last-published bố cục
+    until a human clicks "Lưu" in the editor (or calls
+    `publish_dashboard_draft` explicitly). MCP-driven dashboard builds
+    therefore always land as a draft for human review first — that is
+    the intentional safety contract: AI proposes, human publishes.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -425,12 +432,71 @@ async def update_dashboard_layout(
             {
                 "dashboard_id": int(dashboard_id),
                 "placement_count": len(chart_layouts),
+                "target": "draft_snapshot (Phase-15.56)",
+                "publish_step": (
+                    "Call `publish_dashboard_draft(dashboard_id)` after human review, "
+                    "or have them click 'Lưu' in the editor toolbar."
+                ),
             },
         )
     return await _request(
         "PUT",
-        f"/dashboards/{int(dashboard_id)}/layout",
+        f"/dashboards/{int(dashboard_id)}/draft-layout",
         json_body={"chart_layouts": chart_layouts},
+    )
+
+
+@tool("report")
+async def publish_dashboard_draft(
+    dashboard_id: int,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Publish the dashboard's draft snapshot — copy draft layout onto
+    live rows so public share viewers see the new state.
+
+    Phase-15.56 contract: MCP edits land as a draft; the draft only
+    becomes the public version when this tool is called (or when a
+    human clicks "Lưu" in the editor toolbar). DO NOT auto-call this
+    after every MCP edit — that would defeat the safety net the draft
+    workflow exists for. Only invoke when the user EXPLICITLY asks to
+    publish ("xuất bản", "publish", "đẩy bản mới ra share link").
+    """
+    if not user_confirmed:
+        return _requires_confirmation(
+            "publish_dashboard_draft",
+            {
+                "dashboard_id": int(dashboard_id),
+                "effect": "Draft layout sẽ ghi đè live + public viewer thấy bản mới.",
+            },
+        )
+    return await _request(
+        "POST",
+        f"/dashboards/{int(dashboard_id)}/publish",
+    )
+
+
+@tool("report")
+async def discard_dashboard_draft(
+    dashboard_id: int,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Throw away the dashboard's pending draft. Live + public viewer
+    are untouched. Use when the user says "huỷ bản nháp", "bỏ thay
+    đổi", or asks to revert to the published version.
+    """
+    if not user_confirmed:
+        return _requires_confirmation(
+            "discard_dashboard_draft",
+            {
+                "dashboard_id": int(dashboard_id),
+                "effect": "Draft snapshot bị xoá; live không đổi.",
+            },
+        )
+    return await _request(
+        "POST",
+        f"/dashboards/{int(dashboard_id)}/discard-draft",
     )
 
 

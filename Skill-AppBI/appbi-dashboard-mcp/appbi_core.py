@@ -922,6 +922,23 @@ the UI. All accept Tier-2 `extra={...}` for whitelisted overrides.
 | Public share style (briefing/editorial/minimal) | `set_public_link_appearance` |
 | Tab pages từ list tên | `set_dashboard_pages` |
 
+## Draft / Publish (Phase-15.56) — quan trọng
+
+`update_dashboard_layout` ghi vào **DRAFT snapshot**, không phải live.
+Public share link viewers tiếp tục thấy bản đã xuất bản gần nhất cho
+tới khi human click "Lưu" trong editor (hoặc gọi
+`publish_dashboard_draft` tay).
+
+**Contract**: MCP đề xuất → DRAFT. Human duyệt → PUBLISH.
+- `publish_dashboard_draft(dashboard_id)` — chỉ gọi khi user EXPLICITLY
+  yêu cầu xuất bản ("xuất bản", "publish", "đẩy bản mới ra share").
+  KHÔNG tự gọi sau mỗi mutation MCP.
+- `discard_dashboard_draft(dashboard_id)` — gọi khi user nói "huỷ bản
+  nháp" / "bỏ thay đổi" / "revert".
+
+Add chart / theme / rename hiện vẫn auto-save live (scope Phase-15.56
+giới hạn ở layout). Mở rộng sang full draft là follow-up.
+
 ## Workflow — pick by safety profile
 
 **File-first (1 confirm, DA reviews real file)** — recommended when:
