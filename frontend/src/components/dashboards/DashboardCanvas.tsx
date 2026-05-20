@@ -126,67 +126,86 @@ export function DashboardCanvas({
     [canEdit],
   );
 
+  // rAF-throttle for pointer move. Without this, fast drags fire 100+
+  // pointermove events per second, each triggering a setState → React
+  // re-render. Coalescing to one update per animation frame (~60fps)
+  // makes the drag feel buttery without losing precision — the latest
+  // event always wins because we keep the freshest values in pendingRef.
+  const pendingRef = useRef<{ xPx: number; yPx: number; wPx: number; hPx: number } | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!drag) return;
       const dx = (e.clientX - drag.startX) / scale;
       const dy = (e.clientY - drag.startY) / scale;
+      let next: { xPx: number; yPx: number; wPx: number; hPx: number };
       if (drag.mode.kind === 'move') {
-        const xPx = Math.max(0, snapVal(drag.origX + dx));
-        const yPx = Math.max(0, snapVal(drag.origY + dy));
-        setLocalOverrides((m) => ({
-          ...m,
-          [drag.id]: { xPx, yPx, wPx: drag.origW, hPx: drag.origH },
-        }));
-        return;
+        next = {
+          xPx: Math.max(0, snapVal(drag.origX + dx)),
+          yPx: Math.max(0, snapVal(drag.origY + dy)),
+          wPx: drag.origW,
+          hPx: drag.origH,
+        };
+      } else {
+        // Resize: each of 8 directions affects x/y/w/h differently.
+        // Anchor the OPPOSITE edge of the dragged handle so the chart
+        // stretches naturally toward the cursor — same behaviour as
+        // Looker / PowerBI canvas tiles.
+        const dir = drag.mode.dir;
+        const grow = {
+          left:   dir === 'w' || dir === 'nw' || dir === 'sw',
+          right:  dir === 'e' || dir === 'ne' || dir === 'se',
+          top:    dir === 'n' || dir === 'nw' || dir === 'ne',
+          bottom: dir === 's' || dir === 'sw' || dir === 'se',
+        };
+        let xPx = drag.origX;
+        let yPx = drag.origY;
+        let wPx = drag.origW;
+        let hPx = drag.origH;
+        if (grow.right) {
+          wPx = Math.max(MIN_W, snapVal(drag.origW + dx));
+        } else if (grow.left) {
+          const newW = Math.max(MIN_W, snapVal(drag.origW - dx));
+          wPx = newW;
+          xPx = Math.max(0, drag.origX + drag.origW - newW);
+        }
+        if (grow.bottom) {
+          hPx = Math.max(MIN_H, snapVal(drag.origH + dy));
+        } else if (grow.top) {
+          const newH = Math.max(MIN_H, snapVal(drag.origH - dy));
+          hPx = newH;
+          yPx = Math.max(0, drag.origY + drag.origH - newH);
+        }
+        next = { xPx, yPx, wPx, hPx };
       }
-      // Resize: each of 8 directions affects x/y/w/h differently.
-      // Anchor the OPPOSITE edge of the dragged handle so the chart
-      // stretches naturally toward the cursor — same behaviour as
-      // Looker / PowerBI canvas tiles.
-      const dir = drag.mode.dir;
-      const grow = {
-        left:   dir === 'w' || dir === 'nw' || dir === 'sw',
-        right:  dir === 'e' || dir === 'ne' || dir === 'se',
-        top:    dir === 'n' || dir === 'nw' || dir === 'ne',
-        bottom: dir === 's' || dir === 'sw' || dir === 'se',
-      };
-
-      let xPx = drag.origX;
-      let yPx = drag.origY;
-      let wPx = drag.origW;
-      let hPx = drag.origH;
-
-      if (grow.right) {
-        wPx = Math.max(MIN_W, snapVal(drag.origW + dx));
-      } else if (grow.left) {
-        // Pull the left edge: anchor right edge (origX + origW), clamp width.
-        const newW = Math.max(MIN_W, snapVal(drag.origW - dx));
-        wPx = newW;
-        xPx = Math.max(0, drag.origX + drag.origW - newW);
+      pendingRef.current = next;
+      if (rafIdRef.current == null) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null;
+          const pending = pendingRef.current;
+          if (!pending) return;
+          setLocalOverrides((m) => ({ ...m, [drag.id]: pending }));
+        });
       }
-      if (grow.bottom) {
-        hPx = Math.max(MIN_H, snapVal(drag.origH + dy));
-      } else if (grow.top) {
-        const newH = Math.max(MIN_H, snapVal(drag.origH - dy));
-        hPx = newH;
-        yPx = Math.max(0, drag.origY + drag.origH - newH);
-      }
-
-      setLocalOverrides((m) => ({
-        ...m,
-        [drag.id]: { xPx, yPx, wPx, hPx },
-      }));
     },
     [drag, snap, scale],
   );
 
   const onPointerUp = useCallback(() => {
     if (!drag) return;
-    const o = localOverrides[drag.id];
-    if (o && onLayoutChange) {
+    // Flush any pending rAF update synchronously so the drop-position
+    // reflects the freshest pointer event, not whatever was last
+    // committed to React state.
+    if (rafIdRef.current != null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    const finalPos = pendingRef.current ?? localOverrides[drag.id];
+    pendingRef.current = null;
+    if (finalPos && onLayoutChange) {
       const maxZ = Math.max(0, ...hydrated.map((dc) => dc.layout.z ?? 0));
-      onLayoutChange([{ id: drag.id, ...o, z: maxZ + 1 }]);
+      onLayoutChange([{ id: drag.id, ...finalPos, z: maxZ + 1 }]);
     }
     setDrag(null);
   }, [drag, localOverrides, onLayoutChange, hydrated]);
@@ -229,10 +248,13 @@ export function DashboardCanvas({
           const w = o?.wPx ?? dc.layout.wPx ?? 320;
           const h = o?.hPx ?? dc.layout.hPx ?? 240;
           const z = dc.layout.z ?? 1;
+          // Tag the tile being dragged so CSS can kill its transitions
+          // and make cursor follow 1:1 instead of easing.
+          const isDragging = drag?.id === dc.id;
           return (
             <div
               key={dc.id}
-              className="group absolute"
+              className={`group absolute${isDragging ? ' canvas-tile-dragging' : ''}`}
               style={{ left: x, top: y, width: w, height: h, zIndex: z }}
             >
               {canEdit && (

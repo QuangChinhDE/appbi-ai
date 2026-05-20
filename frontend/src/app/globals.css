@@ -280,6 +280,21 @@
                 0 0 0 1px rgb(8 9 10 / 0.05);
     border-color: rgb(var(--border-strong));
   }
+  /* Kill all transitions while the grid item is being dragged or resized
+   * so cursor movement maps 1:1 to tile position. Without this the 180ms
+   * transform ease fights the drag, making fast drags feel sluggish.
+   * Covers react-grid-layout (Grid mode) and our custom Canvas mode
+   * (`canvas-tile-dragging` added by DashboardCanvas when drag state
+   * matches the tile id). */
+  .react-grid-item.react-draggable-dragging,
+  .react-grid-item.react-draggable-dragging *,
+  .react-grid-item.resizing,
+  .react-grid-item.resizing *,
+  .canvas-tile-dragging,
+  .canvas-tile-dragging * {
+    transition: none !important;
+    animation: none !important;
+  }
 
   /* Drag handle becomes visible on card hover with a gentle grip pattern.
    * Pattern: 6 dots in a 2×3 grid, low contrast unless the card is hovered. */
@@ -316,11 +331,20 @@
    * and height. NOTHING visible at rest — not even on tile hover. The
    * L-bracket only paints when the cursor is directly inside the 18×18
    * corner hit-zone, so the dashboard stays clean until the user
-   * intentionally reaches for a corner to resize. */
+   * intentionally reaches for a corner to resize.
+   *
+   * react-grid-layout ships its own `.react-grid-item > .react-resizable-
+   * handle::after` rule (5×5 gray border, drawn at all times). That
+   * selector has higher specificity than ours (descendant combinator
+   * + pseudo) so we have to explicitly nuke it with `display: none`
+   * before our brand L-bracket can show through. */
   .react-resizable-handle {
     background-image: none !important;
     position: absolute;
     pointer-events: auto;
+  }
+  .react-grid-item > .react-resizable-handle::after {
+    display: none !important;
   }
 
   /* Corner hit-zone — 18×18 invisible until hover. Generous target so
@@ -375,6 +399,13 @@
     border-left-width: 2px; border-top-width: 2px;
     border-bottom: 0; border-right: 0;
     border-top-left-radius: 3px;
+  }
+  /* Restore our pseudo on direct hover. The display:none rule above is
+   * scoped to the library combinator (`.react-grid-item > ...::after`),
+   * so a non-combinator rule wins on specificity at hover time. */
+  .react-grid-item > .react-resizable-handle:hover::after {
+    display: block !important;
+    opacity: 1;
   }
   .react-resizable-handle:hover::after {
     opacity: 1;
