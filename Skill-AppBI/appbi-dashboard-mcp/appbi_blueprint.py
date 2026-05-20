@@ -1757,22 +1757,43 @@ async def commit_dashboard_blueprint(
             ),
         }
 
+    # Phase-15.46: audit qualified-vs-bare refs across all charts so the
+    # confirmation surfaces the "Column X is ambiguous" risk class BEFORE
+    # commit (Phase 15.44 covered _post_chart in chart_library; this
+    # closes the same gap on the blueprint flow).
+    from appbi_chart_library import _audit_role_refs
+    locked_charts: list[str] = []
+    for staged in staged_specs:
+        chart = staged["chart"]
+        audit = _audit_role_refs(chart.get("role_config") or {})
+        if audit["is_locked_to_single_table"]:
+            locked_charts.append(
+                f"{chart.get('title')}: bare refs {audit['bare_refs']}"
+            )
+
     if not user_confirmed:
-        return _requires_confirmation(
-            "commit_dashboard_blueprint",
-            {
-                "dataset_id": dataset_id,
-                "dashboard_name": dashboard_meta.get("name"),
-                "narrative": blueprint.get("narrative"),
-                "chart_count": len(staged_specs),
-                "metrics_used": sorted({
-                    str(m.get("field"))
-                    for staged in staged_specs
-                    for m in (staged["chart"].get("role_config") or {}).get("metrics") or []
-                }),
-                "open_questions_for_user": blueprint.get("open_questions_for_user") or [],
-            },
-        )
+        confirm_plan: dict[str, Any] = {
+            "dataset_id": dataset_id,
+            "dashboard_name": dashboard_meta.get("name"),
+            "narrative": blueprint.get("narrative"),
+            "chart_count": len(staged_specs),
+            "metrics_used": sorted({
+                str(m.get("field"))
+                for staged in staged_specs
+                for m in (staged["chart"].get("role_config") or {}).get("metrics") or []
+            }),
+            "open_questions_for_user": blueprint.get("open_questions_for_user") or [],
+        }
+        if locked_charts:
+            confirm_plan["refs_warning"] = (
+                f"{len(locked_charts)}/{len(staged_specs)} charts use BARE "
+                "refs only — locked to legacy single-table path. If the "
+                "dataset has relationships and you intended cross-table "
+                "data (or to avoid 'Column X is ambiguous' SQL errors), "
+                "qualify the role_config fields as `view.field`."
+            )
+            confirm_plan["locked_charts"] = locked_charts[:10]
+        return _requires_confirmation("commit_dashboard_blueprint", confirm_plan)
 
     created_charts: list[dict[str, Any]] = []
     creation_errors: list[dict[str, Any]] = []
@@ -2668,22 +2689,42 @@ async def build_dashboard_from_design(
     except OSError as exc:
         logger.warning("Failed to render dashboard preview: %s", exc)
 
+    # Phase-15.46: refs audit on logged design — bare-only charts will
+    # hit "Column X is ambiguous" if the dataset has joins.
+    from appbi_chart_library import _audit_role_refs
+    locked_charts: list[str] = []
+    for chart in planned_charts:
+        if not isinstance(chart, dict):
+            continue
+        audit = _audit_role_refs(chart.get("role_config") or {})
+        if audit["is_locked_to_single_table"]:
+            locked_charts.append(
+                f"{chart.get('title')}: bare {audit['bare_refs']}"
+            )
+
     if not user_confirmed:
-        return _requires_confirmation(
-            "build_dashboard_from_design",
-            {
-                "design_path": str(design_file),
-                "html_preview_path": str(preview_path),
-                "dashboard_name": dashboard_meta.get("name"),
-                "chart_count": len(planned_charts),
-                "chart_titles": [c.get("title") for c in planned_charts[:8]],
-                "hint": (
-                    "Open html_preview_path in a browser to verify the "
-                    "layout. Call again with user_confirmed=True to write "
-                    "the charts + dashboard to AppBI."
-                ),
-            },
-        )
+        confirm_plan: dict[str, Any] = {
+            "design_path": str(design_file),
+            "html_preview_path": str(preview_path),
+            "dashboard_name": dashboard_meta.get("name"),
+            "chart_count": len(planned_charts),
+            "chart_titles": [c.get("title") for c in planned_charts[:8]],
+            "hint": (
+                "Open html_preview_path in a browser to verify the "
+                "layout. Call again with user_confirmed=True to write "
+                "the charts + dashboard to AppBI."
+            ),
+        }
+        if locked_charts:
+            confirm_plan["refs_warning"] = (
+                f"{len(locked_charts)}/{len(planned_charts)} planned "
+                "charts use BARE refs only — locked to single-table. If "
+                "the dataset has relationships (cross-table intent or to "
+                "avoid 'Column X is ambiguous'), go back to Phase 1 and "
+                "qualify the role_config fields as `view.field`."
+            )
+            confirm_plan["locked_charts"] = locked_charts[:10]
+        return _requires_confirmation("build_dashboard_from_design", confirm_plan)
 
     # Materialise — for each chart, POST to /charts/. Then POST to
     # /dashboards/ with placements. Rollback any created chart on
