@@ -1478,22 +1478,33 @@ function TimeIntelligenceBuilder({
 /**
  * Validate one measure against the same rules MeasureRow paints red.
  * Shared between the row (inline error display) and the panel footer
- * (Save button disable). Returns Vietnamese error messages keyed by
- * field name — empty object means the measure is save-able.
+ * (Save button disable).
  *
- * The `mode` arg is the editor mode chosen in the row toggle. We
- * cannot infer it from the measure alone (a low-code measure with
- * just `sql` set looks identical to a SQL one without `expression`),
- * so the panel passes the same heuristic the row uses when computing
- * the default mode.
+ * We infer the mode from the saved shape (depends_on => formula;
+ * expression/where_sql/scope=dataset => sql; else lowcode) instead of
+ * passing the editor's transient mode. Either way the rule has to be
+ * "does the persisted measure satisfy the BE compile contract" — the
+ * editor UI is just a view onto that contract.
+ *
+ * Engine semantics this enforces (semantic_query_engine.py:627–729):
+ *   • Every measure needs a valid identifier name.
+ *   • type='count' is the only type that can omit both sql and expression.
+ *   • A measure with expression containing a top-level aggregate
+ *     function (SUM/AVG/...) MUST be in formula mode (depends_on set);
+ *     otherwise the engine raises a double-aggregation guard error.
+ *   • scope='dataset' requires source_columns.
  */
+const AGG_FN_RE = /\b(SUM|AVG|COUNT|MIN|MAX|MEDIAN|STDDEV|VARIANCE)\s*\(/i;
+
 function validateMeasure(measure: MeasureDefinition): Record<string, string> {
-  const mode: 'lowcode' | 'sql' = (
-    measure.expression
-      || measure.where_sql
-      || (measure.depends_on?.length ?? 0) > 0
-      || measure.scope === 'dataset'
-  ) ? 'sql' : 'lowcode';
+  const hasDeps = (measure.depends_on?.length ?? 0) > 0;
+  const hasExpr = Boolean((measure.expression || '').trim());
+  const hasSqlCol = Boolean((measure.sql || '').trim());
+  const mode: 'lowcode' | 'sql' | 'formula' = hasDeps
+    ? 'formula'
+    : (hasExpr || measure.where_sql || measure.scope === 'dataset')
+      ? 'sql'
+      : 'lowcode';
 
   const out: Record<string, string> = {};
   const trimmedName = (measure.name || '').trim();
@@ -1502,14 +1513,27 @@ function validateMeasure(measure: MeasureDefinition): Record<string, string> {
   } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)) {
     out.name = 'SQL name chỉ chứa chữ, số, dấu gạch dưới; không bắt đầu bằng số';
   }
-  if (mode === 'lowcode' && measure.type !== 'count' && !(measure.sql || '').trim()) {
-    out.column = 'Chọn 1 cột để tính (hoặc đổi sang chế độ SQL nếu cần expression)';
+
+  if (mode === 'lowcode' && measure.type !== 'count' && !hasSqlCol) {
+    out.column = 'Chọn 1 cột để tính (hoặc đổi sang SQL nâng cao nếu cần biểu thức)';
   }
-  if (mode === 'sql' && !(measure.expression || '').trim() && !(measure.sql || '').trim()) {
+  if (mode === 'sql' && !hasExpr && !hasSqlCol) {
     out.expression = 'Cần SQL expression hoặc cột nguồn';
   }
+  if (mode === 'sql' && hasExpr && AGG_FN_RE.test(measure.expression || '')) {
+    // Engine guard: expression with SUM(...) AND aggregation wrapper
+    // would compile to SUM(SUM(...)) which BE rejects. User wants
+    // formula mode instead.
+    out.expression = 'Biểu thức có sẵn SUM/AVG/... — chuyển sang "Công thức" và khai báo measure phụ thuộc qua ${tên}';
+  }
+  if (mode === 'formula' && !hasExpr) {
+    out.expression = 'Công thức cần biểu thức (vd ${revenue} / NULLIF(${orders}, 0))';
+  }
+  if (mode === 'formula' && !hasDeps) {
+    out.depends_on = 'Công thức cần khai báo ít nhất 1 measure phụ thuộc';
+  }
   if (measure.scope === 'dataset' && (measure.source_columns?.length ?? 0) === 0) {
-    out.source_columns = 'Đa bảng bật mà chưa khai báo cột nguồn';
+    out.source_columns = 'Tính qua nhiều bảng bật mà chưa khai báo cột nguồn';
   }
   return out;
 }
@@ -1542,17 +1566,54 @@ function MeasureRow({
   const [isExpanded, setIsExpanded] = useState(() => rowKey.startsWith('new-measure') || Boolean(defaultOpen));
   const [editingLabel, setEditingLabel] = useState(false);
 
-  // Auto-detect mode: anything with a custom SQL expression, raw WHERE,
-  // depends_on chain, or cross-table source columns is inherently a
-  // "SQL mode" measure — start there so the user doesn't lose visibility
-  // of fields the measure already uses.
-  const isSqlMeasure = Boolean(
-    measure.expression
-      || measure.where_sql
-      || (measure.depends_on?.length ?? 0) > 0
-      || measure.scope === 'dataset',
-  );
-  const [mode, setMode] = useState<'lowcode' | 'sql'>(isSqlMeasure ? 'sql' : 'lowcode');
+  // Auto-detect mode from the measure shape. The 3 modes map 1-to-1 onto
+  // the BE compile paths in `services/semantic_query_engine.py` (lines
+  // 627–729):
+  //   • formula  — `expression` + `depends_on` non-empty → Mode-2 ratio
+  //                path: aggregation is bypassed, `expression` IS the
+  //                final formula over already-aggregated measures.
+  //   • sql      — `expression` set (or `where_sql` set, or scope=dataset)
+  //                without depends_on → `type` still wraps the value,
+  //                so SUM(revenue - cost) compiles correctly.
+  //   • lowcode  — only `type` + `sql` (a bare column) → plain aggregation.
+  //
+  // Auto-detect on FIRST open so MCP-created measures land in the mode
+  // that shows all their load-bearing fields. The user can flip later.
+  const detectMode = (m: MeasureDefinition): 'lowcode' | 'sql' | 'formula' => {
+    if ((m.depends_on?.length ?? 0) > 0) return 'formula';
+    if (m.expression || m.where_sql || m.scope === 'dataset') return 'sql';
+    return 'lowcode';
+  };
+  const [mode, setMode] = useState<'lowcode' | 'sql' | 'formula'>(detectMode(measure));
+
+  // Mode switch — wipes fields the new mode doesn't use. Without this,
+  // a user who types `revenue - cost` in SQL mode then switches back
+  // to Low-code would leave `expression` set; the BE engine would then
+  // silently ignore the new "Cột để tính" because expression wins over
+  // sql in semantic_query_engine.py:655. Cleanup forces the visible
+  // form to be the actual saved truth.
+  const switchMode = (next: 'lowcode' | 'sql' | 'formula') => {
+    if (next === mode) return;
+    const patch: Partial<MeasureDefinition> = {};
+    if (next === 'lowcode') {
+      // Strip everything SQL-only — keep `sql` (column picker) + `type`.
+      patch.expression = undefined;
+      patch.where_sql = undefined;
+      patch.depends_on = [];
+      patch.scope = 'view';
+      patch.source_columns = [];
+    } else if (next === 'sql') {
+      // Strip formula-only fields. depends_on triggers the Mode-2 path,
+      // so leaving it set would silently flip the compile behaviour.
+      patch.depends_on = [];
+    } else {
+      // formula — strip cross-table (formula refs measures, not view.field).
+      patch.scope = 'view';
+      patch.source_columns = [];
+    }
+    onChange({ ...measure, ...patch });
+    setMode(next);
+  };
 
   const filters = measure.filters ?? [];
   const updateFilters = (next: MeasureFilter[]) => onChange({ ...measure, filters: next });
@@ -1682,47 +1743,54 @@ function MeasureRow({
             {measureNames.filter((n) => !selfMeasureRefs.has(n)).map((n) => <option key={n} value={n} />)}
           </datalist>
 
-          {/* Mode toggle — Low-code (default) vs SQL.
-              Low-code: column picker + aggregation dropdown. Hide raw SQL.
-              SQL: expression textarea + raw WHERE + depends_on + cross-table.
-              Switching from SQL -> Low-code keeps the data but flags any
-              SQL-only fields (expression/where_sql) as visible-via-summary. */}
+          {/* Mode toggle — 3-way. Each mode hides the fields its compile
+              path doesn't use, so a SQL-mode user never sees "Cột để tính"
+              (overridden by expression), a Formula user never sees
+              Aggregation (cosmetic — formula path bypasses it). */}
           <div className="flex items-center justify-between gap-2 -mx-1 -mt-1 border-b border-[rgb(var(--border-line))] pb-2">
             <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-0.5 text-[11px]">
               <button
                 type="button"
-                onClick={() => setMode('lowcode')}
+                onClick={() => switchMode('lowcode')}
                 className={`px-2.5 py-1 rounded font-medium transition-colors ${
                   mode === 'lowcode'
                     ? 'bg-surface-1 text-text-primary shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary'
                 }`}
-                title="Chế độ Low-code — chọn cột + aggregation từ dropdown"
+                title="Chọn 1 cột + 1 hàm aggregation. Compile: SUM(num_calls)"
               >
                 Low-code
               </button>
               <button
                 type="button"
-                onClick={() => setMode('sql')}
+                onClick={() => switchMode('sql')}
                 className={`px-2.5 py-1 rounded font-medium transition-colors ${
                   mode === 'sql'
                     ? 'bg-surface-1 text-text-primary shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary'
                 }`}
-                title="Chế độ SQL — viết biểu thức tuỳ ý, hỗ trợ raw WHERE và đa bảng"
+                title="Viết biểu thức trên cột thô. Compile: SUM(revenue - cost). Hỗ trợ raw WHERE và cross-table."
               >
                 SQL nâng cao
               </button>
+              <button
+                type="button"
+                onClick={() => switchMode('formula')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors ${
+                  mode === 'formula'
+                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                    : 'text-text-tertiary hover:text-text-secondary'
+                }`}
+                title="Công thức trên các measure đã tính sẵn (vd tỷ lệ, %). Compile: ${revenue}/NULLIF(${orders},0) — không cần aggregation."
+              >
+                Công thức
+              </button>
             </div>
-            {mode === 'lowcode' ? (
-              <span className="text-[10px] text-text-quaternary">
-                Đủ cho 90% measure thông thường (SUM/AVG/COUNT theo cột).
-              </span>
-            ) : (
-              <span className="text-[10px] text-text-quaternary">
-                Cho measure có biểu thức tuỳ chỉnh, cross-table, hoặc time-intelligence.
-              </span>
-            )}
+            <span className="text-[10px] text-text-quaternary text-right max-w-[55%] leading-tight">
+              {mode === 'lowcode' && 'Đủ cho 90% measure (SUM/AVG/COUNT theo cột).'}
+              {mode === 'sql' && 'Biểu thức trên cột thô — engine wrap aggregation (SUM/AVG/...) lên trên.'}
+              {mode === 'formula' && 'Công thức trên measure khác đã agg sẵn — engine KHÔNG wrap aggregation nữa.'}
+            </span>
           </div>
 
           {/* Identity — Label first (primary), Aggregation alongside */}
@@ -1744,11 +1812,26 @@ function MeasureRow({
               />
             </div>
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Aggregation</label>
+              <div className="flex items-center gap-1 mb-0.5">
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">Aggregation</label>
+                {mode === 'formula' && (
+                  <span className="text-[9px] text-text-quaternary italic" title="Engine bỏ qua khi dùng Công thức — formula trả về giá trị cuối cùng, không cần wrap.">
+                    không áp dụng
+                  </span>
+                )}
+              </div>
               <select
                 value={measure.type}
+                disabled={mode === 'formula'}
                 onChange={(e) => onChange({ ...measure, type: e.target.value as MeasureDefinition['type'] })}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-50 disabled:cursor-not-allowed"
+                title={
+                  mode === 'lowcode'
+                    ? 'Hàm SUM/AVG/COUNT/... áp dụng lên cột bên dưới.'
+                    : mode === 'sql'
+                      ? 'Hàm wrap lên biểu thức SQL. Vd type=Sum + expression="revenue - cost" → SUM(revenue - cost).'
+                      : 'Bỏ qua trong Công thức — formula trả giá trị cuối.'
+                }
               >
                 {MEASURE_TYPES.map((t) => <option key={t} value={t}>{MEASURE_TYPE_LABEL[t]}</option>)}
               </select>
@@ -1884,15 +1967,21 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* SQL mode block — only visible in SQL nâng cao mode. Low-code
-              hides these fields entirely so the form has ONE place to
-              configure aggregation. Data is preserved when toggling — we
-              keep the field values, just stop rendering. */}
-          {mode === 'sql' && (
+          {/* Expression-required modes (sql + formula). Each mode shows
+              only the sub-fields its compile path uses:
+              • sql:     expression + where_sql + cross-table       (no depends_on)
+              • formula: expression + depends_on + where_sql        (no cross-table, no column picker upstairs)
+              The block is brand-tinted so user sees "I'm in advanced
+              territory now". */}
+          {(mode === 'sql' || mode === 'formula') && (
             <div className="space-y-2 rounded-md border border-brand/20 bg-brand/5 p-2.5">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-brand">
-                <span>SQL nâng cao</span>
-                <span className="text-text-quaternary normal-case font-normal">— biểu thức tuỳ chỉnh, ưu tiên hơn 'Cột để tính'</span>
+                <span>{mode === 'sql' ? 'SQL nâng cao' : 'Công thức'}</span>
+                <span className="text-text-quaternary normal-case font-normal">
+                  {mode === 'sql'
+                    ? '— biểu thức trên cột thô. Engine wrap Aggregation lên trên.'
+                    : '— công thức trên measure khác. Aggregation bị bỏ qua, formula trả giá trị cuối.'}
+                </span>
               </div>
               <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">
@@ -1902,12 +1991,40 @@ function MeasureRow({
                   value={measure.expression || ''}
                   onChange={(e) => onChange({ ...measure, expression: e.target.value || undefined })}
                   className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('expression')}`}
-                  placeholder="vd: revenue - cost"
+                  placeholder={mode === 'sql' ? 'vd: revenue - cost' : 'vd: ${revenue} / NULLIF(${orders}, 0)'}
                 />
                 {errors.expression && (
                   <p className="mt-0.5 text-[10px] text-danger">{errors.expression}</p>
                 )}
               </div>
+              {/* depends_on — only in formula mode. SQL mode hides it
+                  because mixing expression + depends_on triggers the
+                  engine's Mode-2 formula path (which IS formula mode). */}
+              {mode === 'formula' && (
+                <div>
+                  <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                    Phụ thuộc (measure khác) <span className="text-danger">*</span>
+                  </label>
+                  <input
+                    list={measuresListId}
+                    value={(measure.depends_on || []).join(', ')}
+                    onChange={(e) =>
+                      onChange({
+                        ...measure,
+                        depends_on: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      })
+                    }
+                    className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('depends_on')}`}
+                    placeholder="vd: revenue, orders"
+                  />
+                  <p className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+                    Tên các measure khác mà công thức tham chiếu qua <code>{'${name}'}</code>. Engine inline SQL của chúng vào.
+                  </p>
+                  {errors.depends_on && (
+                    <p className="mt-0.5 text-[10px] text-danger">{errors.depends_on}</p>
+                  )}
+                </div>
+              )}
               <div>
                 <label className="text-[10px] text-text-tertiary uppercase font-medium">
                   Điều kiện WHERE bổ sung
@@ -1918,29 +2035,17 @@ function MeasureRow({
                   className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
                   placeholder="vd: status <> 'cancelled'"
                 />
-              </div>
-              <div>
-                <label className="text-[10px] text-text-tertiary uppercase font-medium">
-                  Phụ thuộc (measure khác)
-                </label>
-                <input
-                  list={measuresListId}
-                  value={(measure.depends_on || []).join(', ')}
-                  onChange={(e) =>
-                    onChange({
-                      ...measure,
-                      depends_on: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
-                    })
-                  }
-                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                  placeholder="vd: revenue, calendar.days"
-                />
+                <p className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+                  Cộng AND vào Filters ở trên. Apply trong CASE WHEN trước khi aggregate.
+                </p>
               </div>
 
-              {/* Cross-table source columns. Drift detection (Phase-13.3)
-                  catches the common mistake where the SQL expression
-                  references ${view.field} but source_columns is empty
-                  or mismatched. */}
+              {/* Cross-table source columns — SQL mode only.
+                  Formula mode references OTHER MEASURES via ${name}
+                  (not view.field) so cross-table doesn't apply. Drift
+                  detection (Phase-13.3) flags expression ↔ source_columns
+                  mismatches. */}
+              {mode === 'sql' && (
               <div className={`space-y-1.5 rounded-md border p-2 ${errors.source_columns ? 'border-danger/50 bg-danger/5' : 'border-dashed border-[rgb(var(--border-line))]'}`}>
                 <label className="flex cursor-pointer items-center gap-2 text-[10px] uppercase font-medium text-text-tertiary">
                   <input
@@ -2116,11 +2221,12 @@ function MeasureRow({
                   );
                 })()}
               </div>
+              )}
 
             </div>
           )}
 
-          {/* Filter Context — visible in BOTH modes. "% of total" / "%
+          {/* Filter Context — visible in ALL 3 modes. "% of total" / "%
               within group" are useful for plain SUM/AVG measures too,
               so we don't gate them on SQL mode. The raw-modifier
               checkboxes inside ("Tuỳ chỉnh chi tiết" disclosure) stay
@@ -2130,6 +2236,40 @@ function MeasureRow({
             canEdit={canEdit}
             onChange={onChange}
           />
+
+          {/* SQL compile preview — shows the user what the engine will
+              actually produce. Faithful to semantic_query_engine.py
+              compile path: expression OR sql, wrapped in type (skipped
+              for formula), with WHERE merged from filters + where_sql.
+              Helps demystify which fields are load-bearing. */}
+          {!hasErrors && (() => {
+            const aggFn = ({
+              count: 'COUNT', sum: 'SUM', avg: 'AVG', min: 'MIN', max: 'MAX',
+              count_distinct: 'COUNT DISTINCT', percent_of_total: 'SUM',
+            } as Record<MeasureDefinition['type'], string>)[measure.type];
+            const valueExpr = mode === 'lowcode'
+              ? (measure.type === 'count' ? '*' : (measure.sql || '<chọn cột>'))
+              : (measure.expression || '<biểu thức>');
+            const whereParts: string[] = [];
+            if (filters.length > 0) whereParts.push(`${filters.length} filter`);
+            if (measure.where_sql) whereParts.push('WHERE bổ sung');
+            const whereHint = whereParts.length > 0 ? ` (với ${whereParts.join(' + ')})` : '';
+            const ctxHint = (measure.context_modifiers?.length ?? 0) > 0
+              ? ' OVER (...)' : '';
+            const preview = mode === 'formula'
+              ? valueExpr  // formula returns raw expression
+              : `${aggFn}(${valueExpr})${ctxHint}`;
+            return (
+              <div className="rounded-md bg-surface-2 px-2.5 py-1.5 text-[10px]">
+                <span className="font-emphasis text-text-tertiary uppercase tracking-wide">Sẽ compile thành: </span>
+                <code className="font-mono text-text-secondary">{preview}</code>
+                {whereHint && <span className="text-text-quaternary">{whereHint}</span>}
+                {measure.type === 'percent_of_total' && mode !== 'formula' && (
+                  <span className="text-text-quaternary"> ÷ tổng OVER ()</span>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Validation summary banner. Shows when this row has any
               errors so the user sees a count at the bottom of the form
