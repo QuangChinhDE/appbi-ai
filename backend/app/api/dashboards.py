@@ -1460,7 +1460,13 @@ def create_dashboard(
                 if chart_item.chart_id is None:
                     raise ValueError("chart_id is required for chart widgets")
                 _require_chart_visibility(db, current_user, chart_item.chart_id)
-        return DashboardService.create(db, dashboard, owner_id=current_user.id)
+        created = DashboardService.create(db, dashboard, owner_id=current_user.id)
+        # Phase-15.65 — wrap with draft serializer so DashboardResponse
+        # picks up has_draft/draft_layouts attrs (Phase-15.56). Without
+        # this, Pydantic from_attributes hits ORM objects that never had
+        # those transient fields set and validation can leak unexpected
+        # 500s on MCP-driven creates.
+        return _serialize_dashboard_with_draft(db, created, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -1479,7 +1485,9 @@ def update_dashboard(
     require_edit_access(db, current_user, dash, "dashboards")
     try:
         dashboard = DashboardService.update(db, dashboard_id, dashboard_update)
-        return dashboard
+        if dashboard is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -1521,7 +1529,9 @@ def add_chart_to_dashboard(
             request.layout,
             request.parameters,
         )
-        return dashboard
+        if dashboard is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -1549,7 +1559,9 @@ def add_widget_to_dashboard(
             request.layout,
             request.widget_config,
         )
-        return dashboard
+        if dashboard is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -1579,7 +1591,10 @@ def update_widget_config(
 
     item.widget_config = normalize_dashboard_widget_config(item.widget_type, request.widget_config)
     db.commit()
-    return DashboardService.get_by_id(db, dashboard_id)
+    refreshed = DashboardService.get_by_id(db, dashboard_id)
+    if refreshed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    return _serialize_dashboard_with_draft(db, refreshed, current_user)
 
 
 @router.delete("/{dashboard_id}/charts/{dashboard_chart_id}", response_model=DashboardResponse)
@@ -1596,7 +1611,9 @@ def remove_chart_from_dashboard(
     require_edit_access(db, current_user, dash, "dashboards")
     try:
         dashboard = DashboardService.remove_chart(db, dashboard_id, dashboard_chart_id)
-        return dashboard
+        if dashboard is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -1619,7 +1636,9 @@ def update_dashboard_layout(
             dashboard_id,
             request.chart_layouts
         )
-        return dashboard
+        if dashboard is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+        return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
