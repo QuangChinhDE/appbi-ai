@@ -55,25 +55,6 @@ import {
 } from '@/lib/dashboard-pages';
 import { toast } from '@/lib/toast';
 
-// Debounce utility
-function useDebounce<T extends (...args: any[]) => any>(
-  callback: T,
-  delay: number
-): (...args: Parameters<T>) => void {
-  const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout | null>(null);
-
-  return useCallback(
-    (...args: Parameters<T>) => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-      const id = setTimeout(() => callback(...args), delay);
-      setTimeoutId(id);
-    },
-    [callback, delay, timeoutId]
-  );
-}
-
 function semanticDimensionToFilterType(type: string | undefined): FilterType {
   switch ((type ?? '').toLowerCase()) {
     case 'date':
@@ -149,7 +130,8 @@ export default function DashboardDetailPage() {
   const [pendingRemoveDashboardChartId, setPendingRemoveDashboardChartId] = useState<number | undefined>();
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  // Phase-15.66 — `hasUnsavedChanges` replaced by hasLocalLayoutChanges
+  // (derived from localLayoutOverrides) + serverDashboard.has_draft.
   const [draftGlobalFilters, setDraftGlobalFilters] = useState<BaseFilter[]>([]);
   const [appliedGlobalFilters, setAppliedGlobalFilters] = useState<BaseFilter[]>([]);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
@@ -190,25 +172,45 @@ export default function DashboardDetailPage() {
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
   const { data: serverDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
-  // Phase-15.56 — apply draft_layouts overlay on top of the live
-  // dashboard_charts so the editor renders the pending layout. Public
-  // viewers go through a different endpoint and never see this overlay.
+
+  // Phase-15.66 — local layout overrides (no auto-save). Drag/resize
+  // only updates this map; explicit Save buttons flush to BE.
+  const [localLayoutOverrides, setLocalLayoutOverrides] = useState<
+    Record<number, Record<string, any>>
+  >({});
+  const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
+  const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft);
+
+  // Memoized dashboard view: server data overlaid with (1) BE draft_layouts,
+  // (2) in-progress local edits. Children see a normal dashboard_charts list.
   const dashboard = React.useMemo(() => {
     if (!serverDashboard) return serverDashboard;
-    const drafts = serverDashboard.draft_layouts;
-    if (!drafts || Object.keys(drafts).length === 0) return serverDashboard;
+    const beDrafts = serverDashboard.draft_layouts;
+    if (
+      !hasLocalLayoutChanges
+      && (!beDrafts || Object.keys(beDrafts).length === 0)
+    ) {
+      return serverDashboard;
+    }
     return {
       ...serverDashboard,
       dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
-        // BE sends draft_layouts keyed by dashboard_chart.id as a
-        // string-number (JSON dict keys are always strings). Try both
-        // forms so the override matches regardless of how the client
-        // ended up coercing.
-        const override = drafts[dc.id] ?? drafts[String(dc.id) as any];
-        return override ? { ...dc, layout: { ...dc.layout, ...override } } : dc;
+        const beOverride = beDrafts
+          ? (beDrafts[dc.id] ?? beDrafts[String(dc.id) as any])
+          : null;
+        const localOverride = localLayoutOverrides[dc.id];
+        if (!beOverride && !localOverride) return dc;
+        return {
+          ...dc,
+          layout: {
+            ...(dc.layout ?? {}),
+            ...(beOverride ?? {}),
+            ...(localOverride ?? {}),
+          },
+        };
       }),
     };
-  }, [serverDashboard]);
+  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges]);
 
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
@@ -336,78 +338,134 @@ export default function DashboardDetailPage() {
   //
   //
 
-  // Layout drafts (Phase-15.56). User can drag/resize freely; edits go
-  // into draft_snapshot on the server (debounced 1s) instead of live
-  // rows. Public viewers stay on the last-published layout. The "Lưu"
-  // button in the toolbar calls /publish to copy draft -> live.
-  const debouncedSaveLayout = useDebounce(
-    async (layouts: Layout[]) => {
-      if (!dashboard) return;
-
-      const chartLayouts = layouts.map((item) => ({
-        id: Number(item.i),
-        layout: {
-          ...(dashboard.dashboard_charts?.find((dashboardChart) => dashboardChart.id === Number(item.i))?.layout ?? {}),
-          x: item.x,
-          y: item.y,
-          w: item.w,
-          h: item.h,
-        },
-      }));
-
-      try {
-        await updateDraftLayoutMutation.mutateAsync({
-          dashboardId,
-          chartLayouts,
-        });
-      } catch (error) {
-        console.error('Failed to save draft layout:', error);
-      }
-    },
-    1000 // 1 second debounce
-  );
-
+  // Layout edits (Phase-15.66) — pure local state, NO auto-save.
+  //
+  // Previously (Phase 15.56–15.57) drag/resize debounced a /draft-layout
+  // POST every 1s. That round-trip + onSuccess setQueryData → 150+ tile
+  // re-render was the dominant source of grid lag. Bỏ auto-save hoàn
+  // toàn: drag/resize chỉ update React state, không gọi BE. User chủ
+  // động click "Lưu nháp" / "Lưu & xuất bản" để persist.
+  //
   const handleLayoutChange = (newLayout: Layout[]) => {
-    setHasUnsavedChanges(true);
-    debouncedSaveLayout(newLayout);
+    if (!serverDashboard) return;
+    // Build override map from the new react-grid-layout positions.
+    // Only record entries whose x/y/w/h actually differ from the
+    // baseline (serverDashboard layout merged with draft if any) so the
+    // "Save" button doesn't light up after a no-op gesture.
+    const next: Record<number, Record<string, any>> = {};
+    for (const item of newLayout) {
+      const id = Number(item.i);
+      const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
+      if (!existing) continue;
+      // Baseline = server draft if present, else live layout.
+      const draftKey = String(id);
+      const baseline = {
+        ...(existing.layout ?? {}),
+        ...((serverDashboard.draft_layouts?.[id] ?? serverDashboard.draft_layouts?.[draftKey as any]) ?? {}),
+      };
+      if (
+        baseline.x === item.x
+        && baseline.y === item.y
+        && baseline.w === item.w
+        && baseline.h === item.h
+      ) {
+        continue;
+      }
+      next[id] = {
+        ...(existing.layout ?? {}),
+        x: item.x,
+        y: item.y,
+        w: item.w,
+        h: item.h,
+      };
+    }
+    if (Object.keys(next).length === 0) {
+      // No real change — clear local diff if any.
+      setLocalLayoutOverrides({});
+      return;
+    }
+    setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
   };
 
-  // Canvas-mode layout updates: each entry carries pixel coords + z; we merge
-  // them into the existing layout JSON (preserving grid coords for round-trip).
+  // Canvas-mode layout updates: same pattern — local state only.
   const handleCanvasLayoutChange = useCallback(
-    async (
+    (
       updates: Array<{ id: number; xPx: number; yPx: number; wPx: number; hPx: number; z: number }>,
     ) => {
-      if (!dashboard) return;
-      const chartLayouts = updates.map((u) => {
-        const existing = dashboard.dashboard_charts?.find((dc) => dc.id === u.id)?.layout ?? {
-          x: 0,
-          y: 0,
-          w: 4,
-          h: 4,
-        };
-        return {
-          id: u.id,
-          layout: {
+      if (!serverDashboard) return;
+      setLocalLayoutOverrides((prev) => {
+        const next = { ...prev };
+        for (const u of updates) {
+          const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === u.id)?.layout ?? {
+            x: 0, y: 0, w: 4, h: 4,
+          };
+          next[u.id] = {
             ...existing,
             xPx: u.xPx,
             yPx: u.yPx,
             wPx: u.wPx,
             hPx: u.hPx,
             z: u.z,
-          },
-        };
+          };
+        }
+        return next;
       });
-      setHasUnsavedChanges(true);
-      try {
-        // Phase-15.56 — Canvas drag goes into draft too.
-        await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
-      } catch (err) {
-        console.error('Failed to save canvas draft layout:', err);
-      }
     },
-    [dashboard, dashboardId, updateDraftLayoutMutation],
+    [serverDashboard],
   );
+
+  // Flush helpers — used by Save draft / Save & Publish buttons.
+  const flushLocalLayoutsToDraft = async () => {
+    if (!hasLocalLayoutChanges) return true;
+    const chartLayouts = Object.entries(localLayoutOverrides).map(([id, layout]) => ({
+      id: Number(id),
+      layout,
+    }));
+    try {
+      await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
+      setLocalLayoutOverrides({});
+      return true;
+    } catch (err) {
+      console.error('Failed to flush draft layout:', err);
+      return false;
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const ok = await flushLocalLayoutsToDraft();
+    if (ok) {
+      toast.success('Đã lưu nháp.');
+    } else {
+      toast.error('Lưu nháp thất bại — thử lại.');
+    }
+  };
+
+  const handlePublish = async () => {
+    // Flush any pending local edits into draft first, then publish.
+    const ok = await flushLocalLayoutsToDraft();
+    if (!ok) {
+      toast.error('Không lưu được nháp — chưa thể xuất bản.');
+      return;
+    }
+    try {
+      await publishDashboardMutation.mutateAsync(dashboardId);
+      toast.success('Đã xuất bản — public link cập nhật phiên bản mới.');
+    } catch (err) {
+      toast.error('Xuất bản thất bại — thử lại.');
+    }
+  };
+
+  const handleDiscardAll = async () => {
+    setLocalLayoutOverrides({});
+    if (serverDashboard?.has_draft) {
+      try {
+        await discardDraftMutation.mutateAsync(dashboardId);
+        toast.success('Đã quay lại phiên bản đã xuất bản.');
+      } catch (err) {
+        toast.error('Không huỷ được nháp BE — thử lại.');
+      }
+    }
+  };
 
   const handleAddWidget = useCallback(
     async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher') => {
@@ -1393,39 +1451,55 @@ export default function DashboardDetailPage() {
                       </span>
                     </>
                   )}
-                  {hasUnsavedChanges && (
-                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-[510] text-text-quaternary">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      <span className="hidden sm:inline">Đang lưu nháp</span>
-                    </span>
-                  )}
-                  {/* Phase-15.56 — draft / publish controls. Visible only
-                      when the server reports a pending draft layout. */}
-                  {canEditResource && dashboard?.has_draft && (
+                  {/* Phase-15.66 — Manual save UX (no auto-save).
+                      Drag/resize chỉ update local state → no network call
+                      → mượt. 3 button: Lưu nháp / Lưu & xuất bản / Huỷ.
+
+                      States surfaced:
+                      • Có local change (chưa save BE) → badge "Chưa lưu"
+                      • Server has_draft=true → badge "Bản nháp"
+                      • Cả 2 → badge "Chưa lưu (có cả bản nháp BE)" */}
+                  {canEditResource && hasAnyPendingChanges && (
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
-                        className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide text-warning"
-                        title="Có thay đổi bố cục chưa xuất bản. Người xem qua share link vẫn thấy phiên bản cũ."
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide ${
+                          hasLocalLayoutChanges
+                            ? 'bg-warning/20 text-warning'
+                            : 'bg-warning/10 text-warning'
+                        }`}
+                        title={
+                          hasLocalLayoutChanges
+                            ? 'Có thay đổi chưa lưu — nhấn Lưu nháp hoặc Lưu & xuất bản để giữ.'
+                            : 'Có bản nháp đã lưu chưa xuất bản. Share link vẫn dùng bản cũ.'
+                        }
                       >
-                        Bản nháp
+                        {hasLocalLayoutChanges ? 'Chưa lưu' : 'Bản nháp'}
                       </span>
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            await publishDashboardMutation.mutateAsync(dashboardId);
-                            setHasUnsavedChanges(false);
-                            toast.success('Đã xuất bản — share link cập nhật phiên bản mới.');
-                          } catch (e) {
-                            toast.error('Không xuất bản được — thử lại.');
-                          }
-                        }}
-                        disabled={publishDashboardMutation.isPending}
+                        onClick={handleSaveDraft}
+                        disabled={
+                          !hasLocalLayoutChanges
+                          || updateDraftLayoutMutation.isPending
+                        }
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        title="Lưu bản nháp lên server (share link vẫn dùng bản đã xuất bản gần nhất)"
+                      >
+                        {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        Lưu nháp
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePublish}
+                        disabled={
+                          publishDashboardMutation.isPending
+                          || updateDraftLayoutMutation.isPending
+                        }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
-                        title="Áp dụng bản nháp lên public share link"
+                        title="Áp dụng thay đổi lên public share link"
                       >
                         {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Lưu
+                        Lưu & xuất bản
                       </button>
                       <button
                         type="button"
@@ -1795,21 +1869,14 @@ export default function DashboardDetailPage() {
           variant="danger"
         />
 
-        {/* Phase-15.56 — Confirm discard draft layout */}
+        {/* Phase-15.66 — Confirm discard: clears BOTH local draft state
+            AND any saved-but-not-published BE draft. */}
         <ConfirmDialog
           isOpen={isDiscardConfirmOpen}
           onClose={() => setIsDiscardConfirmOpen(false)}
-          onConfirm={async () => {
-            try {
-              await discardDraftMutation.mutateAsync(dashboardId);
-              setHasUnsavedChanges(false);
-              toast.success('Đã quay lại phiên bản gần nhất.');
-            } catch (e) {
-              toast.error('Không huỷ được — thử lại.');
-            }
-          }}
+          onConfirm={handleDiscardAll}
           title="Huỷ thay đổi bố cục?"
-          description="Bản nháp hiện tại sẽ bị xoá. Dashboard quay về bố cục đã xuất bản gần nhất. Hành động này không hoàn tác được."
+          description="Mọi thay đổi (local + bản nháp đã lưu) sẽ bị xoá. Dashboard quay về bố cục đã xuất bản gần nhất. Hành động này không hoàn tác được."
           confirmLabel="Huỷ thay đổi"
           cancelLabel="Giữ lại"
           variant="warning"
