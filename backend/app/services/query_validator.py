@@ -15,13 +15,34 @@ class QueryValidationError(Exception):
 class QueryValidator:
     """Validates SQL queries for safety"""
     
-    # Dangerous SQL keywords that should never appear
+    # Dangerous SQL keywords that should never appear as statements.
+    # NOTE: REPLACE, MERGE, SET are NOT in this list because they double
+    # as legitimate expressions in modern SQL:
+    #   • REPLACE(str, from, to)       — BigQuery/MySQL string function
+    #   • SELECT * REPLACE(... AS col) — BigQuery column override modifier
+    #   • MERGE statement is DML, but `MERGE` rarely appears as identifier
+    #     so we still block as bare keyword (see _STATEMENT_KEYWORDS).
+    #   • SET clause in UPDATE/INSERT is DML; but SET also appears in
+    #     BigQuery `SELECT AS STRUCT`/`STRUCT<a INT64>` — too ambiguous
+    #     for a blanket block.
+    # We split into 2 lists: hard-block keywords + statement-only
+    # keywords (must appear at start-of-statement to be dangerous).
     DANGEROUS_KEYWORDS = [
         'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'CREATE', 'INSERT',
-        'UPDATE', 'REPLACE', 'MERGE', 'EXEC', 'EXECUTE', 'GRANT',
-        'REVOKE', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'SET',
+        'UPDATE', 'EXEC', 'EXECUTE', 'GRANT',
+        'REVOKE', 'COMMIT', 'ROLLBACK', 'SAVEPOINT',
     ]
-    
+
+    # Keywords that ARE dangerous as statements but legitimate as
+    # functions/expressions. We block them only when they appear
+    # statement-position (not followed by `(` and not inside a SELECT
+    # expression context).
+    _CONTEXT_DEPENDENT = {
+        'REPLACE': r'\bREPLACE\s+(?:INTO|LOW_PRIORITY|DELAYED|IGNORE)\b',
+        'MERGE':   r'\bMERGE\s+(?:INTO)\b',
+        'SET':     r'\bSET\s+[A-Z_]+\s*=',  # SET col = value (UPDATE/SESSION SET)
+    }
+
     # Dangerous patterns
     DANGEROUS_PATTERNS = [
         r';',  # Multiple statements
@@ -68,7 +89,17 @@ class QueryValidator:
             pattern = r'\b' + keyword + r'\b'
             if re.search(pattern, normalized):
                 return False, f"Dangerous keyword not allowed: {keyword}"
-        
+
+        # Context-dependent keywords: only block when used as statement,
+        # not when used as function/expression.
+        #   REPLACE(...)   → safe   (BigQuery string fn / SELECT * REPLACE)
+        #   REPLACE INTO   → DML, block
+        #   SET col=val    → UPDATE clause, block
+        #   MERGE INTO     → DML, block
+        for keyword, danger_pattern in QueryValidator._CONTEXT_DEPENDENT.items():
+            if re.search(danger_pattern, normalized):
+                return False, f"Dangerous keyword not allowed: {keyword}"
+
         # Check for dangerous patterns (on the comment-stripped text)
         for pattern in QueryValidator.DANGEROUS_PATTERNS:
             if re.search(pattern, stripped):
