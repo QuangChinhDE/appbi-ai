@@ -142,18 +142,29 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
     if not chart_ids:
         return {"manifest": manifest.get("data") or {}, "summaries": []}
 
-    # Parallel fan-out. Workers share the same SQLAlchemy session bound to
-    # ``ctx.db``; SQLite/Postgres sessions are not thread-safe, so we keep
-    # the pool small and serialize via a lock if we ever observe issues.
-    # In practice each summary call hits LiveQueryService which opens its
-    # own source DB connection per call, so the bottleneck is the source
-    # DB latency, which parallelizes fine.
+    # Parallel fan-out. Phase-15.70 fix: SQLAlchemy sessions are NOT
+    # thread-safe — sharing ctx.db across workers triggered
+    # `InvalidRequestError: This session is provisioning a new
+    # connection; concurrent operations are not permitted` when 2+
+    # tools queried metadata in parallel. Each worker now opens its
+    # own short-lived session via SessionLocal and clones the
+    # ToolContext to use it; the cloned context still sees the same
+    # dashboard / allowed_chart_ids / public_filters so allowlist + cache
+    # semantics are preserved.
+    from app.core.database import SessionLocal
+    from dataclasses import replace as _dc_replace
+
+    def _run_one(cid: int) -> dict:
+        worker_db = SessionLocal()
+        try:
+            worker_ctx = _dc_replace(ctx, db=worker_db, _chart_data_cache={})
+            return tool_get_chart_summary(worker_ctx, {"chart_id": cid})
+        finally:
+            worker_db.close()
+
     results: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=min(6, len(chart_ids))) as pool:
-        futures = {
-            pool.submit(tool_get_chart_summary, ctx, {"chart_id": cid}): cid
-            for cid in chart_ids
-        }
+        futures = {pool.submit(_run_one, cid): cid for cid in chart_ids}
         for fut in as_completed(futures):
             cid = futures[fut]
             try:

@@ -99,11 +99,23 @@ async def stream_openai(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    # Phase-15.70 — gpt-5 / o1 / o3 / o4 model family rejects the legacy
+    # `max_tokens` field; OpenAI moved it to `max_completion_tokens`.
+    # Detect the new-family by prefix so the bot keeps working as OpenAI
+    # rolls out more reasoning models.
+    model_lc = (model or "").strip().lower()
+    uses_new_tokens_field = (
+        model_lc.startswith("gpt-5")
+        or model_lc.startswith("o1")
+        or model_lc.startswith("o3")
+        or model_lc.startswith("o4")
+    )
+    tokens_field = "max_completion_tokens" if uses_new_tokens_field else "max_tokens"
     payload: dict[str, Any] = {
         "model": model,
         "messages": _to_openai_messages(system_prompt, messages),
         "stream": True,
-        "max_tokens": max_tokens,
+        tokens_field: max_tokens,
         # Ask OpenAI to emit a final chunk carrying token usage so the agent
         # loop can tally cost against the per-turn cap.
         "stream_options": {"include_usage": True},
