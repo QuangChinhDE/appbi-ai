@@ -1728,7 +1728,22 @@ def _enqueue_auto_type_detection_if_needed(
     background_tasks: BackgroundTasks,
     db_table: DatasetTable,
 ) -> None:
-    """Only run auto-detect for sources whose schema is unreliable (Sheets, manual)."""
+    """Run auto-detect for sources whose initial type inference is
+    unreliable.
+
+    Reliable (skipped — native schema used at import time):
+      • physical_table on Postgres/MySQL/BigQuery — types come from
+        information_schema / native client
+      • sql_query on Postgres/MySQL/BigQuery — types from LIMIT 0
+        dry-run or BigQuery dry-run schema
+
+    Unreliable (enqueued — full-scan post-import):
+      • Google Sheets / manual upload — only sample-based detection
+        is available at import
+      • derived_table (wrapped SQL view) — inferred from 200-row
+        preview + 20-row regex; an INT column with a stray decimal
+        further in the data gets typed wrong
+    """
     datasource_id = getattr(db_table, "datasource_id", None)
     if datasource_id is None:
         return
@@ -1739,7 +1754,17 @@ def _enqueue_auto_type_detection_if_needed(
     datasource = getattr(db_table, "datasource", None)
     if datasource is not None:
         ds_type = datasource.type if isinstance(datasource.type, str) else getattr(datasource.type, "value", None)
-    if ds_type not in ("google_sheets", "manual"):
+
+    source_kind = str(getattr(db_table, "source_kind", "") or "").strip().lower()
+
+    # Phase-15.69 — derived_table on any DB source needs the full-scan
+    # check because we wrap user SQL and the resulting schema may have
+    # mixed-type columns the LIMIT-0 detector can't catch.
+    should_enqueue = (
+        ds_type in ("google_sheets", "manual")
+        or source_kind == "derived_table"
+    )
+    if not should_enqueue:
         return
     background_tasks.add_task(_run_auto_type_detection, int(table_id))
 

@@ -909,10 +909,132 @@ def _upsert_semantic_view(
     return view, created, updated
 
 
+def _apply_db_fk_constraints(
+    db: Session,
+    tables: List[DatasetTable],
+    table_views: Dict[int, SemanticView],
+    joins_by_source: Dict[str, List[dict]],
+) -> None:
+    """Phase-15.69 — query each source datasource's INFORMATION_SCHEMA
+    for FK constraints and append matching joins into joins_by_source.
+
+    Grouped by datasource_id so we make one connection per DS, not per
+    table. Skips tables without a datasource (derived/manual/calendar).
+    """
+    from app.services.datasource_service import DataSourceConnectionService
+
+    # Group tables by datasource_id; collect their source_table_name.
+    by_ds: Dict[int, List[DatasetTable]] = {}
+    for t in tables:
+        if is_generated_calendar_table(t):
+            continue
+        if not getattr(t, "datasource_id", None) or not getattr(t, "source_table_name", None):
+            continue
+        by_ds.setdefault(int(t.datasource_id), []).append(t)
+    if not by_ds:
+        return
+
+    # Index physical_table by its source_table_name (case-insensitive,
+    # with + without schema prefix) so we can map FK rows back to our
+    # SemanticView.
+    def _index_by_source_name(group: List[DatasetTable]) -> Dict[str, DatasetTable]:
+        idx: Dict[str, DatasetTable] = {}
+        for tt in group:
+            src = str(tt.source_table_name or "").strip()
+            if not src:
+                continue
+            idx[src.lower()] = tt
+            # Bare table name (without schema) — for cross-schema FKs.
+            if "." in src:
+                bare = src.split(".", 1)[1]
+                idx.setdefault(bare.lower(), tt)
+        return idx
+
+    for ds_id, group in by_ds.items():
+        ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds:
+            continue
+        ds_type = ds.type if isinstance(ds.type, str) else getattr(ds.type, "value", "")
+        if ds_type not in ("postgresql", "mysql", "bigquery"):
+            continue
+        source_names = [str(t.source_table_name) for t in group if t.source_table_name]
+        try:
+            fks = DataSourceConnectionService.list_foreign_keys(
+                ds_type=ds_type,
+                config=ds.config,
+                table_names=source_names,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[fk_extract] ds_id={ds_id} failed: {exc}")
+            continue
+        if not fks:
+            continue
+
+        name_idx = _index_by_source_name(group)
+        for fk in fks:
+            ft = str(fk.get("from_table") or "").strip()
+            tt = str(fk.get("to_table") or "").strip()
+            fc = str(fk.get("from_column") or "").strip()
+            tc = str(fk.get("to_column") or "").strip()
+            if not (ft and tt and fc and tc):
+                continue
+            from_tbl = name_idx.get(ft.lower())
+            to_tbl = name_idx.get(tt.lower())
+            if from_tbl is None or to_tbl is None or from_tbl.id == to_tbl.id:
+                continue
+            from_view = table_views.get(from_tbl.id)
+            to_view = table_views.get(to_tbl.id)
+            if from_view is None or to_view is None:
+                continue
+            joins_by_source.setdefault(from_view.name, [])
+            # Dedupe by (target_view, from_column).
+            already = any(
+                join.get("view") == to_view.name
+                and join.get("from_column") == fc
+                for join in joins_by_source[from_view.name]
+            )
+            if already:
+                continue
+            joins_by_source[from_view.name].append({
+                "name": to_view.name,
+                "view": to_view.name,
+                "type": "left",
+                "sql_on": f"${{TABLE}}.{fc} = ${{{to_view.name}}}.{tc}",
+                "relationship": "many_to_one",
+                "from_view": from_view.name,
+                "from_column": fc,
+                "to_column": tc,
+                "from_columns": [fc],
+                "to_columns": [tc],
+                # Tag distinct from heuristic so UI can show "verified
+                # from DB constraint" vs "guessed from naming".
+                "origin": "auto_db_constraint",
+                "managed": True,
+            })
+
+
 def _detect_fk_joins(
     tables: List[DatasetTable],
     table_views: Dict[int, SemanticView],
+    db: Optional[Session] = None,
 ) -> Dict[str, List[dict]]:
+    """Build join suggestions for the model.
+
+    Phase-15.69 — two-pass detection:
+      1. Pull FK constraints from the source DB's INFORMATION_SCHEMA
+         (Postgres pg_constraint / MySQL KEY_COLUMN_USAGE / BigQuery
+         CONSTRAINT_COLUMN_USAGE). These are AUTHORITATIVE — the DB
+         already enforces them — so any FK we find here is a 100%
+         correct join suggestion. Tagged `origin="auto_db_constraint"`.
+      2. Fall back to the legacy name-heuristic (column ending in `_id`
+         + matching table name) for tables/sources that don't expose
+         FKs. Tagged `origin="auto_fk"` (legacy tag preserved so
+         existing UI annotations still work).
+
+    db arg is optional — when None we skip Phase 1 and only run name
+    heuristics (e.g. when called from a path that doesn't have a DB
+    handle wired in yet).
+    """
     joins_by_source: Dict[str, List[dict]] = {}
     table_names: Dict[str, DatasetTable] = {}
 
@@ -922,6 +1044,13 @@ def _detect_fk_joins(
         display = _view_name_for_table(table)
         table_names[display.lower()] = table
         table_names[_singularize(display).lower()] = table
+
+    # ── Phase 1: source-DB FK constraints (highest signal) ────────────────
+    if db is not None:
+        try:
+            _apply_db_fk_constraints(db, tables, table_views, joins_by_source)
+        except Exception as exc:  # noqa: BLE001 — best effort; never block model gen
+            logger.warning(f"[fk_extract] failed, falling back to name heuristic: {exc}")
 
     for table in tables:
         if is_generated_calendar_table(table) or not table.columns_cache:
@@ -1336,7 +1465,7 @@ def _sync_dataset_model_structure(
     auto_calendar_joins: Dict[str, List[dict]] = {}
     role_view_names: Set[str] = set()
     if refresh_auto_joins:
-        auto_fk_joins = _detect_fk_joins(tables, table_views)
+        auto_fk_joins = _detect_fk_joins(tables, table_views, db=db)
         auto_calendar_joins, role_views, role_views_created, role_views_updated, role_view_names = _build_calendar_role_views(
             db,
             dataset_obj=dataset_obj,

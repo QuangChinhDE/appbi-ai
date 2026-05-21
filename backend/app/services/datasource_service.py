@@ -2306,6 +2306,251 @@ class DataSourceConnectionService:
         return []
 
     @staticmethod
+    def list_foreign_keys(
+        ds_type: str,
+        config: Dict[str, Any],
+        table_names: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Phase-15.69 — pull FK constraints from the source DB's
+        INFORMATION_SCHEMA (or equivalent) for a given set of tables.
+
+        Returns a flat list:
+          [
+            {
+              "from_schema": "public", "from_table": "orders",
+              "from_column": "user_id",
+              "to_schema": "public", "to_table": "users",
+              "to_column": "id",
+            },
+            ...
+          ]
+
+        Only includes FKs where BOTH endpoints are in `table_names`
+        (qualified `schema.table` strings) so we don't pollute the
+        model with joins to tables the dataset doesn't import.
+
+        Google Sheets / Manual / BigQuery (no real FK metadata)
+        return []. BigQuery does have INFORMATION_SCHEMA but FKs are
+        decorative only (not enforced) — still useful as hints when DA
+        author keys them, so we read them too.
+        """
+        from app.core.crypto import decrypt_config
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_list_foreign_keys(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.MYSQL.value:
+            return DataSourceConnectionService._mysql_list_foreign_keys(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.BIGQUERY.value:
+            return DataSourceConnectionService._bq_list_foreign_keys(
+                decrypt_config(config), table_names
+            )
+        return []
+
+    @staticmethod
+    def _pg_list_foreign_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Postgres: read pg_constraint + pg_attribute for type='f' (FK)."""
+        if not table_names:
+            return []
+        # Build the (schema, table) tuple list for IN clause.
+        pairs: List[tuple[str, str]] = []
+        for raw in table_names:
+            if "." in raw:
+                s, t = raw.split(".", 1)
+            else:
+                s, t = "public", raw
+            pairs.append((s.strip('"').strip("'"), t.strip('"').strip("'")))
+        if not pairs:
+            return []
+        sql = """
+            SELECT
+                src_ns.nspname  AS from_schema,
+                src_tbl.relname AS from_table,
+                src_col.attname AS from_column,
+                dst_ns.nspname  AS to_schema,
+                dst_tbl.relname AS to_table,
+                dst_col.attname AS to_column
+            FROM pg_constraint c
+            JOIN pg_class    src_tbl ON src_tbl.oid = c.conrelid
+            JOIN pg_namespace src_ns ON src_ns.oid = src_tbl.relnamespace
+            JOIN pg_class    dst_tbl ON dst_tbl.oid = c.confrelid
+            JOIN pg_namespace dst_ns ON dst_ns.oid = dst_tbl.relnamespace
+            JOIN unnest(c.conkey)  WITH ORDINALITY AS src_attr(attnum, ord) ON TRUE
+            JOIN unnest(c.confkey) WITH ORDINALITY AS dst_attr(attnum, ord)
+                 ON src_attr.ord = dst_attr.ord
+            JOIN pg_attribute src_col
+                 ON src_col.attrelid = c.conrelid AND src_col.attnum = src_attr.attnum
+            JOIN pg_attribute dst_col
+                 ON dst_col.attrelid = c.confrelid AND dst_col.attnum = dst_attr.attnum
+            WHERE c.contype = 'f'
+        """
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql)
+            allowed = {(s, t) for s, t in pairs}
+            out: List[Dict[str, Any]] = []
+            for row in cur.fetchall():
+                fs, ft, fc, ts, tt, tc = row
+                if (fs, ft) not in allowed or (ts, tt) not in allowed:
+                    continue
+                out.append({
+                    "from_schema": fs, "from_table": ft, "from_column": fc,
+                    "to_schema": ts, "to_table": tt, "to_column": tc,
+                })
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[fk_extract] Postgres FK query failed: {exc}")
+            return []
+
+    @staticmethod
+    def _mysql_list_foreign_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        """MySQL: KEY_COLUMN_USAGE filtered to FK rows."""
+        if not table_names:
+            return []
+        # MySQL doesn't really use schema; use db name as the schema.
+        db_name = config.get("database") or ""
+        bare_tables = []
+        for raw in table_names:
+            if "." in raw:
+                _, t = raw.split(".", 1)
+            else:
+                t = raw
+            bare_tables.append(t.strip('"').strip("'").strip("`"))
+        if not bare_tables:
+            return []
+        placeholders = ",".join(["%s"] * len(bare_tables))
+        sql = f"""
+            SELECT
+                TABLE_SCHEMA            AS from_schema,
+                TABLE_NAME              AS from_table,
+                COLUMN_NAME             AS from_column,
+                REFERENCED_TABLE_SCHEMA AS to_schema,
+                REFERENCED_TABLE_NAME   AS to_table,
+                REFERENCED_COLUMN_NAME  AS to_column
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE REFERENCED_TABLE_NAME IS NOT NULL
+              AND TABLE_SCHEMA = %s
+              AND TABLE_NAME IN ({placeholders})
+        """
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"),
+                port=int(config.get("port", 3306)),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+                read_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql, [db_name, *bare_tables])
+            allowed = set(bare_tables)
+            out: List[Dict[str, Any]] = []
+            for row in cur.fetchall():
+                fs, ft, fc, ts, tt, tc = row
+                if ft not in allowed or tt not in allowed:
+                    continue
+                out.append({
+                    "from_schema": fs, "from_table": ft, "from_column": fc,
+                    "to_schema": ts, "to_table": tt, "to_column": tc,
+                })
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[fk_extract] MySQL FK query failed: {exc}")
+            return []
+
+    @staticmethod
+    def _bq_list_foreign_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        """BigQuery: INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE +
+        TABLE_CONSTRAINTS. FKs decorative only (not enforced) but DAs
+        who model them get free join suggestions.
+
+        BigQuery requires querying per-dataset INFORMATION_SCHEMA; we
+        group `table_names` by their dataset (the `schema` part).
+        """
+        if not table_names:
+            return []
+        by_dataset: Dict[str, List[str]] = {}
+        for raw in table_names:
+            if "." in raw:
+                parts = raw.split(".")
+                if len(parts) == 2:
+                    ds, t = parts
+                elif len(parts) >= 3:
+                    # project.dataset.table
+                    ds = parts[-2]
+                    t = parts[-1]
+                else:
+                    continue
+            else:
+                continue
+            by_dataset.setdefault(ds.strip("`"), []).append(t.strip("`"))
+        if not by_dataset:
+            return []
+        try:
+            client = _build_bigquery_client(config)
+            project_id = config.get("project_id")
+            out: List[Dict[str, Any]] = []
+            for ds_name, tables in by_dataset.items():
+                # BigQuery FKs: TABLE_CONSTRAINTS where CONSTRAINT_TYPE='FOREIGN KEY'
+                # then join CONSTRAINT_COLUMN_USAGE for both sides.
+                allowed = set(tables)
+                sql = f"""
+                    SELECT
+                      kcu.table_schema      AS from_schema,
+                      kcu.table_name        AS from_table,
+                      kcu.column_name       AS from_column,
+                      ccu.table_schema      AS to_schema,
+                      ccu.table_name        AS to_table,
+                      ccu.column_name       AS to_column
+                    FROM `{project_id}.{ds_name}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS` tc
+                    JOIN `{project_id}.{ds_name}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE` kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                      AND tc.table_schema = kcu.table_schema
+                    JOIN `{project_id}.{ds_name}.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE` ccu
+                      ON tc.constraint_name = ccu.constraint_name
+                      AND tc.table_schema = ccu.table_schema
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                """
+                job = client.query(sql)
+                for row in job.result(timeout=30):
+                    fs, ft, fc, ts, tt, tc = (
+                        row["from_schema"], row["from_table"], row["from_column"],
+                        row["to_schema"], row["to_table"], row["to_column"],
+                    )
+                    if ft not in allowed:
+                        continue
+                    out.append({
+                        "from_schema": fs, "from_table": ft, "from_column": fc,
+                        "to_schema": ts, "to_table": tt, "to_column": tc,
+                    })
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[fk_extract] BigQuery FK query failed: {exc}")
+            return []
+
+    @staticmethod
     def _pg_list_columns(config: Dict[str, Any], schema: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:
