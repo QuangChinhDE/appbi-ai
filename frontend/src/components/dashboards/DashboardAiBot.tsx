@@ -228,6 +228,12 @@ interface ChatMessage extends AiChatMessage {
   statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
   /** User rating for this assistant message. */
   rating?: 'up' | 'down';
+  /** Phase-15.71 — reading plan emitted by the bot before answering.
+   *  Renders as a collapsible "AI đang đọc" panel above the answer. */
+  readingPlan?: {
+    items: { step: number; chart_id: number | null; phase: string; question: string }[];
+    overallGoal?: string | null;
+  };
 }
 
 interface Props {
@@ -672,6 +678,19 @@ export function DashboardAiBot({
             }
             setMessages(latestMessages);
           },
+          setReadingPlan: (items, overallGoal) => {
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+              latestMessages = [
+                ...latestMessages.slice(0, lastIdx),
+                {
+                  ...latestMessages[lastIdx],
+                  readingPlan: { items, overallGoal },
+                },
+              ];
+            }
+            setMessages(latestMessages);
+          },
           updateState: (s) => { setConvState(s); latestConvState = s; },
         });
       }
@@ -992,6 +1011,10 @@ function applyEvent(
     appendText: (chunk: string) => void;
     setStatus: (s: string) => void;
     appendStatusLog: (entry: { tool: string; text: string; ok?: boolean; error?: string | null }) => void;
+    setReadingPlan: (
+      items: { step: number; chart_id: number | null; phase: string; question: string }[],
+      overallGoal?: string | null,
+    ) => void;
     updateState: (s: AiConversationState) => void;
   },
 ) {
@@ -1010,6 +1033,13 @@ function applyEvent(
   }
   if (ev.type === 'tool_result') {
     ops.appendStatusLog({ tool: ev.tool, text: '', ok: ev.ok, error: ev.error ?? null });
+    return;
+  }
+  if (ev.type === 'reading_plan') {
+    // Phase-15.71 — attach the bot's structured reading plan to the
+    // current assistant message so a collapsible panel can render it
+    // above the prose answer.
+    ops.setReadingPlan(ev.items, ev.overall_goal ?? null);
     return;
   }
   if (ev.type === 'state') {
@@ -1361,6 +1391,13 @@ function MessageBubble({
             : 'border border-[rgb(var(--border-line))] bg-surface-2 text-text-primary'
         }`}
       >
+        {!isUser && message.readingPlan && message.readingPlan.items.length > 0 && (
+          <ReadingPlanPanel
+            items={message.readingPlan.items}
+            overallGoal={message.readingPlan.overallGoal}
+            collapsed={!streaming}
+          />
+        )}
         {!isUser && message.statusLog && message.statusLog.length > 0 && (
           <StatusLog log={message.statusLog} collapsed={!streaming} />
         )}
@@ -1473,6 +1510,85 @@ function extractFollowups(text: string): { body: string; suggestions: string[] }
     bodyLines.pop();
   }
   return { body: bodyLines.join('\n'), suggestions };
+}
+
+// Phase-15.71 — analyst-style "AI đang đọc dashboard" panel. Shows the
+// LLM's declared reading plan BEFORE the prose answer so the user sees
+// the step-by-step flow (which charts, which phase, what question)
+// rather than just the final synthesis.
+const _PHASE_LABEL: Record<string, { label: string; cls: string }> = {
+  triage:        { label: 'Quét nhanh',  cls: 'bg-text-quaternary/20 text-text-secondary' },
+  health_check:  { label: 'Health check', cls: 'bg-info/15 text-info' },
+  drilldown:     { label: 'Đào sâu',     cls: 'bg-brand/15 text-brand' },
+  compare:       { label: 'So sánh',     cls: 'bg-warning/15 text-warning' },
+  synthesize:    { label: 'Tổng hợp',    cls: 'bg-success/15 text-success' },
+};
+
+function ReadingPlanPanel({
+  items,
+  overallGoal,
+  collapsed = false,
+}: {
+  items: NonNullable<ChatMessage['readingPlan']>['items'];
+  overallGoal?: string | null;
+  collapsed?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(!collapsed);
+  // Re-derive expand state when streaming flips; show by default while
+  // streaming so the user can follow along, collapse afterwards.
+  useEffect(() => { setExpanded(!collapsed); }, [collapsed]);
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mb-2 rounded-md border border-brand/25 bg-brand/5 px-2.5 py-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-tiny font-semibold text-brand"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
+          AI đang đọc dashboard ({items.length} bước)
+        </span>
+        <span className="text-text-tertiary">{expanded ? '▾' : '▸'}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1.5">
+          {overallGoal && (
+            <div className="text-tiny italic text-text-tertiary">
+              Mục tiêu: {overallGoal}
+            </div>
+          )}
+          <ol className="space-y-1">
+            {items.map((it) => {
+              const ph = _PHASE_LABEL[it.phase] || { label: it.phase, cls: 'bg-surface-2 text-text-secondary' };
+              return (
+                <li key={it.step} className="flex items-start gap-2 text-tiny">
+                  <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[10px] font-semibold text-brand">
+                    {it.step}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className={`rounded px-1.5 py-px text-[10px] font-medium ${ph.cls}`}>
+                        {ph.label}
+                      </span>
+                      {it.chart_id !== null && it.chart_id !== undefined && (
+                        <span className="text-[10px] text-text-quaternary">
+                          chart #{it.chart_id}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-text-secondary leading-snug">
+                      {it.question}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StatusLog({

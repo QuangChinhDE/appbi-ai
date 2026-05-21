@@ -678,6 +678,22 @@ async def run_agent_stream(
                     tool_result=_scrub_for_log(result),
                 )
 
+                # Phase-15.71 — surface the reading plan to the FE as a
+                # first-class event so the UI can render an "AI đang đọc"
+                # collapsible panel BEFORE the prose answer streams in.
+                # The tool itself ack'd the LLM with a short string; the
+                # rich plan payload only goes to the FE channel.
+                if tc.tool_name == "emit_reading_plan" and isinstance(result, dict):
+                    data = result.get("data") if result.get("ok") else None
+                    if isinstance(data, dict) and data.get("items"):
+                        yield AgentEvent(
+                            type="reading_plan",
+                            extra={
+                                "items": data.get("items") or [],
+                                "overall_goal": data.get("overall_goal"),
+                            },
+                        )
+
             # Loop again so the LLM can react to the tool results
             continue
 

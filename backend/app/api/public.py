@@ -2814,6 +2814,17 @@ def _event_to_envelope(ev) -> dict | None:
             "ok": bool(result.get("ok")),
             "error": result.get("error") if not result.get("ok") else None,
         }
+    if et == "reading_plan":
+        # Phase-15.71 — forward the analyst-style reading plan to the
+        # FE. The structured items are safe to send (already validated
+        # in tool_emit_reading_plan: chart_id ∈ allowed set, phase
+        # whitelisted, question is plain text).
+        extra = ev.extra or {}
+        return {
+            "type": "reading_plan",
+            "items": extra.get("items") or [],
+            "overall_goal": extra.get("overall_goal"),
+        }
     if et == "error":
         return {"type": "error", "text": ev.text}
     if et == "state":

@@ -18,6 +18,11 @@ EventType = Literal[
     "cost",         # running USD spend for this turn (emitted by the loop)
     "error",        # non-fatal error message to surface
     "done",         # final marker
+    # Phase-15.71 — reading plan emitted by the agent before it starts
+    # answering. FE renders this as a collapsible "AI đang đọc" panel so
+    # the user sees the analyst-style flow (which charts → why → in what
+    # order) instead of just the final answer.
+    "reading_plan",
 ]
 
 

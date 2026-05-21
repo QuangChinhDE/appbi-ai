@@ -247,10 +247,21 @@ export interface AiRecon {
   summaries: AiReconInsightPack[];
 }
 
+// Phase-15.71 — reading plan event. The bot emits this BEFORE answering
+// so the FE can render a collapsible "AI đang đọc dashboard" panel that
+// shows the analyst-style flow step-by-step.
+export interface AiReadingPlanItem {
+  step: number;
+  chart_id: number | null;
+  phase: 'triage' | 'health_check' | 'drilldown' | 'compare' | 'synthesize' | string;
+  question: string;
+}
+
 export type AiAgentEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string; tool: string }
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
   | { type: 'state'; state: AiConversationState }
   | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
   | { type: 'usage'; prompt_tokens: number; completion_tokens: number }

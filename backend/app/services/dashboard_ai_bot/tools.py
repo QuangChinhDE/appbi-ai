@@ -526,11 +526,65 @@ def tool_compute(ctx: ToolContext, args: dict) -> dict:
     })
 
 
+def tool_emit_reading_plan(ctx: ToolContext, args: dict) -> dict:
+    """Phase-15.71 — pseudo-tool. Validates and echoes back the
+    structured reading plan. The agent loop intercepts the result and
+    emits an SSE ``reading_plan`` event to the FE; the LLM gets a
+    plain ack so it continues to the actual data calls.
+
+    Validation:
+      - items must be a non-empty list of dicts
+      - chart_id (if present) must be in allowed_chart_ids
+      - phase must match the enum
+    """
+    raw_items = args.get("items") if isinstance(args, dict) else None
+    if not isinstance(raw_items, list) or not raw_items:
+        return _err("emit_reading_plan: items phải là list non-empty.")
+    allowed_phases = {"triage", "health_check", "drilldown", "compare", "synthesize"}
+    cleaned: list[dict] = []
+    for i, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            continue
+        phase = str(item.get("phase") or "").strip().lower()
+        if phase not in allowed_phases:
+            phase = "triage"
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        cid_raw = item.get("chart_id")
+        cid: int | None = None
+        if cid_raw is not None:
+            try:
+                cid_int = int(cid_raw)
+                # Silently drop charts outside this dashboard rather
+                # than fail the whole plan — the LLM might hallucinate
+                # an id and we'd rather let the rest of the plan flow.
+                if cid_int in ctx.allowed_chart_ids:
+                    cid = cid_int
+            except (TypeError, ValueError):
+                pass
+        cleaned.append({
+            "step": i + 1,
+            "chart_id": cid,
+            "phase": phase,
+            "question": question,
+        })
+    if not cleaned:
+        return _err("emit_reading_plan: không có item hợp lệ sau khi validate.")
+    overall_goal = str(args.get("overall_goal") or "").strip()
+    return _ok({
+        "items": cleaned,
+        "overall_goal": overall_goal or None,
+        "ack": f"Plan ghi nhận — {len(cleaned)} bước. Tiếp tục đọc dữ liệu theo thứ tự.",
+    })
+
+
 # Registry ────────────────────────────────────────────────────────────────────
 
 ToolFn = Callable[[ToolContext, dict], dict]
 
 TOOLS: dict[str, ToolFn] = {
+    "emit_reading_plan": tool_emit_reading_plan,
     "list_charts": tool_list_charts,
     "get_chart_summary": tool_get_chart_summary,
     "get_chart_data": tool_get_chart_data,
@@ -574,6 +628,64 @@ def _register_advanced_tools() -> None:
 # OpenAI/Anthropic shape. We translate per-provider in providers/*.
 
 TOOL_DEFINITIONS: list[dict] = [
+    {
+        # Phase-15.71 — pseudo-tool: the LLM uses this to declare WHICH
+        # charts it will read and WHY, BEFORE pulling data. The agent
+        # loop catches the call, emits a `reading_plan` SSE event to the
+        # FE (which renders a collapsible "AI đang đọc dashboard" panel)
+        # and returns ack so the LLM continues with the actual analysis.
+        # This makes the analyst-style reasoning VISIBLE — user sees the
+        # report flow, not just the final answer.
+        "name": "emit_reading_plan",
+        "description": (
+            "ALWAYS call this FIRST for any non-trivial question (skip "
+            "only for one-liner greetings). Declare the chart-by-chart "
+            "reading plan BEFORE fetching data so the user can follow "
+            "your analyst flow. Items should reflect the dashboard's "
+            "narrative order — KPI overviews first, then drill-down "
+            "breakdowns, then outliers/correlations. After this call, "
+            "proceed with get_chart_summary / get_chart_data on each "
+            "chart in turn."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "Ordered reading steps.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "chart_id": {
+                                "type": "integer",
+                                "description": "Chart to read next (must be in the dashboard).",
+                            },
+                            "phase": {
+                                "type": "string",
+                                "enum": ["triage", "health_check", "drilldown", "compare", "synthesize"],
+                                "description": (
+                                    "What this step achieves. triage = quick scan to "
+                                    "rule charts in/out; health_check = is the KPI good/bad; "
+                                    "drilldown = examine breakdown rows; compare = vs period/segment; "
+                                    "synthesize = combine findings across charts."
+                                ),
+                            },
+                            "question": {
+                                "type": "string",
+                                "description": "The specific analyst question this step answers (one sentence in Vietnamese).",
+                            },
+                        },
+                        "required": ["phase", "question"],
+                    },
+                },
+                "overall_goal": {
+                    "type": "string",
+                    "description": "One sentence summarising what the whole reading should produce.",
+                },
+            },
+            "required": ["items"],
+        },
+    },
     {
         "name": "list_charts",
         "description": (
