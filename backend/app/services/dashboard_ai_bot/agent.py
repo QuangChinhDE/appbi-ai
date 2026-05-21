@@ -451,6 +451,8 @@ async def run_agent_stream(
 
     draft_answer_parts: list[str] = []
     tool_calls_made = 0
+    reading_plan_emitted = False
+    reading_plan_nudge_sent = False
     # Per-tool budget within a single turn. Used for expensive tools that
     # ship large multimodal payloads — the LLM occasionally tries to call
     # them 2-3 times in a row, which inflates input tokens drastically.
@@ -564,6 +566,51 @@ async def run_agent_stream(
                     # invisible to the end user. The synthetic tool error
                     # already instructs the model not to mention it.
                     cost_warning_injected = True
+                continue
+
+            # Phase 15.71c — if the LLM jumped straight to data tools on
+            # its first round without calling emit_reading_plan, inject a
+            # synthetic tool error on each call asking it to declare the
+            # plan first. Done once per turn; subsequent rounds bypass
+            # because reading_plan_nudge_sent flips after the injection.
+            requested_plan = any(
+                tc.tool_name == "emit_reading_plan" for tc in round_tool_calls
+            )
+            if (
+                not reading_plan_emitted
+                and not reading_plan_nudge_sent
+                and not requested_plan
+            ):
+                asst_entry: dict = {"role": "assistant"}
+                if round_text:
+                    asst_entry["content"] = round_text
+                asst_entry["tool_calls"] = [
+                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
+                    for tc in round_tool_calls
+                ]
+                running.append(asst_entry)
+                nudge = {
+                    "ok": False,
+                    "error": (
+                        "internal: PHASE 0 missing. You MUST call "
+                        "`emit_reading_plan` BEFORE any data tool. Emit a "
+                        "minimal 1-2 step plan now describing what you are "
+                        "about to read and why, then retry the data tool. "
+                        "Do not mention this message to the user."
+                    ),
+                }
+                for tc in round_tool_calls:
+                    running.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "result": nudge,
+                    })
+                    tool_log.append({
+                        "name": tc.tool_name,
+                        "args": tc.tool_args,
+                        "result": nudge,
+                    })
+                reading_plan_nudge_sent = True
                 continue
 
             # Append the assistant turn (any preamble text + tool_calls)
@@ -686,6 +733,7 @@ async def run_agent_stream(
                 if tc.tool_name == "emit_reading_plan" and isinstance(result, dict):
                     data = result.get("data") if result.get("ok") else None
                     if isinstance(data, dict) and data.get("items"):
+                        reading_plan_emitted = True
                         yield AgentEvent(
                             type="reading_plan",
                             extra={
@@ -698,6 +746,36 @@ async def run_agent_stream(
             continue
 
         # No tool calls in this round → this is the model's draft final answer.
+        # Phase 15.71c — if the LLM produced a final answer on the first
+        # round without ever emitting a reading plan (typically because the
+        # RECON snapshot already contained enough context), synthesize a
+        # minimal one so the FE still has the "AI đang đọc" panel to show.
+        # This keeps the analyst-style UX consistent even for trivial Qs.
+        if not reading_plan_emitted and tool_calls_made == 0:
+            synth_items = [
+                {
+                    "phase": "triage",
+                    "question": (
+                        "Đọc manifest dashboard từ RECON snapshot để xác định "
+                        "phạm vi câu hỏi."
+                    ),
+                },
+                {
+                    "phase": "synthesize",
+                    "question": "Trả lời trực tiếp từ context đã có.",
+                },
+            ]
+            yield AgentEvent(
+                type="reading_plan",
+                extra={
+                    "items": synth_items,
+                    "overall_goal": (
+                        "Trả lời câu hỏi đơn giản dựa trên context có sẵn, "
+                        "không cần fetch dữ liệu chi tiết."
+                    ),
+                },
+            )
+            reading_plan_emitted = True
         draft_answer_parts.append(round_text)
         break
 
