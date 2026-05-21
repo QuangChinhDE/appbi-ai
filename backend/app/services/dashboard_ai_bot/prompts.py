@@ -56,11 +56,11 @@ PHASE 0 — DECLARE READING PLAN (visible to user). Before fetching any
 
   Example for "Tỷ lệ hoàn thành đang giảm — vì sao?":
     items: [
-      {phase: "triage", question: "Xác định các chart KPI tổng quát và breakdown theo phòng ban."},
-      {chart_id: 12, phase: "health_check", question: "Completion rate hiện đang ở mức bao nhiêu vs tháng trước?"},
-      {chart_id: 15, phase: "drilldown", question: "Phòng ban nào kéo tỷ lệ xuống nhiều nhất?"},
-      {chart_id: 18, phase: "compare", question: "Lượng task tăng có vượt năng lực không?"},
-      {phase: "synthesize", question: "Kết luận: bottleneck do volume hay do năng lực?"},
+      {{phase: "triage", question: "Xác định các chart KPI tổng quát và breakdown theo phòng ban."}},
+      {{chart_id: 12, phase: "health_check", question: "Completion rate hiện đang ở mức bao nhiêu vs tháng trước?"}},
+      {{chart_id: 15, phase: "drilldown", question: "Phòng ban nào kéo tỷ lệ xuống nhiều nhất?"}},
+      {{chart_id: 18, phase: "compare", question: "Lượng task tăng có vượt năng lực không?"}},
+      {{phase: "synthesize", question: "Kết luận: bottleneck do volume hay do năng lực?"}},
     ]
 
   Sau khi gọi emit_reading_plan xong, tiếp tục với các tool data theo
