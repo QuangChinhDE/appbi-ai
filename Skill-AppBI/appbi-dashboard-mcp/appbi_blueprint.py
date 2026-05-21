@@ -2773,11 +2773,28 @@ async def build_dashboard_from_design(
             chart.get("layout"), chart_type, index
         )
         if chart_id is not None:
-            placements.append({
+            # Phase-15.67 — react-grid-layout uses `i` (string id) to track
+            # tiles across drag/resize/save/publish cycles. Missing `i`
+            # causes the Phase-15.56 draft_snapshot keys to mismatch on
+            # round-trip + breaks per-tile cross-filter source tracking.
+            # Schema allows `i: Optional[str]` (chart_config.py:158); set
+            # it to the dashboard_chart row id format the FE uses.
+            #
+            # parameters: blueprint spec may carry runtime overrides
+            # (e.g. {"date_range": "last_30_days"}). Forward them so the
+            # chart renders with the intended defaults when the dashboard
+            # loads.
+            placement_layout = dict(layout)
+            placement_layout.setdefault("i", str(chart_id))
+            spec_params = chart.get("parameters")
+            placement: dict[str, Any] = {
                 "chart_id": chart_id,
-                "layout": layout,
+                "layout": placement_layout,
                 "widget_type": "chart",
-            })
+            }
+            if isinstance(spec_params, dict) and spec_params:
+                placement["parameters"] = spec_params
+            placements.append(placement)
 
     if creation_errors:
         cleanup = await _rollback_created_charts(created_charts)

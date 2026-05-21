@@ -271,20 +271,44 @@ async def add_chart_to_dashboard(
     COMBO=12×4. Min w≥3, h≥2.
     `parameters` is optional runtime parameter overrides for THIS placement.
     """
+    # Phase-15.67 — guardrails: layout must have x/y/w/h; auto-fill `i`
+    # so BE schema (DashboardChartLayout) sees the full shape react-grid-
+    # layout expects. Catching shape drift here gives Claude a precise
+    # error message instead of a generic 422 from FastAPI. Run BEFORE
+    # confirmation so the preview itself shows the validated payload.
+    if not isinstance(layout, dict):
+        raise ValueError("layout phải là dict {x, y, w, h, ...}.")
+    required_keys = {"x", "y", "w", "h"}
+    missing = required_keys - set(layout.keys())
+    if missing:
+        raise ValueError(
+            f"layout thiếu key bắt buộc: {sorted(missing)}. "
+            "Tối thiểu cần {x, y, w, h} (BE schema DashboardChartLayout)."
+        )
+    try:
+        w_val = int(layout.get("w", 0))
+    except (TypeError, ValueError):
+        w_val = 0
+    if not (1 <= w_val <= 12):
+        raise ValueError(
+            f"layout.w = {layout.get('w')} ngoài range hợp lệ (1-12)."
+        )
+    layout_with_i = dict(layout)
+    layout_with_i.setdefault("i", str(int(chart_id)))
     if not user_confirmed:
         return _requires_confirmation(
             "add_chart_to_dashboard",
             {
                 "dashboard_id": int(dashboard_id),
                 "chart_id": int(chart_id),
-                "layout": layout,
+                "layout": layout_with_i,
                 "parameters": parameters,
             },
         )
     body = _drop_none(
         {
             "chart_id": int(chart_id),
-            "layout": layout,
+            "layout": layout_with_i,
             "parameters": parameters,
             "widget_type": "chart",
         }
@@ -322,6 +346,24 @@ async def add_widget_to_dashboard(
     """
     if widget_type == "chart":
         raise ValueError("Use add_chart_to_dashboard for chart widgets.")
+    # Phase-15.67 — same guardrails as add_chart_to_dashboard.
+    if not isinstance(layout, dict):
+        raise ValueError("layout phải là dict {x, y, w, h, ...}.")
+    required_keys = {"x", "y", "w", "h"}
+    missing = required_keys - set(layout.keys())
+    if missing:
+        raise ValueError(
+            f"layout thiếu key bắt buộc: {sorted(missing)}. "
+            "Tối thiểu cần {x, y, w, h} (BE schema DashboardChartLayout)."
+        )
+    try:
+        w_val = int(layout.get("w", 0))
+    except (TypeError, ValueError):
+        w_val = 0
+    if not (1 <= w_val <= 12):
+        raise ValueError(
+            f"layout.w = {layout.get('w')} ngoài range hợp lệ (1-12)."
+        )
     if not user_confirmed:
         return _requires_confirmation(
             "add_widget_to_dashboard",
