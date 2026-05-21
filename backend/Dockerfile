@@ -16,8 +16,17 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first for better caching
 COPY backend/requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies.
+# Phase-15.72 — harden against transient network blips during Docker
+# build. Default pip times out after ~15s per chunk; on slow PyPI
+# mirrors a single big wheel (eg. numpy ~25MB) can stall and KILL an
+# 8-minute build. Bumping --timeout + adding --retries gives pip a
+# fighting chance to recover instead of aborting the whole layer.
+ENV PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=8 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY backend/app/ ./app/

@@ -11,7 +11,18 @@ COPY package*.json ./
 # Install dependencies. `npm ci` honors package-lock.json strictly and is
 # reproducible — `npm install` could re-resolve caret ranges and pull a
 # different minor/major across builds.
-RUN npm ci
+#
+# Phase-15.72 — same resilience pattern as backend Dockerfile. npm
+# defaults give up after 1 retry which is too brittle for spotty
+# CI/dev networks. 5 retries × 60s timeout = 5min budget per request
+# before fail; whole `npm ci` still bounded by the surrounding build
+# timeout. fetch-retry-mintimeout/maxtimeout add jitter between
+# retries so we don't slam the registry instantly.
+RUN npm config set fetch-retries 5 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm config set fetch-timeout 60000 \
+    && npm ci --prefer-offline --no-audit --no-fund
 
 # Stage 2: Builder
 # Stage 2: Builder
