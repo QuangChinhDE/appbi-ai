@@ -66,6 +66,17 @@ def resolve_public_ai_credentials(
     return effective_key, provider, model
 
 
+def resolve_public_ai_critique_enabled(appearance_config: dict | None) -> bool:
+    """Phase 15.72 — self-critique pass is opt-in per public link.
+
+    Default OFF. Critique doubles per-turn latency + cost and tends to
+    soften sharp insights ("có thể là" sanitizer drops bullets). Admin
+    can flip it on per link via appearance_config.ai_bot_critique_enabled
+    when they want stricter citation/contradiction enforcement.
+    """
+    return bool((appearance_config or {}).get("ai_bot_critique_enabled"))
+
+
 def resolve_public_ai_cost_cap(
     appearance_config: dict | None,
     *,

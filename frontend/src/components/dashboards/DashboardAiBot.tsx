@@ -229,10 +229,13 @@ interface ChatMessage extends AiChatMessage {
   /** User rating for this assistant message. */
   rating?: 'up' | 'down';
   /** Phase-15.71 — reading plan emitted by the bot before answering.
-   *  Renders as a collapsible "AI đang đọc" panel above the answer. */
+   *  Renders as a collapsible "AI đang đọc" panel above the answer.
+   *  Phase 15.72 — each step carries a live status badge updated by
+   *  plan_step events as the agent works through the plan. */
   readingPlan?: {
     items: { step: number; chart_id: number | null; phase: string; question: string }[];
     overallGoal?: string | null;
+    stepStatuses?: ('pending' | 'running' | 'done')[];
   };
 }
 
@@ -685,11 +688,33 @@ export function DashboardAiBot({
                 ...latestMessages.slice(0, lastIdx),
                 {
                   ...latestMessages[lastIdx],
-                  readingPlan: { items, overallGoal },
+                  readingPlan: {
+                    items,
+                    overallGoal,
+                    stepStatuses: items.map(() => 'pending' as const),
+                  },
                 },
               ];
             }
             setMessages(latestMessages);
+          },
+          updatePlanStep: (stepIndex, status) => {
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+              const prev = latestMessages[lastIdx].readingPlan;
+              if (!prev) return;
+              const nextStatuses = (prev.stepStatuses ?? prev.items.map(() => 'pending' as const)).slice();
+              if (stepIndex < 0 || stepIndex >= nextStatuses.length) return;
+              nextStatuses[stepIndex] = status;
+              latestMessages = [
+                ...latestMessages.slice(0, lastIdx),
+                {
+                  ...latestMessages[lastIdx],
+                  readingPlan: { ...prev, stepStatuses: nextStatuses },
+                },
+              ];
+              setMessages(latestMessages);
+            }
           },
           updateState: (s) => { setConvState(s); latestConvState = s; },
         });
@@ -1015,6 +1040,7 @@ function applyEvent(
       items: { step: number; chart_id: number | null; phase: string; question: string }[],
       overallGoal?: string | null,
     ) => void;
+    updatePlanStep: (stepIndex: number, status: 'pending' | 'running' | 'done') => void;
     updateState: (s: AiConversationState) => void;
   },
 ) {
@@ -1040,6 +1066,13 @@ function applyEvent(
     // current assistant message so a collapsible panel can render it
     // above the prose answer.
     ops.setReadingPlan(ev.items, ev.overall_goal ?? null);
+    return;
+  }
+  if (ev.type === 'plan_step') {
+    // Phase-15.72 — per-step status badge update.
+    if (typeof ev.step_index === 'number' && ev.status) {
+      ops.updatePlanStep(ev.step_index, ev.status);
+    }
     return;
   }
   if (ev.type === 'state') {
@@ -1395,6 +1428,7 @@ function MessageBubble({
           <ReadingPlanPanel
             items={message.readingPlan.items}
             overallGoal={message.readingPlan.overallGoal}
+            stepStatuses={message.readingPlan.stepStatuses}
             collapsed={!streaming}
           />
         )}
@@ -1527,17 +1561,18 @@ const _PHASE_LABEL: Record<string, { label: string; cls: string }> = {
 function ReadingPlanPanel({
   items,
   overallGoal,
+  stepStatuses,
   collapsed = false,
 }: {
   items: NonNullable<ChatMessage['readingPlan']>['items'];
   overallGoal?: string | null;
+  stepStatuses?: ('pending' | 'running' | 'done')[];
   collapsed?: boolean;
 }) {
   const [expanded, setExpanded] = useState(!collapsed);
-  // Re-derive expand state when streaming flips; show by default while
-  // streaming so the user can follow along, collapse afterwards.
   useEffect(() => { setExpanded(!collapsed); }, [collapsed]);
   if (!items || items.length === 0) return null;
+  const doneCount = (stepStatuses ?? []).filter((s) => s === 'done').length;
   return (
     <div className="mb-2 rounded-md border border-brand/25 bg-brand/5 px-2.5 py-1.5">
       <button
@@ -1547,7 +1582,7 @@ function ReadingPlanPanel({
       >
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
-          AI đang đọc dashboard ({items.length} bước)
+          AI đang đọc dashboard ({doneCount}/{items.length} bước)
         </span>
         <span className="text-text-tertiary">{expanded ? '▾' : '▸'}</span>
       </button>
@@ -1559,12 +1594,19 @@ function ReadingPlanPanel({
             </div>
           )}
           <ol className="space-y-1">
-            {items.map((it) => {
+            {items.map((it, idx) => {
               const ph = _PHASE_LABEL[it.phase] || { label: it.phase, cls: 'bg-surface-2 text-text-secondary' };
+              const status = stepStatuses?.[idx] ?? 'pending';
               return (
                 <li key={it.step} className="flex items-start gap-2 text-tiny">
-                  <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[10px] font-semibold text-brand">
-                    {it.step}
+                  <span className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${
+                    status === 'done'
+                      ? 'bg-success/15 text-success'
+                      : status === 'running'
+                      ? 'bg-brand/20 text-brand animate-pulse'
+                      : 'bg-brand/10 text-brand'
+                  }`}>
+                    {status === 'done' ? '✓' : it.step}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -1576,8 +1618,11 @@ function ReadingPlanPanel({
                           chart #{it.chart_id}
                         </span>
                       )}
+                      {status === 'running' && (
+                        <span className="text-[10px] font-medium text-brand">đang đọc…</span>
+                      )}
                     </div>
-                    <div className="mt-0.5 text-text-secondary leading-snug">
+                    <div className={`mt-0.5 leading-snug ${status === 'done' ? 'text-text-tertiary line-through' : 'text-text-secondary'}`}>
                       {it.question}
                     </div>
                   </div>

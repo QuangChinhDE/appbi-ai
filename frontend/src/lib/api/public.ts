@@ -257,11 +257,14 @@ export interface AiReadingPlanItem {
   question: string;
 }
 
+export type AiPlanStepStatus = 'pending' | 'running' | 'done';
+
 export type AiAgentEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string; tool: string }
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
   | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
+  | { type: 'plan_step'; step_index: number; chart_id: number | null; status: AiPlanStepStatus }
   | { type: 'state'; state: AiConversationState }
   | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
   | { type: 'usage'; prompt_tokens: number; completion_tokens: number }

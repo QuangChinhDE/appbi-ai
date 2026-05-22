@@ -23,6 +23,11 @@ EventType = Literal[
     # the user sees the analyst-style flow (which charts → why → in what
     # order) instead of just the final answer.
     "reading_plan",
+    # Phase 15.72 — per-step progress for the reading plan. Emitted whenever
+    # the agent starts/finishes a tool call that maps onto a plan step. FE
+    # uses it to update the badge next to each step from
+    # pending → running → done.
+    "plan_step",
 ]
 
 

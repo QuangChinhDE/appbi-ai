@@ -30,6 +30,7 @@ from app.services.dataset_model_service import get_dataset_model, get_distinct_f
 from app.services.dashboard_ai_bot.public_link_config import (
     resolve_public_ai_cost_cap,
     resolve_public_ai_credentials,
+    resolve_public_ai_critique_enabled,
     sanitize_report_context_note,
 )
 
@@ -2714,6 +2715,7 @@ async def chat_dashboard_ai_agent(
         x_user_ai_cost_cap_usd=x_user_ai_cost_cap_usd,
         x_user_ai_mode=x_user_ai_mode,
     )
+    critique_enabled_flag = resolve_public_ai_critique_enabled(appearance_config)
 
     messages = body.messages or []
     if not messages:
@@ -2775,6 +2777,7 @@ async def chat_dashboard_ai_agent(
             briefing=briefing_obj,
             state=state_obj,
             cost_cap_usd=cost_cap_val,
+            enable_critique=critique_enabled_flag,
             report_context_note=sanitize_report_context_note(
                 (appearance_config or {}).get("ai_bot_report_context_note"),
             ),
@@ -2824,6 +2827,17 @@ def _event_to_envelope(ev) -> dict | None:
             "type": "reading_plan",
             "items": extra.get("items") or [],
             "overall_goal": extra.get("overall_goal"),
+        }
+    if et == "plan_step":
+        # Phase 15.72 — per-step progress badge update. Lets the FE flip
+        # each plan step from pending → running → done as the agent
+        # works through it.
+        extra = ev.extra or {}
+        return {
+            "type": "plan_step",
+            "step_index": extra.get("step_index"),
+            "chart_id": extra.get("chart_id"),
+            "status": extra.get("status"),
         }
     if et == "error":
         return {"type": "error", "text": ev.text}

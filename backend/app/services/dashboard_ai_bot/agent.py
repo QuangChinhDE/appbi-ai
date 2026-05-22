@@ -176,11 +176,24 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
                     type(exc).__name__,
                 )
 
-    # Preserve manifest order
+    # Preserve manifest order + populate the cross-turn LRU so the LLM's
+    # later `get_chart_summary` calls hit cache instead of refetching
+    # (Phase 15.72 Option A). The recon ran with the same dashboard +
+    # filters, so the key set is identical.
+    from app.services.dashboard_ai_bot.summary_cache import put_cached_pack
+    dashboard_id_for_cache = getattr(ctx.dashboard, "id", None)
     for cid in chart_ids:
         res = results.get(cid)
         if res and res.get("ok"):
-            summaries.append(res["data"])
+            pack_data = res["data"]
+            summaries.append(pack_data)
+            if isinstance(dashboard_id_for_cache, int) and isinstance(pack_data, dict):
+                put_cached_pack(
+                    dashboard_id_for_cache,
+                    ctx.public_filters,
+                    cid,
+                    pack_data,
+                )
 
     # Auto cross-chart heuristics: if two summaries share a common keyword
     # (e.g. one chart's name says "tổng / total" and another says "quá hạn /
@@ -336,7 +349,7 @@ async def run_agent_stream(
     api_key: str,
     provider: str,
     model: str | None = None,
-    enable_critique: bool = True,
+    enable_critique: bool = False,
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
     briefing: Briefing | None = None,
     state: ConversationState | None = None,
@@ -453,6 +466,11 @@ async def run_agent_stream(
     tool_calls_made = 0
     reading_plan_emitted = False
     reading_plan_nudge_sent = False
+    # Phase 15.72 — remember the latest plan items + which step is "next"
+    # so we can emit plan_step events that update the FE badge as the
+    # agent works through the plan.
+    reading_plan_items: list[dict] = []
+    plan_step_status: list[str] = []  # pending/running/done, by step index
     # Per-tool budget within a single turn. Used for expensive tools that
     # ship large multimodal payloads — the LLM occasionally tries to call
     # them 2-3 times in a row, which inflates input tokens drastically.
@@ -679,12 +697,44 @@ async def run_agent_stream(
                     tool_args=tc.tool_args,
                 )
 
+                # Phase 15.72 Option C — find a matching plan step for
+                # this tool call. Match by chart_id when the tool carries
+                # one; otherwise pick the next still-pending step. Emit
+                # plan_step(running) before exec.
+                step_idx = _match_plan_step(
+                    reading_plan_items,
+                    plan_step_status,
+                    tc.tool_args,
+                    tc.tool_name,
+                )
+                if step_idx is not None and plan_step_status[step_idx] != "running":
+                    plan_step_status[step_idx] = "running"
+                    yield AgentEvent(
+                        type="plan_step",
+                        extra={
+                            "step_index": step_idx,
+                            "chart_id": reading_plan_items[step_idx].get("chart_id"),
+                            "status": "running",
+                        },
+                    )
+
                 # Execute (sync function; offload to thread to avoid blocking event loop)
                 result = await asyncio.to_thread(
                     execute_tool, ctx, tc.tool_name, tc.tool_args
                 )
                 tool_calls_made += 1
                 per_tool_calls[tc.tool_name] = per_tool_calls.get(tc.tool_name, 0) + 1
+
+                if step_idx is not None and isinstance(result, dict) and result.get("ok"):
+                    plan_step_status[step_idx] = "done"
+                    yield AgentEvent(
+                        type="plan_step",
+                        extra={
+                            "step_index": step_idx,
+                            "chart_id": reading_plan_items[step_idx].get("chart_id"),
+                            "status": "done",
+                        },
+                    )
 
                 # Detach any multimodal image payload BEFORE we save the
                 # result onto the running message log — otherwise the same
@@ -734,10 +784,15 @@ async def run_agent_stream(
                     data = result.get("data") if result.get("ok") else None
                     if isinstance(data, dict) and data.get("items"):
                         reading_plan_emitted = True
+                        # Capture the items so subsequent tool calls can
+                        # be matched against them and emit plan_step
+                        # progress events.
+                        reading_plan_items = list(data.get("items") or [])
+                        plan_step_status = ["pending"] * len(reading_plan_items)
                         yield AgentEvent(
                             type="reading_plan",
                             extra={
-                                "items": data.get("items") or [],
+                                "items": reading_plan_items,
                                 "overall_goal": data.get("overall_goal"),
                             },
                         )
@@ -937,6 +992,45 @@ def _evolve_state(
     )
 
 
+def _match_plan_step(
+    items: list[dict],
+    statuses: list[str],
+    tool_args: dict,
+    tool_name: str,
+) -> int | None:
+    """Pick a reading_plan step to flip into the "running" badge.
+
+    Strategy:
+      1. If `tool_args.chart_id` matches an item with the same chart_id
+         that isn't already done, return its index.
+      2. Otherwise pick the next item whose status is still "pending"
+         and has no chart_id (synthesis / triage steps).
+      3. Otherwise None — silent miss is fine; FE just keeps the prior
+         status for that step.
+    Skips emit_reading_plan itself (we don't badge the planning step).
+    """
+    if not items or tool_name == "emit_reading_plan":
+        return None
+    cid_arg = tool_args.get("chart_id") if isinstance(tool_args, dict) else None
+    if isinstance(cid_arg, int):
+        for idx, item in enumerate(items):
+            if (
+                item.get("chart_id") == cid_arg
+                and idx < len(statuses)
+                and statuses[idx] != "done"
+            ):
+                return idx
+    # Fallback: next pending step that doesn't bind to a chart
+    for idx, item in enumerate(items):
+        if (
+            item.get("chart_id") is None
+            and idx < len(statuses)
+            and statuses[idx] == "pending"
+        ):
+            return idx
+    return None
+
+
 def _pop_image_payload(result: dict) -> dict | None:
     """Extract & remove any multimodal image payload from a tool result.
 
@@ -1021,37 +1115,38 @@ _SPECULATIVE_MARKERS = (
 
 
 def _sanitize_answer(text: str) -> str:
-    """Strip bullets that leak system limits or speculate about causes.
+    """Phase 15.72 — log-only sanitizer. Does NOT drop bullets.
 
-    Operates on a per-line basis. A line is dropped if it contains any of
-    the forbidden phrases. Bullet continuations (indented lines after a
-    dropped bullet) are kept as-is — bullets in our output are single-line.
-    Empty trailing lines are trimmed.
+    Earlier revisions deleted any bullet containing a "forbidden" phrase
+    ("có thể là", "tool budget", "due to limitations"). In practice the
+    LLM frequently emitted valid bullets with hedge words ("có thể tăng
+    nhẹ trong tháng tới") and the sanitizer silently nuked them, leaving
+    the user with shorter, choppier answers than the bot actually
+    produced — a key driver of the quality regression flagged on 2026-05-21.
+
+    The system prompt already bans these patterns; if the model still
+    leaks one we log it for offline tuning instead of mutating the
+    user-visible answer. The TWO truly user-hostile phrases (tool budget
+    / system limit hallucinations) stay loud in logs so we notice if
+    they sneak past the prompt.
     """
     if not text:
         return ""
-    out_lines: list[str] = []
-    for raw in text.split("\n"):
-        low = raw.lower()
-        if any(p in low for p in _FORBIDDEN_PHRASES):
-            continue
-        if any(p in low for p in _SPECULATIVE_MARKERS):
-            continue
-        out_lines.append(raw)
-    # Collapse 3+ blank lines that opened up after deletions
-    cleaned: list[str] = []
-    blank_run = 0
-    for line in out_lines:
-        if line.strip() == "":
-            blank_run += 1
-            if blank_run >= 2:
-                continue
-        else:
-            blank_run = 0
-        cleaned.append(line)
-    while cleaned and cleaned[-1].strip() == "":
-        cleaned.pop()
-    return "\n".join(cleaned)
+    low = text.lower()
+    limit_leaks = [p for p in _FORBIDDEN_PHRASES if p in low]
+    speculation_leaks = [p for p in _SPECULATIVE_MARKERS if p in low]
+    if limit_leaks:
+        logger.warning(
+            "dashboard_ai_bot answer leaked system-limit phrase(s)=%s "
+            "(left in user output — prompt should have suppressed)",
+            limit_leaks,
+        )
+    if speculation_leaks:
+        logger.info(
+            "dashboard_ai_bot answer contains hedged phrase(s)=%s",
+            speculation_leaks,
+        )
+    return text
 
 
 # ── Telemetry & QA ──────────────────────────────────────────────────────────

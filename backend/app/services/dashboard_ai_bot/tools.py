@@ -240,6 +240,24 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     except ToolError as exc:
         return _err(str(exc))
 
+    # Phase 15.72 — cross-turn LRU. Turn-2 with the same dashboard +
+    # filters lands on cached pack instantly, avoiding the live SQL +
+    # stats rebuild.
+    from app.services.dashboard_ai_bot.summary_cache import (
+        get_cached_pack,
+        put_cached_pack,
+    )
+
+    dashboard_id = getattr(ctx.dashboard, "id", None)
+    if isinstance(dashboard_id, int):
+        cached = get_cached_pack(dashboard_id, ctx.public_filters, chart_id)
+        if cached is not None:
+            logger.debug(
+                "dashboard_ai_bot summary cache HIT dashboard_id=%s chart_id=%s",
+                dashboard_id, chart_id,
+            )
+            return _ok(dict(cached))
+
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
@@ -261,7 +279,10 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     except Exception as exc:
         logger.exception("dashboard_ai_bot build_insight_pack failed chart_id=%s", chart_id)
         return _err(f"failed to summarize chart {chart_id}: {type(exc).__name__}: {exc}")
-    return _ok(pack.to_dict())
+    pack_dict = pack.to_dict()
+    if isinstance(dashboard_id, int):
+        put_cached_pack(dashboard_id, ctx.public_filters, chart_id, pack_dict)
+    return _ok(pack_dict)
 
 
 # Tool: get_chart_data ────────────────────────────────────────────────────────
