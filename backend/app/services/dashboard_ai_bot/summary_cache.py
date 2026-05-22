@@ -81,6 +81,26 @@ class _SummaryCache:
     ) -> None:
         if not isinstance(pack, dict):
             return
+        # Phase 15.73 — never cache an empty pack. A chart returning 0
+        # rows is often a transient filter mismatch (e.g. default
+        # "current period" not matching the dashboard's saved date
+        # range). Caching that for 5 minutes poisons every follow-up
+        # question against the same filter set and makes the bot answer
+        # "no data" repeatedly until TTL expires. Better to let the LLM
+        # retry the live call so a fresh fetch can recover if the data
+        # condition changes (or, if it really is empty, the LLM hits the
+        # live tool and can name the empty state in its answer).
+        empty_state = pack.get("empty_state")
+        total_rows = pack.get("total_rows")
+        if empty_state == "no_rows" or (
+            isinstance(total_rows, int) and total_rows == 0
+        ):
+            logger.debug(
+                "summary_cache skip-empty dashboard_id=%s chart_id=%s "
+                "empty_state=%s total_rows=%s",
+                dashboard_id, chart_id, empty_state, total_rows,
+            )
+            return
         key = (int(dashboard_id), _filters_hash(filters), int(chart_id))
         with self._lock:
             self._store[key] = (time.monotonic(), pack)

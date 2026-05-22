@@ -634,6 +634,12 @@ def _register_advanced_tools() -> None:
         tool_get_dashboard_overview_image,
         tool_get_chart_image,
         tool_smart_drilldown,
+        # Phase 15.73 — diagnostic + lookup tools
+        tool_inspect_filters,
+        tool_search_charts,
+        tool_sample_chart_rows,
+        tool_probe_chart_data_range,
+        tool_get_chart_glossary,
     )
     TOOLS["compare_periods"] = tool_compare_periods
     TOOLS["describe_distribution"] = tool_describe_distribution
@@ -643,6 +649,11 @@ def _register_advanced_tools() -> None:
     TOOLS["get_chart_image"] = tool_get_chart_image
     TOOLS["smart_drilldown"] = tool_smart_drilldown
     TOOLS["aggregate_chart_data"] = tool_aggregate_chart_data
+    TOOLS["inspect_filters"] = tool_inspect_filters
+    TOOLS["search_charts"] = tool_search_charts
+    TOOLS["sample_chart_rows"] = tool_sample_chart_rows
+    TOOLS["probe_chart_data_range"] = tool_probe_chart_data_range
+    TOOLS["get_chart_glossary"] = tool_get_chart_glossary
 
 
 # JSON-Schema-ish definitions for provider tool calling. Field names follow
@@ -1009,6 +1020,101 @@ TOOL_DEFINITIONS: list[dict] = [
             "user asks about trend shape: 'có flatten ở cuối không', 'có spike "
             "đột biến không', 'biến động mạnh không'. Return includes a unicode "
             "block sparkline and a one-line shape diagnosis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+            },
+            "required": ["chart_id"],
+        },
+    },
+    # ── Phase 15.73 — Diagnostic & lookup tools ──────────────────────────
+    {
+        "name": "inspect_filters",
+        "description": (
+            "Return the filter set currently being applied to every data "
+            "tool you call (the dashboard's public_filters + any viewer "
+            "slicer filters). USE THIS FIRST when a chart returns 0 rows "
+            "or you want to NAME the active filter scope in your answer "
+            "instead of speaking vaguely. No data is read."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "search_charts",
+        "description": (
+            "Keyword search over chart names + descriptions in this "
+            "dashboard. Use when the user asks about a topic ('doanh "
+            "thu', 'lợi nhuận', 'khách VIP') and you want the relevant "
+            "chart_ids without scanning the whole manifest. Returns "
+            "chart_ids ranked by token overlap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search terms in the user's language.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max matches to return (default 10, max 30).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "sample_chart_rows",
+        "description": (
+            "Read N actual sample rows from a chart (default 5, max 25). "
+            "Use when the Insight Pack or chart description doesn't make "
+            "the row layout obvious and you need to see what real values "
+            "look like before reasoning. Respects public filters — sample "
+            "rows are the first N rows of the chart's filtered output."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "n": {
+                    "type": "integer",
+                    "description": "Number of sample rows (default 5).",
+                },
+            },
+            "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "probe_chart_data_range",
+        "description": (
+            "Diagnose a chart's data shape under current filters: row "
+            "count, per-column min/max + distinct sample values, "
+            "is_empty flag, and a diagnostic note when 0 rows come back. "
+            "USE THIS when get_chart_summary returns empty or you "
+            "suspect a filter mismatch — it tells you exactly what's "
+            "(not) in scope so you can articulate the issue. Respects "
+            "public filters; never bypasses them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+            },
+            "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "get_chart_glossary",
+        "description": (
+            "Return business-glossary metadata for the dataset behind a "
+            "chart: column descriptions, dataset description, common "
+            "user questions, and Vietnamese aliases captured by the "
+            "Knowledge System. Use when the user asks 'what does GP "
+            "Margin mean?' / 'which column is doanh thu?' / 'có chart "
+            "nào về khách VIP không' — translate alias → real column → "
+            "right chart. No row data exposed."
         ),
         "input_schema": {
             "type": "object",

@@ -1337,3 +1337,326 @@ def _shape_summary(points: list[tuple[str, float]]) -> str:
     vol = "biến động mạnh" if flips > n / 3 else ("ổn định" if flips < n / 6 else "biến động vừa")
     pct_str = f"{pct:+.1f}%" if pct is not None else "không đo được %"
     return f"Hình dạng: {direction} ({pct_str}), {vol} với {flips} lần đảo chiều."
+
+
+# ── Phase 15.73 — Diagnostic & lookup tools ───────────────────────────────────
+#
+# These five tools give the bot the option-set the user asked for:
+# instead of patching "no data" with retries, the bot can ACTIVELY
+# inspect the situation. All five respect the dashboard's public_filters
+# (no scope bypass) — they report what's in scope, not what's outside.
+
+
+def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
+    """Surface the filter set the bot is currently operating under.
+
+    When the bot reads a chart and gets 0 rows, the first question is
+    "what filter am I applying?". This tool returns the exact set so the
+    bot can NAME the filters in its answer (e.g. "Tôi đang đọc trong
+    khoảng date >= 2024-01-01 …") and let the user decide whether to
+    relax them. No data is read; no scope is bypassed.
+    """
+    filters = list(ctx.public_filters or [])
+    formatted: list[dict] = []
+    for f in filters:
+        if not isinstance(f, dict):
+            continue
+        formatted.append({
+            "field": f.get("field") or f.get("column") or "?",
+            "operator": f.get("op") or f.get("operator") or "=",
+            "value": f.get("value") if "value" in f else f.get("values"),
+        })
+    return _ok({
+        "filter_count": len(formatted),
+        "has_filters": bool(formatted),
+        "active_filters": formatted,
+        "note": (
+            "These filters are merged from the dashboard public link's "
+            "saved filters and any slicer values the viewer applied. "
+            "Every data tool you call uses this same set — what the "
+            "dashboard renders on screen is what you can read."
+        ),
+    })
+
+
+def tool_search_charts(ctx: ToolContext, args: dict) -> dict:
+    """Keyword search over chart names + descriptions in this dashboard.
+
+    Useful when the user asks about a topic (e.g. "doanh thu", "lợi
+    nhuận", "khách VIP") and you don't want to scan the manifest blindly.
+    Returns matching chart_ids ordered by a simple token-overlap score.
+    """
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _err("query (non-empty string) is required")
+    limit = args.get("limit")
+    if not isinstance(limit, int) or limit <= 0:
+        limit = 10
+    limit = min(limit, 30)
+
+    q_tokens = {tok for tok in query.lower().split() if tok}
+    if not q_tokens:
+        return _err("query has no searchable tokens")
+
+    matches: list[dict] = []
+    for chart_id, meta in ctx.chart_meta.items():
+        haystack = " ".join([
+            str(meta.get("name") or ""),
+            str(meta.get("description") or ""),
+            str(meta.get("chart_type") or ""),
+        ]).lower()
+        # Token overlap + substring credit
+        overlap = sum(1 for tok in q_tokens if tok in haystack)
+        if overlap == 0:
+            continue
+        score = overlap / max(len(q_tokens), 1)
+        matches.append({
+            "chart_id": chart_id,
+            "chart_name": meta.get("name"),
+            "description": meta.get("description") or "",
+            "chart_type": meta.get("chart_type") or "",
+            "score": round(score, 3),
+        })
+    matches.sort(key=lambda m: (-m["score"], m["chart_id"]))
+    matches = matches[:limit]
+
+    return _ok({
+        "query": query,
+        "match_count": len(matches),
+        "matches": matches,
+        "note": (
+            "Empty matches mean no chart in this dashboard mentions the "
+            "query terms in name or description. Try a different keyword."
+        ) if not matches else None,
+    })
+
+
+def tool_sample_chart_rows(ctx: ToolContext, args: dict) -> dict:
+    """Read N sample rows from a chart to get a feel for the shape.
+
+    Wraps the standard chart fetch with public_filters applied. Useful
+    when the chart's name / description / Insight Pack don't make the
+    column layout obvious — peek at 5-10 actual rows. Always respects
+    the link's public filters; sample_rows is just the first N rows
+    of the chart's filtered output.
+    """
+    chart_id = args.get("chart_id")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    n = args.get("n")
+    if not isinstance(n, int) or n <= 0:
+        n = 5
+    n = min(n, 25)
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        logger.exception("dashboard_ai_bot sample_chart_rows failed chart_id=%s", chart_id)
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
+
+    columns = list(data.get("columns") or [])
+    all_rows = data.get("rows") or []
+    sample = [
+        {col: row[i] if i < len(row) else None for i, col in enumerate(columns)}
+        for row in all_rows[:n]
+    ]
+    return _ok({
+        "chart_id": chart_id,
+        "columns": columns,
+        "total_rows": len(all_rows),
+        "sample_count": len(sample),
+        "sample_rows": sample,
+        "note": (
+            "0 rows means the chart returned nothing under the current "
+            "public filters — not that the chart is empty everywhere. "
+            "Use inspect_filters + probe_chart_data_range to diagnose."
+        ) if not sample else None,
+    })
+
+
+def tool_probe_chart_data_range(ctx: ToolContext, args: dict) -> dict:
+    """Report the data shape of one chart under current filters.
+
+    Returns per-column counts + min/max + distinct sample values, plus
+    a top-level row count and an `is_empty` flag. When the chart is
+    empty, the diagnostic field names the likely cause so the bot can
+    explain it instead of bailing with "không có dữ liệu".
+
+    Respects public_filters (no scope bypass).
+    """
+    chart_id = args.get("chart_id")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        logger.exception("dashboard_ai_bot probe_chart_data_range failed chart_id=%s", chart_id)
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
+
+    columns = list(data.get("columns") or [])
+    rows = data.get("rows") or []
+    meta = ctx.chart_meta.get(chart_id, {})
+
+    column_stats: list[dict] = []
+    for idx, col in enumerate(columns):
+        values = [row[idx] for row in rows if idx < len(row)]
+        non_null = [v for v in values if v is not None and v != ""]
+        numerics = [_to_number(v) for v in non_null]
+        numerics = [n for n in numerics if n is not None]
+        distinct = {v for v in non_null}
+        kind = "number" if (numerics and len(numerics) >= max(1, int(0.5 * len(non_null)))) else (
+            "datetime" if non_null and all(isinstance(v, str) and len(v) >= 8 and v[:4].isdigit() for v in non_null[:10])
+            else "string"
+        )
+        entry: dict = {
+            "name": col,
+            "kind": kind,
+            "non_null_count": len(non_null),
+            "null_count": len(values) - len(non_null),
+            "distinct_count": len(distinct),
+        }
+        if kind == "number" and numerics:
+            entry["min"] = min(numerics)
+            entry["max"] = max(numerics)
+            entry["total"] = sum(numerics)
+            entry["avg"] = statistics.fmean(numerics)
+        elif kind == "datetime" and non_null:
+            entry["min"] = min(str(v) for v in non_null)
+            entry["max"] = max(str(v) for v in non_null)
+        else:
+            sample_values = list(distinct)[:8]
+            entry["sample_values"] = [str(v) for v in sample_values]
+        column_stats.append(entry)
+
+    diagnostic = None
+    if not rows:
+        diagnostic = (
+            "Chart returned 0 rows under the current public filters. "
+            "Probable cause: the filter set (especially date range or "
+            "segment value) excludes all rows from this chart's data. "
+            "Use inspect_filters to see the active set and suggest a "
+            "specific filter to relax in your answer."
+        )
+
+    return _ok({
+        "chart_id": chart_id,
+        "chart_name": meta.get("name"),
+        "chart_type": meta.get("chart_type"),
+        "row_count": len(rows),
+        "is_empty": not rows,
+        "columns": column_stats,
+        "filters_applied": data.get("filters_applied") or [],
+        "diagnostic": diagnostic,
+    })
+
+
+def tool_get_chart_glossary(ctx: ToolContext, args: dict) -> dict:
+    """Return business-glossary metadata for a chart's underlying dataset.
+
+    Pulls the DatasetTable's column_descriptions, auto_description,
+    common_questions, query_aliases — populated by the Knowledge System
+    over time. This lets the bot answer "what does GP Margin mean?" or
+    pick the right chart when the user uses a Vietnamese alias ("doanh
+    thu thuần", "doanh thu") that maps to a specific column.
+
+    No row data is exposed; this is purely about column meanings.
+    """
+    chart_id = args.get("chart_id")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+
+    from app.models.models import Chart
+    from app.models.dataset import DatasetTable, Dataset
+
+    chart = ctx.db.query(Chart).filter(Chart.id == chart_id).first()
+    if chart is None:
+        return _err(f"chart {chart_id} not found")
+    if not chart.dataset_table_id:
+        return _ok({
+            "chart_id": chart_id,
+            "chart_name": chart.name,
+            "dataset_table": None,
+            "note": "Chart has no dataset_table binding — likely an ad-hoc chart.",
+        })
+
+    table = (
+        ctx.db.query(DatasetTable)
+        .filter(DatasetTable.id == chart.dataset_table_id)
+        .first()
+    )
+    if table is None:
+        return _ok({
+            "chart_id": chart_id,
+            "chart_name": chart.name,
+            "dataset_table": None,
+            "note": "Bound dataset_table not found (may have been deleted).",
+        })
+
+    dataset = (
+        ctx.db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+        if table.dataset_id
+        else None
+    )
+
+    column_descriptions = (
+        table.column_descriptions if isinstance(table.column_descriptions, dict) else {}
+    )
+    common_questions = (
+        list(table.common_questions) if isinstance(table.common_questions, list) else []
+    )
+    query_aliases = (
+        list(table.query_aliases) if isinstance(table.query_aliases, list) else []
+    )
+    columns_meta = table.columns_cache if isinstance(table.columns_cache, list) else []
+
+    columns_out: list[dict] = []
+    for col in columns_meta or []:
+        if not isinstance(col, dict):
+            continue
+        name = col.get("name") or col.get("column_name")
+        if not name:
+            continue
+        columns_out.append({
+            "name": name,
+            "type": col.get("type") or col.get("data_type"),
+            "description": column_descriptions.get(name) or col.get("description") or "",
+            "is_measure": bool(col.get("is_measure")),
+            "is_dimension": bool(col.get("is_dimension")),
+        })
+
+    return _ok({
+        "chart_id": chart_id,
+        "chart_name": chart.name,
+        "dataset": {
+            "id": dataset.id if dataset else None,
+            "name": dataset.name if dataset else None,
+            "description": (dataset.description or "") if dataset else "",
+        },
+        "dataset_table": {
+            "id": table.id,
+            "display_name": table.display_name,
+            "auto_description": table.auto_description or "",
+            "source_table_name": table.source_table_name,
+        },
+        "columns": columns_out[:60],
+        "common_questions": common_questions[:10],
+        "query_aliases": query_aliases[:20],
+        "note": (
+            "Use this glossary to (a) translate user-spoken aliases like "
+            "'doanh thu' to the actual column name before searching/"
+            "aggregating, (b) explain what a measure means when the "
+            "user asks, (c) pick the right chart when the user names "
+            "a concept rather than a chart."
+        ),
+    })
