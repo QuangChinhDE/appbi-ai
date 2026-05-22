@@ -13,7 +13,7 @@ import logging
 from typing import AsyncGenerator, Awaitable, Callable
 
 from app.services.dashboard_ai_bot.events import AgentEvent
-from app.services.dashboard_ai_bot.prompts import (
+from app.services.dashboard_ai_bot.thinking.prompts import (
     CRITIQUE_SYSTEM_PROMPT,
     build_critique_user_prompt,
 )

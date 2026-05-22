@@ -22,11 +22,11 @@ import re
 import time
 from typing import AsyncGenerator
 
-from app.services.dashboard_ai_bot.briefing import (
+from app.services.dashboard_ai_bot.thinking.briefing import (
     Briefing,
     format_briefing_for_prompt,
 )
-from app.services.dashboard_ai_bot.conversation_state import (
+from app.services.dashboard_ai_bot.thinking.conversation_state import (
     ConversationState,
     Hypothesis,
     collect_seen_chart_ids,
@@ -36,15 +36,15 @@ from app.services.dashboard_ai_bot.conversation_state import (
     format_state_for_prompt,
     update_hypothesis_status,
 )
-from app.services.dashboard_ai_bot.critique import critique_and_stream
+from app.services.dashboard_ai_bot.thinking.critique import critique_and_stream
 from app.services.dashboard_ai_bot.events import AgentEvent
-from app.services.dashboard_ai_bot.prompts import build_agent_system_prompt
+from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
 from app.services.dashboard_ai_bot.providers import (
     stream_anthropic,
     stream_gemini_singleshot,
     stream_openai,
 )
-from app.services.dashboard_ai_bot.tools import (
+from app.services.dashboard_ai_bot.thinking.tools import (
     TOOL_DEFINITIONS,
     ToolContext,
     execute_tool,

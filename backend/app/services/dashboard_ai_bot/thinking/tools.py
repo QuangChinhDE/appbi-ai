@@ -18,166 +18,29 @@ import ast
 import logging
 import math
 import operator as ops
-from dataclasses import dataclass, field
 from typing import Any, Callable
-
-from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from app.models.models import Dashboard
-from app.services.chart_service import ChartService
 from app.services.dashboard_ai_bot.insight_pack import (
     build_chart_manifest,
     build_insight_pack,
 )
-
-
-# Constants ───────────────────────────────────────────────────────────────────
-
-MAX_ROWS_FOR_PACK = 200  # internal sample for stats, not exposed to LLM
-MAX_TOP_N = 50
-
-
-# Context ─────────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class ToolContext:
-    db: Session
-    dashboard: Dashboard
-    public_filters: list[dict]  # the filters the dashboard is currently showing
-    allowed_chart_ids: set[int] = field(default_factory=set)
-    chart_meta: dict[int, dict[str, Any]] = field(default_factory=dict)
-    # Cache so repeated calls don't re-hit the DB unnecessarily within a turn
-    _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
-
-    @classmethod
-    def from_dashboard(
-        cls, db: Session, dashboard: Dashboard, public_filters: list[dict] | None
-    ) -> "ToolContext":
-        allowed: set[int] = set()
-        meta: dict[int, dict[str, Any]] = {}
-        for dc in dashboard.dashboard_charts or []:
-            if not dc.chart_id or not dc.chart:
-                continue
-            allowed.add(dc.chart_id)
-            layout = dc.layout if isinstance(dc.layout, dict) else {}
-            custom_title = layout.get("custom_title") if isinstance(layout, dict) else None
-            meta[dc.chart_id] = {
-                "name": (custom_title or getattr(dc.chart, "name", "") or f"Chart {dc.chart_id}"),
-                "chart_type": str(getattr(dc.chart, "chart_type", "") or ""),
-                "description": getattr(dc.chart, "description", None) or "",
-                "layout": layout,
-            }
-        return cls(
-            db=db,
-            dashboard=dashboard,
-            public_filters=[f for f in (public_filters or []) if isinstance(f, dict)],
-            allowed_chart_ids=allowed,
-            chart_meta=meta,
-        )
-
-    def assert_chart_in_scope(self, chart_id: int) -> None:
-        if chart_id not in self.allowed_chart_ids:
-            raise ToolError(
-                f"chart_id {chart_id} is not part of this dashboard."
-            )
-
-
-class ToolError(Exception):
-    """User-facing tool error. The message is shown to the LLM."""
-
-
-# Tool result envelope ─────────────────────────────────────────────────────────
-
-
-def _ok(data: Any) -> dict:
-    return {"ok": True, "data": data}
-
-
-def _err(message: str) -> dict:
-    return {"ok": False, "error": str(message)}
-
-
-# Internal: chart data fetch with public_filters always applied ───────────────
-
-
-def _fetch_chart_data(
-    ctx: ToolContext,
-    chart_id: int,
-    *,
-    extra_filters: list[dict] | None = None,
-) -> dict[str, Any]:
-    """Fetch chart data honoring the dashboard's public filters.
-
-    Returns a dict with keys: ``columns`` (list[str]), ``rows`` (list[list]),
-    ``filters_applied`` (list[dict]).
-    """
-    ctx.assert_chart_in_scope(chart_id)
-
-    merged: list[dict] = []
-    for f in ctx.public_filters:
-        if isinstance(f, dict):
-            merged.append(dict(f))
-    for f in extra_filters or []:
-        if isinstance(f, dict):
-            merged.append(dict(f))
-
-    cache_key = (chart_id, _hash_filters(merged))
-    cached = ctx._chart_data_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    result = ChartService.get_chart_data(
-        ctx.db,
-        chart_id,
-        extra_filters=merged or None,
-        filter_context="dashboard",
-    )
-    raw = result.get("data") if isinstance(result, dict) else None
-
-    columns: list[str] = []
-    rows: list[list] = []
-
-    # ChartService.get_chart_data returns {"data": rows} where rows is a
-    # list[dict]. Some legacy callers expect {"data": {"columns": [...], "rows": [[]]}}.
-    # Normalize both shapes here so downstream insight pack code is happy.
-    if isinstance(raw, dict):
-        columns = [str(c) for c in (raw.get("columns") or [])]
-        rows = [list(r) if isinstance(r, (list, tuple)) else [r] for r in (raw.get("rows") or [])]
-    elif isinstance(raw, list):
-        # Discover columns from the first non-empty dict, falling back to dict keys union.
-        seen: list[str] = []
-        seen_set: set[str] = set()
-        for item in raw:
-            if isinstance(item, dict):
-                for k in item.keys():
-                    if k not in seen_set:
-                        seen_set.add(k)
-                        seen.append(str(k))
-        columns = seen
-        for item in raw:
-            if isinstance(item, dict):
-                rows.append([item.get(c) for c in columns])
-            elif isinstance(item, (list, tuple)):
-                rows.append(list(item))
-
-    payload = {
-        "columns": columns,
-        "rows": rows,
-        "filters_applied": merged,
-    }
-    ctx._chart_data_cache[cache_key] = payload
-    return payload
-
-
-def _hash_filters(filters: list[dict]) -> str:
-    try:
-        import json
-        return json.dumps(filters, sort_keys=True, default=str)
-    except Exception:
-        return repr(filters)
+# Phase 15.77 — shared infrastructure (ToolContext, _fetch_chart_data,
+# helpers) lives at the top-level so the sibling ``normal/`` variant
+# uses the SAME chart-fetch path. Drift in this layer was the root
+# cause of the empty-data bug, so keep one source of truth.
+from app.services.dashboard_ai_bot.tool_context import (
+    MAX_ROWS_FOR_PACK,
+    MAX_TOP_N,
+    ToolContext,
+    ToolError,
+    _err,
+    _fetch_chart_data,
+    _hash_filters,
+    _ok,
+    _round,
+)
 
 
 # Tool: list_charts ───────────────────────────────────────────────────────────
@@ -462,14 +325,6 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
     })
 
 
-def _round(value: float | None) -> float | None:
-    if value is None or not isinstance(value, (int, float)):
-        return value
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return round(float(value), 4)
-
-
 # Tool: compute ────────────────────────────────────────────────────────────────
 #
 # Safe arithmetic evaluator. AI passes an expression like "(a-b)/b*100" with
@@ -630,7 +485,7 @@ def _register_advanced_tools() -> None:
     """
     if "compare_periods" in TOOLS:
         return
-    from app.services.dashboard_ai_bot.advanced_tools import (
+    from app.services.dashboard_ai_bot.thinking.advanced_tools import (
         tool_aggregate_chart_data,
         tool_compare_periods,
         tool_correlate_charts,

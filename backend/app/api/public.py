@@ -2210,8 +2210,8 @@ def get_dashboard_ai_recon(
     Frontend calls this once when the bot opens to render a "what's notable"
     welcome message and to seed suggested questions. No LLM call here.
     """
-    from app.services.dashboard_ai_bot.agent import build_proactive_recon
-    from app.services.dashboard_ai_bot.tools import ToolContext
+    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -2291,11 +2291,11 @@ def get_dashboard_ai_pdf(
     (Claude, ChatGPT) for offline analysis â€” same data, "real images" the
     way the user described.
     """
-    from app.services.dashboard_ai_bot.advanced_tools import (
+    from app.services.dashboard_ai_bot.thinking.advanced_tools import (
         _detect_dim_idx, _detect_measure_idx,
     )
-    from app.services.dashboard_ai_bot.chart_renderer import render_dashboard_pdf
-    from app.services.dashboard_ai_bot.tools import _fetch_chart_data, ToolContext
+    from app.services.dashboard_ai_bot.thinking.chart_renderer import render_dashboard_pdf
+    from app.services.dashboard_ai_bot.tool_context import _fetch_chart_data, ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -2375,9 +2375,9 @@ def get_dashboard_ai_briefing_guess(
     metrics. The frontend wizard renders this as Step 1 (confirm/correct).
     No LLM call.
     """
-    from app.services.dashboard_ai_bot.agent import build_proactive_recon
-    from app.services.dashboard_ai_bot.briefing import guess_briefing_from_recon
-    from app.services.dashboard_ai_bot.tools import ToolContext
+    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.briefing import guess_briefing_from_recon
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -2452,8 +2452,8 @@ async def post_dashboard_ai_briefing_brief(
     """
     import json as _json
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.agent import build_proactive_recon
-    from app.services.dashboard_ai_bot.briefing import (
+    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.briefing import (
         Briefing,
         EXEC_BRIEF_SYSTEM_PROMPT,
         build_executive_brief_user_prompt,
@@ -2461,7 +2461,7 @@ async def post_dashboard_ai_briefing_brief(
     from app.services.dashboard_ai_bot.providers import (
         stream_anthropic, stream_gemini_singleshot, stream_openai,
     )
-    from app.services.dashboard_ai_bot.tools import ToolContext
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -2691,8 +2691,8 @@ async def chat_dashboard_ai_agent(
     """
     import json as _json
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.agent import run_agent_stream
-    from app.services.dashboard_ai_bot.tools import ToolContext
+    from app.services.dashboard_ai_bot import run_agent_stream
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token, db, session_token=x_public_session, track_access=False,
@@ -2758,8 +2758,8 @@ async def chat_dashboard_ai_agent(
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
 
     # Phase A + B: parse briefing + state, default-construct if missing.
-    from app.services.dashboard_ai_bot.briefing import Briefing as _Briefing
-    from app.services.dashboard_ai_bot.conversation_state import ConversationState as _ConvState
+    from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
+    from app.services.dashboard_ai_bot.thinking.conversation_state import ConversationState as _ConvState
     briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
     state_obj = _ConvState.from_dict(body.state or {}) if body.state is not None else _ConvState()
     # Briefing on the state may be older than what FE sent â€” sync to caller's
@@ -2767,8 +2767,14 @@ async def chat_dashboard_ai_agent(
     if briefing_obj is not None:
         state_obj.briefing = briefing_obj
 
+    # Phase 15.77 — Normal/Thinking dispatch. The chat UI's toggle
+    # comes through as X-User-Ai-Mode header; the dispatcher routes
+    # to dashboard_ai_bot/normal or dashboard_ai_bot/thinking and
+    # silently strips kwargs the normal variant doesn't accept
+    # (briefing, state).
     async def sse_stream():
         async for ev in run_agent_stream(
+            mode=x_user_ai_mode,
             ctx=ctx,
             user_messages=safe_messages,
             api_key=captured_key,

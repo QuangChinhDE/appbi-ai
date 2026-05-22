@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.dashboard_ai_bot.briefing import Briefing
+from app.services.dashboard_ai_bot.thinking.briefing import Briefing
 
 logger = logging.getLogger(__name__)
 

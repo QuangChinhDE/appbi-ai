@@ -30,7 +30,7 @@ import statistics
 from collections.abc import Sequence
 from typing import Any
 
-from app.services.dashboard_ai_bot.tools import (
+from app.services.dashboard_ai_bot.thinking.tools import (
     MAX_TOP_N,
     ToolContext,
     ToolError,
@@ -1170,7 +1170,7 @@ def tool_get_chart_image(ctx: ToolContext, args: dict) -> dict:
     # Render real PNG in a separate try so a renderer failure doesn't lose ASCII.
     png_payload: dict | None = None
     try:
-        from app.services.dashboard_ai_bot.chart_renderer import render_chart_png
+        from app.services.dashboard_ai_bot.thinking.chart_renderer import render_chart_png
         meta = ctx.chart_meta.get(chart_id, {})
         chart_role = "kpi" if (meta.get("chart_type") or "").lower() in (
             "kpi", "metric", "card", "number"
@@ -1256,7 +1256,7 @@ def tool_get_dashboard_overview_image(ctx: ToolContext, args: dict) -> dict:
         return _err("dashboard has no chart data to render")
 
     try:
-        from app.services.dashboard_ai_bot.chart_renderer import render_dashboard_overview_png
+        from app.services.dashboard_ai_bot.thinking.chart_renderer import render_dashboard_overview_png
         rendered = render_dashboard_overview_png(
             dashboard_name=getattr(ctx.dashboard, "name", None) or "Dashboard",
             chart_payloads=chart_payloads,

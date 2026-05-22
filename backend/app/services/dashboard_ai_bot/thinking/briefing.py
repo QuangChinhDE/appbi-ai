@@ -416,7 +416,7 @@ def format_briefing_for_prompt(briefing: Briefing | None) -> str:
     lines.append(_role_priority_block(briefing.role))
     # Inject domain know-how (KPI chuẩn, red-flag, glossary) khi domain
     # đã được confirm. Module thuần data, không gọi LLM.
-    from app.services.dashboard_ai_bot.domain_skills import format_domain_skill_block
+    from app.services.dashboard_ai_bot.thinking.domain_skills import format_domain_skill_block
     skill_block = format_domain_skill_block(briefing.domain)
     if skill_block:
         lines.append("")
