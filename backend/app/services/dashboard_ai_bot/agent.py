@@ -332,36 +332,11 @@ def _format_recon_for_prompt(recon: dict) -> str:
         )
     # Phase 15.73 — detect the "all empty" condition that previously
     # caused the bot to bail with generic "không có dữ liệu". Surface it
-    # loud at the top of the snapshot so the LLM knows to name the
-    # filter-mismatch issue instead of silently giving up.
-    if packs_for_snapshot:
-        empty_pack_count = sum(
-            1 for p in packs_for_snapshot
-            if isinstance(p, dict) and (
-                p.get("empty_state") == "no_rows" or p.get("total_rows") == 0
-            )
-        )
-        if empty_pack_count == len(packs_for_snapshot):
-            lines.append(
-                "\n⚠️ FILTER MISMATCH SIGNAL — every pre-fetched chart "
-                "returned 0 rows under the current public filters, even "
-                "though the dashboard ITSELF renders data on screen for "
-                "the user. The bot's filter set likely doesn't match the "
-                "dashboard's actual data range (typical cause: default "
-                "'current period' window vs. saved date range on the "
-                "report). Your answer MUST: (a) name this mismatch "
-                "explicitly, (b) suggest the user widen the date filter "
-                "or remove filters, (c) NEVER reply with a generic "
-                "'không có dữ liệu' / 'I don't have data'. The data IS "
-                "there — it's just outside the slice we asked for."
-            )
-        elif empty_pack_count > 0:
-            lines.append(
-                f"\nNOTE: {empty_pack_count}/{len(packs_for_snapshot)} "
-                "pre-fetched packs returned 0 rows. Name those charts "
-                "specifically in your answer if relevant; do not hide "
-                "them behind a generic 'no data' phrase."
-            )
+    # Phase 15.75 — removed the all-empty / partial-empty banners.
+    # They pressured the LLM into a fixed playbook ("you MUST name the
+    # mismatch …") that backfired on healthy dashboards where some
+    # packs were genuinely small. The recon partial warning above (when
+    # fetches FAIL) is still useful and stays.
     lines.append(f"\nCharts: {len(charts)}")
     for c in charts:
         role = c.get("role_hint") or "?"
@@ -561,8 +536,6 @@ async def run_agent_stream(
     # agent works through the plan.
     reading_plan_items: list[dict] = []
     plan_step_status: list[str] = []  # pending/running/done, by step index
-    # Phase 15.73 — guard against infinite retry on empty-text drafts.
-    empty_draft_retry_sent = False
     # Per-tool budget within a single turn. Used for expensive tools that
     # ship large multimodal payloads — the LLM occasionally tries to call
     # them 2-3 times in a row, which inflates input tokens drastically.
@@ -923,76 +896,26 @@ async def run_agent_stream(
                 },
             )
             reading_plan_emitted = True
-        # Phase 15.73 — empty-draft retry. If the LLM produced no text
-        # AND we have tool results in scope, bounce back once with a
-        # synthetic user nudge instead of immediately bailing with
-        # "không đủ dữ liệu". Common cause: tool calls returned empty
-        # packs (filter mismatch like default period vs. dashboard's
-        # 2024 data) and the LLM, seeing only empty data in the
-        # transcript, generated nothing. The retry directive forces it
-        # to either (a) explain the empty state by name, or (b) lift
-        # whatever non-empty rows DID come back. Cap at one retry so a
-        # stubborn model can't loop forever.
-        if (
-            not round_text.strip()
-            and tool_calls_made > 0
-            and not empty_draft_retry_sent
-        ):
-            empty_draft_retry_sent = True
-            running.append({
-                "role": "user",
-                "content": (
-                    "(Hệ thống) Phản hồi vừa rồi của bạn trống. Người dùng "
-                    "đang xem dashboard có số liệu rõ ràng trên màn hình, "
-                    "nên ĐỪNG trả lời 'không có dữ liệu'. Hãy viết câu trả "
-                    "lời dựa trên các tool results phía trên: "
-                    "(a) liệt kê chart nào CÓ data và rút insight, "
-                    "(b) chart nào tool trả về 0 rows / empty_state=no_rows "
-                    "thì gọi tên cụ thể và lưu ý 'có thể do filter "
-                    "(đặc biệt là khoảng thời gian) chưa khớp với data "
-                    "trên dashboard'. Tuân thủ format TL;DR + 1-3 "
-                    "bullet + [FOLLOWUP] như prompt hệ thống. Tuyệt đối "
-                    "KHÔNG được trả về chuỗi rỗng nữa."
-                ),
-            })
-            yield AgentEvent(
-                type="status",
-                text="Đang viết câu trả lời…",
-                tool_name="_thinking",
-            )
-            continue
         draft_answer_parts.append(round_text)
         break
 
     draft_answer = "".join(draft_answer_parts).strip()
     cost_cap_reached = cost_cap_reached or meter.over_cap()
     if not draft_answer:
-        # Phase 15.73 — more specific fallback. The user just spent
-        # 10-30s waiting; "thử câu cụ thể hơn" gives them no idea what
-        # went wrong. Name the most likely cause (empty data under the
-        # current filters) so they can act.
-        any_empty = any(
-            (
-                isinstance(entry.get("result"), dict)
-                and isinstance(entry["result"].get("data"), dict)
-                and (
-                    entry["result"]["data"].get("empty_state") == "no_rows"
-                    or entry["result"]["data"].get("total_rows") == 0
-                )
-            )
-            for entry in tool_log
+        # Phase 15.75 — back to a simple, non-prescriptive fallback.
+        # The 15.73 retry-loop + filter-mismatch-blaming fallback put
+        # too much pressure on the LLM and was making it bail more
+        # often, not less. If the model still produced nothing after
+        # the tool round, surface a clear, neutral message and let the
+        # user re-ask.
+        yield AgentEvent(
+            type="text",
+            text=(
+                "Tôi chưa đưa ra được câu trả lời cho câu này. "
+                "Bạn thử hỏi lại theo cách khác (ví dụ: chỉ tên một chart "
+                "cụ thể, hoặc nêu rõ chỉ số / phân khúc bạn muốn xem)."
+            ),
         )
-        fallback_text = (
-            "Tôi vừa đọc các chart trong dashboard nhưng kết quả trả về "
-            "0 dòng dưới bộ filter hiện tại — có thể do khoảng thời gian "
-            "mặc định chưa khớp với data trên báo cáo. Bạn thử mở rộng "
-            "khoảng date hoặc xoá filter rồi hỏi lại nhé."
-            if any_empty
-            else "Tôi chưa đưa ra được câu trả lời cho câu này. Hãy thử "
-                 "diễn đạt cụ thể hơn (nêu rõ phân khúc, khoảng thời gian, "
-                 "hoặc chỉ số bạn muốn xem) để tôi đọc đúng chart."
-        )
-        yield AgentEvent(type="text", text=fallback_text)
         yield AgentEvent(type="done")
         return
 
