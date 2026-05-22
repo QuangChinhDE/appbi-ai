@@ -189,12 +189,17 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # at chat-open time to avoid blocking on N live SQL queries when the
     # dashboard has many charts. The agent can still call
     # ``get_chart_summary`` lazily on the chart it actually needs.
+    #
+    # Phase 15.74 — light mode now reports total_rows=None (unknown), NOT
+    # 0. Reporting 0 silently misled the LLM into thinking the dashboard
+    # was empty when in fact we just hadn't checked yet. recon backfills
+    # the real count from each parallel summary fetch when those succeed.
     light = bool(args.get("light"))
     items = []
     for chart_id in sorted(ctx.allowed_chart_ids):
         meta = ctx.chart_meta.get(chart_id, {})
         columns: list[str] = []
-        total_rows = 0
+        total_rows: int | None = None
         if not light:
             # Pull row count via the same fetch (cached for the turn)
             try:

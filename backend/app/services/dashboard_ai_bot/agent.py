@@ -162,14 +162,22 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
         finally:
             worker_db.close()
 
+    # Phase 15.74 — bumped per-chart timeout from 12s → 30s. Production
+    # data sources (BigQuery, slow PostgreSQL) routinely exceed 12s on
+    # a cold parallel fan-out; the silent drop was causing every chart
+    # summary to vanish from the recon snapshot, leaving the LLM
+    # convinced the dashboard had no data when in fact the dashboard
+    # rendered fine (just slower than the bot's old timeout allowed).
     results: dict[int, dict] = {}
+    failures: dict[int, str] = {}
     with ThreadPoolExecutor(max_workers=min(6, len(chart_ids))) as pool:
         futures = {pool.submit(_run_one, cid): cid for cid in chart_ids}
         for fut in as_completed(futures):
             cid = futures[fut]
             try:
-                results[cid] = fut.result(timeout=12)
+                results[cid] = fut.result(timeout=30)
             except Exception as exc:
+                failures[cid] = type(exc).__name__
                 logger.warning(
                     "recon summary failed chart_id=%s err=%s",
                     cid,
@@ -180,13 +188,26 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
     # later `get_chart_summary` calls hit cache instead of refetching
     # (Phase 15.72 Option A). The recon ran with the same dashboard +
     # filters, so the key set is identical.
+    #
+    # Phase 15.74 — also backfill the manifest's total_rows from each
+    # successful summary. The manifest came back from list_charts
+    # light=True with total_rows=None; the summary pack has the real
+    # count. Otherwise the snapshot printed "rows=None" for every chart
+    # even when we had the data sitting right here.
     from app.services.dashboard_ai_bot.summary_cache import put_cached_pack
     dashboard_id_for_cache = getattr(ctx.dashboard, "id", None)
+    manifest_data = manifest.get("data") or {}
+    manifest_charts = manifest_data.get("charts") or []
+    rows_by_chart: dict[int, int] = {}
     for cid in chart_ids:
         res = results.get(cid)
         if res and res.get("ok"):
             pack_data = res["data"]
             summaries.append(pack_data)
+            if isinstance(pack_data, dict):
+                tr = pack_data.get("total_rows")
+                if isinstance(tr, int):
+                    rows_by_chart[cid] = tr
             if isinstance(dashboard_id_for_cache, int) and isinstance(pack_data, dict):
                 put_cached_pack(
                     dashboard_id_for_cache,
@@ -194,6 +215,11 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
                     cid,
                     pack_data,
                 )
+    if rows_by_chart:
+        for chart_entry in manifest_charts:
+            cid = chart_entry.get("chart_id")
+            if isinstance(cid, int) and cid in rows_by_chart:
+                chart_entry["total_rows"] = rows_by_chart[cid]
 
     # Auto cross-chart heuristics: if two summaries share a common keyword
     # (e.g. one chart's name says "tổng / total" and another says "quá hạn /
@@ -205,6 +231,11 @@ def build_proactive_recon(ctx: ToolContext) -> dict:
         "manifest": manifest.get("data") or {},
         "summaries": summaries,
         "cross_compute": cross_compute,
+        # Phase 15.74 — surface which chart fetches died so we can warn
+        # the LLM in the snapshot. Silent drops here were the root cause
+        # of "Tôi chưa đủ dữ liệu" on prod even with no filters applied.
+        "failures": failures,
+        "requested_chart_ids": list(chart_ids),
     }
 
 
@@ -278,6 +309,27 @@ def _format_recon_for_prompt(recon: dict) -> str:
     manifest = recon.get("manifest") or {}
     charts = manifest.get("charts") or []
     packs_for_snapshot = recon.get("summaries") or []
+    failures = recon.get("failures") or {}
+    requested_ids = recon.get("requested_chart_ids") or []
+    # Phase 15.74 — surface failed pre-fetch loudly. The previous code
+    # silently dropped charts that exceeded the 12s timeout, leaving the
+    # LLM with the impression the dashboard was empty. We now keep
+    # failures in the recon bundle and warn the LLM about which charts
+    # we couldn't pre-load so it can either retry them lazily via
+    # get_chart_summary or explain the partial coverage to the user.
+    if failures:
+        successful = len(packs_for_snapshot)
+        total_requested = len(requested_ids) or (successful + len(failures))
+        lines.append(
+            f"\n⚠️ RECON PARTIAL — {successful}/{total_requested} chart "
+            f"summaries pre-loaded successfully; "
+            f"{len(failures)} failed/timed out. "
+            f"Failed chart_ids: {sorted(failures.keys())}. "
+            "If the user asks about one of these charts, call "
+            "`get_chart_summary` directly (the source data may just be "
+            "slow). DO NOT conclude the dashboard is empty just because "
+            "those packs are missing from this snapshot."
+        )
     # Phase 15.73 — detect the "all empty" condition that previously
     # caused the bot to bail with generic "không có dữ liệu". Surface it
     # loud at the top of the snapshot so the LLM knows to name the
@@ -313,9 +365,14 @@ def _format_recon_for_prompt(recon: dict) -> str:
     lines.append(f"\nCharts: {len(charts)}")
     for c in charts:
         role = c.get("role_hint") or "?"
+        rows_val = c.get("total_rows")
+        # Phase 15.74 — distinguish "we haven't checked yet" (None) from
+        # "the chart genuinely has 0 rows" (0). Both look like falsy to a
+        # casual reader but mean very different things to the LLM.
+        rows_disp = "unknown (not pre-fetched)" if rows_val is None else str(rows_val)
         lines.append(
             f"  - [chart:{c.get('chart_id')}] {c.get('chart_name')!r} "
-            f"role={role} type={c.get('chart_type')} cols={c.get('columns')} rows={c.get('total_rows')}"
+            f"role={role} type={c.get('chart_type')} rows={rows_disp}"
         )
     for pack in recon.get("summaries") or []:
         cid = pack.get("chart_id")

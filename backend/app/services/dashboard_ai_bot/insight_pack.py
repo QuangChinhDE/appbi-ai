@@ -389,10 +389,17 @@ def build_chart_manifest(
     chart_type: str,
     description: str,
     columns: Sequence[str],
-    total_rows: int,
+    total_rows: int | None,
     filters_applied: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Lightweight manifest entry — no rows, no stats. For ``list_charts`` tool."""
+    """Lightweight manifest entry — no rows, no stats. For ``list_charts`` tool.
+
+    ``total_rows`` may be None when the caller used ``light=True`` (skipped
+    the live SQL fetch) — distinct from total_rows=0 which means "we did
+    fetch and the chart genuinely has 0 rows under current filters".
+    The previous revision coerced unknown to 0, which silently
+    misinformed the LLM that every chart was empty (Phase 15.74 fix).
+    """
     # Cheap role hint without summary stats. Lets the agent triage in
     # Phase 1 from the manifest alone, before deciding which charts to
     # fetch full summaries for.
@@ -411,7 +418,7 @@ def build_chart_manifest(
         "chart_type": chart_type,
         "description": description or "",
         "columns": list(columns),
-        "total_rows": int(total_rows),
+        "total_rows": int(total_rows) if total_rows is not None else None,
         "filters_applied": list(filters_applied),
         "role_hint": role,
     }
