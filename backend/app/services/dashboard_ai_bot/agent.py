@@ -56,7 +56,13 @@ from app.services.dashboard_ai_bot.cost import CostMeter
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 16
-RECON_MAX_CHARTS = 10
+# Phase 15.76 — recon trimmed 10 → 3 to give gpt-4o "zoom để phát
+# triển". The previous 10-chart pre-fetch packed ~5K tokens of inline
+# data into the system prompt before the user's question even arrived,
+# crowding out the model's attention budget. 3 charts is enough to
+# give a feel for the dashboard's shape; the LLM can lazily fetch the
+# rest via get_chart_summary when it actually needs them.
+RECON_MAX_CHARTS = 3
 DEFAULT_COST_CAP_USD = 0.10
 _DEFAULT_MODEL_BY_PROVIDER = {
     "anthropic": "claude-3-5-haiku-20241022",
