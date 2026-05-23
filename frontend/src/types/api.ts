@@ -632,12 +632,37 @@ export interface QueryExecuteResponse {
 
 export type ChartDataContext = 'default' | 'dashboard';
 
+/** Phase-15.78 — one entry per runtime filter the BE dropped before SQL. */
+export interface DroppedFilterInfo {
+  field?: string | null;
+  semantic_field?: string | null;
+  operator?: string | null;
+  /** machine-readable: 'dataset_mismatch' | 'binding_unsupported'
+   *  | 'unreachable_view' | 'unknown_operator' | 'empty_value' | 'no_field' */
+  reason: string;
+  detail?: string | null;
+}
+
+/** Phase-15.9 — debug payload surfaced in the Explore "Query" tab. */
+export interface ChartDebugInfo {
+  sql_emitted?: string | null;
+  dialect?: string | null;
+  routing?: string | null;
+  execution_time_ms?: number | null;
+  row_count?: number | null;
+  warnings?: string[];
+  /** Phase-15.78 — filters the BE dropped (e.g. field not in this chart's binding). */
+  dropped_filters?: DroppedFilterInfo[];
+}
+
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
   pre_aggregated?: boolean;
   /** Phase-3b: ambiguous-path / N:N warnings surfaced from the semantic engine. */
   warnings?: string[];
+  /** Phase-15.9: debug payload, omitted on cache hits / older clients. */
+  debug?: ChartDebugInfo;
   meta?: {
     row_count?: number;
     execution_time_ms?: number;

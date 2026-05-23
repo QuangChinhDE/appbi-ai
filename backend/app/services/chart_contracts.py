@@ -7,8 +7,51 @@ backward compatibility for saved chart configs.
 """
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _summarize_filter(filt: dict[str, Any] | None) -> dict[str, Any]:
+    """Phase-15.78 — extract the dropped-filter diagnostic shape from a
+    runtime filter dict. Keeps the diagnostic small (no full value blobs)
+    so it's safe to forward through the API response."""
+    if not isinstance(filt, dict):
+        return {}
+    return {
+        "field": filt.get("field"),
+        "semantic_field": filt.get("semanticField") or filt.get("fieldKey"),
+        "operator": filt.get("operator"),
+    }
+
+
+def _record_dropped_filter(
+    diagnostics: list[dict] | None,
+    filt: dict[str, Any] | None,
+    reason: str,
+    detail: str | None = None,
+) -> None:
+    """Phase-15.78 — append a structured drop entry to caller-provided
+    diagnostics list and emit a WARNING log. Caller passes None when it
+    doesn't care (most internal sites); chart-data endpoints pass a list
+    and forward it into ChartDebugInfo.dropped_filters."""
+    summary = _summarize_filter(filt)
+    logger.warning(
+        "[filter-drop] reason=%s field=%s semantic=%s op=%s detail=%s",
+        reason,
+        summary.get("field"),
+        summary.get("semantic_field"),
+        summary.get("operator"),
+        detail or "",
+    )
+    if diagnostics is None:
+        return
+    entry = {**summary, "reason": reason}
+    if detail:
+        entry["detail"] = detail
+    diagnostics.append(entry)
 
 
 _VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
@@ -148,11 +191,24 @@ def is_filter_condition_active(filter_condition: dict[str, Any]) -> bool:
     return _filter_atom_is_present(value)
 
 
-def normalize_filter_conditions(filters: list[dict] | None) -> list[dict]:
+def normalize_filter_conditions(
+    filters: list[dict] | None,
+    *,
+    diagnostics: list[dict] | None = None,
+) -> list[dict]:
+    """Drop incomplete filters before they reach the SQL builders.
+
+    Phase-15.78 — when `diagnostics` is provided, every drop is recorded
+    there with `reason in {'no_field', 'empty_value'}`. The function
+    always emits a WARNING log for the drop regardless of caller. Callers
+    that don't care about diagnostics (older sites) just pass nothing
+    and keep the original silent-drop ergonomics.
+    """
     normalized: list[dict] = []
     for filt in filters or []:
         field = filt.get("field")
         if not field:
+            _record_dropped_filter(diagnostics, filt, "no_field")
             continue
         operator = normalize_filter_operator(filt.get("operator"))
         value = normalize_filter_value(operator, filt.get("value"))
@@ -163,6 +219,12 @@ def normalize_filter_conditions(filters: list[dict] | None) -> list[dict]:
             "value": value,
         }
         if not is_filter_condition_active(candidate):
+            _record_dropped_filter(
+                diagnostics,
+                candidate,
+                "empty_value",
+                "filter has no usable value for its operator",
+            )
             continue
         normalized.append(
             candidate

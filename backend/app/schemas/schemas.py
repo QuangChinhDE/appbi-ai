@@ -431,6 +431,23 @@ class ChartResponse(ChartBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class DroppedFilterInfo(BaseModel):
+    """Phase-15.78: one entry per runtime filter the BE silently dropped.
+
+    Tester report (Section VIII): when a chart can't apply a filter — e.g.
+    the field isn't in the chart's semantic binding, the dataset doesn't
+    match, or the operator is unknown — the WHERE clause is built without
+    it and the user has no idea the filter was ignored. We now record
+    every drop with a machine-readable `reason` so the FE can banner it
+    and DA can investigate without grepping logs.
+    """
+    field: Optional[str] = None
+    semantic_field: Optional[str] = None
+    operator: Optional[str] = None
+    reason: str  # 'dataset_mismatch' | 'binding_unsupported' | 'unreachable_view' | 'no_join_path' | 'unknown_operator' | 'empty_value' | 'no_field'
+    detail: Optional[str] = None  # human-readable, may include view names etc.
+
+
 class ChartDebugInfo(BaseModel):
     """Phase-15.9: debug payload for the Explore "Query" tab.
 
@@ -441,6 +458,10 @@ class ChartDebugInfo(BaseModel):
     the inspector tab. Omitted entirely on cache hits or when the BE
     can't safely surface the SQL (e.g. raw DataSourceConnectionService
     error paths). Callers MUST treat every field as optional.
+
+    Phase-15.78 adds `dropped_filters` so the UI can warn when a filter
+    the user applied didn't make it into the WHERE clause (see
+    `DroppedFilterInfo`). Empty list = nothing dropped.
     """
     sql_emitted: Optional[str] = None
     dialect: Optional[str] = None  # 'postgresql' | 'bigquery' | 'mysql' | 'duckdb'
@@ -448,6 +469,7 @@ class ChartDebugInfo(BaseModel):
     execution_time_ms: Optional[float] = None
     row_count: Optional[int] = None
     warnings: List[str] = Field(default_factory=list)
+    dropped_filters: List[DroppedFilterInfo] = Field(default_factory=list)
 
 
 class ChartDataResponse(BaseModel):

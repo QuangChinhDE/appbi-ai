@@ -13,6 +13,7 @@ from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.core.logging import get_logger
 from app.services.chart_contracts import (
+    _record_dropped_filter,
     get_chart_active_role_config,
     get_chart_custom_sql,
     merge_chart_query_filters,
@@ -290,6 +291,8 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         # tab shouldn't have to walk multiple shapes.
         "execution_time_ms": runtime_result.get("execution_time_ms"),
         "warnings": list(runtime_result.get("warnings") or []),
+        # Phase-15.78: forward structured drop log to the API response.
+        "dropped_filters": list(raw_debug.get("dropped_filters") or []),
     }
 
 
@@ -489,8 +492,19 @@ def _normalize_runtime_filters_for_chart(
     filters: list | None,
     *,
     include_joined_semantic: bool = False,
+    diagnostics: list[dict] | None = None,
 ) -> list[dict]:
-    normalized_filters = normalize_filter_conditions(filters)
+    """Filter the incoming runtime filter list down to what's safely
+    applicable to *this* chart's semantic binding.
+
+    Phase-15.78 — every dropped filter is logged at WARNING and, when the
+    caller provides a `diagnostics` list, appended as a structured entry
+    `{field, semantic_field, operator, reason, detail}`. Chart-data
+    endpoints forward this into `ChartDebugInfo.dropped_filters` so the
+    user can see exactly which filters their tile ignored and why.
+    Reasons: dataset_mismatch, binding_unsupported, unreachable_view.
+    """
+    normalized_filters = normalize_filter_conditions(filters, diagnostics=diagnostics)
     if not normalized_filters:
         return []
 
@@ -506,6 +520,12 @@ def _normalize_runtime_filters_for_chart(
     for filt in normalized_filters:
         filter_dataset_id = filt.get("datasetId")
         if dataset_id is not None and filter_dataset_id is not None and filter_dataset_id != dataset_id:
+            _record_dropped_filter(
+                diagnostics,
+                filt,
+                "dataset_mismatch",
+                f"filter targets dataset {filter_dataset_id} but chart binds to dataset {dataset_id}",
+            )
             continue
 
         semantic_field = str(
@@ -514,6 +534,12 @@ def _normalize_runtime_filters_for_chart(
             or ""
         ).strip()
         if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
+            _record_dropped_filter(
+                diagnostics,
+                filt,
+                "binding_unsupported",
+                f"semantic field {semantic_field!r} is not exposed by this chart's binding",
+            )
             continue
 
         if not semantic_field or "." not in semantic_field:
@@ -528,6 +554,12 @@ def _normalize_runtime_filters_for_chart(
                 continue
 
             if not _plain_field_is_supported_by_binding(binding, filt.get("field")):
+                _record_dropped_filter(
+                    diagnostics,
+                    filt,
+                    "binding_unsupported",
+                    f"plain field {filt.get('field')!r} is not in the chart's base view",
+                )
                 continue
             result.append(filt)
             continue
@@ -548,8 +580,23 @@ def _normalize_runtime_filters_for_chart(
                 if str(v or "").strip()
             }
             if reachable_views and semantic_view not in reachable_views:
+                _record_dropped_filter(
+                    diagnostics,
+                    filt,
+                    "unreachable_view",
+                    f"view {semantic_view!r} is not reachable from {base_view_name!r} via the semantic join graph",
+                )
                 continue
             result.append(filt)
+        else:
+            # include_joined_semantic=False: anything outside the base view
+            # is not consumable in this call path.
+            _record_dropped_filter(
+                diagnostics,
+                filt,
+                "binding_unsupported",
+                f"joined-view filter on {semantic_field!r} skipped — caller did not enable joined-semantic mode",
+            )
 
     return result
 
@@ -1349,6 +1396,12 @@ def _execute_semantic_chart_runtime(
     # whose target is supported by the binding (base or reachable view) and
     # which the engine can understand. Bare-field filters get qualified to
     # the base view; semantic refs pass through.
+    #
+    # Phase-15.78: collect a structured drop log so the chart-data response
+    # can tell the UI which filters were ignored and why (forwarded into
+    # _debug.dropped_filters below). Tester reported "filter applied but
+    # chart not filtered" was silent — this surfaces it.
+    filter_diagnostics: list[dict] = []
     runtime_filters = _normalize_runtime_filters_for_chart(
         chart_config,
         merge_chart_query_filters(
@@ -1357,6 +1410,7 @@ def _execute_semantic_chart_runtime(
             context=filter_context,
         ),
         include_joined_semantic=True,
+        diagnostics=filter_diagnostics,
     )
 
     _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
@@ -1532,6 +1586,11 @@ def _execute_semantic_chart_runtime(
             "dialect": dialect,
             "routing": "semantic_engine",
             "row_count": len(rows),
+            # Phase-15.78: structured record of every filter the BE dropped
+            # before generating SQL. Empty list = nothing dropped. FE can
+            # banner this so users discover when a slicer they applied
+            # didn't reach this chart.
+            "dropped_filters": list(filter_diagnostics),
         },
     }
 
@@ -1582,7 +1641,16 @@ def _execute_chart_runtime_for_table(
     filters = resolve_chart_query_filters(chart_config, filter_context)
     custom_sql = get_chart_custom_sql(chart_config)
     raw_extra_filters = list(extra_filters or [])
-    normalized_extra_filters = _normalize_runtime_filters_for_chart(chart_config, extra_filters)
+    # Phase-15.78: collect drops from the pre-normalisation step so the
+    # live_query routing path can forward them into _debug.dropped_filters.
+    # Semantic-runtime path takes its own diagnostics list inside
+    # _execute_semantic_chart_runtime; this list only covers the live path.
+    live_filter_diagnostics: list[dict] = []
+    normalized_extra_filters = _normalize_runtime_filters_for_chart(
+        chart_config,
+        extra_filters,
+        diagnostics=live_filter_diagnostics,
+    )
     binding = (
         chart_config.get("semanticBinding")
         if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
@@ -1638,6 +1706,7 @@ def _execute_chart_runtime_for_table(
             cal_sql,
             extra_filters=[],
             limit_override=limit_override,
+            dropped_filters_log=live_filter_diagnostics,
         )
 
     # ── Derived / calculated table: build live SQL from definition ──
@@ -1681,6 +1750,7 @@ def _execute_chart_runtime_for_table(
                     filtered_live_sql,
                     extra_filters=[],
                     limit_override=limit_override,
+                    dropped_filters_log=live_filter_diagnostics,
                 )
 
             live_datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
@@ -1694,11 +1764,13 @@ def _execute_chart_runtime_for_table(
                     live_datasource, chart_type, live_role_config, filters, live_sql,
                     extra_filters=live_filters,
                     limit_override=limit_override,
+                    dropped_filters_log=live_filter_diagnostics,
                 )
             return LiveQueryService.execute_chart_query(
                 live_datasource, live_proxy_table, chart_type, live_role_config, filters,
                 extra_filters=normalized_extra_filters,
                 limit_override=limit_override,
+                dropped_filters_log=live_filter_diagnostics,
             )
         except DatasetTableSqlError as exc:
             raise ValueError(str(exc)) from exc
@@ -1715,6 +1787,7 @@ def _execute_chart_runtime_for_table(
             custom_sql,
             extra_filters=normalized_extra_filters,
             limit_override=limit_override,
+            dropped_filters_log=live_filter_diagnostics,
         )
 
     if datasource is None:
@@ -1744,11 +1817,13 @@ def _execute_chart_runtime_for_table(
             datasource, chart_type, live_role_config, filters, live_sql,
             extra_filters=live_filters,
             limit_override=limit_override,
+            dropped_filters_log=live_filter_diagnostics,
         )
     return LiveQueryService.execute_chart_query(
         datasource, db_table, chart_type, live_role_config, filters,
         extra_filters=normalized_extra_filters,
         limit_override=limit_override,
+        dropped_filters_log=live_filter_diagnostics,
     )
 
 

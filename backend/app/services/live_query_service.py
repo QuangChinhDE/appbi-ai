@@ -1293,11 +1293,18 @@ class LiveQueryService:
         filters: list,
         extra_filters: list | None = None,
         limit_override: Optional[int] = None,
+        dropped_filters_log: list[dict] | None = None,
     ) -> Dict[str, Any]:
         """
         Execute a chart query against the live source database.
 
         Returns: {data: List[Dict], pre_aggregated: bool, execution_time_ms: float}
+
+        Phase-15.78 — `dropped_filters_log`: optional accumulator. If the
+        caller already collected pre-routing drops (binding-unsupported,
+        unreachable_view, etc.) it can pass them here; this method will
+        prepend them to its own normalize_filter_conditions drops and
+        forward the combined list as `_debug.dropped_filters`.
 
         Raises:
             ValueError: if chart lacks required aggregation or cost guard triggers.
@@ -1313,7 +1320,8 @@ class LiveQueryService:
         all_filters = list(filters or [])
         if extra_filters:
             all_filters.extend(extra_filters)
-        all_filters = normalize_filter_conditions(all_filters)
+        local_drops: list[dict] = list(dropped_filters_log or [])
+        all_filters = normalize_filter_conditions(all_filters, diagnostics=local_drops)
         normalized_role_config = normalize_chart_role_config(chart_type, role_config)
 
         table_identifier = build_dataset_table_cache_identifier(db_table)
@@ -1390,6 +1398,8 @@ class LiveQueryService:
                 "dialect": dialect,
                 "routing": "live_query",
                 "row_count": len(rows),
+                # Phase-15.78: surface filters dropped on the way here.
+                "dropped_filters": list(local_drops),
             },
         }
 
@@ -1419,11 +1429,16 @@ class LiveQueryService:
         sql_query: str,
         extra_filters: list | None = None,
         limit_override: Optional[int] = None,
+        dropped_filters_log: list[dict] | None = None,
     ) -> Dict[str, Any]:
         """
         Execute a chart query where the chart source is a custom SQL statement.
 
         The chart role config still applies on top of the SQL output columns.
+
+        Phase-15.78 — `dropped_filters_log`: optional accumulator forwarded
+        from the caller's pre-normalisation step. See execute_chart_query()
+        for the contract.
         """
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
@@ -1439,7 +1454,8 @@ class LiveQueryService:
         all_filters = list(filters or [])
         if extra_filters:
             all_filters.extend(extra_filters)
-        all_filters = normalize_filter_conditions(all_filters)
+        local_drops: list[dict] = list(dropped_filters_log or [])
+        all_filters = normalize_filter_conditions(all_filters, diagnostics=local_drops)
         normalized_role_config = normalize_chart_role_config(chart_type, role_config)
         normalized_chart_type = str(getattr(chart_type, "value", chart_type) or "").upper()
 
@@ -1517,6 +1533,8 @@ class LiveQueryService:
                 "dialect": dialect,
                 "routing": "live_query",
                 "row_count": len(rows),
+                # Phase-15.78: surface filters dropped on the way here.
+                "dropped_filters": list(local_drops),
             },
         }
 

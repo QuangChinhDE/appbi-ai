@@ -474,6 +474,13 @@ function ChartTileBase({
 
   const rawRows: Record<string, any>[] = chartData?.data ?? [];
   const preAggregated = chartData?.pre_aggregated ?? false;
+  // Phase-15.78 — BE now reports filters it dropped before SQL (binding
+  // unsupported, dataset mismatch, unreachable joined view, …). Merge
+  // them into the existing "skipped" badge so the tooltip lists *both*
+  // FE-side skips (resolveChartFieldForFilter rejected the filter
+  // before even sending it) and BE-side drops (server saw it but had
+  // no place to put it). User sees one number per tile either way.
+  const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
 
 
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
@@ -715,18 +722,28 @@ function ChartTileBase({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
-            {canEdit && skippedGlobalFilters.length > 0 && (
+            {canEdit && (skippedGlobalFilters.length > 0 || droppedByBackend.length > 0) && (
               <span
                 className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
-                title={
-                  `This chart cannot apply ${skippedGlobalFilters.length} global filter`
-                  + `${skippedGlobalFilters.length !== 1 ? 's' : ''}`
-                  + ` - no matching field in the chart's data model:\n- `
-                  + skippedGlobalFilters.map(getFilterDisplayLabel).join('\n- ')
-                }
+                title={(() => {
+                  const lines: string[] = [];
+                  const total = skippedGlobalFilters.length + droppedByBackend.length;
+                  lines.push(
+                    `This chart could not apply ${total} filter${total !== 1 ? 's' : ''}:`,
+                  );
+                  for (const f of skippedGlobalFilters) {
+                    lines.push(`• ${getFilterDisplayLabel(f)} — not in this chart's data model`);
+                  }
+                  for (const d of droppedByBackend) {
+                    const ref = d.semantic_field || d.field || '(unknown field)';
+                    const reason = d.detail || d.reason;
+                    lines.push(`• ${ref} — ${reason}`);
+                  }
+                  return lines.join('\n');
+                })()}
               >
                 <AlertTriangle className="h-3 w-3" />
-                {skippedGlobalFilters.length} skipped
+                {skippedGlobalFilters.length + droppedByBackend.length} skipped
               </span>
             )}
             <a
