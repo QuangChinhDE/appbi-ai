@@ -32,9 +32,10 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
-import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
+import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
   collectJoinKeySemanticFields,
+  fromBaseFilter,
   getColumnDisplayLabel,
   getDistinctValueFilterContext,
   getFilterDisplayLabel,
@@ -43,6 +44,7 @@ import {
   getFilterKey,
   inferColumnTypeFromData,
   isSemanticDimensionFilterableForDashboard,
+  toBaseFilter,
 } from '@/lib/filters';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
@@ -90,14 +92,17 @@ function formatFilterValue(value: unknown): string {
   return String(value ?? '');
 }
 
-function normalizeLegacyDateFilter(filter: BaseFilter, dateColumn: ColumnInfo | null): BaseFilter {
+function normalizeLegacyDateFilter(filter: TypedFilter, dateColumn: ColumnInfo | null): TypedFilter {
+  // Phase-15.80 — was BaseFilter; now operates on the union. Only DateFilter
+  // can carry the legacy "bare 'date' field name with no semantic ref"
+  // payload, so other kinds pass through unchanged.
+  if (filter.kind !== 'date') return filter;
   const dateColumnKey = dateColumn ? getColumnKey(dateColumn) : null;
   const semanticField = String(filter.semanticField ?? '').trim();
   const fieldKey = String(filter.fieldKey ?? '').trim();
   const fieldName = String(filter.field ?? '').trim().toLowerCase();
   const isLegacyDateFilter = (
-    filter.type === 'date'
-    && fieldName === 'date'
+    fieldName === 'date'
     && !semanticField.includes('.')
     && !fieldKey.includes('.')
     && Boolean(dateColumn && dateColumnKey && dateColumn.semanticField)
@@ -122,40 +127,43 @@ function normalizeLegacyDateFilter(filter: BaseFilter, dateColumn: ColumnInfo | 
 // "shareable dashboard with filter state already applied" was not possible
 // because filter state lived only in React state + server config. We now
 // mirror appliedGlobalFilters into `?f=<base64-json>` so a teammate can
-// open the same dashboard view by sharing the URL. Encoding strips the
-// `linkedFields` array (often noisy auto-derived data) so the URL stays
-// short for the common case.
+// open the same dashboard view by sharing the URL.
+//
+// Phase-15.80 — encoded payload is the typed Filter union directly
+// (kind/mode/values/range/preset) instead of the legacy
+// operator/value/type triple. Carries an explicit `v: 2` discriminator
+// so we can spot legacy v1 payloads and convert them through
+// fromBaseFilter() before adoption.
 const URL_FILTER_PARAM = 'f';
+const URL_FILTER_VERSION = 2;
 
-function encodeFiltersForUrl(filters: BaseFilter[]): string | null {
+function encodeFiltersForUrl(filters: TypedFilter[]): string | null {
   if (filters.length === 0) return null;
   try {
-    const compact = filters.map(f => ({
-      id: f.id,
-      field: f.field,
-      fieldKey: f.fieldKey,
-      semanticField: f.semanticField,
-      datasetId: f.datasetId,
-      type: f.type,
-      operator: f.operator,
-      value: f.value,
-      label: f.label,
-      datePreset: f.datePreset,
-      linkedFields: f.linkedFields,
-    }));
-    return btoa(unescape(encodeURIComponent(JSON.stringify(compact))));
+    const payload = { v: URL_FILTER_VERSION, filters };
+    return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
   } catch {
     return null;
   }
 }
 
-function decodeFiltersFromUrl(raw: string | null): BaseFilter[] | null {
+function decodeFiltersFromUrl(raw: string | null): TypedFilter[] | null {
   if (!raw) return null;
   try {
     const json = decodeURIComponent(escape(atob(raw)));
     const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return null;
-    return parsed as BaseFilter[];
+    // v2 payload: { v: 2, filters: TypedFilter[] }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.v === URL_FILTER_VERSION) {
+      return Array.isArray(parsed.filters) ? parsed.filters as TypedFilter[] : null;
+    }
+    // v1 payload: BaseFilter[] (Phase-15.78). Convert through fromBaseFilter
+    // so old shared links still work; failed conversions are dropped.
+    if (Array.isArray(parsed)) {
+      return (parsed as BaseFilter[])
+        .map((b) => fromBaseFilter(b))
+        .filter((f): f is TypedFilter => f !== null);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -177,8 +185,12 @@ export default function DashboardDetailPage() {
   const [editedName, setEditedName] = useState('');
   // Phase-15.66 — `hasUnsavedChanges` replaced by hasLocalLayoutChanges
   // (derived from localLayoutOverrides) + serverDashboard.has_draft.
-  const [draftGlobalFilters, setDraftGlobalFilters] = useState<BaseFilter[]>([]);
-  const [appliedGlobalFilters, setAppliedGlobalFilters] = useState<BaseFilter[]>([]);
+  // Phase-15.80 — state holds the typed Filter union (PowerBI-style
+  // discriminator). Legacy BaseFilter is reconstructed on demand for the
+  // execution path (chart-data API, applyFiltersToRows) and for components
+  // that still consume BaseFilter (DashboardFilterBar internals, ChartTile).
+  const [draftGlobalFilters, setDraftGlobalFilters] = useState<TypedFilter[]>([]);
+  const [appliedGlobalFilters, setAppliedGlobalFilters] = useState<TypedFilter[]>([]);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
     sourceChartId: number;
@@ -359,9 +371,18 @@ export default function DashboardDetailPage() {
   React.useEffect(() => {
     if (!dashboard || filtersSeededRef.current) return;
     filtersSeededRef.current = true;
-    const serverDefault: BaseFilter[] = Array.isArray(dashboard.filters_config)
+    // Phase-15.80 — DB stores filters_config as legacy BaseFilter[]
+    // (Phase-15.78 and earlier). Convert through fromBaseFilter() when
+    // seeding so the in-memory state is union-typed. Filters that fail
+    // conversion (corrupt rows, custom operators we haven't modeled)
+    // are dropped silently — they wouldn't have rendered correctly on
+    // the new UI anyway.
+    const legacyServerDefault: BaseFilter[] = Array.isArray(dashboard.filters_config)
       ? dashboard.filters_config as BaseFilter[]
       : [];
+    const serverDefault: TypedFilter[] = legacyServerDefault
+      .map((b) => fromBaseFilter(b))
+      .filter((f): f is TypedFilter => f !== null);
     const fromUrl = decodeFiltersFromUrl(searchParams?.get(URL_FILTER_PARAM) ?? null);
     const initial = fromUrl ?? serverDefault;
     filtersSnapshotRef.current = JSON.stringify(initial);
@@ -388,6 +409,18 @@ export default function DashboardDetailPage() {
     const current = JSON.stringify(appliedGlobalFilters);
     filtersSnapshotRef.current = current;
   }, [appliedGlobalFilters]);
+
+  // Phase-15.80 — legacy BaseFilter[] view of the applied union filters,
+  // memoised so ChartTile / DashboardGrid / DashboardCanvas (which still
+  // consume BaseFilter) get a stable reference per real filter change.
+  // Inactive filters drop out — the legacy execution path expects only
+  // applicable predicates.
+  const appliedGlobalFiltersLegacy = React.useMemo<BaseFilter[]>(
+    () => appliedGlobalFilters
+      .map((f) => toBaseFilter(f))
+      .filter((b): b is BaseFilter => b !== null),
+    [appliedGlobalFilters],
+  );
 
   // Phase-15.78 — mirror appliedGlobalFilters into the URL `?f=` param so
   // the dashboard view is shareable. We replace (not push) so the back
@@ -792,7 +825,14 @@ export default function DashboardDetailPage() {
 
     setIsApplyingFilters(true);
     try {
-      await dashboardApi.update(dashboardId, { filters_config: draftGlobalFilters });
+      // Phase-15.80 — DB schema (filters_config) is still legacy
+      // BaseFilter[]. Project union → BaseFilter via toBaseFilter for
+      // the wire format; inactive filters return null and are dropped.
+      // Save is best-effort so dropped filters in transit aren't fatal.
+      const legacyForSave = draftGlobalFilters
+        .map((f) => toBaseFilter(f))
+        .filter((b): b is BaseFilter => b !== null);
+      await dashboardApi.update(dashboardId, { filters_config: legacyForSave });
       filtersSnapshotRef.current = JSON.stringify(draftGlobalFilters);
     } catch (error) {
       console.error('Failed to save dashboard filters:', error);
@@ -1235,8 +1275,15 @@ export default function DashboardDetailPage() {
       activeColumns.set(key, column);
     }
 
+    // Phase-15.80 — getDistinctValueFilterContext + the BE distinct-values
+    // endpoint both speak legacy BaseFilter, so project the typed draft set
+    // through toBaseFilter at the boundary. Inactive filters drop out
+    // (cascade only respects "applied" filters anyway).
+    const legacyDraft = draftGlobalFilters
+      .map((f) => toBaseFilter(f))
+      .filter((b): b is BaseFilter => b !== null);
     return Array.from(activeColumns.values()).map((column) => {
-      const filterContext = getDistinctValueFilterContext(draftGlobalFilters, column);
+      const filterContext = getDistinctValueFilterContext(legacyDraft, column);
       return {
         column,
         filterContext,
@@ -1651,14 +1698,24 @@ export default function DashboardDetailPage() {
                           columns={resolvedAvailableColumns}
                           columnChartCount={resolvedColumnChartCount}
                           distinctValues={resolvedDistinctValues}
-                          filters={draftGlobalFilters}
-                          onFiltersChange={(next) => {
+                          // Phase-15.80 — DashboardFilterBar internals
+                          // still speak legacy BaseFilter. Project union
+                          // → BaseFilter on the way in, reconstruct union
+                          // on the way out via fromBaseFilter so the page
+                          // state stays typed.
+                          filters={draftGlobalFilters
+                            .map((f) => toBaseFilter(f))
+                            .filter((b): b is BaseFilter => b !== null)}
+                          onFiltersChange={(nextLegacy) => {
                             // Phase-15.79 — any user-driven mutation
                             // means the current filter set is no longer
                             // a pristine URL hydrate, so DB persistence
                             // on Apply becomes safe again.
                             filtersHydratedFromUrlRef.current = false;
-                            setDraftGlobalFilters(next);
+                            const nextUnion = nextLegacy
+                              .map((b) => fromBaseFilter(b))
+                              .filter((f): f is TypedFilter => f !== null);
+                            setDraftGlobalFilters(nextUnion);
                           }}
                           hasPendingChanges={hasPendingFilterChanges}
                           onApply={handleApplyFilters}
@@ -1848,7 +1905,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
-            globalFilters={appliedGlobalFilters}
+            globalFilters={appliedGlobalFiltersLegacy}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
@@ -1868,7 +1925,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
-            globalFilters={appliedGlobalFilters}
+            globalFilters={appliedGlobalFiltersLegacy}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
@@ -1899,7 +1956,7 @@ export default function DashboardDetailPage() {
                 currentLayout={dc.layout as Record<string, any>}
                 canEdit={false}
                 allowAppearanceEdit={false}
-                globalFilters={appliedGlobalFilters}
+                globalFilters={appliedGlobalFiltersLegacy}
                 instanceParameters={dc.parameters ?? {}}
               />
             ))}

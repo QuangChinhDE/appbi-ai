@@ -82,6 +82,235 @@ export interface DashboardFilter extends BaseFilter {
   datasetId: number; // dataset this filter targets
 }
 
+// ─── Phase-15.80: Typed Filter discriminated union ────────────────────────
+//
+// PowerBI-style: each filter has a `kind` discriminator that tells the UI
+// what controls to render and tells the bridge how to project the filter
+// into the legacy `BaseFilter` shape that the chart-data API still
+// consumes. The legacy `BaseFilter` stays the canonical wire format —
+// authoring & UI logic move to the union, execution layers don't change.
+//
+// Three kinds cover the PowerBI Filter Pane mainstream:
+//   • categorical → text/dropdown column, multi-select OR single-select
+//     OR explicit exclude
+//   • numeric     → number column, between/eq/gt/...
+//   • date        → date column, preset OR explicit range
+//
+// Per-tile Top-N is intentionally NOT modeled as a Filter here — it's a
+// chart-shaping rule on the metric, not a row predicate, and ships
+// through styleConfigOverride.dataLimit (Phase-15.78). Keeping the two
+// layers separate avoids the "filter that has no real WHERE clause"
+// foot-gun PowerBI itself has.
+
+export type FilterKind = 'categorical' | 'numeric' | 'date';
+
+interface FilterCommon {
+  id: string;
+  field: string;
+  fieldKey?: string;
+  semanticField?: string;
+  datasetId?: number;
+  linkedFields?: string[];
+  label?: string;
+}
+
+export type CategoricalMode = 'multi' | 'single' | 'exclude';
+
+export interface CategoricalFilter extends FilterCommon {
+  kind: 'categorical';
+  mode: CategoricalMode;
+  /** Always an array regardless of mode. Length 0 = inactive.
+   *  Length 1 with mode='single' = single value selected.
+   *  Length >=1 with mode='multi'/'exclude' = N-way selection. */
+  values: string[];
+}
+
+export type NumericMode = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
+
+export interface NumericFilter extends FilterCommon {
+  kind: 'numeric';
+  mode: NumericMode;
+  /** For eq/neq/gt/gte/lt/lte. */
+  value?: number | null;
+  /** For between. min or max may be null to express "unbounded on this side". */
+  range?: { min: number | null; max: number | null };
+}
+
+export interface DateFilter extends FilterCommon {
+  kind: 'date';
+  /** When preset === 'custom', `range` is used. Otherwise range is computed
+   *  on the fly from the preset (see computeDatePresetRange). */
+  preset: DatePreset;
+  range?: { start: string | null; end: string | null };
+}
+
+export type Filter = CategoricalFilter | NumericFilter | DateFilter;
+
+/** Type guards for the union. */
+export function isCategorical(f: Filter): f is CategoricalFilter { return f.kind === 'categorical'; }
+export function isNumeric(f: Filter): f is NumericFilter         { return f.kind === 'numeric'; }
+export function isDate(f: Filter): f is DateFilter               { return f.kind === 'date'; }
+
+/** Active = has data the engine can actually use. Empty selection / no
+ *  bounds = inactive. Used for badge counts + skipping idle filters before
+ *  the legacy bridge runs. */
+export function isFilterActive(filter: Filter): boolean {
+  switch (filter.kind) {
+    case 'categorical':
+      return filter.values.some((v) => v != null && String(v).trim() !== '');
+    case 'numeric':
+      if (filter.mode === 'between') {
+        const lo = filter.range?.min;
+        const hi = filter.range?.max;
+        return (lo != null && !Number.isNaN(lo)) || (hi != null && !Number.isNaN(hi));
+      }
+      return filter.value != null && !Number.isNaN(filter.value);
+    case 'date':
+      if (filter.preset !== 'custom') return true;
+      const s = filter.range?.start;
+      const e = filter.range?.end;
+      return Boolean((s && s.trim()) || (e && e.trim()));
+  }
+}
+
+/** Project a typed filter onto the legacy `BaseFilter` shape that the
+ *  chart-data API + applyFiltersToRows / serverFilters already consume.
+ *  Returns null when the typed filter is inactive (engine should skip). */
+export function toBaseFilter(f: Filter): BaseFilter | null {
+  if (!isFilterActive(f)) return null;
+  const common = {
+    id: f.id,
+    field: f.field,
+    fieldKey: f.fieldKey,
+    semanticField: f.semanticField,
+    datasetId: f.datasetId,
+    linkedFields: f.linkedFields,
+    label: f.label,
+  };
+  switch (f.kind) {
+    case 'categorical': {
+      const cleanValues = f.values.filter((v) => v != null && String(v).trim() !== '');
+      if (f.mode === 'single') {
+        return { ...common, type: 'dropdown', operator: 'eq', value: cleanValues[0] ?? '' };
+      }
+      if (f.mode === 'exclude') {
+        return { ...common, type: 'dropdown', operator: 'not_in', value: cleanValues };
+      }
+      return { ...common, type: 'dropdown', operator: 'in', value: cleanValues };
+    }
+    case 'numeric': {
+      if (f.mode === 'between') {
+        const min = f.range?.min;
+        const max = f.range?.max;
+        return {
+          ...common,
+          type: 'number',
+          operator: 'between',
+          value: [
+            min != null && !Number.isNaN(min) ? min : '',
+            max != null && !Number.isNaN(max) ? max : '',
+          ],
+        };
+      }
+      return {
+        ...common,
+        type: 'number',
+        operator: f.mode,
+        value: f.value ?? '',
+      };
+    }
+    case 'date': {
+      if (f.preset !== 'custom') {
+        const [start, end] = computeDatePresetRange(f.preset);
+        return {
+          ...common,
+          type: 'date',
+          operator: 'between',
+          value: [start, end],
+          datePreset: f.preset,
+        };
+      }
+      return {
+        ...common,
+        type: 'date',
+        operator: 'between',
+        value: [f.range?.start ?? '', f.range?.end ?? ''],
+        datePreset: 'custom',
+      };
+    }
+  }
+}
+
+/** Inverse of `toBaseFilter` for hydrating typed state from a legacy
+ *  `BaseFilter` (DB saved config, URL pre-Phase-15.80, etc.). Returns null
+ *  for shapes we can't safely convert — caller drops with a warning. */
+export function fromBaseFilter(b: BaseFilter): Filter | null {
+  const common = {
+    id: b.id,
+    field: b.field,
+    fieldKey: b.fieldKey,
+    semanticField: b.semanticField,
+    datasetId: b.datasetId,
+    linkedFields: b.linkedFields,
+    label: b.label,
+  };
+  if (b.type === 'date') {
+    const preset: DatePreset = b.datePreset ?? 'custom';
+    const [start, end] = Array.isArray(b.value) ? b.value : ['', ''];
+    return {
+      ...common,
+      kind: 'date',
+      preset,
+      range: preset === 'custom'
+        ? { start: start || null, end: end || null }
+        : undefined,
+    };
+  }
+  if (b.type === 'number') {
+    if (b.operator === 'between') {
+      const [lo, hi] = Array.isArray(b.value) ? b.value : [null, null];
+      const parseNum = (v: any): number | null => {
+        if (v == null || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      return {
+        ...common,
+        kind: 'numeric',
+        mode: 'between',
+        range: { min: parseNum(lo), max: parseNum(hi) },
+      };
+    }
+    const allowed = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']);
+    const mode = allowed.has(b.operator as string) ? (b.operator as NumericMode) : 'eq';
+    const n = b.value === '' || b.value == null ? null : Number(b.value);
+    return {
+      ...common,
+      kind: 'numeric',
+      mode,
+      value: Number.isFinite(n as number) ? (n as number) : null,
+    };
+  }
+  // text + dropdown → categorical
+  if (b.operator === 'in') {
+    return { ...common, kind: 'categorical', mode: 'multi', values: Array.isArray(b.value) ? b.value.map(String) : [] };
+  }
+  if (b.operator === 'not_in') {
+    return { ...common, kind: 'categorical', mode: 'exclude', values: Array.isArray(b.value) ? b.value.map(String) : [] };
+  }
+  if (b.operator === 'eq' || b.operator === 'neq') {
+    const v = b.value == null ? '' : String(b.value);
+    return { ...common, kind: 'categorical', mode: b.operator === 'eq' ? 'single' : 'exclude', values: v === '' ? [] : [v] };
+  }
+  // contains/like/starts_with etc. — represent as a single-value
+  // categorical for now (UI doesn't expose those operators yet). Legacy
+  // configs that used them will be downgraded to multi-select.
+  if (Array.isArray(b.value)) {
+    return { ...common, kind: 'categorical', mode: 'multi', values: b.value.map(String) };
+  }
+  return null;
+}
+
 /**
  * Infer FilterType by sampling actual values in the data rows.
  * Returns 'date' | 'number' | 'text'.
