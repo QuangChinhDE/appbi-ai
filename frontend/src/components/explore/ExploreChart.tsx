@@ -508,8 +508,18 @@ function ExploreChartInner({
       return categoricalData;
     }
 
+    // Phase-15.78 — when BE already ran SELECT … GROUP BY date_trunc(…)
+    // (pre_aggregated=true), running applyTimeGranularity here would
+    // re-bucket already-bucketed rows and silently produce wrong output.
+    // The Phase-12.5 contract was that FE skips client-side aggregation
+    // when preAggregated; that was enforced for applyGroupByAgg but
+    // missed here. Defer to the BE's chosen bucket and skip.
+    if (preAggregated) {
+      return categoricalData;
+    }
+
     return applyTimeGranularity(categoricalData, tf, metrics, gran);
-  }, [type, categoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics]);
+  }, [type, categoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics, preAggregated]);
 
   const sortedCategoricalData = useMemo(() => {
     let d = applySortRules(categoricalOutputData, sortRules);
