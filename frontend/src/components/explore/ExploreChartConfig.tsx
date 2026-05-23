@@ -420,6 +420,112 @@ const BREAKDOWN_SUPPORTED_CHART_TYPES = new Set<string>([
 const RAW_DISTRIBUTION_TYPES = new Set<string>(['BOXPLOT']);
 
 /**
+ * Phase-15.78 — when DA changes chart type in Explore, transfer the
+ * old role config into the new chart's shape so the canvas doesn't
+ * render blank just because the role field names differ.
+ *
+ * Concretely:
+ *   BAR (dimension + metrics)         → SCATTER (scatterX + scatterY)
+ *     scatterX gets the first metric field, scatterY the second, falling
+ *     back to dimension when only one metric exists. DA's intent
+ *     ("plot these two numeric fields") is preserved.
+ *
+ *   LINE (dimension + metrics)        → TIME_SERIES (timeField + metrics)
+ *     dimension carries over to timeField; metrics stay.
+ *
+ *   PIE (dimension + 1 metric)        → KPI (metrics, no dimension)
+ *     drop dimension, keep first metric.
+ *
+ *   SCATTER (scatterX/scatterY)       → BAR (dimension + metrics)
+ *     scatterX becomes the dimension, scatterY becomes the first metric.
+ *
+ *   BAR (metrics)                     → BAR_LINE (metrics + lineMetric)
+ *     if there are ≥2 metrics, second one becomes lineMetric.
+ *
+ *   TABLE/MATRIX transitions          → handled by createDefaultTableRoleConfig
+ *     in ExploreEditor.handleChartTypeChange — this helper deliberately
+ *     skips those (they have their own field shape).
+ *
+ * Anything we can't infer just falls through unchanged. Combined with
+ * normalizeRoleConfig (which prunes fields that don't belong to the new
+ * type), the result is a config that's at least *render-attemptable*.
+ * If the new chart still lacks required fields, the existing
+ * getChartRoleConfigValidationMessage banner explains what's missing.
+ */
+const TIME_SERIES_LIKE_TYPES = new Set<string>(['TIME_SERIES', 'RIBBON']);
+
+export function migrateRoleConfig(
+  fromType: string,
+  toType: string,
+  config: ChartRoleConfig | null | undefined,
+): ChartRoleConfig {
+  if (fromType === toType || !config) {
+    return config ?? EMPTY_ROLE_CONFIG;
+  }
+
+  const next: ChartRoleConfig = { ...config, metrics: [...(config.metrics ?? [])] };
+
+  const toScatter = SCATTER_LIKE_TYPES.has(toType);
+  const fromScatter = SCATTER_LIKE_TYPES.has(fromType);
+  const toTime = TIME_SERIES_LIKE_TYPES.has(toType);
+  const fromTime = TIME_SERIES_LIKE_TYPES.has(fromType);
+
+  // SCATTER family: needs scatterX + scatterY. Map from metrics/dimension.
+  if (toScatter && !fromScatter) {
+    if (!next.scatterX) {
+      next.scatterX = next.metrics[0]?.field ?? next.dimension;
+    }
+    if (!next.scatterY) {
+      // Prefer a second metric for Y; fall back to first metric if only one.
+      next.scatterY = next.metrics[1]?.field ?? next.metrics[0]?.field;
+    }
+  }
+
+  // SCATTER → categorical: rehydrate dimension + metrics from x/y.
+  if (fromScatter && !toScatter) {
+    if (!next.dimension && next.scatterX) {
+      next.dimension = next.scatterX;
+    }
+    if (next.metrics.length === 0 && next.scatterY) {
+      next.metrics = [{ field: next.scatterY, agg: 'sum' }];
+    }
+  }
+
+  // TIME_SERIES family: needs timeField; pull from dimension if not set.
+  if (toTime && !fromTime && !next.timeField && next.dimension) {
+    next.timeField = next.dimension;
+  }
+
+  // Coming OUT of TIME_SERIES into a plain categorical: dimension is the
+  // user-facing X. Surface timeField so the BAR/LINE doesn't render blank.
+  if (fromTime && !toTime && !next.dimension && next.timeField) {
+    next.dimension = next.timeField;
+  }
+
+  // BAR_LINE needs metrics[] for bars AND a lineMetric for the line series.
+  // If switching INTO BAR_LINE with multiple metrics, donate the last one
+  // to lineMetric so the chart isn't just a bar chart in disguise.
+  if (toType === 'BAR_LINE' && !next.lineMetric && next.metrics.length >= 2) {
+    next.lineMetric = next.metrics[next.metrics.length - 1];
+    next.metrics = next.metrics.slice(0, -1);
+  }
+
+  // Leaving BAR_LINE: fold lineMetric back into metrics so we don't lose the
+  // user's field choice — normalizeRoleConfig will trim if the new type only
+  // supports one metric.
+  if (fromType === 'BAR_LINE' && toType !== 'BAR_LINE' && next.lineMetric) {
+    next.metrics = [...next.metrics, next.lineMetric];
+    next.lineMetric = undefined;
+  }
+
+  // Coming INTO PIE/DONUT/etc. or KPI/GAUGE/BULLET: normalizeRoleConfig
+  // already trims to one metric and (for KPI/GAUGE/BULLET) the dimension
+  // is irrelevant. Don't undo that here.
+
+  return next;
+}
+
+/**
  * Optional registry mapping qualified field refs (`view.field`) or bare field
  * names to the human-friendly label declared on the semantic measure /
  * dimension. Callers that know the semantic model build this map once and

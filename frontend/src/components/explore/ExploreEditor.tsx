@@ -30,6 +30,7 @@ import {
   DEFAULT_STYLE_CONFIG,
   getChartRoleConfigRequirementMessage,
   getChartRoleConfigValidationMessage,
+  migrateRoleConfig,
   normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
@@ -1783,21 +1784,37 @@ export function ExploreEditor({
       return;
     }
 
+    const fromType = chartType;
     setChartType(nextType);
 
-    if (!TABLE_LIKE_CHART_TYPES.has(nextType) || TABLE_LIKE_CHART_TYPES.has(chartType)) {
+    const transitionIntoTable = TABLE_LIKE_CHART_TYPES.has(nextType) && !TABLE_LIKE_CHART_TYPES.has(fromType);
+
+    if (transitionIntoTable) {
+      const nextTableMode = nextType === 'MATRIX' ? 'pivot' : 'standard';
+      setGeneratedRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
+      setCustomRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
+      setChartStyleConfig((prev) => createDefaultTableStyleConfig(prev));
+      setGeneratedQueryState(null);
+      setCustomQueryState(null);
+      setGeneratedLastRunSignature('');
+      setCustomLastRunSignature('');
+      setQueryError(null);
       return;
     }
 
-    const nextTableMode = nextType === 'MATRIX' ? 'pivot' : 'standard';
-    setGeneratedRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
-    setCustomRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
-    setChartStyleConfig((prev) => createDefaultTableStyleConfig(prev));
-    setGeneratedQueryState(null);
-    setCustomQueryState(null);
-    setGeneratedLastRunSignature('');
-    setCustomLastRunSignature('');
-    setQueryError(null);
+    // Phase-15.78 — for every non-TABLE transition, run the role config
+    // through migrateRoleConfig so fields the new chart kind cares about
+    // (scatterX/Y, timeField, lineMetric, …) get hydrated from the
+    // carryover instead of staying undefined. normalizeRoleConfig then
+    // prunes whatever the new type doesn't accept. Result: switching
+    // BAR → SCATTER no longer renders blank just because the field names
+    // differ between the two role schemas.
+    setGeneratedRoleConfig((prev) =>
+      normalizeRoleConfig(nextType, migrateRoleConfig(fromType, nextType, prev)),
+    );
+    setCustomRoleConfig((prev) =>
+      normalizeRoleConfig(nextType, migrateRoleConfig(fromType, nextType, prev)),
+    );
   }, [chartType]);
 
   // Phase-15.10: auto-derive base table from the first picked field's view.
