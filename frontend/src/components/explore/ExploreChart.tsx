@@ -491,6 +491,25 @@ function ExploreChartInner({
   } = model;
   const { dimension, metrics, scatterX, scatterY } = normalizedRoleConfig;
 
+  // Phase-15.78 — click a legend entry to hide that series. Recharts'
+  // `<Bar/Line/Area hide={true}>` props are respected without re-laying
+  // out the chart (slot stays, line vanishes), and the legend onClick
+  // handler gets the clicked entry's dataKey via payload. Stored in a
+  // Set keyed by series.key so toggling is O(1).
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set());
+  const toggleSeriesHidden = useCallback((seriesKey: string) => {
+    setHiddenSeries(prev => {
+      const next = new Set(prev);
+      if (next.has(seriesKey)) next.delete(seriesKey);
+      else next.add(seriesKey);
+      return next;
+    });
+  }, []);
+  const handleLegendClick = useCallback((payload: any) => {
+    const key = payload?.dataKey ?? payload?.value;
+    if (typeof key === 'string' && key) toggleSeriesHidden(key);
+  }, [toggleSeriesHidden]);
+
   // Apply sort + limit to chart-output rows before rendering.
   const sortRules = style.chartSortRules ?? [];
   const dataLimit = style.dataLimit;
@@ -625,10 +644,30 @@ function ExploreChartInner({
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
   );
   const renderLegend = () => showLegend ? (
-    <Legend wrapperStyle={{ fontSize }}
+    <Legend
+      wrapperStyle={{ fontSize, cursor: 'pointer' }}
       verticalAlign={legendPos === 'left' || legendPos === 'right' ? 'middle' : legendPos as any}
       align={legendPos === 'left' || legendPos === 'right' ? legendPos as any : 'center'}
-      layout={legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal'} />
+      layout={legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal'}
+      // Phase-15.78 — clicking a legend item toggles series visibility.
+      // Recharts forwards the clicked entry's payload (dataKey + value)
+      // here; we hand it to toggleSeriesHidden which Bar/Line/Area read
+      // via the `hide` prop. Hidden items render with reduced opacity
+      // in the legend so the user can put them back.
+      onClick={handleLegendClick}
+      formatter={(value: any, entry: any) => {
+        const key = entry?.dataKey ?? value;
+        const isHidden = typeof key === 'string' && hiddenSeries.has(key);
+        return (
+          <span style={{
+            color: isHidden ? 'var(--text-quaternary, #999)' : undefined,
+            textDecoration: isHidden ? 'line-through' : undefined,
+          }}>
+            {value}
+          </span>
+        );
+      }}
+    />
   ) : null;
   const renderBenchmarkLine = (axis: 'x' | 'y') => {
     if (!showBenchmarkLine || benchmarkValue === null) return null;
@@ -933,6 +972,7 @@ function ExploreChartInner({
                 return (
                   <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
                     name={series.label}
+                    hide={hiddenSeries.has(series.key)}
                     barSize={barSize}
                     radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
                     {showLabel && isPercent && (
@@ -1015,6 +1055,7 @@ function ExploreChartInner({
                 return (
                   <Area key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
+                    hide={hiddenSeries.has(series.key)}
                     stroke={getSeriesColor(series.key, i)}
                     fill={getSeriesColor(series.key, i)}
                     fillOpacity={areaOpacity} strokeWidth={lineWidth}
@@ -1052,6 +1093,7 @@ function ExploreChartInner({
                 return (
                   <Line key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
+                    hide={hiddenSeries.has(series.key)}
                     stroke={getSeriesColor(series.key, i)}
                     strokeWidth={lineWidth}
                     dot={showDots && displayData.length <= 60}
@@ -1108,6 +1150,7 @@ function ExploreChartInner({
           return (
             <Bar key={series.key} dataKey={series.key}
               name={series.label}
+              hide={hiddenSeries.has(series.key)}
               fill={getSeriesColor(series.key, i)}
               barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
@@ -1169,6 +1212,7 @@ function ExploreChartInner({
               {renderLegend()}
               {comboBarSeries.map((series, index) => (
                 <Bar key={series.key} dataKey={series.key} name={series.label}
+                  hide={hiddenSeries.has(series.key)}
                   fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
                   barSize={barSize}>
                   {showDataLabels && (
@@ -1177,6 +1221,7 @@ function ExploreChartInner({
                 </Bar>
               ))}
               <Line dataKey={lineSeries.key} name={lineSeries.label}
+                hide={hiddenSeries.has(lineSeries.key)}
                 type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
                 dot={showDots && displayData.length <= 60}
                 strokeDasharray={lineDash}
@@ -1209,6 +1254,7 @@ function ExploreChartInner({
               return (
                 <Bar key={series.key} dataKey={series.key}
                   name={series.label}
+                  hide={hiddenSeries.has(series.key)}
                   fill={getSeriesColor(series.key, i)}
                   barSize={barSize}
                   radius={[barRadius, barRadius, 0, 0]}>
