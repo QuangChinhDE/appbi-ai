@@ -386,14 +386,34 @@ export default function PublicDashboardPage() {
     }
 
     try {
+      // Phase-15.81 — also forward per-page + per-tile filters set by the
+      // dashboard owner in the editor. Viewer doesn't see these in the
+      // top-bar chips (those are for editing), but they must apply to the
+      // chart-data request so the public dashboard shows the same slice
+      // the owner authored. Order matters only for dedup; BE ANDs them
+      // all into a single WHERE clause.
+      const activePageObj = dashboardPages.find((p) => p.id === activePageId);
+      const pageScopeFilters: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
+        ? ((activePageObj as any).filters as BaseFilter[])
+        : [];
+
       const entries = await runWithConcurrency(
         targetCharts,
         async (dashboardChart) => {
-          const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
+          const tileLayout = dashboardChart.layout as Record<string, any> | undefined;
+          const tileScopeFilters: BaseFilter[] = Array.isArray(tileLayout?.tileFilters)
+            ? (tileLayout.tileFilters as BaseFilter[])
+            : [];
+          const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
+          const requestFilters = [
+            ...baseViewerFilters,
+            ...pageScopeFilters,
+            ...tileScopeFilters,
+          ];
           try {
             const data = await publicDashboardApi.getChartData(
               token,
@@ -461,7 +481,7 @@ export default function PublicDashboardPage() {
         setIsApplyingFilters(false);
       }
     }
-  }, [appliedViewerFilters, crossFilterState, dashboard, scheduleSessionExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;

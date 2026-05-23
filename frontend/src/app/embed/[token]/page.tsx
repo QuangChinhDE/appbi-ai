@@ -377,14 +377,31 @@ export default function EmbedDashboardPage() {
     }
 
     try {
+      // Phase-15.81 — merge per-page + per-tile filters set by the
+      // dashboard owner into chart-data requests. Embed viewer doesn't
+      // expose these in any UI (top-bar is for owner-authored
+      // public_filters_config only) but the WHERE clause must apply.
+      const activePageObj = dashboardPages.find((p) => p.id === activePageId);
+      const pageScopeFilters: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
+        ? ((activePageObj as any).filters as BaseFilter[])
+        : [];
       const entries = await runWithConcurrency(
         targetCharts,
         async (dashboardChart) => {
-          const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
+          const tileLayout = dashboardChart.layout as Record<string, any> | undefined;
+          const tileScopeFilters: BaseFilter[] = Array.isArray(tileLayout?.tileFilters)
+            ? (tileLayout.tileFilters as BaseFilter[])
+            : [];
+          const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
+          const requestFilters = [
+            ...baseViewerFilters,
+            ...pageScopeFilters,
+            ...tileScopeFilters,
+          ];
           try {
             const data = await publicDashboardApi.getChartData(
               token,
@@ -452,7 +469,7 @@ export default function EmbedDashboardPage() {
         setIsApplyingFilters(false);
       }
     }
-  }, [appliedViewerFilters, crossFilterState, dashboard, scheduleExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleExpiry, token]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;

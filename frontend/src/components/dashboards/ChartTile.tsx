@@ -1269,6 +1269,15 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   // Layout reference change is fine — we render the same DOM either way;
   // the parent grid moves the wrapper via CSS transform. Skip deep
   // compare to keep this hot path cheap.
+  //
+  // Phase-15.81 — exception: when `currentLayout.tileFilters` (per-visual
+  // PowerBI-style scope) changes, the tile MUST re-render so the new
+  // filter is folded into serverFilters + chart-data request. Same for
+  // styleConfigOverride (Phase-15.78 Top-N panel writes data limit / sort
+  // rules here). Both are user-driven config rather than grid geometry,
+  // so the perf concern that originally motivated the skip doesn't apply.
+  if (prev.currentLayout?.tileFilters !== next.currentLayout?.tileFilters) return false;
+  if (prev.currentLayout?.styleConfigOverride !== next.currentLayout?.styleConfigOverride) return false;
   if (prev.onRemove !== next.onRemove) return false;
   if (prev.onDataLoaded !== next.onDataLoaded) return false;
   if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;

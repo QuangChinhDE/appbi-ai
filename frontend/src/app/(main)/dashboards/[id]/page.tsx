@@ -30,7 +30,7 @@ import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlI
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
-import { FieldList, FilterPane } from '@/components/dashboards/FilterPane';
+import { FilterPane } from '@/components/dashboards/FilterPane';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
@@ -1916,18 +1916,11 @@ export default function DashboardDetailPage() {
       </div>
 
       {/* ── Content area ──
-          Phase-15.81 — when the FilterPane is open we render a 3-column
-          shell: [FieldList | Canvas | FilterPane]. Canvas keeps its
-          existing padding; the sidebars are fixed-width and overflow-y
-          independently so a long field list doesn't push the canvas. */}
+          Phase-15.81 — when the FilterPane is open we render a 2-column
+          shell: [Canvas | FilterPane]. Picking a field happens inside
+          each FilterPane section's "+ Add filter" picker — no separate
+          FieldList sidebar (DA: long mouse travel was annoying). */}
       <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
-
-        {/* Left dock: Field list — visible only with FilterPane open */}
-        {isFilterPaneOpen && (
-          <aside className="hidden lg:flex w-[200px] flex-shrink-0 flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] self-stretch">
-            <FieldList columns={resolvedAvailableColumns} />
-          </aside>
-        )}
 
         <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (

@@ -27,7 +27,7 @@
 // generic drops from outside the dashboard.
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Filter as FilterIcon, ChevronDown, ChevronRight, Search, X, Pencil, Check, Hash, Calendar, Type, ToggleLeft, ToggleRight, AlertTriangle } from 'lucide-react';
+import { Filter as FilterIcon, ChevronDown, ChevronRight, Search, X, Pencil, Check, Hash, Calendar, Type, ToggleLeft, ToggleRight, AlertTriangle, Plus } from 'lucide-react';
 import type {
   BaseFilter,
   ColumnInfo,
@@ -655,6 +655,7 @@ export function FilterPane({
           expanded={expanded.visual}
           onToggle={() => setExpanded((p) => ({ ...p, visual: !p.visual }))}
           filters={visualFilters}
+          columns={columns}
           onAddFilter={(key) => sectionAddFilter('visual', key)}
           onChange={onChangeVisualFilters}
           distinctValues={distinctValues}
@@ -667,6 +668,7 @@ export function FilterPane({
           expanded={expanded.page}
           onToggle={() => setExpanded((p) => ({ ...p, page: !p.page }))}
           filters={pageFilters}
+          columns={columns}
           onAddFilter={(key) => sectionAddFilter('page', key)}
           onChange={onChangePageFilters}
           distinctValues={distinctValues}
@@ -678,6 +680,7 @@ export function FilterPane({
           expanded={expanded.all}
           onToggle={() => setExpanded((p) => ({ ...p, all: !p.all }))}
           filters={allFilters}
+          columns={columns}
           onAddFilter={(key) => sectionAddFilter('all', key)}
           onChange={onChangeAllFilters}
           distinctValues={distinctValues}
@@ -724,14 +727,31 @@ interface SectionProps {
   expanded: boolean;
   onToggle: () => void;
   filters: BaseFilter[];
+  /** Phase-15.81 — full column list so the inline "+ Add filter" picker
+   *  can show what's available. Drag-and-drop from a side FieldList was
+   *  killed per DA feedback: a sidebar far from the FilterPane meant a
+   *  long mouse travel for the common action. Picker is right here. */
+  columns: ColumnInfo[];
   onAddFilter: (columnKey: string) => void;
   onChange: (next: BaseFilter[]) => void;
   distinctValues: Record<string, string[]>;
   disabled?: boolean;
 }
-function Section({ scope, title, subtitle, expanded, onToggle, filters, onAddFilter, onChange, distinctValues, disabled }: SectionProps) {
+function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, disabled }: SectionProps) {
+  const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
+
+  // Hide columns already used by THIS section so the picker only shows
+  // unfilled options. Other sections can still use the same column —
+  // that's deliberate (PBI lets the same field have a page-level filter
+  // and an all-pages filter independently).
+  const usedKeys = useMemo(() => new Set(filters.map((f) => f.fieldKey ?? f.field)), [filters]);
+  const addable = useMemo(
+    () => columns.filter((c) => !usedKeys.has(getColumnKey(c))),
+    [columns, usedKeys],
+  );
+
   return (
     <div className="border-b border-[rgb(var(--border-line))] last:border-b-0">
       <button
@@ -754,6 +774,8 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, onAddFil
         <div
           onDragEnter={(e) => {
             if (disabled) return;
+            const types = Array.from(e.dataTransfer.types || []);
+            if (!types.includes(APPBI_FIELD_MIME)) return;
             e.preventDefault();
             dragCounterRef.current += 1;
             setIsDragOver(true);
@@ -782,16 +804,14 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, onAddFil
             e.preventDefault();
             onAddFilter(payload.columnKey);
           }}
-          className={`min-h-[60px] space-y-2 px-2 py-2 transition-colors ${
+          className={`space-y-2 px-2 py-2 transition-colors ${
             isDragOver ? 'bg-brand/10 ring-1 ring-inset ring-brand/40' : ''
           } ${disabled ? 'opacity-40' : ''}`}
         >
           {filters.length === 0 && (
-            <div className="rounded border border-dashed border-[rgb(var(--border-line))] p-3 text-center">
-              <p className="text-[11px] text-text-quaternary">
-                {disabled ? 'Click a chart first to add per-visual filters' : 'Drag a field here to add a filter'}
-              </p>
-            </div>
+            <p className="px-1 text-[11px] text-text-quaternary">
+              {disabled ? 'Click a chart first to add per-visual filters' : 'No filters yet'}
+            </p>
           )}
           {filters.map((f) => (
             <FilterCardPBI
@@ -802,8 +822,132 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, onAddFil
               onRemove={() => onChange(filters.filter((x) => x.id !== f.id))}
             />
           ))}
+
+          {/* Phase-15.81 — inline "+ Add filter" picker. Click → expand
+              a search + grouped column list. Pick a column → onAddFilter
+              fires and we collapse the picker. */}
+          {!disabled && (
+            <div className="pt-1">
+              {!isAddOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setIsAddOpen(true)}
+                  disabled={addable.length === 0}
+                  className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Plus className="h-3 w-3" />
+                  {addable.length === 0 ? 'All fields already used here' : 'Add filter'}
+                </button>
+              ) : (
+                <AddFilterPicker
+                  columns={addable}
+                  onPick={(key) => { onAddFilter(key); setIsAddOpen(false); }}
+                  onCancel={() => setIsAddOpen(false)}
+                />
+              )}
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Inline column picker — opens under a section's + Add filter ────────
+//
+// Searchable, grouped list. ESC closes; Enter on the search input adds the
+// first matching column. Avoid stealing focus from the dashboard since the
+// picker lives inside the right-dock pane.
+//
+function AddFilterPicker({ columns, onPick, onCancel }: {
+  columns: ColumnInfo[];
+  onPick: (columnKey: string) => void;
+  onCancel: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const groups = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matched = q
+      ? columns.filter((c) => {
+          const label = getColumnDisplayLabel(c).toLowerCase();
+          return label.includes(q) || c.name.toLowerCase().includes(q);
+        })
+      : columns;
+    const byGroup = new Map<string, ColumnInfo[]>();
+    for (const col of matched) {
+      const groupKey = col.datasetId != null
+        ? `Dataset ${col.datasetId}`
+        : (col.semanticField?.split('.')[0] ?? 'Columns');
+      const arr = byGroup.get(groupKey) ?? [];
+      arr.push(col);
+      byGroup.set(groupKey, arr);
+    }
+    return Array.from(byGroup.entries()).map(([name, cols]) => ({ name, cols }));
+  }, [columns, search]);
+
+  const firstMatch = useMemo(
+    () => groups.flatMap((g) => g.cols)[0] ?? null,
+    [groups],
+  );
+
+  return (
+    <div className="rounded border border-brand/30 bg-surface-2 p-1.5 space-y-1.5">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+            if (e.key === 'Enter' && firstMatch) { e.preventDefault(); onPick(getColumnKey(firstMatch)); }
+          }}
+          placeholder="Search columns..."
+          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
+        />
+      </div>
+      <div className="max-h-64 overflow-y-auto space-y-1">
+        {groups.length === 0 && (
+          <p className="px-1 py-2 text-center text-[11px] text-text-quaternary">No columns match</p>
+        )}
+        {groups.map((group) => (
+          <div key={group.name}>
+            <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
+              {group.name}
+            </p>
+            <div className="space-y-0.5">
+              {group.cols.map((col) => {
+                const key = getColumnKey(col);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onPick(key)}
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
+                    title={col.semanticField ?? col.name}
+                  >
+                    <FieldIcon type={col.type} />
+                    <span className="truncate">{getColumnDisplayLabel(col)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-[10px] text-text-quaternary hover:text-text-secondary"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
