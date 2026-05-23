@@ -46,6 +46,9 @@ interface DashboardCanvasProps {
   emptyMessage?: string;
   canEdit?: boolean;
   allowAppearanceEdit?: boolean;
+  /** Phase-15.81 — focus prop for FilterPane "this visual" scope. */
+  focusedDashboardChartId?: number | null;
+  onFocusChart?: (dashboardChartId: number) => void;
 }
 
 export function DashboardCanvas({
@@ -67,6 +70,8 @@ export function DashboardCanvas({
   emptyMessage,
   canEdit = false,
   allowAppearanceEdit = false,
+  focusedDashboardChartId = null,
+  onFocusChart,
 }: DashboardCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(canvasConfig?.width ?? 1440);
@@ -335,6 +340,8 @@ export function DashboardCanvas({
                     typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)
                   }
                   onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
+                  isFocused={focusedDashboardChartId === dc.id}
+                  onFocus={onFocusChart}
                 />
               </ChartErrorBoundary>
               )}

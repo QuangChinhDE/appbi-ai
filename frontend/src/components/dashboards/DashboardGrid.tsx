@@ -75,6 +75,11 @@ interface DashboardGridProps {
   themeConfig?: DashboardThemeConfig | null;
   /** When true, skip IntersectionObserver lazy loading — render all charts immediately. */
   disableLazy?: boolean;
+  /** Phase-15.81 — focus state for FilterPane "Filters on this visual"
+   *  scope. Grid passes focusedDashboardChartId through; the focused tile
+   *  renders a brand-ring and click toggles focus via onFocusChart. */
+  focusedDashboardChartId?: number | null;
+  onFocusChart?: (dashboardChartId: number) => void;
 }
 
 export function DashboardGrid({
@@ -97,6 +102,8 @@ export function DashboardGrid({
   allowAppearanceEdit = false,
   themeConfig = null,
   disableLazy = false,
+  focusedDashboardChartId = null,
+  onFocusChart,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format.
   // resizeHandles: 4 corners only. Edges removed per DA feedback —
@@ -259,6 +266,8 @@ export function DashboardGrid({
             availablePages={availablePages}
             currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
+            isFocused={focusedDashboardChartId === dc.id}
+            onFocus={onFocusChart}
           />
         );
         return (

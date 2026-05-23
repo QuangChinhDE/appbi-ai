@@ -30,7 +30,7 @@ import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlI
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { FieldList, FilterPane } from '@/components/dashboards/FilterPane';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
@@ -203,7 +203,11 @@ export default function DashboardDetailPage() {
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isPagesMenuOpen, setIsPagesMenuOpen] = useState(false);
-  const [isFilterPopoverOpen, setIsFilterPopoverOpen] = useState(false);
+  // Phase-15.81 — kept for backward compat with onClick handlers in other
+  // menus that still call setIsFilterPopoverOpen(false). The Filter popover
+  // itself is gone — the right-dock FilterPane (isFilterPaneOpen) replaces
+  // it. Both states stay in sync via the menu close-out pattern.
+  const [, setIsFilterPopoverOpen] = useState(false);
   const [isWidgetSubmenuOpen, setIsWidgetSubmenuOpen] = useState(false);
   const [editingWidgetId, setEditingWidgetId] = useState<number | null>(null);
   const queryClient = useQueryClient();
@@ -421,6 +425,48 @@ export default function DashboardDetailPage() {
       .filter((b): b is BaseFilter => b !== null),
     [appliedGlobalFilters],
   );
+
+  // Phase-15.81 — PowerBI-style "Filters on this page" scope. Lives on
+  // pages_config[activePage].filters. Auto-saves through persistPagesConfig
+  // (no draft/applied — page filters apply immediately, like PBI).
+  const activePageFilters = React.useMemo<BaseFilter[]>(
+    () => Array.isArray(currentPage?.filters) ? currentPage!.filters as BaseFilter[] : [],
+    [currentPage],
+  );
+  // Phase-15.81 — combined view fed into DashboardGrid/Canvas/ChartTile.
+  // All-pages + per-page filters merge into the same `globalFilters` prop
+  // because both apply to every chart on the page; per-visual filters
+  // come in through tile layout.tileFilters and are handled inside
+  // ChartTile (see Phase-15.81 wire-up there).
+  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(
+    () => [...appliedGlobalFiltersLegacy, ...activePageFilters],
+    [appliedGlobalFiltersLegacy, activePageFilters],
+  );
+  // Phase-15.81 — "Filters on this visual" focus state. Click a tile to
+  // populate the "Filters on this visual" section of FilterPane. Per-tile
+  // filters persist in tile layout.tileFilters (auto-save on edit).
+  const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // Phase-15.81 — replace the old top-bar popover with a docked right-hand
+  // FilterPane sidebar. Persisted in window only (intentionally not URL),
+  // since pane state is a viewing preference.
+  const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
+
+  const focusedTile = React.useMemo(
+    () => visibleDashboardCharts.find((dc) => dc.id === focusedTileId) ?? null,
+    [visibleDashboardCharts, focusedTileId],
+  );
+  const visualFiltersForFocused = React.useMemo<BaseFilter[]>(
+    () => {
+      const layout = focusedTile?.layout as Record<string, any> | undefined;
+      return Array.isArray(layout?.tileFilters) ? layout!.tileFilters as BaseFilter[] : [];
+    },
+    [focusedTile],
+  );
+  const focusedTileLabel = React.useMemo(() => {
+    if (!focusedTile) return null;
+    const layout = focusedTile.layout as Record<string, any> | undefined;
+    return (layout?.custom_title?.trim?.() || focusedTile.chart?.name) ?? `Chart ${focusedTile.chart_id}`;
+  }, [focusedTile]);
 
   // Phase-15.78 — mirror appliedGlobalFilters into the URL `?f=` param so
   // the dashboard view is shareable. We replace (not push) so the back
@@ -858,6 +904,39 @@ export default function DashboardDetailPage() {
       throw error;
     }
   }, [dashboardId, updateDashboardMutation]);
+
+  // Phase-15.81 — write "Filters on this page" back to pages_config.
+  // Auto-saves immediately (unlike all-pages which has draft/apply). User
+  // can blame me later if this turns out too aggressive for their flow.
+  const handleSetPageFilters = useCallback(async (nextFilters: BaseFilter[]) => {
+    if (!activePageId) return;
+    const nextPages = dashboardPages.map((p) =>
+      p.id === activePageId ? { ...p, filters: nextFilters.length > 0 ? nextFilters : undefined } : p
+    );
+    try {
+      await persistPagesConfig(nextPages);
+    } catch {
+      /* persistPagesConfig already rolls back localPagesConfig */
+    }
+  }, [activePageId, dashboardPages, persistPagesConfig]);
+
+  // Phase-15.81 — write "Filters on this visual" back to the tile's
+  // layout.tileFilters via the existing updateLayout endpoint. The layout
+  // JSON is pass-through on the BE so no schema change is needed.
+  const handleSetVisualFilters = useCallback(async (nextFilters: BaseFilter[]) => {
+    if (!focusedTile) return;
+    const layout = (focusedTile.layout as Record<string, any> | undefined) ?? {};
+    try {
+      await dashboardApi.updateLayout(dashboardId, [{
+        id: focusedTile.id,
+        layout: { ...layout, tileFilters: nextFilters.length > 0 ? nextFilters : undefined },
+      }]);
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    } catch (error) {
+      console.error('Failed to save tile filters:', error);
+      toast.error('Failed to save filters on this visual.');
+    }
+  }, [focusedTile, dashboardId, queryClient]);
 
   const handleAddPage = async () => {
     const nextPage: DashboardPageConfig = {
@@ -1662,17 +1741,25 @@ export default function DashboardDetailPage() {
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
             <div className="flex shrink-0 items-center gap-1">
-              {/* Filter popover trigger */}
+              {/* Filter pane toggle (Phase-15.81).
+                  Opens the right-dock FilterPane sidebar instead of the
+                  old popover. Active state when pane is open OR when
+                  filters are applied. */}
               <div className="relative">
                 <button
                   type="button"
-                  onClick={() => { setIsFilterPopoverOpen((v) => !v); setIsMoreMenuOpen(false); setIsPagesMenuOpen(false); }}
-                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] transition-colors hover:bg-[rgba(255,255,255,0.04)] ${
-                    appliedGlobalFilters.length > 0 ? 'text-brand' : 'text-text-secondary'
+                  onClick={() => { setIsFilterPaneOpen((v) => !v); setIsMoreMenuOpen(false); setIsPagesMenuOpen(false); }}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[12px] font-[510] transition-colors ${
+                    isFilterPaneOpen
+                      ? 'border-brand/40 bg-brand/15 text-brand'
+                      : appliedGlobalFilters.length > 0
+                        ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-brand hover:bg-[rgba(255,255,255,0.04)]'
+                        : 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary hover:bg-[rgba(255,255,255,0.04)]'
                   }`}
-                  title="Filters"
+                  title={isFilterPaneOpen ? 'Hide Filter Pane' : 'Show Filter Pane'}
                 >
                   <Filter className="h-3 w-3" />
+                  <span>Filters</span>
                   {appliedGlobalFilters.length > 0 && (
                     <span className="rounded-full bg-brand/20 px-1.5 text-[10px] font-[600] leading-[1.4] text-brand">
                       {appliedGlobalFilters.length}
@@ -1682,52 +1769,9 @@ export default function DashboardDetailPage() {
                     <span className="h-1.5 w-1.5 rounded-full bg-warning" title="Unapplied changes" />
                   )}
                 </button>
-                {isFilterPopoverOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setIsFilterPopoverOpen(false)} />
-                    <div className="absolute right-0 z-50 mt-1.5 w-[min(640px,92vw)] overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
-                      {/*
-                        Force the inner FilterCard grid to a single column inside this
-                        popover. The component's default responsive grid (sm:2 / lg:3 /
-                        xl:4) collapses cards to ~120px when the popover sits inside
-                        a wide viewport, which makes long labels (e.g. "ngày") and
-                        coverage badges ("16/30 charts") overlap.
-                       */}
-                      <div className="max-h-[70vh] overflow-y-auto p-2 [&_.grid]:!grid-cols-1">
-                        <DashboardFilterBar
-                          columns={resolvedAvailableColumns}
-                          columnChartCount={resolvedColumnChartCount}
-                          distinctValues={resolvedDistinctValues}
-                          // Phase-15.80 — DashboardFilterBar internals
-                          // still speak legacy BaseFilter. Project union
-                          // → BaseFilter on the way in, reconstruct union
-                          // on the way out via fromBaseFilter so the page
-                          // state stays typed.
-                          filters={draftGlobalFilters
-                            .map((f) => toBaseFilter(f))
-                            .filter((b): b is BaseFilter => b !== null)}
-                          onFiltersChange={(nextLegacy) => {
-                            // Phase-15.79 — any user-driven mutation
-                            // means the current filter set is no longer
-                            // a pristine URL hydrate, so DB persistence
-                            // on Apply becomes safe again.
-                            filtersHydratedFromUrlRef.current = false;
-                            const nextUnion = nextLegacy
-                              .map((b) => fromBaseFilter(b))
-                              .filter((f): f is TypedFilter => f !== null);
-                            setDraftGlobalFilters(nextUnion);
-                          }}
-                          hasPendingChanges={hasPendingFilterChanges}
-                          onApply={handleApplyFilters}
-                          onReset={handleResetFilters}
-                          isApplying={isApplyingFilters}
-                          initialExpanded={true}
-                          embedded
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
+                {/* Phase-15.81 — popover removed. Filter editing lives in
+                    the right-dock FilterPane (see the aside at the bottom
+                    of the content area). */}
               </div>
 
               {/* More menu — gathers Export, Share, Public links, Theme, Switch layout, Manage, Import, Widgets */}
@@ -1871,9 +1915,21 @@ export default function DashboardDetailPage() {
         </div>
       </div>
 
-      {/* ── Content area ── */}
-      <div className="px-4 pb-8 sm:px-6 lg:px-8">
+      {/* ── Content area ──
+          Phase-15.81 — when the FilterPane is open we render a 3-column
+          shell: [FieldList | Canvas | FilterPane]. Canvas keeps its
+          existing padding; the sidebars are fixed-width and overflow-y
+          independently so a long field list doesn't push the canvas. */}
+      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
 
+        {/* Left dock: Field list — visible only with FilterPane open */}
+        {isFilterPaneOpen && (
+          <aside className="hidden lg:flex w-[200px] flex-shrink-0 flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] self-stretch">
+            <FieldList columns={resolvedAvailableColumns} />
+          </aside>
+        )}
+
+        <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (
           <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/20 bg-[rgba(245,158,11,0.05)] px-4 py-2.5 text-[13px] font-[510] text-warning">
             <span>
@@ -1905,7 +1961,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
-            globalFilters={appliedGlobalFiltersLegacy}
+            globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
@@ -1913,6 +1969,8 @@ export default function DashboardDetailPage() {
             availablePages={dashboardPages}
             onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
+            focusedDashboardChartId={focusedTileId}
+            onFocusChart={setFocusedTileId}
           />
         ) : (
           <DashboardGrid
@@ -1925,7 +1983,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
-            globalFilters={appliedGlobalFiltersLegacy}
+            globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
@@ -1933,6 +1991,8 @@ export default function DashboardDetailPage() {
             availablePages={dashboardPages}
             onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
+            focusedDashboardChartId={focusedTileId}
+            onFocusChart={setFocusedTileId}
           />
         )}
         </div>
@@ -1956,12 +2016,49 @@ export default function DashboardDetailPage() {
                 currentLayout={dc.layout as Record<string, any>}
                 canEdit={false}
                 allowAppearanceEdit={false}
-                globalFilters={appliedGlobalFiltersLegacy}
+                globalFilters={effectivePageScopeFilters}
                 instanceParameters={dc.parameters ?? {}}
               />
             ))}
         </div>
+        </div>
 
+        {/* Right dock: Filter Pane (Phase-15.81). Sticky alongside the
+            canvas; sections own visual / page / all-pages scope. */}
+        {isFilterPaneOpen && (
+          <aside className="hidden lg:flex w-[300px] flex-shrink-0 flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] self-stretch">
+            <FilterPane
+              columns={resolvedAvailableColumns}
+              distinctValues={resolvedDistinctValues}
+              visualFilters={visualFiltersForFocused}
+              visualLabel={focusedTileLabel}
+              onChangeVisualFilters={handleSetVisualFilters}
+              pageFilters={activePageFilters}
+              pageLabel={currentPage?.name ?? 'Untitled page'}
+              onChangePageFilters={handleSetPageFilters}
+              allFilters={appliedGlobalFiltersLegacy}
+              onChangeAllFilters={(nextLegacy) => {
+                // Same boundary as the popover used: bridge legacy → union
+                // for state, and treat as a user edit (clears URL-hydrate
+                // guard, marks draft pending until Apply).
+                filtersHydratedFromUrlRef.current = false;
+                const nextUnion = nextLegacy
+                  .map((b) => fromBaseFilter(b))
+                  .filter((f): f is TypedFilter => f !== null);
+                setDraftGlobalFilters(nextUnion);
+                // FilterPane auto-applies dashboard-wide changes for parity
+                // with PBI's "Filters on all pages" behaviour. Apply still
+                // saves to DB via handleApplyFilters but bypasses the
+                // draft buffer that the legacy popover used.
+                setAppliedGlobalFilters(nextUnion);
+              }}
+              hasPendingChanges={hasPendingFilterChanges}
+              onApply={handleApplyFilters}
+              onReset={handleResetFilters}
+              isApplying={isApplyingFilters}
+            />
+          </aside>
+        )}
       </div>
 
       {/* Modals */}

@@ -433,6 +433,11 @@ export interface DashboardChartLayout {
   custom_title?: string;
   pageId?: string | null;
   styleConfigOverride?: Record<string, any> | null;
+  /** Phase-15.81 — PowerBI-style "Filters on this visual" scope. Stored on
+   *  the tile's layout JSON so other dashboards using the same chart keep
+   *  their own per-visual filter (mirrors the styleConfigOverride pattern).
+   *  Sent into chart-data API as extra_filters at runtime. */
+  tileFilters?: any[];
   // Canvas-mode geometry (px). Stored alongside grid coords so toggling modes
   // never loses cell positions.
   xPx?: number;
@@ -445,6 +450,11 @@ export interface DashboardChartLayout {
 export interface DashboardPageConfig {
   id: string;
   name: string;
+  /** Phase-15.81 — PowerBI-style "Filters on this page" scope. Filters
+   *  applied to every chart on this page. Stored as legacy BaseFilter[]
+   *  to match the chart-data API contract. BE passes through (pages_config
+   *  is arbitrary JSON), no schema change needed server-side. */
+  filters?: any[];
 }
 
 // NOTE: chart_id is typed as `number` for backward-compat with the ~25 call

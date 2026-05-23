@@ -51,6 +51,12 @@ interface ChartTileProps {
   availablePages?: DashboardPageConfig[];
   currentPageId?: string | null;
   onMoveToPage?: (pageId: string) => void;
+  /** Phase-15.81 — PowerBI-style "Filters on this visual" focus. When
+   *  isFocused is true, the tile draws a brand-coloured ring so the user
+   *  knows which visual the FilterPane "this visual" section refers to.
+   *  onFocus is called on tile body click. */
+  isFocused?: boolean;
+  onFocus?: (dashboardChartId: number) => void;
 }
 
 /** Debounce a value to avoid cascading API calls on rapid filter changes. */
@@ -174,6 +180,8 @@ function ChartTileBase({
   availablePages = [],
   currentPageId = null,
   onMoveToPage,
+  isFocused = false,
+  onFocus,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { ref: visibilityRef, visible: hasBeenVisible } = useStickyVisibility();
@@ -235,6 +243,16 @@ function ChartTileBase({
     return filters;
   }, [chart?.parameters, instanceParameters]);
 
+  // Phase-15.81 — "Filters on this visual" (PowerBI-style) lives on the
+  // tile's layout JSON. Read here and merge into serverFilters alongside
+  // page-scope + cross-filters. Visual filters are the most specific
+  // scope so they're appended last, but de-dupe by (field, op, value)
+  // means duplicates with broader scopes collapse to a single SQL clause.
+  const tileFilters = useMemo<BaseFilter[]>(
+    () => Array.isArray(currentLayout?.tileFilters) ? currentLayout.tileFilters as BaseFilter[] : [],
+    [currentLayout],
+  );
+
   // Build server-side filters from dashboard + global filters for server-side push-down
   const serverFilters = useMemo(() => {
     const filters: Record<string, unknown>[] = [];
@@ -283,11 +301,11 @@ function ChartTileBase({
       }
     };
 
-    [...globalFilters, ...crossFilters].forEach(appendServerFilters);
+    [...globalFilters, ...crossFilters, ...tileFilters].forEach(appendServerFilters);
     dashboardFilters.forEach(appendServerFilters);
 
     return filters.length > 0 ? filters : undefined;
-  }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
+  }, [globalFilters, crossFilters, dashboardFilters, tileFilters, parameterFilters, chartSemanticBinding]);
 
   // Track which active global filters this chart could NOT consume. The
   // dashboard filter bar fan-outs every global filter to every tile, but
@@ -588,7 +606,10 @@ function ChartTileBase({
         rows = applyFiltersToRows(rows, applicableDashboardFilters);
       }
     }
-    const runtimeFilters = [...globalFilters, ...crossFilters];
+    // Phase-15.81 — tileFilters (per-visual scope) join the runtime set
+    // alongside globalFilters + crossFilters when the client-side path is
+    // active (non-pre-aggregated charts).
+    const runtimeFilters = [...globalFilters, ...crossFilters, ...tileFilters];
     if (runtimeFilters.length > 0 && rows.length > 0) {
       const applicable = resolveClientFilters(runtimeFilters);
       if (applicable.length > 0) {
@@ -596,7 +617,7 @@ function ChartTileBase({
       }
     }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, preAggregated, chartSemanticBinding]);
+  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, tileFilters, preAggregated, chartSemanticBinding]);
 
   const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown } | null) => {
     if (!onSelectCrossFilter) return;
@@ -740,11 +761,20 @@ function ChartTileBase({
   }
 
   return (
-    <div className={`dashboard-tile bi-card-hover relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
-      isCrossFilterSource
-        ? 'border-warning/40 ring-1 ring-warning'
-        : 'border-[rgb(var(--border-line))]'
-    }`}>
+    <div
+      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
+        isCrossFilterSource
+          ? 'border-warning/40 ring-1 ring-warning'
+          : isFocused
+            ? 'border-brand/50 ring-2 ring-brand/40'
+            : 'border-[rgb(var(--border-line))]'
+      }`}
+      // Phase-15.81 — click body to focus this tile in the FilterPane
+      // (so "Filters on this visual" applies to it). onMouseDown
+      // stop-prop so the click doesn't fire on drag-handle text or
+      // remove/menu buttons.
+      onClick={onFocus ? () => onFocus(dashboardChartId) : undefined}
+    >
       {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
       {onRemove && (
       <button
@@ -1234,6 +1264,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.allowAppearanceEdit !== next.allowAppearanceEdit) return false;
   if (prev.isRemoving !== next.isRemoving) return false;
   if (prev.isCrossFilterSource !== next.isCrossFilterSource) return false;
+  if (prev.isFocused !== next.isFocused) return false;
   if (prev.currentPageId !== next.currentPageId) return false;
   // Layout reference change is fine — we render the same DOM either way;
   // the parent grid moves the wrapper via CSS transform. Skip deep
@@ -1242,6 +1273,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.onDataLoaded !== next.onDataLoaded) return false;
   if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;
   if (prev.onMoveToPage !== next.onMoveToPage) return false;
+  if (prev.onFocus !== next.onFocus) return false;
   // Trust reference identity for arrays & dicts. Parent owns immutability
   // (slicer Apply path always swaps the array), so a new ref means a real
   // value change and the tile must re-render.
