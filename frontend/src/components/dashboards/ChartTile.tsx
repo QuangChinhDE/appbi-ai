@@ -446,6 +446,15 @@ function ChartTileBase({
   // Phase-15.78 — persist Top N / Bottom N override at the tile level
   // through styleConfigOverride. Setting limit to '' clears the override
   // so the base chart's saved dataLimit (if any) takes over.
+  //
+  // Phase-15.79 — applyDataLimit just slice(0,N) or slice(-N) the array
+  // in BE row order. For the tooltip wording "by metric value" to be
+  // accurate, the data has to be sorted by that metric first. When the
+  // user sets a Top/Bottom N on a tile whose chartSortRules don't
+  // already mention the primary metric, we auto-insert one (desc for
+  // 'top', asc for 'bottom'). Clearing the limit does NOT remove the
+  // sort rule — sort and limit are independent and the user might want
+  // the sort alone.
   const saveTopN = async (limit: number | '', direction: 'top' | 'bottom') => {
     if (!canEdit) return;
     const currentStyleOverride = currentLayout?.styleConfigOverride;
@@ -462,6 +471,27 @@ function ChartTileBase({
     } else {
       baseOverride.dataLimit = limit;
       baseOverride.dataLimitDirection = direction;
+      // Auto-insert a sort rule on the primary metric if the effective
+      // style doesn't already have one. Auto-injection is per-tile via
+      // styleConfigOverride.chartSortRules — base chart config isn't
+      // mutated. We look at the *effective* rules (base + override) to
+      // avoid duplicating a rule the user already set in Explore.
+      const primaryMetric = exploreConfig?.roleConfig.metrics?.[0];
+      const primaryKey = primaryMetric ? metricKey(primaryMetric) : null;
+      if (primaryKey) {
+        const existingRules: any[] = Array.isArray(effectiveStyleConfig.chartSortRules)
+          ? effectiveStyleConfig.chartSortRules
+          : [];
+        const hasRuleOnPrimary = existingRules.some(
+          (r) => r && typeof r === 'object' && r.field === primaryKey,
+        );
+        if (!hasRuleOnPrimary) {
+          baseOverride.chartSortRules = [
+            { field: primaryKey, direction: direction === 'bottom' ? 'asc' : 'desc' },
+            ...existingRules,
+          ];
+        }
+      }
     }
     const styleConfigOverride = Object.keys(baseOverride).length > 0 ? baseOverride : undefined;
     try {
