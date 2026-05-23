@@ -2992,7 +2992,13 @@ export function ExploreEditor({
                         ))}
                       </div>
                     )}
-                    <div className="flex-1 overflow-hidden">
+                    {/* Phase-15.78 — keyed wrapper + bi-fade-in so the
+                        chart softly cross-fades on chart-type change
+                        instead of hard-cutting between Recharts
+                        primitives. Most chart-type swaps happen here in
+                        Explore preview; ChartTile uses the same pattern
+                        for dashboard tiles. */}
+                    <div key={chartType} className="flex-1 overflow-hidden bi-fade-in">
                       <ExploreChart
                         type={chartType}
                         data={displayedQueryState.chartRows}

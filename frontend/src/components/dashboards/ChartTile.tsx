@@ -1133,27 +1133,37 @@ function ChartTileBase({
             </div>
           </div>
         ) : exploreConfig ? (
-          <ExploreChart
-            type={exploreConfig.chartType}
-            data={filteredData}
-            roleConfig={exploreConfig.roleConfig}
-            styleConfig={exploreConfig.styleConfig}
-            havingFilters={havingFilters}
-            preAggregated={preAggregated}
-            onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
-              ? handleCrossFilterSelection
-              : undefined}
-          />
+          // Phase-15.78 — `key` on a chart-type wrapper triggers a clean
+          // remount + fade-in on chart-type change. Recharts components
+          // don't smoothly cross-fade between Bar/Line/Area (different
+          // primitives), so we lean on a CSS fade to soften what would
+          // otherwise be a hard cut. bi-fade-in is the project's
+          // standard 150ms ease-out used by filter cards.
+          <div key={exploreConfig.chartType} className="h-full bi-fade-in">
+            <ExploreChart
+              type={exploreConfig.chartType}
+              data={filteredData}
+              roleConfig={exploreConfig.roleConfig}
+              styleConfig={exploreConfig.styleConfig}
+              havingFilters={havingFilters}
+              preAggregated={preAggregated}
+              onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+                ? handleCrossFilterSelection
+                : undefined}
+            />
+          </div>
         ) : (
-          <ChartPreview
-            chartType={chart.chart_type}
-            data={filteredData}
-            config={legacyRenderChartConfig}
-            styleConfig={chartRenderStyleConfig}
-            onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
-              ? handleCrossFilterSelection
-              : undefined}
-          />
+          <div key={chart.chart_type} className="h-full bi-fade-in">
+            <ChartPreview
+              chartType={chart.chart_type}
+              data={filteredData}
+              config={legacyRenderChartConfig}
+              styleConfig={chartRenderStyleConfig}
+              onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+                ? handleCrossFilterSelection
+                : undefined}
+            />
+          </div>
         )}
       </div>
 
