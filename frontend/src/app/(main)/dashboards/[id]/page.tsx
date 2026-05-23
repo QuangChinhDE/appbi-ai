@@ -213,6 +213,14 @@ export default function DashboardDetailPage() {
   // Refs for filter seeding
   const filtersSeededRef = React.useRef(false);
   const filtersSnapshotRef = React.useRef<string>('[]');
+  // Phase-15.79 — when filters were seeded from a shared `?f=` URL param,
+  // we suppress the DB-write side-effect of handleApplyFilters until the
+  // user has explicitly modified the filter set. Otherwise an editor
+  // opening a teammate's share link could click Apply (e.g. after adding
+  // their own filter) and accidentally overwrite the dashboard's saved
+  // filters_config with the URL state. The flag flips to false the first
+  // time DashboardFilterBar reports a draft change.
+  const filtersHydratedFromUrlRef = React.useRef(false);
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
@@ -357,6 +365,9 @@ export default function DashboardDetailPage() {
     const fromUrl = decodeFiltersFromUrl(searchParams?.get(URL_FILTER_PARAM) ?? null);
     const initial = fromUrl ?? serverDefault;
     filtersSnapshotRef.current = JSON.stringify(initial);
+    // Phase-15.79 — mark URL-hydrated state so handleApplyFilters can
+    // skip DB persistence until the user has explicitly edited the set.
+    filtersHydratedFromUrlRef.current = fromUrl != null;
     setDraftGlobalFilters(initial);
     setAppliedGlobalFilters(initial);
   }, [dashboard, searchParams]);
@@ -765,6 +776,19 @@ export default function DashboardDetailPage() {
   const handleApplyFilters = async () => {
     setAppliedGlobalFilters(draftGlobalFilters);
     if (!canEditResource) return;
+
+    // Phase-15.79 — when the draft state is still the pristine URL
+    // hydrate (no user mutation since open), don't promote it to the
+    // dashboard's saved filters_config. Otherwise an editor opening a
+    // teammate's `?f=` share link could overwrite the dashboard default
+    // for every other viewer just by clicking Apply. Inform them with a
+    // toast so the behaviour isn't silent.
+    if (filtersHydratedFromUrlRef.current) {
+      toast.info(
+        'Đang xem filter từ link chia sẻ. Chỉnh sửa filter trước khi Apply để lưu làm mặc định.',
+      );
+      return;
+    }
 
     setIsApplyingFilters(true);
     try {
@@ -1628,7 +1652,14 @@ export default function DashboardDetailPage() {
                           columnChartCount={resolvedColumnChartCount}
                           distinctValues={resolvedDistinctValues}
                           filters={draftGlobalFilters}
-                          onFiltersChange={setDraftGlobalFilters}
+                          onFiltersChange={(next) => {
+                            // Phase-15.79 — any user-driven mutation
+                            // means the current filter set is no longer
+                            // a pristine URL hydrate, so DB persistence
+                            // on Apply becomes safe again.
+                            filtersHydratedFromUrlRef.current = false;
+                            setDraftGlobalFilters(next);
+                          }}
                           hasPendingChanges={hasPendingFilterChanges}
                           onApply={handleApplyFilters}
                           onReset={handleResetFilters}
