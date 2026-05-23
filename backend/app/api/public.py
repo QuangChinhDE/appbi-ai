@@ -616,7 +616,7 @@ def get_public_dashboard(
 ):
     """Return dashboard structure for a public shared link. No auth required.
     Password-protected links require X-Public-Session header from /auth."""
-    dash, public_filters, link_name, appearance_config = _get_dashboard_by_token(
+    dash, link_hidden_filters, link_name, appearance_config = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,
@@ -625,9 +625,31 @@ def get_public_dashboard(
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
         ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
-    # Expose the link-specific filters so the frontend can display filter badges
-    dash.public_filters_config = public_filters
-    dash.available_filter_fields = _build_public_filter_fields(db, dash, public_filters)
+
+    # Phase-15.81 — TWO filter mechanisms surface differently:
+    #
+    #   A. dashboard.filters_config + pages_config[i].filters
+    #      Set by the dashboard owner via the editor FilterPane. Intent:
+    #      "DA-defined slicers for viewer interactivity" (Looker/PowerBI
+    #      style). Viewer SEES these in the top-bar and can change values.
+    #
+    #   B. DashboardPublicLink.filters_config
+    #      Set per-link in the Public Links modal. Intent: "DA wants to
+    #      stamp a hidden constraint on THIS link only" — different links
+    #      to the same dashboard can have different hidden filters. Viewer
+    #      MUST NOT see / change these; they apply silently to every
+    #      chart query.
+    #
+    # We attach (B) to a non-public field so FE merges it into chart-data
+    # requests but doesn't render it. The top-bar slicer set served to FE
+    # comes from (A) only.
+    top_bar_filters = list(dash.filters_config or [])
+    dash.public_filters_config = top_bar_filters
+    dash.available_filter_fields = _build_public_filter_fields(db, dash, top_bar_filters)
+    # New: pass link's hidden filters as a separate field for the FE viewer
+    # to merge silently into every chart-data request. Empty list when the
+    # legacy share_token path is used (legacy never had per-link filters).
+    dash.public_link_hidden_filters = list(link_hidden_filters or [])
     dash.public_link_name = link_name
     # Strip the admin-only ai_bot_key before sending to public viewers.
     # Replace it with a safe boolean so the AI bot UI can skip key entry.

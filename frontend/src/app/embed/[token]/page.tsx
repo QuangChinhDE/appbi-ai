@@ -308,20 +308,40 @@ export default function EmbedDashboardPage() {
     setChartErrors({});
   }, [appliedViewerFilters]);
 
-  // Slicer-model seed: see d/[token]/page.tsx for rationale. DA-defined Access
-  // filters become the viewer's initial values; viewer can change them but
-  // cannot add/remove slots (lockSlots on the filter bar).
+  // Phase-15.81 — slicer seed. See d/[token]/page.tsx for the full
+  // commentary on the two-mechanism filter taxonomy. Per-page filters
+  // from pages_config[i].filters now also merge into the top-bar set
+  // and re-seed on page switch (preserving viewer edits).
   useEffect(() => {
     if (!dashboard || !token) return;
-    if (seededFiltersForTokenRef.current === token) return;
-    const seeded = Array.isArray(dashboard.public_filters_config)
+    const allPagesSeed = Array.isArray(dashboard.public_filters_config)
       ? (dashboard.public_filters_config as BaseFilter[])
       : [];
+    const activePageObj = dashboardPages.find((p) => p.id === activePageId);
+    const pageSeed: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
+      ? ((activePageObj as any).filters as BaseFilter[])
+      : [];
+    const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
-    setDraftViewerFilters(seeded);
-    setAppliedViewerFilters(seeded);
-    appliedFilterSignatureRef.current = JSON.stringify(seeded);
-  }, [dashboard, token]);
+    const seedByKey = new Map<string, BaseFilter>();
+    for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    const merged: BaseFilter[] = [];
+    if (!isFirstSeed) {
+      const existingByKey = new Map<string, BaseFilter>();
+      for (const f of appliedViewerFilters) existingByKey.set(f.fieldKey ?? f.field, f);
+      for (const [key, seedFilter] of seedByKey.entries()) {
+        const existing = existingByKey.get(key);
+        merged.push(existing ?? seedFilter);
+      }
+    } else {
+      for (const f of seedByKey.values()) merged.push(f);
+    }
+    setDraftViewerFilters(merged);
+    setAppliedViewerFilters(merged);
+    appliedFilterSignatureRef.current = JSON.stringify(merged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
     if (!crossFilterState) return;
@@ -377,13 +397,13 @@ export default function EmbedDashboardPage() {
     }
 
     try {
-      // Phase-15.81 — merge per-page + per-tile filters set by the
-      // dashboard owner into chart-data requests. Embed viewer doesn't
-      // expose these in any UI (top-bar is for owner-authored
-      // public_filters_config only) but the WHERE clause must apply.
-      const activePageObj = dashboardPages.find((p) => p.id === activePageId);
-      const pageScopeFilters: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
-        ? ((activePageObj as any).filters as BaseFilter[])
+      // Phase-15.81 — see d/[token]/page.tsx for the full 3-source merge
+      // commentary. Embed viewer follows the same model: top-bar set
+      // already contains all-pages + active-page filters (handled by the
+      // seed effect), so we only need to add tile filters + per-link
+      // hidden constraints here.
+      const linkHiddenFilters: BaseFilter[] = Array.isArray((dashboard as any)?.public_link_hidden_filters)
+        ? ((dashboard as any).public_link_hidden_filters as BaseFilter[])
         : [];
       const entries = await runWithConcurrency(
         targetCharts,
@@ -399,8 +419,8 @@ export default function EmbedDashboardPage() {
               : appliedViewerFilters;
           const requestFilters = [
             ...baseViewerFilters,
-            ...pageScopeFilters,
             ...tileScopeFilters,
+            ...linkHiddenFilters,
           ];
           try {
             const data = await publicDashboardApi.getChartData(

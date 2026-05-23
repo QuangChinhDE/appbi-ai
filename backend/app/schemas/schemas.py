@@ -584,6 +584,11 @@ class DashboardResponse(DashboardBase):
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
+    # Phase-15.81 — hidden per-link constraint set. Populated only on the
+    # /public/dashboards/{token} response (server stuffs the link's own
+    # filters_config here). FE merges them silently into chart-data
+    # requests but never renders them in the top-bar slicer.
+    public_link_hidden_filters: Optional[List[Dict[str, Any]]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
     public_link_name: Optional[str] = None
     public_link_appearance: Optional[Dict[str, Any]] = None

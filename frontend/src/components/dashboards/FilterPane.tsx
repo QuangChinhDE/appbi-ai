@@ -609,12 +609,18 @@ export function FilterPane({
 
   const sectionAddFilter = (scope: Scope, columnKey: string) => {
     const col = columnsByKey.get(columnKey);
-    if (!col) return;
+    if (!col) {
+      // eslint-disable-next-line no-console
+      console.warn('[FilterPane] sectionAddFilter: column not found for key', columnKey, 'in', Array.from(columnsByKey.keys()).slice(0, 20));
+      return;
+    }
     const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
     const datePreset = col.type === 'date' ? 'this_month' as DatePreset : undefined;
     const dateValue = datePreset ? computeDatePresetRange(datePreset) : ['', ''];
     const newFilter: BaseFilter = {
-      id: `f-${scope}-${Date.now()}`,
+      // Phase-15.81 v3 — randomize id more aggressively so simultaneous
+      // adds across scopes don't collide on Date.now() at ms resolution.
+      id: `f-${scope}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       field: col.name,
       fieldKey: columnKey,
       semanticField: col.semanticField,
@@ -629,7 +635,11 @@ export function FilterPane({
     const target = scope === 'visual' ? visualFilters : scope === 'page' ? pageFilters : allFilters;
     const setter = scope === 'visual' ? onChangeVisualFilters : scope === 'page' ? onChangePageFilters : onChangeAllFilters;
     // Don't add twice for the same column
-    if (target.some((f) => (f.fieldKey ?? f.field) === columnKey)) return;
+    if (target.some((f) => (f.fieldKey ?? f.field) === columnKey)) {
+      // eslint-disable-next-line no-console
+      console.warn('[FilterPane] sectionAddFilter: duplicate column in scope', scope, columnKey);
+      return;
+    }
     setter([...target, newFilter]);
   };
 

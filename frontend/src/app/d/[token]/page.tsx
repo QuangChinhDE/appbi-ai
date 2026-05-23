@@ -312,21 +312,64 @@ export default function PublicDashboardPage() {
     setChartErrors({});
   }, [appliedViewerFilters]);
 
-  // Slicer-model seed: when the dashboard payload arrives, populate viewer
-  // filters from the link's saved Access filters (DA-defined defaults).
-  // The seed runs once per token; viewer can change values but not the slot
-  // inventory (Add/Remove are hidden via lockSlots on the filter bar).
+  // Phase-15.81 — Slicer seed.
+  //
+  // Two filter mechanisms (see backend public.py docstring on
+  // _get_share_dashboard for the full taxonomy):
+  //
+  //   A. DA-authored slicers (top-bar, viewer-editable):
+  //        dashboard.public_filters_config (now mirrors dash.filters_config
+  //        = all-pages set from the editor FilterPane), PLUS the active
+  //        page's pages_config[i].filters when switching pages.
+  //
+  //   B. Per-link hidden constraints (silent WHERE, viewer never sees):
+  //        dashboard.public_link_hidden_filters — these are merged in the
+  //        chart-data fetcher, not surfaced to the slicer bar.
+  //
+  // Seed runs once per token then re-runs when the active page changes
+  // (so switching to "page-b" surfaces its per-page slicers without
+  // wiping the all-pages chips). Custom values the viewer typed since
+  // the last seed are merged on top via fieldKey, so changing pages
+  // doesn't drop their in-session selections.
   useEffect(() => {
     if (!dashboard || !token) return;
-    if (seededFiltersForTokenRef.current === token) return;
-    const seeded = Array.isArray(dashboard.public_filters_config)
+    const allPagesSeed = Array.isArray(dashboard.public_filters_config)
       ? (dashboard.public_filters_config as BaseFilter[])
       : [];
+    const activePageObj = dashboardPages.find((p) => p.id === activePageId);
+    const pageSeed: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
+      ? ((activePageObj as any).filters as BaseFilter[])
+      : [];
+    // De-dupe by fieldKey; per-page entries take precedence over all-pages
+    // when the same field appears in both (rare, but tester intent: page-
+    // level override semantics). On token change we reset; on page switch
+    // we preserve viewer's edits for fields that still exist in the new
+    // seed set.
+    const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
-    setDraftViewerFilters(seeded);
-    setAppliedViewerFilters(seeded);
-    appliedFilterSignatureRef.current = JSON.stringify(seeded);
-  }, [dashboard, token]);
+    const seedByKey = new Map<string, BaseFilter>();
+    for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    const merged: BaseFilter[] = [];
+    if (!isFirstSeed) {
+      // Preserve viewer's edits for any field that still exists in the
+      // seed; otherwise fall back to the (possibly newly added) seed.
+      const existingByKey = new Map<string, BaseFilter>();
+      for (const f of appliedViewerFilters) existingByKey.set(f.fieldKey ?? f.field, f);
+      for (const [key, seedFilter] of seedByKey.entries()) {
+        const existing = existingByKey.get(key);
+        merged.push(existing ?? seedFilter);
+      }
+    } else {
+      for (const f of seedByKey.values()) merged.push(f);
+    }
+    setDraftViewerFilters(merged);
+    setAppliedViewerFilters(merged);
+    appliedFilterSignatureRef.current = JSON.stringify(merged);
+    // appliedViewerFilters intentionally excluded from deps to avoid an
+    // infinite loop — we read it as snapshot only on page-switch re-seeds.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
     if (!crossFilterState) return;
@@ -386,15 +429,18 @@ export default function PublicDashboardPage() {
     }
 
     try {
-      // Phase-15.81 — also forward per-page + per-tile filters set by the
-      // dashboard owner in the editor. Viewer doesn't see these in the
-      // top-bar chips (those are for editing), but they must apply to the
-      // chart-data request so the public dashboard shows the same slice
-      // the owner authored. Order matters only for dedup; BE ANDs them
-      // all into a single WHERE clause.
-      const activePageObj = dashboardPages.find((p) => p.id === activePageId);
-      const pageScopeFilters: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
-        ? ((activePageObj as any).filters as BaseFilter[])
+      // Phase-15.81 — chart-data request merges three sources:
+      //   1. appliedViewerFilters (top-bar, includes BOTH all-pages and
+      //      active-page filter sets — see seed effect above).
+      //   2. tile.layout.tileFilters (per-visual hidden filter on the
+      //      tile; never surfaces to top-bar).
+      //   3. dashboard.public_link_hidden_filters (per-link hidden
+      //      constraints set in the Public Links modal; viewer cannot
+      //      see / change them, but BE applies them to every WHERE).
+      // BE merges them as AND predicates with the link's own
+      // filters_config (which it adds server-side).
+      const linkHiddenFilters: BaseFilter[] = Array.isArray((dashboard as any)?.public_link_hidden_filters)
+        ? ((dashboard as any).public_link_hidden_filters as BaseFilter[])
         : [];
 
       const entries = await runWithConcurrency(
@@ -411,8 +457,8 @@ export default function PublicDashboardPage() {
               : appliedViewerFilters;
           const requestFilters = [
             ...baseViewerFilters,
-            ...pageScopeFilters,
             ...tileScopeFilters,
+            ...linkHiddenFilters,
           ];
           try {
             const data = await publicDashboardApi.getChartData(

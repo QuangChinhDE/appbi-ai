@@ -588,7 +588,17 @@ export interface Dashboard {
   updated_at: string;
   dashboard_charts: DashboardChart[];
   filters_config?: any[]; // Dashboard-level filters (hybrid v1)
+  /** Phase-15.81 — public viewer's top-bar slicer set. BE serves
+   *  dashboard.filters_config (all-pages set from editor FilterPane)
+   *  through this field on the /public/dashboards/{token} response.
+   *  Viewers see + edit values; per-link hidden filters live in
+   *  public_link_hidden_filters instead. */
   public_filters_config?: any[];
+  /** Phase-15.81 — hidden constraints baked into THIS public link.
+   *  Set in the Public Links modal per-link. Viewer never sees these;
+   *  FE merges them silently into every chart-data request alongside
+   *  top-bar filters. */
+  public_link_hidden_filters?: any[];
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
   public_link_name?: string | null;
