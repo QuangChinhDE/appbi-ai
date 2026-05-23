@@ -1149,6 +1149,96 @@ function MultiSelectBody({
   );
 }
 
+// ── Number range body (between operator) ────────────────────────
+// Phase-15.78 — paired range sliders + number inputs for the between
+// operator. Sliders give visual feedback while typing into either
+// input still lets the user pin precise bounds. Slider scale is
+// auto-derived from the current values (with a 10× padding for
+// headroom) so the bar isn't dead before the user types numbers; if
+// they want a wider range, they just type larger numbers into the
+// inputs and the slider re-scales next render.
+function NumberRangeBody({
+  filter: f,
+  onUpdateValue,
+}: {
+  filter: BaseFilter;
+  onUpdateValue: (v: any) => void;
+}) {
+  const [lo, hi] = Array.isArray(f.value)
+    ? [f.value[0] ?? '', f.value[1] ?? '']
+    : ['', ''];
+  const loNum = lo !== '' && lo != null ? Number(lo) : NaN;
+  const hiNum = hi !== '' && hi != null ? Number(hi) : NaN;
+
+  // Derive slider scale. If both bounds typed, scale spans them with
+  // generous headroom either side; otherwise default 0–100. When the
+  // user types out-of-range numbers, the slider thumb sits at the edge
+  // and the inputs remain the source of truth.
+  const hasBoth = Number.isFinite(loNum) && Number.isFinite(hiNum);
+  const span = hasBoth ? Math.max(Math.abs(hiNum - loNum), 1) : 100;
+  const min = hasBoth ? Math.min(loNum, hiNum) - span : 0;
+  const max = hasBoth ? Math.max(loNum, hiNum) + span : 100;
+  const step = span > 100 ? Math.max(1, Math.round(span / 100)) : span > 10 ? 1 : 0.1;
+
+  const updateLo = (next: string | number) => {
+    const value = typeof next === 'number' ? String(next) : next;
+    onUpdateValue([value, hi]);
+  };
+  const updateHi = (next: string | number) => {
+    const value = typeof next === 'number' ? String(next) : next;
+    onUpdateValue([lo, value]);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          value={lo}
+          onChange={e => updateLo(e.target.value)}
+          placeholder="Min"
+          className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+        />
+        <span className="text-text-quaternary text-xs">–</span>
+        <input
+          type="number"
+          value={hi}
+          onChange={e => updateHi(e.target.value)}
+          placeholder="Max"
+          className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+        />
+      </div>
+      <div className="space-y-1 pt-1">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={Number.isFinite(loNum) ? loNum : min}
+          onChange={e => updateLo(Number(e.target.value))}
+          className="w-full accent-brand"
+          title={`Min: ${Number.isFinite(loNum) ? loNum : '(not set)'}`}
+        />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={Number.isFinite(hiNum) ? hiNum : max}
+          onChange={e => updateHi(Number(e.target.value))}
+          className="w-full accent-brand"
+          title={`Max: ${Number.isFinite(hiNum) ? hiNum : '(not set)'}`}
+        />
+        {!hasBoth && (
+          <p className="text-[10px] text-text-quaternary leading-tight">
+            Type Min &amp; Max to enable visual range; sliders re-scale automatically.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Number filter body ──────────────────────────────────────────
 function NumberBody({
   filter: f,
@@ -1177,23 +1267,7 @@ function NumberBody({
         <option value="is_not_null">≠∅ is not empty</option>
       </select>
       {f.operator === 'is_null' || f.operator === 'is_not_null' ? null : f.operator === 'between' ? (
-        <div className="flex items-center gap-1.5">
-          <input
-            type="number"
-            value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
-            onChange={e => onUpdateValue([e.target.value, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
-            placeholder="Min"
-            className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
-          />
-          <span className="text-text-quaternary text-xs">–</span>
-          <input
-            type="number"
-            value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
-            onChange={e => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', e.target.value])}
-            placeholder="Max"
-            className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
-          />
-        </div>
+        <NumberRangeBody filter={f} onUpdateValue={onUpdateValue} />
       ) : (
         <input
           type="number"
