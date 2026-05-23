@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
@@ -118,9 +118,54 @@ function normalizeLegacyDateFilter(filter: BaseFilter, dateColumn: ColumnInfo | 
   };
 }
 
+// Phase-15.78 — URL persistence for applied filters. Tester report (X.6):
+// "shareable dashboard with filter state already applied" was not possible
+// because filter state lived only in React state + server config. We now
+// mirror appliedGlobalFilters into `?f=<base64-json>` so a teammate can
+// open the same dashboard view by sharing the URL. Encoding strips the
+// `linkedFields` array (often noisy auto-derived data) so the URL stays
+// short for the common case.
+const URL_FILTER_PARAM = 'f';
+
+function encodeFiltersForUrl(filters: BaseFilter[]): string | null {
+  if (filters.length === 0) return null;
+  try {
+    const compact = filters.map(f => ({
+      id: f.id,
+      field: f.field,
+      fieldKey: f.fieldKey,
+      semanticField: f.semanticField,
+      datasetId: f.datasetId,
+      type: f.type,
+      operator: f.operator,
+      value: f.value,
+      label: f.label,
+      datePreset: f.datePreset,
+      linkedFields: f.linkedFields,
+    }));
+    return btoa(unescape(encodeURIComponent(JSON.stringify(compact))));
+  } catch {
+    return null;
+  }
+}
+
+function decodeFiltersFromUrl(raw: string | null): BaseFilter[] | null {
+  if (!raw) return null;
+  try {
+    const json = decodeURIComponent(escape(atob(raw)));
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as BaseFilter[];
+  } catch {
+    return null;
+  }
+}
+
 export default function DashboardDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const dashboardId = Number(params.id);
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
@@ -298,15 +343,23 @@ export default function DashboardDetailPage() {
     setLocalPagesConfig(null);
   }, [dashboard?.pages_config]);
 
-  // Seed globalFilters from dashboard.filters_config once when dashboard first loads
+  // Seed globalFilters from dashboard.filters_config once when dashboard first loads.
+  // Phase-15.78 — when the URL carries an `?f=` param (shared link), it
+  // takes precedence over the server-side default so the viewer lands on
+  // the same filter state the sender saw. URL filters are NOT persisted
+  // back to the dashboard — they're a per-session override.
   React.useEffect(() => {
     if (!dashboard || filtersSeededRef.current) return;
     filtersSeededRef.current = true;
-    const initial: BaseFilter[] = Array.isArray(dashboard.filters_config) ? dashboard.filters_config as BaseFilter[] : [];
+    const serverDefault: BaseFilter[] = Array.isArray(dashboard.filters_config)
+      ? dashboard.filters_config as BaseFilter[]
+      : [];
+    const fromUrl = decodeFiltersFromUrl(searchParams?.get(URL_FILTER_PARAM) ?? null);
+    const initial = fromUrl ?? serverDefault;
     filtersSnapshotRef.current = JSON.stringify(initial);
     setDraftGlobalFilters(initial);
     setAppliedGlobalFilters(initial);
-  }, [dashboard]);
+  }, [dashboard, searchParams]);
 
   React.useEffect(() => {
     if (!crossFilterState) return;
@@ -324,6 +377,26 @@ export default function DashboardDetailPage() {
     const current = JSON.stringify(appliedGlobalFilters);
     filtersSnapshotRef.current = current;
   }, [appliedGlobalFilters]);
+
+  // Phase-15.78 — mirror appliedGlobalFilters into the URL `?f=` param so
+  // the dashboard view is shareable. We replace (not push) so the back
+  // button still walks page-level navigation rather than per-filter
+  // history entries. Skip on initial mount before the seed effect runs.
+  React.useEffect(() => {
+    if (!filtersSeededRef.current || !pathname) return;
+    const encoded = encodeFiltersForUrl(appliedGlobalFilters);
+    const next = new URLSearchParams(searchParams?.toString() ?? '');
+    if (encoded) {
+      next.set(URL_FILTER_PARAM, encoded);
+    } else {
+      next.delete(URL_FILTER_PARAM);
+    }
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // searchParams intentionally excluded from deps: it changes whenever
+    // we write here, which would loop. We read it once per applied change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedGlobalFilters, pathname, router]);
   // Filter changes are applied explicitly via the Apply action.
   //
   //
