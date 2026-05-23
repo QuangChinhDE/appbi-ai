@@ -819,14 +819,14 @@ function ChartTileBase({
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => setIsTopNOpen(v => !v)}
                 className={`relative flex-shrink-0 transition-opacity ${
-                  isTopNOpen || (effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '')
+                  isTopNOpen || (Number(effectiveStyleConfig.dataLimit) > 0)
                     ? 'opacity-100 text-brand'
                     : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand'
                 }`}
                 title="Top N / Bottom N row limit"
               >
                 <TrendingUp className="h-3.5 w-3.5" />
-                {effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '' && (
+                {Number(effectiveStyleConfig.dataLimit) > 0 && (
                   <span className="absolute -top-1 -right-1 w-2 h-2 bg-brand rounded-full" />
                 )}
               </button>
@@ -1050,7 +1050,7 @@ function ChartTileBase({
               className="text-xs border border-[rgb(var(--border-strong))] rounded px-1.5 py-0.5 w-16 focus:outline-none focus:ring-1 focus:ring-brand"
             />
             <span className="text-[10px] text-text-quaternary">rows by metric value</span>
-            {effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '' && (
+            {Number(effectiveStyleConfig.dataLimit) > 0 && (
               <button
                 onClick={() => saveTopN('', 'top')}
                 className="text-xs text-text-quaternary hover:text-text-secondary"
