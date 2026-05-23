@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, TrendingUp } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -357,6 +357,10 @@ function ChartTileBase({
   const [isHavingOpen, setIsHavingOpen] = useState(false);
   const [isTileMenuOpen, setIsTileMenuOpen] = useState(false);
   const [isMovePageOpen, setIsMovePageOpen] = useState(false);
+  // Phase-15.78 — per-tile Top N / Bottom N quick control. Persists into
+  // styleConfigOverride.dataLimit + .dataLimitDirection so the saved
+  // chart isn't mutated (other dashboards keep their own choice).
+  const [isTopNOpen, setIsTopNOpen] = useState(false);
   const [draftHavingField, setDraftHavingField] = useState('');
   const [draftHavingOp, setDraftHavingOp] = useState<FilterOperator>('gt');
   const [draftHavingValue, setDraftHavingValue] = useState('');
@@ -437,6 +441,38 @@ function ChartTileBase({
   const openDetailModal = (tab: 'appearance' | 'data') => {
     setDetailModalInitialTab(tab);
     setIsDetailModalOpen(true);
+  };
+
+  // Phase-15.78 — persist Top N / Bottom N override at the tile level
+  // through styleConfigOverride. Setting limit to '' clears the override
+  // so the base chart's saved dataLimit (if any) takes over.
+  const saveTopN = async (limit: number | '', direction: 'top' | 'bottom') => {
+    if (!canEdit) return;
+    const currentStyleOverride = currentLayout?.styleConfigOverride;
+    const baseOverride: Record<string, any> = (
+      currentStyleOverride
+      && typeof currentStyleOverride === 'object'
+      && !Array.isArray(currentStyleOverride)
+    )
+      ? { ...currentStyleOverride }
+      : {};
+    if (limit === '' || limit == null) {
+      delete baseOverride.dataLimit;
+      delete baseOverride.dataLimitDirection;
+    } else {
+      baseOverride.dataLimit = limit;
+      baseOverride.dataLimitDirection = direction;
+    }
+    const styleConfigOverride = Object.keys(baseOverride).length > 0 ? baseOverride : undefined;
+    try {
+      await dashboardApi.updateLayout(dashboardId, [{
+        id: dashboardChartId,
+        layout: { ...currentLayout, styleConfigOverride },
+      }]);
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    } catch {
+      /* layout save is best-effort */
+    }
   };
 
   const handleTitleKeyDown = (e: React.KeyboardEvent) => {
@@ -776,6 +812,26 @@ function ChartTileBase({
               </button>
             )}
 
+            {/* Phase-15.78 — Top N / Bottom N quick-control. Active state
+                when an override is set; click toggles the inline editor. */}
+            {canEdit && exploreConfig && (
+              <button
+                onMouseDown={e => e.stopPropagation()}
+                onClick={() => setIsTopNOpen(v => !v)}
+                className={`relative flex-shrink-0 transition-opacity ${
+                  isTopNOpen || (effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '')
+                    ? 'opacity-100 text-brand'
+                    : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand'
+                }`}
+                title="Top N / Bottom N row limit"
+              >
+                <TrendingUp className="h-3.5 w-3.5" />
+                {effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '' && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-brand rounded-full" />
+                )}
+              </button>
+            )}
+
             {/* Single overflow menu for View, Appearance, Rename, and Move to page. */}
             <div className="relative flex-shrink-0">
               <button
@@ -958,6 +1014,48 @@ function ChartTileBase({
                 className="text-xs text-text-quaternary hover:text-text-secondary"
               >
                 Clear all
+              </button>
+            )}
+          </div>
+        )}
+        {/* Phase-15.78 — Top N / Bottom N editor panel. Sits per-tile in
+            styleConfigOverride so other dashboards using the same chart
+            keep their own choice. Clear restores the chart's saved default. */}
+        {isTopNOpen && exploreConfig && (
+          <div
+            className="border border-brand/20 bg-brand/10/50 rounded p-2 flex flex-wrap items-center gap-1.5"
+            onMouseDown={e => e.stopPropagation()}
+          >
+            <span className="text-[10px] font-mono uppercase text-text-tertiary">show</span>
+            <select
+              value={effectiveStyleConfig.dataLimitDirection ?? 'top'}
+              onChange={e => saveTopN(effectiveStyleConfig.dataLimit ?? '', e.target.value as 'top' | 'bottom')}
+              className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
+            >
+              <option value="top">Top</option>
+              <option value="bottom">Bottom</option>
+            </select>
+            <input
+              type="number"
+              min={1}
+              value={effectiveStyleConfig.dataLimit ?? ''}
+              placeholder="N"
+              onChange={e => {
+                const v = e.target.value;
+                saveTopN(v === '' ? '' : Number(v), effectiveStyleConfig.dataLimitDirection ?? 'top');
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Escape') setIsTopNOpen(false);
+              }}
+              className="text-xs border border-[rgb(var(--border-strong))] rounded px-1.5 py-0.5 w-16 focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+            <span className="text-[10px] text-text-quaternary">rows by metric value</span>
+            {effectiveStyleConfig.dataLimit && effectiveStyleConfig.dataLimit !== '' && (
+              <button
+                onClick={() => saveTopN('', 'top')}
+                className="text-xs text-text-quaternary hover:text-text-secondary"
+              >
+                Clear
               </button>
             )}
           </div>
