@@ -590,10 +590,28 @@ export function applyFiltersToRows(
         }
         
         case 'dropdown': {
-          const selected: unknown[] = f.value ?? [];
-          if (!selected.length) return true;
+          // Phase-15.79 — `in`/`not_in` already handled above (the multi-select
+          // path). Single-select dropdown filters (Phase-15.78 toggle) arrive
+          // here with operator `eq`/`neq` and a *scalar* value, not an array.
+          // Old code did `(f.value ?? []).length` which on a string crashed
+          // at `.some(...)` (TypeError: not a function). Route scalar ops to
+          // the same string comparison the `text` branch does.
           const strVal = String(val);
-          return selected.some(s => String(s) === strVal);
+          if (Array.isArray(f.value)) {
+            if (f.value.length === 0) return true;
+            const inList = f.value.some(s => String(s) === strVal);
+            return f.operator === 'neq' ? !inList : inList;
+          }
+          const filterVal = String(f.value ?? '');
+          if (filterVal === '') return true;
+          switch (f.operator) {
+            case 'eq': return strVal === filterVal;
+            case 'neq': return strVal !== filterVal;
+            case 'contains': return strVal.toLowerCase().includes(filterVal.toLowerCase());
+            case 'not_contains': return !strVal.toLowerCase().includes(filterVal.toLowerCase());
+            case 'starts_with': return strVal.toLowerCase().startsWith(filterVal.toLowerCase());
+            default: return true;
+          }
         }
         
         case 'number': {
@@ -602,8 +620,16 @@ export function applyFiltersToRows(
           
           if (f.operator === 'between') {
             const [min, max] = f.value ?? [];
-            if (min !== null && min !== undefined && numVal < Number(min)) return false;
-            if (max !== null && max !== undefined && numVal > Number(max)) return false;
+            // Phase-15.79 — old code treated `''` as a present bound and ran
+            // `Number('') = 0` which silently rejected every value > 0 when
+            // the user typed only one bound. Range slider (Phase-15.78) made
+            // single-bound state common because dragging one thumb leaves
+            // the other end empty. Treat empty string + null + undefined
+            // identically as "unbounded".
+            const hasMin = min !== null && min !== undefined && min !== '';
+            const hasMax = max !== null && max !== undefined && max !== '';
+            if (hasMin && numVal < Number(min)) return false;
+            if (hasMax && numVal > Number(max)) return false;
             return true;
           }
           

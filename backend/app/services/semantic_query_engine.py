@@ -998,8 +998,22 @@ class SemanticQueryEngine:
             vals = value if isinstance(value, list) else [value]
             return f"{field_sql} NOT IN ({', '.join(_q(v) for v in vals)})"
         if operator == "between":
+            # Phase-15.79 — degrade to >= / <= when only one bound is
+            # supplied, mirroring _build_where_clause Phase-15.19 behaviour.
+            # Old code emitted `BETWEEN NULL AND NULL` for single-side
+            # bounds which never matches anything; with the new range-
+            # slider UI users routinely leave one thumb un-set so we now
+            # render the user's intent properly here too.
             lo, hi = (value or [None, None])[:2]
-            return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
+            lo_present = lo is not None and (not isinstance(lo, str) or lo.strip() != "")
+            hi_present = hi is not None and (not isinstance(hi, str) or hi.strip() != "")
+            if lo_present and hi_present:
+                return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
+            if lo_present:
+                return f"{field_sql} >= {_q(lo)}"
+            if hi_present:
+                return f"{field_sql} <= {_q(hi)}"
+            return None
         if operator == "contains":
             return f"{field_sql} LIKE '%' || {_q(value)} || '%'"
         if operator == "starts_with":
