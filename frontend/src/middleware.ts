@@ -13,8 +13,8 @@ import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
 // Public paths that do NOT require authentication.
-// /ws/ + /w/ are workspace + workboard public links (worker / foreman flows
-// authenticate against a project-owned table, not against AppBI accounts).
+// /ws/ + /w/ are workspace + workboard public links. End-user sessions use
+// Workboard app users, not AppBI accounts.
 const PUBLIC_PATHS = ['/login', '/d/', '/embed/', '/ws/', '/w/'];
 const ACCESS_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
 const REFRESH_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;

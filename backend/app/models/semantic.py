@@ -44,6 +44,7 @@ class SemanticModel(Base):
     name = Column(String, nullable=False, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True)
     description = Column(String, nullable=True)
+    settings = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

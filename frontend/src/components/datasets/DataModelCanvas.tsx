@@ -31,6 +31,7 @@ import {
   EyeOff,
   Pencil,
   Sigma,
+  MoreVertical,
   Plus,
   Trash2,
   Link2,
@@ -48,6 +49,7 @@ import {
   type MeasureDefinition,
 } from '@/hooks/use-dataset-model';
 import { RelationshipDialog, type RelationshipDialogValue } from './RelationshipDialog';
+import RelationshipReviewModal from './RelationshipReviewModal';
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
@@ -813,6 +815,70 @@ function CalendarLayerBanner({
   );
 }
 
+function ModelOverflowMenu({
+  onResetModel,
+  busy,
+}: {
+  onResetModel: () => void;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center justify-center w-8 h-8 rounded-md text-text-secondary
+          border border-[rgb(var(--border-strong))] hover:bg-surface-2 transition-colors"
+        title="More actions"
+      >
+        {busy ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        ) : (
+          <MoreVertical className="w-3.5 h-3.5" />
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-md p-1">
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              if (
+                window.confirm(
+                  'Reset model: xoá tất cả auto-detected relationships và tái sinh từ đầu. Relationships do bạn tạo tay vẫn được giữ. Tiếp tục?',
+                )
+              ) {
+                onResetModel();
+              }
+            }}
+            className="w-full flex items-start gap-2 rounded px-2 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-2"
+          >
+            <RefreshCw className="mt-0.5 w-3.5 h-3.5 shrink-0 text-text-tertiary" />
+            <div>
+              <div className="font-medium text-text-primary">Reset model</div>
+              <div className="text-[11px] text-text-tertiary">
+                Wipe auto joins, regenerate from scratch. Manual joins kept.
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DataModelCanvas({
   datasetId,
   datasetName = 'Dataset',
@@ -827,6 +893,7 @@ export function DataModelCanvas({
   const removeJoin    = useRemoveJoin();
   const [showCalendarLayer, setShowCalendarLayer] = useState(false);
   const [dictModalOpen, setDictModalOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [dialogInitialValue, setDialogInitialValue] = useState<Partial<RelationshipDialogValue> | undefined>(undefined);
   const [relationshipDrag, setRelationshipDrag] = useState<{
@@ -1584,20 +1651,30 @@ export function DataModelCanvas({
           )}
           {canEdit && (
             <button
-              onClick={() => handleGenerate(true)}
-              disabled={generateModel.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
-                border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 disabled:opacity-50 transition-colors"
-              title="Regenerate model (overwrite)"
+              onClick={() => setReviewOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white
+                bg-brand rounded-md hover:bg-brand-hover transition-colors"
+              title="Detect relationships from FK constraints and column names — you confirm what to apply"
             >
-              {generateModel.isPending
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <RefreshCw className="w-3.5 h-3.5" />}
-              Regenerate
+              <Link2 className="w-3.5 h-3.5" />
+              Detect relationships
             </button>
+          )}
+          {canEdit && (
+            <ModelOverflowMenu
+              onResetModel={() => handleGenerate(true)}
+              busy={generateModel.isPending}
+            />
           )}
         </div>
       </div>
+
+      <RelationshipReviewModal
+        datasetId={datasetId}
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onApplied={() => refetch()}
+      />
 
       <CalendarLayerBanner
         calendarView={calendarPresentationView}

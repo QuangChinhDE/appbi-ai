@@ -16,16 +16,38 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import require_permission
+from app.core.dependencies import (
+    require_edit_access,
+    require_permission,
+)
 from app.models.user import User
 from app.modules.workboards.models import (
     Workboard,
     WorkboardAppUser,
     WorkboardWorkspace,
 )
+from app.modules.workboards.permissions import require_dataset_binding_access
 from app.modules.workboards.workspace_schemas import WorkspaceAccessMode
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+
+
+def _require_menu_dataset_access(
+    db: Session,
+    user: User,
+    menu_config: List[Dict[str, Any]],
+) -> None:
+    slugs = {
+        str(item.get("workboard_slug") or "").strip()
+        for item in menu_config
+        if isinstance(item, dict)
+    }
+    slugs.discard("")
+    if not slugs:
+        return
+    workboards = db.query(Workboard).filter(Workboard.slug.in_(slugs)).all()
+    for workboard in workboards:
+        require_dataset_binding_access(db, user, workboard.dataset_id)
 
 
 class WorkspaceMenuItemAdmin(BaseModel):
@@ -60,7 +82,7 @@ class WorkspaceCreateRequest(BaseModel):
     icon: Optional[str] = None
     # Default to ``public_app_users`` because that's how mini-apps are
     # actually used in the field. Identity now lives on each workboard,
-    # so creating a workspace no longer requires picking a users table —
+    # so creating a workspace no longer requires extra user-source wiring -
     # admins just attach workboards through ``menu_config``.
     access_mode: WorkspaceAccessMode = "public_app_users"
     menu_config: List[Dict[str, Any]] = Field(default_factory=list)
@@ -119,6 +141,7 @@ def create_workspace(
     if slug:
         if db.query(WorkboardWorkspace).filter(WorkboardWorkspace.slug == slug).first():
             raise HTTPException(status_code=409, detail=f"Workspace slug '{slug}' already exists.")
+    _require_menu_dataset_access(db, user, body.menu_config)
     ws = WorkboardWorkspace(
         name=body.name,
         slug=slug,
@@ -155,12 +178,14 @@ def update_workspace(
     workspace_id: int,
     body: WorkspaceUpdateRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "full")),
+    user: User = Depends(require_permission("workboards", "full")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     patch = body.model_dump(exclude_unset=True)
+    if "menu_config" in patch:
+        _require_menu_dataset_access(db, user, patch["menu_config"] or [])
     for key, val in patch.items():
         setattr(ws, key, val)
     db.commit()
@@ -235,20 +260,23 @@ def preview_session(
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
     access_mode = (ws.access_mode or "internal")
+    preview_workboard: Workboard | None = None
+    if body.workboard_id is not None:
+        preview_workboard = (
+            db.query(Workboard)
+            .filter(Workboard.id == body.workboard_id)
+            .first()
+        )
+        if preview_workboard is None:
+            raise HTTPException(status_code=404, detail="Workboard not found.")
+        require_edit_access(db, user, preview_workboard, "workboards")
+        require_dataset_binding_access(db, user, preview_workboard.dataset_id)
 
-    # Internal-mode workspaces don't have an app_users table — mint the
-    # session directly from the AppBI staff identity so the iframe runtime
-    # gets a workspace cookie just like the public flow.
+    # Internal-mode previews use the AppBI staff identity directly so the
+    # iframe runtime gets a workspace cookie just like the public flow.
     if access_mode == "internal":
         extra_claims: Dict[str, Any] = {}
-        if body.workboard_id is not None:
-            exists = (
-                db.query(Workboard.id)
-                .filter(Workboard.id == body.workboard_id)
-                .first()
-            )
-            if exists is None:
-                raise HTTPException(status_code=404, detail="Workboard not found.")
+        if preview_workboard is not None:
             extra_claims["preview_workboard_id"] = body.workboard_id
         token, ttl = app_user_service.create_internal_session_token(
             ws,
@@ -293,7 +321,7 @@ def preview_session(
                 "users của workboard tương ứng."
             ),
         )
-    wb = db.query(Workboard).filter(Workboard.id == body.workboard_id).first()
+    wb = preview_workboard
     if wb is None:
         raise HTTPException(status_code=404, detail="Workboard not found.")
 
@@ -331,6 +359,7 @@ def preview_session(
     token, ttl = app_user_service.create_session_token(
         ws,
         matched_user,
+        db=db,
         extra_claims=extra_claims,
     )
     import hashlib
@@ -400,7 +429,7 @@ def suggest_relationships(
     from_table_id: int = Query(..., gt=0),
     dataset_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "edit")),
+    user: User = Depends(require_permission("workboards", "edit")),
 ):
     """Return tables joinable from ``from_table_id`` along with the columns
     a Builder dropdown can prefill into a lookup ``relationship_path``.
@@ -417,6 +446,12 @@ def suggest_relationships(
         raise HTTPException(status_code=404, detail="Source table not found.")
     if dataset_id is None:
         dataset_id = from_table.dataset_id
+    elif int(dataset_id) != int(from_table.dataset_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Source table does not belong to the requested dataset.",
+        )
+    require_dataset_binding_access(db, user, dataset_id)
 
     model = get_dataset_model(db, dataset_id) or {}
     explores = model.get("explores") or []

@@ -22,6 +22,7 @@ from app.core.dependencies import (
 from app.core.logging import get_logger
 from app.models.user import User
 from app.modules.workboards.models import Workboard, WorkboardSyncRun
+from app.modules.workboards.permissions import require_dataset_binding_access
 from app.modules.workboards.schemas import (
     SyncRunStatus,
     WorkboardSyncRunDetailResponse,
@@ -128,6 +129,7 @@ def create_webhook(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     _validate_doc_screen_id(wb, payload.screen_id)
     configs = svc.list_webhook_configs(wb)
     new_id = _slug_id(payload.name, [c.id for c in configs])
@@ -150,6 +152,7 @@ def update_webhook(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     updates = payload.model_dump(exclude_unset=True)
     if "screen_id" in updates and updates["screen_id"]:
         _validate_doc_screen_id(wb, updates["screen_id"])
@@ -175,6 +178,7 @@ def delete_webhook(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     configs = svc.list_webhook_configs(wb)
     new_configs = [c for c in configs if c.id != webhook_id]
     if len(new_configs) == len(configs):

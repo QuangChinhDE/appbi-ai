@@ -1,8 +1,8 @@
 """Pydantic schemas for the workspace public-facing API.
 
 A "workspace" is the bundle of workboards a non-AppBI end-user sees behind
-a single ``/w/{token}`` URL. Authentication is delegated to a project-owned
-table inside the workspace's dataset; AppBI never owns the user list.
+a single ``/w/{token}`` URL. Authentication uses Workboard app-user rows
+stored by AppBI; screen RLS maps that identity onto dataset rows.
 
 These schemas are kept separate from ``schemas.py`` so editing the workboard
 runtime/layout layer does not accidentally break the public auth surface.
@@ -16,10 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 # Access modes the public link supports.
-#   - "internal": only AppBI staff can open the workspace; no app_users
-#     table required. Preview/runtime use the AppBI session.
+#   - "internal": only AppBI staff can open the workspace.
+#     Preview/runtime use the AppBI session.
 #   - "public_app_users": workers/foremen log in with PIN against a
-#     project-owned table inside the workspace's dataset.
+#     Workboard app-user row stored by AppBI.
 WorkspaceAccessMode = Literal["internal", "public_app_users"]
 
 

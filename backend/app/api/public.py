@@ -930,8 +930,9 @@ if settings.WORKBOARDS_ENABLED:
         matched_user, _matched_wb = app_user_service.authenticate(
             db, ws, body.username.strip(), body.pin, ip=client_ip
         )
+        scope_context = app_user_service.compute_scope_context(db, matched_user)
         session_token, ttl = app_user_service.create_session_token(
-            ws, matched_user
+            ws, matched_user, db=db
         )
 
         # Cookie is httpOnly so JS cannot read it (XSS-resistant). SameSite=lax
@@ -952,7 +953,10 @@ if settings.WORKBOARDS_ENABLED:
                 username=matched_user.username,
                 role=matched_user.role,
                 full_name=matched_user.full_name,
-                context=dict(matched_user.context or {}),
+                context={
+                    **dict(matched_user.context or {}),
+                    **scope_context,
+                },
             ),
         )
 
@@ -1090,10 +1094,9 @@ if settings.WORKBOARDS_ENABLED:
         one-workboard bypass so newly imported mini-apps can be previewed
         before they are published into the workspace menu.
 
-        When ``app_user`` is supplied and the workboard has a per-workboard
-        ``app_users_config`` override, callers from a different user table
-        are rejected with 403 â€” guards against an authenticated nurse
-        poking around a drivers-only mini-app by id.
+        When ``app_user`` is supplied, its Workboard ownership is verified
+        before it can open the app by id. This stops one authenticated
+        mini-app user from poking around a sibling app in the workspace.
         """
         configured_slugs = {
             (item.get("workboard_slug") or "")
@@ -1130,10 +1133,7 @@ if settings.WORKBOARDS_ENABLED:
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "TÃ i khoáº£n nÃ y thuá»™c báº£ng ngÆ°á»i dÃ¹ng khÃ¡c â€” khÃ´ng truy cáº­p "
-                    "Ä‘Æ°á»£c mini-app nÃ y."
-                ),
+                detail="This account does not belong to this mini-app.",
             )
         return wb
 

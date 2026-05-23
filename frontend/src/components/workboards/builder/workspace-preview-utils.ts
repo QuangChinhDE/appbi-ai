@@ -34,12 +34,11 @@ export function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
  * Sort workspaces for the preview picker. We rank by:
  *   - workboard already in menu_config (highest signal)
  *   - workspace is public_app_users (matches the new product default and
- *     exercises real RLS / per-workboard user table flows)
+ *     exercises real RLS / per-workboard app-user flows)
  *   - workspace is internal (fallback for staff-only testing)
  *
  * App-user identity now lives on the workboard itself, so workspace-level
- * app_users_config is intentionally not part of this decision anymore.
- * so the auto-selected one almost always works without further action.
+ * user-source wiring is not part of this decision anymore.
  */
 export function sortPreviewWorkspaces(
   data: WorkspaceLite[],

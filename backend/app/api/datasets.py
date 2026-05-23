@@ -4600,6 +4600,126 @@ def update_dataset_explore(
 
 
 @router.post(
+    "/{dataset_id}/model/generate-suggestions",
+    summary="Compute relationship diff without persisting — backbone of the review modal",
+)
+def generate_join_suggestions_endpoint(
+    dataset_id: int,
+    payload: dict | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Non-destructive counterpart to /generate-model.
+
+    Returns kept/recommended/obsolete/warnings without touching the model so
+    the builder can review and apply selectively. Pass {"deep_scan": true}
+    to opt into column-overlap probes that catch joins missed by the FK
+    constraint and name-heuristic passes.
+    """
+    from app.services.dataset_model_service import generate_join_suggestions
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    deep_scan = bool((payload or {}).get("deep_scan"))
+    try:
+        return generate_join_suggestions(db, dataset_id, deep_scan=deep_scan)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to generate suggestions for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/{dataset_id}/model/joins/batch",
+    summary="Apply a batch of reviewed relationship suggestions",
+)
+def apply_join_suggestions_endpoint(
+    dataset_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Body: {"selections": [...]} where each item carries from_view, to_view,
+    from_columns, to_columns, relationship.
+    """
+    from app.services.dataset_model_service import apply_join_suggestions
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    selections = payload.get("selections") or []
+    if not isinstance(selections, list):
+        raise HTTPException(status_code=422, detail="selections must be a list")
+
+    try:
+        return apply_join_suggestions(db, dataset_id, selections)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to apply suggestions for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/{dataset_id}/model/joins/reject",
+    summary="Persist tombstones for suggestions the builder declined",
+)
+def reject_join_suggestions_endpoint(
+    dataset_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Body: {"rejections": [...]} — same shape items as apply, but they go
+    into SemanticModel.settings.rejected_auto_joins so they stop showing up
+    in future suggestion runs.
+    """
+    from app.services.dataset_model_service import add_rejected_suggestions
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    rejections = payload.get("rejections") or []
+    if not isinstance(rejections, list):
+        raise HTTPException(status_code=422, detail="rejections must be a list")
+
+    try:
+        return add_rejected_suggestions(db, dataset_id, rejections)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete(
+    "/{dataset_id}/model/joins/reject",
+    summary="Clear all suggestion tombstones — used by the 'Reset rejections' button",
+)
+def clear_rejected_suggestions_endpoint(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.dataset_model_service import clear_rejected_suggestions
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    try:
+        return clear_rejected_suggestions(db, dataset_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
     "/{dataset_id}/model/joins/suggestion",
     summary="Suggest and validate a relationship between two tables",
 )

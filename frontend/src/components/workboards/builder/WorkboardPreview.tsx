@@ -113,7 +113,7 @@ export default function WorkboardPreview({ workboard }: Props) {
           <p>
             Create a workspace in Settings → Workspaces. The default mode is{' '}
             <code className="rounded bg-warning/20 px-1">public_app_users</code>{' '}
-            (requires selecting a user table in the dataset for the mini-app).
+            (uses the mini-app users managed in the Workboard builder).
           </p>
         </div>
       </div>
@@ -162,8 +162,8 @@ export default function WorkboardPreview({ workboard }: Props) {
               className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
             />
             <p className="mt-1 text-caption text-text-tertiary">
-              Enter a real username from the workspace app_users table, or leave
-              it blank so the backend picks the first active user.
+              Enter a real username from this Workboard, or leave it blank so
+              the backend picks the first active app user.
             </p>
           </>
         ) : (
@@ -215,7 +215,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         )}
 
         <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-caption text-text-tertiary">
-          Preview uses the selected workspace app users table, so it does not depend on a fixed sample username.
+          Preview uses the Workboard app users selected by role, so it does not depend on a fixed sample username.
         </div>
       </aside>
 

@@ -33,6 +33,7 @@ from app.modules.workboards.models import (
     WorkboardAppUser,
     WorkboardWorkspace,
 )
+from app.modules.workboards.permissions import require_dataset_binding_access
 from app.modules.workboards.roles import is_owner_role, normalize_app_user_role
 from app.modules.workboards.schemas import (
     AppUserCreate,
@@ -120,6 +121,7 @@ def create_workboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("workboards", "edit")),
 ):
+    require_dataset_binding_access(db, current_user, payload.dataset_id)
     try:
         wb = WorkboardService.create(db, payload, owner_id=current_user.id)
     except ValueError as exc:
@@ -168,6 +170,13 @@ def update_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    patch = payload.model_dump(exclude_unset=True)
+    if any(field in patch for field in ("dataset_id", "primary_table_id", "layout_json")):
+        require_dataset_binding_access(
+            db,
+            current_user,
+            patch.get("dataset_id") or wb.dataset_id,
+        )
     try:
         updated = WorkboardService.update(db, workboard_id, payload)
     except ValueError as exc:
@@ -240,6 +249,7 @@ def publish_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     wb = WorkboardService.refresh_schema_defaults(db, wb)
     wb.is_published = True
     db.commit()
@@ -300,6 +310,7 @@ def audit_workboard(
 
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     issues: list[dict[str, Any]] = []
 
@@ -401,7 +412,46 @@ def audit_workboard(
 
         cols = _column_set(table_id) if kind != "dashboard" else set()
 
-        # 2. Per-kind column references
+        # 2. App-user row access must be explicit for every data screen.
+        if kind != "dashboard":
+            raw_rls_rules = screen.get("rls")
+            rls_rules = raw_rls_rules if isinstance(raw_rls_rules, list) else []
+            rls_default = screen.get("rls_default")
+            if not rls_rules and not isinstance(rls_default, dict):
+                _add(
+                    severity="warning",
+                    code="missing_app_user_rls",
+                    detail=(
+                        "Screen has no app-user row access rule or default. "
+                        "Standard app users are denied until RLS is configured."
+                    ),
+                    screen=screen,
+                )
+
+            rls_to_check = [
+                (f"role '{rule.get('role') or ''}'", rule)
+                for rule in rls_rules
+                if isinstance(rule, dict)
+            ]
+            if isinstance(rls_default, dict):
+                rls_to_check.append(("default", rls_default))
+            for rule_label, rule in rls_to_check:
+                if rule.get("unrestricted"):
+                    continue
+                filter_column = str(rule.get("filter_column") or "").strip()
+                if filter_column and filter_column not in cols:
+                    _add(
+                        severity="error",
+                        code="missing_rls_filter_column",
+                        detail=(
+                            f"RLS {rule_label} filters on missing column "
+                            f"'{filter_column}'."
+                        ),
+                        screen=screen,
+                        context={"column": filter_column, "rule": rule_label},
+                    )
+
+        # 3. Per-kind column references
         if kind == "form":
             form_spec = screen.get("form") or {}
             for index, field in enumerate(form_spec.get("fields") or []):
@@ -501,6 +551,28 @@ def audit_workboard(
                         )
                         continue
                 block_cols = _column_set(effective_table_id)
+                if effective_table_id and int(effective_table_id) != int(table_id):
+                    for rule_label, rule in rls_to_check:
+                        if rule.get("unrestricted"):
+                            continue
+                        filter_column = str(rule.get("filter_column") or "").strip()
+                        if filter_column and filter_column not in block_cols:
+                            _add(
+                                severity="error",
+                                code="missing_doc_rls_filter_column",
+                                detail=(
+                                    f"Doc data_table block #{block_index} sources "
+                                    f"table {effective_table_id}, but RLS {rule_label} "
+                                    f"filters on missing column '{filter_column}'."
+                                ),
+                                screen=screen,
+                                context={
+                                    "block_index": block_index,
+                                    "source": source,
+                                    "column": filter_column,
+                                    "rule": rule_label,
+                                },
+                            )
                 for col in block.get("columns") or []:
                     if col and col not in block_cols:
                         _add(
@@ -543,6 +615,63 @@ def audit_workboard(
         "ok": not any(issue["severity"] == "error" for issue in issues),
         "issues": issues,
     }
+
+
+@router.get("/{workboard_id}/access-audit")
+def access_audit_workboard(
+    workboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Per-table access-mode audit (Phase-16).
+
+    Classifies every DatasetTable that backs a screen into one of:
+    per_user, joined_through, shared, unknown — see access_mode_service
+    for definitions. The App-users tab consumes this to render precise
+    banners instead of a single "needs miniapp_user" message.
+    """
+    from app.modules.workboards.services.access_mode_service import (
+        audit_workboard_access,
+    )
+
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
+
+    return audit_workboard_access(db, workboard=wb)
+
+
+@router.put("/{workboard_id}/tables/{table_id}/miniapp-share")
+def set_table_miniapp_share(
+    workboard_id: int,
+    table_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Toggle the `miniapp_share` flag on a DatasetTable.
+
+    Builder uses this from the access-audit banner to mark a table as
+    "shared / public reference data" so the audit stops warning about
+    it. Edit-rights on the workboard's dataset are required.
+    """
+    from app.models.dataset import DatasetTable as _DatasetTable
+
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
+
+    table = (
+        db.query(_DatasetTable)
+        .filter(_DatasetTable.id == table_id, _DatasetTable.dataset_id == wb.dataset_id)
+        .first()
+    )
+    if table is None:
+        raise HTTPException(status_code=404, detail="Table not found in dataset")
+    table.miniapp_share = bool(payload.get("shared"))
+    db.commit()
+    db.refresh(table)
+    return {"table_id": table.id, "miniapp_share": table.miniapp_share}
 
 
 @router.post("/{workboard_id}/screens/{screen_id}/test-js")
@@ -651,6 +780,7 @@ def create_public_link(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     if not wb.is_published:
         wb = WorkboardService.refresh_schema_defaults(db, wb)
         wb.is_published = True
@@ -676,6 +806,7 @@ def update_public_link(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     updated = WorkboardPublicLinkService.update_link(
         db,
         wb,
@@ -733,6 +864,7 @@ def export_workboard_template(
 ):
     wb = _get_or_404(db, workboard_id)
     require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
     bundle = _template_svc.export_workboard(
         db, wb, include_credentials=include_credentials
     )
@@ -821,6 +953,7 @@ def import_workboard_template(
     "imported, but X table needs wiring" notification.
     """
     target_workspace: WorkboardWorkspace | None = None
+    require_dataset_binding_access(db, current_user, payload.target_dataset_id)
     if payload.target_workspace_id is not None:
         _ensure_can_attach_workspace(current_user)
         target_workspace = (
@@ -973,6 +1106,7 @@ def create_app_user(
 
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     username = payload.username.strip()
     if not username:
@@ -1026,6 +1160,7 @@ def update_app_user(
 
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     user = (
         db.query(WorkboardAppUser)
@@ -1094,6 +1229,7 @@ def delete_app_user(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     user = (
         db.query(WorkboardAppUser)
@@ -1122,7 +1258,7 @@ def delete_app_user(
 def import_auto_map(
     body: _AutoMapRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "edit")),
+    current_user: User = Depends(require_permission("workboards", "edit")),
 ):
     """Suggest table + column mappings from a bundle's source schema to a
     target dataset, using an LLM.
@@ -1139,6 +1275,7 @@ def import_auto_map(
     import json as _json
     import re as _re
 
+    require_dataset_binding_access(db, current_user, body.target_dataset_id)
     bundle = body.bundle or {}
     tables_meta = bundle.get("tables_meta") or {}
     if not isinstance(tables_meta, dict) or not tables_meta:

@@ -10,9 +10,9 @@ AppBI logged-in users (admins opening the workboard inside the AppBI shell
 for preview / debugging) bypass RLS entirely — object-level permission
 checks in the API layer still apply.
 
-If RLS rules exist for a screen but no matching rule is found for the
-caller's role *and* no default exists, the engine fails closed: list
-queries return zero rows and writes are denied.
+App-user RLS is fail-closed. Owner roles bypass row filters. Admin/user
+roles need either a matching screen rule or an explicit ``rls_default``;
+without one list queries return zero rows and writes are denied.
 """
 from __future__ import annotations
 
@@ -65,7 +65,12 @@ def identity_from_appbi(user) -> CallerIdentity:
 
 
 def identity_from_app_user(app_user_payload: Dict[str, Any]) -> CallerIdentity:
-    return CallerIdentity(app_user=dict(app_user_payload or {}))
+    payload = dict(app_user_payload or {})
+    if payload.get("_internal"):
+        return CallerIdentity(
+            appbi_user_id=str(payload.get("username") or "internal-preview")
+        )
+    return CallerIdentity(app_user=payload)
 
 
 # ── Rule resolution ───────────────────────────────────────────────────────
@@ -88,6 +93,13 @@ def _resolve_placeholder(value: Any, identity: CallerIdentity) -> Any:
     if key == "username":
         return identity.app_user.get("username")
     return identity.app_user.get(key)
+
+
+def _as_filter_values(value: Any) -> Optional[List[Any]]:
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    values = [item for item in value if item not in (None, "")]
+    return values
 
 
 def _pick_rule(
@@ -126,20 +138,18 @@ def build_rls_filter(
       matching rule and no default). The runtime should return an empty
       result without executing the query in that case.
 
-    When no rules exist (empty list and no default), returns ``([], True)``
-    — the screen is unrestricted.
+    When no rules exist (empty list and no default), normal app users are
+    denied until the builder adds a rule or an explicit default.
     """
-    # No rules configured → unrestricted.
-    if not rules and default is None:
-        return [], True
-
-    # AppBI admin opening the workboard for preview — RLS does not apply.
+    # AppBI staff opening the builder/preview bypass app-user row filters.
     if not identity.is_app_user:
         return [], True
 
-    # Owner role bypasses RLS on its workboard.
     if is_owner_role(identity.role):
         return [], True
+
+    if not rules and default is None:
+        return [], False
 
     rule = _pick_rule(rules, default, identity)
     if rule is None:
@@ -154,6 +164,22 @@ def build_rls_filter(
 
     resolved = _resolve_placeholder(rule.filter_value, identity)
     if resolved is None:
+        return [], False
+    filter_values = _as_filter_values(resolved)
+    if filter_values is not None:
+        if not filter_values:
+            return [], False
+        return (
+            [
+                {
+                    "field": rule.filter_column,
+                    "operator": "in",
+                    "value": filter_values,
+                }
+            ],
+            True,
+        )
+    if isinstance(resolved, dict):
         return [], False
     return (
         [
@@ -182,16 +208,17 @@ def enforce_write_access(
     Returns a sanitised copy of ``row_values`` with any read-only columns
     stripped out. Raises :class:`RlsDenied` if the caller is forbidden.
     """
-    # No rules configured → unrestricted.
-    if not rules and default is None:
-        return dict(row_values or {})
-
-    # AppBI admin — object-level permission checks gate the write.
+    # AppBI staff are gated by the authenticated Workboard API.
     if not identity.is_app_user:
         return dict(row_values or {})
 
     if is_owner_role(identity.role):
         return dict(row_values or {})
+
+    if not rules and default is None:
+        raise RlsDenied(
+            "No app-user data access rule is configured for this screen."
+        )
 
     rule = _pick_rule(rules, default, identity)
     if rule is None:
@@ -212,7 +239,26 @@ def enforce_write_access(
     if op == "insert" and rule.filter_column and not rule.unrestricted:
         forced = _resolve_placeholder(rule.filter_value, identity)
         if forced is not None:
-            cleaned[rule.filter_column] = forced
+            filter_values = _as_filter_values(forced)
+            if filter_values is not None:
+                if not filter_values:
+                    raise RlsDenied("Your role has no writable data scope.")
+                current = cleaned.get(rule.filter_column)
+                if current in (None, ""):
+                    if len(filter_values) == 1:
+                        cleaned[rule.filter_column] = filter_values[0]
+                    else:
+                        raise RlsDenied(
+                            "Choose a value inside your data scope before saving."
+                        )
+                elif current not in filter_values and str(current) not in {
+                    str(item) for item in filter_values
+                }:
+                    raise RlsDenied("Inserted row is outside your data scope.")
+            elif isinstance(forced, dict):
+                raise RlsDenied("Invalid app-user data scope.")
+            else:
+                cleaned[rule.filter_column] = forced
 
     if rule.readonly_columns:
         for col in rule.readonly_columns:

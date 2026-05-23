@@ -291,6 +291,23 @@ export const workboardApi = {
     await apiClient.delete(`/workboards/${workboardId}/app-users/${appUserId}`);
   },
 
+  // ── Phase-16: access-mode audit ────────────────────────────────────
+  getAccessAudit: async (workboardId: number): Promise<WorkboardAccessAudit> => {
+    const { data } = await apiClient.get(`/workboards/${workboardId}/access-audit`);
+    return data;
+  },
+  setTableMiniappShare: async (
+    workboardId: number,
+    tableId: number,
+    shared: boolean,
+  ): Promise<{ table_id: number; miniapp_share: boolean }> => {
+    const { data } = await apiClient.put(
+      `/workboards/${workboardId}/tables/${tableId}/miniapp-share`,
+      { shared },
+    );
+    return data;
+  },
+
   // ── AI auto-map for import ─────────────────────────────────────────
   autoMapImport: async (
     bundle: Record<string, unknown>,
@@ -307,6 +324,40 @@ export const workboardApi = {
     return data;
   },
 };
+
+export type AccessMode = 'per_user' | 'joined_through' | 'shared' | 'unknown';
+
+export interface AccessChainHop {
+  from_view: string;
+  to_view: string;
+  from_columns: string[];
+  to_columns: string[];
+  relationship?: string;
+  direction?: 'forward' | 'reverse';
+}
+
+export interface AccessAuditEntry {
+  table_id: number;
+  table_name: string;
+  mode: AccessMode;
+  reason: string;
+  chain?: AccessChainHop[];
+  screens: { screen_id: string; screen_title: string }[];
+  legacy_rules: {
+    screen_id: string;
+    screen_title: string;
+    role?: string | null;
+    filter_column: string;
+    filter_value?: unknown;
+  }[];
+}
+
+export interface WorkboardAccessAudit {
+  workboard_id: number;
+  dataset_id: number;
+  tables: AccessAuditEntry[];
+  summary: Record<AccessMode, number>;
+}
 
 export interface WorkboardAppUserResponse {
   id: number;

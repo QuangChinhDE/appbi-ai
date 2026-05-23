@@ -2,23 +2,22 @@
  * RlsEditor — per-screen, per-role row-level rules.
  *
  * Convention enforced here:
- *   - "owner" never appears in the role dropdown — owners are full-access
- *     by definition (see backend roles.is_owner_role).
- *   - Selecting "admin" auto-checks `unrestricted` and locks the filter
- *     fields. Admins are operations users; restricting their data view
- *     by row is rarely what people want and the backend treats them as
- *     unrestricted by default anyway.
- *   - Default new rule role is "user" with `{{app_user.username}}` as the
- *     filter value, which is the common case.
+ *   - Every fact table must carry a fixed `miniapp_user` column whose value is
+ *     the username of the row owner. RLS rules default to filtering on that
+ *     column, so builders no longer pick `filter_column` for fact data.
+ *   - "owner" never appears in the role dropdown — owners are full-access by
+ *     definition (see backend roles.is_owner_role).
+ *   - Admin scope still uses {{app_user.scope_usernames}} so one admin sees
+ *     their branch; mark the rule unrestricted when a role should see every
+ *     row.
  */
 'use client';
 
-import React from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Info, Plus, Trash2 } from 'lucide-react';
 
 import { buildAppUserRoleOptions, normalizeAppUserRole } from './appUserRoles';
 import {
-  BUILDER_GRID_2,
   BuilderActionButton,
   BuilderIconButton,
   BuilderSubsection,
@@ -26,9 +25,20 @@ import {
 import { FixedExpressionInput, type SelectOption } from './BuilderValueControls';
 import type { ScreenRlsRuleSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import {
+  type AccessAuditEntry,
+  type AccessMode,
+  workboardApi,
+} from '@/lib/api/workboards';
+
+const MINIAPP_USER_COLUMN = 'miniapp_user';
 
 const RLS_FILTER_VAR_OPTIONS: SelectOption[] = [
-  { value: '{{app_user.username}}', label: 'Signed-in user - username' },
+  { value: '{{app_user.username}}', label: 'Signed-in user - username (default)' },
+  { value: '{{app_user.scope_usernames}}', label: 'Visible users - username scope' },
+  { value: '{{app_user.direct_report_usernames}}', label: 'Direct reports - usernames' },
+  { value: '{{app_user.scope_admin_usernames}}', label: 'Visible admins - username scope' },
+  { value: '{{app_user.manager_username}}', label: 'Manager - username' },
   { value: '{{app_user.full_name}}', label: 'Signed-in user - full name' },
   { value: '{{app_user.role}}', label: 'Signed-in user - role' },
 ];
@@ -43,14 +53,45 @@ interface DatasetTableInfo {
 export default function RlsEditor({
   screen,
   tables,
+  workboardId,
   onChange,
 }: {
   screen: ScreenSpec;
   tables: DatasetTableInfo[];
+  workboardId?: number;
   onChange: (next: ScreenSpec) => void;
 }) {
   const rules = screen.rls || [];
   const tableCols = tables.find((t) => t.id === screen.table_id)?.columns || [];
+  const hasMiniappUserColumn = tableCols.some(
+    (col) => col.name === MINIAPP_USER_COLUMN,
+  );
+
+  const [auditEntry, setAuditEntry] = useState<AccessAuditEntry | null>(null);
+
+  useEffect(() => {
+    if (!workboardId || !screen.table_id) {
+      setAuditEntry(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const audit = await workboardApi.getAccessAudit(workboardId);
+        if (cancelled) return;
+        setAuditEntry(
+          audit.tables.find((t) => t.table_id === screen.table_id) ?? null,
+        );
+      } catch {
+        if (!cancelled) setAuditEntry(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workboardId, screen.table_id]);
+
+  const accessMode: AccessMode | null = auditEntry?.mode ?? null;
 
   const update = (idx: number, patch: Partial<ScreenRlsRuleSpec>) => {
     const next = [...rules];
@@ -60,7 +101,7 @@ export default function RlsEditor({
   const add = () => {
     const fresh: ScreenRlsRuleSpec = {
       role: 'user',
-      filter_column: null,
+      filter_column: MINIAPP_USER_COLUMN,
       filter_value: '{{app_user.username}}',
       can_create: true,
       can_update: true,
@@ -76,31 +117,40 @@ export default function RlsEditor({
       <div className="mb-3 rounded-md border border-info/20 bg-info/5 p-2.5 text-caption text-text-secondary">
         <p className="font-emphasis text-text-primary">Role-based data access rules</p>
         <p className="mt-0.5">
-          Each rule tells one <em>role</em> (user / admin / ...) which rows it can
-          view, create, update, or delete. By default, Owner and Admin see every
-          row. Other roles only see rows where the <em>filter column</em> matches
-          the <em>match value</em>.
+          Mỗi rule gán cho một <em>role</em> (user / admin / …) quyền view /
+          create / update / delete trên các dòng. Owner luôn thấy mọi dòng;
+          admin/user chỉ thấy dòng khớp rule (trừ khi tick &quot;Unrestricted&quot;).
         </p>
         <p className="mt-1 text-[11px] text-text-tertiary">
-          Example: filter column <code className="font-mono">created_by</code> + match value{' '}
-          <code className="font-mono">{'{{app_user.username}}'}</code> = each
-          user only sees rows they created.
+          Convention: bảng fact phải có cột{' '}
+          <code className="font-mono">{MINIAPP_USER_COLUMN}</code> chứa username
+          của app user sở hữu dòng. RLS mặc định lọc{' '}
+          <code className="font-mono">{MINIAPP_USER_COLUMN}</code> ={' '}
+          <code className="font-mono">{'{{app_user.username}}'}</code>, không
+          cần builder chọn cột.
         </p>
       </div>
+
+      {screen.table_id && (
+        <AccessModeBanner
+          mode={accessMode}
+          hasMiniappUserColumn={hasMiniappUserColumn}
+          entry={auditEntry}
+        />
+      )}
 
       <div className="space-y-2">
         {rules.map((r, idx) => (
           <RuleCard
             key={idx}
             rule={r}
-            tableCols={tableCols}
             onChange={(patch) => update(idx, patch)}
             onRemove={() => remove(idx)}
           />
         ))}
         {rules.length === 0 && (
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-caption text-text-tertiary">
-            No rules yet. Default: only Owner / Admin can see every row; User sees
+            No rules yet. Default: only Owner can see every row; Admin/User see
             nothing until you add a rule.
           </p>
         )}
@@ -120,12 +170,10 @@ export default function RlsEditor({
 
 function RuleCard({
   rule,
-  tableCols,
   onChange,
   onRemove,
 }: {
   rule: ScreenRlsRuleSpec;
-  tableCols: { name: string; type?: string }[];
   onChange: (patch: Partial<ScreenRlsRuleSpec>) => void;
   onRemove: () => void;
 }) {
@@ -135,18 +183,12 @@ function RuleCard({
     (option) => option.value !== 'owner',
   );
   const normalizedRole = normalizeAppUserRole(rule.role) || 'user';
-  const isAdmin = normalizedRole === 'admin';
-  // Admin is treated as unrestricted regardless of stored value, so the UI
-  // mirrors that: checkbox is on and locked, filter fields are hidden.
-  const effectiveUnrestricted = isAdmin ? true : !!rule.unrestricted;
+  const effectiveUnrestricted = !!rule.unrestricted;
+  const legacyColumnInUse =
+    !!rule.filter_column && rule.filter_column !== MINIAPP_USER_COLUMN;
 
   const handleRoleChange = (nextRole: string) => {
-    const patch: Partial<ScreenRlsRuleSpec> = { role: nextRole };
-    if (normalizeAppUserRole(nextRole) === 'admin') {
-      patch.unrestricted = true;
-      patch.filter_column = null;
-    }
-    onChange(patch);
+    onChange({ role: nextRole });
   };
 
   return (
@@ -169,56 +211,55 @@ function RuleCard({
         </BuilderIconButton>
       </div>
 
-      {isAdmin ? (
-        <p className="mb-2 rounded-md border border-info/20 bg-info/5 px-2 py-1.5 text-caption text-text-secondary">
-          Admin sees every row by default - no filter column is needed.
-        </p>
-      ) : (
-        <label className="mb-2 flex items-center gap-1.5 text-caption text-text-secondary">
-          <input
-            type="checkbox"
-            checked={effectiveUnrestricted}
-            onChange={(e) => onChange({ unrestricted: e.target.checked })}
-            className="h-3 w-3"
-          />
-          Unrestricted (see every row)
-        </label>
-      )}
+      <label className="mb-2 flex items-center gap-1.5 text-caption text-text-secondary">
+        <input
+          type="checkbox"
+          checked={effectiveUnrestricted}
+          onChange={(e) => onChange({ unrestricted: e.target.checked })}
+          className="h-3 w-3"
+        />
+        Unrestricted (see every row)
+      </label>
 
       {!effectiveUnrestricted && (
         <>
-          <div className={BUILDER_GRID_2}>
-            <Lbl label="Filter column">
-              <select
-                value={rule.filter_column || ''}
-                onChange={(e) => onChange({ filter_column: e.target.value || null })}
-                className={INPUT}
+          <Lbl label={`Match value (filter on column ${MINIAPP_USER_COLUMN})`}>
+            <FixedExpressionInput
+              value={rule.filter_value}
+              onChange={(next) => onChange({ filter_value: next })}
+              fixedPlaceholder="e.g. HN, branch-01, ..."
+              expressionPlaceholder="e.g. {{app_user.username}}"
+              expressionOptions={RLS_FILTER_VAR_OPTIONS}
+            />
+          </Lbl>
+          {legacyColumnInUse && (
+            <p className="mt-1.5 rounded-md border border-warning/30 bg-warning/5 px-2 py-1.5 text-[11px] text-warning">
+              Rule này đang dùng cột{' '}
+              <code className="font-mono">{rule.filter_column}</code> (legacy).
+              Hãy chuyển dữ liệu sang cột{' '}
+              <code className="font-mono">{MINIAPP_USER_COLUMN}</code> và bấm{' '}
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    filter_column: MINIAPP_USER_COLUMN,
+                    filter_value: '{{app_user.username}}',
+                  })
+                }
+                className="font-emphasis underline hover:no-underline"
               >
-                <option value="">— pick a column —</option>
-                {tableCols.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </Lbl>
-            <Lbl label="Match value">
-              <FixedExpressionInput
-                value={rule.filter_value}
-                onChange={(next) => onChange({ filter_value: next })}
-                fixedPlaceholder="e.g. HN, branch-01, ..."
-                expressionPlaceholder="e.g. {{app_user.username}}"
-                expressionOptions={RLS_FILTER_VAR_OPTIONS}
-              />
-            </Lbl>
-          </div>
-          {rule.filter_column && rule.filter_value ? (
+                migrate sang miniapp_user
+              </button>
+              .
+            </p>
+          )}
+          {rule.filter_value && !legacyColumnInUse ? (
             <p className="mt-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[11px] text-text-secondary">
-              Role <strong>{normalizedRole}</strong> only sees rows where{' '}
+              Role <strong>{normalizedRole}</strong> chỉ thấy dòng có{' '}
               <code className="font-mono text-text-primary">
-                {rule.filter_column}
+                {MINIAPP_USER_COLUMN}
               </code>{' '}
-              ={' '}
+              khớp{' '}
               <code className="font-mono text-text-primary">
                 {String(rule.filter_value)}
               </code>
@@ -281,5 +322,140 @@ function RuleCard({
         </Lbl>
       </div>
     </BuilderSubsection>
+  );
+}
+
+function AccessModeBanner({
+  mode,
+  hasMiniappUserColumn,
+  entry,
+}: {
+  mode: AccessMode | null;
+  hasMiniappUserColumn: boolean;
+  entry: AccessAuditEntry | null;
+}) {
+  // Until the audit response arrives, fall back to the column check —
+  // covers the "still loading" gap so the banner doesn't flicker.
+  if (mode === null) {
+    if (hasMiniappUserColumn) return null;
+    return (
+      <div className="mb-3 rounded-md border border-warning/30 bg-warning/5 p-2.5 text-caption text-warning">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-emphasis">
+              Bảng nguồn chưa có cột{' '}
+              <code className="font-mono">{MINIAPP_USER_COLUMN}</code>
+            </p>
+            <p className="mt-0.5 text-text-secondary">
+              Audit đang tải — nếu bảng này là dim/shared, banner sẽ tắt sau khi
+              audit xong.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === 'per_user') {
+    return (
+      <div className="mb-3 rounded-md border border-success/30 bg-success/5 p-2.5 text-caption text-success">
+        <div className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-emphasis">
+              Per-user — RLS tự lọc qua{' '}
+              <code className="font-mono">{MINIAPP_USER_COLUMN}</code>
+            </p>
+            <p className="mt-0.5 text-text-secondary">
+              Builder không cần chọn cột lọc nữa. Bạn vẫn có thể tùy biến{' '}
+              <em>Match value</em> để mở rộng scope (vd. theo manager).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === 'shared') {
+    return (
+      <div className="mb-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2.5 text-caption text-text-secondary">
+        <div className="flex items-start gap-2">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-info" />
+          <div>
+            <p className="font-emphasis text-text-primary">
+              Bảng shared — không lọc theo user
+            </p>
+            <p className="mt-0.5">
+              Bảng được đánh dấu là reference/dim. Mọi app user đều thấy
+              toàn bộ dòng. Rule bạn thêm dưới đây vẫn áp dụng nếu muốn
+              giới hạn theo role (vd. chỉ admin xem được).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === 'joined_through') {
+    return (
+      <div className="mb-3 rounded-md border border-info/30 bg-info/5 p-2.5 text-caption text-info">
+        <div className="flex items-start gap-2">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-emphasis">
+              Quyền kế thừa qua quan hệ
+            </p>
+            <p className="mt-0.5 text-text-secondary">
+              Bảng này không có{' '}
+              <code className="font-mono">{MINIAPP_USER_COLUMN}</code> nhưng
+              nối với bảng fact qua model. Auto-RLS qua join chưa được engine
+              hỗ trợ — tạm thời rule sẽ chỉ chạy khi bạn nhập SQL thủ công
+              trong cột tùy biến phía dưới, hoặc cân nhắc thêm{' '}
+              <code className="font-mono">{MINIAPP_USER_COLUMN}</code> để
+              chuyển sang per-user.
+            </p>
+            {entry?.chain && entry.chain.length > 0 && (
+              <p className="mt-1 text-text-tertiary">
+                Chain:{' '}
+                {entry.chain.map((hop, idx) => (
+                  <span key={idx}>
+                    {idx > 0 ? ' → ' : ''}
+                    <code className="rounded bg-surface-2 px-1">
+                      {hop.from_view}.{hop.from_columns.join('+')}
+                    </code>{' '}
+                    ={' '}
+                    <code className="rounded bg-surface-2 px-1">
+                      {hop.to_view}.{hop.to_columns.join('+')}
+                    </code>
+                  </span>
+                ))}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // mode === 'unknown'
+  return (
+    <div className="mb-3 rounded-md border border-danger/30 bg-danger/5 p-2.5 text-caption text-danger">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div>
+          <p className="font-emphasis">
+            Bảng chưa rõ phân quyền theo user
+          </p>
+          <p className="mt-0.5 text-text-secondary">
+            Bảng không có cột{' '}
+            <code className="font-mono">{MINIAPP_USER_COLUMN}</code>, không có
+            relationship đến bảng fact nào có cột đó, và chưa được tick
+            shared. Mini-app sẽ trả 0 dòng cho non-owner. Vào tab{' '}
+            <strong>App users</strong> hoặc <strong>Model</strong> để xử lý.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }

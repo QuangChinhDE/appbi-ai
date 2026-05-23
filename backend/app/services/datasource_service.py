@@ -2551,6 +2551,376 @@ class DataSourceConnectionService:
             return []
 
     @staticmethod
+    def list_primary_keys(
+        ds_type: str,
+        config: Dict[str, Any],
+        table_names: List[str],
+    ) -> Dict[str, List[str]]:
+        """Phase-16 — fetch primary-key columns per table.
+
+        Returns ``{"schema.table": ["pk_col1", ...], ...}``. Tables with
+        composite PKs return the ordered list of columns. Tables with no
+        declared PK are absent. The relationship review modal uses this
+        to anchor pass 2 ("name match") on the real PK instead of
+        assuming `.id`, and to set cardinality correctly in pass 3 (a
+        column joining onto a PK is necessarily many_to_one).
+        """
+        from app.core.crypto import decrypt_config
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_list_primary_keys(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.MYSQL.value:
+            return DataSourceConnectionService._mysql_list_primary_keys(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.BIGQUERY.value:
+            return DataSourceConnectionService._bq_list_primary_keys(
+                decrypt_config(config), table_names
+            )
+        return {}
+
+    @staticmethod
+    def list_source_column_types(
+        ds_type: str,
+        config: Dict[str, Any],
+        table_names: List[str],
+    ) -> Dict[str, Dict[str, str]]:
+        """Phase-16 — fetch the source DB's declared column type per table.
+
+        Returns ``{"schema.table": {"col_name": "raw_db_type", ...}, ...}``.
+        The raw type is the value the DB returns in INFORMATION_SCHEMA
+        (e.g. "uuid", "bigint", "character varying", "varchar(36)") —
+        more discriminating than AppBI's normalised cache labels, which
+        collapse every numeric into "number" and every text into "string".
+        """
+        from app.core.crypto import decrypt_config
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_list_source_column_types(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.MYSQL.value:
+            return DataSourceConnectionService._mysql_list_source_column_types(
+                decrypt_config(config), table_names
+            )
+        if ds_type == DataSourceType.BIGQUERY.value:
+            return DataSourceConnectionService._bq_list_source_column_types(
+                decrypt_config(config), table_names
+            )
+        return {}
+
+    @staticmethod
+    def _pg_list_primary_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, List[str]]:
+        if not table_names:
+            return {}
+        pairs: List[tuple[str, str]] = []
+        for raw in table_names:
+            if "." in raw:
+                s, t = raw.split(".", 1)
+            else:
+                s, t = "public", raw
+            pairs.append((s.strip('"').strip("'"), t.strip('"').strip("'")))
+        if not pairs:
+            return {}
+        sql = """
+            SELECT
+                ns.nspname  AS schema_name,
+                tbl.relname AS table_name,
+                att.attname AS column_name,
+                src_attr.ord AS ord
+            FROM pg_constraint c
+            JOIN pg_class     tbl ON tbl.oid = c.conrelid
+            JOIN pg_namespace ns  ON ns.oid = tbl.relnamespace
+            JOIN unnest(c.conkey) WITH ORDINALITY AS src_attr(attnum, ord) ON TRUE
+            JOIN pg_attribute att
+                 ON att.attrelid = c.conrelid AND att.attnum = src_attr.attnum
+            WHERE c.contype = 'p'
+            ORDER BY ns.nspname, tbl.relname, src_attr.ord
+        """
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql)
+            allowed = {(s, t) for s, t in pairs}
+            out: Dict[str, List[str]] = {}
+            for schema_name, table_name, column_name, _ord in cur.fetchall():
+                if (schema_name, table_name) not in allowed:
+                    continue
+                key = f"{schema_name}.{table_name}"
+                out.setdefault(key, []).append(column_name)
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[pk_extract] Postgres PK query failed: {exc}")
+            return {}
+
+    @staticmethod
+    def _mysql_list_primary_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, List[str]]:
+        if not table_names:
+            return {}
+        db_name = config.get("database") or ""
+        bare_tables = []
+        for raw in table_names:
+            if "." in raw:
+                _, t = raw.split(".", 1)
+            else:
+                t = raw
+            bare_tables.append(t.strip('"').strip("'").strip("`"))
+        if not bare_tables:
+            return {}
+        placeholders = ",".join(["%s"] * len(bare_tables))
+        sql = f"""
+            SELECT
+                TABLE_SCHEMA,
+                TABLE_NAME,
+                COLUMN_NAME,
+                ORDINAL_POSITION
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE CONSTRAINT_NAME = 'PRIMARY'
+              AND TABLE_SCHEMA = %s
+              AND TABLE_NAME IN ({placeholders})
+            ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+        """
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"),
+                port=int(config.get("port", 3306)),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+                read_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql, [db_name, *bare_tables])
+            out: Dict[str, List[str]] = {}
+            for schema_name, table_name, column_name, _ord in cur.fetchall():
+                key = f"{schema_name}.{table_name}"
+                out.setdefault(key, []).append(column_name)
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[pk_extract] MySQL PK query failed: {exc}")
+            return {}
+
+    @staticmethod
+    def _bq_list_primary_keys(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, List[str]]:
+        if not table_names:
+            return {}
+        by_dataset: Dict[str, List[str]] = {}
+        for raw in table_names:
+            if "." in raw:
+                parts = raw.split(".")
+                if len(parts) == 2:
+                    ds, t = parts
+                elif len(parts) >= 3:
+                    ds = parts[-2]
+                    t = parts[-1]
+                else:
+                    continue
+            else:
+                continue
+            by_dataset.setdefault(ds.strip("`"), []).append(t.strip("`"))
+        if not by_dataset:
+            return {}
+        out: Dict[str, List[str]] = {}
+        try:
+            client = _build_bigquery_client(config)
+            project_id = config.get("project_id")
+            for ds_name, tables in by_dataset.items():
+                allowed = set(tables)
+                sql = f"""
+                    SELECT
+                      kcu.table_schema, kcu.table_name, kcu.column_name, kcu.ordinal_position
+                    FROM `{project_id}.{ds_name}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS` tc
+                    JOIN `{project_id}.{ds_name}.INFORMATION_SCHEMA.KEY_COLUMN_USAGE` kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                    WHERE tc.constraint_type = 'PRIMARY KEY'
+                    ORDER BY kcu.table_schema, kcu.table_name, kcu.ordinal_position
+                """
+                job = client.query(sql)
+                for row in job.result(timeout=30):
+                    schema_name = row["table_schema"]
+                    table_name = row["table_name"]
+                    if table_name not in allowed:
+                        continue
+                    key = f"{schema_name}.{table_name}"
+                    out.setdefault(key, []).append(row["column_name"])
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[pk_extract] BigQuery PK query failed: {exc}")
+            return {}
+
+    @staticmethod
+    def _pg_list_source_column_types(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, Dict[str, str]]:
+        if not table_names:
+            return {}
+        pairs: List[tuple[str, str]] = []
+        for raw in table_names:
+            if "." in raw:
+                s, t = raw.split(".", 1)
+            else:
+                s, t = "public", raw
+            pairs.append((s.strip('"').strip("'"), t.strip('"').strip("'")))
+        if not pairs:
+            return {}
+        sql = """
+            SELECT
+                table_schema,
+                table_name,
+                column_name,
+                data_type,
+                udt_name,
+                character_maximum_length
+            FROM information_schema.columns
+        """
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql)
+            allowed = {(s, t) for s, t in pairs}
+            out: Dict[str, Dict[str, str]] = {}
+            for schema_name, table_name, column_name, data_type, udt_name, char_max in cur.fetchall():
+                if (schema_name, table_name) not in allowed:
+                    continue
+                # Prefer udt_name for postgres-specific types (uuid, jsonb) —
+                # data_type collapses uuid into "uuid" already but for arrays
+                # it gives "ARRAY" which loses the element type.
+                resolved_type = str(udt_name or data_type or "").lower()
+                if char_max is not None and resolved_type in {"varchar", "character varying", "char", "character"}:
+                    resolved_type = f"{resolved_type}({int(char_max)})"
+                key = f"{schema_name}.{table_name}"
+                out.setdefault(key, {})[column_name] = resolved_type
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[type_extract] Postgres column types query failed: {exc}")
+            return {}
+
+    @staticmethod
+    def _mysql_list_source_column_types(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, Dict[str, str]]:
+        if not table_names:
+            return {}
+        db_name = config.get("database") or ""
+        bare_tables = []
+        for raw in table_names:
+            if "." in raw:
+                _, t = raw.split(".", 1)
+            else:
+                t = raw
+            bare_tables.append(t.strip('"').strip("'").strip("`"))
+        if not bare_tables:
+            return {}
+        placeholders = ",".join(["%s"] * len(bare_tables))
+        sql = f"""
+            SELECT
+                TABLE_SCHEMA,
+                TABLE_NAME,
+                COLUMN_NAME,
+                COLUMN_TYPE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME IN ({placeholders})
+        """
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"),
+                port=int(config.get("port", 3306)),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+                read_timeout=10,
+            )
+            cur = conn.cursor()
+            cur.execute(sql, [db_name, *bare_tables])
+            out: Dict[str, Dict[str, str]] = {}
+            for schema_name, table_name, column_name, column_type in cur.fetchall():
+                key = f"{schema_name}.{table_name}"
+                out.setdefault(key, {})[column_name] = str(column_type or "").lower()
+            cur.close()
+            conn.close()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[type_extract] MySQL column types query failed: {exc}")
+            return {}
+
+    @staticmethod
+    def _bq_list_source_column_types(
+        config: Dict[str, Any], table_names: List[str]
+    ) -> Dict[str, Dict[str, str]]:
+        if not table_names:
+            return {}
+        by_dataset: Dict[str, List[str]] = {}
+        for raw in table_names:
+            if "." in raw:
+                parts = raw.split(".")
+                if len(parts) == 2:
+                    ds, t = parts
+                elif len(parts) >= 3:
+                    ds = parts[-2]
+                    t = parts[-1]
+                else:
+                    continue
+            else:
+                continue
+            by_dataset.setdefault(ds.strip("`"), []).append(t.strip("`"))
+        if not by_dataset:
+            return {}
+        out: Dict[str, Dict[str, str]] = {}
+        try:
+            client = _build_bigquery_client(config)
+            project_id = config.get("project_id")
+            for ds_name, tables in by_dataset.items():
+                allowed = set(tables)
+                sql = f"""
+                    SELECT table_schema, table_name, column_name, data_type
+                    FROM `{project_id}.{ds_name}.INFORMATION_SCHEMA.COLUMNS`
+                """
+                job = client.query(sql)
+                for row in job.result(timeout=30):
+                    schema_name = row["table_schema"]
+                    table_name = row["table_name"]
+                    if table_name not in allowed:
+                        continue
+                    key = f"{schema_name}.{table_name}"
+                    out.setdefault(key, {})[row["column_name"]] = str(row["data_type"] or "").lower()
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[type_extract] BigQuery column types query failed: {exc}")
+            return {}
+
+    @staticmethod
     def _pg_list_columns(config: Dict[str, Any], schema: str, table: str) -> List[Dict[str, str]]:
         conn = cursor = None
         try:

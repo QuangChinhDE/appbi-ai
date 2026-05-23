@@ -6,10 +6,9 @@ identity owned by the workboard itself, *not* by any project dataset.
 
 Why this lives here and not in business data
 --------------------------------------------
-* Re-importing a dataset (e.g. updated Excel headers) used to silently
-  invalidate the workspace's ``app_users_config`` because the dataset
-  table id changed. With identity in AppBI's own DB that whole class of
-  drift just disappears.
+* Re-importing a dataset (e.g. updated Excel headers) used to invalidate
+  legacy dataset-backed user wiring when table ids changed. With identity
+  in AppBI's own DB that whole class of drift just disappears.
 * PIN hashes never travel through dataset previews / chart endpoints /
   shared link APIs, so misconfiguration can't leak credentials.
 * Schema is fixed (username/role/active/context); admins manage users
@@ -22,6 +21,7 @@ mini-apps the matched user can't run.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -50,6 +50,17 @@ _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _SESSION_TYPE = "workspace_app_user"
 _LOGIN_FAIL_WINDOW_MINUTES = 15
 _LOGIN_FAIL_THRESHOLD = 5
+_MANAGER_CONTEXT_KEYS = ("manager_username", "reports_to", "manager_usernames")
+_SCOPE_USER_CONTEXT_KEYS = (
+    "scope_usernames",
+    "managed_usernames",
+    "visible_usernames",
+)
+_SCOPE_ADMIN_CONTEXT_KEYS = (
+    "scope_admin_usernames",
+    "managed_admins",
+    "managed_admin_usernames",
+)
 
 
 # ── Hash helpers ──────────────────────────────────────────────────────────
@@ -108,7 +119,118 @@ def list_workspace_workboards(
 # ── Identity helpers ──────────────────────────────────────────────────────
 
 
-def app_user_to_payload(user: WorkboardAppUser) -> Dict[str, Any]:
+def _dedupe_strings(values: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _as_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return _as_string_list(parsed)
+        return _dedupe_strings([part.strip() for part in text.split(",")])
+    if isinstance(value, (list, tuple, set)):
+        return _dedupe_strings([str(item).strip() for item in value])
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _context_string_list(
+    context: Dict[str, Any],
+    keys: Tuple[str, ...],
+) -> List[str]:
+    values: List[str] = []
+    for key in keys:
+        values.extend(_as_string_list(context.get(key)))
+    return _dedupe_strings(values)
+
+
+def compute_scope_context(db: Session, user: WorkboardAppUser) -> Dict[str, Any]:
+    """Return computed mini-app hierarchy fields for an app user.
+
+    Stored app-user context remains the source of truth:
+    - manager_username/reports_to marks a direct parent.
+    - scope_admin_usernames/managed_admins grants visibility into other
+      admin branches.
+    - scope_usernames/managed_usernames grants explicit direct usernames.
+    """
+    if db is None or user is None:
+        return {}
+
+    rows: List[WorkboardAppUser] = (
+        db.query(WorkboardAppUser)
+        .filter(
+            WorkboardAppUser.workboard_id == user.workboard_id,
+            WorkboardAppUser.active.is_(True),
+        )
+        .all()
+    )
+    by_username = {row.username: row for row in rows if row.username}
+    children_by_manager: Dict[str, List[str]] = {}
+    for row in rows:
+        context = dict(row.context or {})
+        for manager in _context_string_list(context, _MANAGER_CONTEXT_KEYS):
+            children_by_manager.setdefault(manager, []).append(row.username)
+
+    own_context = dict(user.context or {})
+    manager_usernames = _context_string_list(own_context, _MANAGER_CONTEXT_KEYS)
+    direct_reports = _dedupe_strings(children_by_manager.get(user.username, []))
+
+    root_admins = _context_string_list(own_context, _SCOPE_ADMIN_CONTEXT_KEYS)
+    explicit_users = _context_string_list(own_context, _SCOPE_USER_CONTEXT_KEYS)
+    stack = _dedupe_strings([user.username, *root_admins, *explicit_users])
+    seen: set[str] = set()
+    scope_usernames: List[str] = []
+    scope_admin_usernames: List[str] = []
+
+    while stack:
+        username = stack.pop(0)
+        if username in seen:
+            continue
+        seen.add(username)
+        scope_usernames.append(username)
+
+        scoped_user = by_username.get(username)
+        if (
+            scoped_user is not None
+            and normalize_app_user_role(scoped_user.role) == "admin"
+        ):
+            scope_admin_usernames.append(username)
+
+        for child_username in children_by_manager.get(username, []):
+            if child_username not in seen:
+                stack.append(child_username)
+
+    return {
+        "manager_username": manager_usernames[0] if manager_usernames else None,
+        "manager_usernames": manager_usernames,
+        "direct_report_usernames": direct_reports,
+        "scope_usernames": scope_usernames,
+        "scope_admin_usernames": _dedupe_strings(scope_admin_usernames),
+    }
+
+
+def app_user_to_payload(
+    user: WorkboardAppUser,
+    scope_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Serialise a WorkboardAppUser row to the dict the runtime carries
     around in the JWT and feeds to RLS placeholders.
     """
@@ -122,6 +244,9 @@ def app_user_to_payload(user: WorkboardAppUser) -> Dict[str, Any]:
         # Don't let context overwrite the canonical identity keys.
         if k not in payload:
             payload[k] = v
+    for k, v in (scope_context or {}).items():
+        if k not in {"username", "role", "full_name", "workboard_id"}:
+            payload[k] = v
     return payload
 
 
@@ -133,7 +258,7 @@ def can_app_user_access_workboard(
     """True when the JWT identity is allowed to open ``workboard``.
 
     AppBI staff (preview/internal-mode sessions) bypass; otherwise the
-    identity must originate from this workboard's own users table —
+    identity must originate from this workboard's own app-user rows -
     confirmed by the ``workboard_id`` claim baked into the JWT at login.
     """
     if not isinstance(app_user, dict):
@@ -199,17 +324,19 @@ def create_session_token(
     workspace: WorkboardWorkspace,
     user: WorkboardAppUser,
     *,
+    db: Optional[Session] = None,
     extra_claims: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, int]:
     ttl = max(int(workspace.session_ttl_seconds or 28800), 60)
     now = datetime.now(timezone.utc)
+    scope_context = compute_scope_context(db, user) if db is not None else None
     payload: Dict[str, Any] = {
         "sub": user.username,
         "type": _SESSION_TYPE,
         "ws": workspace.token,
         "exp": now + timedelta(seconds=ttl),
         "iat": now,
-        "app_user": app_user_to_payload(user),
+        "app_user": app_user_to_payload(user, scope_context=scope_context),
     }
     if extra_claims:
         for key, value in extra_claims.items():

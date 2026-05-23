@@ -2608,3 +2608,1304 @@ def get_distinct_field_values(
     if datasource is None:
         raise ValueError("Data source not found")
     return fetch_live_values()
+
+
+# ===========================================================================
+# Phase-16 — Relationship review (non-destructive Gen-model)
+# ===========================================================================
+#
+# These helpers power POST /datasets/{id}/model/generate-suggestions.
+# The endpoint runs the same detection logic as generate_dataset_model but
+# never writes to the DB — it returns a diff the builder can review and
+# selectively apply through POST /model/joins/batch. Rejected suggestions
+# are persisted in SemanticModel.settings.rejected_auto_joins so they stop
+# resurfacing on later runs.
+
+
+# AppBI normalises every column type into one of a handful of semantic
+# labels (see app.schemas.dataset.ColumnMetadata.type) before caching it.
+# In particular: every numeric variant — int4, bigint, decimal, float —
+# lands as "number" / "numeric" / "integer", and every text variant lands
+# as "string" / "text". Earlier versions of this list only matched the
+# raw DB types, which meant pass 3 (deep scan) silently skipped every
+# column on a real AppBI dataset.
+_KEY_LIKE_NUMERIC_TYPES = {
+    "integer",
+    "int",
+    "int4",
+    "int8",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "number",        # AppBI semantic label for any numeric column
+    "numeric",
+    "decimal",
+    "long",
+    "serial",
+    "bigserial",
+}
+_KEY_LIKE_STRING_TYPES = {
+    "string",        # AppBI semantic label
+    "text",
+    "varchar",
+    "character varying",
+    "char",
+    "character",
+    "uuid",
+    "nvarchar",
+    "nchar",
+}
+_KEY_LIKE_STRING_MAX_LEN = 200  # raised from 64 — VN business keys are often >64 chars
+
+# Columns whose values look like keys but serve a different purpose and
+# must NOT be proposed as join candidates. `miniapp_user` is the
+# workboard RLS scope — many tables carry it with overlapping values
+# (the same user appears across fact tables) which fools the overlap
+# probe. Treating it as a join would silently force cross-product joins
+# in queries that should stay scoped.
+_RESERVED_NON_JOIN_COLUMNS = {"miniapp_user"}
+
+# Generic primary-key column names — when BOTH sides of a candidate
+# pair share one of these names (e.g. id↔id), the match is meaningless.
+# Two unrelated dim tables each have their own `id`; suggesting a join
+# would silently produce cross-joins. The real `<table>_id → <table>.id`
+# direction is already covered by pass 2 (name heuristic).
+_SAME_NAME_SKIP = {"id", "pk", "key", "_id", "uuid"}
+
+
+def _is_key_like_column(column: dict) -> bool:
+    """A column is "key-like" if its values look like identifiers we could
+    plausibly join on: bounded-length strings, uuids, or numeric types.
+
+    Floats are allowed too because AppBI stores all numerics under the
+    same "number" label — we can't tell decimals apart from integers
+    here. Date/time and booleans are excluded.
+    """
+    col_name = str(column.get("name") or "").strip().lower()
+    if col_name in _RESERVED_NON_JOIN_COLUMNS:
+        return False
+    raw_type = str(column.get("type") or column.get("data_type") or "").strip().lower()
+    if not raw_type:
+        # When type is unknown, don't preemptively reject — the overlap
+        # probe will tell us via SQL whether the values actually match.
+        return True
+    # Strip any "(length)" or " precision,scale" trailer that some
+    # introspectors leave on, e.g. "varchar(255)" or "numeric(10,2)".
+    base_type = raw_type.split("(", 1)[0].strip()
+    if base_type in _KEY_LIKE_NUMERIC_TYPES:
+        return True
+    if base_type in _KEY_LIKE_STRING_TYPES:
+        length_value = column.get("length") or column.get("character_maximum_length")
+        try:
+            if length_value is not None and int(length_value) > _KEY_LIKE_STRING_MAX_LEN:
+                return False
+        except (TypeError, ValueError):
+            pass
+        return True
+    # Date/datetime/boolean/blob — explicitly not key-like.
+    if base_type in {"date", "datetime", "timestamp", "time", "boolean", "bool", "yesno", "blob", "bytea"}:
+        return False
+    # Anything we don't recognise — let the probe decide.
+    return True
+
+
+def _columns_of_table(table: DatasetTable) -> list[dict]:
+    cc = table.columns_cache
+    if isinstance(cc, dict):
+        cols = cc.get("columns", [])
+    elif isinstance(cc, list):
+        cols = cc
+    else:
+        cols = []
+    return [c for c in cols if isinstance(c, dict) and c.get("name")]
+
+
+def _effective_column_meta(
+    column: dict,
+    table_id: int,
+    raw_types_by_table_id: Dict[int, Dict[str, str]],
+) -> dict:
+    """Return a column dict whose ``type`` is the raw DB type when
+    available, falling back to whatever the cache has.
+
+    AppBI's columns_cache stores a normalised semantic type
+    (``number`` / ``string`` / ``date`` / ``boolean``) that's too
+    coarse for join detection — every numeric collapses into the same
+    bucket. Raw DB types (``bigint``, ``uuid``, ``varchar(36)``,
+    ``numeric(10,2)``) discriminate much better, so when the table has
+    an introspectable datasource we use them.
+    """
+    raw_map = raw_types_by_table_id.get(table_id) or {}
+    col_name = str(column.get("name") or "")
+    raw_type = raw_map.get(col_name)
+    if not raw_type:
+        return column
+    enriched = dict(column)
+    enriched["type"] = raw_type
+    enriched["raw_type"] = raw_type
+    return enriched
+
+
+def _type_family(raw_type: str) -> str:
+    """Bucket a raw column type into 'numeric' / 'string' / 'other'."""
+    base = str(raw_type or "").strip().lower().split("(", 1)[0].strip()
+    if not base:
+        return "unknown"
+    if base in _KEY_LIKE_NUMERIC_TYPES:
+        return "numeric"
+    if base in _KEY_LIKE_STRING_TYPES:
+        return "string"
+    return "other"
+
+
+def _type_compat(a: dict, b: dict) -> bool:
+    """Two columns can be joined when they share a type family.
+
+    'unknown' (cache without a type tag) is treated as a wildcard so we
+    still probe — the SQL itself will reject incompatible casts. This
+    matters because some legacy tables have columns_cache entries
+    without a `type` field.
+    """
+    fam_a = _type_family(a.get("type") or a.get("data_type") or "")
+    fam_b = _type_family(b.get("type") or b.get("data_type") or "")
+    if fam_a == "other" or fam_b == "other":
+        return False
+    if fam_a == "unknown" or fam_b == "unknown":
+        return True
+    return fam_a == fam_b
+
+
+def _suggestion_signature(
+    from_view_name: str,
+    to_view_name: str,
+    from_columns: list[str],
+    to_columns: list[str],
+) -> tuple[str, str, tuple[tuple[str, str], ...]]:
+    return (
+        str(from_view_name),
+        str(to_view_name),
+        _join_pairs_signature(from_columns, to_columns),
+    )
+
+
+def _rejected_signatures(model: SemanticModel | None) -> set[tuple]:
+    """Tombstones live under SemanticModel.settings.rejected_auto_joins as
+    a list of {from_view, to_view, from_columns, to_columns}."""
+    if model is None or not isinstance(model.settings, dict):
+        return set()
+    raw = model.settings.get("rejected_auto_joins") or []
+    if not isinstance(raw, list):
+        return set()
+    out: set[tuple] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        from_cols = item.get("from_columns") or ([item["from_column"]] if item.get("from_column") else [])
+        to_cols = item.get("to_columns") or ([item["to_column"]] if item.get("to_column") else [])
+        if not from_cols or not to_cols:
+            continue
+        out.add(
+            _suggestion_signature(
+                str(item.get("from_view") or ""),
+                str(item.get("to_view") or ""),
+                [str(c) for c in from_cols],
+                [str(c) for c in to_cols],
+            )
+        )
+    return out
+
+
+def add_rejected_suggestions(
+    db: Session,
+    dataset_id: int,
+    rejections: list[dict],
+) -> dict:
+    """Persist tombstones the builder dismissed in the review modal."""
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        raise ValueError("Dataset has no semantic model yet")
+    settings_obj = dict(model.settings or {})
+    existing_raw = settings_obj.get("rejected_auto_joins") or []
+    if not isinstance(existing_raw, list):
+        existing_raw = []
+    existing_sigs = _rejected_signatures(model)
+    appended = 0
+    for item in rejections:
+        if not isinstance(item, dict):
+            continue
+        from_cols = item.get("from_columns") or []
+        to_cols = item.get("to_columns") or []
+        if not from_cols or not to_cols:
+            continue
+        sig = _suggestion_signature(
+            str(item.get("from_view") or ""),
+            str(item.get("to_view") or ""),
+            [str(c) for c in from_cols],
+            [str(c) for c in to_cols],
+        )
+        if sig in existing_sigs:
+            continue
+        existing_sigs.add(sig)
+        existing_raw.append(
+            {
+                "from_view": str(item.get("from_view") or ""),
+                "to_view": str(item.get("to_view") or ""),
+                "from_columns": [str(c) for c in from_cols],
+                "to_columns": [str(c) for c in to_cols],
+            }
+        )
+        appended += 1
+    settings_obj["rejected_auto_joins"] = existing_raw
+    model.settings = settings_obj
+    db.commit()
+    return {"rejected_count": len(existing_raw), "added": appended}
+
+
+def clear_rejected_suggestions(db: Session, dataset_id: int) -> dict:
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        raise ValueError("Dataset has no semantic model yet")
+    settings_obj = dict(model.settings or {})
+    cleared = len(settings_obj.get("rejected_auto_joins") or [])
+    settings_obj["rejected_auto_joins"] = []
+    model.settings = settings_obj
+    db.commit()
+    return {"cleared": cleared}
+
+
+class _ColumnDistinctCache:
+    """Per-Detect cache for distinct values of (view, column).
+
+    Strategy: fetch the entire table once, then extract distinct values
+    for any column in Python. This matters because:
+
+    - Postgres trivially handles per-column SELECT DISTINCT, so the
+      naive "one SQL per column" approach already works.
+    - Google Sheets is the opposite. Every execute_query against a
+      Sheets datasource loads ALL sheets in the spreadsheet through
+      one API read (see datasource_service Google Sheets path). With
+      the 60-reads-per-minute-per-user quota, fetching even 10 columns
+      across 3 tables blows past the limit in seconds.
+
+    So we run ONE `SELECT * FROM table LIMIT 5000` per view. That's
+    one datasource read regardless of how many columns the overlap
+    probe asks about. Distinct sets are computed once per (view,
+    column) request and memoised.
+
+    Side benefit: any view whose first fetch fails (quota or other
+    error) is marked failed — subsequent probes for that view skip
+    without further network calls.
+    """
+
+    SAMPLE_LIMIT = 5000  # cap rows per table; balances cost vs coverage
+
+    def __init__(self, db: Session, dataset_obj: Dataset, dataset_id: int) -> None:
+        self.db = db
+        self.dataset_obj = dataset_obj
+        self.dataset_id = dataset_id
+        # view.id -> list of rows (each row is dict col_name -> value)
+        self._rows_by_view: Dict[int, Optional[list[dict]]] = {}
+        # key (view.id, column) -> cached distinct set so we only compute once
+        self._distinct_cache: Dict[tuple[int, str], Optional[set[str]]] = {}
+        # cache view -> (datasource, live_table) so we don't re-resolve N times
+        self._resolved: Dict[int, Optional[tuple[Any, Any, Any]]] = {}
+        # remember which views had a fatal datasource error
+        self._failed_views: set[int] = set()
+        self.quota_warning_count: int = 0
+
+    @property
+    def datasource_reads(self) -> int:
+        """Number of full-table fetches that actually hit the datasource."""
+        return sum(1 for rows in self._rows_by_view.values() if rows is not None)
+
+    def get_distinct(self, view: SemanticView, column: str) -> Optional[set[str]]:
+        cache_key = (view.id, column)
+        if cache_key in self._distinct_cache:
+            return self._distinct_cache[cache_key]
+        if view.id in self._failed_views:
+            self._distinct_cache[cache_key] = None
+            return None
+        rows = self._load_view_rows(view)
+        if rows is None:
+            self._distinct_cache[cache_key] = None
+            return None
+        values: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = row.get(column)
+            if raw is None or raw == "":
+                continue
+            values.add(str(raw).strip())
+        self._distinct_cache[cache_key] = values
+        return values
+
+    def get_non_null_count(self, view: SemanticView, column: str) -> Optional[int]:
+        """How many non-null rows does this column have?
+
+        Used together with ``len(get_distinct(...))`` to decide whether
+        the column is unique inside its table. If non_null == distinct,
+        every row has a unique value → this column behaves like a PK and
+        anything joining onto it is many_to_one. This is what lets us
+        classify cardinality correctly when the DB does not declare a PK
+        (e.g. Google Sheets, ad-hoc Postgres tables).
+        """
+        rows = self._load_view_rows(view)
+        if rows is None:
+            return None
+        count = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = row.get(column)
+            if raw is None or raw == "":
+                continue
+            count += 1
+        return count
+
+    def _resolve(self, view: SemanticView) -> Optional[tuple[Any, Any, Any]]:
+        if view.id in self._resolved:
+            return self._resolved[view.id]
+        try:
+            triple = _resolve_semantic_view_table(
+                self.db,
+                dataset_obj=self.dataset_obj,
+                dataset_id=self.dataset_id,
+                view=view,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Overlap probe — view resolution failed (%s): %s",
+                view.name, exc,
+            )
+            self._failed_views.add(view.id)
+            self._resolved[view.id] = None
+            return None
+        self._resolved[view.id] = triple
+        return triple
+
+    def _load_view_rows(self, view: SemanticView) -> Optional[list[dict]]:
+        if view.id in self._rows_by_view:
+            return self._rows_by_view[view.id]
+        triple = self._resolve(view)
+        if triple is None:
+            self._rows_by_view[view.id] = None
+            return None
+        _, datasource, live_table = triple
+        from app.services.dataset_relation_service import resolve_dataset_table_relation
+        from app.services.datasource_service import DataSourceConnectionService
+
+        ds_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+        try:
+            relation = resolve_dataset_table_relation(datasource, live_table)
+        except Exception as exc:
+            logger.warning(
+                "Overlap probe — relation resolution failed (%s): %s",
+                view.name, exc,
+            )
+            self._rows_by_view[view.id] = None
+            return None
+        sql = f"SELECT * FROM ({relation.sql}) src LIMIT {self.SAMPLE_LIMIT}"
+        try:
+            _, rows, _ = DataSourceConnectionService.execute_query(
+                ds_type,
+                datasource.config,
+                sql,
+                timeout_seconds=15,
+            )
+        except Exception as exc:
+            message = str(exc)
+            if "429" in message or "quota" in message.lower() or "rate limit" in message.lower():
+                self._failed_views.add(view.id)
+                self.quota_warning_count += 1
+                logger.warning(
+                    "Overlap probe — datasource quota exceeded for view %s; "
+                    "abandoning probes against this view: %s",
+                    view.name, message,
+                )
+            else:
+                logger.warning(
+                    "Overlap probe — full-table fetch failed for %s: %s",
+                    view.name, message,
+                )
+            self._rows_by_view[view.id] = None
+            return None
+        rows = rows or []
+        self._rows_by_view[view.id] = rows
+        return rows
+
+    def probe_pair(
+        self,
+        from_view: SemanticView,
+        from_column: str,
+        to_view: SemanticView,
+        to_column: str,
+    ) -> Optional[dict]:
+        """Return the same overlap stats the legacy SQL probe returned."""
+        triple_a = self._resolve(from_view)
+        triple_b = self._resolve(to_view)
+        if triple_a is None or triple_b is None:
+            return None
+        # Cross-datasource joins still skipped — needs separate machinery
+        # the runtime doesn't have yet.
+        if triple_a[1].id != triple_b[1].id:
+            return None
+        from_values = self.get_distinct(from_view, from_column)
+        to_values = self.get_distinct(to_view, to_column)
+        if from_values is None or to_values is None:
+            return None
+        from_d = len(from_values)
+        to_d = len(to_values)
+        if from_d == 0 or to_d == 0:
+            return None
+        from_non_null = self.get_non_null_count(from_view, from_column) or 0
+        to_non_null = self.get_non_null_count(to_view, to_column) or 0
+        shared = len(from_values & to_values)
+        denom = min(from_d, to_d)
+        ratio = shared / denom if denom else 0.0
+        return {
+            "from_distinct": from_d,
+            "to_distinct": to_d,
+            # Tells the caller whether the column is unique within its
+            # table (non_null == distinct ⇒ acts like a PK). Without
+            # this we cannot tell many_to_one from one_to_many when the
+            # DB has no declared PK.
+            "from_non_null": from_non_null,
+            "to_non_null": to_non_null,
+            "shared_distinct": shared,
+            "overlap_ratio": ratio,
+        }
+
+
+def _prefetch_db_metadata(
+    db: Session,
+    tables: List[DatasetTable],
+) -> tuple[Dict[int, List[str]], Dict[int, Dict[str, str]]]:
+    """Fetch PK + raw column types from the source DB, keyed by table.id.
+
+    Returns ``(pk_by_table_id, raw_types_by_table_id)`` where:
+    - ``pk_by_table_id[table.id]`` is the list of PK columns (ordered)
+      for that table, when the source DB declares one.
+    - ``raw_types_by_table_id[table.id][col_name]`` is the raw DB type
+      string (e.g. "uuid", "bigint", "varchar(36)").
+
+    Tables without a usable datasource (derived/calendar/sql_query
+    against non-introspectable source, plus Google Sheets / manual)
+    don't appear in the returned dicts — callers fall back to the
+    cached `columns_cache` types.
+
+    Network calls are best-effort; any error is logged at WARNING and
+    the helper returns whatever it managed to collect.
+    """
+    from app.services.datasource_service import DataSourceConnectionService
+
+    pk_by_table_id: Dict[int, List[str]] = {}
+    raw_types_by_table_id: Dict[int, Dict[str, str]] = {}
+
+    by_ds: Dict[int, List[DatasetTable]] = {}
+    for t in tables:
+        if is_generated_calendar_table(t):
+            continue
+        if not getattr(t, "datasource_id", None) or not getattr(t, "source_table_name", None):
+            continue
+        if getattr(t, "source_kind", "physical_table") != "physical_table":
+            continue
+        by_ds.setdefault(int(t.datasource_id), []).append(t)
+    if not by_ds:
+        return pk_by_table_id, raw_types_by_table_id
+
+    for ds_id, group in by_ds.items():
+        ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds:
+            continue
+        ds_type = ds.type if isinstance(ds.type, str) else getattr(ds.type, "value", "")
+        if ds_type not in ("postgresql", "mysql", "bigquery"):
+            continue
+        source_names = [str(t.source_table_name) for t in group if t.source_table_name]
+        # PK extraction
+        try:
+            pk_map = DataSourceConnectionService.list_primary_keys(
+                ds_type=ds_type, config=ds.config, table_names=source_names,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[prefetch] PK extraction failed ds={ds_id}: {exc}")
+            pk_map = {}
+        # Raw column types
+        try:
+            types_map = DataSourceConnectionService.list_source_column_types(
+                ds_type=ds_type, config=ds.config, table_names=source_names,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[prefetch] type extraction failed ds={ds_id}: {exc}")
+            types_map = {}
+
+        # Re-key by table.id using source_table_name (with + without schema)
+        for t in group:
+            src = str(t.source_table_name or "").strip()
+            if not src:
+                continue
+            # Try the qualified key first, then bare table.
+            candidates = [src]
+            if "." in src:
+                candidates.append(src.split(".", 1)[1])
+            else:
+                # PG default schema = public; MySQL uses db_name as schema.
+                candidates.insert(0, f"public.{src}")
+                if ds_type == "mysql":
+                    db_name = (ds.config or {}).get("database")
+                    if db_name:
+                        candidates.insert(0, f"{db_name}.{src}")
+            for key in candidates:
+                if key in pk_map and t.id not in pk_by_table_id:
+                    pk_by_table_id[t.id] = list(pk_map[key])
+                if key in types_map and t.id not in raw_types_by_table_id:
+                    raw_types_by_table_id[t.id] = dict(types_map[key])
+
+    return pk_by_table_id, raw_types_by_table_id
+
+
+_CARDINALITY_CERTAINTY = {
+    "target_is_pk": 1.0,
+    "source_is_pk": 1.0,
+    "both_pk": 1.0,
+    "target_unique_in_data": 0.9,
+    "source_unique_in_data": 0.9,
+    "both_unique_in_data": 0.9,
+    "distinct_count_heuristic": 0.6,
+    "equal_distinct_count_ambiguous": 0.4,
+}
+
+
+def _cardinality_certainty(reasons: list[str]) -> float:
+    """Pick the lowest-certainty tag — that drives the confidence floor."""
+    if not reasons:
+        return 0.5
+    return min((_CARDINALITY_CERTAINTY.get(r, 0.7) for r in reasons), default=0.7)
+
+
+def _name_similarity_score(a: str, b: str) -> float:
+    """Rough 0..1 similarity between two column names.
+
+    Uses Jaccard over 3-char shingles after snake_case normalisation.
+    Cheap, works well for "ma_kh" vs "ma_khach_hang" (~0.6) and
+    "customer_id" vs "id_customer" (~0.7). Not a real string-similarity
+    library — we don't need it perfect, just enough to bubble obvious
+    pairs to the front of the probe queue.
+    """
+    a_norm = str(a or "").strip().lower()
+    b_norm = str(b or "").strip().lower()
+    if not a_norm or not b_norm:
+        return 0.0
+    if a_norm == b_norm:
+        return 1.0
+    # Build 3-char shingle sets (pad short strings).
+    def shingles(s: str) -> set[str]:
+        if len(s) < 3:
+            return {s}
+        return {s[i : i + 3] for i in range(len(s) - 2)}
+    sa, sb = shingles(a_norm), shingles(b_norm)
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+def _score_candidate_pair(
+    fc: dict,
+    tc: dict,
+    *,
+    fc_in_pk: bool,
+    tc_in_pk: bool,
+) -> float:
+    """Higher score = probe this pair earlier.
+
+    Signals (additive):
+    - PK side present → strong (DB tells us one side is unique)
+    - Column-name similarity → tables that have similar key names
+      usually intend to join (e.g. khach_hang.ma_kh ↔ don_hang.ma_kh)
+    - Either side contains "_id" / "_pk" / "_key" suffix → likely FK
+
+    Range roughly 0..3. The probe loop sorts descending and truncates
+    at MAX_PROBES.
+    """
+    score = 0.0
+    if tc_in_pk or fc_in_pk:
+        score += 1.5
+    score += _name_similarity_score(fc.get("name", ""), tc.get("name", ""))
+    fc_name = str(fc.get("name") or "").lower()
+    tc_name = str(tc.get("name") or "").lower()
+    fk_hint_suffixes = ("_id", "_pk", "_fk", "_key", "_no", "_code", "_ma")
+    if any(fc_name.endswith(s) for s in fk_hint_suffixes):
+        score += 0.4
+    if any(tc_name.endswith(s) for s in fk_hint_suffixes):
+        score += 0.4
+    return score
+
+
+def _infer_cardinality_from_probe(
+    *,
+    probe: dict,
+    from_in_pk: bool,
+    to_in_pk: bool,
+) -> tuple[str, list[str]]:
+    """Decide the join cardinality from probe stats + PK info.
+
+    Decision tree, most reliable first:
+
+    1. Declared single-column PK on one side (`from_in_pk` /
+       `to_in_pk`) — DB tells us which side is unique, trust it.
+    2. Inferred uniqueness from probed data — a column is "PK-like"
+       when its non-null row count equals its distinct count, i.e.
+       every value appears exactly once. This catches Sheets/CSV-style
+       tables where the source doesn't declare a PK but the data is in
+       fact unique.
+    3. Distinct-count heuristic as a last resort. Returned with a
+       "low confidence" tag so the caller can flag it.
+
+    Returns ``(relationship, reasons)``.
+    """
+    from_d = int(probe.get("from_distinct") or 0)
+    to_d = int(probe.get("to_distinct") or 0)
+    from_nn = int(probe.get("from_non_null") or 0)
+    to_nn = int(probe.get("to_non_null") or 0)
+
+    # Step 1: declared PK wins.
+    if to_in_pk and not from_in_pk:
+        return "many_to_one", ["target_is_pk"]
+    if from_in_pk and not to_in_pk:
+        return "one_to_many", ["source_is_pk"]
+    if from_in_pk and to_in_pk:
+        return "one_to_one", ["both_pk"]
+
+    # Step 2: data-inferred uniqueness. Each side is "unique-like" when
+    # non_null == distinct and at least 2 rows exist (1-row probes give
+    # no information).
+    from_unique = from_nn >= 2 and from_nn == from_d
+    to_unique = to_nn >= 2 and to_nn == to_d
+    if from_unique and not to_unique:
+        return "one_to_many", ["source_unique_in_data"]
+    if to_unique and not from_unique:
+        return "many_to_one", ["target_unique_in_data"]
+    if from_unique and to_unique:
+        return "one_to_one", ["both_unique_in_data"]
+
+    # Step 3: distinct-count heuristic — the side with FEWER distinct
+    # values is *likely* the dim (its values appear repeatedly on the
+    # other side). Marked low-confidence so the FE can flag for review.
+    if from_d < to_d:
+        return "one_to_many", ["distinct_count_heuristic"]
+    if to_d < from_d:
+        return "many_to_one", ["distinct_count_heuristic"]
+    return "many_to_one", ["distinct_count_heuristic", "equal_distinct_count_ambiguous"]
+
+
+def _resolve_target_pk_column(
+    pk_by_table_id: Dict[int, List[str]],
+    to_table: Optional[DatasetTable],
+    fallback: str = "id",
+) -> str:
+    """Pick the target column for a name-heuristic join.
+
+    The legacy heuristic hard-coded ``to_column = "id"``, which fails on
+    schemas where the PK is named ``ma_kh`` / ``user_uuid`` /
+    ``order_no``. When DB introspection found the real PK, prefer it.
+    Composite PKs fall back to the legacy behaviour because the FK
+    detection here is single-column anyway.
+    """
+    if to_table is None:
+        return fallback
+    pk_cols = pk_by_table_id.get(to_table.id) or []
+    if len(pk_cols) == 1:
+        return pk_cols[0]
+    return fallback
+
+
+def _generate_join_suggestions(
+    db: Session,
+    dataset_id: int,
+    *,
+    deep_scan: bool,
+) -> dict:
+    """Produce a diff between (a) joins currently saved on the model and
+    (b) what auto-detection would propose right now.
+
+    Output shape:
+      {
+        existing: [...],        # joins already on the model — status=kept
+        recommended: [...],     # joins we want to add — needs builder confirm
+        obsolete: [...],        # joins on the model that no longer make sense
+        warnings: [...],        # many-to-many, ambiguous, etc.
+        rejected_count: int,    # how many suggestions were skipped due to tombstones
+        deep_scan: bool,
+      }
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise ValueError(f"Dataset {dataset_id} not found")
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        raise ValueError(
+            "Dataset has no semantic model yet. Run Generate Model first, "
+            "then come back here to review suggestions."
+        )
+
+    tables: list[DatasetTable] = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id, DatasetTable.enabled == True)
+        .all()
+    )
+    table_by_id = {t.id: t for t in tables}
+    views = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id.in_([t.id for t in tables]))
+        .all()
+    )
+    table_views = {v.dataset_table_id: v for v in views if v.dataset_table_id}
+    views_by_name = {v.name: v for v in views}
+
+    rejected = _rejected_signatures(model)
+
+    # --- Prefetch source-DB metadata (PK + raw column types) ------------
+    # This is the "fast path" the user asked for: rather than relying on
+    # column-name guesses or AppBI's coarse cached type labels, we ask
+    # the source DB directly. One query per datasource collects PKs and
+    # raw types for every table in the dataset. We skip Google Sheets /
+    # manual / derived tables — they have no FK/PK metadata to read.
+    pk_by_table_id, raw_types_by_table_id = _prefetch_db_metadata(db, tables)
+
+    # Index from semantic-view name back to its DatasetTable, used to
+    # look up the table we need to query PK/types for.
+    table_by_view_name: Dict[str, DatasetTable] = {}
+    for view in views:
+        if view.dataset_table_id is None:
+            continue
+        tbl = next((t for t in tables if t.id == view.dataset_table_id), None)
+        if tbl is not None:
+            table_by_view_name[view.name] = tbl
+
+    # --- Existing joins on the model -------------------------------------
+    explores = (
+        db.query(SemanticExplore)
+        .filter(SemanticExplore.model_id == model.id)
+        .all()
+    )
+    existing_payload: list[dict] = []
+    existing_sigs: set[tuple] = set()
+    for explore in explores:
+        for join in explore.joins or []:
+            from_cols, to_cols = _join_columns_from_definition(join)
+            if not from_cols or not to_cols:
+                continue
+            sig = _suggestion_signature(
+                explore.base_view_name,
+                str(join.get("view") or ""),
+                from_cols,
+                to_cols,
+            )
+            if sig in existing_sigs:
+                continue
+            existing_sigs.add(sig)
+            existing_payload.append(
+                {
+                    "from_view": explore.base_view_name,
+                    "to_view": str(join.get("view") or ""),
+                    "from_columns": from_cols,
+                    "to_columns": to_cols,
+                    "relationship": join.get("relationship") or "many_to_one",
+                    "origin": join.get("origin") or "manual",
+                    "status": "kept",
+                }
+            )
+
+    # --- Pass 1 + 2: existing detection (FK + name heuristic) ------------
+    auto_joins_by_source = _detect_fk_joins(tables, table_views, db=db)
+    recommended: list[dict] = []
+    warnings: list[dict] = []
+    stats = {
+        "tables_scanned": len(tables),
+        "fk_constraints_found": 0,
+        "name_matches_found": 0,
+        "overlap_probes_run": 0,
+        "overlap_probes_hit": 0,
+        "overlap_probes_failed": 0,
+        "overlap_probes_below_threshold": 0,
+        "rejected_skipped": 0,
+        "already_existing_skipped": 0,
+        "key_like_columns_total": 0,
+        "tables_with_db_pk": len(pk_by_table_id),
+        "tables_with_raw_types": len(raw_types_by_table_id),
+        "datasource_reads": 0,
+        "quota_warnings": 0,
+    }
+
+    def _push_recommendation(rec: dict) -> None:
+        sig = _suggestion_signature(
+            rec["from_view"], rec["to_view"], rec["from_columns"], rec["to_columns"],
+        )
+        if sig in existing_sigs:
+            stats["already_existing_skipped"] += 1
+            return
+        if sig in rejected:
+            stats["rejected_skipped"] += 1
+            return
+        # Dedupe within the recommendations list itself
+        for prev in recommended:
+            if _suggestion_signature(
+                prev["from_view"], prev["to_view"], prev["from_columns"], prev["to_columns"]
+            ) == sig:
+                return
+        recommended.append(rec)
+
+    for from_view_name, joins in auto_joins_by_source.items():
+        for join in joins:
+            from_cols, to_cols = _join_columns_from_definition(join)
+            if not from_cols or not to_cols:
+                continue
+            origin = str(join.get("origin") or "auto_fk")
+            target_view_name = str(join.get("view") or "")
+            if origin == "auto_db_constraint":
+                stats["fk_constraints_found"] += 1
+                reasons = ["db_fk_constraint"]
+            else:
+                stats["name_matches_found"] += 1
+                reasons = ["column_name_match"]
+                # Override the hard-coded `.id` target when the DB
+                # declares a different single-column PK. Saves the
+                # builder from manual-fixing every `kh_id → ma_kh`
+                # style mismatch.
+                to_table = table_by_view_name.get(target_view_name)
+                if to_table is not None and len(to_cols) == 1 and to_cols[0] == "id":
+                    real_pk = _resolve_target_pk_column(pk_by_table_id, to_table, fallback="")
+                    if real_pk and real_pk != "id":
+                        to_cols = [real_pk]
+                        reasons.append("pk_resolved_from_db")
+            _push_recommendation(
+                {
+                    "from_view": from_view_name,
+                    "to_view": target_view_name,
+                    "from_columns": from_cols,
+                    "to_columns": to_cols,
+                    "relationship": join.get("relationship") or "many_to_one",
+                    "origin": origin,
+                    "confidence": 1.0 if origin == "auto_db_constraint" else 0.85,
+                    "reasons": reasons,
+                    "status": "new",
+                }
+            )
+
+    # --- Pass 2.5: same-name overlap probe -------------------------------
+    # Always-on, cheap version of deep scan. For every pair of tables, we
+    # probe columns that share the same NAME (case-insensitive after
+    # snake_case normalisation). This catches the common VN business
+    # pattern where the schema lacks FK declarations but uses a stable
+    # column name across tables (e.g. khach_hang.ma_kh shared with
+    # don_hang.ma_kh). Same column names with overlapping values is the
+    # single strongest signal we can act on without exploding the
+    # cartesian search space.
+    #
+    # Pass 2.5 specifically SKIPS generic primary-key column names like
+    # `id` / `pk` / `key`. Every table has its own `id` so a same-name
+    # match on `id` between two unrelated dim tables is meaningless —
+    # pass 2 already covers the real `<table>_id → <table>.id` flow.
+    #
+    # The cache used here is identical to the deep-scan cache so we don't
+    # double-load the data when both passes run.
+    distinct_cache = _ColumnDistinctCache(db, dataset_obj, dataset_id)
+    stats["same_name_pairs_probed"] = 0
+    stats["same_name_hits"] = 0
+
+    def _normalise_col_name(name: str) -> str:
+        return str(name or "").strip().lower()
+
+    sorted_tables = sorted(tables, key=lambda t: t.id)
+    for i, from_table in enumerate(sorted_tables):
+        from_view = table_views.get(from_table.id)
+        if from_view is None or from_table.id in distinct_cache._failed_views:
+            continue
+        from_col_list = [
+            _effective_column_meta(c, from_table.id, raw_types_by_table_id)
+            for c in _columns_of_table(from_table)
+        ]
+        from_col_list = [c for c in from_col_list if _is_key_like_column(c)]
+        from_by_norm = {_normalise_col_name(c["name"]): c for c in from_col_list}
+        from_pk_cols = pk_by_table_id.get(from_table.id) or []
+        from_pk_set = set(from_pk_cols) if len(from_pk_cols) == 1 else set()
+
+        for to_table in sorted_tables[i + 1:]:
+            to_view = table_views.get(to_table.id)
+            if to_view is None or to_table.id in distinct_cache._failed_views:
+                continue
+            to_col_list = [
+                _effective_column_meta(c, to_table.id, raw_types_by_table_id)
+                for c in _columns_of_table(to_table)
+            ]
+            to_col_list = [c for c in to_col_list if _is_key_like_column(c)]
+            to_by_norm = {_normalise_col_name(c["name"]): c for c in to_col_list}
+            to_pk_cols = pk_by_table_id.get(to_table.id) or []
+            to_pk_set = set(to_pk_cols) if len(to_pk_cols) == 1 else set()
+
+            shared_names = (set(from_by_norm) & set(to_by_norm)) - _SAME_NAME_SKIP
+            for norm_name in shared_names:
+                fc = from_by_norm[norm_name]
+                tc = to_by_norm[norm_name]
+                if not _type_compat(fc, tc):
+                    continue
+                sig_a = _suggestion_signature(
+                    from_view.name, to_view.name, [fc["name"]], [tc["name"]],
+                )
+                sig_b = _suggestion_signature(
+                    to_view.name, from_view.name, [tc["name"]], [fc["name"]],
+                )
+                if sig_a in existing_sigs or sig_b in existing_sigs:
+                    stats["already_existing_skipped"] += 1
+                    continue
+                if sig_a in rejected or sig_b in rejected:
+                    stats["rejected_skipped"] += 1
+                    continue
+                stats["same_name_pairs_probed"] += 1
+                probe = distinct_cache.probe_pair(
+                    from_view, fc["name"], to_view, tc["name"],
+                )
+                if probe is None:
+                    continue
+                if probe["overlap_ratio"] < 0.5:
+                    continue
+                stats["same_name_hits"] += 1
+                relationship, extra_reasons = _infer_cardinality_from_probe(
+                    probe=probe,
+                    from_in_pk=fc["name"] in from_pk_set,
+                    to_in_pk=tc["name"] in to_pk_set,
+                )
+                # Confidence floor follows the weakest signal we used —
+                # if we had to fall back to distinct-count heuristic,
+                # the suggestion can't be 100% even with 100% overlap.
+                confidence = min(
+                    probe["overlap_ratio"],
+                    _cardinality_certainty(extra_reasons),
+                )
+                _push_recommendation(
+                    {
+                        "from_view": from_view.name,
+                        "to_view": to_view.name,
+                        "from_columns": [fc["name"]],
+                        "to_columns": [tc["name"]],
+                        "relationship": relationship,
+                        "origin": "auto_same_name",
+                        "confidence": round(confidence, 3),
+                        "reasons": [
+                            "same_column_name",
+                            f"overlap_{int(probe['overlap_ratio'] * 100)}pct",
+                            *extra_reasons,
+                        ],
+                        "status": "new",
+                    }
+                )
+
+    # --- Pass 3: deep scan via column overlap probe ----------------------
+    # Pass 2.5 only probed same-name pairs. Pass 3 expands to type-compat
+    # cross-name probes (e.g. orders.user_id ↔ customers.id). Opt-in
+    # because the search space grows quickly with table/column count.
+    if deep_scan:
+        # Cap the cartesian product so a 30-table dataset can't issue
+        # tens of thousands of in-memory intersections. Note this cap
+        # protects the app process (CPU + latency), NOT the datasource —
+        # the cache makes every probe free at the datasource level.
+        # Bumped to 200 because per-app cost is ~1ms/probe; the bottleneck
+        # used to be Sheets quota which is now decoupled from probe count.
+        MAX_PROBES = 200
+        probes_run = 0
+        sorted_tables = sorted(tables, key=lambda t: t.id)
+        for i, from_table in enumerate(sorted_tables):
+            if probes_run >= MAX_PROBES:
+                warnings.append({
+                    "kind": "deep_scan_capped",
+                    "reason": f"Stopped after {MAX_PROBES} probes — narrow the dataset or rely on existing suggestions.",
+                })
+                break
+            from_view = table_views.get(from_table.id)
+            if from_view is None:
+                continue
+            from_cols = [
+                _effective_column_meta(c, from_table.id, raw_types_by_table_id)
+                for c in _columns_of_table(from_table)
+            ]
+            from_cols = [c for c in from_cols if _is_key_like_column(c)]
+            stats["key_like_columns_total"] += len(from_cols)
+            # Use only SINGLE-column PKs to assert uniqueness. A column
+            # that's one of several in a composite PK isn't unique on its
+            # own — treating it as a PK in cardinality detection would
+            # mark `chi_tiet_don_hang.ma_sp` (composite (ma_dh, ma_sp))
+            # as one_to_one with `san_pham.ma_sp`, which is wrong.
+            from_pk_cols = pk_by_table_id.get(from_table.id) or []
+            from_pk_set = set(from_pk_cols) if len(from_pk_cols) == 1 else set()
+            for to_table in sorted_tables[i + 1:]:
+                if probes_run >= MAX_PROBES:
+                    break
+                to_view = table_views.get(to_table.id)
+                if to_view is None:
+                    continue
+                to_cols = [
+                    _effective_column_meta(c, to_table.id, raw_types_by_table_id)
+                    for c in _columns_of_table(to_table)
+                ]
+                to_cols = [c for c in to_cols if _is_key_like_column(c)]
+                to_pk_cols = pk_by_table_id.get(to_table.id) or []
+                to_pk_set = set(to_pk_cols) if len(to_pk_cols) == 1 else set()
+                # Rank candidate pairs BEFORE probing so the MAX_PROBES
+                # budget covers the most likely matches first. Without
+                # this, a dataset with many noise columns can exhaust the
+                # budget on bad candidates and miss real relationships.
+                candidate_pairs: list[tuple[float, dict, dict]] = []
+                for fc in from_cols:
+                    for tc in to_cols:
+                        if not _type_compat(fc, tc):
+                            continue
+                        # Skip generic PK→PK same-name pairs (id↔id,
+                        # pk↔pk). Two unrelated dim tables both have
+                        # an `id` whose values happen to overlap, but
+                        # they don't actually join — pass 2 covers the
+                        # real `<table>_id → <table>.id` path.
+                        fc_lower = str(fc.get("name") or "").lower()
+                        tc_lower = str(tc.get("name") or "").lower()
+                        if (
+                            fc_lower in _SAME_NAME_SKIP
+                            and tc_lower in _SAME_NAME_SKIP
+                        ):
+                            continue
+                        score = _score_candidate_pair(
+                            fc, tc,
+                            fc_in_pk=fc["name"] in from_pk_set,
+                            tc_in_pk=tc["name"] in to_pk_set,
+                        )
+                        candidate_pairs.append((score, fc, tc))
+                candidate_pairs.sort(key=lambda x: x[0], reverse=True)
+                pair_hits: list[dict] = []
+                for _score, fc, tc in candidate_pairs:
+                    if probes_run >= MAX_PROBES:
+                        break
+                    sig_a = _suggestion_signature(
+                        from_view.name, to_view.name, [fc["name"]], [tc["name"]],
+                    )
+                    sig_b = _suggestion_signature(
+                        to_view.name, from_view.name, [tc["name"]], [fc["name"]],
+                    )
+                    if sig_a in existing_sigs or sig_b in existing_sigs:
+                        stats["already_existing_skipped"] += 1
+                        continue
+                    if sig_a in rejected or sig_b in rejected:
+                        stats["rejected_skipped"] += 1
+                        continue
+                    # If we already know either view's datasource
+                    # is throttled or unreachable, skip without
+                    # touching the network or the probe counter.
+                    if (
+                        from_view.id in distinct_cache._failed_views
+                        or to_view.id in distinct_cache._failed_views
+                    ):
+                        continue
+                    probes_run += 1
+                    stats["overlap_probes_run"] += 1
+                    probe = distinct_cache.probe_pair(
+                        from_view, fc["name"], to_view, tc["name"],
+                    )
+                    if probe is None:
+                        stats["overlap_probes_failed"] += 1
+                        continue
+                    if probe["overlap_ratio"] < 0.5:
+                        stats["overlap_probes_below_threshold"] += 1
+                        continue
+                    stats["overlap_probes_hit"] += 1
+                    pair_hits.append(
+                        {
+                            "from_column": fc["name"],
+                            "to_column": tc["name"],
+                            "overlap_ratio": probe["overlap_ratio"],
+                            "from_distinct": probe["from_distinct"],
+                            "to_distinct": probe["to_distinct"],
+                            "from_non_null": probe.get("from_non_null", 0),
+                            "to_non_null": probe.get("to_non_null", 0),
+                        }
+                    )
+
+                # Many-to-many detection: more than one viable column pair
+                # between the same two tables almost always means a bridge
+                # is needed instead of a direct relationship.
+                if len(pair_hits) > 1:
+                    warnings.append(
+                        {
+                            "kind": "ambiguous_relationship",
+                            "from_view": from_view.name,
+                            "to_view": to_view.name,
+                            "candidates": pair_hits,
+                            "reason": (
+                                f"Detected {len(pair_hits)} distinct column pairs that overlap "
+                                f"between {from_view.name} and {to_view.name}. This usually "
+                                f"means you need a bridge/junction table — pick one carefully."
+                            ),
+                        }
+                    )
+                    # Still propose the top candidate; builder will see warning.
+                    pair_hits.sort(key=lambda x: x["overlap_ratio"], reverse=True)
+
+                for hit in pair_hits:
+                    # Hit dicts here are summary projections from the
+                    # original probe — reconstruct the shape the
+                    # cardinality helper needs.
+                    probe_for_card = {
+                        "from_distinct": hit["from_distinct"],
+                        "to_distinct": hit["to_distinct"],
+                        "from_non_null": hit.get("from_non_null") or 0,
+                        "to_non_null": hit.get("to_non_null") or 0,
+                    }
+                    relationship, extra_reasons = _infer_cardinality_from_probe(
+                        probe=probe_for_card,
+                        from_in_pk=hit["from_column"] in from_pk_set,
+                        to_in_pk=hit["to_column"] in to_pk_set,
+                    )
+                    confidence = min(
+                        hit["overlap_ratio"],
+                        _cardinality_certainty(extra_reasons),
+                    )
+                    _push_recommendation(
+                        {
+                            "from_view": from_view.name,
+                            "to_view": to_view.name,
+                            "from_columns": [hit["from_column"]],
+                            "to_columns": [hit["to_column"]],
+                            "relationship": relationship,
+                            "origin": "auto_type_distinct",
+                            "confidence": round(confidence, 3),
+                            "reasons": [
+                                "type_compatible",
+                                f"overlap_{int(hit['overlap_ratio'] * 100)}pct",
+                                *extra_reasons,
+                            ],
+                            "status": "new",
+                        }
+                    )
+
+    # One full-table fetch per view, regardless of how many columns
+    # the probe asked for — see _ColumnDistinctCache strategy note.
+    stats["datasource_reads"] = distinct_cache.datasource_reads
+    stats["quota_warnings"] = distinct_cache.quota_warning_count
+
+    # --- Surface deep-scan datasource quota warnings ---------------------
+    if distinct_cache.quota_warning_count > 0:
+        warnings.append({
+            "kind": "datasource_quota_exceeded",
+            "reason": (
+                f"Datasource rate limit (vd. Google Sheets 60 reads/min) "
+                f"đã hit khi quét — {distinct_cache.quota_warning_count} bảng "
+                f"bị bỏ dở. Chờ 1 phút rồi bấm Re-scan, hoặc giảm số bảng "
+                f"trong dataset trước khi dò. Đã có sẵn các gợi ý từ bảng "
+                f"hoàn tất."
+            ),
+        })
+
+    # --- Obsolete check: joins whose columns no longer exist -------------
+    obsolete: list[dict] = []
+    for join in existing_payload:
+        from_view_obj = views_by_name.get(join["from_view"])
+        to_view_obj = views_by_name.get(join["to_view"])
+        if from_view_obj is None or to_view_obj is None:
+            obsolete.append({**join, "reason": "View no longer exists in this model."})
+            continue
+        from_fields = _field_names_for_view(from_view_obj)
+        to_fields = _field_names_for_view(to_view_obj)
+        missing_from = [c for c in join["from_columns"] if c not in from_fields]
+        missing_to = [c for c in join["to_columns"] if c not in to_fields]
+        if missing_from or missing_to:
+            parts = []
+            if missing_from:
+                parts.append(f"{join['from_view']} no longer has {missing_from}")
+            if missing_to:
+                parts.append(f"{join['to_view']} no longer has {missing_to}")
+            obsolete.append({**join, "reason": "; ".join(parts)})
+
+    # Build view-name → friendly label map so the FE shows "Customers"
+    # instead of "dataset_table_165". We prefer the dataset table's
+    # display_name; if a view has no underlying dataset table (calendar
+    # role views, derived) we fall back to the view name itself.
+    view_labels: Dict[str, str] = {}
+    for view in views:
+        tbl = table_by_view_name.get(view.name)
+        if tbl is not None:
+            view_labels[view.name] = (
+                str(tbl.display_name)
+                or str(tbl.source_table_name)
+                or view.name
+            )
+        else:
+            view_labels[view.name] = view.name
+
+    return {
+        "model_id": model.id,
+        "dataset_id": dataset_id,
+        "existing": existing_payload,
+        "recommended": recommended,
+        "obsolete": obsolete,
+        "warnings": warnings,
+        "rejected_count": len(rejected),
+        "deep_scan": deep_scan,
+        "stats": stats,
+        "view_labels": view_labels,
+    }
+
+
+def generate_join_suggestions(
+    db: Session,
+    dataset_id: int,
+    *,
+    deep_scan: bool = False,
+) -> dict:
+    """Public wrapper — kept thin so the endpoint stays simple."""
+    return _generate_join_suggestions(db, dataset_id, deep_scan=deep_scan)
+
+
+def apply_join_suggestions(
+    db: Session,
+    dataset_id: int,
+    selections: list[dict],
+) -> dict:
+    """Apply a batch of selected suggestions by delegating to add_join."""
+    if not selections:
+        return {"added": 0, "skipped": 0, "errors": []}
+
+    added = 0
+    skipped = 0
+    errors: list[dict] = []
+    views = {v.name: v for v in db.query(SemanticView).all()}
+    for item in selections:
+        try:
+            from_view_name = str(item.get("from_view") or "")
+            to_view_name = str(item.get("to_view") or "")
+            from_columns = [str(c) for c in (item.get("from_columns") or [])]
+            to_columns = [str(c) for c in (item.get("to_columns") or [])]
+            if not from_view_name or not to_view_name or not from_columns or not to_columns:
+                skipped += 1
+                continue
+            from_view = views.get(from_view_name)
+            to_view = views.get(to_view_name)
+            if from_view is None or to_view is None:
+                errors.append(
+                    {"item": item, "reason": "View not found at apply time."}
+                )
+                continue
+            add_join(
+                db,
+                dataset_id=dataset_id,
+                from_view_id=from_view.id,
+                to_view_id=to_view.id,
+                from_column=from_columns[0],
+                to_column=to_columns[0],
+                from_columns=from_columns,
+                to_columns=to_columns,
+                join_type=str(item.get("join_type") or "left"),
+                relationship=str(item.get("relationship") or "many_to_one"),
+            )
+            added += 1
+        except Exception as exc:
+            errors.append({"item": item, "reason": str(exc)})
+    return {"added": added, "skipped": skipped, "errors": errors}

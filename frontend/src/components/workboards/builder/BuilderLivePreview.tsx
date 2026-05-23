@@ -399,7 +399,7 @@ export default function BuilderLivePreview({
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-caption text-warning">
               No workspace is available for live preview. Create one in
               Settings → Workspaces. The default <code>public_app_users</code>{' '}
-              mode needs a user table selected for the mini-app.
+              mode uses the mini-app users managed in the Workboard builder.
             </div>
           </Centered>
         ) : sessionError ? (

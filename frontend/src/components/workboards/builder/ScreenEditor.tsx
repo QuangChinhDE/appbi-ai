@@ -169,7 +169,12 @@ export default function ScreenEditor({
       )}
 
       {tab === 'permission' && (
-        <PermissionTab screen={screen} tables={tables} onChange={onChange} />
+        <PermissionTab
+          screen={screen}
+          tables={tables}
+          workboardId={workboardId}
+          onChange={onChange}
+        />
       )}
 
       {tab === 'settings' && (
@@ -194,10 +199,12 @@ function badge(count?: number): React.ReactNode {
 function PermissionTab({
   screen,
   tables,
+  workboardId,
   onChange,
 }: {
   screen: ScreenSpec;
   tables: DatasetTableInfo[];
+  workboardId?: number;
   onChange: (next: ScreenSpec) => void;
 }) {
   const roleOptions = buildAppUserRoleOptions(screen.visible_for_roles).filter(
@@ -241,7 +248,12 @@ function PermissionTab({
           title="Role rules"
           description="Each rule = one role + view/edit/delete scope. Owner is hidden because it always has full access."
         >
-          <RlsEditor screen={screen} tables={tables} onChange={onChange} />
+          <RlsEditor
+            screen={screen}
+            tables={tables}
+            workboardId={workboardId}
+            onChange={onChange}
+          />
         </BuilderSection>
       )}
 

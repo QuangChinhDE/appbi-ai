@@ -2,12 +2,12 @@ export const APP_USER_ROLE_OPTIONS = [
   {
     value: 'user',
     label: 'User',
-    description: 'End user, with data scope controlled by dataset/RLS settings.',
+    description: 'End user; data scope is controlled by mini-app RLS and user hierarchy.',
   },
   {
     value: 'admin',
     label: 'Admin',
-    description: 'Operations admin role, used for management screens.',
+    description: 'Operations admin; data scope is controlled by mini-app RLS and user hierarchy.',
   },
   {
     value: 'owner',

@@ -3,7 +3,8 @@
  *
  * Main UX goals:
  * - fixed product roles: user / admin / owner
- * - dataset-backed selects for access keys discovered from screen RLS
+ * - explicit mini-app hierarchy: owner full access, scoped admin/user branches
+ * - dataset-backed selects for non-hierarchy access keys discovered from RLS
  * - manual context only as an advanced fallback
  */
 'use client';
@@ -27,6 +28,8 @@ import {
   type WorkboardAppUserCreate,
   type WorkboardAppUserResponse,
   type WorkboardAppUserUpdate,
+  type WorkboardAccessAudit,
+  type AccessAuditEntry,
 } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import { Button } from '@/components/ui/Button';
@@ -40,6 +43,7 @@ import {
   isOwnerAppUserRole,
   normalizeAppUserRole,
 } from './appUserRoles';
+import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
 
 interface Props {
   workboard: Workboard;
@@ -88,12 +92,47 @@ interface AccessFieldConfig extends AccessFieldSpec {
   options: AccessFieldOption[];
 }
 
+type AccessIssueKind =
+  | 'missing_column'
+  | 'empty_column'
+  | 'missing_miniapp_user_column'
+  | 'legacy_rule_column';
+
+interface AccessIssue {
+  fieldKey: string;
+  fieldLabel: string;
+  tableId: number;
+  tableLabel: string;
+  column: string;
+  screenTitle: string;
+  kind: AccessIssueKind;
+}
+
 interface ContextRow {
   key: string;
   value: string;
 }
 
-const RESERVED_CONTEXT_KEYS = new Set(['username', 'role', 'full_name']);
+const MINIAPP_USER_COLUMN = 'miniapp_user';
+
+const HIERARCHY_CONTEXT_KEYS = new Set([
+  'manager_username',
+  'manager_usernames',
+  'reports_to',
+  'scope_usernames',
+  'managed_usernames',
+  'visible_usernames',
+  'scope_admin_usernames',
+  'managed_admins',
+  'managed_admin_usernames',
+  'direct_report_usernames',
+]);
+const RESERVED_CONTEXT_KEYS = new Set([
+  'username',
+  'role',
+  'full_name',
+  ...HIERARCHY_CONTEXT_KEYS,
+]);
 const ACCESS_OPTION_PREVIEW_LIMIT = 200;
 
 function getApiErrorMessage(err: unknown, fallback: string): string {
@@ -172,8 +211,43 @@ function optionKeyForValue(value: unknown): string {
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map((item) => displayValue(item)).filter(Boolean).join(', ');
   if (typeof value === 'string') return value;
   return String(value);
+}
+
+function stringListFromContext(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(value.map((item) => String(item).trim()).filter(Boolean)),
+    );
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return stringListFromContext(parsed);
+      } catch {
+        // Fall through to comma parsing.
+      }
+    }
+    return Array.from(
+      new Set(trimmed.split(',').map((part) => part.trim()).filter(Boolean)),
+    );
+  }
+  const text = String(value).trim();
+  return text ? [text] : [];
+}
+
+function firstStringFromContext(...values: unknown[]): string {
+  for (const value of values) {
+    const [first] = stringListFromContext(value);
+    if (first) return first;
+  }
+  return '';
 }
 
 function collectAccessFieldSpecs(
@@ -334,9 +408,29 @@ function renderContextSummary(
     .filter(([key]) => accessKeySet.has(key))
     .map(([key, value]) => `${makeAccessFieldLabel(key)}=${displayValue(value)}`);
   const extraParts = entries
-    .filter(([key]) => !accessKeySet.has(key))
+    .filter(([key]) => !accessKeySet.has(key) && !HIERARCHY_CONTEXT_KEYS.has(key))
     .map(([key, value]) => `${key}=${displayValue(value)}`);
-  return [...accessParts, ...extraParts].join(', ');
+  const parts = [...accessParts, ...extraParts];
+  return parts.length > 0 ? parts.join(', ') : '—';
+}
+
+function renderHierarchySummary(
+  context: Record<string, unknown>,
+  directReports: string[] = [],
+): string {
+  const manager = firstStringFromContext(context.manager_username, context.reports_to);
+  const adminBranches = stringListFromContext(
+    context.scope_admin_usernames ?? context.managed_admins ?? context.managed_admin_usernames,
+  );
+  const explicitUsers = stringListFromContext(
+    context.scope_usernames ?? context.managed_usernames ?? context.visible_usernames,
+  );
+  const parts: string[] = [];
+  if (manager) parts.push(`reports to ${manager}`);
+  if (directReports.length > 0) parts.push(`direct users: ${directReports.join(', ')}`);
+  if (adminBranches.length > 0) parts.push(`admin branches: ${adminBranches.join(', ')}`);
+  if (explicitUsers.length > 0) parts.push(`extra users: ${explicitUsers.join(', ')}`);
+  return parts.join(' | ') || 'self only';
 }
 
 function mergeInitialAccessValue(
@@ -365,6 +459,9 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
   const [editing, setEditing] = useState<WorkboardAppUserResponse | 'new' | null>(null);
   const [pendingDelete, setPendingDelete] = useState<WorkboardAppUserResponse | null>(null);
   const [accessFields, setAccessFields] = useState<AccessFieldConfig[]>([]);
+  const [accessIssues, setAccessIssues] = useState<AccessIssue[]>([]);
+  const [audit, setAudit] = useState<WorkboardAccessAudit | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const contextSuggestions = useMemo(
     () => collectContextKeySuggestions(workboard),
@@ -388,9 +485,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
     setLoadingAccess(true);
     try {
       const tables = await loadDatasetTables(workboard.dataset_id);
+      const tablesById = new Map(tables.map((table) => [table.id, table]));
       const specs = collectAccessFieldSpecs(workboard, tables);
+
       if (specs.length === 0) {
         setAccessFields([]);
+        setAccessIssues([]);
         return;
       }
 
@@ -400,7 +500,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
         for (const source of spec.sources) {
           const cacheKey = `${source.tableId}:${source.column}`;
           if (sourceOptions.has(cacheKey)) continue;
+          const tableMeta = tablesById.get(source.tableId);
+          const columnExists = tableMeta?.columns.some(
+            (col) => col.name === source.column,
+          );
           sourceOptions.set(cacheKey, []);
+          if (!columnExists) continue;
           distinctJobs.push(
             loadDistinctOptions(workboard.dataset_id, source)
               .then((options) => {
@@ -429,15 +534,70 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
           options: Array.from(dedupedOptions.values()),
         };
       });
+
+      const issues: AccessIssue[] = [];
+      const seenIssue = new Set<string>();
+      for (const spec of specs) {
+        for (const source of spec.sources) {
+          const tableMeta = tablesById.get(source.tableId);
+          const columnExists = tableMeta?.columns.some(
+            (col) => col.name === source.column,
+          );
+          const kind: AccessIssueKind | null = !columnExists
+            ? 'missing_column'
+            : (sourceOptions.get(`${source.tableId}:${source.column}`) || []).length === 0
+              ? 'empty_column'
+              : null;
+          if (!kind) continue;
+          const dedupeKey = `${spec.key}:${source.tableId}:${source.column}:${kind}`;
+          if (seenIssue.has(dedupeKey)) continue;
+          seenIssue.add(dedupeKey);
+          issues.push({
+            fieldKey: spec.key,
+            fieldLabel: spec.label,
+            tableId: source.tableId,
+            tableLabel: source.tableLabel,
+            column: source.column,
+            screenTitle: source.screenTitle,
+            kind,
+          });
+        }
+      }
+
       setAccessFields(nextFields);
+      setAccessIssues(issues);
     } finally {
       setLoadingAccess(false);
+    }
+  };
+
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const result = await workboardApi.getAccessAudit(workboard.id);
+      setAudit(result);
+    } catch (err) {
+      console.warn('Failed to load access audit', err);
+      setAudit(null);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const handleToggleShared = async (tableId: number, shared: boolean) => {
+    try {
+      await workboardApi.setTableMiniappShare(workboard.id, tableId, shared);
+      await loadAudit();
+      toast.success(shared ? 'Đã đánh dấu là shared.' : 'Đã bỏ shared.');
+    } catch (err) {
+      toast.error(getApiErrorMessage(err, 'Không cập nhật được flag shared.'));
     }
   };
 
   useEffect(() => {
     void loadUsers();
     void loadAccessFields();
+    void loadAudit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workboard.id, workboard.dataset_id]);
 
@@ -455,6 +615,15 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
     () => users.filter((user) => isOwnerUsingDefaultPin(user)),
     [users],
   );
+  const directReportsByUsername = useMemo(() => {
+    const next = new Map<string, string[]>();
+    for (const row of users) {
+      const manager = firstStringFromContext(row.context?.manager_username, row.context?.reports_to);
+      if (!manager) continue;
+      next.set(manager, [...(next.get(manager) || []), row.username]);
+    }
+    return next;
+  }, [users]);
 
   return (
     <div className="flex h-full flex-col bg-surface-0">
@@ -465,7 +634,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
           {users.length} {users.length === 1 ? 'user' : 'users'} can sign in to this mini-app
         </span>
         <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-text-secondary">
-          Standard roles: user / admin / owner
+          Mini-app roles: user / admin / owner
         </span>
         <div className="flex-1" />
         <div className="relative">
@@ -483,6 +652,23 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
       </div>
 
       <div className="flex-1 overflow-auto p-4">
+        {audit && (
+          <AccessAuditBanner
+            audit={audit}
+            datasetId={workboard.dataset_id}
+            onToggleShared={handleToggleShared}
+            onRefresh={loadAudit}
+            loading={auditLoading}
+          />
+        )}
+
+        {accessIssues.length > 0 && (
+          <AccessIssuesBanner
+            datasetId={workboard.dataset_id}
+            issues={accessIssues}
+          />
+        )}
+
         {ownersUsingDefaultPin.length > 0 && (
           <div className="mb-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-caption text-danger">
             <div className="flex items-start gap-2">
@@ -523,7 +709,8 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                   <th className="px-3 py-2 text-left font-medium">Username</th>
                   <th className="px-3 py-2 text-left font-medium">Full name</th>
                   <th className="px-3 py-2 text-left font-medium">Role</th>
-                  <th className="px-3 py-2 text-left font-medium">Dataset access</th>
+                  <th className="px-3 py-2 text-left font-medium">Mini-app scope</th>
+                  <th className="px-3 py-2 text-left font-medium">RLS context</th>
                   <th className="px-3 py-2 text-left font-medium">Active</th>
                   <th className="px-3 py-2 text-right font-medium">Actions</th>
                 </tr>
@@ -556,6 +743,14 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                       ) : (
                         '—'
                       )}
+                    </td>
+                    <td className="max-w-[280px] px-3 py-2 text-caption text-text-tertiary">
+                      {isOwnerAppUserRole(user.role)
+                        ? 'full access'
+                        : renderHierarchySummary(
+                            user.context || {},
+                            directReportsByUsername.get(user.username) || [],
+                          )}
                     </td>
                     <td className="max-w-[320px] px-3 py-2 text-caption text-text-tertiary">
                       {renderContextSummary(user.context || {}, accessFields)}
@@ -602,10 +797,13 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
       {editing && (
         <AppUserEditModal
           workboardId={workboard.id}
+          datasetId={workboard.dataset_id}
           user={editing === 'new' ? null : editing}
           contextSuggestions={contextSuggestions}
           accessFields={accessFields}
+          accessIssues={accessIssues}
           loadingAccess={loadingAccess}
+          existingUsers={users}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -655,18 +853,24 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
 
 function AppUserEditModal({
   workboardId,
+  datasetId,
   user,
   contextSuggestions,
   accessFields,
+  accessIssues,
   loadingAccess,
+  existingUsers,
   onClose,
   onSaved,
 }: {
   workboardId: number;
+  datasetId: number;
   user: WorkboardAppUserResponse | null;
   contextSuggestions: string[];
   accessFields: AccessFieldConfig[];
+  accessIssues: AccessIssue[];
   loadingAccess: boolean;
+  existingUsers: WorkboardAppUserResponse[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -681,6 +885,56 @@ function AppUserEditModal({
   const [role, setRole] = useState(normalizedExistingRole);
   const [active, setActive] = useState(user?.active ?? true);
   const [pin, setPin] = useState('');
+  const [managerUsername, setManagerUsername] = useState(() =>
+    firstStringFromContext(user?.context?.manager_username, user?.context?.reports_to),
+  );
+  const [scopeAdminUsernames, setScopeAdminUsernames] = useState<string[]>(() =>
+    stringListFromContext(
+      user?.context?.scope_admin_usernames ??
+        user?.context?.managed_admins ??
+        user?.context?.managed_admin_usernames,
+    ),
+  );
+  const [scopeUsernames, setScopeUsernames] = useState<string[]>(() =>
+    stringListFromContext(
+      user?.context?.scope_usernames ??
+        user?.context?.managed_usernames ??
+        user?.context?.visible_usernames,
+    ),
+  );
+
+  const editingUsername = user?.username ?? '';
+  const managerOptions = useMemo(
+    () =>
+      existingUsers
+        .filter((row) => row.username && row.username !== editingUsername)
+        .map((row) => row.username),
+    [existingUsers, editingUsername],
+  );
+  const adminBranchOptions = useMemo(
+    () =>
+      existingUsers
+        .filter((row) => {
+          if (!row.username || row.username === editingUsername) return false;
+          const normalized = normalizeAppUserRole(row.role);
+          return normalized === 'admin' || normalized === 'owner';
+        })
+        .map((row) => row.username),
+    [existingUsers, editingUsername],
+  );
+  const userLabelByUsername = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const row of existingUsers) {
+      if (!row.username) continue;
+      const roleLabel = row.role ? formatAppUserRoleLabel(row.role) : '';
+      map[row.username] = row.full_name
+        ? `${row.username} — ${row.full_name}${roleLabel ? ` (${roleLabel})` : ''}`
+        : roleLabel
+          ? `${row.username} (${roleLabel})`
+          : row.username;
+    }
+    return map;
+  }, [existingUsers]);
 
   const effectiveAccessFields = useMemo(
     () =>
@@ -707,13 +961,16 @@ function AppUserEditModal({
   });
 
   const advancedSuggestions = useMemo(
-    () => contextSuggestions.filter((key) => !accessKeySet.has(key)),
+    () =>
+      contextSuggestions.filter(
+        (key) => !accessKeySet.has(key) && !HIERARCHY_CONTEXT_KEYS.has(key),
+      ),
     [accessKeySet, contextSuggestions],
   );
 
   const [contextRows, setContextRows] = useState<ContextRow[]>(() => {
     const seed = Object.entries(user?.context ?? {})
-      .filter(([key]) => !accessKeySet.has(key))
+      .filter(([key]) => !accessKeySet.has(key) && !HIERARCHY_CONTEXT_KEYS.has(key))
       .map(([key, value]) => ({
         key,
         value: typeof value === 'string' ? value : JSON.stringify(value),
@@ -767,8 +1024,23 @@ function AppUserEditModal({
       setError('PIN is required when creating a new user.');
       return;
     }
+    const cleanUsername = username.trim();
+    const cleanManagerUsername = managerUsername.trim();
+    if (cleanManagerUsername && cleanManagerUsername === cleanUsername) {
+      setError('Manager username cannot be the same as this user.');
+      return;
+    }
 
     const context: Record<string, unknown> = {};
+    if (cleanManagerUsername) {
+      context.manager_username = cleanManagerUsername;
+    }
+    if (scopeAdminUsernames.length > 0) {
+      context.scope_admin_usernames = scopeAdminUsernames;
+    }
+    if (scopeUsernames.length > 0) {
+      context.scope_usernames = scopeUsernames;
+    }
     for (const field of effectiveAccessFields) {
       const value = selectedAccessValues[field.key];
       if (value === null || value === undefined || value === '') continue;
@@ -777,6 +1049,7 @@ function AppUserEditModal({
     for (const row of contextRows) {
       const key = row.key.trim();
       if (!key) continue;
+      if (RESERVED_CONTEXT_KEYS.has(key) || accessKeySet.has(key)) continue;
       context[key] = row.value;
     }
 
@@ -784,7 +1057,7 @@ function AppUserEditModal({
     try {
       if (isCreate) {
         const payload: WorkboardAppUserCreate = {
-          username: username.trim(),
+          username: cleanUsername,
           pin,
           full_name: fullName || null,
           role,
@@ -795,7 +1068,7 @@ function AppUserEditModal({
         toast.success('User created');
       } else {
         const payload: WorkboardAppUserUpdate = {
-          username: username.trim(),
+          username: cleanUsername,
           full_name: fullName || null,
           role,
           active,
@@ -823,7 +1096,8 @@ function AppUserEditModal({
       isOpen
       onClose={onClose}
       title={isCreate ? 'Create user' : `Edit user "${user?.username}"`}
-      size="md"
+      size="xl"
+      contentClassName="h-[80vh]"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -836,7 +1110,7 @@ function AppUserEditModal({
       }
     >
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="block">
             <span className="mb-1 block text-caption font-medium text-text-secondary">Username *</span>
             <Input
@@ -894,9 +1168,83 @@ function AppUserEditModal({
 
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="mb-2">
-            <h3 className="text-caption font-medium text-text-secondary">Dataset access</h3>
+            <h3 className="text-caption font-medium text-text-secondary">Mini-app hierarchy</h3>
             <p className="text-caption text-text-tertiary">
-              The fields below come from the current workboard RLS config. Pick values directly from data instead of typing them by hand.
+              This controls mini-app row scope only. AppBI dataset permissions are checked before a builder can connect the dataset.
+            </p>
+            {isOwnerAppUserRole(role) && (
+              <p className="mt-1 text-caption text-success">
+                Owner has full access in the mini-app; hierarchy fields are ignored for RLS.
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <label className="block">
+              <span className="mb-1 block text-caption font-medium text-text-secondary">
+                Direct manager
+              </span>
+              <SingleColumnPicker
+                sourceColumns={managerOptions}
+                value={managerUsername || null}
+                onChange={(next) => setManagerUsername(next || '')}
+                placeholder={
+                  managerOptions.length === 0
+                    ? 'No other users yet'
+                    : 'Pick a manager…'
+                }
+                emptyHint="No matching users."
+                labelByValue={userLabelByUsername}
+              />
+              <p className="mt-1 text-caption text-text-tertiary">
+                This user becomes part of that manager&apos;s scope.
+              </p>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-caption font-medium text-text-secondary">
+                Admin branches this user can view
+              </span>
+              <MultiColumnPicker
+                sourceColumns={adminBranchOptions}
+                value={scopeAdminUsernames}
+                onChange={setScopeAdminUsernames}
+                placeholder={
+                  adminBranchOptions.length === 0
+                    ? 'No admins/owners yet'
+                    : 'Pick admin branches…'
+                }
+                emptyHint="No matching admins."
+              />
+              <p className="mt-1 text-caption text-text-tertiary">
+                Includes those admins and every user under them.
+              </p>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-caption font-medium text-text-secondary">
+                Extra visible usernames
+              </span>
+              <MultiColumnPicker
+                sourceColumns={managerOptions}
+                value={scopeUsernames}
+                onChange={setScopeUsernames}
+                placeholder={
+                  managerOptions.length === 0
+                    ? 'No other users yet'
+                    : 'Pick extra users…'
+                }
+                emptyHint="No matching users."
+              />
+              <p className="mt-1 text-caption text-text-tertiary">
+                Optional direct grants beyond the manager tree.
+              </p>
+            </label>
+          </div>
+        </div>
+
+        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+          <div className="mb-2">
+            <h3 className="text-caption font-medium text-text-secondary">RLS context fields</h3>
+            <p className="text-caption text-text-tertiary">
+              Non-hierarchy placeholders from RLS appear here. Pick values directly from data instead of typing them by hand.
             </p>
             {isOwnerAppUserRole(role) && (
               <p className="mt-1 text-caption text-success">
@@ -904,6 +1252,12 @@ function AppUserEditModal({
               </p>
             )}
           </div>
+
+          {accessIssues.length > 0 && (
+            <div className="mb-3">
+              <AccessIssuesBanner datasetId={datasetId} issues={accessIssues} />
+            </div>
+          )}
 
           {loadingAccess ? (
             <div className="flex items-center gap-2 text-caption text-text-tertiary">
@@ -915,7 +1269,7 @@ function AppUserEditModal({
               No access fields were detected from RLS. You can still use additional context below.
             </p>
           ) : (
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {effectiveAccessFields.map((field) => {
                 const currentValue = selectedAccessValues[field.key];
                 const selectValue =
@@ -1031,5 +1385,282 @@ function AppUserEditModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+function AccessIssueDescription({ row }: { row: AccessIssue }) {
+  const code = (text: string) => (
+    <code className="rounded bg-surface-2 px-1 text-text-secondary">{text}</code>
+  );
+  switch (row.kind) {
+    case 'missing_miniapp_user_column':
+      return (
+        <>
+          Thiếu cột {code(MINIAPP_USER_COLUMN)} — bảng này được dùng làm nguồn
+          cho screen {code(row.screenTitle)}. Thêm cột để mini-app tự lọc theo
+          username (giá trị từng dòng = username của app user sở hữu).
+        </>
+      );
+    case 'legacy_rule_column':
+      return (
+        <>
+          Rule RLS cũ đang lọc theo cột {code(row.column)} thay vì{' '}
+          {code(MINIAPP_USER_COLUMN)} ({row.screenTitle}). Convention mới yêu
+          cầu mọi bảng fact lọc qua {code(MINIAPP_USER_COLUMN)}; rule này sẽ
+          không nhận được giá trị mặc định khi tạo user.
+        </>
+      );
+    case 'missing_column':
+      return (
+        <>
+          Thiếu cột {code(row.column)} — RLS placeholder{' '}
+          {code(`{{app_user.${row.fieldKey}}}`)} không có chỗ để lọc (
+          {row.screenTitle}).
+        </>
+      );
+    case 'empty_column':
+      return (
+        <>
+          Cột {code(row.column)} chưa có giá trị nào — app user không có lựa
+          chọn để gán quyền ({row.screenTitle}).
+        </>
+      );
+    default:
+      return null;
+  }
+}
+
+function AccessAuditBanner({
+  audit,
+  datasetId,
+  onToggleShared,
+  onRefresh,
+  loading,
+}: {
+  audit: WorkboardAccessAudit;
+  datasetId: number;
+  onToggleShared: (tableId: number, shared: boolean) => void;
+  onRefresh: () => void;
+  loading: boolean;
+}) {
+  const { tables, summary } = audit;
+  const unknowns = tables.filter((t) => t.mode === 'unknown');
+  const joinedThrough = tables.filter((t) => t.mode === 'joined_through');
+  const legacy = tables.filter((t) => t.legacy_rules.length > 0);
+
+  if (tables.length === 0) return null;
+
+  const hasBlocker = unknowns.length > 0;
+  const tone = hasBlocker
+    ? 'border-danger/30 bg-danger/5'
+    : joinedThrough.length + legacy.length > 0
+      ? 'border-warning/30 bg-warning/5'
+      : 'border-success/30 bg-success/5';
+
+  return (
+    <div className={`mb-4 rounded-md border p-3 text-caption ${tone}`}>
+      <div className="flex items-start gap-2">
+        {hasBlocker ? (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+        ) : (
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+        )}
+        <div className="flex-1 space-y-2">
+          <div className="flex items-center gap-3">
+            <span className="font-medium text-text-primary">
+              Phân quyền dữ liệu
+            </span>
+            <span className="text-text-tertiary">
+              {summary.per_user} per-user · {summary.joined_through} qua quan hệ ·{' '}
+              {summary.shared} shared · {summary.unknown} chưa rõ
+            </span>
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={loading}
+              className="ml-auto text-info hover:underline disabled:opacity-50"
+            >
+              {loading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
+          {tables.map((entry) => (
+            <AccessAuditRow
+              key={entry.table_id}
+              entry={entry}
+              datasetId={datasetId}
+              onToggleShared={onToggleShared}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccessAuditRow({
+  entry,
+  datasetId,
+  onToggleShared,
+}: {
+  entry: AccessAuditEntry;
+  datasetId: number;
+  onToggleShared: (tableId: number, shared: boolean) => void;
+}) {
+  const modeStyle: Record<typeof entry.mode, string> = {
+    per_user: 'bg-success/10 text-success',
+    joined_through: 'bg-info/10 text-info',
+    shared: 'bg-surface-2 text-text-secondary',
+    unknown: 'bg-danger/10 text-danger',
+  };
+  const modeLabel: Record<typeof entry.mode, string> = {
+    per_user: 'per-user',
+    joined_through: 'qua quan hệ',
+    shared: 'shared',
+    unknown: 'chưa rõ',
+  };
+  return (
+    <div className="rounded bg-surface-0/60 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-text-primary">{entry.table_name}</span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${modeStyle[entry.mode]}`}>
+          {modeLabel[entry.mode]}
+        </span>
+        <span className="text-text-tertiary">{entry.reason}</span>
+        <a
+          href={`/datasets/${datasetId}?table=${entry.table_id}&tab=schema`}
+          target="_blank"
+          rel="noreferrer"
+          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-caption text-text-secondary hover:border-brand/40 hover:text-brand"
+        >
+          Mở dataset
+        </a>
+        {entry.mode === 'unknown' && (
+          <button
+            type="button"
+            onClick={() => onToggleShared(entry.table_id, true)}
+            className="rounded border border-warning/30 bg-warning/5 px-2 py-0.5 text-caption text-warning hover:bg-warning/10"
+            title="Đánh dấu bảng là shared / dim public"
+          >
+            Đánh dấu shared
+          </button>
+        )}
+        {entry.mode === 'shared' && (
+          <button
+            type="button"
+            onClick={() => onToggleShared(entry.table_id, false)}
+            className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-caption text-text-secondary hover:bg-surface-2"
+          >
+            Bỏ shared
+          </button>
+        )}
+      </div>
+      {entry.chain && entry.chain.length > 0 && (
+        <div className="mt-1 text-caption text-text-tertiary">
+          Chain:{' '}
+          {entry.chain.map((hop, idx) => (
+            <span key={idx}>
+              {idx > 0 ? ' → ' : ''}
+              <code className="rounded bg-surface-2 px-1">{hop.from_view}.{hop.from_columns.join('+')}</code>
+              <span> = </span>
+              <code className="rounded bg-surface-2 px-1">{hop.to_view}.{hop.to_columns.join('+')}</code>
+            </span>
+          ))}
+        </div>
+      )}
+      {entry.legacy_rules.length > 0 && (
+        <div className="mt-1 text-caption text-warning">
+          Legacy rule:{' '}
+          {entry.legacy_rules.map((r, idx) => (
+            <span key={idx}>
+              {idx > 0 ? '; ' : ''}
+              {r.screen_title}: filter_column =
+              <code className="ml-1 rounded bg-surface-2 px-1 text-text-secondary">{r.filter_column}</code>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AccessIssuesBanner({
+  datasetId,
+  issues,
+}: {
+  datasetId: number;
+  issues: AccessIssue[];
+}) {
+  const grouped = useMemo(() => {
+    const map = new Map<number, { tableLabel: string; rows: AccessIssue[] }>();
+    for (const issue of issues) {
+      const bucket = map.get(issue.tableId) ?? {
+        tableLabel: issue.tableLabel,
+        rows: [] as AccessIssue[],
+      };
+      bucket.rows.push(issue);
+      map.set(issue.tableId, bucket);
+    }
+    return Array.from(map.entries()).map(([tableId, value]) => ({
+      tableId,
+      tableLabel: value.tableLabel,
+      rows: value.rows,
+    }));
+  }, [issues]);
+
+  const hasBlocker = issues.some(
+    (issue) =>
+      issue.kind === 'missing_column' ||
+      issue.kind === 'missing_miniapp_user_column',
+  );
+  const tone = hasBlocker
+    ? 'border-danger/30 bg-danger/5 text-danger'
+    : 'border-warning/30 bg-warning/5 text-warning';
+
+  return (
+    <div className={`mb-4 rounded-md border p-3 text-caption ${tone}`}>
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="flex-1 space-y-2">
+          <div className="font-medium">
+            Source dữ liệu chưa sẵn sàng để phân quyền theo app user
+          </div>
+          <p className="text-text-secondary">
+            Mỗi bảng fact dùng trong screen phải có cột{' '}
+            <code className="rounded bg-surface-2 px-1 text-text-secondary">
+              miniapp_user
+            </code>{' '}
+            để mini-app tự lọc theo username của app user (dim không cần — dim
+            kế thừa quyền qua join). Thiếu cột → mini-app sẽ trả 0 dòng cho
+            user không phải owner.
+          </p>
+          <ul className="space-y-1.5">
+            {grouped.map((group) => (
+              <li key={group.tableId} className="rounded bg-surface-0/60 p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-text-primary">
+                    {group.tableLabel}
+                  </span>
+                  <a
+                    href={`/datasets/${datasetId}?table=${group.tableId}&tab=schema`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-caption text-text-secondary hover:border-brand/40 hover:text-brand"
+                  >
+                    Mở dataset
+                  </a>
+                </div>
+                <ul className="mt-1 space-y-0.5 text-text-tertiary">
+                  {group.rows.map((row) => (
+                    <li key={`${row.fieldKey}:${row.column}:${row.kind}`}>
+                      <AccessIssueDescription row={row} />
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
   );
 }

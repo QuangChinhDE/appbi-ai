@@ -4,6 +4,7 @@ Dataset Models - Table-based dataset like NocoDB/Airtable
 from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, Float, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import expression
 from datetime import datetime
 
 from app.core.database import Base
@@ -67,6 +68,10 @@ class DatasetTable(Base):
     # Status and config
     enabled = Column(Boolean, default=True, nullable=True)
     transformations = Column(JSON, default=None, nullable=True)  # Transform steps
+    # Workboard access-audit: when True, the table is treated as shared/dim
+    # data in mini-apps (no miniapp_user filter applied even if no chain to a
+    # per-user fact exists). Default False so missing-config stays loud.
+    miniapp_share = Column(Boolean, default=False, nullable=False, server_default=expression.false())
     
     # Cache for performance
     columns_cache = Column(JSON, nullable=True)  # Cached column metadata

@@ -167,11 +167,10 @@ class WorkboardSubmission(Base):
 class WorkboardWorkspace(Base):
     """A public-facing workspace bundling several workboards behind one link.
 
-    The link target audience is end-users (workers, foremen, drivers…) who
-    do *not* have AppBI accounts. They authenticate against an
-    "App user" table living inside the project's own dataset — the workspace
-    config simply tells the runtime which table + columns to use, see
-    ``app_users_config`` below.
+    The link target audience is end-users (workers, foremen, drivers...) who
+    do *not* have AppBI accounts. They authenticate as Workboard app users
+    stored in AppBI, while screen RLS binds those identities to business
+    rows in the Workboard's dataset.
 
     Layout example::
 
@@ -200,12 +199,10 @@ class WorkboardWorkspace(Base):
     token = Column(String(64), nullable=False, unique=True, index=True)
 
     # Access mode controls who can open the workspace's public link.
-    #   - "internal": no app_users table needed; only AppBI-authenticated
-    #     staff can open the workboards (admin/test path). app_users_config
-    #     stays empty.
+    #   - "internal": only AppBI-authenticated staff can open workboards
+    #     through the workspace (admin/test path).
     #   - "public_app_users": end-users (workers, foremen) login via PIN
-    #     against a project-owned table inside the workspace's dataset.
-    #     app_users_config must be populated.
+    #     against Workboard app-user rows stored by AppBI.
     access_mode = Column(
         String(32),
         nullable=False,
@@ -267,6 +264,9 @@ class WorkboardAppUser(Base):
     read via ``{{app_user.<key>}}`` placeholders — vertical-specific
     fields (``nong_trai_id``, ``clinic_id``, ``dept_id`` …) live here
     without forcing a schema migration each time a new vertical is added.
+    Mini-app hierarchy also lives in ``context``: ``manager_username`` links
+    direct reports, while ``scope_admin_usernames`` / ``scope_usernames``
+    grant branch or explicit-user visibility for scoped admin accounts.
     """
 
     __tablename__ = "workboard_app_users"

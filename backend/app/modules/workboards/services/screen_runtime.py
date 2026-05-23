@@ -465,6 +465,8 @@ def get_screen(layout: LayoutJson, screen_id: str) -> Screen:
 
 
 def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
+    if not identity.is_app_user:
+        return True
     if is_owner_role(identity.role):
         return True
     if not screen.visible_for_roles:
@@ -479,6 +481,25 @@ def _load_table(db: Session, table_id: int) -> Optional[DatasetTable]:
     if not table_id:
         return None
     return db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+
+
+def _columns_cache_list(table: DatasetTable) -> List[Dict[str, Any]]:
+    cache = table.columns_cache
+    if isinstance(cache, dict):
+        raw = cache.get("columns")
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+    if isinstance(cache, list):
+        return [item for item in cache if isinstance(item, dict)]
+    return []
+
+
+def _table_column_names(table: DatasetTable) -> set[str]:
+    return {
+        str(item.get("name") or "").strip()
+        for item in _columns_cache_list(table)
+        if item.get("name")
+    }
 
 
 def _load_datasource(db: Session, table: DatasetTable) -> Optional[DataSource]:
@@ -1642,19 +1663,14 @@ def _resolve_doc_data_block(
         return {"columns": [], "rows": []}
 
     filters: List[Dict[str, Any]] = []
-    # Apply RLS only on the screen's bound table (block.source == "primary"
-    # or pointing back to the same table). Cross-table doc tables (lookups)
-    # still need to be visible to the role; we trust the screen's
-    # ``visible_for_roles`` to gate that.
-    is_primary = (
-        block.source == "primary"
-        or (block.source.startswith("lookup:") and table_id == screen.table_id)
+    rls_filters, allowed = build_rls_filter(
+        screen.rls, screen.rls_default, identity
     )
-    if is_primary:
-        rls_filters, allowed = build_rls_filter(
-            screen.rls, screen.rls_default, identity
-        )
-        if not allowed:
+    if not allowed:
+        return {"columns": [], "rows": []}
+    if rls_filters:
+        table_columns = _table_column_names(table)
+        if any(str(item.get("field") or "") not in table_columns for item in rls_filters):
             return {"columns": [], "rows": []}
         filters = filters + rls_filters
 
@@ -1838,6 +1854,10 @@ def render_app_shell(
         # treats None as "see everything".
         "viewer": {
             "role": identity.role,
-            "username": (identity.app_user or {}).get("username") if identity.app_user else None,
+            "username": (
+                (identity.app_user or {}).get("username")
+                if identity.app_user
+                else identity.appbi_user_id
+            ),
         },
     }

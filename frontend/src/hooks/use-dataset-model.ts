@@ -590,6 +590,138 @@ export function useSaveModelLayout() {
   });
 }
 
+// ===== Phase-16: Relationship review (non-destructive Gen-model) =====
+
+export interface RelationshipSuggestion {
+  from_view: string;
+  to_view: string;
+  from_columns: string[];
+  to_columns: string[];
+  relationship: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  origin: 'auto_db_constraint' | 'auto_fk' | 'auto_same_name' | 'auto_type_distinct' | 'manual';
+  confidence?: number;
+  reasons?: string[];
+  status: 'kept' | 'new';
+}
+
+export interface RelationshipObsolete extends RelationshipSuggestion {
+  reason: string;
+}
+
+export interface RelationshipWarning {
+  kind: 'ambiguous_relationship' | 'deep_scan_capped' | 'datasource_quota_exceeded';
+  from_view?: string;
+  to_view?: string;
+  candidates?: Array<{
+    from_column: string;
+    to_column: string;
+    overlap_ratio: number;
+    from_distinct: number;
+    to_distinct: number;
+  }>;
+  reason: string;
+}
+
+export interface RelationshipSuggestionsResponse {
+  model_id: number;
+  dataset_id: number;
+  existing: RelationshipSuggestion[];
+  recommended: RelationshipSuggestion[];
+  obsolete: RelationshipObsolete[];
+  warnings: RelationshipWarning[];
+  rejected_count: number;
+  deep_scan: boolean;
+  view_labels?: Record<string, string>;
+  stats?: {
+    tables_scanned: number;
+    fk_constraints_found: number;
+    name_matches_found: number;
+    same_name_pairs_probed: number;
+    same_name_hits: number;
+    overlap_probes_run: number;
+    overlap_probes_hit: number;
+    overlap_probes_failed: number;
+    overlap_probes_below_threshold: number;
+    rejected_skipped: number;
+    already_existing_skipped: number;
+    key_like_columns_total: number;
+    tables_with_db_pk: number;
+    tables_with_raw_types: number;
+    datasource_reads: number;
+    quota_warnings: number;
+  };
+}
+
+export function useGenerateJoinSuggestions() {
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      deepScan = false,
+    }: {
+      datasetId: number;
+      deepScan?: boolean;
+    }) => {
+      const response = await api.post<RelationshipSuggestionsResponse>(
+        `/datasets/${datasetId}/model/generate-suggestions`,
+        { deep_scan: deepScan },
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useApplyJoinSuggestions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      selections,
+    }: {
+      datasetId: number;
+      selections: RelationshipSuggestion[];
+    }) => {
+      const response = await api.post<{
+        added: number;
+        skipped: number;
+        errors: Array<{ item: unknown; reason: string }>;
+      }>(`/datasets/${datasetId}/model/joins/batch`, { selections });
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
+    },
+  });
+}
+
+export function useRejectJoinSuggestions() {
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      rejections,
+    }: {
+      datasetId: number;
+      rejections: RelationshipSuggestion[];
+    }) => {
+      const response = await api.post<{ rejected_count: number; added: number }>(
+        `/datasets/${datasetId}/model/joins/reject`,
+        { rejections },
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useClearJoinRejections() {
+  return useMutation({
+    mutationFn: async ({ datasetId }: { datasetId: number }) => {
+      const response = await api.delete<{ cleared: number }>(
+        `/datasets/${datasetId}/model/joins/reject`,
+      );
+      return response.data;
+    },
+  });
+}
+
 // ===== Phase-5: Column lineage probe (proactive cascade warning) =====
 
 export interface ColumnLineageResponse {

@@ -2,8 +2,8 @@
  * Public-facing workspace API client.
  *
  * The workspace flow is intentionally separate from the AppBI-authenticated
- * workboards flow: end users do not have AppBI accounts, login goes against
- * a project-owned table and the session is a cookie set per workspace token.
+ * workboards flow: end users do not have AppBI accounts, login uses native
+ * Workboard app users, and the session is a cookie set per workspace token.
  *
  * Every request below is sent ``credentials: 'include'`` so the workspace
  * cookie travels with the request even though the auth scheme is unrelated

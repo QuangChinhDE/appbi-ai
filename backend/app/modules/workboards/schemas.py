@@ -1098,6 +1098,10 @@ class AppUserCreate(BaseModel):
     sharing a workspace menu — the latter is enforced server-side because
     the public login form has no idea which workboard a username belongs
     to until match time.
+
+    ``context`` also carries mini-app hierarchy fields:
+    ``manager_username`` for direct reports, ``scope_admin_usernames`` for
+    admin branches, and ``scope_usernames`` for explicit usernames.
     """
 
     username: str = Field(..., min_length=1, max_length=255)
