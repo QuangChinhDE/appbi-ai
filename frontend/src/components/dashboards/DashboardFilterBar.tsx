@@ -361,8 +361,16 @@ export function DashboardFilterBar({
         </button>
 
         {hasPendingChanges && (
-          <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
-            Draft changes
+          // Phase-15.78 — make pending-changes signal louder. Tester
+          // reported users tweak a filter and walk away thinking it
+          // applied. Pulse + amber stripe + explicit "unapplied" wording
+          // catches the eye without blocking other dashboard controls.
+          <span
+            className="inline-flex items-center gap-1 rounded-full border-2 border-amber-400 bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold text-amber-900 shadow-sm animate-pulse"
+            title="You have filter changes that haven't been applied yet. Click Apply to update the dashboard."
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            Unapplied changes
           </span>
         )}
 
@@ -406,7 +414,11 @@ export function DashboardFilterBar({
             <button
               onClick={onApply}
               disabled={!hasPendingChanges || isApplying}
-              className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-brand/40"
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-white transition-shadow disabled:cursor-not-allowed disabled:bg-brand/40 ${
+                hasPendingChanges && !isApplying
+                  ? 'bg-brand hover:bg-brand-hover ring-2 ring-brand/30 ring-offset-1 shadow-md'
+                  : 'bg-brand hover:bg-brand-hover'
+              }`}
             >
               <Check className="h-3 w-3" />
               {isApplying ? 'Applying...' : 'Apply'}
