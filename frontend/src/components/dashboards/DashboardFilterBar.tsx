@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw, Calendar } from 'lucide-react';
+import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw, Calendar, Pencil, ToggleLeft, ToggleRight } from 'lucide-react';
 import {
   BaseFilter,
   FilterOperator,
@@ -256,6 +256,38 @@ export function DashboardFilterBar({
       if (operator === 'between') return { ...f, operator, value: ['', ''] };
       if (operator === 'in' || operator === 'not_in') return { ...f, operator, value: [] };
       return { ...f, operator, value: '' };
+    }));
+
+  // Phase-15.78 — user-editable label. BaseFilter.label already takes
+  // priority in getFilterDisplayLabel; this just exposes the UI to set
+  // it. Empty/whitespace clears the override so the auto-derived label
+  // (semantic measure name → friendly field name → raw column) comes
+  // back.
+  const updateLabel = (filterId: string, label: string) =>
+    onFiltersChange(filters.map(f => {
+      if (f.id !== filterId) return f;
+      const next = label.trim();
+      return { ...f, label: next || undefined };
+    }));
+
+  // Phase-15.78 — toggle dropdown mode (multi vs single). Operator is
+  // the source of truth: `in` = multi, `eq` = single. Switching modes
+  // coerces the value: array → first element when going single, scalar
+  // → [scalar] when going multi. Same field, same dataset, different
+  // affordance — slicers without a multi-select count box are the
+  // PowerBI default.
+  const switchDropdownMode = (filterId: string, mode: 'multi' | 'single') =>
+    onFiltersChange(filters.map(f => {
+      if (f.id !== filterId) return f;
+      const isCurrentlyMulti = f.operator === 'in' || f.operator === 'not_in';
+      const wantsMulti = mode === 'multi';
+      if (isCurrentlyMulti === wantsMulti) return f;
+      if (wantsMulti) {
+        const cur = typeof f.value === 'string' && f.value !== '' ? [f.value] : [];
+        return { ...f, operator: 'in' as FilterOperator, value: cur };
+      }
+      const first = Array.isArray(f.value) && f.value.length > 0 ? String(f.value[0]) : '';
+      return { ...f, operator: 'eq' as FilterOperator, value: first };
     }));
 
   const toggleLinkedField = (filterId: string, columnName: string) => {
@@ -567,6 +599,8 @@ export function DashboardFilterBar({
                 onUpdateOperator={op => updateOperator(f.id, op)}
                 onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
                 onToggleLinkedField={col => toggleLinkedField(f.id, col)}
+                onUpdateLabel={l => updateLabel(f.id, l)}
+                onSwitchDropdownMode={m => switchDropdownMode(f.id, m)}
                 onClear={() => clearFilter(f.id)}
                 onRemove={() => removeFilter(f.id)}
                 conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
@@ -620,6 +654,10 @@ interface FilterCardProps {
   onUpdateOperator: (op: FilterOperator) => void;
   onUpdateDatePreset: (preset: DatePreset) => void;
   onToggleLinkedField: (columnName: string) => void;
+  /** Phase-15.78: persist a user-friendly label override. */
+  onUpdateLabel: (label: string) => void;
+  /** Phase-15.78: switch dropdown filters between multi (`in`) and single (`eq`). */
+  onSwitchDropdownMode: (mode: 'multi' | 'single') => void;
   onClear: () => void;
   onRemove: () => void;
   /** Labels of other filters currently constraining the distinct-values query
@@ -646,16 +684,23 @@ function FilterCard({
   onUpdateOperator,
   onUpdateDatePreset,
   onToggleLinkedField,
+  onUpdateLabel,
+  onSwitchDropdownMode,
   onClear,
   onRemove,
   conflictingFilterLabels,
   lockSlots = false,
 }: FilterCardProps) {
   const [showLinked, setShowLinked] = useState(false);
+  const [isEditingLabel, setIsEditingLabel] = useState(false);
+  const [labelDraft, setLabelDraft] = useState(f.label ?? '');
 
   const isMultiSelect = f.operator === 'in' || f.operator === 'not_in';
   const selected: string[] = isMultiSelect && Array.isArray(f.value) ? f.value : [];
   const hasValue = isFilterValueActive(f);
+  // text + dropdown-typed filters can toggle multi/single (number/date keep
+  // their operator-driven UI). String fields are the common slicer case.
+  const supportsDropdownModeToggle = f.type === 'dropdown' || f.type === 'text';
 
   // Columns of the same type that could be linked (not the primary, not used as separate filters)
   const linkableColumns = useMemo(
@@ -713,7 +758,35 @@ function FilterCard({
           <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={`Type: ${TYPE_LABEL[f.type]}`}>
             {TYPE_LABEL[f.type]}
           </span>
-          <span className="text-sm font-semibold text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
+          {isEditingLabel ? (
+            // Phase-15.78 — inline label editor. Tester report (X.1):
+            // users were stuck reading raw column names like
+            // customer_acquisition_channel; this lets them rename to
+            // "Kênh mua hàng" or similar, persisted on the filter.
+            <input
+              autoFocus
+              value={labelDraft}
+              onChange={e => setLabelDraft(e.target.value)}
+              onBlur={() => { onUpdateLabel(labelDraft); setIsEditingLabel(false); }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { onUpdateLabel(labelDraft); setIsEditingLabel(false); }
+                if (e.key === 'Escape') { setLabelDraft(f.label ?? ''); setIsEditingLabel(false); }
+              }}
+              placeholder={getFilterDisplayLabel(f)}
+              className="text-sm font-semibold text-text-primary bg-surface-2 border border-brand/40 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-brand min-w-0 max-w-[12rem]"
+            />
+          ) : (
+            <button
+              onClick={() => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
+              title={f.label ? 'Click to rename — clears to default if empty' : 'Click to set a custom label'}
+              className="group/label inline-flex items-center gap-1 min-w-0"
+            >
+              <span className="text-sm font-semibold text-text-primary truncate">
+                {getFilterDisplayLabel(f)}
+              </span>
+              <Pencil className="w-3 h-3 text-text-quaternary opacity-0 group-hover/label:opacity-100 transition-opacity flex-shrink-0" />
+            </button>
+          )}
           {contextLabel && (
             <span className="hidden max-w-[9rem] truncate text-xs text-text-quaternary sm:inline">
               {contextLabel}
@@ -762,6 +835,25 @@ function FilterCard({
 
       {/* Card body */}
       <div className="px-3 py-2 flex-1">
+        {/* Phase-15.78 — multi/single mode toggle for dropdown/text filters.
+            Operator `in` → multi-select checklist (legacy behaviour);
+            `eq` → single-select dropdown (PowerBI-style). Hidden on
+            number/date because they have their own operator UI. */}
+        {supportsDropdownModeToggle && (
+          <div className="mb-2 flex items-center gap-1 text-[11px] text-text-tertiary">
+            <span className="opacity-70">Mode:</span>
+            <button
+              type="button"
+              onClick={() => onSwitchDropdownMode(isMultiSelect ? 'single' : 'multi')}
+              className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 hover:bg-surface-2 transition-colors"
+              title={isMultiSelect ? 'Click to switch to single-select' : 'Click to switch to multi-select'}
+            >
+              {isMultiSelect
+                ? <><ToggleRight className="w-3.5 h-3.5 text-brand" /> Multi</>
+                : <><ToggleLeft className="w-3.5 h-3.5 text-text-quaternary" /> Single</>}
+            </button>
+          </div>
+        )}
         {isMultiSelect ? (
           <MultiSelectBody
             values={mergedValues}
@@ -772,6 +864,20 @@ function FilterCard({
             onToggleValue={onToggleValue}
             onSelectAll={() => onSelectAll(mergedValues)}
             onDeselectAll={onDeselectAll}
+            conflictingFilterLabels={conflictingFilterLabels}
+          />
+        ) : supportsDropdownModeToggle ? (
+          // Phase-15.78 — single-select dropdown for `eq` operator on
+          // text/dropdown columns. One radio active at a time; clears
+          // the value when the user picks "(none)".
+          <SingleSelectBody
+            values={mergedValues}
+            filteredValues={filteredValues}
+            selectedValue={typeof f.value === 'string' ? f.value : ''}
+            search={search}
+            onSearchChange={onSearchChange}
+            onSelect={val => onUpdateValue(val)}
+            onClear={() => onUpdateValue('')}
             conflictingFilterLabels={conflictingFilterLabels}
           />
         ) : f.type === 'number' ? (
@@ -837,6 +943,100 @@ function FilterCard({
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Single-select dropdown (PowerBI radio-style slicer) ─────────
+// Phase-15.78 — alternate body for `eq` operator on dropdown/text filters.
+// One value at a time, radio buttons, with the same cascading distinct
+// query + conflict banner UX as MultiSelectBody.
+function SingleSelectBody({
+  values,
+  filteredValues,
+  selectedValue,
+  search,
+  onSearchChange,
+  onSelect,
+  onClear,
+  conflictingFilterLabels,
+}: {
+  values: string[];
+  filteredValues: string[];
+  selectedValue: string;
+  search: string;
+  onSearchChange: (s: string) => void;
+  onSelect: (val: string) => void;
+  onClear: () => void;
+  conflictingFilterLabels?: string[];
+}) {
+  const showConflictBanner =
+    values.length === 0
+    && (conflictingFilterLabels?.length ?? 0) > 0;
+  return (
+    <div>
+      {showConflictBanner && (
+        <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+          <p className="font-medium">No values match current filter combination.</p>
+          <p className="mt-0.5 text-amber-700">
+            Try relaxing: {conflictingFilterLabels!.slice(0, 3).join(', ')}
+            {conflictingFilterLabels!.length > 3 ? ` (+${conflictingFilterLabels!.length - 3} more)` : ''}
+          </p>
+        </div>
+      )}
+      {values.length > 8 && (
+        <div className="relative mb-2">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => onSearchChange(e.target.value)}
+            placeholder="Search values..."
+            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
+          />
+        </div>
+      )}
+      {selectedValue && (
+        <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
+          <button onClick={onClear} className="text-xs text-text-tertiary hover:text-text-secondary">
+            Clear selection
+          </button>
+        </div>
+      )}
+      <div className="max-h-48 overflow-y-auto space-y-0.5">
+        {filteredValues.length === 0 ? (
+          <p className="text-xs text-text-quaternary italic py-1">
+            {values.length === 0
+              ? (showConflictBanner ? 'No matching values' : 'Loading values...')
+              : 'No match'}
+          </p>
+        ) : (
+          filteredValues.map(val => {
+            const checked = selectedValue === val;
+            return (
+              <label
+                key={val}
+                className={`flex items-center gap-2 px-1.5 py-1 rounded cursor-pointer text-xs ${
+                  checked ? 'bg-brand/10 text-brand' : 'hover:bg-surface-2 text-text-secondary'
+                }`}
+              >
+                <input
+                  type="radio"
+                  checked={checked}
+                  onChange={() => onSelect(val)}
+                  className="w-3.5 h-3.5 border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1"
+                />
+                <span className="truncate flex-1">{val || '(empty)'}</span>
+              </label>
+            );
+          })
+        )}
+      </div>
+      {search && filteredValues.length < values.length && (
+        <p className="text-xs text-text-quaternary mt-1">
+          {filteredValues.length} of {values.length}
+        </p>
       )}
     </div>
   );
