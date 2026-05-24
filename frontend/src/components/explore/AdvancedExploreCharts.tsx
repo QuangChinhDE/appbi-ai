@@ -550,6 +550,14 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
   if (!items.length) return <EmptyAdvanced message="No funnel stages to render." />;
   const max = Math.max(...items.map((item) => item.value), 1);
   const h = Math.min(56, 320 / Math.max(items.length, 1));
+  // Phase-15.86 — DA could not turn off labels because they were
+  // rendered unconditionally. Honour the master switch (new
+  // dataLabelConfig.enabled OR legacy showDataLabels). Default is true
+  // for funnel stages — the label IS the stage identifier, hiding it
+  // makes the chart unreadable. So when the master switch is off, we
+  // fall back to showing just the stage name without the numeric value.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {items.map((item, index) => {
@@ -561,11 +569,29 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
         const x2 = 400 + topWidth / 2;
         const x3 = 400 + bottomWidth / 2;
         const x4 = 400 - bottomWidth / 2;
+        // Phase-15.86 — per-stage label style. Format precedence: override
+        // > seriesFormats > dlc.format > global. Color defaults to white
+        // (legacy) because labels sit on top of a coloured shape.
+        const override = dlc?.overrides?.[item.name];
+        const fontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
+        const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
+        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const labelText = labelsEnabled
+          ? (style.dataLabelTemplate
+              ? expandLabelTemplate({
+                  template: style.dataLabelTemplate,
+                  formatted: formatNumber(item.value, styleForLabel),
+                  rawName: item.name,
+                  percent: item.value / max,
+                })
+              : `${item.name.slice(0, 28)} - ${formatNumber(item.value, styleForLabel)}`)
+          : item.name.slice(0, 28);
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.9} />
-            <text x={400} y={y + h / 2 + 4} fontSize={12} textAnchor="middle" fill="#fff">{item.name.slice(0, 28)} - {formatNumber(item.value, style)}</text>
-            <title>{item.name}: {formatNumber(item.value, style)}</title>
+            <text x={400} y={y + h / 2 + 4} fontSize={fontSize} textAnchor="middle" fill={fontColor}>{labelText}</text>
+            <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
           </g>
         );
       })}
