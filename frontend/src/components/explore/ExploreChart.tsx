@@ -1507,6 +1507,88 @@ function ExploreChartInner({
     const m = metrics[0];
     if (!dimension || !m) return <EmptyState message="Select legend and value columns to render this chart." />;
     const sortedPieData = applyDataLimit(applySortRules(pieData, sortRules), dataLimit, dataLimitDir);
+    // Phase-15.86 — PIE label fully honours DataLabelConfig (fontSize,
+    // fontColor, background, template) via a custom <text>+<rect>
+    // renderer. Previously Recharts `label` prop took a string only, so
+    // colour/size from the editor went nowhere. Position/rotation
+    // stay N/A for radial layout (Pie picks the angle).
+    const renderPieLabel = (entry: any) => {
+      const { name, value, percent, x, y, cx, cy, midAngle } = entry;
+      // Skip slices below 3% — match Recharts default to keep small
+      // slice labels from overlapping near the centre.
+      if (percent === undefined || percent <= 0.03) return null;
+      const sliceKey = String(name);
+      const resolved = resolveDataLabelStyle(style, sliceKey);
+      // When master switch is off we still surface a compact "Name (X%)"
+      // string so the legend retention behaviour matches the rest of the
+      // app. Hidden entirely only when both `enabled` and percent are off.
+      if (!resolved) {
+        // Render a soft "Name (X%)" so the chart still has a visual
+        // identifier — matches the old behaviour pre-15.84.
+        return (
+          <text x={x} y={y}
+            fill="rgb(var(--text-secondary))"
+            fontSize={11}
+            textAnchor={x > cx ? 'start' : 'end'}
+            dominantBaseline="central"
+          >
+            {`${name} (${(percent * 100).toFixed(0)}%)`}
+          </text>
+        );
+      }
+      // Resolved → build text (template-aware) then render with full
+      // DataLabel styling. seriesFormats is included in the precedence
+      // via the formatter call below (mirrors buildDataLabelContent
+      // precedence: override.format > seriesFormats > dlc.format > global).
+      const effectiveFormat = resolved.format ?? style.seriesFormats?.[sliceKey] ?? style.numberFormat;
+      const styleForLabel = effectiveFormat ? { ...style, numberFormat: effectiveFormat } : style;
+      const text = style.dataLabelTemplate
+        ? renderTemplatedLabel({
+            template: style.dataLabelTemplate,
+            value,
+            seriesKey: sliceKey,
+            seriesLabel: sliceKey,
+            dimensionValue: sliceKey,
+            percent,
+            style: styleForLabel,
+          })
+        : `${name}: ${formatNumber(value, styleForLabel, sliceKey)} (${(percent * 100).toFixed(0)}%)`;
+      const approxWidth = text.length * resolved.fontSize * 0.6;
+      const approxHeight = resolved.fontSize + 4;
+      const anchor: 'start' | 'end' = x > cx ? 'start' : 'end';
+      const bgX = anchor === 'start' ? x - 3 : x - approxWidth - 3;
+      return (
+        <g>
+          {resolved.background && (
+            <rect
+              x={bgX}
+              y={y - approxHeight / 2}
+              width={approxWidth + 6}
+              height={approxHeight}
+              rx={2}
+              fill={resolved.backgroundColor}
+            />
+          )}
+          <text
+            x={x}
+            y={y}
+            fill={resolved.fontColor}
+            fontSize={resolved.fontSize}
+            textAnchor={anchor}
+            dominantBaseline="central"
+          >
+            {text}
+          </text>
+        </g>
+      );
+    };
+    // Synthesize a series list so CustomTooltip can show the dimension
+    // value + metric label correctly even though PIE only has one metric.
+    const pieSeriesForTooltip: ChartSeriesDef[] = [{
+      key: 'value',
+      label: metricLabel(m, labelMap),
+      metric: m,
+    }];
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -1517,44 +1599,27 @@ function ExploreChartInner({
                 cx="50%" cy="45%" outerRadius="60%"
                 innerRadius={pieInnerRadius > 0 ? `${pieInnerRadius}%` : undefined}
                 onClick={handlePieClick}
-                // Phase-15.84 — PIE label respects the DataLabelConfig:
-                //   - text template (defaults to "{label}: {value} ({percent}%)")
-                //   - per-slice override resolved by slice name as series key
-                //   - fontSize / fontColor / format
-                // (Radial position/rotation aren't meaningful on Pie, so
-                //  we don't surface them here; the chart picks the angle.)
-                label={({ name, value, percent }) => {
-                  if (!showDataLabels) {
-                    return percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : '';
-                  }
-                  if (percent <= 0.03) return '';
-                  const sliceKey = String(name);
-                  const resolved = resolveDataLabelStyle(style, sliceKey);
-                  if (!resolved) return '';
-                  if (style.dataLabelTemplate) {
-                    return renderTemplatedLabel({
-                      template: style.dataLabelTemplate,
-                      value,
-                      seriesKey: sliceKey,
-                      seriesLabel: sliceKey,
-                      dimensionValue: sliceKey,
-                      percent,
-                      style: resolved.format ? { ...style, numberFormat: resolved.format } : style,
-                    });
-                  }
-                  const formatted = formatNumber(
-                    value,
-                    resolved.format ? { ...style, numberFormat: resolved.format } : style,
-                  );
-                  return `${name}: ${formatted} (${(percent * 100).toFixed(0)}%)`;
-                }}
+                label={renderPieLabel}
                 labelLine={showDataLabels}
               >
                 {sortedPieData.map((row: any, i) => (
                   <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m, labelMap)]} />
+              {/* Phase-15.86 — CustomTooltip on PIE so `tooltipExtraFields`
+                  surfaces the row's other columns (eg. region, segment)
+                  next to the slice value. Previously bare Recharts
+                  Tooltip ignored that style field. */}
+              <Tooltip
+                content={(p: any) => (
+                  <CustomTooltip
+                    {...p}
+                    series={pieSeriesForTooltip}
+                    style={style}
+                    fontSize={fontSize}
+                  />
+                )}
+              />
               {renderLegend()}
             </PieChart>
           </ResponsiveContainer>
