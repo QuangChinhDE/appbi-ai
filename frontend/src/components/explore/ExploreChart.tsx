@@ -612,11 +612,18 @@ function applySortRules(data: Record<string, any>[], rules: ChartSortRule[]): Re
   });
 }
 
-// ── Client-side top/bottom N limit ───────────────────────────────────────────
-function applyDataLimit(data: Record<string, any>[], limit: number | '' | undefined, direction: 'top' | 'bottom' | undefined): Record<string, any>[] {
-  if (!limit || typeof limit !== 'number' || limit <= 0) return data;
-  if (direction === 'bottom') return data.slice(-limit);
-  return data.slice(0, limit);
+// Phase-15.83 — Top/Bottom N truncation retired. DA wants every row to
+// render even on charts saved with an earlier dataLimit. The function
+// signature stays so existing call sites don't need touching, but it
+// now passes data through unchanged. If the "Top N best sellers" use
+// case comes back as a real DA ask, we re-enable selectively rather
+// than as a default cap.
+function applyDataLimit(
+  data: Record<string, any>[],
+  _limit: number | '' | undefined,
+  _direction: 'top' | 'bottom' | undefined,
+): Record<string, any>[] {
+  return data;
 }
 
 // ── Time granularity bucketing ────────────────────────────────────────────────

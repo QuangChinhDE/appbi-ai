@@ -4855,24 +4855,10 @@ export function ExploreChartConfig({
             ))}
           </div>
 
-          {/* Top N limit */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Show</label>
-              <select value={styleConfig.dataLimitDirection || 'top'}
-                onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
-                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="top">Top N</option>
-                <option value="bottom">Bottom N</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Limit (rows)</label>
-              <input type="number" min={1} value={styleConfig.dataLimit ?? ''} placeholder="all"
-                onChange={e => updStyle({ dataLimit: e.target.value === '' ? '' : Number(e.target.value) })}
-                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
-            </div>
-          </div>
+          {/* Phase-15.83 — Top N / Bottom N inputs removed. The render
+              path now ignores dataLimit (applyDataLimit is a no-op). If
+              DA needs "top 10 best sellers" later we reintroduce as an
+              explicit feature rather than a default cap. */}
         </Disclosure>
       )}
         </SectionPanel>

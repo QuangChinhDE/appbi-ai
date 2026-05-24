@@ -216,8 +216,13 @@ function QueryInspector({
 
 type QueryMode = 'generated' | 'custom';
 
+// Phase-15.83 — kept as fallback constants for any caller that still
+// references them, but the Limit dropdown was removed from the editor
+// header (DA dropped per-chart caps). New runs default to the 10M
+// sentinel so the BE LIMIT clause stops cutting data.
 const GENERATED_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000, 10000];
 const CUSTOM_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000];
+const NO_LIMIT_SENTINEL = 10_000_000;
 const TABLE_LIKE_CHART_TYPES = new Set<ChartType>(['TABLE', 'MATRIX']);
 const SCATTER_LIKE_CHART_TYPES = new Set<ChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
 const NO_DIMENSION_METRIC_CHART_TYPES = new Set<ChartType>(['KPI', 'GAUGE', 'BULLET']);
@@ -252,8 +257,11 @@ const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ChartType>([
   'SUNBURST',
   'RIBBON',
 ]);
-function getMaxQueryLimit(mode: QueryMode): number {
-  return mode === 'custom' ? 5000 : 10000;
+function getMaxQueryLimit(_mode: QueryMode): number {
+  // Phase-15.83 — DA dropped per-chart row caps. The function stays so
+  // callers still compile; it returns the 10M sentinel that disables
+  // truncation in practice (BE short-circuits on the actual row count).
+  return NO_LIMIT_SENTINEL;
 }
 
 interface ExploreQueryState {
@@ -943,7 +951,10 @@ export function ExploreEditor({
    * by checking whether the SQL ran on the path they expected.
    */
   const [previewPanelTab, setPreviewPanelTab] = useState<'chart' | 'table' | 'query'>('chart');
-  const [queryLimit, setQueryLimit] = useState(100);
+  // Phase-15.83 — queryLimit state retained for backward-compat with the
+  // run-query payload (BE param is still `limit`), but defaulted to the
+  // no-limit sentinel and never displayed in the UI.
+  const [queryLimit] = useState(NO_LIMIT_SENTINEL);
   const [sqlMode, setSqlMode] = useState<QueryMode>('generated');
   const [customSqlDraft, setCustomSqlDraft] = useState('');
   const [generatedQueryState, setGeneratedQueryState] = useState<ExploreQueryState | null>(null);
@@ -1984,12 +1995,8 @@ export function ExploreEditor({
     });
   }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare]);
 
-  useEffect(() => {
-    const maxLimit = getMaxQueryLimit(sqlMode);
-    if (queryLimit > maxLimit) {
-      setQueryLimit(maxLimit);
-    }
-  }, [queryLimit, sqlMode]);
+  // Phase-15.83 — useEffect previously clamped queryLimit to the per-mode
+  // cap. Caps removed (NO_LIMIT_SENTINEL); effect deleted.
 
   /**
    * Phase-12.7 — apply the qualified-upgrade pass to customRoleConfig too.
@@ -2650,17 +2657,9 @@ export function ExploreEditor({
                 {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
-            <label className="flex items-center gap-1 text-[11px] text-text-tertiary">
-              Limit
-              <select
-                value={effectiveQueryLimit}
-                onChange={(e) => setQueryLimit(Number(e.target.value))}
-                disabled={!resPerms.canEdit}
-                className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
+            {/* Phase-15.83 — DA dropped per-query row cap; Limit dropdown
+                removed. Run button below sends the BE query without any
+                client-imposed cap. */}
             <button
               onClick={() => void handleRunQuery()}
               disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
