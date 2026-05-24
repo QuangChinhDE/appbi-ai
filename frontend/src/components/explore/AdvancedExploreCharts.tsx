@@ -947,18 +947,41 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
   const targets = Array.from(new Set(flows.map((flow) => flow.target)));
   const max = Math.max(...flows.map((flow) => flow.value), 1);
   const yFor = (items: string[], name: string) => 60 + Math.max(0, items.indexOf(name)) * (300 / Math.max(items.length - 1, 1));
+  // Phase-15.86 — DataLabels master switch. When enabled, mid-flow
+  // values render along each flow path so DA can read magnitudes
+  // without hovering. fontSize/fontColor/format honoured.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const dlFontSize = dlc?.fontSize ?? 10;
+  const dlFontColor = dlc?.fontColor ?? 'rgb(var(--text-secondary))';
+  const dlFormat = dlc?.format ?? style.numberFormat;
+  const styleForLabel = dlFormat ? { ...style, numberFormat: dlFormat } : style;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {flows.map((flow, index) => {
         const y1 = yFor(sources, flow.source);
         const y2 = yFor(targets, flow.target);
         const width = 2 + positiveShare(flow.value, max) * 24;
+        const midX = 400;
+        const midY = (y1 + y2) / 2;
+        const flowOverride = dlc?.overrides?.[flow.source];
+        const flowFontColor = flowOverride?.fontColor ?? dlFontColor;
+        const flowFontSize = flowOverride?.fontSize ?? dlFontSize;
+        const flowFmt = flowOverride?.format ?? style.seriesFormats?.[flow.source] ?? dlFormat;
+        const flowStyle = flowFmt ? { ...style, numberFormat: flowFmt } : styleForLabel;
         return (
-          <path key={`${flow.source}-${flow.target}-${index}`} d={`M 185 ${y1} C 330 ${y1}, 470 ${y2}, 615 ${y2}`}
-            fill="none" stroke={resolveSliceColor(style, palette, flow.source, index)} strokeWidth={width} opacity={0.38}
-            onClick={() => onSelect?.(flow.source)} className="cursor-pointer">
-            <title>{flow.source}{' -> '}{flow.target}: {formatNumber(flow.value, style)}</title>
-          </path>
+          <g key={`${flow.source}-${flow.target}-${index}`}>
+            <path d={`M 185 ${y1} C 330 ${y1}, 470 ${y2}, 615 ${y2}`}
+              fill="none" stroke={resolveSliceColor(style, palette, flow.source, index)} strokeWidth={width} opacity={0.38}
+              onClick={() => onSelect?.(flow.source)} className="cursor-pointer">
+              <title>{flow.source}{' -> '}{flow.target}: {formatNumber(flow.value, flowStyle)}</title>
+            </path>
+            {labelsEnabled && (
+              <text x={midX} y={midY - 4} fontSize={flowFontSize} textAnchor="middle" fill={flowFontColor} style={{ pointerEvents: 'none' }}>
+                {formatNumber(flow.value, flowStyle)}
+              </text>
+            )}
+          </g>
         );
       })}
       {sources.map((source, index) => (
@@ -992,6 +1015,11 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
   const total = inner.reduce((sum, item) => sum + item.value, 0) || 1;
   let cursor = 0;
   const sourceAngles = new Map<string, { start: number; end: number }>();
+  // Phase-15.86 — DataLabels on inner-ring slices.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const dlFontSize = dlc?.fontSize ?? 11;
+  const dlFontColor = dlc?.fontColor ?? '#fff';
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {inner.map((item, index) => {
@@ -1000,11 +1028,35 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
         const end = cursor + angle;
         sourceAngles.set(item.name, { start, end });
         cursor = end;
+        // Phase-15.86 — slice label at mid-angle on the inner ring.
+        // Skip very small slices (<5%) so labels don't overlap.
+        const sharePct = item.value / total;
+        const mid = (start + end) / 2;
+        const labelPos = polar(400, 210, 83, mid);
+        const override = dlc?.overrides?.[item.name];
+        const fontColor = override?.fontColor ?? dlFontColor;
+        const fontSize = override?.fontSize ?? dlFontSize;
+        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
-          <path key={item.name} d={ringSegment(400, 210, 115, 52, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
-            onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <title>{item.name}: {formatNumber(item.value, style)}</title>
-          </path>
+          <g key={item.name}>
+            <path d={ringSegment(400, 210, 115, 52, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
+              onClick={() => onSelect?.(item.name)} className="cursor-pointer">
+              <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+            </path>
+            {labelsEnabled && sharePct >= 0.05 && (
+              <text x={labelPos.x} y={labelPos.y} textAnchor="middle" fontSize={fontSize} fill={fontColor} style={{ pointerEvents: 'none' }}>
+                {style.dataLabelTemplate
+                  ? expandLabelTemplate({
+                      template: style.dataLabelTemplate,
+                      formatted: formatNumber(item.value, styleForLabel),
+                      rawName: item.name,
+                      percent: sharePct,
+                    })
+                  : formatNumber(item.value, styleForLabel)}
+              </text>
+            )}
+          </g>
         );
       })}
       {outerPairs.map((pair, index) => {
