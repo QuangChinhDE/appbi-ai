@@ -209,7 +209,26 @@ export function FilterCardPBI({ filter, distinctValues = [], onChange, onRemove 
     return onChange({ ...filter, operator: 'eq', value: first });
   };
 
-  const merged = distinctValues;
+  // Phase-15.81 v14 — dedupe distinct values defensively. BE returns
+  // unique values per query, but when a filter card pulls from
+  // multiple linkedFields the upstream merger can stitch the same
+  // raw value back in twice (e.g. "RC03" present in both
+  // dataset_table_A.code and dataset_table_B.code distinct sets).
+  // Without this guard the checklist renders the value twice and the
+  // checkbox state is split across the two rows. Comparison is
+  // case-sensitive + trim-preserving so we don't accidentally collapse
+  // "RC03" and "rc03" if the source data treats them as distinct.
+  const merged = useMemo(() => {
+    if (distinctValues.length < 2) return distinctValues;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of distinctValues) {
+      if (seen.has(v)) continue;
+      seen.add(v);
+      out.push(v);
+    }
+    return out.length === distinctValues.length ? distinctValues : out;
+  }, [distinctValues]);
   const filteredValues = useMemo(() => {
     if (!search) return merged;
     const q = search.toLowerCase();

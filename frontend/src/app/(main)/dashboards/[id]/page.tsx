@@ -71,6 +71,40 @@ function semanticDimensionToFilterType(type: string | undefined): FilterType {
   }
 }
 
+// Phase-15.81 v14 — heuristic: when the semantic model mislabels a
+// date/datetime column as `string` (DA forgot to set the type in the
+// data model UI), the column shows up in the picker as a dropdown
+// slot, gets picked by DA as a text filter, and produces 0-row
+// queries because BETWEEN '2026-...' '2026-...' never matches the
+// raw column. Treat well-known date-name suffixes as evidence the
+// column IS a date so we route it through the calendar filter
+// fan-out path instead of the field picker.
+const DATE_NAME_HINTS = [
+  '_at', '_date', '_time', '_datetime',
+  'date', 'time', 'datetime', 'timestamp',
+  'add_time', 'update_time', 'close_time', 'lost_time', 'transfer_date',
+  'created', 'modified', 'expired', 'payment_date',
+];
+
+function nameSuggestsDate(fieldName: string): boolean {
+  const n = (fieldName ?? '').toLowerCase().trim();
+  if (!n) return false;
+  return DATE_NAME_HINTS.some((hint) =>
+    n === hint || n.endsWith(hint) || n.startsWith(hint),
+  );
+}
+
+function resolveDimensionFilterType(
+  storedType: string | undefined,
+  fieldName: string,
+): FilterType {
+  const fromStored = semanticDimensionToFilterType(storedType);
+  if (fromStored === 'dropdown' && nameSuggestsDate(fieldName)) {
+    return 'date';
+  }
+  return fromStored;
+}
+
 function splitSemanticField(field: string): [string, string] | null {
   if (!field.includes('.')) return null;
   const [viewName, fieldName] = field.split('.', 2);
@@ -1094,7 +1128,7 @@ export default function DashboardDetailPage() {
             name: fieldName,
             label: getFriendlyFieldLabel(dimension.label ?? fieldName),
             tableLabel: view.table_display_name ?? view.name,
-            type: semanticDimensionToFilterType(dimension.type),
+            type: resolveDimensionFilterType(dimension.type, fieldName),
             datasetId: binding.datasetId,
             datasetName: model.dataset_name,
             semanticField,
@@ -1145,18 +1179,49 @@ export default function DashboardDetailPage() {
     // its linkedFields fan out to every concrete semantic date field so
     // ChartTile can resolve a matching field per chart via the existing
     // canDeferFilterToChartSemanticBinding contract.
-    const semanticFields = new Set<string>();
+    //
+    // Phase-15.81 v14 — primary semantic field MUST be a Date-dimension
+    // (calendar table), NOT a fact table's date column. Previous code
+    // alphabetically sorted ALL discovered date fields and took the
+    // first → in a dataset where `bc_activity` (fact) sorts before
+    // `dim_date`, the filter ended up bound to `bc_activity.Date` so
+    // every query LEFT JOIN'd through the fact and dropped the calendar
+    // semantics. Two-bucket separation now:
+    //   • calendar (Path A + name match) → eligible primary
+    //   • fact     (Path B only)         → linkedFields fan-out only
+    const calendarSemanticFields = new Set<string>();
+    const factSemanticFields = new Set<string>();
     const chartsWithDate = new Set<number>();
     const datasetIds = new Set<number>();
 
-    // First pass: collect date/datetime dimension names from every dataset model.
+    // Heuristic: a view is "calendar/date-dim" when its name contains
+    // calendar/date markers in a position that suggests dimension role.
+    // We deliberately keep this loose — DA-named tables vary widely
+    // ("dim_date", "calendar", "d_date", "date_dim") — and rely on
+    // calendarFieldMappings (Path A) as the authoritative signal.
+    const isCalendarViewName = (viewName: string): boolean => {
+      const n = viewName.toLowerCase().trim();
+      return (
+        n === 'date' || n === 'calendar'
+        || n.startsWith('dim_date') || n.startsWith('d_date')
+        || n.startsWith('date_dim') || n.startsWith('calendar_')
+        || n.endsWith('_calendar') || n.endsWith('_date_dim')
+      );
+    };
+
+    // First pass: collect date/datetime dimension names from every
+    // dataset model. v14 — also accept fields whose stored type is
+    // `string` but whose name strongly suggests a date column (DA
+    // forgot to set the type in the data model UI).
     const dateDimensionFieldsByDataset = new Map<number, Set<string>>();
     for (const [datasetId, model] of datasetModelsById.entries()) {
       const dateFields = new Set<string>();
       for (const view of model.views ?? []) {
         for (const dim of view.dimensions ?? []) {
           const dimType = String(dim.type ?? '').toLowerCase();
-          if (dimType === 'date' || dimType === 'datetime') {
+          const isDateType = dimType === 'date' || dimType === 'datetime';
+          const looksLikeDate = !isDateType && nameSuggestsDate(dim.name ?? '');
+          if (isDateType || looksLikeDate) {
             dateFields.add(`${view.name}.${dim.name}`);
           }
         }
@@ -1186,22 +1251,20 @@ export default function DashboardDetailPage() {
 
       let chartHasDate = false;
 
-      // Path A (legacy): explicit calendar mappings — keep so saved charts
-      // that rely on a calendar table continue to be filterable.
+      // Path A (legacy): explicit calendar mappings — these are
+      // ALWAYS calendar-table fields (DA wired them up specifically).
       for (const mapping of binding?.calendarFieldMappings ?? []) {
         if (mapping?.calendarField !== 'date') continue;
         const sf = mapping.semanticField;
         if (typeof sf === 'string' && sf.includes('.')) {
-          semanticFields.add(sf);
+          calendarSemanticFields.add(sf);
           chartHasDate = true;
         }
       }
 
-      // Path B (new): any date/datetime semantic dimension that the chart
-      // can already see — directly bound (dimensionFields/measureFields/
-      // fieldMap values) or reachable via the explore join graph
-      // (reachableFields). This lets a Date filter target charts that
-      // don't go through a calendar table.
+      // Path B (new): any date/datetime semantic dimension reachable
+      // from the chart. Split into calendar vs fact buckets via the
+      // view-name heuristic so the primary stays on a date dim.
       const datasetId = binding?.datasetId;
       const dateFieldsForDataset = datasetId != null
         ? dateDimensionFieldsByDataset.get(datasetId) ?? new Set<string>()
@@ -1216,10 +1279,14 @@ export default function DashboardDetailPage() {
           ...(binding?.reachableFields ?? []),
         ]);
         for (const candidate of candidates) {
-          if (dateFieldsForDataset.has(candidate)) {
-            semanticFields.add(candidate);
-            chartHasDate = true;
+          if (!dateFieldsForDataset.has(candidate)) continue;
+          const [viewName] = candidate.split('.', 1);
+          if (isCalendarViewName(viewName)) {
+            calendarSemanticFields.add(candidate);
+          } else {
+            factSemanticFields.add(candidate);
           }
+          chartHasDate = true;
         }
       }
 
@@ -1228,25 +1295,34 @@ export default function DashboardDetailPage() {
       }
     }
 
-    const orderedSemanticFields = Array.from(semanticFields).sort();
+    // Build the final ordered list: calendar fields first (primary
+    // candidates), then fact fields as linkedFields fan-out.
+    const orderedCalendarFields = Array.from(calendarSemanticFields).sort();
+    const orderedFactFields = Array.from(factSemanticFields)
+      .filter((f) => !calendarSemanticFields.has(f))
+      .sort();
+    const orderedSemanticFields = [...orderedCalendarFields, ...orderedFactFields];
     if (orderedSemanticFields.length === 0) return [];
 
-    const firstSemanticField = orderedSemanticFields[0];
-    const [firstViewName] = firstSemanticField.split('.', 1);
+    // Pick primary: first calendar field, else first fact field as
+    // last resort (no calendar table in the model — legacy datasets).
+    const primarySemanticField = orderedCalendarFields[0] ?? orderedFactFields[0];
+    const linkedFields = orderedSemanticFields.filter((f) => f !== primarySemanticField);
+    const [primaryViewName] = primarySemanticField.split('.', 1);
     const firstDatasetId = datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined;
     const firstModel = firstDatasetId ? datasetModelsById.get(firstDatasetId) : undefined;
-    const firstView = firstModel?.views.find((view) => view.name === firstViewName);
+    const primaryView = firstModel?.views.find((view) => view.name === primaryViewName);
 
     return [{
-      key: orderedSemanticFields[0],
+      key: primarySemanticField,
       name: 'date',
       label: 'Date',
-      tableLabel: firstView?.table_display_name ?? firstView?.name,
+      tableLabel: primaryView?.table_display_name ?? primaryView?.name,
       type: 'date',
-      semanticField: orderedSemanticFields[0],
+      semanticField: primarySemanticField,
       datasetId: firstDatasetId,
       datasetName: firstModel?.dataset_name,
-      defaultLinkedFields: orderedSemanticFields.slice(1),
+      defaultLinkedFields: linkedFields,
       chartCoverage: chartsWithDate.size,
       datasetChartCount: totalDashboardChartCount,
       sharedAcrossDataset: totalDashboardChartCount > 0 && chartsWithDate.size === totalDashboardChartCount,
