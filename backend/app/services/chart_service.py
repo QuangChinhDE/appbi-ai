@@ -2175,7 +2175,9 @@ class ChartService:
 
             ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
             timeout = 60 if ds_type == "bigquery" else 30
-            source_sample_limit = max(1, min(int(source_sample_limit), 5000))
+            # Phase-15.83 — cap raised from 5000 → 10M sentinel; DB
+            # short-circuits on the real row count.
+            source_sample_limit = max(1, min(int(source_sample_limit), 10_000_000))
             source_columns, source_rows, source_execution_time_ms = DataSourceConnectionService.execute_query(
                 ds_type,
                 datasource.config,

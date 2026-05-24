@@ -70,7 +70,11 @@ class ChartPreviewDataRequest(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
     context: Optional[str] = None
     include_source_sample: bool = False
-    source_sample_limit: int = Field(default=100, ge=1, le=5000)
+    # Phase-15.83 — DA dropped per-chart row caps. Pydantic upper bound
+    # bumped from 5000 to a 10M sentinel so the FE can send the
+    # NO_LIMIT_SENTINEL without tripping a 422. Default stays low (100)
+    # for backward-compat with callers that omit the field.
+    source_sample_limit: int = Field(default=100, ge=1, le=10_000_000)
 
 
 class ChartNormalizeConfigRequest(BaseModel):

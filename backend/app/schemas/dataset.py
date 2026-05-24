@@ -274,7 +274,11 @@ class ExecuteQueryRequest(BaseModel):
     filters: Optional[List[FilterCondition]] = None
     order_by: Optional[List[OrderBySpec]] = None
     time_grains: Optional[Dict[str, Literal["day", "week", "month", "quarter", "year"]]] = None
-    limit: int = Field(default=1000, ge=1, le=10000)
+    # Phase-15.83 — chart-render path (FE Explore + dashboard tile) sends
+    # NO_LIMIT_SENTINEL (10M) after the row-cap removal. Upper bound bumped
+    # from 10000 to match so requests aren't 422-rejected. Default stays
+    # at 1000 for legacy callers (table preview, MCP).
+    limit: int = Field(default=1000, ge=1, le=10_000_000)
 
 
 class ExecuteQueryResponse(BaseModel):

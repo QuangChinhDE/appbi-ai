@@ -655,7 +655,10 @@ class QueryExecuteRequest(BaseModel):
     """Schema for executing an ad-hoc query."""
     data_source_id: int
     sql_query: str = Field(..., min_length=1)
-    limit: Optional[int] = Field(None, ge=1, le=10000)
+    # Phase-15.83 — ad-hoc query LIMIT cap bumped from 10000 to 10M
+    # sentinel so the Explore custom-SQL path doesn't 422 when sending the
+    # NO_LIMIT_SENTINEL chosen by the FE row-cap-removal change.
+    limit: Optional[int] = Field(None, ge=1, le=10_000_000)
     timeout_seconds: Optional[int] = Field(30, ge=1, le=300, description="Query timeout in seconds")
 
 

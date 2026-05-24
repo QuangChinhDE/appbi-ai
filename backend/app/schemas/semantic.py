@@ -535,7 +535,11 @@ class SemanticQueryRequest(BaseModel):
     filters: Dict[str, FilterCondition] = {}  # Field name -> filter condition
     pivots: List[str] = []  # Dimensions to pivot (currently supports max 1)
     sorts: List[SortDefinition] = []  # Sort specifications
-    limit: int = Field(default=500, ge=1, le=10000)
+    # Phase-15.83 — Pydantic upper bound bumped from 10000 to 10M sentinel.
+    # The FE Explore editor now sends NO_LIMIT_SENTINEL after the row-cap
+    # removal; old callers that omit the field still get the conservative
+    # 500 default.
+    limit: int = Field(default=500, ge=1, le=10_000_000)
     window_functions: List[WindowFunctionDefinition] = []  # Window function definitions
     calculated_fields: List[CalculatedFieldDefinition] = []  # Calculated fields
     time_grains: Dict[str, Literal["day", "week", "month", "quarter", "year"]] = {}  # Dimension -> grain

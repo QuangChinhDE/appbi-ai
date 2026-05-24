@@ -1576,7 +1576,10 @@ class LiveQueryService:
         measures: list[dict] | None,
         filters: list | None,
         order_by: list[dict] | None = None,
-        limit: int = 1000,
+        # Phase-15.83 — default raised from 1000 → 10M sentinel after DA
+        # dropped the chart row cap. Callers that explicitly pass a small
+        # limit (preview routes, tests) are unaffected.
+        limit: int = 10_000_000,
         time_grains: dict[str, str] | None = None,
     ) -> list[dict]:
         """Execute dataset table query directly against the live source."""
