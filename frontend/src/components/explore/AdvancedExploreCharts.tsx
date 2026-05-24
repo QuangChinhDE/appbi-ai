@@ -35,6 +35,29 @@ export function resolveSliceColor(
   return palette[index % palette.length];
 }
 
+/**
+ * Phase-15.86 — local copy of the data-label template expander used by
+ * ExploreChart. Kept here so AdvancedExploreCharts.tsx doesn't need a
+ * circular import.
+ *
+ * Tokens: {value} {label} {dimension} {series} {percent}
+ */
+export function expandLabelTemplate(opts: {
+  template?: string;
+  formatted: string;
+  rawName: string;
+  percent?: number;
+}): string {
+  const { template, formatted, rawName, percent } = opts;
+  if (!template) return formatted;
+  return template
+    .replace(/\{value\}/g, formatted)
+    .replace(/\{label\}/g, rawName)
+    .replace(/\{series\}/g, rawName)
+    .replace(/\{dimension\}/g, rawName)
+    .replace(/\{percent\}/g, percent == null ? '' : (percent * 100).toFixed(1));
+}
+
 export const ADVANCED_EXPLORE_CHART_TYPES = new Set<string>([
   'DONUT',
   'RADAR',
@@ -367,13 +390,36 @@ function DonutOrPolarChart({
         const dlc = style.dataLabelConfig;
         const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
         const sliceOverride = dlc?.overrides?.[item.name];
-        const sliceFormat = sliceOverride?.format ?? dlc?.format;
-        const sliceStyle = sliceFormat ? { ...style, numberFormat: sliceFormat } : style;
         const sliceFontColor = sliceOverride?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
         const sliceFontSize = sliceOverride?.fontSize ?? dlc?.fontSize ?? 11;
-        const labelText = labelsEnabled
-          ? `${item.name.slice(0, 12)} ${formatNumber(item.value, sliceStyle)} (${formatPercent(item.value, total)})`
-          : item.name.slice(0, 16);
+        // Phase-15.86 — when DataLabels enabled AND user provided a
+        // template, expand it. Per-series format precedence:
+        // override.format > seriesFormats[slice] > dlc.format > global.
+        // Fall back to the legacy compact "Name VALUE (X%)" composition
+        // when no template is set.
+        const effectiveFormat = sliceOverride?.format
+          ?? style.seriesFormats?.[item.name]
+          ?? dlc?.format
+          ?? style.numberFormat;
+        const styleForLabel = effectiveFormat
+          ? { ...style, numberFormat: effectiveFormat }
+          : style;
+        const sharePct = item.value / Math.max(total, 1);
+        let labelText: string;
+        if (labelsEnabled) {
+          if (style.dataLabelTemplate) {
+            labelText = expandLabelTemplate({
+              template: style.dataLabelTemplate,
+              formatted: formatNumber(item.value, styleForLabel),
+              rawName: item.name,
+              percent: sharePct,
+            });
+          } else {
+            labelText = `${item.name.slice(0, 12)} ${formatNumber(item.value, styleForLabel)} (${formatPercent(item.value, total)})`;
+          }
+        } else {
+          labelText = item.name.slice(0, 16);
+        }
         cursor += angle;
         // Phase-15.85 — respect per-slice colour override from
         // style.seriesColors. Previously DONUT/POLAR_AREA ignored the
@@ -386,9 +432,8 @@ function DonutOrPolarChart({
         // stay reachable via the legend on the right and the SVG
         // <title> hover. Matches the Recharts PIE behaviour we already
         // use in the main chart.
-        const share = item.value / Math.max(total, 1);
         const showLabelForSlice = labelsEnabled
-          ? share >= 0.03 && index < 10
+          ? sharePct >= 0.03 && index < 10
           : index < 10;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
