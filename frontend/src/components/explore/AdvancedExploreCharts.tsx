@@ -599,7 +599,11 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
   );
 }
 
-function GaugeChartSvg({ value, target, style, palette }: { value: number; target: number; style: ChartStyleConfig; palette: string[] }) {
+function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
+  // Phase-15.86 — primary arc colour respects seriesColors override.
+  // Key = the chart's primary metric key (or 'value' fallback for legacy
+  // saved charts that don't pass one).
+  const arcColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
   const safeTarget = target > 0 ? target : Math.max(value, 1);
   const pct = Math.max(0, Math.min(value / safeTarget, 1));
   const start = -115;
@@ -614,7 +618,7 @@ function GaugeChartSvg({ value, target, style, palette }: { value: number; targe
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <path d={arc(150, start, end)} fill="none" stroke="rgb(var(--surface-3))" strokeWidth={34} strokeLinecap="round" />
-      <path d={arc(150, start, valueEnd)} fill="none" stroke={palette[0]} strokeWidth={34} strokeLinecap="round" />
+      <path d={arc(150, start, valueEnd)} fill="none" stroke={arcColor} strokeWidth={34} strokeLinecap="round" />
       <line x1={400} y1={260} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
       <circle cx={400} cy={260} r={8} fill="rgb(var(--text-primary))" />
       <text x={400} y={330} fontSize={34} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, style)}</text>
@@ -623,15 +627,17 @@ function GaugeChartSvg({ value, target, style, palette }: { value: number; targe
   );
 }
 
-function BulletChartSvg({ value, target, style, palette }: { value: number; target: number; style: ChartStyleConfig; palette: string[] }) {
+function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
   const safeTarget = target > 0 ? target : Math.max(value, 1);
   const max = Math.max(value, safeTarget) * 1.18;
   const valueWidth = 560 * Math.max(0, value / max);
   const targetX = 120 + 560 * Math.max(0, safeTarget / max);
+  // Phase-15.86 — value bar honours seriesColors override.
+  const barColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={120} y={175} width={560} height={70} rx={8} fill="rgb(var(--surface-3))" />
-      <rect x={120} y={175} width={valueWidth} height={70} rx={8} fill={palette[0]} />
+      <rect x={120} y={175} width={valueWidth} height={70} rx={8} fill={barColor} />
       <line x1={targetX} y1={150} x2={targetX} y2={272} stroke="rgb(var(--text-primary))" strokeWidth={4} />
       <text x={120} y={315} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
       <text x={680} y={315} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, style)}</text>
@@ -647,6 +653,12 @@ function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[];
   let x = 20;
   let y = 20;
   let rowH = 0;
+  // Phase-15.86 — DataLabels master switch. When disabled, treemap
+  // shows only the name (no value), so DA can pick a "minimal" look
+  // for embedded dashboards. Default true since labels are the main
+  // identifier in a treemap.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {items.map((item, index) => {
@@ -661,12 +673,31 @@ function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[];
         const rect = { x, y, w, h };
         x += w + 8;
         rowH = Math.max(rowH, h);
+        // Phase-15.86 — per-cell label style. format precedence and
+        // fontColor/fontSize honoured. Defaults stay white because the
+        // background is a coloured rect.
+        const override = dlc?.overrides?.[item.name];
+        const nameFontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
+        const valueFontSize = Math.max((override?.fontSize ?? dlc?.fontSize ?? 12) - 1, 9);
+        const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
+        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const valueLabel = style.dataLabelTemplate
+          ? expandLabelTemplate({
+              template: style.dataLabelTemplate,
+              formatted: formatNumber(item.value, styleForLabel),
+              rawName: item.name,
+              percent: item.value / total,
+            })
+          : formatNumber(item.value, styleForLabel);
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={8} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.88} />
-            <text x={rect.x + 10} y={rect.y + 20} fontSize={12} fontWeight={600} fill="#fff">{item.name.slice(0, 22)}</text>
-            <text x={rect.x + 10} y={rect.y + 38} fontSize={11} fill="#fff">{formatNumber(item.value, style)}</text>
-            <title>{item.name}: {formatNumber(item.value, style)}</title>
+            <text x={rect.x + 10} y={rect.y + 20} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{item.name.slice(0, 22)}</text>
+            {labelsEnabled && (
+              <text x={rect.x + 10} y={rect.y + 38} fontSize={valueFontSize} fill={fontColor}>{valueLabel}</text>
+            )}
+            <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
           </g>
         );
       })}
@@ -687,6 +718,9 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
   const max = Math.max(0, ...bars.flatMap((bar) => [bar.start, bar.end]));
   const scaleY = (value: number) => 360 - ((value - min) / Math.max(max - min, 1)) * 300;
   const barW = Math.max(14, 650 / Math.max(bars.length, 1) - 8);
+  // Phase-15.86 — WATERFALL DataLabels master switch + format precedence.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <line x1={60} y1={scaleY(0)} x2={760} y2={scaleY(0)} stroke="rgb(var(--border-line))" />
@@ -696,17 +730,37 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
         const y2 = scaleY(bar.end);
         const y = Math.min(y1, y2);
         const h = Math.max(2, Math.abs(y2 - y1));
-        const color = bar.value >= 0 ? palette[0] : (palette[3] ?? '#ef4444');
+        // Phase-15.86 — explicit user override beats sign-based fallback.
+        // Previously WATERFALL hardcoded palette[0]/palette[3] by sign and
+        // ignored seriesColors entirely. Now: user-picked color > sign-
+        // based default. Lets DA recolour individual steps (eg. "Refunds"
+        // bar to amber) without losing the positive/negative semantics
+        // for un-customised bars.
+        const userColor = style.seriesColors?.[bar.name];
+        const signColor = bar.value >= 0 ? palette[0] : (palette[3] ?? '#ef4444');
+        const color = userColor ?? signColor;
+        const override = dlc?.overrides?.[bar.name];
+        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+        const labelColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
+        const fmt = override?.format ?? style.seriesFormats?.[bar.name] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const labelText = style.dataLabelTemplate
+          ? expandLabelTemplate({
+              template: style.dataLabelTemplate,
+              formatted: formatNumber(bar.value, styleForLabel),
+              rawName: bar.name,
+            })
+          : formatNumber(bar.value, styleForLabel);
         return (
           <g key={bar.name} onClick={() => onSelect?.(bar.name)} className="cursor-pointer">
             <rect x={x} y={y} width={barW} height={h} rx={4} fill={color} />
-            {style.showDataLabels && (
-              <text x={x + barW / 2} y={Math.max(18, y - 6)} fontSize={10} textAnchor="middle" fill="rgb(var(--text-secondary))">
-                {formatNumber(bar.value, style)}
+            {labelsEnabled && (
+              <text x={x + barW / 2} y={Math.max(18, y - 6)} fontSize={labelFontSize} textAnchor="middle" fill={labelColor}>
+                {labelText}
               </text>
             )}
             <text x={x + barW / 2} y={388} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} 388)`} fill="rgb(var(--text-tertiary))">{bar.name.slice(0, 12)}</text>
-            <title>{bar.name}: {formatNumber(bar.value, style)}</title>
+            <title>{bar.name}: {formatNumber(bar.value, styleForLabel)}</title>
           </g>
         );
       })}
@@ -1139,9 +1193,9 @@ export function AdvancedExploreChart({
       ) : type === 'FUNNEL' ? (
         <FunnelChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'GAUGE' ? (
-        <GaugeChartSvg value={totalValue} target={targetValue} style={style} palette={palette} />
+        <GaugeChartSvg value={totalValue} target={targetValue} style={style} palette={palette} seriesKey={primaryMetric ? metricKey(primaryMetric) : undefined} />
       ) : type === 'BULLET' ? (
-        <BulletChartSvg value={totalValue} target={targetValue} style={style} palette={palette} />
+        <BulletChartSvg value={totalValue} target={targetValue} style={style} palette={palette} seriesKey={primaryMetric ? metricKey(primaryMetric) : undefined} />
       ) : type === 'TREEMAP' ? (
         <TreemapChart items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'WATERFALL' ? (
