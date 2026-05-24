@@ -261,6 +261,8 @@ modify-write). All tagged `report`:
 | update_dashboard_layout | ✓ |   |   | ✓ |
 | add_dashboard_filter | ✓ |   |   | ✓ |
 | remove_dashboard_filter |   |   |   | ✓ |
+| update_dashboard_draft_filters |   |   |   | ✓ |
+| list_dashboard_filters | ✓ |   |   | ✓ |
 | share_dashboard |   |   |   | ✓ |
 | unshare_dashboard |   |   |   | ✓ |
 | create_public_link | ✓ |   |   | ✓ |
@@ -272,6 +274,15 @@ Phase-15.14 additions:
 - `update_widget_config` — edit a placed widget's config in place; previously required delete + re-add.
 - `share_dashboard` / `unshare_dashboard` — legacy single share-token mechanism. Prefer `create_public_link` for multi-link sharing.
 - `create_dashboard` now accepts `public_filters_config` + `pages_config` upfront (previously had to follow up with `update_dashboard`).
+
+Phase-15.81 v9–v13 (filter pipeline):
+- **Filter slot edits stage into draft_snapshot** (sibling of layout drafts). `add_dashboard_filter`, `remove_dashboard_filter`, `add_date_filter_recipe`, `add_dropdown_filter_recipe` all PUT `/dashboards/{id}/draft-filters` now. Public link viewer keeps seeing the last-published config until you call `publish_dashboard_draft`.
+- **Two filter scopes** on the dashboard itself: `filters_config` (all-pages) and `pages_config[i].filters` (per-page). `scope='all'|'page'` + `page_id` on the granular helpers routes the slot.
+- **Per-link hidden constraints** (Loại 2 — silent WHERE) stay on `DashboardPublicLink.filters_config` via `create_public_link`. Viewer never sees these in UI but BE AND-merges them into every chart-data request.
+- `update_dashboard_draft_filters` — set BOTH scopes in one call (e.g. push a fully composed `pages_config` array).
+- `list_dashboard_filters` — read the current slot list (draft overlay applied) with a `has_draft` flag so you know whether the slots are pending publish.
+- `publish_dashboard_draft` now flushes layout + filter drafts together; `discard_dashboard_draft` clears both.
+- BaseFilter wire shape: `{id, field, semanticField?, datasetId?, fieldKey?, type, operator, value, label, linkedFields?, datePreset?}` — see [`appbi_dashboard.py`](appbi_dashboard.py) module docstring.
 
 ### Cross-cutting
 

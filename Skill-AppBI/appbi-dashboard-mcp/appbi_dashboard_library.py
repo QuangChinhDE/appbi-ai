@@ -22,8 +22,11 @@ Tools (Phase 15.48 dashboard config library):
   shape outside these patterns.
 
 Every tool follows preview-then-confirm via `user_confirmed`. On
-commit the tool PATCHes /dashboards/{id} with the resolved config —
-no read-modify-write needed because BE merges JSON dict fields.
+commit non-filter tools PATCH /dashboards/{id} directly (BE merges
+JSON dict fields). Filter recipes (Phase-15.81 v12) instead stage
+into draft_snapshot via PUT /dashboards/{id}/draft-filters — the
+human publishes by calling `publish_dashboard_draft` so the public
+link only sees vetted slot edits.
 
 Presets here mirror what the FE bakes into DashboardThemeModal /
 PublicLinkAppearance / DashboardFilterBar — keeping MCP and FE in
@@ -308,20 +311,27 @@ async def add_date_filter_recipe(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Append a DATE filter to the dashboard with a named relative
+    """Append a DATE filter slot to the dashboard with a named relative
     preset (FE resolves the actual {start,end} at render time).
 
     `field` is the semantic-qualified `view.column` (e.g.
     `orders.created_at`) or a bare column name for non-semantic
-    dashboards.
+    dashboards. Prefer the qualified form so the slot also carries
+    `semanticField` for Phase-15.81 v9 SQL emit (avoids ambiguous-
+    column errors when cross-table JOINs kick in).
 
-    `target='public_filters'` writes to `public_filters_config` instead
-    — those are LOCKED on the public share link (viewer cannot change
-    them). Use this to force a "last 30 days" lens on a public link.
+    `target='filters'` (default, Phase-15.81 v12): stages a slicer
+       slot into `filters_config` via the draft pipeline. The chip is
+       VIEWER-EDITABLE on the public link once published.
+    `target='public_filters'` (legacy): writes straight to
+       `public_filters_config` (DA-baked, viewer can't change). Modern
+       hidden constraints prefer per-link `create_public_link(
+       filters_config=[...])` — see that tool's docstring.
 
-    `linked_fields` (optional): names of additional date columns the
-    same filter should propagate to. Useful for dashboards mixing
-    multiple date dimensions (e.g. order_date + ship_date).
+    `linked_fields` (optional): semantic refs of additional date
+    columns the same filter should propagate to. Useful for dashboards
+    mixing multiple date dimensions (e.g. `orders.order_date` +
+    `orders.ship_date`).
     """
     if date_preset not in DATE_PRESETS or date_preset == "custom":
         raise ValueError(
@@ -329,34 +339,68 @@ async def add_date_filter_recipe(
             "`custom` would require explicit start/end — use the generic "
             "`add_dashboard_filter` tool for that."
         )
+    # Phase-15.81 — derive semanticField + datasetId from a qualified
+    # `view.col` so the BE engine can route the filter through joins
+    # instead of falling back to base-view bare-name matching.
+    semantic_field = field if "." in field else None
     new_filter = _drop_none({
         "id": f"df-{date_preset}-{field.replace('.', '_')}",
-        "name": name,
-        "field": field,
+        "field": field.split(".", 1)[-1] if "." in field else field,
+        "fieldKey": semantic_field,
+        "semanticField": semantic_field,
         "type": "date",
         "operator": "between",
         "datePreset": date_preset,
         "linkedFields": linked_fields,
         "label": name,
     })
-    # Read current filter list so we can append (PATCH replaces the
-    # whole JSON column otherwise).
+    if target == "filters":
+        # Phase-15.81 v12 — route through the draft pipeline. Reading
+        # the current overlay so we append rather than replace.
+        dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
+        existing = list((dash.get("filters_config") or []))
+        if any((f or {}).get("id") == new_filter["id"] for f in existing):
+            raise ValueError(
+                f"A filter with id {new_filter['id']!r} already exists in "
+                "filters_config. Remove it first or pick a different "
+                "field/preset combo."
+            )
+        if not user_confirmed:
+            return _requires_confirmation(
+                "add_date_filter_recipe",
+                {
+                    "dashboard_id": int(dashboard_id),
+                    "target": "draft_snapshot (filters_config)",
+                    "filter_id": new_filter["id"],
+                    "field": field,
+                    "date_preset": date_preset,
+                    "existing_filter_count": len(existing),
+                    "publish_step": (
+                        "Call `publish_dashboard_draft` after human review."
+                    ),
+                },
+            )
+        return await _request(
+            "PUT",
+            f"/dashboards/{int(dashboard_id)}/draft-filters",
+            json_body={"filters_config": existing + [new_filter]},
+        )
+
+    # target == 'public_filters' (legacy live write).
     dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
-    key = "filters_config" if target == "filters" else "public_filters_config"
-    existing = list((dash.get(key) or []))
+    existing = list((dash.get("public_filters_config") or []))
     if any((f or {}).get("id") == new_filter["id"] for f in existing):
         raise ValueError(
             f"A filter with id {new_filter['id']!r} already exists in "
-            f"{key}. Remove it first (via `remove_dashboard_filter`) or "
-            "use a different field/preset combo."
+            "public_filters_config."
         )
     return await _patch_dashboard(
         dashboard_id,
-        {key: existing + [new_filter]},
+        {"public_filters_config": existing + [new_filter]},
         user_confirmed,
         "add_date_filter_recipe",
         {
-            "target": target,
+            "target": "public_filters_config (legacy live write)",
             "filter_id": new_filter["id"],
             "field": field,
             "date_preset": date_preset,
@@ -377,8 +421,12 @@ async def add_dropdown_filter_recipe(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Append a dropdown/multi-select filter (operator='in') to the
-    dashboard. The FE auto-fetches distinct values for `field`.
+    """Append a dropdown/multi-select filter slot (operator='in') to
+    the dashboard. The FE auto-fetches distinct values for `field`.
+
+    `field` should be the qualified `view.col` form (e.g.
+    `orders.status`) so the slot gets a `semanticField` for the
+    Phase-15.81 v9 SQL routing.
 
     `default_values`: optional pre-selected list. Pass empty/None for
     "show all rows".
@@ -386,38 +434,73 @@ async def add_dropdown_filter_recipe(
     `multi_select=False` switches the operator to 'eq' so the chip
     only accepts ONE value (rare — used for radio-style filters).
 
-    `target='public_filters'` LOCKS the filter on the public share —
-    viewers see the chip but cannot change values.
+    `target='filters'` (default, Phase-15.81 v12): stages a slicer
+       slot into `filters_config` via the draft pipeline.
+    `target='public_filters'` (legacy): writes to
+       `public_filters_config` live (DA-baked, viewer can't change).
     """
     operator = "in" if multi_select else "eq"
     value: Any = list(default_values or []) if multi_select else (
         default_values[0] if default_values else ""
     )
+    semantic_field = field if "." in field else None
     new_filter = _drop_none({
         "id": f"df-dd-{field.replace('.', '_')}",
-        "name": name,
-        "field": field,
+        "field": field.split(".", 1)[-1] if "." in field else field,
+        "fieldKey": semantic_field,
+        "semanticField": semantic_field,
         "type": "dropdown",
         "operator": operator,
         "value": value,
         "linkedFields": linked_fields,
         "label": name,
     })
+    if target == "filters":
+        dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
+        existing = list((dash.get("filters_config") or []))
+        if any((f or {}).get("id") == new_filter["id"] for f in existing):
+            raise ValueError(
+                f"A filter with id {new_filter['id']!r} already exists in "
+                "filters_config. Pick a different field or remove the "
+                "existing one."
+            )
+        if not user_confirmed:
+            return _requires_confirmation(
+                "add_dropdown_filter_recipe",
+                {
+                    "dashboard_id": int(dashboard_id),
+                    "target": "draft_snapshot (filters_config)",
+                    "filter_id": new_filter["id"],
+                    "field": field,
+                    "multi_select": multi_select,
+                    "default_value_count": len(default_values or []),
+                    "existing_filter_count": len(existing),
+                    "publish_step": (
+                        "Call `publish_dashboard_draft` after human review."
+                    ),
+                },
+            )
+        return await _request(
+            "PUT",
+            f"/dashboards/{int(dashboard_id)}/draft-filters",
+            json_body={"filters_config": existing + [new_filter]},
+        )
+
+    # target == 'public_filters' (legacy live write).
     dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
-    key = "filters_config" if target == "filters" else "public_filters_config"
-    existing = list((dash.get(key) or []))
+    existing = list((dash.get("public_filters_config") or []))
     if any((f or {}).get("id") == new_filter["id"] for f in existing):
         raise ValueError(
             f"A filter with id {new_filter['id']!r} already exists in "
-            f"{key}. Pick a different field or remove the existing one."
+            "public_filters_config."
         )
     return await _patch_dashboard(
         dashboard_id,
-        {key: existing + [new_filter]},
+        {"public_filters_config": existing + [new_filter]},
         user_confirmed,
         "add_dropdown_filter_recipe",
         {
-            "target": target,
+            "target": "public_filters_config (legacy live write)",
             "filter_id": new_filter["id"],
             "field": field,
             "multi_select": multi_select,

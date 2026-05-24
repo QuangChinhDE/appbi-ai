@@ -5,9 +5,34 @@ Prefer the blueprint flow (`propose_dashboard_blueprint` →
 `commit_dashboard_blueprint`) for multi-chart builds — these granular tools
 are for incremental edits to an existing dashboard.
 
-Filters: AppBI uses a hybrid model where dashboard filters are stored as a
-JSON array on the dashboard itself (`filters_config`). There is no separate
-filter CRUD endpoint, so add/remove operations go through `update_dashboard`.
+Filters (Phase-15.81 v12):
+  AppBI dashboards expose TWO authoring scopes for slicer filters:
+    * `filters_config`          — all-pages slot list (applies to every chart)
+    * `pages_config[i].filters` — per-page slot list (applies to active page)
+  Plus per-public-link hidden constraints stored on each
+  `DashboardPublicLink.filters_config` (silent WHERE, viewer never sees).
+
+  All slot edits land in the dashboard's `draft_snapshot` first so the
+  human can review before public viewers see them. Publishing flushes
+  layout + filter drafts in one shot. MCP-driven filter edits should
+  therefore use the *_draft_filters helpers; calling the live
+  `update_dashboard(filters_config=...)` bypasses the draft safety net
+  and is discouraged for AI-driven flows.
+
+  BaseFilter wire shape (each slot):
+    {
+      id: str,                         # stable unique id
+      field: str,                      # bare column name
+      fieldKey?: 'view.col',           # qualified key
+      semanticField?: 'view.col',      # semantic ref (preferred)
+      datasetId?: int,                 # dataset scope
+      linkedFields?: ['view.col', ...],# cross-view fan-out (Date filter etc.)
+      type: 'text'|'number'|'date'|'dropdown',
+      operator: 'eq'|'in'|'not_in'|'between'|'gte'|'lte'|...,
+      value: any,                      # scalar | array | [from,to]
+      label?: str,                     # display name override
+      datePreset?: 'this_month'|'last_7_days'|'custom'|...
+    }
 """
 from __future__ import annotations
 
@@ -131,12 +156,18 @@ async def create_dashboard(
 
     `charts`: [{chart_id, layout:{x,y,w,h}, parameters?, widget_type?}]
       OR non-chart [{widget_type, widget_config, layout}].
-    `filters_config`: [{id, name, type:text|number|date|dropdown,
-      field:'view.col', default_value?, scope}].
-    `public_filters_config`: same shape, baked into the public-share
-      token (viewers can't change).
-    `pages_config`: [{id, name, order?}] for tab pages; charts pin via
-      layout.pageId.
+    `filters_config` (Phase-15.81): all-pages slicer slots. Each item
+      follows the BaseFilter shape — see module docstring. Common
+      fields: `{id, field, semanticField:'view.col', datasetId, type,
+      operator, value, label, linkedFields?}`.
+    `public_filters_config`: legacy DA-baked slot list for the public
+      share link. NEW dashboards prefer the per-link filters via
+      `create_public_link(filters_config=...)` which scopes hidden
+      constraints to each share token.
+    `pages_config`: [{id, name, filters?, order?}] for tab pages.
+      Charts pin to a page via `layout.pageId`. `filters` is a
+      per-page slot list (same BaseFilter shape) — applies only when
+      that page is active.
     `layout_mode`: "grid"|"canvas".
     `theme_config` keys: mode, accent, font, background, density,
       cardStyle, cardRadius, cardShadow, hoverAnimation.
@@ -196,11 +227,19 @@ async def update_dashboard(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Patch a dashboard. To replace the filters list, pass `filters_config`.
+    """Patch a dashboard.
 
-    Note: filters are stored as a JSON array on the dashboard itself —
-    there is no separate filter CRUD. Use the `add_dashboard_filter` /
-    `remove_dashboard_filter` helpers for safer additive operations.
+    ⚠️  Phase-15.81 v12 — this endpoint writes LIVE config directly.
+    For filter slot edits you almost always want
+    `update_dashboard_draft_filters` / `add_dashboard_filter` /
+    `remove_dashboard_filter` instead, which stage into draft_snapshot
+    so the public link only sees changes after Publish. Calling this
+    tool with `filters_config` or `pages_config[i].filters` bypasses
+    that safety net.
+
+    Safe live-write cases: name, description, theme, layout_mode,
+    canvas_config. Filter fields are accepted for backwards-compat but
+    will skip the draft pipeline.
     """
     changes = _drop_none(
         {
@@ -494,22 +533,27 @@ async def publish_dashboard_draft(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Publish the dashboard's draft snapshot — copy draft layout onto
-    live rows so public share viewers see the new state.
+    """Publish the dashboard's draft snapshot — copy draft layout AND
+    draft filters onto live rows so public share viewers see the new state.
 
-    Phase-15.56 contract: MCP edits land as a draft; the draft only
-    becomes the public version when this tool is called (or when a
-    human clicks "Lưu" in the editor toolbar). DO NOT auto-call this
-    after every MCP edit — that would defeat the safety net the draft
-    workflow exists for. Only invoke when the user EXPLICITLY asks to
-    publish ("xuất bản", "publish", "đẩy bản mới ra share link").
+    Phase-15.56 introduced layout drafts; Phase-15.81 v12 extended the
+    snapshot to also hold filter slot drafts (`filters_config` +
+    `pages_config[i].filters`). One Publish call flushes both. MCP
+    edits land as a draft; the draft only becomes the public version
+    when this tool is called (or when a human clicks "Lưu & xuất bản"
+    in the editor toolbar). DO NOT auto-call this after every MCP edit
+    — that would defeat the safety net the draft workflow exists for.
+    Only invoke when the user EXPLICITLY asks to publish ("xuất bản",
+    "publish", "đẩy bản mới ra share link").
     """
     if not user_confirmed:
         return _requires_confirmation(
             "publish_dashboard_draft",
             {
                 "dashboard_id": int(dashboard_id),
-                "effect": "Draft layout sẽ ghi đè live + public viewer thấy bản mới.",
+                "effect": (
+                    "Draft layout + filter sẽ ghi đè live + public viewer thấy bản mới."
+                ),
             },
         )
     return await _request(
@@ -524,9 +568,12 @@ async def discard_dashboard_draft(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Throw away the dashboard's pending draft. Live + public viewer
-    are untouched. Use when the user says "huỷ bản nháp", "bỏ thay
-    đổi", or asks to revert to the published version.
+    """Throw away the dashboard's pending draft (layout + filters).
+
+    Live + public viewer are untouched. Use when the user says "huỷ
+    bản nháp", "bỏ thay đổi", or asks to revert to the published
+    version. Phase-15.81 v12: this also discards any pending filter
+    slot edits, not just layout.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -543,43 +590,196 @@ async def discard_dashboard_draft(
 
 
 # ---------------------------------------------------------------------------
-# Write — filters (managed via update_dashboard.filters_config)
+# Write — filter slots (Phase-15.81 v12 draft pipeline)
+#
+# Filter slot edits route through draft_snapshot so the human can review
+# before public viewers see them. Publish (`publish_dashboard_draft`)
+# flushes layout + filter drafts together. The granular helpers below
+# read the CURRENT slot list (which is the draft overlay on top of live
+# when a draft exists, else live), mutate, and stage back as a draft.
 # ---------------------------------------------------------------------------
+
+
+def _normalize_scope(scope: str | None, page_id: str | None) -> tuple[str, str | None]:
+    """Resolve filter scope. Returns ('all'|'page', page_id_or_None).
+
+    `scope` accepts: 'all', 'all_pages', 'global'  → all-pages slot
+                     'page', 'page:<id>'            → per-page slot
+    If `scope` is 'page:<id>', `page_id` is overridden by the suffix.
+    """
+    raw = (scope or "all").strip().lower()
+    if raw.startswith("page:"):
+        return "page", raw.split(":", 1)[1] or page_id
+    if raw in {"page", "this_page"}:
+        if not page_id:
+            raise ValueError(
+                "scope='page' yêu cầu `page_id` (id của trang trong pages_config)."
+            )
+        return "page", page_id
+    if raw in {"all", "all_pages", "global"}:
+        return "all", None
+    raise ValueError(
+        f"scope='{scope}' không hợp lệ. Chấp nhận: 'all' | 'page' (kèm page_id) | 'page:<id>'."
+    )
+
+
+def _patch_pages_config(
+    pages: list[dict[str, Any]],
+    page_id: str,
+    mutator,
+) -> list[dict[str, Any]]:
+    """Apply `mutator(page_dict) → page_dict` to the page whose id matches."""
+    out: list[dict[str, Any]] = []
+    matched = False
+    for page in pages or []:
+        if isinstance(page, dict) and str(page.get("id") or "") == str(page_id):
+            out.append(mutator(dict(page)))
+            matched = True
+        else:
+            out.append(page)
+    if not matched:
+        raise ValueError(
+            f"page_id='{page_id}' không tồn tại trong pages_config — list trước bằng "
+            "`get_dashboard(dashboard_id).pages_config`."
+        )
+    return out
+
+
+@tool("report")
+async def update_dashboard_draft_filters(
+    dashboard_id: int,
+    filters_config: list[dict[str, Any]] | None = None,
+    pages_config: list[dict[str, Any]] | None = None,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Stage filter-slot edits (all-pages + per-page) into draft_snapshot.
+
+    Phase-15.81 v12 — body fields are independent: omit one to leave that
+    scope untouched in the draft. Public viewer keeps seeing the last-
+    published filter config until `publish_dashboard_draft` flushes it.
+
+    Use this when you want to set BOTH scopes in one call, or to push a
+    fully composed pages_config (each page item is `{id, name, filters?}`).
+    For single-filter add/remove, prefer the granular helpers.
+    """
+    body = _drop_none(
+        {
+            "filters_config": filters_config,
+            "pages_config": pages_config,
+        }
+    )
+    if not body:
+        raise ValueError(
+            "Phải truyền ít nhất một trong `filters_config` hoặc `pages_config`."
+        )
+    if not user_confirmed:
+        return _requires_confirmation(
+            "update_dashboard_draft_filters",
+            {
+                "dashboard_id": int(dashboard_id),
+                "scopes": sorted(body.keys()),
+                "all_filter_count": (
+                    len(filters_config) if filters_config is not None else None
+                ),
+                "page_count": (
+                    len(pages_config) if pages_config is not None else None
+                ),
+                "target": "draft_snapshot (Phase-15.81 v12)",
+                "publish_step": (
+                    "Call `publish_dashboard_draft(dashboard_id)` after human review "
+                    "to make filters visible to the public link."
+                ),
+            },
+        )
+    return await _request(
+        "PUT",
+        f"/dashboards/{int(dashboard_id)}/draft-filters",
+        json_body=body,
+    )
 
 
 @tool("report")
 async def add_dashboard_filter(
     dashboard_id: int,
     filter_def: dict[str, Any],
+    scope: str = "all",
+    page_id: str | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Append a filter to the dashboard's filters_config.
+    """Append a filter slot to the dashboard. Stages into draft_snapshot.
 
-    `filter_def`: {id (unique), name, type:text|number|date|dropdown,
-    field ('orders.country' qualified), default_value?, scope:'global' or
-    'page:<page_id>'}. GET/append/PUT to avoid overwriting concurrent edits.
+    `filter_def`: BaseFilter shape — see module docstring. At minimum
+       `{id, field, type, operator, value, datasetId, semanticField}`.
+       `id` must be unique within the target scope.
+
+    `scope`:
+       * 'all' (default)   — append to dashboard.filters_config (all-pages
+                              slicer that every chart on every page sees).
+       * 'page'            — append to pages_config[page_id].filters
+                              (only charts on that page see it).
+
+    `page_id`: required when `scope='page'`. Find page ids via
+       `get_dashboard(dashboard_id).pages_config[*].id`.
+
+    Phase-15.81 v12: stages a DRAFT — call `publish_dashboard_draft` to
+    push to the public link, or `discard_dashboard_draft` to revert.
     """
+    target_scope, resolved_page = _normalize_scope(scope, page_id)
     if not user_confirmed:
         return _requires_confirmation(
             "add_dashboard_filter",
             {
                 "dashboard_id": int(dashboard_id),
+                "scope": target_scope,
+                "page_id": resolved_page,
                 "filter_summary": {
                     "id": filter_def.get("id"),
-                    "name": filter_def.get("name"),
+                    "label": filter_def.get("label"),
                     "type": filter_def.get("type"),
-                    "field": filter_def.get("field"),
+                    "operator": filter_def.get("operator"),
+                    "semanticField": filter_def.get("semanticField"),
+                    "datasetId": filter_def.get("datasetId"),
                 },
+                "target": "draft_snapshot",
             },
         )
     dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
-    existing = list(dash.get("filters_config") or [])
-    existing.append(filter_def)
+    body: dict[str, Any] = {}
+    if target_scope == "all":
+        existing = list(dash.get("filters_config") or [])
+        if any((f.get("id") == filter_def.get("id")) for f in existing if isinstance(f, dict)):
+            raise ValueError(
+                f"filter_def.id='{filter_def.get('id')}' đã tồn tại trong "
+                "filters_config — dùng `update_dashboard_draft_filters` để replace."
+            )
+        existing.append(filter_def)
+        body["filters_config"] = existing
+    else:
+        assert resolved_page is not None  # _normalize_scope guarantees
+        pages = list(dash.get("pages_config") or [])
+
+        def _add(page: dict[str, Any]) -> dict[str, Any]:
+            current = list(page.get("filters") or [])
+            if any(
+                (f.get("id") == filter_def.get("id"))
+                for f in current
+                if isinstance(f, dict)
+            ):
+                raise ValueError(
+                    f"filter_def.id='{filter_def.get('id')}' đã tồn tại trong "
+                    f"pages_config[{resolved_page}].filters."
+                )
+            current.append(filter_def)
+            page["filters"] = current
+            return page
+
+        body["pages_config"] = _patch_pages_config(pages, resolved_page, _add)
     return await _request(
         "PUT",
-        f"/dashboards/{int(dashboard_id)}",
-        json_body={"filters_config": existing},
+        f"/dashboards/{int(dashboard_id)}/draft-filters",
+        json_body=body,
     )
 
 
@@ -587,26 +787,100 @@ async def add_dashboard_filter(
 async def remove_dashboard_filter(
     dashboard_id: int,
     filter_id: str,
+    scope: str = "all",
+    page_id: str | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Remove a filter (by its `id`) from the dashboard's `filters_config`."""
+    """Remove a filter slot (by its `id`) from the dashboard's draft.
+
+    `scope` / `page_id` semantics mirror `add_dashboard_filter`.
+
+    Phase-15.81 v12: stages the removal into draft_snapshot — the public
+    link viewer keeps seeing the old slot until you publish or discard.
+    """
+    target_scope, resolved_page = _normalize_scope(scope, page_id)
     if not user_confirmed:
         return _confirmation_required_for_destructive(
             "remove_dashboard_filter",
-            {"dashboard_id": int(dashboard_id), "filter_id": filter_id},
+            {
+                "dashboard_id": int(dashboard_id),
+                "filter_id": filter_id,
+                "scope": target_scope,
+                "page_id": resolved_page,
+                "target": "draft_snapshot",
+            },
             reversible=True,
         )
     dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
-    existing = [
-        f for f in (dash.get("filters_config") or [])
-        if f.get("id") != filter_id
-    ]
+    body: dict[str, Any] = {}
+    if target_scope == "all":
+        existing = [
+            f for f in (dash.get("filters_config") or [])
+            if isinstance(f, dict) and f.get("id") != filter_id
+        ]
+        body["filters_config"] = existing
+    else:
+        assert resolved_page is not None
+        pages = list(dash.get("pages_config") or [])
+
+        def _strip(page: dict[str, Any]) -> dict[str, Any]:
+            current = [
+                f for f in (page.get("filters") or [])
+                if isinstance(f, dict) and f.get("id") != filter_id
+            ]
+            if current:
+                page["filters"] = current
+            else:
+                page.pop("filters", None)
+            return page
+
+        body["pages_config"] = _patch_pages_config(pages, resolved_page, _strip)
     return await _request(
         "PUT",
-        f"/dashboards/{int(dashboard_id)}",
-        json_body={"filters_config": existing},
+        f"/dashboards/{int(dashboard_id)}/draft-filters",
+        json_body=body,
     )
+
+
+@tool("report")
+async def list_dashboard_filters(
+    dashboard_id: int,
+    scope: str = "all",
+    page_id: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Read the current filter slot list for a scope (draft overlay applied).
+
+    `scope`: 'all' for dashboard.filters_config, 'page' (+ page_id) for
+    pages_config[page_id].filters. Returns {scope, page_id, filters,
+    has_draft} so the caller can tell whether the slots they see are
+    pending publish.
+    """
+    target_scope, resolved_page = _normalize_scope(scope, page_id)
+    dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
+    if target_scope == "all":
+        filters = list(dash.get("filters_config") or [])
+    else:
+        assert resolved_page is not None
+        page = next(
+            (
+                p for p in (dash.get("pages_config") or [])
+                if isinstance(p, dict) and str(p.get("id") or "") == str(resolved_page)
+            ),
+            None,
+        )
+        if page is None:
+            raise ValueError(
+                f"page_id='{resolved_page}' không tồn tại trong pages_config."
+            )
+        filters = list(page.get("filters") or [])
+    return {
+        "scope": target_scope,
+        "page_id": resolved_page,
+        "filters": filters,
+        "has_draft": bool(dash.get("has_draft")),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -688,11 +962,22 @@ async def create_public_link(
     """Create a shareable public link for a dashboard.
 
     The returned record's `token` field is the URL slug — share it as
-    `<APPBI_BASE_URL>/public/dashboard/<token>`. `filters_config` lets you
-    bake in filter presets that public viewers cannot change.
+    `<APPBI_BASE_URL>/public/dashboard/<token>`.
 
-    A `password` (optional) gates the link with a shared secret. Communicate
-    that password through a separate channel.
+    `filters_config` (Phase-15.81 — Loại 2 hidden link filters):
+       Bake in HIDDEN constraints scoped to THIS share link. Viewer
+       never sees these filters in the UI, but BE silently AND-merges
+       them into every chart-data request from this token. Different
+       links to the same dashboard can carry different hidden filters
+       (e.g. one link constrained by region=North, another by
+       region=South). Uses the same BaseFilter shape — see module
+       docstring.
+       Note: the SLICER filters the viewer can interact with come from
+       the dashboard's own `filters_config` / `pages_config[i].filters`
+       (Loại 1) — NOT this field.
+
+    `password` (optional) gates the link with a shared secret.
+    Communicate that password through a separate channel.
     """
     if not user_confirmed:
         return _requires_confirmation(
@@ -736,6 +1021,10 @@ async def update_public_link(
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Update a public link's name/filters/active state/password.
+
+    `filters_config` here is the LINK's hidden constraint set (Loại 2,
+    silent WHERE), NOT the dashboard's slicer config. See
+    `create_public_link` docstring for the distinction.
 
     Pass `password=""` (empty string) to clear an existing password.
     Pass `password=None` (default) to leave it unchanged.
