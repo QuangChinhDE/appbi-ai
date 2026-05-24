@@ -1691,11 +1691,21 @@ export function ExploreEditor({
       roleConfig: normalizedRoleConfig,
       preAggregated: displayedQueryState?.chartPreAggregated ?? false,
     });
-    if (chartType === 'BAR_LINE') {
-      return [...(model.comboBarSeries ?? []), ...(model.comboLineSeries ?? [])].map((s) => ({
-        key: s.key,
-        label: s.label,
+    // Phase-15.84 — append calculated fields so DA can target them in
+    // editors that key on series (Series colors, Data Labels override,
+    // per-series format). LINE/AREA renderers iterate over
+    // `categoricalSeriesWithCalc` so the calc-field key reaches the
+    // chart; without this append the dropdown silently omits them.
+    const calcFieldSeries: { key: string; label: string }[] =
+      (chartStyleConfig.calculatedFields ?? []).map((f) => ({
+        key: f.id,
+        label: f.label || f.id,
       }));
+    if (chartType === 'BAR_LINE') {
+      return [
+        ...(model.comboBarSeries ?? []),
+        ...(model.comboLineSeries ?? []),
+      ].map((s) => ({ key: s.key, label: s.label }));
     }
     if (PIE_LIKE_CHART_TYPES.has(chartType)) {
       // Phase-15.82 bugfix — defensive dedupe by slice name. The model's
@@ -1714,8 +1724,11 @@ export function ExploreEditor({
       }
       return unique;
     }
-    return (model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label }));
-  }, [chartType, displayedQueryState?.chartRows, displayedQueryState?.chartPreAggregated, normalizedRoleConfig]);
+    return [
+      ...(model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label })),
+      ...calcFieldSeries,
+    ];
+  }, [chartType, displayedQueryState?.chartRows, displayedQueryState?.chartPreAggregated, normalizedRoleConfig, chartStyleConfig.calculatedFields]);
 
   const sortLimitColumns = useMemo(() => {
     const inferenceRows = displayedQueryState?.chartRows?.length

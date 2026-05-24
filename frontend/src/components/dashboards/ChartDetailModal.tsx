@@ -480,6 +480,13 @@ export function ChartDetailModal({
       roleConfig: appearanceRoleConfig,
       preAggregated: chartRuntime?.pre_aggregated ?? false,
     });
+    // Phase-15.84 — append calc-field series so dashboard-mode editors
+    // (DataLabels, Series colors, Per-series format) include them.
+    const calcFieldSeries: { key: string; label: string }[] =
+      (draftStyleConfig.calculatedFields ?? []).map((f: any) => ({
+        key: f.id,
+        label: f.label || f.id,
+      }));
     if (exploreChartType === 'BAR_LINE') {
       return [...(model.comboBarSeries ?? []), ...(model.comboLineSeries ?? [])].map((s: any) => ({
         key: s.key,
@@ -492,8 +499,11 @@ export function ChartDetailModal({
         label: String(p?.name ?? ''),
       }));
     }
-    return (model.categoricalSeries ?? []).map((s: any) => ({ key: s.key, label: s.label }));
-  }, [exploreChartType, runtimeRows, appearanceRoleConfig, chartRuntime?.pre_aggregated]);
+    return [
+      ...(model.categoricalSeries ?? []).map((s: any) => ({ key: s.key, label: s.label })),
+      ...calcFieldSeries,
+    ];
+  }, [exploreChartType, runtimeRows, appearanceRoleConfig, chartRuntime?.pre_aggregated, draftStyleConfig.calculatedFields]);
 
   const isLoadingPreview = isLoadingChart || isLoadingRuntime || (queryMode === 'custom' && customSourcePreview.isLoading);
 

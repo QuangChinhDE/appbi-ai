@@ -4868,21 +4868,30 @@ export function ExploreChartConfig({
           {/* Phase-15.84 — Data Labels editor (replaces the bare on/off
               toggle that used to live here). Wrapped in its own
               Disclosure so it stays out of the way until DA opens it.
-              Hidden entirely for SCATTER / BUBBLE since those charts
-              place labels via `scatterLabelField` instead. */}
-          {!isScatterLike && (
-            <Disclosure
-              title="Data Labels"
-              hint="Show numeric labels on data points. Customise per series — position, rotation, font, background, and auto-hide overlapping labels."
-            >
-              <DataLabelsEditor
-                styleConfig={styleConfig}
-                availableSeriesKeys={availableSeriesKeys}
-                updStyle={updStyle}
-                applicableForChart={!isTableLike}
-              />
-            </Disclosure>
-          )}
+              Hidden entirely for:
+                - SCATTER / BUBBLE: use `scatterLabelField` instead
+                - PODIUM: medal renders its own value text
+                - KPI / GAUGE / BULLET: no data points to label
+                - TABLE / MATRIX: no labels (cells already show values)
+              */}
+          {(() => {
+            const noLabelTypes = new Set(['PODIUM', 'KPI', 'GAUGE', 'BULLET']);
+            const hideEditor = isScatterLike || isTableLike || noLabelTypes.has(chartType);
+            if (hideEditor) return null;
+            return (
+              <Disclosure
+                title="Data Labels"
+                hint="Show numeric labels on data points. Customise per series — position, rotation, font, background, and auto-hide overlapping labels."
+              >
+                <DataLabelsEditor
+                  styleConfig={styleConfig}
+                  availableSeriesKeys={availableSeriesKeys}
+                  updStyle={updStyle}
+                  applicableForChart
+                />
+              </Disclosure>
+            );
+          })()}
 
           {/* Number format */}
           <div>

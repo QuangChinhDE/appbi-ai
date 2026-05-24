@@ -413,17 +413,21 @@ function resolveDataLabelStyle(
 }
 
 /**
- * Phase-15.84 — module-level collision registry. Recharts renders each
- * LabelList element separately, so collision detection has to coordinate
- * across all rendering passes for the same chart. We key by chart
- * instance (a fresh symbol each render) and store axis-aligned bounding
- * boxes of placed labels.
+ * Phase-15.84 — collision registry for the "auto-hide overlap" feature.
  *
- * Each chart re-render must call `resetLabelRegistry()` before its
- * passes — our renderer accepts the registry as an argument so each
- * <ExploreChartInner> render owns its own.
+ * Earlier draft used an Array<LabelBBox> and pushed on every label
+ * render. Recharts re-invokes `content` on every animation tick, so the
+ * array accumulated stale bboxes from the initial-position frame and
+ * suppressed every label once the final-position frame ran.
+ *
+ * Fixed version uses a Map keyed by `${seriesKey}:${pointIndex}`. Each
+ * label point owns exactly one slot; subsequent ticks for the same
+ * label overwrite (idempotent). Collision check walks all OTHER slots
+ * — never the entry being placed — so a label can update its own bbox
+ * during animation without being mistaken for a collider.
  */
 type LabelBBox = { x: number; y: number; width: number; height: number };
+type LabelRegistry = Map<string, LabelBBox>;
 function rectsOverlap(a: LabelBBox, b: LabelBBox, pad = 2): boolean {
   return !(a.x + a.width + pad < b.x || b.x + b.width + pad < a.x
         || a.y + a.height + pad < b.y || b.y + b.height + pad < a.y);
@@ -444,12 +448,24 @@ function buildDataLabelContent(opts: {
   seriesKey: string;
   seriesLabel: string;
   style: ChartStyleConfig;
-  registry: LabelBBox[];
+  registry: LabelRegistry;
   orientation: 'vertical' | 'horizontal' | 'point';
 }): (props: any) => React.ReactNode {
   const { resolved, seriesKey, seriesLabel, style, registry, orientation } = opts;
   if (!resolved) return () => null;
   const { position, rotation, fontSize, fontColor, background, backgroundColor, autoHideOverlap } = resolved;
+  // Phase-15.84 bugfix — format precedence:
+  //   1. DataLabel override.format (explicit per-series override)
+  //   2. seriesFormats[seriesKey] (chart-wide per-series number format)
+  //   3. dataLabelConfig.format (chart-wide data-label format)
+  //   4. style.numberFormat (global)
+  // Previously this builder bypassed seriesFormats whenever ANY format
+  // was set on the resolved DL config — even when the user only set
+  // fontColor / position. The label silently diverged from the tooltip.
+  const effectiveFormat = resolved.format ?? style.seriesFormats?.[seriesKey] ?? style.numberFormat;
+  const styleForLabel = effectiveFormat
+    ? { ...style, numberFormat: effectiveFormat }
+    : style;
   const formatLabel = (value: any, payload?: any) => {
     if (style.dataLabelTemplate) {
       return renderTemplatedLabel({
@@ -458,10 +474,10 @@ function buildDataLabelContent(opts: {
         seriesKey,
         seriesLabel,
         dimensionValue: payload ? payload[Object.keys(payload)[0]] : undefined,
-        style: resolved.format ? { ...style, numberFormat: resolved.format } : style,
+        style: styleForLabel,
       });
     }
-    return formatNumber(value, resolved.format ? { ...style, numberFormat: resolved.format } : style, seriesKey);
+    return formatNumber(value, styleForLabel, seriesKey);
   };
 
   return (props: any) => {
@@ -523,10 +539,16 @@ function buildDataLabelContent(opts: {
       height: approxHeight,
     };
     if (autoHideOverlap) {
-      for (const placed of registry) {
+      // Phase-15.84 bugfix — registry is a Map keyed by series+index so
+      // the same label updating across animation ticks overwrites its
+      // own slot. Collision check skips the entry being placed; checks
+      // every other entry currently in the map.
+      const slotKey = `${seriesKey}:${(props as any).index ?? 0}`;
+      for (const [otherKey, placed] of registry) {
+        if (otherKey === slotKey) continue;
         if (rectsOverlap(placed, bbox)) return null;
       }
-      registry.push(bbox);
+      registry.set(slotKey, bbox);
     }
 
     const rotate = rotation === 0 ? undefined : `rotate(${rotation} ${cx} ${cy})`;
@@ -1153,10 +1175,12 @@ function ExploreChartInner({
   // Renderers gate on this; per-series visibility comes from
   // resolveDataLabelStyle below.
   const showDataLabels = style.dataLabelConfig?.enabled ?? style.showDataLabels ?? false;
-  // Phase-15.84 — collision registry recreated each render. Shared
-  // across every <LabelList> on this chart so the "auto-hide overlap"
-  // option can suppress later labels that intersect earlier ones.
-  const labelRegistry: LabelBBox[] = [];
+  // Phase-15.84 — collision registry as a Map keyed by series+pointIndex.
+  // Recreated each React render. Recharts replays `content` on every
+  // animation tick within the same render closure; the Map shape is
+  // idempotent across those replays so labels don't get permanently
+  // suppressed once initial → final frame transitions complete.
+  const labelRegistry: LabelRegistry = new Map();
   /**
    * Helper used by every LabelList call site to produce a custom
    * `content=` renderer respecting position / rotation / font / bg.
@@ -1482,11 +1506,38 @@ function ExploreChartInner({
                 cx="50%" cy="45%" outerRadius="60%"
                 innerRadius={pieInnerRadius > 0 ? `${pieInnerRadius}%` : undefined}
                 onClick={handlePieClick}
-                label={showDataLabels
-                  ? ({ name, value, percent }) => percent > 0.03
-                    ? `${name}: ${formatNumber(value, style)} (${(percent * 100).toFixed(0)}%)`
-                    : ''
-                  : ({ name, percent }) => percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : ''}
+                // Phase-15.84 — PIE label respects the DataLabelConfig:
+                //   - text template (defaults to "{label}: {value} ({percent}%)")
+                //   - per-slice override resolved by slice name as series key
+                //   - fontSize / fontColor / format
+                // (Radial position/rotation aren't meaningful on Pie, so
+                //  we don't surface them here; the chart picks the angle.)
+                label={({ name, value, percent }) => {
+                  if (!showDataLabels) {
+                    return percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : '';
+                  }
+                  if (percent <= 0.03) return '';
+                  const sliceKey = String(name);
+                  const resolved = resolveDataLabelStyle(style, sliceKey);
+                  if (!resolved) return '';
+                  if (style.dataLabelTemplate) {
+                    return renderTemplatedLabel({
+                      template: style.dataLabelTemplate,
+                      value,
+                      seriesKey: sliceKey,
+                      seriesLabel: sliceKey,
+                      dimensionValue: sliceKey,
+                      percent,
+                      style: resolved.format ? { ...style, numberFormat: resolved.format } : style,
+                    });
+                  }
+                  const formatted = formatNumber(
+                    value,
+                    resolved.format ? { ...style, numberFormat: resolved.format } : style,
+                  );
+                  return `${name}: ${formatted} (${(percent * 100).toFixed(0)}%)`;
+                }}
+                labelLine={showDataLabels}
               >
                 {sortedPieData.map((row: any, i) => (
                   <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} />
@@ -1628,6 +1679,17 @@ function ExploreChartInner({
                 // Percent mode: each segment shows its own % inside the bar.
                 // Normal mode: only the top segment shows total above the bar.
                 const showLabel = showDataLabels && (isPercent || isTopOfStack);
+                // Phase-15.84 — resolve the user's DataLabelStyle so the
+                // STACKED percent / stack-total labels respect font size,
+                // text color, background, rotation, and per-series overrides
+                // (previously hardcoded to #fff / 11pt / no background).
+                const resolvedDL = showLabel ? resolveDataLabelStyle(style, series.key) : null;
+                const dlFontSize = resolvedDL?.fontSize ?? (fontSize - 1);
+                const dlPercentColor = resolvedDL?.fontColor ?? '#fff';
+                const dlTotalColor = resolvedDL?.fontColor ?? 'rgb(var(--text-secondary))';
+                const dlBackground = resolvedDL?.background ?? false;
+                const dlBgColor = resolvedDL?.backgroundColor ?? 'rgba(255,255,255,0.85)';
+                const dlRotation = resolvedDL?.rotation ?? 0;
                 return (
                   <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
                     name={series.label}
@@ -1644,17 +1706,24 @@ function ExploreChartInner({
                           if (!total) return null;
                           const pct = (Number(value) / total) * 100;
                           if (pct < 4) return null;
+                          const cx = x + width / 2;
+                          const cy = y + height / 2;
+                          const text = `${pct.toFixed(0)}%`;
+                          const approxW = text.length * dlFontSize * 0.6;
                           return (
-                            <text
-                              x={x + width / 2}
-                              y={y + height / 2}
-                              textAnchor="middle"
-                              dominantBaseline="middle"
-                              fill="#fff"
-                              fontSize={fontSize - 1}
-                            >
-                              {`${pct.toFixed(0)}%`}
-                            </text>
+                            <g transform={dlRotation !== 0 ? `rotate(${dlRotation} ${cx} ${cy})` : undefined}>
+                              {dlBackground && (
+                                <rect x={cx - approxW / 2 - 3} y={cy - dlFontSize / 2 - 1}
+                                      width={approxW + 6} height={dlFontSize + 2}
+                                      rx={2} ry={2} fill={dlBgColor} />
+                              )}
+                              <text x={cx} y={cy}
+                                textAnchor="middle" dominantBaseline="middle"
+                                fill={dlPercentColor} fontSize={dlFontSize}
+                                style={{ pointerEvents: 'none' }}>
+                                {text}
+                              </text>
+                            </g>
                           );
                         }}
                       />
@@ -1667,16 +1736,27 @@ function ExploreChartInner({
                           const { x, y, width, index } = props;
                           const total = stackTotalsByIndex[index] || 0;
                           if (!total) return null;
+                          const cx = x + width / 2;
+                          const cy = Math.max(12, y - 6);
+                          const text = formatNumber(
+                            total,
+                            resolvedDL?.format ? { ...style, numberFormat: resolvedDL.format } : style,
+                          );
+                          const approxW = text.length * dlFontSize * 0.6;
                           return (
-                            <text
-                              x={x + width / 2}
-                              y={Math.max(12, y - 6)}
-                              textAnchor="middle"
-                              fill="rgb(var(--text-secondary))"
-                              fontSize={fontSize - 1}
-                            >
-                              {formatNumber(total, style)}
-                            </text>
+                            <g transform={dlRotation !== 0 ? `rotate(${dlRotation} ${cx} ${cy})` : undefined}>
+                              {dlBackground && (
+                                <rect x={cx - approxW / 2 - 3} y={cy - dlFontSize}
+                                      width={approxW + 6} height={dlFontSize + 4}
+                                      rx={2} ry={2} fill={dlBgColor} />
+                              )}
+                              <text x={cx} y={cy}
+                                textAnchor="middle"
+                                fill={dlTotalColor} fontSize={dlFontSize}
+                                style={{ pointerEvents: 'none' }}>
+                                {text}
+                              </text>
+                            </g>
                           );
                         }}
                       />
@@ -1726,7 +1806,16 @@ function ExploreChartInner({
                     fill={getSeriesColor(series.key, i)}
                     fillOpacity={areaOpacity} strokeWidth={lineWidth}
                     dot={showDots && displayData.length <= 60}
-                    strokeDasharray={lineDash} />
+                    strokeDasharray={lineDash}>
+                    {showDataLabels && (
+                      // Phase-15.84 bugfix — AREA chart was missing its
+                      // LabelList entirely; toggling DataLabels did
+                      // nothing for area-renders. 'point' orientation
+                      // because Recharts passes data-point coordinates
+                      // (cx,cy) rather than rectangle bounds for Area.
+                      <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                    )}
+                  </Area>
                 );
               })}
               {renderBenchmarkLine('y')}
@@ -1924,7 +2013,15 @@ function ExploreChartInner({
                           strokeWidth={lineWidth}
                           dot={showDots && displayData.length <= 60}
                           strokeDasharray={lineDash}
-                        />
+                        >
+                          {showDataLabels && (
+                            // Phase-15.84 bugfix — free-form mix Line
+                            // branch was missing LabelList → DataLabels
+                            // silently no-op for line-as-series in
+                            // BAR_LINE composed charts.
+                            <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                          )}
+                        </Line>
                       );
                     }
                     if (mode === 'area') {
@@ -1939,7 +2036,11 @@ function ExploreChartInner({
                           fill={color}
                           fillOpacity={areaOpacity}
                           strokeWidth={lineWidth}
-                        />
+                        >
+                          {showDataLabels && (
+                            <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                          )}
+                        </Area>
                       );
                     }
                     return (
@@ -1975,7 +2076,15 @@ function ExploreChartInner({
                       type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
                       dot={showDots && displayData.length <= 60}
                       strokeDasharray={lineDash}
-                      yAxisId={dualYAxis ? 'right' : 0} />
+                      yAxisId={dualYAxis ? 'right' : 0}>
+                      {showDataLabels && (
+                        // Phase-15.84 bugfix — legacy BAR_LINE Line element
+                        // was missing LabelList: DataLabels rendered on bars
+                        // but not on the lineMetric. Now both follow the
+                        // same `dataLabelContent` resolver.
+                        <LabelList dataKey={lineSeries.key} content={dataLabelContent(lineSeries.key, lineSeries.label, 'point')} />
+                      )}
+                    </Line>
                   </>
                 )
               }

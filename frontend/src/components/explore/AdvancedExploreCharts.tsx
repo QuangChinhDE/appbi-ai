@@ -334,15 +334,26 @@ function DonutOrPolarChart({
         const path = ringSegment(cx, cy, radius, type === 'DONUT' ? inner : 0, cursor, cursor + angle);
         const mid = cursor + angle / 2;
         const labelPoint = polar(cx, cy, Math.max(radius + 24, 80), mid);
-        const labelText = style.showDataLabels
-          ? `${item.name.slice(0, 12)} ${formatNumber(item.value, style)} (${formatPercent(item.value, total)})`
+        // Phase-15.84 — DONUT/POLAR_AREA read the new DataLabelConfig
+        // master switch + per-slice format override (if any). Position /
+        // rotation / background aren't meaningful for this radial layout
+        // so we honour only the parts that have visual meaning here.
+        const dlc = style.dataLabelConfig;
+        const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+        const sliceOverride = dlc?.overrides?.[item.name];
+        const sliceFormat = sliceOverride?.format ?? dlc?.format;
+        const sliceStyle = sliceFormat ? { ...style, numberFormat: sliceFormat } : style;
+        const sliceFontColor = sliceOverride?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
+        const sliceFontSize = sliceOverride?.fontSize ?? dlc?.fontSize ?? 11;
+        const labelText = labelsEnabled
+          ? `${item.name.slice(0, 12)} ${formatNumber(item.value, sliceStyle)} (${formatPercent(item.value, total)})`
           : item.name.slice(0, 16);
         cursor += angle;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <path d={path} fill={palette[index % palette.length]} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
             {index < 10 && (
-              <text x={labelPoint.x} y={labelPoint.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">
+              <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>
                 {labelText}
               </text>
             )}
