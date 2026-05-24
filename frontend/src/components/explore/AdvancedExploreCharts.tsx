@@ -801,17 +801,37 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   const sx = (value: number) => 70 + ((value - minX) / Math.max(maxX - minX, 1)) * 650;
   const sy = (value: number) => 360 - ((value - minY) / Math.max(maxY - minY, 1)) * 300;
   const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * 20 : 5;
+  // Phase-15.86 — BUBBLE/MAP_POINT DataLabels. Master switch shows the
+  // dimension label next to each point. fontSize/fontColor per-point
+  // override (keyed by label).
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={55} y={35} width={690} height={335} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
       <text x={70} y={394} fontSize={11} fill="rgb(var(--text-tertiary))">{scatterX}</text>
       <text x={28} y={55} fontSize={11} fill="rgb(var(--text-tertiary))" transform="rotate(-90 28 55)">{scatterY}</text>
-      {points.map((point, index) => (
-        <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
-          <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, String(point.label ?? index), index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
-          <title>{point.label ? `${point.label}: ` : ''}${scatterX} ${formatNumber(point.x, style)}, ${scatterY} ${formatNumber(point.y, style)}</title>
-        </g>
-      ))}
+      {points.map((point, index) => {
+        const pointKey = String(point.label ?? index);
+        const override = dlc?.overrides?.[pointKey];
+        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
+        return (
+          <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
+            <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, pointKey, index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
+            {labelsEnabled && point.label !== undefined && (
+              <text x={sx(point.x)} y={sy(point.y) - sr(point.r) - 4}
+                fontSize={labelFontSize}
+                textAnchor="middle"
+                fill={labelFontColor}
+                style={{ pointerEvents: 'none' }}>
+                {String(point.label).slice(0, 16)}
+              </text>
+            )}
+            <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -881,21 +901,36 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
 
 function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
   const max = Math.max(...items.map((item) => item.value), 1);
+  // Phase-15.86 — DataLabels master switch hides the value column.
+  // The region name stays visible (identifier). Per-region format
+  // precedence honoured.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
     <div className="h-full overflow-auto p-4">
       <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-        {items.map((item, index) => (
-          <button key={item.name} onClick={() => onSelect?.(item.name)}
-            className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left hover:bg-surface-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="truncate text-sm font-medium text-text-secondary">{item.name}</span>
-              <span className="text-sm font-semibold text-text-primary">{formatNumber(item.value, style)}</span>
-            </div>
-            <div className="mt-2 h-2 rounded-full bg-surface-3">
-              <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: resolveSliceColor(style, palette, item.name, index) }} />
-            </div>
-          </button>
-        ))}
+        {items.map((item, index) => {
+          const override = dlc?.overrides?.[item.name];
+          const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+          const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+          return (
+            <button key={item.name} onClick={() => onSelect?.(item.name)}
+              className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left hover:bg-surface-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate text-sm font-medium text-text-secondary">{item.name}</span>
+                {labelsEnabled && (
+                  <span className="text-sm font-semibold text-text-primary"
+                    style={override?.fontColor ? { color: override.fontColor } : undefined}>
+                    {formatNumber(item.value, styleForLabel)}
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-surface-3">
+                <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: resolveSliceColor(style, palette, item.name, index) }} />
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -926,13 +961,27 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
       {stats.map((item, index) => {
         const x = 70 + index * step + step / 2;
         const boxW = Math.min(36, step * 0.55);
+        const boxColor = resolveSliceColor(style, palette, item.name, index);
+        // Phase-15.86 — BOXPLOT median value label (DataLabels enabled).
+        const dlc = style.dataLabelConfig;
+        const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+        const override = dlc?.overrides?.[item.name];
+        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 9;
+        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-primary))';
+        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <line x1={x} x2={x} y1={sy(item.min)} y2={sy(item.max)} stroke="rgb(var(--text-tertiary))" />
-            <rect x={x - boxW / 2} y={sy(item.q3)} width={boxW} height={Math.max(2, sy(item.q1) - sy(item.q3))} rx={3} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.35} stroke={resolveSliceColor(style, palette, item.name, index)} />
+            <rect x={x - boxW / 2} y={sy(item.q3)} width={boxW} height={Math.max(2, sy(item.q1) - sy(item.q3))} rx={3} fill={boxColor} opacity={0.35} stroke={boxColor} />
             <line x1={x - boxW / 2} x2={x + boxW / 2} y1={sy(item.med)} y2={sy(item.med)} stroke="rgb(var(--text-primary))" strokeWidth={2} />
+            {labelsEnabled && (
+              <text x={x + boxW / 2 + 4} y={sy(item.med) + 3} fontSize={labelFontSize} fill={labelFontColor}>
+                {formatNumber(item.med, styleForLabel)}
+              </text>
+            )}
             <text x={x} y={390} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} 390)`} fill="rgb(var(--text-tertiary))">{item.name.slice(0, 12)}</text>
-            <title>{item.name}: median {formatNumber(item.med, style)}</title>
+            <title>{item.name}: median {formatNumber(item.med, styleForLabel)}</title>
           </g>
         );
       })}
@@ -1184,20 +1233,32 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
 
 function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
   const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
+  // Phase-15.86 — WORD_CLOUD: the words ARE the labels, so the
+  // master switch doesn't hide them (that'd leave an empty cloud).
+  // We honour fontSize/fontColor overrides per word, and per-word
+  // format precedence flows into the hover title.
+  const dlc = style.dataLabelConfig;
   return (
     <div className="flex h-full items-center justify-center overflow-hidden p-6">
       <div className="flex max-w-full flex-wrap items-center justify-center gap-x-5 gap-y-3">
-        {items.map((item, index) => (
-          <button key={item.name} onClick={() => onSelect?.(item.name)}
-            className="font-semibold leading-none hover:opacity-80"
-            style={{
-              color: resolveSliceColor(style, palette, item.name, index),
-              fontSize: `${14 + safeSqrtShare(item.value, max) * 34}px`,
-            }}
-            title={`${item.name}: ${formatNumber(item.value, style)}`}>
-            {item.name}
-          </button>
-        ))}
+        {items.map((item, index) => {
+          const override = dlc?.overrides?.[item.name];
+          const fontSize = override?.fontSize ?? (14 + safeSqrtShare(item.value, max) * 34);
+          const fontColor = override?.fontColor ?? resolveSliceColor(style, palette, item.name, index);
+          const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+          const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+          return (
+            <button key={item.name} onClick={() => onSelect?.(item.name)}
+              className="font-semibold leading-none hover:opacity-80"
+              style={{
+                color: fontColor,
+                fontSize: typeof fontSize === 'number' ? `${fontSize}px` : fontSize,
+              }}
+              title={`${item.name}: ${formatNumber(item.value, styleForLabel)}`}>
+              {item.name}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
