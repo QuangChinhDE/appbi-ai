@@ -499,24 +499,46 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
           </g>
         );
       })}
+      {/* Phase-15.86 — RADAR DataLabels.
+          When enabled, render numeric labels at each polygon vertex
+          (one per metric × axis-category). Per-series font/color/format
+          from DataLabelConfig.overrides[metricKey] is honoured. */}
       {series.map((item, index) => {
+        const mKey = metricKey(item.metric);
         const points = item.values.map((value, valueIndex) => {
           const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
           return `${p.x},${p.y}`;
         }).join(' ');
+        const radarColor = resolveSliceColor(style, palette, mKey, index);
+        const dlc = style.dataLabelConfig;
+        const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+        const override = dlc?.overrides?.[mKey];
+        const fontColor = override?.fontColor ?? dlc?.fontColor ?? radarColor;
+        const fontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+        const fmt = override?.format ?? style.seriesFormats?.[mKey] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
-          <g key={metricKey(item.metric)}>
-            {(() => {
-              // Phase-15.85 — RADAR series keyed by metricKey (matches the
-              // Series colors editor's metric key entries).
-              const radarColor = resolveSliceColor(style, palette, metricKey(item.metric), index);
+          <g key={mKey}>
+            <polygon points={points} fill={radarColor} opacity={0.16} stroke={radarColor} strokeWidth={2} />
+            {/* Phase-15.86 — metric legend uses metricLabel (humanised
+                via measure.label when available), not raw metricKey. */}
+            <text x={28} y={28 + index * 18} fontSize={11} fill={radarColor}>{metricLabel(item.metric)}</text>
+            {labelsEnabled && item.values.map((value, valueIndex) => {
+              const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
+              const text = formatNumber(value, styleForLabel);
               return (
-                <>
-                  <polygon points={points} fill={radarColor} opacity={0.16} stroke={radarColor} strokeWidth={2} />
-                  <text x={28} y={28 + index * 18} fontSize={11} fill={radarColor}>{metricLabel(item.metric)}</text>
-                </>
+                <text key={`${mKey}-${valueIndex}`} x={p.x} y={p.y - 4}
+                  fontSize={fontSize}
+                  textAnchor="middle"
+                  fill={fontColor}
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {text}
+                </text>
               );
-            })()}
+            })}
+            {/* SVG native tooltip per series — at least gives a hover cue */}
+            <title>{metricLabel(item.metric)}</title>
           </g>
         );
       })}
