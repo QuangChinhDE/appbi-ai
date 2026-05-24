@@ -9,6 +9,32 @@ import type { ExploreChartModel } from './chartDataAdapter';
 
 type ChartRow = Record<string, unknown>;
 
+/**
+ * Phase-15.85 — slice colour resolver.
+ *
+ * DA-reported: in DONUT (and every other AdvancedExploreCharts
+ * renderer) the "Series colors" editor in the Style tab wrote into
+ * `style.seriesColors[sliceName] = '#xxx'`, but the renderers iterated
+ * `palette[index]` from the active palette, ignoring the override. The
+ * editor looked broken to DA — pick a colour, chart doesn't change.
+ *
+ * This helper walks the same precedence as ExploreChart's
+ * `getSeriesColor`: explicit override > palette[i % palette.length].
+ * Series colours are keyed by the user-visible name (slice label /
+ * dimension value / metric key) so the editor's dropdown and the
+ * resolver agree.
+ */
+export function resolveSliceColor(
+  style: ChartStyleConfig | undefined,
+  palette: string[],
+  name: string,
+  index: number,
+): string {
+  const override = style?.seriesColors?.[name];
+  if (override) return override;
+  return palette[index % palette.length];
+}
+
 export const ADVANCED_EXPLORE_CHART_TYPES = new Set<string>([
   'DONUT',
   'RADAR',
@@ -349,10 +375,25 @@ function DonutOrPolarChart({
           ? `${item.name.slice(0, 12)} ${formatNumber(item.value, sliceStyle)} (${formatPercent(item.value, total)})`
           : item.name.slice(0, 16);
         cursor += angle;
+        // Phase-15.85 — respect per-slice colour override from
+        // style.seriesColors. Previously DONUT/POLAR_AREA ignored the
+        // overrides and rendered every slice with the active palette.
+        const sliceColor = resolveSliceColor(style, palette, item.name, index);
+        // Phase-15.85 — DA-reported overlap on DONUT (small slices at
+        // similar angles produced colliding labels, e.g. "Resales" and
+        // "Unknown" rendering on top of each other near the top of the
+        // ring). Skip labels for slices whose share is below 3% — they
+        // stay reachable via the legend on the right and the SVG
+        // <title> hover. Matches the Recharts PIE behaviour we already
+        // use in the main chart.
+        const share = item.value / Math.max(total, 1);
+        const showLabelForSlice = labelsEnabled
+          ? share >= 0.03 && index < 10
+          : index < 10;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <path d={path} fill={palette[index % palette.length]} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
-            {index < 10 && (
+            <path d={path} fill={sliceColor} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
+            {showLabelForSlice && (
               <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>
                 {labelText}
               </text>
@@ -364,7 +405,7 @@ function DonutOrPolarChart({
       <g transform="translate(520 84)">
         {items.slice(0, 12).map((item, index) => (
           <g key={item.name} transform={`translate(0 ${index * 22})`}>
-            <rect width={10} height={10} rx={2} fill={palette[index % palette.length]} />
+            <rect width={10} height={10} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
             <text x={18} y={9} fontSize={11} fill="rgb(var(--text-secondary))">{item.name.slice(0, 24)}</text>
           </g>
         ))}
@@ -373,11 +414,13 @@ function DonutOrPolarChart({
   );
 }
 
-function RadarChartSvg({ rows, metrics, field, palette, preAggregated }: {
+function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: {
   rows: ChartRow[];
   metrics: MetricConfig[];
   field?: string;
   palette: string[];
+  // Phase-15.85 — pass style so Series colors override resolver can run.
+  style: ChartStyleConfig;
   preAggregated?: boolean;
 }) {
   if (!field || metrics.length === 0) return <EmptyAdvanced message="Select an axis field and value columns." />;
@@ -418,8 +461,17 @@ function RadarChartSvg({ rows, metrics, field, palette, preAggregated }: {
         }).join(' ');
         return (
           <g key={metricKey(item.metric)}>
-            <polygon points={points} fill={palette[index % palette.length]} opacity={0.16} stroke={palette[index % palette.length]} strokeWidth={2} />
-            <text x={28} y={28 + index * 18} fontSize={11} fill={palette[index % palette.length]}>{metricLabel(item.metric)}</text>
+            {(() => {
+              // Phase-15.85 — RADAR series keyed by metricKey (matches the
+              // Series colors editor's metric key entries).
+              const radarColor = resolveSliceColor(style, palette, metricKey(item.metric), index);
+              return (
+                <>
+                  <polygon points={points} fill={radarColor} opacity={0.16} stroke={radarColor} strokeWidth={2} />
+                  <text x={28} y={28 + index * 18} fontSize={11} fill={radarColor}>{metricLabel(item.metric)}</text>
+                </>
+              );
+            })()}
           </g>
         );
       })}
@@ -444,7 +496,7 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
         const x4 = 400 - bottomWidth / 2;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={palette[index % palette.length]} opacity={0.9} />
+            <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.9} />
             <text x={400} y={y + h / 2 + 4} fontSize={12} textAnchor="middle" fill="#fff">{item.name.slice(0, 28)} - {formatNumber(item.value, style)}</text>
             <title>{item.name}: {formatNumber(item.value, style)}</title>
           </g>
@@ -518,7 +570,7 @@ function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[];
         rowH = Math.max(rowH, h);
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={8} fill={palette[index % palette.length]} opacity={0.88} />
+            <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={8} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.88} />
             <text x={rect.x + 10} y={rect.y + 20} fontSize={12} fontWeight={600} fill="#fff">{item.name.slice(0, 22)}</text>
             <text x={rect.x + 10} y={rect.y + 38} fontSize={11} fill="#fff">{formatNumber(item.value, style)}</text>
             <title>{item.name}: {formatNumber(item.value, style)}</title>
@@ -609,7 +661,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
       <text x={28} y={55} fontSize={11} fill="rgb(var(--text-tertiary))" transform="rotate(-90 28 55)">{scatterY}</text>
       {points.map((point, index) => (
         <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
-          <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={palette[index % palette.length]} opacity={0.68} stroke="rgb(var(--surface-1))" />
+          <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, String(point.label ?? index), index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
           <title>{point.label ? `${point.label}: ` : ''}${scatterX} ${formatNumber(point.x, style)}, ${scatterY} ${formatNumber(point.y, style)}</title>
         </g>
       ))}
@@ -671,7 +723,7 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
               <span className="text-sm font-semibold text-text-primary">{formatNumber(item.value, style)}</span>
             </div>
             <div className="mt-2 h-2 rounded-full bg-surface-3">
-              <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: palette[index % palette.length] }} />
+              <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: resolveSliceColor(style, palette, item.name, index) }} />
             </div>
           </button>
         ))}
@@ -708,7 +760,7 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <line x1={x} x2={x} y1={sy(item.min)} y2={sy(item.max)} stroke="rgb(var(--text-tertiary))" />
-            <rect x={x - boxW / 2} y={sy(item.q3)} width={boxW} height={Math.max(2, sy(item.q1) - sy(item.q3))} rx={3} fill={palette[index % palette.length]} opacity={0.35} stroke={palette[index % palette.length]} />
+            <rect x={x - boxW / 2} y={sy(item.q3)} width={boxW} height={Math.max(2, sy(item.q1) - sy(item.q3))} rx={3} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.35} stroke={resolveSliceColor(style, palette, item.name, index)} />
             <line x1={x - boxW / 2} x2={x + boxW / 2} y1={sy(item.med)} y2={sy(item.med)} stroke="rgb(var(--text-primary))" strokeWidth={2} />
             <text x={x} y={390} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} 390)`} fill="rgb(var(--text-tertiary))">{item.name.slice(0, 12)}</text>
             <title>{item.name}: median {formatNumber(item.med, style)}</title>
@@ -734,7 +786,7 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
         const width = 2 + positiveShare(flow.value, max) * 24;
         return (
           <path key={`${flow.source}-${flow.target}-${index}`} d={`M 185 ${y1} C 330 ${y1}, 470 ${y2}, 615 ${y2}`}
-            fill="none" stroke={palette[index % palette.length]} strokeWidth={width} opacity={0.38}
+            fill="none" stroke={resolveSliceColor(style, palette, flow.source, index)} strokeWidth={width} opacity={0.38}
             onClick={() => onSelect?.(flow.source)} className="cursor-pointer">
             <title>{flow.source}{' -> '}{flow.target}: {formatNumber(flow.value, style)}</title>
           </path>
@@ -742,7 +794,7 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
       })}
       {sources.map((source, index) => (
         <g key={source} onClick={() => onSelect?.(source)} className="cursor-pointer">
-          <rect x={55} y={yFor(sources, source) - 13} width={130} height={26} rx={6} fill={palette[index % palette.length]} opacity={0.85} />
+          <rect x={55} y={yFor(sources, source) - 13} width={130} height={26} rx={6} fill={resolveSliceColor(style, palette, source, index)} opacity={0.85} />
           <text x={120} y={yFor(sources, source) + 4} textAnchor="middle" fontSize={11} fill="#fff">{source.slice(0, 18)}</text>
         </g>
       ))}
@@ -780,7 +832,7 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
         sourceAngles.set(item.name, { start, end });
         cursor = end;
         return (
-          <path key={item.name} d={ringSegment(400, 210, 115, 52, start, end)} fill={palette[index % palette.length]} opacity={0.86}
+          <path key={item.name} d={ringSegment(400, 210, 115, 52, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
             onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <title>{item.name}: {formatNumber(item.value, style)}</title>
           </path>
@@ -795,7 +847,7 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
         const start = range.start + ((before / siblingTotal) * (range.end - range.start));
         const end = start + ((pair.value / siblingTotal) * (range.end - range.start));
         return (
-          <path key={`${pair.source}-${pair.target}-${index}`} d={ringSegment(400, 210, 168, 118, start, end)} fill={palette[index % palette.length]} opacity={0.62}>
+          <path key={`${pair.source}-${pair.target}-${index}`} d={ringSegment(400, 210, 168, 118, start, end)} fill={resolveSliceColor(style, palette, pair.target, index)} opacity={0.62}>
             <title>{pair.source} / {pair.target}: {formatNumber(pair.value, style)}</title>
           </path>
         );
@@ -804,7 +856,7 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
   );
 }
 
-function RibbonChart({ pairs, palette, onSelect }: { pairs: PairValue[]; palette: string[]; onSelect?: (source: string) => void }) {
+function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; palette: string[]; style: ChartStyleConfig; onSelect?: (source: string) => void }) {
   const times = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 20);
   const cats = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 8);
   if (times.length < 2 || cats.length === 0) return <EmptyAdvanced message="Select time, series, and value fields." />;
@@ -823,7 +875,7 @@ function RibbonChart({ pairs, palette, onSelect }: { pairs: PairValue[]; palette
       {cats.map((cat, catIndex) => {
         const d = times.map((time, timeIndex) => `${timeIndex === 0 ? 'M' : 'L'} ${x(timeIndex)} ${y(rankByTime.get(time)?.get(cat) ?? cats.length - 1)}`).join(' ');
         return (
-          <path key={cat} d={d} fill="none" stroke={palette[catIndex % palette.length]} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
+          <path key={cat} d={d} fill="none" stroke={resolveSliceColor(style, palette, cat, catIndex)} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
             onClick={() => onSelect?.(cat)} className="cursor-pointer">
             <title>{cat}</title>
           </path>
@@ -866,7 +918,7 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
         return (
           <g key={`${event.label}-${event.time}-${index}`} onClick={() => onSelect?.(dimension, event.label)} className="cursor-pointer">
             <line x1={x(event.time)} y1={210} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
-            <circle cx={x(event.time)} cy={yy} r={r} fill={palette[index % palette.length]} opacity={0.82} />
+            <circle cx={x(event.time)} cy={yy} r={r} fill={resolveSliceColor(style, palette, event.label, index)} opacity={0.82} />
             {index < 18 && <text x={x(event.time)} y={yy + (yy < 210 ? -14 : 24)} fontSize={10} textAnchor="middle" fill="rgb(var(--text-tertiary))">{event.label.slice(0, 14)}</text>}
             <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, style)}` : ''}</title>
           </g>
@@ -885,7 +937,7 @@ function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[
           <button key={item.name} onClick={() => onSelect?.(item.name)}
             className="font-semibold leading-none hover:opacity-80"
             style={{
-              color: palette[index % palette.length],
+              color: resolveSliceColor(style, palette, item.name, index),
               fontSize: `${14 + safeSqrtShare(item.value, max) * 34}px`,
             }}
             title={`${item.name}: ${formatNumber(item.value, style)}`}>
@@ -990,7 +1042,7 @@ export function AdvancedExploreChart({
       {type === 'DONUT' || type === 'POLAR_AREA' ? (
         <DonutOrPolarChart type={type} items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'RADAR' ? (
-        <RadarChartSvg rows={data} metrics={roleConfig.metrics} field={dimension} palette={palette} preAggregated={preAggregated} />
+        <RadarChartSvg rows={data} metrics={roleConfig.metrics} field={dimension} palette={palette} style={style} preAggregated={preAggregated} />
       ) : type === 'FUNNEL' ? (
         <FunnelChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'GAUGE' ? (
@@ -1014,7 +1066,7 @@ export function AdvancedExploreChart({
       ) : type === 'SUNBURST' ? (
         <SunburstChart pairs={pairs} style={style} palette={palette} onSelect={(source) => xField && emitField(xField, source)} />
       ) : type === 'RIBBON' ? (
-        <RibbonChart pairs={pairs} palette={palette} onSelect={(target) => breakdown && emitField(breakdown, target)} />
+        <RibbonChart pairs={pairs} palette={palette} style={style} onSelect={(target) => breakdown && emitField(breakdown, target)} />
       ) : type === 'TIMELINE' ? (
         <TimelineChart rows={data} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} />
       ) : type === 'WORD_CLOUD' ? (
