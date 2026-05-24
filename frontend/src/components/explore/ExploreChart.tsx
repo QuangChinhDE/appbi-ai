@@ -12,7 +12,15 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
   ResponsiveContainer,
 } from 'recharts';
-import type { ChartRoleConfig, MetricConfig, ChartStyleConfig } from './ExploreChartConfig';
+import type {
+  ChartRoleConfig,
+  ChartStyleConfig,
+  DataLabelPosition,
+  DataLabelRotation,
+  DataLabelStyle,
+  MetricConfig,
+  NumberFormat,
+} from './ExploreChartConfig';
 import { metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
 import type { ChartSortRule, TimeGranularity } from '@/types/api';
 import { KpiCard } from '@/components/visualizations/KpiCard';
@@ -350,9 +358,14 @@ function tooltipFormatter(series: ChartSeriesDef[], style?: ChartStyleConfig) {
   };
 }
 
+// Phase-15.84 — Recharts LabelList formatter helper.
+//
+// Phase-15.82 added this. Phase-15.84 routes single-series labels
+// through `buildDataLabelContent` instead so DA gets position / font /
+// background / collision controls. The function is kept for the
+// stacked-bar percent inline labels and any future callers that just
+// want a string formatter.
 function dataLabelFormatter(style?: ChartStyleConfig, seriesKey?: string, seriesLabel?: string) {
-  // Phase-15.82 — when style.dataLabelTemplate is set, expand tokens via
-  // renderTemplatedLabel; otherwise fall back to the plain numeric format.
   if (style?.dataLabelTemplate) {
     return (value: any, props?: any) => renderTemplatedLabel({
       template: style.dataLabelTemplate,
@@ -364,6 +377,185 @@ function dataLabelFormatter(style?: ChartStyleConfig, seriesKey?: string, series
     });
   }
   return (value: any) => formatNumber(value, style, seriesKey);
+}
+
+/**
+ * Phase-15.84 — resolve the effective DataLabelStyle for a given series,
+ * walking three layers: per-series override → chart-wide
+ * dataLabelConfig → legacy fallbacks (showDataLabels +
+ * dataLabelPosition). Returns null when labels are disabled for the
+ * series so callers can skip rendering entirely.
+ */
+function resolveDataLabelStyle(
+  style: ChartStyleConfig | undefined,
+  seriesKey: string,
+): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
+  format?: NumberFormat;
+  autoHideOverlap: boolean;
+}) | null {
+  const dlc = style?.dataLabelConfig;
+  // Backward compat — legacy showDataLabels enables when no new config exists.
+  const enabled = dlc?.enabled ?? style?.showDataLabels ?? false;
+  if (!enabled) return null;
+
+  const override = dlc?.overrides?.[seriesKey];
+  const legacyPosition = (style?.dataLabelPosition as DataLabelPosition | undefined);
+  return {
+    position: (override?.position ?? dlc?.position ?? legacyPosition ?? 'top') as DataLabelPosition,
+    rotation: (override?.rotation ?? dlc?.rotation ?? 0) as DataLabelRotation,
+    fontSize: override?.fontSize ?? dlc?.fontSize ?? (style?.fontSize ?? 11),
+    fontColor: override?.fontColor ?? dlc?.fontColor ?? 'currentColor',
+    background: override?.background ?? dlc?.background ?? false,
+    backgroundColor: override?.backgroundColor ?? dlc?.backgroundColor ?? 'rgba(255,255,255,0.85)',
+    format: override?.format ?? dlc?.format,
+    autoHideOverlap: dlc?.autoHideOverlap ?? false,
+  };
+}
+
+/**
+ * Phase-15.84 — module-level collision registry. Recharts renders each
+ * LabelList element separately, so collision detection has to coordinate
+ * across all rendering passes for the same chart. We key by chart
+ * instance (a fresh symbol each render) and store axis-aligned bounding
+ * boxes of placed labels.
+ *
+ * Each chart re-render must call `resetLabelRegistry()` before its
+ * passes — our renderer accepts the registry as an argument so each
+ * <ExploreChartInner> render owns its own.
+ */
+type LabelBBox = { x: number; y: number; width: number; height: number };
+function rectsOverlap(a: LabelBBox, b: LabelBBox, pad = 2): boolean {
+  return !(a.x + a.width + pad < b.x || b.x + b.width + pad < a.x
+        || a.y + a.height + pad < b.y || b.y + b.height + pad < a.y);
+}
+
+/**
+ * Phase-15.84 — build a `content=` renderer for Recharts LabelList that
+ * honours position / rotation / fontColor / background, and (optionally)
+ * suppresses labels colliding with earlier ones in the same chart frame.
+ *
+ * `orientation` is 'vertical' (BAR/STACKED — labels on top of upright
+ * bars) or 'horizontal' (HORIZONTAL_BAR — labels to the right of bars).
+ * The position semantics differ between the two; this helper hides that
+ * from the call sites.
+ */
+function buildDataLabelContent(opts: {
+  resolved: ReturnType<typeof resolveDataLabelStyle>;
+  seriesKey: string;
+  seriesLabel: string;
+  style: ChartStyleConfig;
+  registry: LabelBBox[];
+  orientation: 'vertical' | 'horizontal' | 'point';
+}): (props: any) => React.ReactNode {
+  const { resolved, seriesKey, seriesLabel, style, registry, orientation } = opts;
+  if (!resolved) return () => null;
+  const { position, rotation, fontSize, fontColor, background, backgroundColor, autoHideOverlap } = resolved;
+  const formatLabel = (value: any, payload?: any) => {
+    if (style.dataLabelTemplate) {
+      return renderTemplatedLabel({
+        template: style.dataLabelTemplate,
+        value,
+        seriesKey,
+        seriesLabel,
+        dimensionValue: payload ? payload[Object.keys(payload)[0]] : undefined,
+        style: resolved.format ? { ...style, numberFormat: resolved.format } : style,
+      });
+    }
+    return formatNumber(value, resolved.format ? { ...style, numberFormat: resolved.format } : style, seriesKey);
+  };
+
+  return (props: any) => {
+    const { x, y, width = 0, height = 0, value, payload } = props;
+    if (value === null || value === undefined || value === '') return null;
+    const text = formatLabel(value, payload);
+    if (!text) return null;
+
+    // Approximate text bbox — Recharts doesn't expose measured metrics
+    // before paint, so we estimate width from char count × 0.6 × font
+    // size (matches the SVG default font roughly enough for collision
+    // checks). Height is the font size + 4px padding.
+    const approxWidth = text.length * fontSize * 0.6;
+    const approxHeight = fontSize + 4;
+
+    // Resolve anchor (cx, cy) from position + orientation.
+    let cx = x;
+    let cy = y;
+    let textAnchor: 'start' | 'middle' | 'end' = 'middle';
+    if (orientation === 'vertical') {
+      cx = x + width / 2;
+      switch (position) {
+        case 'top':       cy = y - 4; break;
+        case 'bottom':    cy = y + height + approxHeight; break;
+        case 'inside':
+        case 'center':
+        case 'insideTop': cy = y + approxHeight; break;
+        case 'insideBottom': cy = y + height - 4; break;
+        default:          cy = y - 4;
+      }
+    } else if (orientation === 'horizontal') {
+      cy = y + height / 2 + approxHeight / 3;
+      switch (position) {
+        case 'left':       cx = x - 4; textAnchor = 'end'; break;
+        case 'inside':
+        case 'center':     cx = x + width / 2; textAnchor = 'middle'; break;
+        case 'insideEnd':  cx = x + width - 4; textAnchor = 'end'; break;
+        case 'insideStart':cx = x + 4; textAnchor = 'start'; break;
+        case 'right':
+        default:           cx = x + width + 4; textAnchor = 'start';
+      }
+    } else {
+      // 'point' — for LINE/AREA, Recharts gives the data point (x, y) directly.
+      cx = x;
+      switch (position) {
+        case 'bottom': cy = y + approxHeight + 4; break;
+        case 'center': cy = y; break;
+        case 'top':
+        default:       cy = y - 6;
+      }
+    }
+
+    // Collision check (optional). Skip labels overlapping any already-
+    // placed label this frame.
+    const bbox: LabelBBox = {
+      x: textAnchor === 'middle' ? cx - approxWidth / 2 : textAnchor === 'end' ? cx - approxWidth : cx,
+      y: cy - approxHeight + 2,
+      width: approxWidth,
+      height: approxHeight,
+    };
+    if (autoHideOverlap) {
+      for (const placed of registry) {
+        if (rectsOverlap(placed, bbox)) return null;
+      }
+      registry.push(bbox);
+    }
+
+    const rotate = rotation === 0 ? undefined : `rotate(${rotation} ${cx} ${cy})`;
+    return (
+      <g transform={rotate}>
+        {background && (
+          <rect
+            x={bbox.x - 3}
+            y={bbox.y - 1}
+            width={approxWidth + 6}
+            height={approxHeight}
+            rx={2}
+            ry={2}
+            fill={backgroundColor}
+          />
+        )}
+        <text
+          x={cx}
+          y={cy}
+          textAnchor={textAnchor}
+          fontSize={fontSize}
+          fill={fontColor}
+          style={{ pointerEvents: 'none' }}
+        >
+          {text}
+        </text>
+      </g>
+    );
+  };
 }
 
 /**
@@ -956,7 +1148,31 @@ function ExploreChartInner({
   const showLegend = legendPos !== 'none';
   const barRadius = style.barRadius ?? 4;
   const barSize = typeof style.barSize === 'number' && style.barSize > 0 ? style.barSize : undefined;
-  const showDataLabels = style.showDataLabels ?? false;
+  // Phase-15.84 — `showDataLabels` is now a derived signal: enabled when
+  // EITHER the legacy flag or the new DataLabelConfig.enabled is true.
+  // Renderers gate on this; per-series visibility comes from
+  // resolveDataLabelStyle below.
+  const showDataLabels = style.dataLabelConfig?.enabled ?? style.showDataLabels ?? false;
+  // Phase-15.84 — collision registry recreated each render. Shared
+  // across every <LabelList> on this chart so the "auto-hide overlap"
+  // option can suppress later labels that intersect earlier ones.
+  const labelRegistry: LabelBBox[] = [];
+  /**
+   * Helper used by every LabelList call site to produce a custom
+   * `content=` renderer respecting position / rotation / font / bg.
+   * Falls back to plain text if labels are disabled for this series.
+   */
+  const dataLabelContent = (seriesKey: string, seriesLabel: string, orientation: 'vertical' | 'horizontal' | 'point') => {
+    const resolved = resolveDataLabelStyle(style, seriesKey);
+    return buildDataLabelContent({
+      resolved,
+      seriesKey,
+      seriesLabel,
+      style,
+      registry: labelRegistry,
+      orientation,
+    });
+  };
   const showDots = style.showDots ?? true;
   const lineWidth = style.lineWidth ?? 2;
   const areaOpacity = style.areaOpacity ?? 0.6;
@@ -1557,7 +1773,7 @@ function ExploreChartInner({
                     dot={showDots && displayData.length <= 60}
                     strokeDasharray={lineDash}>
                     {showDataLabels && (
-                      <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                      <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
                     )}
                   </Line>
                 );
@@ -1618,7 +1834,7 @@ function ExploreChartInner({
               barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
               {showDataLabels && (
-                <LabelList dataKey={series.key} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'horizontal')} />
               )}
             </Bar>
           );
@@ -1737,7 +1953,7 @@ function ExploreChartInner({
                         barSize={barSize}
                       >
                         {showDataLabels && (
-                          <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                          <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'vertical')} />
                         )}
                       </Bar>
                     );
@@ -1750,7 +1966,7 @@ function ExploreChartInner({
                         fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}>
                         {showDataLabels && (
-                          <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                          <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'vertical')} />
                         )}
                       </Bar>
                     ))}
@@ -1809,7 +2025,7 @@ function ExploreChartInner({
                     <Cell key={`${series.key}-${idx}`} fill={resolveConditionalColor(row[series.key], baseColor)} />
                   ))}
                   {showDataLabels && (
-                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                    <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'vertical')} />
                   )}
                 </Bar>
               );

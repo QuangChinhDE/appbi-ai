@@ -645,6 +645,8 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "annotations",
     "seriesRenderAs",
     "calculatedFields",
+    # Phase-15.84 — granular data-label config (DataLabelConfig).
+    "dataLabelConfig",
 }
 
 

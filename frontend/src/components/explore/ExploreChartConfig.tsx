@@ -106,6 +106,56 @@ export interface CalculatedFieldDef {
   format?: NumberFormat;
 }
 
+/**
+ * Phase-15.84 — granular data-label customisation (PowerBI-style).
+ *
+ * Was: a single global `showDataLabels` boolean + a `dataLabelPosition`
+ * field that was declared but never read by the renderer.
+ *
+ * Now: a structured DataLabelConfig where:
+ *   - `enabled` is the global on/off (defaults to false).
+ *   - `position` controls placement; supported values match Recharts'
+ *     `LabelList.position` for the chart family in question.
+ *   - `rotation` rotates the text (-90 / 0 / 90). 90° helps fit numbers
+ *     on narrow stacked-bar segments.
+ *   - `fontSize`, `fontColor`, `background` style the chip.
+ *   - `autoHideOverlap` is a best-effort runtime hide for colliding
+ *     labels (we drop later ones whose centroid is closer than a
+ *     threshold to a previously-placed one).
+ *   - `overrides[seriesKey]` lets DA tweak just one series, falling
+ *     back to the chart-level config for unset keys.
+ *
+ * Backward-compat: when `dataLabelConfig` is absent we fall back to the
+ * legacy `showDataLabels` + `dataLabelPosition` so charts saved before
+ * Phase-15.84 keep rendering exactly the same.
+ */
+export type DataLabelPosition =
+  | 'top' | 'bottom' | 'left' | 'right'
+  | 'inside' | 'insideTop' | 'insideBottom' | 'insideStart' | 'insideEnd'
+  | 'center' | 'outside';
+
+export type DataLabelRotation = -90 | 0 | 90;
+
+export interface DataLabelStyle {
+  position?: DataLabelPosition;
+  rotation?: DataLabelRotation;
+  fontSize?: number;
+  fontColor?: string;
+  background?: boolean;
+  backgroundColor?: string;
+  /** Per-series number-format override; falls back to seriesFormats / global */
+  format?: NumberFormat;
+}
+
+export interface DataLabelConfig extends DataLabelStyle {
+  /** Master switch. Equivalent to legacy `showDataLabels`. */
+  enabled?: boolean;
+  /** When true, drop labels whose bounding box overlaps an earlier label. */
+  autoHideOverlap?: boolean;
+  /** Per-series overrides keyed by metricKey / breakdown value. */
+  overrides?: Record<string, DataLabelStyle>;
+}
+
 export interface MetricConfig {
   field: string;
   agg: AggFn;
@@ -126,8 +176,14 @@ export interface MetricConfig {
 
 export interface ChartStyleConfig {
   // Data labels
+  /** @deprecated Phase-15.84 — kept for backward compat with charts saved
+   *  before DataLabelConfig existed. New code should read
+   *  `dataLabelConfig.enabled` instead. */
   showDataLabels?: boolean;
+  /** @deprecated Phase-15.84 — superseded by `dataLabelConfig.position`. */
   dataLabelPosition?: 'top' | 'center' | 'inside' | 'outside';
+  /** Phase-15.84 — granular data-label settings. See DataLabelConfig. */
+  dataLabelConfig?: DataLabelConfig;
   // Number formatting
   numberFormat?: NumberFormat;
   currencySymbol?: string;
@@ -1472,6 +1528,248 @@ function SeriesColorsEditor({
         >
           Collapse
         </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase-15.84 — Data Labels editor.
+ *
+ * Three sub-sections matching the DA spec:
+ *
+ *  (i) Apply to — choose "All series" or a specific seriesKey. The
+ *      editor then writes into either the top-level DataLabelConfig
+ *      or into `overrides[seriesKey]`.
+ *
+ *  (ii) Position — top / bottom / inside variants + rotation chip +
+ *       auto-hide overlap toggle (best effort runtime collision check).
+ *
+ *  (iii) Font / color / background — fontSize, fontColor, optional
+ *        background chip with its own colour.
+ *
+ * Backward compat: writing `enabled=true` here also sets the legacy
+ * `showDataLabels=true` so charts on older renderers keep working.
+ */
+type ApplyTarget = '__all__' | string;
+function DataLabelsEditor({
+  styleConfig,
+  availableSeriesKeys,
+  updStyle,
+  applicableForChart,
+}: {
+  styleConfig: ChartStyleConfig;
+  availableSeriesKeys: { key: string; label: string }[];
+  updStyle: (patch: Partial<ChartStyleConfig>) => void;
+  applicableForChart: boolean;
+}) {
+  const [target, setTarget] = useState<ApplyTarget>('__all__');
+  const dlc: DataLabelConfig = styleConfig.dataLabelConfig ?? {};
+  const enabled = dlc.enabled ?? styleConfig.showDataLabels ?? false;
+
+  // Resolve effective DataLabelStyle for the currently-edited target,
+  // walking override → chart-level → defaults. The editor writes back
+  // ONLY the diff against chart-level so per-series rows stay sparse.
+  const isAll = target === '__all__';
+  const currentStyle: DataLabelStyle = isAll
+    ? {
+        position: dlc.position ?? 'top',
+        rotation: dlc.rotation ?? 0,
+        fontSize: dlc.fontSize,
+        fontColor: dlc.fontColor,
+        background: dlc.background,
+        backgroundColor: dlc.backgroundColor,
+        format: dlc.format,
+      }
+    : (dlc.overrides?.[target] ?? {});
+
+  const patchConfig = (next: DataLabelConfig) => {
+    // Keep legacy showDataLabels in sync so older code paths see the
+    // master switch.
+    updStyle({
+      dataLabelConfig: next,
+      showDataLabels: next.enabled ?? styleConfig.showDataLabels,
+    });
+  };
+  const patchTarget = (patch: DataLabelStyle) => {
+    if (isAll) {
+      patchConfig({ ...dlc, ...patch });
+      return;
+    }
+    const overrides = { ...(dlc.overrides ?? {}) };
+    const merged: DataLabelStyle = { ...(overrides[target] ?? {}), ...patch };
+    // Drop keys whose value matches the chart-level config — keeps the
+    // override sparse so "reset" is the natural state.
+    const cleaned: DataLabelStyle = {};
+    (Object.keys(merged) as (keyof DataLabelStyle)[]).forEach((k) => {
+      const v = merged[k];
+      if (v !== undefined && v !== null && v !== '') cleaned[k] = v as never;
+    });
+    if (Object.keys(cleaned).length === 0) {
+      delete overrides[target];
+    } else {
+      overrides[target] = cleaned;
+    }
+    patchConfig({ ...dlc, overrides: Object.keys(overrides).length === 0 ? undefined : overrides });
+  };
+  const resetTarget = () => {
+    if (isAll) {
+      patchConfig({ enabled: dlc.enabled });
+    } else {
+      const overrides = { ...(dlc.overrides ?? {}) };
+      delete overrides[target];
+      patchConfig({ ...dlc, overrides: Object.keys(overrides).length === 0 ? undefined : overrides });
+    }
+  };
+
+  if (!applicableForChart) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      <Toggle
+        label="Data Labels"
+        checked={enabled}
+        onChange={(v) => patchConfig({ ...dlc, enabled: v })}
+      />
+      {!enabled && (
+        <p className="text-[10px] text-text-quaternary">
+          Turn on to show numeric labels on each data point. Customise per series below once enabled.
+        </p>
+      )}
+      {enabled && (
+        <>
+          {/* (i) Apply to */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">
+              Apply settings to
+            </label>
+            <select
+              value={target}
+              onChange={(e) => setTarget(e.target.value as ApplyTarget)}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+            >
+              <option value="__all__">All series</option>
+              {availableSeriesKeys.map(({ key, label }) => {
+                const hasOverride = Boolean(dlc.overrides?.[key]);
+                return (
+                  <option key={key} value={key}>
+                    {label}{hasOverride ? ' · customised' : ''}
+                  </option>
+                );
+              })}
+            </select>
+            {!isAll && (
+              <button
+                type="button"
+                onClick={resetTarget}
+                className="mt-1 text-[10px] text-text-tertiary hover:text-text-primary underline-offset-2 hover:underline"
+              >
+                Reset to chart defaults
+              </button>
+            )}
+          </div>
+
+          {/* (ii) Position + rotation + auto-hide */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">
+              Position
+            </label>
+            <div className="flex flex-wrap gap-1">
+              {(['top', 'bottom', 'inside', 'center', 'outside'] as DataLabelPosition[]).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => patchTarget({ position: p })}
+                  className={`px-1.5 py-1 text-[11px] rounded border ${
+                    (currentStyle.position ?? (isAll ? 'top' : undefined)) === p
+                      ? 'bg-brand text-white border-brand'
+                      : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            <label className="text-xs font-semibold text-text-secondary mt-2 mb-1 block">
+              Rotation
+            </label>
+            <div className="flex gap-1">
+              {([0, -90, 90] as DataLabelRotation[]).map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => patchTarget({ rotation: r })}
+                  className={`px-2 py-1 text-[11px] rounded border ${
+                    (currentStyle.rotation ?? 0) === r
+                      ? 'bg-brand text-white border-brand'
+                      : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
+                  }`}
+                >
+                  {r === 0 ? 'Horizontal' : r === 90 ? 'Vertical ↑' : 'Vertical ↓'}
+                </button>
+              ))}
+            </div>
+            {isAll && (
+              <div className="mt-2">
+                <Toggle
+                  label="Auto-hide overlapping labels"
+                  checked={dlc.autoHideOverlap ?? false}
+                  onChange={(v) => patchConfig({ ...dlc, autoHideOverlap: v })}
+                />
+                <p className="text-[10px] text-text-quaternary mt-1">
+                  Drops labels whose bounding box intersects an earlier one in the same chart frame.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* (iii) Font + color + background */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">
+              Font & background
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={8}
+                max={32}
+                placeholder="size"
+                value={currentStyle.fontSize ?? ''}
+                onChange={(e) => patchTarget({ fontSize: e.target.value === '' ? undefined : Number(e.target.value) })}
+                className="w-16 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+              />
+              <input
+                type="color"
+                value={currentStyle.fontColor ?? '#1a1a1a'}
+                onChange={(e) => patchTarget({ fontColor: e.target.value })}
+                className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                title="Text color"
+              />
+              <span className="text-[11px] text-text-tertiary flex-1">Text</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1.5">
+              <input
+                type="checkbox"
+                checked={currentStyle.background ?? false}
+                onChange={(e) => patchTarget({ background: e.target.checked })}
+                className="h-3.5 w-3.5"
+              />
+              <input
+                type="color"
+                value={currentStyle.backgroundColor ?? '#ffffff'}
+                onChange={(e) => patchTarget({ backgroundColor: e.target.value, background: true })}
+                className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                title="Background color"
+              />
+              <span className="text-[11px] text-text-tertiary flex-1">Background chip</span>
+            </div>
+            <p className="text-[10px] text-text-quaternary mt-1">
+              Background helps readability on dark themes / cluttered charts.
+            </p>
+          </div>
+        </>
       )}
     </div>
   );
@@ -4567,10 +4865,23 @@ export function ExploreChartConfig({
           )}
           </Disclosure>
 
-          {/* Data labels */}
+          {/* Phase-15.84 — Data Labels editor (replaces the bare on/off
+              toggle that used to live here). Wrapped in its own
+              Disclosure so it stays out of the way until DA opens it.
+              Hidden entirely for SCATTER / BUBBLE since those charts
+              place labels via `scatterLabelField` instead. */}
           {!isScatterLike && (
-            <Toggle label="Data Labels" checked={styleConfig.showDataLabels ?? false}
-              onChange={v => updStyle({ showDataLabels: v })} />
+            <Disclosure
+              title="Data Labels"
+              hint="Show numeric labels on data points. Customise per series — position, rotation, font, background, and auto-hide overlapping labels."
+            >
+              <DataLabelsEditor
+                styleConfig={styleConfig}
+                availableSeriesKeys={availableSeriesKeys}
+                updStyle={updStyle}
+                applicableForChart={!isTableLike}
+              />
+            </Disclosure>
           )}
 
           {/* Number format */}
