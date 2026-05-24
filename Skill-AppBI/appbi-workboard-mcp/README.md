@@ -1,152 +1,110 @@
 # AppBI Workboard MCP
 
-Dedicated MCP server for building AppBI Workboard mini-apps from datasets,
-Google Sheets tabs, app users, and workspace links.
+This MCP builds a Workboard mini-app from an existing AppBI dataset. It follows
+the same module/profile style as `appbi-dashboard-mcp`, but keeps the main
+authoring path deliberately smaller:
 
-## Why this MCP exists
+```
+dataset inspection -> one Workboard bundle -> validate -> apply -> audit/runtime smoke
+```
 
-Workboards are not dashboards:
-
-- They write directly to physical tables or Google Sheets tabs.
-- They rely on screen-level role rules.
-- End users log in with app-user credentials, not AppBI platform auth.
-- Workspace linking is part of the delivery path.
-
-Claude therefore needs a narrower, schema-aware toolset than the general
-dashboard orchestration MCP.
-
-## Supported flows
-
-### SQL-backed workboards
-
-1. Discovery: `list_datasets`, `list_workboards`, `get_dataset`, `list_dataset_tables`, `get_dataset_table_profile`, `list_data_sources`, `list_datasource_tables`, `inspect_source_schema`, `inspect_source_table`
-2. Dataset setup: `create_dataset`, `add_physical_table`
-3. Blueprint design: `propose_workboard_blueprint`
-4. Create/update: `commit_workboard_blueprint`, `update_workboard_blueprint`
-5. App users: `create_app_users_batch`, `update_app_user`, `delete_app_user`
-6. Workspace delivery: `create_workspace`, `link_workboard_to_workspace`, `preview_workboard`
-
-### Google Sheets-backed workboards
-
-1. Discovery: `list_data_sources`, `get_google_data_access_status`, `list_gsheet_tabs`, `read_gsheet_rows`
-2. Sheet design: `prepare_gsheet_tab_schema`, `create_gsheet_tab`
-3. Dataset attach: `create_dataset`, `attach_gsheet_tab_to_dataset`, `get_dataset_table_profile`
-4. Blueprint design: `propose_workboard_blueprint`
-5. Create/update: `commit_workboard_blueprint`, `update_workboard_blueprint`
-6. Runtime QA: `run_workboard_runtime_smoke_test`
-
-## Key improvements in this version
-
-- Discovery tools now match the real backend routes.
-- Dataset attach tools now send the real backend payload for `physical_table` rows, including `datasource_id` and `display_name`.
-- Google Sheets helpers now normalize headers for workboard use and scaffold optimistic-lock expectations.
-- Google Sheets write helpers now preflight the connected OAuth write scope before calling mutating endpoints.
-- Blueprint commit/update now validate dataset table bindings and normalize `layout_json.audit.updated_at_column` for Google Sheets.
-- A new `update_workboard_blueprint` tool gives Claude a safer update path than raw PATCH.
-- Doc `data_table` blocks now accept `column_metadata` for per-column overrides (label / width_px / format / align / total / merge).
-- Pivot transforms now accept `columns` as either a string or a list of strings (multi-level pivot).
-- Workboard `branding` no longer includes `welcome_text` — that field belongs to workspace branding and is silently dropped when placed on layout_json.
-
-## Webhook sync (not exposed through MCP)
-
-The backend supports per-doc-screen outbound webhooks and tracked sync runs
-(see `WorkboardWebhookConfig`, `DataTableSyncTrigger`, `WorkboardSyncRun`). MCP
-intentionally does **not** create or manage webhooks — they are case-by-case
-business integrations the workboard owner configures by hand in the
-"Webhooks" tab of the Builder UI. Claude can still describe a `data_table`
-block's `sync_triggers` in a blueprint if the user explicitly asks, but should
-not invent webhook ids on its own.
-
-## Tool catalogue
-
-| Tool | Stage | Purpose |
-|------|-------|---------|
-| `list_datasets` | 1 | List datasets |
-| `get_dataset` | 1 | Fetch one dataset with table details |
-| `list_dataset_tables` | 1 | List tables attached to a dataset |
-| `get_dataset_table_profile` | 1 | Read schema, sample rows, and optional stats |
-| `list_workboards` | 1 | List workboards |
-| `get_workboard` | 1 | Read full workboard layout |
-| `list_app_users` | 1 | List app users for one workboard |
-| `list_data_sources` | 1 | List datasources |
-| `get_data_source` | 1 | Read one datasource |
-| `inspect_source_schema` | 1 | List SQL schemas in a datasource |
-| `list_datasource_tables` | 1 | List live source tables/tabs before attach |
-| `inspect_source_table` | 1 | Inspect one live source table before attach |
-| `list_workspaces` | 1 | List workspaces |
-| `get_workspace` | 1 | Read one workspace |
-| `create_dataset` | 2 | Create a dataset |
-| `add_physical_table` | 2 | Attach a SQL table or GSheets tab to a dataset |
-| `attach_gsheet_tab_to_dataset` | 2 | Safer helper for attaching a GSheets tab |
-| `get_google_data_access_status` | 1b | Check current AppBI user's Google OAuth scopes |
-| `prepare_gsheet_tab_schema` | 1b | Normalize intended GSheets headers and recommended audit/lock fields |
-| `create_gsheet_tab` | 1b | Create a tab with normalized headers |
-| `read_gsheet_rows` | 1b | Read raw GSheets rows |
-| `append_gsheet_row` | 1b | Direct seed/repair write to GSheets |
-| `update_gsheet_row` | 1b | Direct seed/repair update to GSheets |
-| `delete_gsheet_row` | 1b | Direct seed/repair delete from GSheets |
-| `propose_workboard_blueprint` | 3 | Return dataset context plus a starter blueprint |
-| `get_doc_screen_examples` | 3 | Copy-pasteable patterns for printable document screens |
-| `get_dashboard_screen_examples` | 3 | Copy-pasteable patterns for embedded-dashboard screens |
-| `validate_workboard_blueprint` | 3 | Dry-run validate a blueprint before commit |
-| `commit_workboard_blueprint` | 4 | Validate, normalize, create, and publish a workboard |
-| `update_workboard_blueprint` | 4 | Validate, normalize, and update an existing workboard |
-| `update_workboard` | 4 | Low-level raw PATCH for expert use |
-| `publish_workboard` | 4 | Publish an existing workboard |
-| `delete_workboard` | 4 | Delete a workboard |
-| `create_app_users_batch` | 5 | Create app users in bulk |
-| `update_app_user` | 5 | Update one app user |
-| `delete_app_user` | 5 | Delete one app user |
-| `create_workspace` | 6 | Create a workspace |
-| `link_workboard_to_workspace` | 6 | Upsert one workboard into workspace menu_config |
-| `preview_workboard` | 6 | Start a preview session |
-| `run_workboard_runtime_smoke_test` | 6 | Login as an app user, verify menu/list, optionally insert a test row and verify it appears |
-
-## Important rules
-
-1. Always profile the target dataset table before finalizing the blueprint.
-2. Never use string values like `"edit"` inside `row_actions`; use full `ScreenAction` objects.
-3. Never add `default` to `mini_app_nav`.
-4. For Google Sheets, keep a stable `id` column and an `updated_at` column.
-5. For Google Sheets, `id` and `updated_at` are system columns: keep them in the tab, but do not expose them as user-editable form fields.
-6. For Google Sheets, `workboard.optimistic_lock_column` and `layout_json.audit.updated_at_column` should point to the same column.
-7. Google Sheets writes require the stored Google OAuth grant to include `https://www.googleapis.com/auth/spreadsheets`; file ownership alone is not enough.
-8. Raw `append_gsheet_row` / `update_gsheet_row` / `delete_gsheet_row` tools bypass workboard runtime validation and RLS. Use them only for setup, repair, or seeding.
-9. Workspace create/link requires the MCP PAT to include `workboards: full`. A user's normal AppBI permissions are not enough if the PAT scopes are capped.
-10. After publishing and linking a mini-app, run `run_workboard_runtime_smoke_test` with a real app user. For write flows, include a harmless test row and `user_confirmed=true`, then confirm the row appears in the list.
+Source ingestion, Google Sheets attachment, semantic modeling, charts, and
+dashboard authoring stay in the dashboard MCP or the AppBI UI. Workboard MCP
+owns mini-app screens, app users, doc webhooks, and workspace delivery.
 
 ## Setup
 
-```bash
-cd Skill-AppBI/appbi-workboard-mcp
-pip install -r requirements.txt
-cp .env.example .env
+```powershell
+Set-Location D:\Appv2\appbi-ai\Skill-AppBI\appbi-workboard-mcp
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe appbi_workboard_mcp.py
 ```
 
-Set:
+Set `APPBI_BASE_URL` and `APPBI_PAT` in `.env`. The PAT needs:
 
-- `APPBI_BASE_URL`
-- `APPBI_PAT`
+- `datasets=view` to inspect the source dataset.
+- `workboards=edit` to build Workboards and app users.
+- `workboards=full` when creating or changing delivery workspaces.
 
-## Run
+Use `APPBI_MCP_PROFILE=design`, `delivery`, or `all`. The default is `all`.
+Profiles can be combined with commas.
 
-```bash
-python appbi_workboard_mcp.py
-```
+## Bundle Contract
 
-## Claude Desktop example
+Call `get_workboard_design_guide()` for the live starter bundle and rules.
+The main artifact has this shape:
 
 ```json
 {
-  "mcpServers": {
-    "appbi-workboard": {
-      "command": "python",
-      "args": ["D:/Appv2/appbi-ai/Skill-AppBI/appbi-workboard-mcp/appbi_workboard_mcp.py"],
-      "env": {
-        "APPBI_BASE_URL": "http://localhost:8000",
-        "APPBI_PAT": "your_token_here"
-      }
-    }
-  }
+  "workboard": {
+    "name": "Inventory Demo",
+    "slug": "inventory-demo",
+    "dataset_id": 47,
+    "primary_table_id": 101,
+    "primary_key_columns": ["id"],
+    "publish": true
+  },
+  "layout_json": {
+    "screens": [],
+    "mini_app_nav": {"items": []}
+  },
+  "app_users": [],
+  "webhooks": [],
+  "workspace": {}
 }
 ```
+
+`layout_json` uses backend screen schemas directly: `form`, `table`, `doc`,
+and `dashboard`. A table screen uses its `table` spec with
+`editable_columns`; legacy `list` and `grid` screen specs are not valid.
+Doc `data_table.sync_triggers[].webhook_ids` must refer to stable ids in the
+top-level `webhooks` list.
+
+For a demo similar to the dataset 47 seed while skipping Dashboard, design:
+
+1. A form screen for data entry and `after_submit` navigation.
+2. A table screen with filters, inline editable columns, lookup/computed
+   columns, totals, detail panel, and row actions.
+3. A doc screen with printable blocks, Excel export, pivot/report tables, and
+   webhook sync triggers.
+4. Master-data table screens relevant to lookups.
+5. App users for `owner`, `admin`, `user`, and one inactive user.
+6. A public-app-users workspace link when the mini-app must be demoed outside
+   the builder.
+
+## Tool Surface
+
+| Tool | Profile | Purpose |
+|---|---|---|
+| `health_check` | design, delivery | Verify base URL/PAT runtime config |
+| `list_datasets` | design | Pick an existing dataset |
+| `inspect_dataset_for_workboard` | design | One-call table ids, columns, samples |
+| `list_workboards`, `get_workboard`, `audit_workboard` | design, delivery | Reuse and verify Workboards |
+| `list_workspaces`, `get_workspace` | design, delivery | Reuse delivery workspaces |
+| `get_workboard_design_guide` | design | Bundle template and screen rules |
+| `validate_workboard_bundle` | design | Dry-run references and bundle consistency |
+| `apply_workboard_bundle` | design, delivery | One-confirm create/update path |
+| `list_workboard_app_users` | design, delivery | Inspect mini-app users |
+| `upsert_workboard_app_users` | delivery | Maintenance user upsert |
+| `replace_workboard_webhooks`, `test_workboard_webhook` | delivery | Maintain/test doc webhooks |
+| `list_workboard_webhooks`, `list_workboard_sync_runs` | design, delivery | Webhook verification |
+| `deliver_workboard_to_workspace` | delivery | Link a Workboard into a workspace |
+| `create_workspace_preview_session` | delivery | Admin preview session |
+| `run_workboard_runtime_smoke_test` | delivery | Public login, menu, screen/table smoke; optional confirmed form write |
+
+Every mutating tool returns a confirmation preview until
+`user_confirmed=true`.
+
+## Files
+
+| File | Role |
+|---|---|
+| `appbi_workboard_mcp.py` | Entry point importing all modules |
+| `appbi_wb_core.py` | FastMCP, profiles, HTTP client, confirmation helpers |
+| `appbi_wb_discovery.py` | Dataset/Workboard/workspace read tools |
+| `appbi_wb_build.py` | Bundle guide, validation, one-confirm apply |
+| `appbi_wb_users.py` | App-user maintenance |
+| `appbi_wb_webhooks.py` | Stable-id webhook maintenance and sync history |
+| `appbi_wb_workspace.py` | Workspace delivery and runtime smoke |

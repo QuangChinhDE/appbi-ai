@@ -240,7 +240,7 @@ class ChartCreate(ChartBase):
         # crashed. The CHART_REQUIRED_ROLE_KEYS canonical map fixes that
         # by checking the role-config container (the first one that's
         # actually populated) against the chart_type's contract.
-        from app.schemas.chart_config import check_chart_required_role_keys
+        from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
 
         # Pick the populated container — generatedRoleConfig and
         # roleConfig are usually mirrors; customRoleConfig is the
@@ -255,6 +255,14 @@ class ChartCreate(ChartBase):
         # the role-config path — those are explicit raw-SQL paths and
         # don't have role-config requirements.
         if role_to_check is not None and not self.config.get("customSql"):
+            # Phase-15.82 — structural shape check fires BEFORE required-key
+            # check so a malformed `metrics: "foo"` doesn't masquerade as
+            # missing role keys (more helpful error).
+            shape_errors = check_role_config_shape(role_to_check)
+            if shape_errors:
+                raise ValueError(
+                    f"role_config shape errors: {'; '.join(shape_errors)}"
+                )
             missing = check_chart_required_role_keys(
                 str(self.chart_type), role_to_check
             )
@@ -337,7 +345,7 @@ class ChartUpdate(BaseModel):
         # a config-only PATCH can't be checked without knowing the type
         # (route handler should disallow that anyway).
         if self.chart_type is not None:
-            from app.schemas.chart_config import check_chart_required_role_keys
+            from app.schemas.chart_config import check_chart_required_role_keys, check_role_config_shape
 
             role_to_check: Optional[Dict[str, Any]] = None
             for container_key in ("generatedRoleConfig", "roleConfig", "customRoleConfig"):
@@ -346,6 +354,11 @@ class ChartUpdate(BaseModel):
                     role_to_check = container
                     break
             if role_to_check is not None and not self.config.get("customSql"):
+                shape_errors = check_role_config_shape(role_to_check)
+                if shape_errors:
+                    raise ValueError(
+                        f"role_config shape errors: {'; '.join(shape_errors)}"
+                    )
                 missing = check_chart_required_role_keys(
                     str(self.chart_type), role_to_check
                 )

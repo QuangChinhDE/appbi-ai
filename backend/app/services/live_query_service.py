@@ -719,9 +719,15 @@ def build_live_agg_query(
     quoted_group_order_alias = qi(group_order_alias, dialect)
 
     def resolve_limit(default_limit: int) -> int:
+        # Phase-15.83 — DA dropped the 5000-row server cap. We still need
+        # an integer for the SQL LIMIT clause (the dialects all emit one),
+        # so use a 10M sentinel that's larger than any expected single-
+        # chart workload. The DB short-circuits when the real count is
+        # smaller, so the high sentinel only matters as a safety net
+        # against pathological "select *" queries with no filters.
         if limit_override is None:
             return default_limit
-        return max(1, min(int(limit_override), 5000))
+        return max(1, int(limit_override))
 
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
@@ -746,14 +752,17 @@ def build_live_agg_query(
             if isinstance(metric, dict)
         ])
 
-    def raw_select(fields: list[Any], default_limit: int = 5000) -> str:
+    def raw_select(fields: list[Any], default_limit: int = 10_000_000) -> str:
         cols = dedupe_fields(fields)
         select_cols = ", ".join(qi(col, dialect) for col in cols) if cols else "*"
         limit = resolve_limit(default_limit)
         return f"SELECT {select_cols} FROM {base_table}{where_sql} LIMIT {int(limit)}"
 
     if not role_config:
-        limit = resolve_limit(500)
+        # Phase-15.83 — no role_config means we're rendering a fallback
+        # raw table (no SELECT cols, no GROUP BY). Bump the default from
+        # 500 to a high sentinel so this path doesn't silently cut data.
+        limit = resolve_limit(10_000_000)
         return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", False
 
     dimension = role_config.get("dimension")
@@ -790,7 +799,7 @@ def build_live_agg_query(
             else:
                 metric_sql = f"SUM({quoted_metric_field}) AS {quoted_alias}"
 
-            limit = resolve_limit(5000)
+            limit = resolve_limit(10_000_000)
             ordered_base_table = (
                 f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} "
                 f"FROM {base_table}) AS _appbi_ordered"
@@ -899,8 +908,9 @@ def build_live_agg_query(
             f"ORDER BY {quoted_group_order_alias} ASC"
         )
 
-    # Stricter limit for live queries
-    limit = resolve_limit(1000)
+    # Phase-15.83 — DA dropped the chart row cap; default raised from
+    # 1000 to a 10M sentinel that effectively disables the LIMIT clause.
+    limit = resolve_limit(10_000_000)
     sql += f" LIMIT {int(limit)}"
     return sql, True
 

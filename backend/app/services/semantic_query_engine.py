@@ -59,7 +59,10 @@ class SemanticQueryEngine:
         filters: Dict[str, Any],
         pivots: List[str] = None,
         sorts: List[Dict[str, str]] = None,
-        limit: int = 500,
+        # Phase-15.83 — DA dropped per-chart row caps. Default raised from
+        # 500 to a 10M sentinel; `top_n` still overrides for explicit
+        # "leading N" queries.
+        limit: int = 10_000_000,
         window_functions: List[Dict[str, Any]] = None,
         calculated_fields: List[Dict[str, Any]] = None,
         time_grains: Dict[str, str] = None,
@@ -385,7 +388,11 @@ class SemanticQueryEngine:
         query = f"SELECT DISTINCT {dim_sql} AS pval {from_clause}"
         if where_clause:
             query += f" {where_clause}"
-        query += " ORDER BY pval LIMIT 100"  # Limit pivot values
+        # Phase-15.83 — was LIMIT 100 (pivot/breakdown distinct values).
+        # FE pivotByBreakdown still caps at 12 visible series, but here we
+        # lift the SQL cap to 10000 so very wide pivots (regional codes,
+        # product SKUs) reach the FE intact for the user to filter down.
+        query += " ORDER BY pval LIMIT 10000"
         
         # Execute query to get values
         try:

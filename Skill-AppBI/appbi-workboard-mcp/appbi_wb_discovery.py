@@ -1,281 +1,233 @@
-"""Stage 1 - Discovery tools (read-only).
-
-All tools here are safe: they only call read endpoints and never mutate
-anything. Claude should call these first before proposing or committing.
-"""
+"""Read-only discovery tools for Workboard design."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
-from appbi_wb_core import _request, mcp
+from appbi_wb_core import (
+    BackendError,
+    Context,
+    _clamp_int,
+    _query_path,
+    _request,
+    tool,
+)
 
 
-def _columns_from_cache(table: dict) -> list[dict]:
-    cache = table.get("columns_cache") or {}
-    raw_columns = cache.get("columns") if isinstance(cache, dict) else []
-    columns: list[dict] = []
-    if isinstance(raw_columns, list):
-        for entry in raw_columns:
-            if isinstance(entry, dict) and entry.get("name"):
-                columns.append(
-                    {
-                        "name": str(entry.get("name")),
-                        "type": str(entry.get("type") or "string"),
-                        "nullable": bool(entry.get("nullable", True)),
-                        "description": "",
-                    }
-                )
-            elif isinstance(entry, str):
-                columns.append(
-                    {
-                        "name": entry,
-                        "type": "string",
-                        "nullable": True,
-                        "description": "",
-                    }
-                )
+def _as_items(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _column_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    cache = table.get("columns_cache")
+    raw_columns: Any = cache
+    if isinstance(cache, dict):
+        raw_columns = cache.get("columns") or cache.get("items") or []
+    columns: list[dict[str, Any]] = []
+    for raw in raw_columns if isinstance(raw_columns, list) else []:
+        if isinstance(raw, dict) and raw.get("name"):
+            columns.append(
+                {
+                    "name": str(raw["name"]),
+                    "type": str(raw.get("type") or "string"),
+                    "nullable": bool(raw.get("nullable", True)),
+                }
+            )
+        elif isinstance(raw, str):
+            columns.append({"name": raw, "type": "string", "nullable": True})
     return columns
 
 
-async def _fallback_gsheet_table_profile(
-    dataset_id: int,
-    table_id: int,
-    sample_rows: int,
-    original_error: Exception,
-) -> Any:
-    tables = await _request("GET", f"/datasets/{dataset_id}/tables")
-    table = next(
-        (item for item in tables if isinstance(item, dict) and int(item.get("id") or 0) == int(table_id)),
-        None,
-    )
-    if not table or not table.get("datasource_id"):
-        raise original_error
-
-    datasource = await _request("GET", f"/datasources/{int(table['datasource_id'])}")
-    if str(datasource.get("type") or "").strip().lower() != "google_sheets":
-        raise original_error
-
-    rows_payload = await _request(
-        "GET",
-        f"/datasources/{int(table['datasource_id'])}/gsheets/{table.get('source_table_name')}/rows",
-        params={"limit": sample_rows},
-    )
-    columns = rows_payload.get("columns") or _columns_from_cache(table)
+def _profile_summary(
+    table: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    profile_fallback: str | None = None,
+) -> dict[str, Any]:
+    columns = payload.get("columns") or _column_rows(table)
     if columns and isinstance(columns[0], str):
-        columns = [
-            {"name": str(name), "type": "string", "nullable": True, "description": ""}
-            for name in columns
-        ]
+        columns = [{"name": value, "type": "string"} for value in columns]
+    sample = payload.get("sample_rows") or payload.get("rows") or []
+    table_meta = payload.get("table") if isinstance(payload.get("table"), dict) else {}
     return {
-        "ok": True,
-        "fallback": True,
-        "fallback_reason": (
-            "Backend dataset table profile failed for this Google Sheets table; "
-            "MCP fell back to datasource rows plus dataset columns_cache."
+        "id": table.get("id"),
+        "display_name": table.get("display_name"),
+        "source_kind": table.get("source_kind"),
+        "source_table_name": table.get("source_table_name"),
+        "datasource_id": table.get("datasource_id"),
+        "query_mode": table.get("query_mode"),
+        "estimated_row_count": (
+            table_meta.get("estimated_row_count") or table.get("estimated_row_count")
         ),
-        "original_error": str(original_error),
-        "table": {
-            "id": table.get("id"),
-            "name": table.get("source_table_name"),
-            "display_name": table.get("display_name"),
-            "description": table.get("auto_description"),
-            "estimated_row_count": rows_payload.get("row_count") or table.get("estimated_row_count"),
-        },
         "columns": columns,
-        "sample_rows": rows_payload.get("rows") or [],
-        "sample_size": len(rows_payload.get("rows") or []),
-        "stats": {} if columns else None,
+        "sample_rows": sample,
+        "stats": payload.get("stats") or {},
+        "profile_fallback": profile_fallback,
     }
 
 
-@mcp.tool()
-async def list_datasets(skip: int = 0, limit: int = 50) -> Any:
-    """List datasets visible to the current AppBI PAT.
+async def _profile_table(
+    dataset_id: int,
+    table: dict[str, Any],
+    *,
+    sample_rows: int,
+    include_stats: bool,
+) -> dict[str, Any]:
+    table_id = int(table["id"])
+    try:
+        profile = await _request(
+            "POST",
+            f"/datasets/{int(dataset_id)}/tables/{table_id}/profile",
+            params={
+                "sample_limit": sample_rows,
+                "include_stats": "true" if include_stats else "false",
+                "stats_top_limit": 3,
+            },
+        )
+        return _profile_summary(table, profile if isinstance(profile, dict) else {})
+    except BackendError as exc:
+        datasource_id = table.get("datasource_id")
+        if not datasource_id:
+            raise
+        datasource = await _request("GET", f"/datasources/{int(datasource_id)}")
+        if str((datasource or {}).get("type") or "").lower() != "google_sheets":
+            raise
+        sheet_name = str(table.get("source_table_name") or "")
+        rows = await _request(
+            "GET",
+            f"/datasources/{int(datasource_id)}/gsheets/{sheet_name}/rows",
+            params={"limit": sample_rows},
+        )
+        return _profile_summary(
+            table,
+            rows if isinstance(rows, dict) else {},
+            profile_fallback=f"Google Sheets rows fallback after profile error {exc.status_code}",
+        )
 
-    Returns a structured list: {datasets: [{id, name, description, table_count}, ...], total}
-    so the caller can quickly find a dataset by id or name without parsing raw JSON blobs.
-    """
-    raw = await _request("GET", "/datasets/", params={"skip": skip, "limit": limit})
-    # Normalize to a clean list regardless of whether backend returns list or {items:...}
-    items = raw if isinstance(raw, list) else (raw.get("items") or raw.get("datasets") or [])
-    datasets = [
-        {
-            "id": ds.get("id"),
-            "name": ds.get("name"),
-            "description": ds.get("description") or "",
-            "table_count": len(ds.get("tables") or []),
-            "created_at": ds.get("created_at"),
-        }
-        for ds in items
-        if isinstance(ds, dict)
-    ]
+
+@tool("design")
+async def list_datasets(
+    skip: int = 0,
+    limit: int = 50,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """List datasets visible to the PAT before choosing a Workboard source."""
+    rows = _as_items(
+        await _request(
+            "GET",
+            _query_path("/datasets/", {"skip": skip, "limit": limit}),
+        ),
+        "items",
+        "datasets",
+    )
     return {
-        "datasets": datasets,
-        "total": len(datasets),
+        "items": [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "table_count": len(row.get("tables") or []),
+                "updated_at": row.get("updated_at"),
+            }
+            for row in rows
+        ],
         "skip": skip,
         "limit": limit,
     }
 
 
-@mcp.tool()
-async def get_dataset(dataset_id: int) -> Any:
-    """Get a dataset with attached table details."""
-    return await _request("GET", f"/datasets/{dataset_id}")
-
-
-@mcp.tool()
-async def list_dataset_tables(dataset_id: int, check_sheet_exists: bool = False) -> Any:
-    """List all tables attached to a dataset.
-
-    By default returns only the stored table metadata (fast, no extra API calls).
-
-    Set check_sheet_exists=True ONLY when you need to diagnose stale state —
-    e.g. a tab was registered in the dataset but you suspect it was deleted from
-    the spreadsheet. This triggers a live call to /datasources/{id}/gsheets/sheets
-    per datasource and adds a sheet_exists: true/false/null field to each row.
-
-    For creating a new workboard: leave check_sheet_exists=False (default).
-    You only need the table ids and column names, not live sheet validation.
-    """
-    tables = await _request("GET", f"/datasets/{dataset_id}/tables")
-    if not isinstance(tables, list):
-        return tables
-
-    # Fast path: no live sheet check needed
-    if not check_sheet_exists:
-        return tables
-
-    # Slow path: live sheet_exists check — only when explicitly requested
-    from typing import Dict as _Dict
-    dsid_to_tabs: _Dict[int, Any] = {}
-
-    result = []
-    for table in tables:
-        if not isinstance(table, dict):
-            result.append(table)
-            continue
-
-        dsid = table.get("datasource_id")
-        source_kind = str(table.get("source_kind") or "")
-        sheet_exists: Any = None
-
-        if dsid is not None and source_kind == "physical_table":
-            if dsid not in dsid_to_tabs:
-                try:
-                    tabs_resp = await _request("GET", f"/datasources/{dsid}/gsheets/sheets")
-                    if isinstance(tabs_resp, list):
-                        dsid_to_tabs[dsid] = {str(t.get("title") or t.get("name") or ""): True for t in tabs_resp if isinstance(t, dict)}
-                    elif isinstance(tabs_resp, dict) and "sheets" in tabs_resp:
-                        dsid_to_tabs[dsid] = {str(s.get("title") or ""): True for s in tabs_resp["sheets"] if isinstance(s, dict)}
-                    else:
-                        dsid_to_tabs[dsid] = None  # not a GSheets datasource
-                except Exception:
-                    dsid_to_tabs[dsid] = None
-
-            tab_map = dsid_to_tabs.get(dsid)
-            if tab_map is not None:
-                tab_name = str(table.get("source_table_name") or "")
-                sheet_exists = tab_map.get(tab_name, False)
-
-        result.append({**table, "sheet_exists": sheet_exists})
-
-    return result
-
-
-@mcp.tool()
-async def get_dataset_table_profile(
+@tool("design")
+async def inspect_dataset_for_workboard(
     dataset_id: int,
-    table_id: int,
-    sample_rows: int = 20,
-    include_stats: bool = True,
-    stats_top_limit: int = 5,
-) -> Any:
-    """Profile a dataset table: schema, sample rows, and optional stats.
+    table_ids: list[int] | None = None,
+    sample_rows: int = 5,
+    include_stats: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Return Workboard design context for a dataset in one call.
 
-    The backend exposes this as POST even though it is read-only.
+    Includes attached dataset table ids, columns and small live samples.
+    Restrict table_ids on large datasets. The result is the source of truth
+    for screen.table_id and lookup table ids in a Workboard bundle.
     """
-    try:
-        return await _request(
-            "POST",
-            f"/datasets/{dataset_id}/tables/{table_id}/profile",
-            params={
-                "sample_limit": sample_rows,
-                "include_stats": include_stats,
-                "stats_top_limit": stats_top_limit,
-            },
+    sample_limit = _clamp_int(sample_rows, default=5, minimum=1, maximum=50)
+    dataset = await _request("GET", f"/datasets/{int(dataset_id)}")
+    tables_payload = await _request("GET", f"/datasets/{int(dataset_id)}/tables")
+    tables = _as_items(tables_payload, "items", "tables")
+    wanted = {int(item) for item in table_ids or []}
+    selected = [
+        table
+        for table in tables
+        if not wanted or int(table.get("id") or 0) in wanted
+    ]
+    profiles = [
+        await _profile_table(
+            int(dataset_id),
+            table,
+            sample_rows=sample_limit,
+            include_stats=include_stats,
         )
-    except Exception as exc:
-        return await _fallback_gsheet_table_profile(dataset_id, table_id, sample_rows, exc)
+        for table in selected
+    ]
+    return {
+        "dataset": {
+            "id": dataset.get("id") if isinstance(dataset, dict) else dataset_id,
+            "name": dataset.get("name") if isinstance(dataset, dict) else None,
+            "description": dataset.get("description") if isinstance(dataset, dict) else None,
+        },
+        "tables": profiles,
+        "table_count": len(profiles),
+        "design_notes": [
+            "Use tables[].id for screen.table_id and lookup.table_id.",
+            "Use table columns that exist in this response before inventing form fields.",
+            "Primary Workboard rows should have stable primary_key_columns for update/delete.",
+        ],
+    }
 
 
-@mcp.tool()
-async def list_workboards(skip: int = 0, limit: int = 50) -> Any:
-    """List workboards visible to the current AppBI PAT."""
-    return await _request("GET", "/workboards/", params={"skip": skip, "limit": limit})
+@tool({"design", "delivery"})
+async def list_workboards(ctx: Context | None = None) -> dict[str, Any]:
+    """List Workboards visible to the PAT so a builder can reuse or update."""
+    return {"items": await _request("GET", "/workboards/")}
 
 
-@mcp.tool()
-async def get_workboard(workboard_id: int) -> Any:
-    """Get a full workboard including layout_json."""
-    return await _request("GET", f"/workboards/{workboard_id}")
+@tool({"design", "delivery"})
+async def get_workboard(
+    workboard_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Fetch full Workboard layout, settings, dataset binding and publish state."""
+    return await _request("GET", f"/workboards/{int(workboard_id)}")
 
 
-@mcp.tool()
-async def list_app_users(workboard_id: int) -> Any:
-    """List app users for a workboard."""
-    return await _request("GET", f"/workboards/{workboard_id}/app-users")
+@tool({"design", "delivery"})
+async def audit_workboard(
+    workboard_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Run the backend broken-reference audit for a Workboard layout."""
+    return await _request("GET", f"/workboards/{int(workboard_id)}/audit")
 
 
-@mcp.tool()
-async def list_data_sources(skip: int = 0, limit: int = 50) -> Any:
-    """List datasource connections registered on AppBI."""
-    return await _request("GET", "/datasources/", params={"skip": skip, "limit": limit})
+@tool({"design", "delivery"})
+async def list_workspaces(ctx: Context | None = None) -> dict[str, Any]:
+    """List public Workboard workspaces available to this PAT."""
+    return {"items": await _request("GET", "/workspaces/")}
 
 
-@mcp.tool()
-async def get_data_source(datasource_id: int) -> Any:
-    """Get one datasource with type and connection metadata."""
-    return await _request("GET", f"/datasources/{datasource_id}")
+@tool({"design", "delivery"})
+async def get_workspace(
+    workspace_id: int,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Fetch one workspace including its menu_config and public token."""
+    return await _request("GET", f"/workspaces/{int(workspace_id)}")
 
 
-@mcp.tool()
-async def inspect_source_schema(datasource_id: int) -> Any:
-    """List schemas available in a datasource."""
-    return await _request("GET", f"/datasources/{datasource_id}/schema")
-
-
-@mcp.tool()
-async def list_datasource_tables(
-    datasource_id: int,
-    search: Optional[str] = None,
-) -> Any:
-    """List live source tables/tabs for a datasource."""
-    params = {"search": search} if search else None
-    return await _request("GET", f"/datasets/datasources/{datasource_id}/tables", params=params)
-
-
-@mcp.tool()
-async def inspect_source_table(
-    datasource_id: int,
-    schema_name: str,
-    table_name: str,
-    preview_rows: int = 5,
-) -> Any:
-    """Inspect a single physical source table before attaching it to a dataset."""
-    return await _request(
-        "GET",
-        f"/datasources/{datasource_id}/tables/{schema_name}/{table_name}",
-        params={"preview_rows": preview_rows},
-    )
-
-
-@mcp.tool()
-async def list_workspaces() -> Any:
-    """List public workspaces."""
-    return await _request("GET", "/workspaces/")
-
-
-@mcp.tool()
-async def get_workspace(workspace_id: int) -> Any:
-    """Get workspace details including menu_config."""
-    return await _request("GET", f"/workspaces/{workspace_id}")
+__all__: list[str] = []

@@ -625,6 +625,22 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "dualYAxis",
     # AREA
     "areaOpacity",
+    # LINE / AREA / TIME_SERIES — stroke + sizing
+    "lineWidth", "barSize",
+    # SCATTER label field
+    "scatterLabelField",
+    # Phase-15.82 — render-pipeline extensions. All read by ExploreChart
+    # / chartDataAdapter; declared here so /charts/dry-run-create doesn't
+    # report them as `fe_unrecognised_keys` to MCP and AI agents.
+    "showAllPoints",
+    "seriesFormats", "seriesDecimalPlaces",
+    "tooltipExtraFields",
+    "dataLabelTemplate",
+    "dateDrillLevel",
+    "seriesConditionalRules",
+    "annotations",
+    "seriesRenderAs",
+    "calculatedFields",
 }
 
 

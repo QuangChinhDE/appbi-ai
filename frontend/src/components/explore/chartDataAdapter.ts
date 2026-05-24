@@ -6,12 +6,198 @@ import {
   metricLabel,
   normalizeRoleConfig,
   TABLE_PIVOT_COLUMN_LIMIT,
+  type CalculatedFieldDef,
   type ChartRoleConfig,
   type MetricConfig,
   type SemanticLabelMap,
 } from './ExploreChartConfig';
 
-export const MAX_CHART_POINTS = 2000;
+/**
+ * Phase-15.82 — inline calculated-field evaluator.
+ *
+ * SECURITY: this is run for every saved chart, including on public /
+ * embed dashboards seen by anonymous viewers. A previous draft used
+ * `new Function(expression)` with a whitelist regex; that was leaky —
+ * strings like `${a}.constructor.constructor("alert(1)")()` slipped past
+ * the regex and ran arbitrary JS in the viewer's browser.
+ *
+ * This implementation is a hand-written tokeniser + shunting-yard parser
+ * with NO `eval` / `new Function` / `Function` references anywhere.
+ * Grammar:
+ *
+ *   expr   := term (('+' | '-') term)*
+ *   term   := factor (('*' | '/' | '%') factor)*
+ *   factor := number | '${' ident '}' | '(' expr ')' | '-' factor
+ *   number := /\d+(\.\d+)?/
+ *   ident  := /[A-Za-z0-9_.]+/
+ *
+ * Anything outside that grammar fails the parser → NaN. Division by
+ * zero → NaN (not Infinity, so the chart skips the point instead of
+ * blowing the Y-axis).
+ */
+type Token =
+  | { type: 'num'; value: number }
+  | { type: 'op'; value: '+' | '-' | '*' | '/' | '%' }
+  | { type: 'lparen' }
+  | { type: 'rparen' }
+  | { type: 'ref'; key: string };
+
+function tokenizeCalcExpr(expr: string): Token[] | null {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < expr.length) {
+    const ch = expr[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n') { i++; continue; }
+    if (ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '%') {
+      tokens.push({ type: 'op', value: ch });
+      i++; continue;
+    }
+    if (ch === '(') { tokens.push({ type: 'lparen' }); i++; continue; }
+    if (ch === ')') { tokens.push({ type: 'rparen' }); i++; continue; }
+    if (ch >= '0' && ch <= '9') {
+      let j = i;
+      while (j < expr.length && ((expr[j] >= '0' && expr[j] <= '9') || expr[j] === '.')) j++;
+      const num = Number(expr.slice(i, j));
+      if (!Number.isFinite(num)) return null;
+      tokens.push({ type: 'num', value: num });
+      i = j; continue;
+    }
+    if (ch === '$' && expr[i + 1] === '{') {
+      const close = expr.indexOf('}', i + 2);
+      if (close === -1) return null;
+      const key = expr.slice(i + 2, close);
+      // Only [A-Za-z0-9_.] allowed inside ${...}. No brackets, quotes, parens.
+      if (!/^[A-Za-z0-9_.]+$/.test(key)) return null;
+      tokens.push({ type: 'ref', key });
+      i = close + 1; continue;
+    }
+    // Anything else is illegal.
+    return null;
+  }
+  return tokens;
+}
+
+// Shunting-yard: tokens → reverse-Polish.
+const PRECEDENCE: Record<string, number> = { '+': 1, '-': 1, '*': 2, '/': 2, '%': 2 };
+function toRpn(tokens: Token[]): Token[] | null {
+  const output: Token[] = [];
+  const stack: Token[] = [];
+  let prevType: string | null = null;
+  for (const tok of tokens) {
+    if (tok.type === 'num' || tok.type === 'ref') {
+      output.push(tok);
+    } else if (tok.type === 'op') {
+      // Handle unary minus: `-x` or `(-x)` or `*-x` → push 0 first.
+      if (tok.value === '-' && (prevType === null || prevType === 'op' || prevType === 'lparen')) {
+        output.push({ type: 'num', value: 0 });
+      } else if (tok.value === '+' && (prevType === null || prevType === 'op' || prevType === 'lparen')) {
+        prevType = tok.type;
+        continue; // unary plus = no-op
+      }
+      while (
+        stack.length > 0 &&
+        stack[stack.length - 1].type === 'op' &&
+        PRECEDENCE[(stack[stack.length - 1] as any).value] >= PRECEDENCE[tok.value]
+      ) {
+        output.push(stack.pop()!);
+      }
+      stack.push(tok);
+    } else if (tok.type === 'lparen') {
+      stack.push(tok);
+    } else if (tok.type === 'rparen') {
+      while (stack.length > 0 && stack[stack.length - 1].type !== 'lparen') {
+        output.push(stack.pop()!);
+      }
+      if (stack.length === 0) return null; // unbalanced
+      stack.pop(); // pop lparen
+    }
+    prevType = tok.type;
+  }
+  while (stack.length > 0) {
+    const top = stack.pop()!;
+    if (top.type === 'lparen' || top.type === 'rparen') return null; // unbalanced
+    output.push(top);
+  }
+  return output;
+}
+
+function evalRpn(rpn: Token[], row: Record<string, any>): number {
+  const stack: number[] = [];
+  for (const tok of rpn) {
+    if (tok.type === 'num') {
+      stack.push(tok.value);
+    } else if (tok.type === 'ref') {
+      // Avoid prototype chain — only read own enumerable properties.
+      const raw = Object.prototype.hasOwnProperty.call(row, tok.key) ? (row as any)[tok.key] : 0;
+      const num = Number(raw);
+      stack.push(Number.isFinite(num) ? num : 0);
+    } else if (tok.type === 'op') {
+      if (stack.length < 2) return NaN;
+      const b = stack.pop()!;
+      const a = stack.pop()!;
+      let res: number;
+      switch (tok.value) {
+        case '+': res = a + b; break;
+        case '-': res = a - b; break;
+        case '*': res = a * b; break;
+        case '/': res = b === 0 ? NaN : a / b; break;
+        case '%': res = b === 0 ? NaN : a % b; break;
+        default: return NaN;
+      }
+      stack.push(res);
+    } else {
+      return NaN;
+    }
+  }
+  if (stack.length !== 1) return NaN;
+  return Number.isFinite(stack[0]) ? stack[0] : NaN;
+}
+
+export function evaluateCalculatedField(
+  expression: string,
+  row: Record<string, any>,
+): number {
+  if (!expression) return NaN;
+  // Cheap upper bound to defend against pathological inputs.
+  if (expression.length > 500) return NaN;
+  const tokens = tokenizeCalcExpr(expression);
+  if (!tokens || tokens.length === 0) return NaN;
+  const rpn = toRpn(tokens);
+  if (!rpn) return NaN;
+  return evalRpn(rpn, row);
+}
+
+export function applyCalculatedFields(
+  rows: Record<string, any>[],
+  fields: CalculatedFieldDef[] = [],
+): Record<string, any>[] {
+  if (fields.length === 0) return rows;
+  return rows.map((row) => {
+    const next: Record<string, any> = { ...row };
+    for (const f of fields) {
+      next[f.id] = evaluateCalculatedField(f.expression, row);
+    }
+    return next;
+  });
+}
+
+/**
+ * Phase-15.83 — DA decision: render every row, no FE-side truncation.
+ *
+ * Previously the FE capped at 2000 (with a Phase-15.82 opt-in to 50k via
+ * `showAllPoints`). DA judged the trade-off — "render lag if dataset is
+ * huge" beats "chart shows the wrong total because rows got cut" — and
+ * asked us to drop both caps. The constants stay exported (with very
+ * large fallback values) for callers that still reference them, but
+ * `limitRows()` is now a no-op: it returns `truncated: false` always
+ * and lets the banner code below disappear.
+ *
+ * If browsers start choking on very large datasets we re-introduce a
+ * smarter sampler later (server-side row_limit per chart, à la
+ * Superset), not another client-side hard cap.
+ */
+export const MAX_CHART_POINTS = Number.POSITIVE_INFINITY;
+export const ABSOLUTE_MAX_CHART_POINTS = Number.POSITIVE_INFINITY;
 
 export interface ChartSeriesDef {
   key: string;
@@ -209,12 +395,32 @@ function looksLikeRawTimestamp(value: unknown): boolean {
   return /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value);
 }
 
+/**
+ * @deprecated Phase-15.82 — DA goal is "single GROUP BY layer on the BE".
+ * This function still runs for the live-query path (raw rows) but every
+ * call is now a regression candidate. Prefer routing through the semantic
+ * engine so `preAggregated=true` triggers the FE-skip branch in
+ * `buildExploreChartModel`.
+ */
 export function applyGroupByAgg(
   data: Record<string, any>[],
   dimField: string,
   metrics: MetricConfig[],
 ): Record<string, any>[] {
   if (!dimField || metrics.length === 0 || data.length === 0) return data;
+
+  // Phase-15.82 — consolidation telemetry. Enable via the dev console:
+  //   window.__APPBI_DEBUG_AGG__ = true
+  // and every FE fallback aggregation will log so eng can spot live-path
+  // regressions where the BE could have aggregated instead.
+  if (typeof window !== 'undefined' && (window as any).__APPBI_DEBUG_AGG__) {
+    // eslint-disable-next-line no-console
+    console.debug('[chartDataAdapter] FE fallback aggregation', {
+      dimField,
+      metrics: metrics.map((m) => `${m.agg}__${m.field}`),
+      rows: data.length,
+    });
+  }
 
   // Phase-12.5 granularity warning. Only fires on raw timestamps; categorical
   // dimensions never trigger it. Keeps DA QA honest without changing output.
@@ -283,13 +489,16 @@ export function pivotByBreakdown(
     ? applyFiltersToRows(longForm, havingFilters)
     : longForm;
 
-  // 3. Decide which breakdown values remain (cap at 12 distinct values for
-  //    rendering). Ordering follows first-appearance to keep stable output.
+  // 3. Decide which breakdown values remain. Phase-15.83 raised the cap
+  //    from 12 → 100; DA dropped per-chart limits, but 100 distinct stack
+  //    segments in a single Bar is already unreadable so we keep a
+  //    softer ceiling rather than rendering everything. Ordering follows
+  //    first-appearance to keep stable output.
   const breakdownKeys: string[] = [];
   for (const r of surviving) {
     const k = String(r[breakdownField] ?? '');
     if (!breakdownKeys.includes(k)) breakdownKeys.push(k);
-    if (breakdownKeys.length >= 12) break;
+    if (breakdownKeys.length >= 100) break;
   }
 
   // 4. Pivot only what survived for rendering.
@@ -385,11 +594,15 @@ function buildPivotTableModel(args: {
   };
 }
 
-function limitRows(rows: Record<string, any>[]) {
-  const truncated = rows.length > MAX_CHART_POINTS;
+/**
+ * Phase-15.83 — no-op. Used to truncate at 2000; DA opted to render every
+ * row. Kept as a function (rather than inlining) so existing call sites
+ * stay readable and we can re-add sampling here later if needed.
+ */
+function limitRows(rows: Record<string, any>[], _showAll = false) {
   return {
-    rows: truncated ? rows.slice(0, MAX_CHART_POINTS) : rows,
-    truncated,
+    rows,
+    truncated: false,
     totalPoints: rows.length,
   };
 }
@@ -404,6 +617,8 @@ export function buildExploreChartModel(args: {
    *  semantic model. Used so legend / tooltips show measure.label instead
    *  of raw SQL identifiers. */
   labelMap?: SemanticLabelMap;
+  /** @deprecated Phase-15.83 — FE no longer truncates; flag is ignored. */
+  showAllPoints?: boolean;
 }): ExploreChartModel {
   const { type, data, roleConfig, havingFilters = [], preAggregated = false, labelMap } = args;
   const normalizedRoleConfig = normalizeRoleConfig(type, roleConfig);
@@ -524,14 +739,36 @@ export function buildExploreChartModel(args: {
     const valueField = metric
       ? resolveMetricValueField(filteredAggregated, metric, preAggregated)
       : undefined;
+    // Phase-15.82 bugfix — dedupe slice names. The BE pre_aggregated path
+    // trusts the SQL GROUP BY to produce distinct dimension values, but in
+    // practice fan-out from JOINs or a non-unique dimension column can
+    // emit several rows with the same `dimension` value (e.g. the
+    // "Sales hunt × 3" report DA filed). Without this dedupe each
+    // duplicate row becomes its own pie slice with its own legend swatch,
+    // and the Series-colors editor lists the same name three times with
+    // different colors — wrong both visually and as a config affordance.
+    // We collapse same-name rows by SUMming their values; this matches
+    // PowerBI / Superset behaviour for PIE.
+    const pieDataRaw = dimension && metric
+      ? filteredAggregated.map(row => ({
+          name: String(row[dimension] ?? 'Unknown'),
+          value: Number(row[valueField ?? metricKey(metric)]) || 0,
+        }))
+      : [];
+    const dedupedByName = new Map<string, number>();
+    for (const slice of pieDataRaw) {
+      dedupedByName.set(slice.name, (dedupedByName.get(slice.name) ?? 0) + slice.value);
+    }
+    // Phase-15.83 — was .slice(0, 20). DA dropped per-chart caps; PIE can
+    // now render every slice. Recharts renders fine up to a few hundred
+    // slices; beyond that the chart is unreadable but we surface the data
+    // (the legend / Series-colors editor already has its own scroll +
+    // "Show more" pagination from the earlier Series-colors UX fix).
+    const pieData = Array.from(dedupedByName.entries())
+      .map(([name, value]) => ({ name, value }));
     return {
       ...emptyModel,
-      pieData: dimension && metric
-        ? filteredAggregated.slice(0, 20).map(row => ({
-            name: String(row[dimension] ?? 'Unknown'),
-            value: Number(row[valueField ?? metricKey(metric)]) || 0,
-          }))
-        : [],
+      pieData,
     };
   }
 

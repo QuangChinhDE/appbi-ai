@@ -1438,12 +1438,19 @@ def _execute_semantic_chart_runtime(
             "value": filt.get("value"),
         }
 
-    # Resolve a sensible row limit. Charts use 1000 by default; preview /
-    # editor may raise via limit_override (capped at 5000 in shared resolver).
-    effective_limit: int = 1000
+    # Phase-15.83 — DA decision: render every row. The previous code
+    # capped chart queries at 1000 (default) / 5000 (with limit_override).
+    # Both are gone; the LIMIT clause is now constructed only when an
+    # explicit override is passed. If the override is missing or invalid
+    # we fall back to a very high sentinel that effectively disables the
+    # LIMIT (the SQL builder always emits "LIMIT N" so we can't drop it
+    # entirely without rewriting every dialect path — 10M is well above
+    # any single-chart workload we expect, and DBs short-circuit when
+    # the actual row count is smaller).
+    effective_limit: int = 10_000_000
     if limit_override is not None:
         try:
-            effective_limit = max(1, min(int(limit_override), 5000))
+            effective_limit = max(1, int(limit_override))
         except (TypeError, ValueError):
             pass
 

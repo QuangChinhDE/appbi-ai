@@ -1,132 +1,149 @@
-"""Stage 5 - App user management."""
+"""App-user maintenance tools for Workboard mini-app delivery."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
-from appbi_wb_core import _request, _requires_confirmation, mcp
+from appbi_wb_core import (
+    Context,
+    _confirmation_required_for_destructive,
+    _drop_none,
+    _request,
+    _requires_confirmation,
+    tool,
+)
 
 
-@mcp.tool()
-async def create_app_users_batch(
-    workboard_id: int,
-    users: List[Dict[str, Any]],
-    user_confirmed: bool = False,
-) -> Any:
-    """Create multiple app users for a workboard in one call."""
-    if not users:
-        return {"ok": False, "message": "users list is empty"}
-
-    errors: List[str] = []
-    usernames_seen: set[str] = set()
-    for index, user in enumerate(users):
-        username = str(user.get("username") or "").strip()
-        pin = str(user.get("pin") or "").strip()
-        full_name = str(user.get("full_name") or "").strip()
-        role = str(user.get("role") or "").strip()
-
-        if not username:
-            errors.append(f"users[{index}] missing username")
-        elif username in usernames_seen:
-            errors.append(f"users[{index}] duplicate username '{username}' in the same batch")
-        else:
-            usernames_seen.add(username)
-        if not pin:
-            errors.append(f"users[{index}] missing pin")
-        elif len(pin) < 4:
-            errors.append(f"users[{index}] pin must be at least 4 characters")
-        if not full_name:
-            errors.append(f"users[{index}] missing full_name")
-        if not role:
-            errors.append(f"users[{index}] missing role")
-
-    if errors:
-        return {"ok": False, "validation_errors": errors}
-
-    plan = {
-        "action": "create_app_users_batch",
-        "workboard_id": workboard_id,
-        "user_count": len(users),
-        "users_preview": [
-            {
-                "username": str(user["username"]).strip(),
-                "full_name": str(user["full_name"]).strip(),
-                "role": str(user["role"]).strip(),
-                "pin": "****",
-            }
-            for user in users
-        ],
-    }
-    if not user_confirmed:
-        return _requires_confirmation(plan)
-
-    created: List[Dict[str, Any]] = []
-    errors_out: List[Dict[str, Any]] = []
-    for user in users:
-        body = {
-            "username": str(user["username"]).strip(),
-            "pin": str(user["pin"]).strip(),
-            "full_name": str(user["full_name"]).strip(),
-            "role": str(user["role"]).strip(),
-            "active": bool(user.get("active", True)),
-            "context": user.get("context") or {},
+def _user_patch_payload(user: dict[str, Any], *, creating: bool) -> dict[str, Any]:
+    payload = _drop_none(
+        {
+            "username": user.get("username"),
+            "pin": user.get("pin"),
+            "full_name": user.get("full_name"),
+            "role": user.get("role"),
+            "active": user.get("active"),
+            "context": user.get("context"),
         }
-        try:
-            result = await _request("POST", f"/workboards/{workboard_id}/app-users", json_body=body)
-            created.append({"ok": True, "username": body["username"], "id": result.get("id")})
-        except RuntimeError as exc:
-            errors_out.append({"ok": False, "username": body["username"], "error": str(exc)})
+    )
+    username = str(payload.get("username") or "").strip()
+    if not username:
+        raise ValueError("Every app user needs a non-empty username.")
+    payload["username"] = username
+    if creating and not str(payload.get("pin") or "").strip():
+        raise ValueError(f"New app user '{username}' needs a PIN.")
+    return payload
+
+
+async def _upsert_app_users(
+    workboard_id: int,
+    users: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create or patch app users by username without deleting other users."""
+    existing_rows = await _request("GET", f"/workboards/{int(workboard_id)}/app-users")
+    by_username = {
+        str(row.get("username") or ""): row
+        for row in existing_rows if isinstance(row, dict)
+    }
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+
+    for raw in users:
+        if not isinstance(raw, dict):
+            raise ValueError("app_users must be a list of objects.")
+        username = str(raw.get("username") or "").strip()
+        existing = by_username.get(username)
+        body = _user_patch_payload(raw, creating=existing is None)
+        if existing is None:
+            result = await _request(
+                "POST",
+                f"/workboards/{int(workboard_id)}/app-users",
+                json_body=body,
+            )
+            created.append(result)
+            if isinstance(result, dict):
+                by_username[str(result.get("username") or username)] = result
+            continue
+
+        result = await _request(
+            "PATCH",
+            f"/workboards/{int(workboard_id)}/app-users/{int(existing['id'])}",
+            json_body=body,
+        )
+        updated.append(result)
 
     return {
-        "ok": len(errors_out) == 0,
+        "workboard_id": int(workboard_id),
         "created": created,
-        "errors": errors_out,
-        "total_created": len(created),
-        "total_errors": len(errors_out),
+        "updated": updated,
+        "created_count": len(created),
+        "updated_count": len(updated),
     }
 
 
-@mcp.tool()
-async def update_app_user(
+@tool({"design", "delivery"})
+async def list_workboard_app_users(
     workboard_id: int,
-    app_user_id: int,
-    updates: Dict[str, Any],
-    user_confirmed: bool = False,
-) -> Any:
-    """Update an existing app user.
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """List app users for one Workboard. PIN hashes never leave the backend."""
+    return {
+        "items": await _request("GET", f"/workboards/{int(workboard_id)}/app-users")
+    }
 
-    Supported fields: username, pin, full_name, role, active, context.
+
+@tool("delivery")
+async def upsert_workboard_app_users(
+    workboard_id: int,
+    users: list[dict[str, Any]],
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Create or patch multiple Workboard app users by username.
+
+    This tool never deletes users. New users need `username` and `pin`.
+    Existing users can omit `pin` to keep their credential unchanged.
+    Common demo roles are `owner`, `admin`, `user`; inactive users are
+    represented by `active=false`.
     """
-    plan = {
-        "action": "update_app_user",
-        "workboard_id": workboard_id,
-        "app_user_id": app_user_id,
-        "fields_to_update": {
-            key: "****" if key == "pin" else value for key, value in updates.items()
-        },
-    }
+    preview = [
+        {
+            "username": user.get("username"),
+            "role": user.get("role"),
+            "active": user.get("active", True),
+            "pin_will_change": bool(user.get("pin")),
+        }
+        for user in users if isinstance(user, dict)
+    ]
     if not user_confirmed:
-        return _requires_confirmation(plan)
-
-    return await _request(
-        "PATCH",
-        f"/workboards/{workboard_id}/app-users/{app_user_id}",
-        json_body=updates,
-    )
+        return _requires_confirmation(
+            "upsert_workboard_app_users",
+            {"workboard_id": int(workboard_id), "users": preview},
+        )
+    return await _upsert_app_users(int(workboard_id), users)
 
 
-@mcp.tool()
-async def delete_app_user(
+@tool("all")
+async def delete_workboard_app_user(
     workboard_id: int,
     app_user_id: int,
     user_confirmed: bool = False,
-) -> Any:
-    """Delete an app user from a workboard."""
-    plan = {
-        "action": "delete_app_user",
-        "workboard_id": workboard_id,
-        "app_user_id": app_user_id,
-    }
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Delete one Workboard app user by app_user_id."""
     if not user_confirmed:
-        return _requires_confirmation(plan)
+        return _confirmation_required_for_destructive(
+            "delete_workboard_app_user",
+            {"workboard_id": int(workboard_id), "app_user_id": int(app_user_id)},
+        )
+    await _request(
+        "DELETE",
+        f"/workboards/{int(workboard_id)}/app-users/{int(app_user_id)}",
+        expect_json=False,
+    )
+    return {
+        "status": "deleted",
+        "workboard_id": int(workboard_id),
+        "app_user_id": int(app_user_id),
+    }
 
-    return await _request("DELETE", f"/workboards/{workboard_id}/app-users/{app_user_id}")
+
+__all__: list[str] = ["_upsert_app_users"]

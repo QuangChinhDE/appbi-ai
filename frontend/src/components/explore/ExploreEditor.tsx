@@ -1687,10 +1687,21 @@ export function ExploreEditor({
       }));
     }
     if (PIE_LIKE_CHART_TYPES.has(chartType)) {
-      return (model.pieData ?? []).slice(0, 12).map((p: any) => ({
-        key: String(p?.name ?? ''),
-        label: String(p?.name ?? ''),
-      }));
+      // Phase-15.82 bugfix — defensive dedupe by slice name. The model's
+      // pieData is now deduped upstream (chartDataAdapter), but legacy
+      // callers / older charts may still emit duplicates if the model
+      // builder is bypassed. Keep this filter so Series-colors never
+      // shows the same label twice with different swatches.
+      const seen = new Set<string>();
+      const unique: { key: string; label: string }[] = [];
+      for (const p of (model.pieData ?? [])) {
+        const name = String((p as any)?.name ?? '');
+        if (seen.has(name)) continue;
+        seen.add(name);
+        unique.push({ key: name, label: name });
+        if (unique.length >= 12) break;
+      }
+      return unique;
     }
     return (model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label }));
   }, [chartType, displayedQueryState?.chartRows, displayedQueryState?.chartPreAggregated, normalizedRoleConfig]);

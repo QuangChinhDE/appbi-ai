@@ -71,6 +71,41 @@ export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 export const TABLE_PIVOT_COLUMN_LIMIT = 50;
 
+/**
+ * Phase-15.82 — manual chart annotation. Rendered as a Recharts
+ * `<ReferenceLine>` on the indicated axis. `axis` defaults to `y`.
+ * `value` is plotted against that axis (numeric for y, raw row value
+ * for x). `color` defaults to a warm hue; `label` is optional.
+ */
+export interface ChartAnnotation {
+  id: string;
+  label?: string;
+  value: number | string;
+  axis?: 'x' | 'y';
+  color?: string;
+  lineStyle?: 'solid' | 'dashed';
+}
+
+/**
+ * Phase-15.82 — inline calculated field. Pure FE — evaluated after the
+ * BE returns aggregated rows. Supported `expression` grammar:
+ *
+ *   - References to other metric keys via `${metricKey}` interpolation
+ *     (matches `agg__field` form, e.g. `${sum__revenue}`)
+ *   - Plain math operators `+ - * /` and parentheses
+ *   - Numeric literals (e.g. `100`, `0.5`)
+ *
+ * Example: `${sum__revenue} / ${sum__units}` produces a per-unit price.
+ * Evaluator uses Function constructor in a sandboxed scope (no globals);
+ * malformed expressions render as `NaN` and surface in the UI editor.
+ */
+export interface CalculatedFieldDef {
+  id: string;
+  label: string;
+  expression: string;
+  format?: NumberFormat;
+}
+
 export interface MetricConfig {
   field: string;
   agg: AggFn;
@@ -174,6 +209,39 @@ export interface ChartStyleConfig {
   // Data: limit displayed rows (top N or bottom N)
   dataLimit?: number | '';
   dataLimitDirection?: 'top' | 'bottom';
+  // Phase-15.83 — `showAllPoints` retired. The FE no longer truncates;
+  // every row from the BE renders. Kept here (deprecated) so older saved
+  // charts that already wrote the field don't crash on read — Pydantic
+  // is passthrough JSON, so the field stays in DB but is ignored.
+  /** @deprecated Phase-15.83 — ignored. */
+  showAllPoints?: boolean;
+  // Phase-15.82 — per-series formatting & free-form custom tooltip.
+  // `seriesFormats[key]` overrides global numberFormat for that series.
+  seriesFormats?: Record<string, NumberFormat>;
+  // `seriesDecimalPlaces[key]` per-series decimals override.
+  seriesDecimalPlaces?: Record<string, number>;
+  // Custom tooltip: list of fields to surface (in addition to default
+  // series values). Each entry is a raw row key from the result set.
+  tooltipExtraFields?: string[];
+  // Phase-15.82 — data label template, e.g. "{label}: {value} ({percent}%)".
+  // Supported tokens: {value}, {label}, {dimension}, {series}, {percent}.
+  dataLabelTemplate?: string;
+  // Phase-15.82 — date hierarchy drill state. When non-null, overrides
+  // `timeGranularity` for the current render. Cleared on chart-type or
+  // dimension change.
+  dateDrillLevel?: TimeGranularity;
+  // Phase-15.82 — conditional color rules for bar/line series. Same shape
+  // as table ConditionalFormatRule but applied to series cells.
+  seriesConditionalRules?: ConditionalFormatRule[];
+  // Phase-15.82 — manual annotations rendered as ReferenceLines/Areas on
+  // cartesian charts. Each entry is a label + value + axis target.
+  annotations?: ChartAnnotation[];
+  // Phase-15.82 — free-form mixed series. When non-empty, BAR_LINE-like
+  // mix is replaced by an explicit `(metricKey, renderAs)` mapping.
+  seriesRenderAs?: Record<string, 'bar' | 'line' | 'area'>;
+  // Phase-15.82 — inline calculated fields (DAX-lite). Each evaluates
+  // against aggregated row to produce a derived numeric series.
+  calculatedFields?: CalculatedFieldDef[];
   // BAR_LINE: show a second Y axis on the right for the line metric
   dualYAxis?: boolean;
   yAxisRightLabel?: string;
@@ -1284,6 +1352,131 @@ function HelpTooltip({ text }: { text: string }) {
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Disclosure (collapsible section) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+/**
+ * Phase-15.82 — Series colors editor extracted so it can keep its own
+ * "show more / collapse" local state (the previous IIFE attempted to
+ * stash it on styleConfig, which would have persisted UI state into the
+ * saved chart — wrong layer).
+ *
+ * Also adds:
+ *   - Defensive dedupe on key. The PIE adapter dedupes upstream, but
+ *     defensive filtering protects against future callers passing raw
+ *     pie slices (PowerBI / Superset both dedupe at this layer too).
+ *   - Heads-up banner when every legend label looks like a raw ISO
+ *     timestamp — strong signal DA mapped a datetime column to the
+ *     legend dimension by mistake (the bug in the screenshot).
+ *   - 12-row visible cap with "Show N more…" so a 50-slice pie doesn't
+ *     produce a 50-row scrolling color editor.
+ */
+function SeriesColorsEditor({
+  availableSeriesKeys,
+  palette,
+  seriesColors,
+  onChange,
+}: {
+  availableSeriesKeys: { key: string; label: string }[];
+  palette: string;
+  seriesColors?: Record<string, string>;
+  onChange: (next: Record<string, string> | undefined) => void;
+}) {
+  const VISIBLE_CAP = 12;
+  const [expanded, setExpanded] = useState(false);
+
+  // Dedupe by key so duplicate slice names from a fan-out join don't
+  // render as separate rows with different colours.
+  const uniqueSeries = useMemo(() => {
+    const seen = new Set<string>();
+    return availableSeriesKeys.filter(({ key }) => {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [availableSeriesKeys]);
+
+  // ISO timestamps like "2025-08-01T00:00:00" or "2025-08-01 12:34" —
+  // common when DA picks a datetime column for the PIE legend.
+  const looksLikeRawTime = useMemo(() => {
+    const isoTimestampRegex = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+    return uniqueSeries.length > 0 && uniqueSeries.every(({ label }) => isoTimestampRegex.test(label));
+  }, [uniqueSeries]);
+
+  const visible = expanded ? uniqueSeries : uniqueSeries.slice(0, VISIBLE_CAP);
+  const hiddenCount = uniqueSeries.length - visible.length;
+  const paletteColors = useMemo(
+    () => CHART_PALETTES.find((p) => p.name === palette)?.colors ?? [],
+    [palette],
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-xs font-semibold text-text-secondary">
+          Series colors
+          <span className="ml-1 text-[10px] font-normal text-text-quaternary">
+            ({uniqueSeries.length})
+          </span>
+        </label>
+      </div>
+      {looksLikeRawTime && (
+        <div className="mb-1.5 px-2 py-1 text-[10px] bg-warning/10 border border-warning/30 rounded text-warning">
+          Series labels look like raw timestamps. Pick a categorical column for the legend, or set a time granularity in the Style tab.
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {visible.map(({ key, label }, i) => {
+          const current = seriesColors?.[key] ?? '';
+          const fallback = paletteColors[i] || '#888';
+          return (
+            <div key={key} className="flex items-center gap-2">
+              <span className="flex-1 truncate text-xs text-text-secondary" title={label}>
+                {label}
+              </span>
+              <input
+                type="color"
+                value={current || fallback}
+                onChange={(e) => onChange({ ...(seriesColors ?? {}), [key]: e.target.value })}
+                className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+              />
+              {current && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = { ...(seriesColors ?? {}) };
+                    delete next[key];
+                    onChange(Object.keys(next).length === 0 ? undefined : next);
+                  }}
+                  className="text-xs text-text-tertiary hover:text-text-primary"
+                  title="Reset to palette"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1.5 w-full px-2 py-1 text-[11px] border border-dashed border-[rgb(var(--border-line))] rounded text-text-secondary hover:bg-surface-2"
+        >
+          Show {hiddenCount} more…
+        </button>
+      )}
+      {expanded && uniqueSeries.length > VISIBLE_CAP && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1.5 w-full px-2 py-1 text-[11px] text-text-quaternary hover:text-text-tertiary"
+        >
+          Collapse
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Disclosure({ title, hint, defaultOpen = false, children }: {
   title: string; hint?: string; defaultOpen?: boolean; children: React.ReactNode;
 }) {
@@ -3918,49 +4111,461 @@ export function ExploreChartConfig({
             </div>
           </div>
 
-          {/* Per-series color overrides (visible when chart has identifiable series). */}
+          {/* Per-series color overrides (visible when chart has identifiable series).
+              Phase-15.82 bugfix — DA reported the list rendering raw timestamps
+              (`2025-08-01T00:00:00`) and the same label thrice ("Sales hunt × 3")
+              when picking the wrong PIE dimension. Mitigations:
+                1. Defensive dedupe in case upstream forgot.
+                2. Cap visible rows so a high-cardinality dimension doesn't
+                   produce a 100-line scrollable list (with an "Show more"
+                   affordance).
+                3. Heads-up hint when a row label looks like a raw timestamp
+                   (DA picked a datetime column as the legend dimension by
+                   accident). */}
+          {!isTableLike && availableSeriesKeys.length > 0 && (
+            <SeriesColorsEditor
+              availableSeriesKeys={availableSeriesKeys}
+              palette={styleConfig.palette || 'default'}
+              seriesColors={styleConfig.seriesColors}
+              onChange={(next) => updStyle({ seriesColors: next })}
+            />
+          )}
+
+          {/* Phase-15.82 — advanced presentation features grouped behind a
+              collapsed disclosure. DA shouldn't have to scroll past
+              annotation/calc-field editors just to change number format. */}
+          <Disclosure
+            title="Advanced (annotations, calc fields, drill, mix)"
+            hint="PowerBI-style extras: per-series format, custom tooltip fields, data-label templates, annotations, conditional colors, calculated fields, and chart-type mix. All optional — leave them blank to render with the standard layout."
+          >
+          {/* Phase-15.82 — free-form series mix (BAR_LINE / mixed chart). */}
+          {chartType === 'BAR_LINE' && availableSeriesKeys.length > 0 && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
+                Series mix (free-form)
+              </label>
+              <div className="space-y-1.5">
+                {availableSeriesKeys.map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="flex-1 truncate text-xs text-text-secondary" title={label}>
+                      {label}
+                    </span>
+                    <select
+                      value={styleConfig.seriesRenderAs?.[key] ?? ''}
+                      onChange={(e) => {
+                        const next = { ...(styleConfig.seriesRenderAs ?? {}) };
+                        if (e.target.value === '') {
+                          delete next[key];
+                        } else {
+                          next[key] = e.target.value as 'bar' | 'line' | 'area';
+                        }
+                        updStyle({ seriesRenderAs: Object.keys(next).length === 0 ? undefined : next });
+                      }}
+                      className="px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    >
+                      <option value="">(default)</option>
+                      <option value="bar">Bar</option>
+                      <option value="line">Line</option>
+                      <option value="area">Area</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">
+                Override per-series render type. Leaving all on (default) keeps the legacy bars + line metric layout.
+              </p>
+            </div>
+          )}
+
+          {/* Phase-15.82 — per-series number format. Lets DA mix % and currency
+              series in one chart. Empty = inherit global numberFormat. */}
           {!isTableLike && availableSeriesKeys.length > 0 && (
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
-                Series colors
+                Per-series format
               </label>
               <div className="space-y-1.5">
-                {availableSeriesKeys.map(({ key, label }, i) => {
-                  const current = styleConfig.seriesColors?.[key] ?? '';
-                  const fallback = (CHART_PALETTES.find((p) => p.name === (styleConfig.palette || 'default'))?.colors ?? [])[i] || '#888';
+                {availableSeriesKeys.map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="flex-1 truncate text-xs text-text-secondary" title={label}>
+                      {label}
+                    </span>
+                    <select
+                      value={styleConfig.seriesFormats?.[key] ?? ''}
+                      onChange={(e) => {
+                        const next = { ...(styleConfig.seriesFormats ?? {}) };
+                        if (e.target.value === '') {
+                          delete next[key];
+                        } else {
+                          next[key] = e.target.value as NumberFormat;
+                        }
+                        updStyle({ seriesFormats: next });
+                      }}
+                      className="px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    >
+                      <option value="">(inherit)</option>
+                      <option value="auto">Auto</option>
+                      <option value="compact">Compact</option>
+                      <option value="number">Number</option>
+                      <option value="percent">Percent</option>
+                      <option value="currency">Currency</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={0}
+                      max={6}
+                      placeholder="dp"
+                      value={styleConfig.seriesDecimalPlaces?.[key] ?? ''}
+                      onChange={(e) => {
+                        const next = { ...(styleConfig.seriesDecimalPlaces ?? {}) };
+                        if (e.target.value === '') {
+                          delete next[key];
+                        } else {
+                          next[key] = Number(e.target.value);
+                        }
+                        updStyle({ seriesDecimalPlaces: next });
+                      }}
+                      className="w-12 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">Overrides global Number Format below.</p>
+            </div>
+          )}
+
+          {/* Phase-15.82 — tooltip extra fields. Chip-style toggle list so
+              DA doesn't have to discover Ctrl/Cmd-click on a native
+              multi-select (the previous draft used <select multiple>, which
+              tested poorly with non-power users). */}
+          {!isTableLike && availableColumns.length > 0 && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Tooltip extra fields
+              </label>
+              <div className="flex flex-wrap gap-1">
+                {availableColumns.map((col: any) => {
+                  const selected = (styleConfig.tooltipExtraFields ?? []).includes(col.name);
                   return (
-                    <div key={key} className="flex items-center gap-2">
-                      <span className="flex-1 truncate text-xs text-text-secondary" title={label}>
-                        {label}
-                      </span>
+                    <button
+                      key={col.name}
+                      type="button"
+                      onClick={() => {
+                        const current = styleConfig.tooltipExtraFields ?? [];
+                        const next = selected
+                          ? current.filter((f) => f !== col.name)
+                          : [...current, col.name];
+                        updStyle({ tooltipExtraFields: next.length === 0 ? undefined : next });
+                      }}
+                      className={`px-1.5 py-0.5 text-[11px] rounded border transition-colors ${
+                        selected
+                          ? 'bg-brand text-white border-brand'
+                          : 'bg-surface-1 text-text-secondary border-[rgb(var(--border-line))] hover:bg-surface-2'
+                      }`}
+                      title={col.name}
+                    >
+                      {col.label || col.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">
+                Click a column to toggle it into the chart tooltip.
+              </p>
+            </div>
+          )}
+
+          {/* Phase-15.82 — data label template (PowerBI-style). */}
+          {!isScatterLike && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Data label template
+              </label>
+              <input
+                type="text"
+                value={styleConfig.dataLabelTemplate ?? ''}
+                placeholder="{label}: {value}"
+                onChange={(e) => updStyle({ dataLabelTemplate: e.target.value || undefined })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 font-mono"
+              />
+              <p className="mt-1 text-[10px] text-text-quaternary">
+                Tokens: {'{value}'} {'{label}'} {'{series}'} {'{dimension}'} {'{percent}'}
+              </p>
+            </div>
+          )}
+
+          {/* Phase-15.82 — chart annotations (manual reference lines). */}
+          {!isTableLike && !isScatterLike && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Annotations
+              </label>
+              <div className="space-y-1.5">
+                {(styleConfig.annotations ?? []).map((annotation, idx) => (
+                  <div key={annotation.id} className="rounded border border-[rgb(var(--border-line))] p-2 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={annotation.label ?? ''}
+                        placeholder="Label"
+                        onChange={(e) => {
+                          const next = [...(styleConfig.annotations ?? [])];
+                          next[idx] = { ...annotation, label: e.target.value };
+                          updStyle({ annotations: next });
+                        }}
+                        className="flex-1 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = [...(styleConfig.annotations ?? [])];
+                          next.splice(idx, 1);
+                          updStyle({ annotations: next.length === 0 ? undefined : next });
+                        }}
+                        className="text-text-tertiary hover:text-text-primary"
+                        title="Remove annotation"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={annotation.axis ?? 'y'}
+                        onChange={(e) => {
+                          const next = [...(styleConfig.annotations ?? [])];
+                          next[idx] = { ...annotation, axis: e.target.value as 'x' | 'y' };
+                          updStyle({ annotations: next });
+                        }}
+                        className="px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                      >
+                        <option value="y">Y axis</option>
+                        <option value="x">X axis</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={String(annotation.value ?? '')}
+                        placeholder="Value"
+                        onChange={(e) => {
+                          const next = [...(styleConfig.annotations ?? [])];
+                          const raw = e.target.value;
+                          next[idx] = { ...annotation, value: Number(raw) || raw };
+                          updStyle({ annotations: next });
+                        }}
+                        className="flex-1 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                      />
                       <input
                         type="color"
-                        value={current || fallback}
-                        onChange={(e) => updStyle({
-                          seriesColors: { ...(styleConfig.seriesColors ?? {}), [key]: e.target.value },
-                        })}
-                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                        value={annotation.color || '#7c3aed'}
+                        onChange={(e) => {
+                          const next = [...(styleConfig.annotations ?? [])];
+                          next[idx] = { ...annotation, color: e.target.value };
+                          updStyle({ annotations: next });
+                        }}
+                        className="h-6 w-8 cursor-pointer rounded border border-[rgb(var(--border-line))]"
                       />
-                      {current && (
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = [...(styleConfig.annotations ?? [])];
+                    next.push({
+                      id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                      label: '',
+                      value: 0,
+                      axis: 'y',
+                      color: '#7c3aed',
+                      lineStyle: 'dashed',
+                    });
+                    updStyle({ annotations: next });
+                  }}
+                  className="w-full px-2 py-1 text-[11px] border border-dashed border-[rgb(var(--border-line))] rounded text-text-secondary hover:bg-surface-2"
+                >
+                  + Add annotation
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Phase-15.82 — conditional color rules for bar/line series. */}
+          {!isTableLike && !isScatterLike && !isPieLike && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Conditional series colors
+              </label>
+              <div className="space-y-1.5">
+                {(styleConfig.seriesConditionalRules ?? []).map((rule, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5">
+                    <select
+                      value={rule.operator}
+                      onChange={(e) => {
+                        const next = [...(styleConfig.seriesConditionalRules ?? [])];
+                        next[idx] = { ...rule, operator: e.target.value as ConditionalFormatRule['operator'] };
+                        updStyle({ seriesConditionalRules: next });
+                      }}
+                      className="px-1 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    >
+                      <option value=">">&gt;</option>
+                      <option value=">=">&ge;</option>
+                      <option value="<">&lt;</option>
+                      <option value="<=">&le;</option>
+                      <option value="=">=</option>
+                      <option value="!=">≠</option>
+                    </select>
+                    <input
+                      type="number"
+                      value={rule.value ?? ''}
+                      placeholder="value"
+                      onChange={(e) => {
+                        const next = [...(styleConfig.seriesConditionalRules ?? [])];
+                        next[idx] = { ...rule, value: e.target.value === '' ? '' : Number(e.target.value) };
+                        updStyle({ seriesConditionalRules: next });
+                      }}
+                      className="flex-1 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    />
+                    <input
+                      type="color"
+                      value={rule.color || '#dc2626'}
+                      onChange={(e) => {
+                        const next = [...(styleConfig.seriesConditionalRules ?? [])];
+                        next[idx] = { ...rule, color: e.target.value };
+                        updStyle({ seriesConditionalRules: next });
+                      }}
+                      className="h-6 w-8 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = [...(styleConfig.seriesConditionalRules ?? [])];
+                        next.splice(idx, 1);
+                        updStyle({ seriesConditionalRules: next.length === 0 ? undefined : next });
+                      }}
+                      className="text-text-tertiary hover:text-text-primary"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = [...(styleConfig.seriesConditionalRules ?? [])];
+                    next.push({ field: '', operator: '>', value: 0, color: '#dc2626' });
+                    updStyle({ seriesConditionalRules: next });
+                  }}
+                  className="w-full px-2 py-1 text-[11px] border border-dashed border-[rgb(var(--border-line))] rounded text-text-secondary hover:bg-surface-2"
+                >
+                  + Add color rule
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">Currently applied to vertical Bar charts.</p>
+            </div>
+          )}
+
+          {/* Phase-15.82 — inline calculated fields (DAX-lite).
+              UX: surface the available metric keys as click-to-insert chips
+              so DA doesn't have to memorise the `agg__field` convention. */}
+          {!isTableLike && !isScatterLike && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Calculated fields
+              </label>
+              <div className="space-y-1.5">
+                {(styleConfig.calculatedFields ?? []).map((field, idx) => {
+                  const expressionId = `calc-expr-${field.id}`;
+                  const insertToken = (token: string) => {
+                    const input = document.getElementById(expressionId) as HTMLInputElement | null;
+                    const before = field.expression ?? '';
+                    let nextExpr = before + token;
+                    if (input) {
+                      const start = input.selectionStart ?? before.length;
+                      const end = input.selectionEnd ?? before.length;
+                      nextExpr = before.slice(0, start) + token + before.slice(end);
+                    }
+                    const next = [...(styleConfig.calculatedFields ?? [])];
+                    next[idx] = { ...field, expression: nextExpr };
+                    updStyle({ calculatedFields: next });
+                  };
+                  return (
+                    <div key={field.id} className="rounded border border-[rgb(var(--border-line))] p-2 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={field.label ?? ''}
+                          placeholder="Label (e.g. Margin %)"
+                          onChange={(e) => {
+                            const next = [...(styleConfig.calculatedFields ?? [])];
+                            next[idx] = { ...field, label: e.target.value };
+                            updStyle({ calculatedFields: next });
+                          }}
+                          className="flex-1 px-1.5 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                        />
                         <button
                           type="button"
                           onClick={() => {
-                            const next = { ...(styleConfig.seriesColors ?? {}) };
-                            delete next[key];
-                            updStyle({ seriesColors: next });
+                            const next = [...(styleConfig.calculatedFields ?? [])];
+                            next.splice(idx, 1);
+                            updStyle({ calculatedFields: next.length === 0 ? undefined : next });
                           }}
-                          className="text-xs text-text-tertiary hover:text-text-primary"
-                          title="Reset to palette"
+                          className="text-text-tertiary hover:text-text-primary"
                         >
                           <X className="h-3 w-3" />
                         </button>
+                      </div>
+                      <input
+                        id={expressionId}
+                        type="text"
+                        value={field.expression ?? ''}
+                        placeholder="Type, or click a chip below to insert"
+                        onChange={(e) => {
+                          const next = [...(styleConfig.calculatedFields ?? [])];
+                          next[idx] = { ...field, expression: e.target.value };
+                          updStyle({ calculatedFields: next });
+                        }}
+                        className="w-full px-1.5 py-1 text-[11px] font-mono border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                      />
+                      {availableSeriesKeys.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {availableSeriesKeys.map(({ key, label }) => (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => insertToken('${' + key + '}')}
+                              className="px-1.5 py-0.5 text-[10px] rounded bg-surface-2 hover:bg-surface-3 text-text-secondary border border-[rgb(var(--border-line))]"
+                              title={`Insert reference to ${label}`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <span className="text-[10px] text-text-quaternary self-center ml-1">+ - * / ( )</span>
+                        </div>
                       )}
                     </div>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = [...(styleConfig.calculatedFields ?? [])];
+                    next.push({
+                      id: `calc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                      label: '',
+                      expression: '',
+                    });
+                    updStyle({ calculatedFields: next });
+                  }}
+                  className="w-full px-2 py-1 text-[11px] border border-dashed border-[rgb(var(--border-line))] rounded text-text-secondary hover:bg-surface-2"
+                >
+                  + Add calculated field
+                </button>
               </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">
+                Click a series chip to insert it as a reference. Renders as an additional line on LINE/AREA charts.
+              </p>
             </div>
           )}
+          </Disclosure>
 
           {/* Data labels */}
           {!isScatterLike && (

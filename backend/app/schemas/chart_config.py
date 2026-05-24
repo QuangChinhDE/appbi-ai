@@ -100,6 +100,94 @@ def check_chart_required_role_keys(
     return errors
 
 
+# Phase-15.82 — strict structural typecheck for role_config. Catches
+# malformed payloads (e.g. `metrics: "sum_revenue"` instead of a list of
+# dicts) that the token-based checker above can't see. Returns list of
+# human-readable errors, mirroring `check_chart_required_role_keys` so
+# callers can concat both for a complete validation pass.
+_VALID_AGG = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
+
+
+def _check_metric_shape(metric: Any, path: str) -> List[str]:
+    """Phase-15.82 — STRUCTURAL shape only. We deliberately do NOT reject
+    empty/whitespace `field` here because legacy charts saved during the
+    draft-builder flow (Phase-13/14) routinely persisted placeholder
+    metrics like ``{field: "", agg: "sum"}`` and any UPDATE that
+    re-submits the full config would otherwise crash with 422.
+
+    The per-chart-type required-key validator
+    (:func:`check_chart_required_role_keys`) is the layer that checks
+    emptiness when the chart is actually expected to render — that's the
+    right place to enforce "you need a metric to draw a BAR chart".
+    """
+    errors: List[str] = []
+    if not isinstance(metric, dict):
+        return [f"{path} must be an object with field+agg (got {type(metric).__name__})"]
+    field = metric.get("field")
+    if field is not None and not isinstance(field, str):
+        errors.append(f"{path}.field must be a string when present (got {type(field).__name__})")
+    agg = metric.get("agg")
+    # agg may be omitted on legacy/draft rows; only fail on outright-wrong types.
+    if agg is not None and (not isinstance(agg, str) or agg not in _VALID_AGG):
+        errors.append(f"{path}.agg must be one of {sorted(_VALID_AGG)} (got {agg!r})")
+    return errors
+
+
+def check_role_config_shape(role_config: Optional[Dict[str, Any]]) -> List[str]:
+    """Validate the structural shape of role_config independent of chart type.
+
+    Catches drift like passing `metrics` as a string, `breakdown` as a list,
+    or a malformed `lineMetric`. Combined with `check_chart_required_role_keys`
+    it forms a two-layer validator: structural shape + chart-type required
+    keys.
+    """
+    if role_config is None:
+        return []
+    if not isinstance(role_config, dict):
+        return [f"role_config must be an object (got {type(role_config).__name__})"]
+    errors: List[str] = []
+
+    metrics = role_config.get("metrics")
+    if metrics is not None:
+        if not isinstance(metrics, list):
+            errors.append(f"metrics must be a list (got {type(metrics).__name__})")
+        else:
+            for i, m in enumerate(metrics):
+                errors.extend(_check_metric_shape(m, f"metrics[{i}]"))
+
+    for single_metric_key in ("lineMetric", "tablePivotMetric", "benchmarkMetric"):
+        m = role_config.get(single_metric_key)
+        if m is not None:
+            errors.extend(_check_metric_shape(m, single_metric_key))
+
+    for str_key in ("dimension", "breakdown", "timeField", "scatterX", "scatterY",
+                    "tableRowDimension", "tableColumnDimension", "tableMode"):
+        value = role_config.get(str_key)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"{str_key} must be a string (got {type(value).__name__})")
+
+    selected = role_config.get("selectedColumns")
+    if selected is not None:
+        if not isinstance(selected, list):
+            errors.append(f"selectedColumns must be a list (got {type(selected).__name__})")
+        else:
+            for i, c in enumerate(selected):
+                if not isinstance(c, str):
+                    errors.append(f"selectedColumns[{i}] must be a string")
+
+    time_grains = role_config.get("timeGrains")
+    if time_grains is not None:
+        if not isinstance(time_grains, dict):
+            errors.append(f"timeGrains must be an object (got {type(time_grains).__name__})")
+        else:
+            valid_grains = {"day", "week", "month", "quarter", "year"}
+            for k, v in time_grains.items():
+                if not isinstance(v, str) or v not in valid_grains:
+                    errors.append(f"timeGrains[{k!r}] must be one of {sorted(valid_grains)} (got {v!r})")
+
+    return errors
+
+
 class ChartConfigBase(BaseModel):
     """
     Base chart configuration model.

@@ -1,25 +1,17 @@
-"""Core infrastructure for the AppBI Workboard MCP.
-
-Shared HTTP client, environment loading, confirmation helper, and the
-FastMCP instance that all stage modules register tools onto.
-
-Design rules:
-- Claude is the only LLM. Never call any AppBI endpoint that triggers
-  backend AI inference.
-- Every write tool exposes user_confirmed: bool = False. When False,
-  return a plain-language plan and write nothing.
-"""
+"""Shared infrastructure for the AppBI Workboard MCP."""
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 
 def _runtime_root() -> Path:
@@ -32,10 +24,17 @@ ROOT = _runtime_root()
 load_dotenv(Path(os.getenv("APPBI_ENV_FILE") or (ROOT / ".env")))
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _normalize_api_base_url(raw: str) -> str:
     base = str(raw or "").strip().rstrip("/")
     if not base:
-        raise RuntimeError("APPBI_BASE_URL is required (for example http://localhost:8000)")
+        raise RuntimeError("APPBI_BASE_URL is required, for example http://localhost:8000")
     if base.endswith("/api/v1"):
         return base
     return f"{base}/api/v1"
@@ -52,7 +51,8 @@ def _read_required_pat() -> str:
 
 APPBI_API_BASE_URL = _normalize_api_base_url(os.getenv("APPBI_BASE_URL", ""))
 APPBI_PAT = _read_required_pat()
-APPBI_TIMEOUT = float(os.getenv("APPBI_TIMEOUT_SECONDS", "60"))
+APPBI_TIMEOUT_SECONDS = float(os.getenv("APPBI_TIMEOUT_SECONDS", "120"))
+APPBI_VERIFY_TLS = _env_flag("APPBI_VERIFY_TLS", True)
 
 
 logging.basicConfig(
@@ -64,153 +64,237 @@ logger = logging.getLogger("appbi_workboard_mcp")
 
 
 _MCP_INSTRUCTIONS = """
-You are the AppBI Workboard Builder. Help the user go from raw tables to a
-working mini-app with forms, list views, app users, and workspace links.
+You are the AppBI Workboard Builder. Build a real mini-app from an existing
+AppBI dataset. A production-grade result is one coherent Workboard bundle:
+layout_json screens + app users + doc webhooks + optional public workspace.
 
-## Canonical workflow - SQL source
+## Canonical workflow
 
-  Stage 1 - Discovery (read only)
-    list_datasets
-    list_workboards
-    get_dataset
-    list_dataset_tables
-    get_dataset_table_profile
-    list_data_sources
-    list_datasource_tables
-    inspect_source_schema
-    inspect_source_table
+1. Read first:
+   list_datasets -> inspect_dataset_for_workboard(dataset_id)
+   list_workboards -> list_workspaces when reuse is possible.
+2. Design once:
+   get_workboard_design_guide() for the current bundle contract and screen
+   examples. Build a bundle with only the screens the user asked for.
+3. Dry-run:
+   validate_workboard_bundle(bundle). Fix every error and consider warnings.
+4. Confirm once:
+   apply_workboard_bundle(bundle, user_confirmed=true). This can create or
+   update a workboard, publish it, upsert app users, store webhook configs,
+   and link/create a workspace.
+5. Verify:
+   audit_workboard and run_workboard_runtime_smoke_test as a real app user.
 
-  Stage 2 - Dataset setup
-    create_dataset
-    add_physical_table(dataset_id, table_name, datasource_id, schema_name?)
+## Non-negotiable rules
 
-  Stage 3 - Blueprint design
-    propose_workboard_blueprint(dataset_id, business_intent, table_profiles)
+- Start from dataset tables already attached to AppBI. Source ingestion and
+  dashboard authoring stay in the dashboard MCP or AppBI UI.
+- Use the table ids from inspect_dataset_for_workboard, not source table ids.
+- Use current screen kinds only: form, table, doc, dashboard. For a table
+  screen the spec key is `table`, never legacy `list` or `grid`.
+- Row actions and form after_submit are ScreenAction objects, never strings.
+- Doc webhook sync buttons reference webhook ids declared in bundle.webhooks.
+  Webhooks belong to doc screens; dashboard screens do not host sync triggers.
+- role strings in visible_for_roles and RLS must match app user roles. Owner
+  bypass exists, but user/admin rules should still be explicit.
+- Every write tool previews a plan until user_confirmed=true.
+""".strip()
 
-  Stage 4 - Create or update
-    commit_workboard_blueprint(blueprint_json, user_confirmed=true)
-    update_workboard_blueprint(workboard_id, blueprint_json, user_confirmed=true)
 
-  Stage 5 - App users
-    create_app_users_batch(workboard_id, users, user_confirmed=true)
+_VALID_PROFILES = {"design", "delivery", "all"}
 
-  Stage 6 - Workspace
-    create_workspace
-    link_workboard_to_workspace
-    preview_workboard
-    run_workboard_runtime_smoke_test
-    Requires the MCP PAT scope workboards=full for create/link.
 
-## Canonical workflow - Google Sheets source
+def _active_profiles() -> set[str]:
+    raw = os.getenv("APPBI_MCP_PROFILE", "all").strip().lower()
+    active = {part.strip() for part in raw.split(",") if part.strip()} or {"all"}
+    unknown = active - _VALID_PROFILES
+    if unknown:
+        raise RuntimeError(
+            f"APPBI_MCP_PROFILE has unknown values {sorted(unknown)}. "
+            f"Valid values: {sorted(_VALID_PROFILES)}."
+        )
+    return active
 
-  Stage 1 - Discovery
-    list_data_sources
-    get_google_data_access_status
-    list_gsheet_tabs
-    read_gsheet_rows
 
-  Stage 1b - Sheet design
-    prepare_gsheet_tab_schema(business_columns)
-    create_gsheet_tab(datasource_id, sheet_name, headers, user_confirmed=true)
+ACTIVE_PROFILES = _active_profiles()
+logger.info("Workboard MCP starting with profiles=%s", sorted(ACTIVE_PROFILES))
 
-  Stage 2 - Attach to dataset
-    create_dataset
-    attach_gsheet_tab_to_dataset(dataset_id, datasource_id, sheet_name, user_confirmed=true)
-    get_dataset_table_profile
+mcp = FastMCP("AppBI Workboard Builder", instructions=_MCP_INSTRUCTIONS)
 
-  Stage 3 - Blueprint design
-    propose_workboard_blueprint
-    For Google Sheets, keep a stable id column and use updated_at for optimistic locking.
 
-  Stage 4 - Create or update
-    commit_workboard_blueprint
-    update_workboard_blueprint
+class BackendError(RuntimeError):
+    """Backend response that tool wrappers convert to structured output."""
 
-## Important schema rules
+    def __init__(self, method: str, path: str, status_code: int, detail: Any) -> None:
+        super().__init__(f"{method} {path} -> {status_code}: {detail}")
+        self.method = method.upper()
+        self.path = path
+        self.status_code = int(status_code)
+        self.detail = detail
 
-1. Profile tables before proposing a blueprint.
-2. row_actions must be ScreenAction objects, never strings.
-3. mini_app_nav must not contain a "default" key.
-4. Screen/table ids must refer to dataset_tables.id values already attached to the dataset.
-5. visible_for_roles and screen RLS role strings must match the app user roles you plan to create.
-6. For Google Sheets, id and optimistic_lock_column are system columns. Keep them in the sheet, but do not expose them as user-editable form fields.
-7. Google Sheets writes require OAuth scope https://www.googleapis.com/auth/spreadsheets; spreadsheet ownership does not replace OAuth write scope.
-8. Raw GSheets row tools are for setup/repair only; they bypass workboard runtime validation and RLS.
 
-## Report / doc screens (báo cáo)
+def _backend_error_envelope(exc: BackendError) -> dict[str, Any]:
+    return {
+        "status": "backend_error",
+        "method": exc.method,
+        "path": exc.path,
+        "status_code": exc.status_code,
+        "detail": exc.detail,
+        "claude_should": (
+            "Fix request payload or permissions before retrying."
+            if 400 <= exc.status_code < 500
+            else "Surface the backend error and inspect AppBI logs before retrying."
+        ),
+    }
 
-When the user wants a report, dashboard panel, pivot, cross-tab, printable
-document, or Excel export, use `kind="doc"` screens. ALWAYS call
-`get_doc_screen_examples()` first to fetch annotated patterns:
 
-  - simple flat report with totals row
-  - 2-row grouped header (NHẬP/XUẤT/TỒN style)
-  - unpivot wide → long (Google Sheet with t1..t12 columns)
-  - pivot long → wide (cross-tab matrix)
-  - printable doc with header / kv_grid / signature blocks
+def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
+    """Register a tool only when APPBI_MCP_PROFILE exposes its surface."""
+    tags = {profiles} if isinstance(profiles, str) else set(profiles)
 
-Key rules for `kind="doc"`:
-  - Set `form=null` and `list=null` on the screen. The screen must have `doc: {page, blocks[]}`.
-  - Allowed block.type: header, kv_grid, data_table, text, spacer, signature, footer.
-  - `column_labels` lives on the SCREEN (not the block) and maps {db_col: "Nhãn hiển thị"}.
-  - `data_table.transform` is null OR {kind:"unpivot", id_columns, value_columns, var_name, value_name}
-    OR {kind:"pivot", index[], columns, values, agg, max_columns, fill_value}.
-  - `data_table.allow_export_excel=true` exposes a "Xuất Excel" button; off by default.
-  - `column_groups[].columns` must be a contiguous subset of `data_table.columns`.
+    def decorator(fn):
+        if not ("all" in ACTIVE_PROFILES or tags & ACTIVE_PROFILES):
+            return fn
 
-## Confirmation model
+        @functools.wraps(fn)
+        async def wrapped(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except BackendError as exc:
+                logger.info(
+                    "tool %s backend error %s on %s %s",
+                    fn.__name__,
+                    exc.status_code,
+                    exc.method,
+                    exc.path,
+                )
+                return _backend_error_envelope(exc)
 
-Every write tool supports preview-then-confirm:
-  - user_confirmed=false -> return a plan only
-  - user_confirmed=true  -> execute the write
-"""
+        return mcp.tool()(wrapped)
 
-mcp = FastMCP(
-    name="AppBI Workboard Builder",
-    instructions=_MCP_INSTRUCTIONS,
-)
+    return decorator
+
+
+def _clean_params(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not params:
+        return None
+    cleaned = {
+        key: value
+        for key, value in params.items()
+        if value is not None and str(value).strip() != ""
+    }
+    return cleaned or None
+
+
+def _query_path(path: str, params: dict[str, Any] | None) -> str:
+    cleaned = _clean_params(params)
+    return f"{path}?{urlencode(cleaned)}" if cleaned else path
 
 
 async def _request(
     method: str,
     path: str,
-    json_body: dict | None = None,
-    params: dict | None = None,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | list[Any] | None = None,
+    expect_json: bool = True,
+    timeout_seconds: float | None = None,
 ) -> Any:
-    url = f"{APPBI_API_BASE_URL}{path}"
+    """Call the authenticated AppBI API and raise structured backend errors."""
+    timeout = float(timeout_seconds or APPBI_TIMEOUT_SECONDS)
     headers = {
         "Authorization": f"Bearer {APPBI_PAT}",
-        "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    async with httpx.AsyncClient(timeout=APPBI_TIMEOUT, verify=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        verify=APPBI_VERIFY_TLS,
+        follow_redirects=True,
+    ) as client:
         response = await client.request(
-            method=method.upper(),
-            url=url,
+            method.upper(),
+            f"{APPBI_API_BASE_URL}{path}",
             headers=headers,
+            params=_clean_params(params),
             json=json_body,
-            params=params,
         )
     if response.status_code >= 400:
+        detail: Any = response.text
         try:
-            detail = response.json()
-        except Exception:
-            detail = response.text
-        raise RuntimeError(f"AppBI API {method} {path} -> {response.status_code}: {detail}")
-    if response.status_code == 204 or not response.content:
-        return {"ok": True}
-    return response.json()
+            payload = response.json()
+            detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
+        except ValueError:
+            pass
+        raise BackendError(method, path, response.status_code, detail)
+    if not expect_json or not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
 
 
-def _requires_confirmation(plan: dict) -> dict:
+def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _requires_confirmation(action: str, plan: dict[str, Any]) -> dict[str, Any]:
     return {
-        "requires_confirmation": True,
-        "message": "Review the plan above. Call again with user_confirmed=True to execute.",
+        "status": "requires_confirmation",
+        "action": action,
+        "claude_must_stop_here": True,
+        "message": "No changes were made. Show this plan and wait for explicit approval.",
         "plan": plan,
     }
 
 
-def _clamp_int(val: int, default: int, minimum: int, maximum: int) -> int:
-    if val is None:
-        return default
-    return max(minimum, min(maximum, int(val)))
+def _confirmation_required_for_destructive(
+    action: str, target: dict[str, Any]
+) -> dict[str, Any]:
+    return _requires_confirmation(
+        action,
+        {
+            "destructive": True,
+            "reversible": False,
+            "target": target,
+        },
+    )
+
+
+@tool({"design", "delivery"})
+async def health_check(ctx: Context | None = None) -> dict[str, Any]:
+    """Verify the MCP can reach AppBI with the configured PAT."""
+    return {
+        "status": "ok",
+        "appbi_api_base_url": APPBI_API_BASE_URL,
+        "user": await _request("GET", "/auth/me"),
+    }
+
+
+__all__ = [
+    "ACTIVE_PROFILES",
+    "APPBI_API_BASE_URL",
+    "APPBI_PAT",
+    "APPBI_TIMEOUT_SECONDS",
+    "APPBI_VERIFY_TLS",
+    "BackendError",
+    "Context",
+    "_backend_error_envelope",
+    "_clamp_int",
+    "_confirmation_required_for_destructive",
+    "_drop_none",
+    "_query_path",
+    "_request",
+    "_requires_confirmation",
+    "logger",
+    "mcp",
+    "tool",
+]

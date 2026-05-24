@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useMemo, useState } from 'react';
+import * as Popover from '@radix-ui/react-popover';
 import {
   BarChart, Bar, LabelList,
   LineChart, Line,
@@ -19,12 +20,13 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
-import { buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
+import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 
-/** Maximum data points to render in a chart (BAR/LINE/AREA/STACKED_BAR etc.).
- *  Beyond this Recharts DOM rendering becomes unusably slow. */
-const MAX_CHART_POINTS = 2000;
+// Phase-15.83 — DA dropped the FE row cap; the chart renders every row
+// the BE returns. Constants removed (no longer referenced); if Recharts
+// starts choking on very large datasets we revisit with server-side
+// sampling rather than a client-side hard cap.
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ X-axis smart helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 /**
@@ -130,6 +132,162 @@ function CustomAxisTick({
 }
 
 /**
+ * Phase-15.82 — CustomLegend renders the Recharts legend with an inline
+ * popover color picker per item. Clicking the swatch opens the picker;
+ * clicking the label toggles series visibility. Strikethrough indicates
+ * a hidden series (consistent with the old default-Legend behaviour).
+ *
+ * Props mirror what Recharts forwards to a custom `content=` legend.
+ */
+const COLOR_SWATCHES = [
+  '#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed',
+  '#0891b2', '#db2777', '#65a30d', '#ea580c', '#475569',
+];
+interface CustomLegendProps {
+  payload?: Array<{ value: string; dataKey?: string; color?: string }>;
+  hiddenSeries: Set<string>;
+  seriesColors?: Record<string, string>;
+  fontSize: number;
+  layout: 'horizontal' | 'vertical';
+  onToggle: (key: string) => void;
+  onColorChange?: (key: string, color: string) => void;
+  onColorReset?: (key: string) => void;
+}
+function CustomLegend({
+  payload = [],
+  hiddenSeries,
+  seriesColors,
+  fontSize,
+  layout,
+  onToggle,
+  onColorChange,
+  onColorReset,
+}: CustomLegendProps) {
+  return (
+    <ul
+      style={{
+        listStyle: 'none',
+        padding: 0,
+        margin: 0,
+        display: 'flex',
+        flexDirection: layout === 'vertical' ? 'column' : 'row',
+        flexWrap: 'wrap',
+        gap: layout === 'vertical' ? 4 : 12,
+        justifyContent: 'center',
+        fontSize,
+      }}
+    >
+      {payload.map((entry) => {
+        // Recharts types dataKey as `string | number | ((row) => any)`. We
+        // only ever pass strings (`metricKey()` results) so the cast is
+        // safe in practice, but force-stringify defensively in case a
+        // future series ever uses a function dataKey — otherwise the
+        // hiddenSeries Set lookup would silently miss every entry.
+        const key = String(entry.dataKey ?? entry.value ?? '');
+        const isHidden = hiddenSeries.has(key);
+        const swatchColor = seriesColors?.[key] ?? entry.color ?? '#888';
+        const canEditColor = Boolean(onColorChange);
+        return (
+          <li key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {canEditColor ? (
+              <Popover.Root>
+                <Popover.Trigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`Change color for ${entry.value}`}
+                    style={{
+                      width: 12, height: 12, borderRadius: 3,
+                      background: swatchColor,
+                      border: '1px solid rgba(0,0,0,0.15)',
+                      cursor: 'pointer',
+                      padding: 0,
+                      opacity: isHidden ? 0.4 : 1,
+                    }}
+                  />
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content
+                    side="top"
+                    align="center"
+                    sideOffset={6}
+                    style={{
+                      background: 'var(--surface-1, white)',
+                      border: '1px solid rgba(0,0,0,0.15)',
+                      borderRadius: 6,
+                      padding: 8,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+                      zIndex: 50,
+                    }}
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 132 }}>
+                      {COLOR_SWATCHES.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => onColorChange?.(key, c)}
+                          style={{
+                            width: 20, height: 20, borderRadius: 4,
+                            background: c, cursor: 'pointer',
+                            border: swatchColor === c ? '2px solid black' : '1px solid rgba(0,0,0,0.15)',
+                            padding: 0,
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <input
+                        type="color"
+                        value={swatchColor.startsWith('#') ? swatchColor : '#000000'}
+                        onChange={(e) => onColorChange?.(key, e.target.value)}
+                        style={{ width: 30, height: 22, padding: 0, border: 'none' }}
+                      />
+                      {onColorReset && seriesColors?.[key] && (
+                        <button
+                          type="button"
+                          onClick={() => onColorReset(key)}
+                          style={{
+                            fontSize: 10,
+                            padding: '2px 6px',
+                            background: 'transparent',
+                            border: '1px solid rgba(0,0,0,0.2)',
+                            borderRadius: 4,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
+            ) : (
+              <span
+                style={{
+                  width: 12, height: 12, borderRadius: 3, background: swatchColor,
+                  border: '1px solid rgba(0,0,0,0.15)', opacity: isHidden ? 0.4 : 1,
+                }}
+              />
+            )}
+            <span
+              onClick={() => onToggle(key)}
+              style={{
+                cursor: 'pointer',
+                color: isHidden ? 'var(--text-quaternary, #999)' : 'inherit',
+                textDecoration: isHidden ? 'line-through' : 'none',
+                userSelect: 'none',
+              }}
+            >
+              {entry.value}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
  * Wrap a Recharts chart element in a horizontally-scrollable container when
  * the number of categories exceeds SCROLL_THRESHOLD. The chart is given
  * sufficient horizontal space so every bar/point has breathing room.
@@ -155,11 +313,15 @@ function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Number formatting ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-function formatNumber(value: any, style?: ChartStyleConfig): string {
+function formatNumber(value: any, style?: ChartStyleConfig, seriesKey?: string): string {
   const n = Number(value);
   if (isNaN(n)) return String(value);
-  const fmt = style?.numberFormat || 'compact';
-  const dec = style?.decimalPlaces ?? 1;
+  // Phase-15.82 — per-series format override. seriesFormats[key] beats
+  // the global numberFormat so DA can mix % and VND in one chart.
+  const perSeriesFmt = seriesKey ? style?.seriesFormats?.[seriesKey] : undefined;
+  const perSeriesDec = seriesKey ? style?.seriesDecimalPlaces?.[seriesKey] : undefined;
+  const fmt = perSeriesFmt ?? style?.numberFormat ?? 'compact';
+  const dec = perSeriesDec ?? style?.decimalPlaces ?? 1;
   switch (fmt) {
     case 'compact':
       if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(dec)}B`;
@@ -184,12 +346,113 @@ function yAxisTickFormatter(style?: ChartStyleConfig) {
 function tooltipFormatter(series: ChartSeriesDef[], style?: ChartStyleConfig) {
   return (value: any, name: string) => {
     const match = series.find(item => item.key === name);
-    return [formatNumber(value, style), match?.label ?? name];
+    return [formatNumber(value, style, name), match?.label ?? name];
   };
 }
 
-function dataLabelFormatter(style?: ChartStyleConfig) {
-  return (value: any) => formatNumber(value, style);
+function dataLabelFormatter(style?: ChartStyleConfig, seriesKey?: string, seriesLabel?: string) {
+  // Phase-15.82 — when style.dataLabelTemplate is set, expand tokens via
+  // renderTemplatedLabel; otherwise fall back to the plain numeric format.
+  if (style?.dataLabelTemplate) {
+    return (value: any, props?: any) => renderTemplatedLabel({
+      template: style.dataLabelTemplate,
+      value,
+      seriesKey,
+      seriesLabel,
+      dimensionValue: props?.payload ? props.payload[Object.keys(props.payload)[0]] : undefined,
+      style,
+    });
+  }
+  return (value: any) => formatNumber(value, style, seriesKey);
+}
+
+/**
+ * Phase-15.82 — render a data-label using `style.dataLabelTemplate` when
+ * provided. Supported tokens:
+ *   {value}   – raw value formatted per-series
+ *   {label}   – series display label
+ *   {series}  – series key (machine-readable)
+ *   {dimension} – row's dimension value
+ *   {percent} – (PIE only) share as percent
+ */
+function renderTemplatedLabel(opts: {
+  template?: string;
+  value: any;
+  seriesKey?: string;
+  seriesLabel?: string;
+  dimensionValue?: any;
+  percent?: number;
+  style?: ChartStyleConfig;
+}): string {
+  const { template, value, seriesKey, seriesLabel, dimensionValue, percent, style } = opts;
+  const formatted = formatNumber(value, style, seriesKey);
+  if (!template) return formatted;
+  return template
+    .replace(/\{value\}/g, formatted)
+    .replace(/\{label\}/g, seriesLabel ?? seriesKey ?? '')
+    .replace(/\{series\}/g, seriesKey ?? '')
+    .replace(/\{dimension\}/g, dimensionValue == null ? '' : String(dimensionValue))
+    .replace(/\{percent\}/g, percent == null ? '' : (percent * 100).toFixed(1));
+}
+
+/**
+ * Phase-15.82 — Custom Recharts tooltip that respects per-series format
+ * AND surfaces extra row fields the user opted into via
+ * `style.tooltipExtraFields`. Falls back to a sensible default layout
+ * when no extra fields are configured.
+ */
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: any[];
+  label?: any;
+  series: ChartSeriesDef[];
+  style: ChartStyleConfig;
+  fontSize: number;
+  xField?: string;
+}
+function CustomTooltip({ active, payload, label, series, style, fontSize, xField }: CustomTooltipProps) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload ?? {};
+  const extras = style.tooltipExtraFields ?? [];
+  return (
+    <div
+      className="bg-surface-1 border border-[rgb(var(--border-line))] rounded shadow-linear-sm"
+      style={{ fontSize, padding: '8px 10px', minWidth: 140 }}
+    >
+      {label !== undefined && (
+        <div className="font-semibold text-text-primary mb-1">{String(label)}</div>
+      )}
+      {payload.map((entry: any, i: number) => {
+        const key = entry.dataKey ?? entry.name;
+        const match = series.find((s) => s.key === key);
+        const value = formatNumber(entry.value, style, key);
+        const color = entry.color ?? entry.payload?.fill;
+        return (
+          <div key={i} className="flex items-center gap-2 text-text-secondary">
+            {color && (
+              <span style={{ width: 8, height: 8, background: color, borderRadius: 2, display: 'inline-block' }} />
+            )}
+            <span>{match?.label ?? key}:</span>
+            <span className="font-medium text-text-primary">{value}</span>
+          </div>
+        );
+      })}
+      {extras.length > 0 && (
+        <div className="mt-1 pt-1 border-t border-[rgb(var(--border-line))]/40">
+          {extras.map((field) => {
+            if (field === xField) return null;
+            const v = row[field];
+            if (v === undefined || v === null) return null;
+            return (
+              <div key={field} className="text-text-tertiary text-[11px]">
+                <span className="opacity-70">{field}:</span> <span>{String(v)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function getBenchmarkValue(style?: ChartStyleConfig): number | null {
@@ -466,6 +729,7 @@ function ExploreChartInner({
   );
   const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
+  // Phase-15.83 — showAllPoints flag retired; adapter renders every row.
   const model = useMemo(
     () => buildExploreChartModel({ type, data, roleConfig, havingFilters, preAggregated, labelMap }),
     [type, data, roleConfig, havingFilters, preAggregated, labelMap],
@@ -486,8 +750,6 @@ function ExploreChartInner({
     kpiValue,
     kpiBenchmarkValue,
     scatterPoints,
-    truncated,
-    totalPoints,
   } = model;
   const { dimension, metrics, scatterX, scatterY } = normalizedRoleConfig;
 
@@ -520,7 +782,10 @@ function ExploreChartInner({
       return categoricalData;
     }
 
-    const gran = style.timeGranularity ?? 'raw';
+    // Phase-15.82 — dateDrillLevel from click-drill takes priority over the
+    // user-chosen timeGranularity. Allows DA to drill into year → quarter →
+    // month → day with no config round-trip to the BE.
+    const gran = style.dateDrillLevel ?? style.timeGranularity ?? 'raw';
     const tf = normalizedRoleConfig.timeField || xField;
 
     if (!tf || gran === 'raw') {
@@ -538,13 +803,27 @@ function ExploreChartInner({
     }
 
     return applyTimeGranularity(categoricalData, tf, metrics, gran);
-  }, [type, categoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics, preAggregated]);
+  }, [type, categoricalData, style.timeGranularity, style.dateDrillLevel, normalizedRoleConfig.timeField, xField, metrics, preAggregated]);
 
   const sortedCategoricalData = useMemo(() => {
-    let d = applySortRules(categoricalOutputData, sortRules);
+    // Phase-15.82 — apply inline calculated fields BEFORE sort+limit so
+    // calc fields are sortable too (e.g. "top 5 by margin").
+    let d = applyCalculatedFields(categoricalOutputData, style.calculatedFields ?? []);
+    d = applySortRules(d, sortRules);
     d = applyDataLimit(d, dataLimit, dataLimitDir);
     return d;
-  }, [categoricalOutputData, sortRules, dataLimit, dataLimitDir]);
+  }, [categoricalOutputData, style.calculatedFields, sortRules, dataLimit, dataLimitDir]);
+
+  // Phase-15.82 — series list extended with calculated fields so they
+  // render as additional lines/bars in cartesian charts.
+  const calculatedSeries: ChartSeriesDef[] = useMemo(
+    () => (style.calculatedFields ?? []).map((f) => ({ key: f.id, label: f.label || f.id })),
+    [style.calculatedFields],
+  );
+  const categoricalSeriesWithCalc = useMemo(
+    () => [...categoricalSeries, ...calculatedSeries],
+    [categoricalSeries, calculatedSeries],
+  );
 
   const sortedComboData = useMemo(() => {
     let d = applySortRules(comboData, sortRules);
@@ -578,11 +857,91 @@ function ExploreChartInner({
   }
 
   // Truncation banner ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shown above the chart when data points exceed MAX_CHART_POINTS
-  const TruncationBanner = truncated ? (
-    <div className="px-3 py-1.5 bg-warning/10 border border-warning/30 rounded text-xs text-warning mb-1">
-      Showing top {MAX_CHART_POINTS.toLocaleString()} of {totalPoints.toLocaleString()} groups. Add filters or choose a lower-cardinality dimension for the full picture.
-    </div>
+  // Phase-15.83 — DA dropped the FE row cap entirely. No banner, no toggle.
+  // `truncated` from the model is now always false, so TruncationBanner
+  // below collapses to null.
+  // Phase-15.82 — date hierarchy drill controls.
+  //
+  // UX rules (refined):
+  //   - Hidden by default to avoid cluttering every LINE chart with chips
+  //     the user never asked for.
+  //   - Once any drill level is set (`style.dateDrillLevel != null`), the
+  //     full bar appears with a "× clear drill" affordance.
+  //   - The label says "Drill (overrides Granularity)" so DA who already
+  //     picked timeGranularity in the Style tab understands why the chart
+  //     suddenly buckets differently.
+  //   - When no drill is active, surface a tiny ghost button so the
+  //     feature is discoverable (DA could otherwise never find it).
+  const DRILL_LEVELS: Array<{ value: TimeGranularity; label: string }> = [
+    { value: 'year', label: 'Y' },
+    { value: 'quarter', label: 'Q' },
+    { value: 'month', label: 'M' },
+    { value: 'week', label: 'W' },
+    { value: 'day', label: 'D' },
+  ];
+  const isTimeChart = type === 'LINE' || type === 'TIME_SERIES';
+  const hasTimeField = Boolean(normalizedRoleConfig.timeField || xField);
+  const canDrill = isTimeChart && Boolean(onStyleConfigChange) && hasTimeField;
+  const drillActive = Boolean(style.dateDrillLevel);
+  const handleDrillChange = (level: TimeGranularity | 'raw') => {
+    if (!onStyleConfigChange) return;
+    onStyleConfigChange({
+      ...style,
+      dateDrillLevel: level === 'raw' ? undefined : level,
+    });
+  };
+  const DrillBar = canDrill ? (
+    drillActive ? (
+      <div className="px-1 py-1 flex items-center gap-1 text-[10px] text-text-tertiary mb-1">
+        <span className="font-semibold mr-1" title="Date drill — temporarily re-buckets the chart. Overrides the Granularity setting in the Style tab.">
+          Drill (overrides Granularity):
+        </span>
+        {DRILL_LEVELS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => handleDrillChange(opt.value)}
+            className={`px-1.5 py-0.5 rounded text-[10px] ${style.dateDrillLevel === opt.value ? 'bg-brand text-white' : 'bg-surface-2 hover:bg-surface-3'}`}
+            title={opt.value}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => handleDrillChange('raw')}
+          className="ml-1 px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-text-quaternary"
+          title="Clear drill — fall back to the Style tab's Granularity"
+        >
+          × clear
+        </button>
+      </div>
+    ) : (
+      <div className="px-1 mb-0.5 text-[10px]">
+        <button
+          type="button"
+          onClick={() => {
+            // Seed the drill level from whatever the Style tab already has,
+            // falling back to 'month' so the bar appears at a sensible
+            // default rather than 'raw' (which would render identically to
+            // disabled state — confusing).
+            const seed = (style.timeGranularity && style.timeGranularity !== 'raw')
+              ? (style.timeGranularity as TimeGranularity)
+              : 'month';
+            handleDrillChange(seed);
+          }}
+          className="text-text-quaternary hover:text-text-tertiary underline-offset-2 hover:underline"
+          title="Start drilling: temporarily switch the chart's time bucket (Y/Q/M/W/D). The Style tab's Granularity is the fall-back."
+        >
+          Enable date drill…
+        </button>
+      </div>
+    )
   ) : null;
+
+  // Phase-15.83 — banner removed; FE no longer truncates. Keep variable
+  // name so JSX further down doesn't need editing.
+  const TruncationBanner: React.ReactNode = null;
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shared rendering helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   const showGrid = style.showGrid ?? true;
@@ -643,32 +1002,108 @@ function ExploreChartInner({
     <YAxis tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain}
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
   );
+  // Phase-15.82 — per-series color override handlers. Writes to
+  // style.seriesColors so the chart re-renders with the new palette.
+  const handleSeriesColorChange = useCallback((key: string, color: string) => {
+    if (!onStyleConfigChange) return;
+    onStyleConfigChange({
+      ...style,
+      seriesColors: { ...(style.seriesColors ?? {}), [key]: color },
+    });
+  }, [onStyleConfigChange, style]);
+  const handleSeriesColorReset = useCallback((key: string) => {
+    if (!onStyleConfigChange) return;
+    const next = { ...(style.seriesColors ?? {}) };
+    delete next[key];
+    onStyleConfigChange({ ...style, seriesColors: next });
+  }, [onStyleConfigChange, style]);
+  const legendLayout: 'horizontal' | 'vertical' = legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal';
   const renderLegend = () => showLegend ? (
     <Legend
       wrapperStyle={{ fontSize, cursor: 'pointer' }}
       verticalAlign={legendPos === 'left' || legendPos === 'right' ? 'middle' : legendPos as any}
       align={legendPos === 'left' || legendPos === 'right' ? legendPos as any : 'center'}
-      layout={legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal'}
-      // Phase-15.78 — clicking a legend item toggles series visibility.
-      // Recharts forwards the clicked entry's payload (dataKey + value)
-      // here; we hand it to toggleSeriesHidden which Bar/Line/Area read
-      // via the `hide` prop. Hidden items render with reduced opacity
-      // in the legend so the user can put them back.
-      onClick={handleLegendClick}
-      formatter={(value: any, entry: any) => {
-        const key = entry?.dataKey ?? value;
-        const isHidden = typeof key === 'string' && hiddenSeries.has(key);
-        return (
-          <span style={{
-            color: isHidden ? 'var(--text-quaternary, #999)' : undefined,
-            textDecoration: isHidden ? 'line-through' : undefined,
-          }}>
-            {value}
-          </span>
-        );
-      }}
+      layout={legendLayout}
+      // Phase-15.82 — custom legend exposes per-series color picker
+      // (Radix popover) + click-to-toggle visibility. handleLegendClick
+      // is now unused for the popover path but kept for series visibility
+      // when the popover is dismissed via the label click.
+      content={(props: any) => (
+        <CustomLegend
+          payload={props?.payload ?? []}
+          hiddenSeries={hiddenSeries}
+          seriesColors={style.seriesColors}
+          fontSize={fontSize}
+          layout={legendLayout}
+          onToggle={toggleSeriesHidden}
+          onColorChange={onStyleConfigChange ? handleSeriesColorChange : undefined}
+          onColorReset={onStyleConfigChange ? handleSeriesColorReset : undefined}
+        />
+      )}
     />
   ) : null;
+  // Phase-15.82 — evaluate conditional color rules per cell. Mirrors the
+  // table heatmap operator semantics so DA gets consistent behaviour.
+  const conditionalSeriesRules = style.seriesConditionalRules ?? [];
+  const resolveConditionalColor = useCallback((value: any, fallback: string): string => {
+    if (conditionalSeriesRules.length === 0) return fallback;
+    const num = Number(value);
+    for (const rule of conditionalSeriesRules) {
+      if (!rule || rule.color == null) continue;
+      const ruleValueRaw = (rule as any).value;
+      const ruleValue = Number(ruleValueRaw);
+      let matched = false;
+      const op = rule.operator as string;
+      switch (op) {
+        case '>': matched = num > ruleValue; break;
+        case '>=': matched = num >= ruleValue; break;
+        case '<': matched = num < ruleValue; break;
+        case '<=': matched = num <= ruleValue; break;
+        case '=':
+        case '==': matched = num === ruleValue; break;
+        case '!=': matched = num !== ruleValue; break;
+        case 'between': {
+          const lo = Number((rule as any).valueLow ?? ruleValueRaw);
+          const hi = Number((rule as any).valueHigh ?? (rule as any).valueTo);
+          matched = num >= lo && num <= hi;
+          break;
+        }
+        default: matched = false;
+      }
+      if (matched) return rule.color;
+    }
+    return fallback;
+  }, [conditionalSeriesRules]);
+
+  // Phase-15.82 — render manual annotations as ReferenceLine elements.
+  // Each annotation pins a label/value pair to either the X or Y axis.
+  const renderAnnotations = () => {
+    const annotations = style.annotations ?? [];
+    if (annotations.length === 0) return null;
+    return annotations.map((a) => {
+      if (a.value === null || a.value === undefined || a.value === '') return null;
+      const axis = a.axis ?? 'y';
+      const isNumericValue = typeof a.value === 'number' || (!isNaN(Number(a.value)) && a.value !== '');
+      const value = axis === 'y' && isNumericValue ? Number(a.value) : a.value;
+      return (
+        <ReferenceLine
+          key={a.id}
+          ifOverflow="extendDomain"
+          stroke={a.color || '#7c3aed'}
+          strokeWidth={1.5}
+          strokeDasharray={(a.lineStyle ?? 'dashed') === 'dashed' ? '5 4' : undefined}
+          label={a.label ? {
+            value: a.label,
+            position: axis === 'y' ? 'insideTopRight' : 'top',
+            fill: a.color || '#7c3aed',
+            fontSize: Math.max(fontSize - 1, 10),
+          } : undefined}
+          {...(axis === 'x' ? { x: value } : { y: value as number })}
+        />
+      );
+    });
+  };
+
   const renderBenchmarkLine = (axis: 'x' | 'y') => {
     if (!showBenchmarkLine || benchmarkValue === null) return null;
 
@@ -953,6 +1388,7 @@ function ExploreChartInner({
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
+          {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
             <BarChart data={displayData} onClick={handleCategoricalChartClick}
@@ -1026,6 +1462,7 @@ function ExploreChartInner({
                 );
               })}
               {renderBenchmarkLine('y')}
+              {renderAnnotations()}
             </BarChart>,
             displayData.length,
           )}
@@ -1038,18 +1475,24 @@ function ExploreChartInner({
   if (type === 'AREA') {
     const dateLikeXAxis = isDateLikeAxis(sortedCategoricalData, xField, xAxisLabel || normalizedRoleConfig.timeField);
     const displayData = sortRowsByDateAxis(sortedCategoricalData, xField, dateLikeXAxis && sortRules.length === 0);
-    const displaySeries = categoricalSeries;
+    const displaySeries = categoricalSeriesWithCalc;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
+          {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
             <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
-              <Tooltip formatter={tooltipFormatter(displaySeries, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
+              <Tooltip
+                content={(p: any) => (
+                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+                )}
+                labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined}
+              />
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (
@@ -1064,6 +1507,7 @@ function ExploreChartInner({
                 );
               })}
               {renderBenchmarkLine('y')}
+              {renderAnnotations()}
             </AreaChart>,
             displayData.length,
           )}
@@ -1076,18 +1520,25 @@ function ExploreChartInner({
   if (type === 'LINE' || type === 'TIME_SERIES') {
     const dateLikeXAxis = type === 'TIME_SERIES' || isDateLikeAxis(timeSeriesData, xField, xAxisLabel || normalizedRoleConfig.timeField);
     const displayData = sortRowsByDateAxis(timeSeriesData, xField, dateLikeXAxis && sortRules.length === 0);
-    const displaySeries = categoricalSeries;
+    // Phase-15.82 — include calculated fields so they render as extra lines.
+    const displaySeries = categoricalSeriesWithCalc;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
+          {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
             <LineChart data={displayData} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
-              <Tooltip formatter={tooltipFormatter(displaySeries, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
+              <Tooltip
+                content={(p: any) => (
+                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+                )}
+                labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined}
+              />
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (
@@ -1099,12 +1550,13 @@ function ExploreChartInner({
                     dot={showDots && displayData.length <= 60}
                     strokeDasharray={lineDash}>
                     {showDataLabels && (
-                      <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                      <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
                     )}
                   </Line>
                 );
               })}
               {renderBenchmarkLine('y')}
+              {renderAnnotations()}
             </LineChart>,
             displayData.length,
           )}
@@ -1144,7 +1596,11 @@ function ExploreChartInner({
           label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
         <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)}
           label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
-        <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
+        <Tooltip
+          content={(p: any) => (
+            <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+          )}
+        />
         {renderLegend()}
         {displaySeries.map((series, i) => {
           return (
@@ -1155,18 +1611,20 @@ function ExploreChartInner({
               barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
               {showDataLabels && (
-                <LabelList dataKey={series.key} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                <LabelList dataKey={series.key} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
               )}
             </Bar>
           );
         })}
         {renderBenchmarkLine('x')}
+        {renderAnnotations()}
       </BarChart>
     );
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
+          {DrillBar}
           {TruncationBanner}
           {displayData.length > SCROLL_THRESHOLD ? (
             <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
@@ -1188,8 +1646,14 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ BAR + LINE (Combo) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'BAR_LINE') {
-    if (comboBarSeries.length === 0 || comboLineSeries.length === 0) {
-      return <EmptyState message="Select bar value columns and a line value column to render this chart." />;
+    // Phase-15.82 — free-form mix: when style.seriesRenderAs is set, each
+    // series picks its own render mode (bar/line/area). Otherwise we keep
+    // the legacy "bars + 1 line metric" contract.
+    const renderAsMap = style.seriesRenderAs ?? {};
+    const hasFreeFormMix = Object.keys(renderAsMap).length > 0;
+    const allComboSeries = [...comboBarSeries, ...comboLineSeries];
+    if (!hasFreeFormMix && (comboBarSeries.length === 0 || comboLineSeries.length === 0)) {
+      return <EmptyState message="Select bar value columns and a line value column to render this chart, or assign render types via Series mix." />;
     }
     const lineSeries = comboLineSeries[0];
     const displayData = sortedComboData;
@@ -1197,6 +1661,7 @@ function ExploreChartInner({
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
+          {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
             <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
@@ -1208,25 +1673,91 @@ function ExploreChartInner({
                   tickFormatter={yAxisTickFormatter(style)}
                   label={yAxisRightLabel ? { value: yAxisRightLabel, angle: 90, position: 'insideRight', fontSize, dx: 15 } : undefined} />
               )}
-              <Tooltip formatter={tooltipFormatter([...comboBarSeries, ...comboLineSeries], style)} />
+              <Tooltip
+                content={(p: any) => (
+                  <CustomTooltip
+                    {...p}
+                    series={[...comboBarSeries, ...comboLineSeries]}
+                    style={style}
+                    fontSize={fontSize}
+                    xField={xField}
+                  />
+                )}
+              />
               {renderLegend()}
-              {comboBarSeries.map((series, index) => (
-                <Bar key={series.key} dataKey={series.key} name={series.label}
-                  hide={hiddenSeries.has(series.key)}
-                  fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
-                  barSize={barSize}>
-                  {showDataLabels && (
-                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                  )}
-                </Bar>
-              ))}
-              <Line dataKey={lineSeries.key} name={lineSeries.label}
-                hide={hiddenSeries.has(lineSeries.key)}
-                type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
-                dot={showDots && displayData.length <= 60}
-                strokeDasharray={lineDash}
-                yAxisId={dualYAxis ? 'right' : 0} />
+              {hasFreeFormMix
+                ? allComboSeries.map((series, index) => {
+                    const mode = renderAsMap[series.key] ?? 'bar';
+                    const color = getSeriesColor(series.key, index);
+                    if (mode === 'line') {
+                      return (
+                        <Line
+                          key={series.key}
+                          dataKey={series.key}
+                          name={series.label}
+                          hide={hiddenSeries.has(series.key)}
+                          type="monotone"
+                          stroke={color}
+                          strokeWidth={lineWidth}
+                          dot={showDots && displayData.length <= 60}
+                          strokeDasharray={lineDash}
+                        />
+                      );
+                    }
+                    if (mode === 'area') {
+                      return (
+                        <Area
+                          key={series.key}
+                          dataKey={series.key}
+                          name={series.label}
+                          hide={hiddenSeries.has(series.key)}
+                          type="monotone"
+                          stroke={color}
+                          fill={color}
+                          fillOpacity={areaOpacity}
+                          strokeWidth={lineWidth}
+                        />
+                      );
+                    }
+                    return (
+                      <Bar
+                        key={series.key}
+                        dataKey={series.key}
+                        name={series.label}
+                        hide={hiddenSeries.has(series.key)}
+                        fill={color}
+                        radius={[barRadius, barRadius, 0, 0]}
+                        barSize={barSize}
+                      >
+                        {showDataLabels && (
+                          <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                        )}
+                      </Bar>
+                    );
+                  })
+                : (
+                  <>
+                    {comboBarSeries.map((series, index) => (
+                      <Bar key={series.key} dataKey={series.key} name={series.label}
+                        hide={hiddenSeries.has(series.key)}
+                        fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
+                        barSize={barSize}>
+                        {showDataLabels && (
+                          <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
+                        )}
+                      </Bar>
+                    ))}
+                    <Line dataKey={lineSeries.key} name={lineSeries.label}
+                      hide={hiddenSeries.has(lineSeries.key)}
+                      type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
+                      dot={showDots && displayData.length <= 60}
+                      strokeDasharray={lineDash}
+                      yAxisId={dualYAxis ? 'right' : 0} />
+                  </>
+                )
+              }
               {renderBenchmarkLine('y')}
+              {renderAnnotations()}
             </ComposedChart>,
             displayData.length,
           )}
@@ -1242,29 +1773,42 @@ function ExploreChartInner({
     <div className="h-full flex flex-col">
       {ChartTitleEl}
       <div className="flex-1 min-h-0">
+        {DrillBar}
         {TruncationBanner}
         {wrapScrollable(
           <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             {renderXAxis(xField, displayBarData.length)}
             {renderYAxis()}
-            <Tooltip formatter={tooltipFormatter(displayBarSeries, style)} />
+            <Tooltip
+              content={(p: any) => (
+                <CustomTooltip {...p} series={displayBarSeries} style={style} fontSize={fontSize} xField={xField} />
+              )}
+            />
             {renderLegend()}
             {displayBarSeries.map((series, i) => {
+              const baseColor = getSeriesColor(series.key, i);
+              const hasConditional = conditionalSeriesRules.length > 0;
               return (
                 <Bar key={series.key} dataKey={series.key}
                   name={series.label}
                   hide={hiddenSeries.has(series.key)}
-                  fill={getSeriesColor(series.key, i)}
+                  fill={baseColor}
                   barSize={barSize}
                   radius={[barRadius, barRadius, 0, 0]}>
+                  {/* Phase-15.82 — conditional cell coloring. Each <Cell>
+                      overrides the parent Bar's fill when a rule matches. */}
+                  {hasConditional && displayBarData.map((row, idx) => (
+                    <Cell key={`${series.key}-${idx}`} fill={resolveConditionalColor(row[series.key], baseColor)} />
+                  ))}
                   {showDataLabels && (
-                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style, series.key, series.label)} />
                   )}
                 </Bar>
               );
             })}
             {renderBenchmarkLine('y')}
+            {renderAnnotations()}
           </BarChart>,
           displayBarData.length,
         )}
@@ -1273,4 +1817,39 @@ function ExploreChartInner({
   );
 }
 
-export const ExploreChart = React.memo(ExploreChartInner);
+const ExploreChartMemo = React.memo(ExploreChartInner);
+
+/**
+ * Phase-15.82 — wrap the memoised chart in a key-bumping fade so changing
+ * chart type fades out → in instead of snapping. Recharts mounts a fresh
+ * component tree (BarChart vs LineChart) on type change anyway, so the
+ * `key` cost is already paid; we just add a 220 ms opacity transition on
+ * top. Falls back to instant render when `prefers-reduced-motion`.
+ */
+export function ExploreChart(props: ExploreChartProps) {
+  // Bump a render token whenever `props.type` changes so the wrapper
+  // remounts (CSS `animation` re-runs). Recharts is going to mount a
+  // different chart component on type swap anyway — the wrapper just
+  // adds a 220ms fade-up so the swap doesn't feel abrupt.
+  const reduceMotion = typeof window !== 'undefined'
+    && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  return (
+    <div
+      key={props.type}
+      style={{
+        height: '100%',
+        width: '100%',
+        animation: reduceMotion ? undefined : 'appbiChartFadeIn 220ms ease forwards',
+        opacity: reduceMotion ? 1 : undefined,
+      }}
+    >
+      <style>{`
+        @keyframes appbiChartFadeIn {
+          0% { opacity: 0; transform: translateY(4px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+      <ExploreChartMemo {...props} />
+    </div>
+  );
+}
