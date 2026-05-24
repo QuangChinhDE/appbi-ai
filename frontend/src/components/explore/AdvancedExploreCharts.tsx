@@ -823,6 +823,22 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
   const max = Math.max(...pairs.map((pair) => Math.abs(pair.value)), 1);
   const cellW = 660 / Math.max(targets.length, 1);
   const cellH = 300 / Math.max(sources.length, 1);
+  // Phase-15.86 — heatmap base colour is a SINGLE hue, opacity scaled
+  // by value. Three layers of override:
+  //   1. style.seriesColors['__heatmap__'] — explicit gradient base
+  //   2. style.seriesColors[firstTarget] — first column's colour lets DA
+  //      "pick a hue" without inventing a synthetic key
+  //   3. palette[0] — legacy default
+  const gradientBase = style.seriesColors?.['__heatmap__']
+    ?? (targets[0] && style.seriesColors?.[targets[0]])
+    ?? palette[0];
+  // DataLabels master switch (cell-size gate still applies).
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const dlFontSize = dlc?.fontSize ?? 10;
+  const dlFontColor = dlc?.fontColor ?? 'rgb(var(--text-primary))';
+  const dlFormat = dlc?.format ?? style.numberFormat;
+  const styleForLabel = dlFormat ? { ...style, numberFormat: dlFormat } : style;
   const valueMap = new Map(pairs.map((pair) => [`${pair.source}\u0000${pair.target}`, pair.value]));
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
@@ -837,19 +853,25 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
         const opacity = value !== 0 ? 0.12 + (Math.abs(value) / max) * 0.84 : 0.05;
         return (
           <g key={`${source}-${target}`} onClick={() => onSelect?.(source)} className="cursor-pointer">
-            <rect x={125 + col * cellW} y={52 + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={palette[0]} opacity={opacity} />
-            {style.showDataLabels && cellW >= 42 && cellH >= 20 && value !== 0 && (
+            <rect x={125 + col * cellW} y={52 + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={gradientBase} opacity={opacity} />
+            {labelsEnabled && cellW >= 42 && cellH >= 20 && value !== 0 && (
               <text
                 x={125 + col * cellW + cellW / 2}
                 y={52 + row * cellH + cellH / 2 + 4}
                 textAnchor="middle"
-                fontSize={10}
-                fill="rgb(var(--text-primary))"
+                fontSize={dlFontSize}
+                fill={dlFontColor}
               >
-                {formatNumber(value, style)}
+                {style.dataLabelTemplate
+                  ? expandLabelTemplate({
+                      template: style.dataLabelTemplate,
+                      formatted: formatNumber(value, styleForLabel),
+                      rawName: `${source}/${target}`,
+                    })
+                  : formatNumber(value, styleForLabel)}
               </text>
             )}
-            <title>{source} / {target}: {formatNumber(value, style)}</title>
+            <title>{source} / {target}: {formatNumber(value, styleForLabel)}</title>
           </g>
         );
       }))}
