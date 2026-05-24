@@ -1410,6 +1410,14 @@ function ExploreChartInner({
         ? null
         : Number(style.kpiBenchmarkValue)
     );
+    // Phase-15.86 — KPI per-metric format precedence. If the user set a
+    // per-series format on the KPI's metric, pass that into KpiCard
+    // instead of the global numberFormat. Lets a $-format KPI sit next
+    // to a %-format KPI on the same dashboard without forcing them to
+    // share the global setting.
+    const kpiMetricKey = metricKey(kpiMetric);
+    const kpiFormat = style.seriesFormats?.[kpiMetricKey] ?? style.numberFormat ?? 'compact';
+    const kpiDecimals = style.seriesDecimalPlaces?.[kpiMetricKey] ?? style.decimalPlaces;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -1418,8 +1426,8 @@ function ExploreChartInner({
             <KpiCard
               value={kpiValue}
               label={cardLabel}
-              format={style.numberFormat ?? 'compact'}
-              decimalPlaces={style.decimalPlaces}
+              format={kpiFormat}
+              decimalPlaces={kpiDecimals}
               currencySymbol={style.currencySymbol}
               contextTemplate={style.kpiContextTemplate}
               benchmarkValue={benchmarkValue}
@@ -1452,9 +1460,15 @@ function ExploreChartInner({
       return <EmptyState message="Select a name dimension and a value metric to render the podium." />;
     }
     const top = Math.min(Math.max(style.podiumTop ?? 3, 1), 5);
-    const ranked = [...data]
-      .sort((a, b) => Number(b?.[valueField] ?? 0) - Number(a?.[valueField] ?? 0))
-      .slice(0, top);
+    // Phase-15.86 — chartSortRules used to be ignored (hardcoded desc by
+    // valueField). Now: if the user set a sort rule, use the already-
+    // sorted sortedCategoricalData order (which applySortRules + dataLimit
+    // both ran on). Otherwise fall back to the legacy "highest value
+    // first" so unconfigured podiums still rank correctly.
+    const sortedSource = sortRules.length > 0 ? sortedCategoricalData : [...data].sort((a, b) =>
+      Number(b?.[valueField] ?? 0) - Number(a?.[valueField] ?? 0),
+    );
+    const ranked = sortedSource.slice(0, top);
     const colors = [
       style.podiumGoldColor || '#fbbf24',
       style.podiumSilverColor || '#cbd5e1',
@@ -1464,14 +1478,23 @@ function ExploreChartInner({
     ];
     const labels = ['Winner', 'Runner-up', 'Rank 3', 'Rank 4', 'Rank 5'];
     const display = ranked.length >= 3 ? [ranked[1], ranked[0], ranked[2], ...ranked.slice(3)] : ranked;
-    const fmt = (v: any) => formatNumber(Number(v) || 0, style);
+    // Phase-15.86 — per-metric format precedence (override > seriesFormats >
+    // global). Lets DA show podium values as currency on one chart and
+    // percent on another within the same dashboard.
+    const podiumFmt = style.seriesFormats?.[valueField] ?? style.numberFormat;
+    const podiumStyle = podiumFmt ? { ...style, numberFormat: podiumFmt } : style;
+    const fmt = (v: any) => formatNumber(Number(v) || 0, podiumStyle, valueField);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 flex items-end justify-center gap-4 px-4">
           {display.map((e: any, i: number) => {
             const rank = ranked.indexOf(e);
-            const color = colors[rank] || colors[colors.length - 1];
+            // Phase-15.86 — allow per-name seriesColors override to beat
+            // the gold/silver/bronze default. Lets DA brand a specific
+            // entrant (eg. a partner name) with their own colour.
+            const name = String(e?.[nameField] ?? '');
+            const color = style.seriesColors?.[name] ?? colors[rank] ?? colors[colors.length - 1];
             const isFirst = rank === 0;
             return (
               <div
