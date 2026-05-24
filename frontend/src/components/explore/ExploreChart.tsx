@@ -1631,19 +1631,59 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATTER ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'SCATTER') {
     if (!scatterX || !scatterY) return <EmptyState message="Select X Axis and Y Axis columns to render this chart." />;
+    // Phase-15.86 — SCATTER bring-up to feature parity. Previously the
+    // renderer ignored almost every Phase-15.82+ style field. Now:
+    //   - per-point seriesColors[pointLabel] override via <Cell>
+    //   - tooltip surfaces tooltipExtraFields (from the original row)
+    //   - benchmark line + annotations now render
+    //   - data label respects dataLabelConfig.{fontSize,fontColor,bg}
+    //     when scatterLabelField is set
+    //   - per-axis format reads seriesFormats[scatterX/Y] for tooltip
+    const xFormatStyle = style.seriesFormats?.[scatterX]
+      ? { ...style, numberFormat: style.seriesFormats[scatterX] }
+      : style;
+    const yFormatStyle = style.seriesFormats?.[scatterY]
+      ? { ...style, numberFormat: style.seriesFormats[scatterY] }
+      : style;
     const ScatterTooltip = ({ active, payload }: any) => {
       if (!active || !payload?.length) return null;
       const pt = payload[0]?.payload;
+      // Look up the original row by label so tooltipExtraFields can show
+      // dimensions that weren't pivoted into the scatter point shape.
+      // (sortedScatterPoints is {x,y,label}; tooltipExtras live on `data`.)
+      const sourceRow = dimension && pt?.label !== undefined
+        ? data.find((r) => r[dimension] === pt.label)
+        : undefined;
+      const extras = style.tooltipExtraFields ?? [];
       return (
         <div className="bg-surface-1 border border-[rgb(var(--border-line))] rounded px-3 py-2 shadow-linear-sm" style={{ fontSize }}>
           {dimension && pt.label !== undefined && (
             <div className="font-semibold text-text-primary mb-1">{String(pt.label)}</div>
           )}
-          <div className="text-text-secondary">{scatterX}: <span className="font-medium text-text-primary">{formatNumber(pt.x, style)}</span></div>
-          <div className="text-text-secondary">{scatterY}: <span className="font-medium text-text-primary">{formatNumber(pt.y, style)}</span></div>
+          <div className="text-text-secondary">{scatterX}: <span className="font-medium text-text-primary">{formatNumber(pt.x, xFormatStyle, scatterX)}</span></div>
+          <div className="text-text-secondary">{scatterY}: <span className="font-medium text-text-primary">{formatNumber(pt.y, yFormatStyle, scatterY)}</span></div>
+          {sourceRow && extras.length > 0 && (
+            <div className="mt-1 pt-1 border-t border-[rgb(var(--border-line))]/40">
+              {extras.map((field) => {
+                if (field === scatterX || field === scatterY || field === dimension) return null;
+                const v = sourceRow[field];
+                if (v === undefined || v === null) return null;
+                return (
+                  <div key={field} className="text-text-tertiary text-[11px]">
+                    <span className="opacity-70">{field}:</span> <span>{String(v)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       );
     };
+    // Per-point fill: scatter has one Scatter element with many points;
+    // override colour per-point by mapping <Cell> children. Key is the
+    // point's label (dimension value) so the Series colors editor entries
+    // matching that label paint the correct dot.
+    const hasPerPointColors = Boolean(style.seriesColors && Object.keys(style.seriesColors).length > 0);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -1660,10 +1700,27 @@ function ExploreChartInner({
               <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
               {renderLegend()}
               <Scatter name={`${scatterX} vs ${scatterY}`} data={sortedScatterPoints} fill={PALETTE[0]}>
-                {scatterLabelField && (
-                  <LabelList dataKey={scatterLabelField} position="top" fontSize={fontSize - 1} />
-                )}
+                {hasPerPointColors && sortedScatterPoints.map((point: any, idx: number) => (
+                  <Cell key={`scatter-${idx}`} fill={getSeriesColor(String(point?.label ?? idx), idx)} />
+                ))}
+                {scatterLabelField && (() => {
+                  // Phase-15.86 — when DataLabels enabled, route through
+                  // the shared dataLabelContent renderer so font/colour/bg
+                  // / position / rotation work the same as BAR/LINE.
+                  // Otherwise keep the legacy plain-text label.
+                  const resolved = resolveDataLabelStyle(style, scatterLabelField);
+                  if (resolved) {
+                    return (
+                      <LabelList dataKey={scatterLabelField} content={dataLabelContent(scatterLabelField, scatterLabelField, 'point')} />
+                    );
+                  }
+                  return (
+                    <LabelList dataKey={scatterLabelField} position="top" fontSize={fontSize - 1} />
+                  );
+                })()}
               </Scatter>
+              {renderBenchmarkLine('y')}
+              {renderAnnotations()}
             </ScatterChart>
           </ResponsiveContainer>
         </div>
