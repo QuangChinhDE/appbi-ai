@@ -1091,15 +1091,33 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
   }
   const x = (index: number) => 70 + index * (660 / Math.max(times.length - 1, 1));
   const y = (rank: number) => 55 + rank * (300 / Math.max(cats.length - 1, 1));
+  // Phase-15.86 — RIBBON DataLabels: write the category name at the
+  // last point of each ribbon so DA can identify which category each
+  // ribbon represents without hovering each line.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {cats.map((cat, catIndex) => {
         const d = times.map((time, timeIndex) => `${timeIndex === 0 ? 'M' : 'L'} ${x(timeIndex)} ${y(rankByTime.get(time)?.get(cat) ?? cats.length - 1)}`).join(' ');
+        const catColor = resolveSliceColor(style, palette, cat, catIndex);
+        const override = dlc?.overrides?.[cat];
+        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? catColor;
+        const lastTime = times[times.length - 1];
+        const lastRank = rankByTime.get(lastTime)?.get(cat) ?? cats.length - 1;
         return (
-          <path key={cat} d={d} fill="none" stroke={resolveSliceColor(style, palette, cat, catIndex)} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
-            onClick={() => onSelect?.(cat)} className="cursor-pointer">
-            <title>{cat}</title>
-          </path>
+          <g key={cat}>
+            <path d={d} fill="none" stroke={catColor} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
+              onClick={() => onSelect?.(cat)} className="cursor-pointer">
+              <title>{cat}</title>
+            </path>
+            {labelsEnabled && (
+              <text x={x(times.length - 1) + 8} y={y(lastRank) + 4} fontSize={labelFontSize} fill={labelFontColor} style={{ pointerEvents: 'none' }}>
+                {cat.slice(0, 18)}
+              </text>
+            )}
+          </g>
         );
       })}
       {times.map((time, index) => (
@@ -1130,18 +1148,33 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
   const max = Math.max(...events.map((event) => event.time));
   const x = (time: number) => 70 + ((time - min) / Math.max(max - min, 1)) * 660;
   const maxValue = Math.max(...events.map((event) => Math.abs(event.value)), 1);
+  // Phase-15.86 — DataLabels master switch. Master defaults to true so
+  // existing charts (where labels always rendered for first 18 events)
+  // don't lose their identifiers; turning the switch off hides them.
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <line x1={70} y1={210} x2={730} y2={210} stroke="rgb(var(--border-line))" strokeWidth={2} />
       {events.map((event, index) => {
         const yy = index % 2 === 0 ? 155 : 265;
         const r = metric ? 5 + Math.sqrt(Math.abs(event.value) / maxValue) * 12 : 7;
+        // Phase-15.86 — per-event style override.
+        const override = dlc?.overrides?.[event.label];
+        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
+        const fmt = override?.format ?? style.seriesFormats?.[event.label] ?? dlc?.format ?? style.numberFormat;
+        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
           <g key={`${event.label}-${event.time}-${index}`} onClick={() => onSelect?.(dimension, event.label)} className="cursor-pointer">
             <line x1={x(event.time)} y1={210} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
             <circle cx={x(event.time)} cy={yy} r={r} fill={resolveSliceColor(style, palette, event.label, index)} opacity={0.82} />
-            {index < 18 && <text x={x(event.time)} y={yy + (yy < 210 ? -14 : 24)} fontSize={10} textAnchor="middle" fill="rgb(var(--text-tertiary))">{event.label.slice(0, 14)}</text>}
-            <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, style)}` : ''}</title>
+            {labelsEnabled && index < 18 && (
+              <text x={x(event.time)} y={yy + (yy < 210 ? -14 : 24)} fontSize={labelFontSize} textAnchor="middle" fill={labelFontColor}>
+                {event.label.slice(0, 14)}
+              </text>
+            )}
+            <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, styleForLabel)}` : ''}</title>
           </g>
         );
       })}
