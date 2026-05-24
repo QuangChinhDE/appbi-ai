@@ -481,7 +481,18 @@ function buildDataLabelContent(opts: {
   };
 
   return (props: any) => {
-    const { x, y, width = 0, height = 0, value, payload } = props;
+    // Phase-15.84 bugfix — Recharts puts geometry on EITHER `props.viewBox`
+    // (Line / Area / Pie) OR on top-level `props.x/y/width/height` (Bar).
+    // The earlier draft only read top-level → Line/Area labels were
+    // computing NaN coordinates and never rendered (the DA-reported
+    // "line series has no labels in BAR_LINE" bug). Resolve geometry
+    // from whichever source provides it.
+    const vb = props.viewBox ?? {};
+    const x = props.x ?? vb.x ?? 0;
+    const y = props.y ?? vb.y ?? 0;
+    const width = props.width ?? vb.width ?? 0;
+    const height = props.height ?? vb.height ?? 0;
+    const { value, payload } = props;
     if (value === null || value === undefined || value === '') return null;
     const text = formatLabel(value, payload);
     if (!text) return null;
