@@ -1725,7 +1725,10 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ STACKED BAR ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'STACKED_BAR') {
     const displayData = sortedCategoricalData;
-    const displaySeries = categoricalSeries;
+    // Phase-15.86 — include calculated fields in STACKED_BAR series list so
+    // a user's "Margin %" calc shows up as an extra stack segment, matching
+    // LINE/AREA behaviour. Was previously dropped here.
+    const displaySeries = categoricalSeriesWithCalc;
     const isPercent = stackMode === 'percent';
     const stackTotalsByIndex = displayData.map((row: any) =>
       displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
@@ -1746,9 +1749,21 @@ function ExploreChartInner({
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
               {renderXAxis(xField, displayData.length)}
               {percentYAxis}
-              <Tooltip formatter={isPercent
-                ? (v: any, name: string) => [`${(Number(v) * 100).toFixed(1)}%`, name]
-                : tooltipFormatter(displaySeries, style)} />
+              {/* Phase-15.86 — STACKED_BAR was using a bare Tooltip
+                  formatter so `tooltipExtraFields` (Phase-15.82) silently
+                  no-op'd. Switched to CustomTooltip. Percent mode keeps
+                  its bespoke "%" formatter by passing a transformed style. */}
+              <Tooltip
+                content={(p: any) => (
+                  <CustomTooltip
+                    {...p}
+                    series={displaySeries}
+                    style={isPercent ? { ...style, numberFormat: 'percent', decimalPlaces: 1 } : style}
+                    fontSize={fontSize}
+                    xField={xField}
+                  />
+                )}
+              />
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 const isTopOfStack = i === displaySeries.length - 1;
@@ -1809,15 +1824,33 @@ function ExploreChartInner({
                         dataKey={series.key}
                         position="top"
                         content={(props: any) => {
-                          const { x, y, width, index } = props;
+                          const { x, y, width, index, payload } = props;
                           const total = stackTotalsByIndex[index] || 0;
                           if (!total) return null;
                           const cx = x + width / 2;
                           const cy = Math.max(12, y - 6);
-                          const text = formatNumber(
-                            total,
-                            resolvedDL?.format ? { ...style, numberFormat: resolvedDL.format } : style,
-                          );
+                          // Phase-15.86 — STACKED stack-total label now
+                          // respects `dataLabelTemplate` (tokens
+                          // {value}/{label}/{dimension}/{percent}) and the
+                          // standard seriesFormats precedence (override >
+                          // seriesFormats[top-segment] > dlc.format >
+                          // global). Previously hardcoded formatNumber.
+                          const effectiveFormat = resolvedDL?.format
+                            ?? style.seriesFormats?.[series.key]
+                            ?? style.numberFormat;
+                          const styleForLabel = effectiveFormat
+                            ? { ...style, numberFormat: effectiveFormat }
+                            : style;
+                          const text = style.dataLabelTemplate
+                            ? renderTemplatedLabel({
+                                template: style.dataLabelTemplate,
+                                value: total,
+                                seriesKey: series.key,
+                                seriesLabel: series.label,
+                                dimensionValue: payload?.[xField ?? ''],
+                                style: styleForLabel,
+                              })
+                            : formatNumber(total, styleForLabel);
                           const approxW = text.length * dlFontSize * 0.6;
                           return (
                             <g transform={dlRotation !== 0 ? `rotate(${dlRotation} ${cx} ${cy})` : undefined}>
