@@ -232,6 +232,14 @@ export default function PublicDashboardPage() {
   const skipCrossFilterRefreshRef = useRef<string | null>(null);
   const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
   const seededFiltersForTokenRef = useRef<string | null>(null);
+  // Phase-15.81 v6 — keep a ref of the current applied filters so the
+  // seed effect (which intentionally excludes appliedViewerFilters from
+  // deps to avoid a loop) reads a fresh value on page switch instead of
+  // a stale closure snapshot.
+  const appliedViewerFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => {
+    appliedViewerFiltersRef.current = appliedViewerFilters;
+  }, [appliedViewerFilters]);
 
   const clearSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -354,8 +362,10 @@ export default function PublicDashboardPage() {
     if (!isFirstSeed) {
       // Preserve viewer's edits for any field that still exists in the
       // seed; otherwise fall back to the (possibly newly added) seed.
+      // Read from ref (not closure) so a fast page switch right after an
+      // edit doesn't drop the just-typed selection.
       const existingByKey = new Map<string, BaseFilter>();
-      for (const f of appliedViewerFilters) existingByKey.set(f.fieldKey ?? f.field, f);
+      for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
@@ -366,9 +376,6 @@ export default function PublicDashboardPage() {
     setDraftViewerFilters(merged);
     setAppliedViewerFilters(merged);
     appliedFilterSignatureRef.current = JSON.stringify(merged);
-    // appliedViewerFilters intentionally excluded from deps to avoid an
-    // infinite loop — we read it as snapshot only on page-switch re-seeds.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
@@ -429,16 +436,17 @@ export default function PublicDashboardPage() {
     }
 
     try {
-      // Phase-15.81 — chart-data request merges three sources:
+      // Phase-15.81 v6 — chart-data request merges two viewer-visible
+      // sources plus one hidden source:
       //   1. appliedViewerFilters (top-bar, includes BOTH all-pages and
       //      active-page filter sets — see seed effect above).
-      //   2. tile.layout.tileFilters (per-visual hidden filter on the
-      //      tile; never surfaces to top-bar).
-      //   3. dashboard.public_link_hidden_filters (per-link hidden
+      //   2. dashboard.public_link_hidden_filters (per-link hidden
       //      constraints set in the Public Links modal; viewer cannot
       //      see / change them, but BE applies them to every WHERE).
-      // BE merges them as AND predicates with the link's own
-      // filters_config (which it adds server-side).
+      // Per-visual `tile.layout.tileFilters` is no longer honored —
+      // the per-visual scope was removed; each chart owns its own
+      // filters via its config now. BE also merges link.filters_config
+      // server-side, so dedupe handles the overlap.
       const linkHiddenFilters: BaseFilter[] = Array.isArray((dashboard as any)?.public_link_hidden_filters)
         ? ((dashboard as any).public_link_hidden_filters as BaseFilter[])
         : [];
@@ -446,10 +454,6 @@ export default function PublicDashboardPage() {
       const entries = await runWithConcurrency(
         targetCharts,
         async (dashboardChart) => {
-          const tileLayout = dashboardChart.layout as Record<string, any> | undefined;
-          const tileScopeFilters: BaseFilter[] = Array.isArray(tileLayout?.tileFilters)
-            ? (tileLayout.tileFilters as BaseFilter[])
-            : [];
           const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
@@ -457,7 +461,6 @@ export default function PublicDashboardPage() {
               : appliedViewerFilters;
           const requestFilters = [
             ...baseViewerFilters,
-            ...tileScopeFilters,
             ...linkHiddenFilters,
           ];
           try {

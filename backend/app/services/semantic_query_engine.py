@@ -728,6 +728,24 @@ class SemanticQueryEngine:
         else:
             sql_template = raw_template
 
+        # Phase-15.81 v9 — auto-qualify bare-identifier measure templates
+        # with ${TABLE}, mirroring the Phase-15.61 fix on the dimension
+        # path. Legacy measures stored as `sql = "user_id"` rendered as
+        # the bare column name; when a dashboard filter triggered an
+        # extra JOIN (linkedFields fan-out across tables that share a
+        # column name like `user_id`), BigQuery raised
+        # "Column name X is ambiguous". Explore worked because no extra
+        # JOIN happened. Detect the bare-identifier case and prepend the
+        # placeholder so view_alias substitution kicks in.
+        if (
+            sql_template
+            and sql_template != '*'
+            and "${TABLE}" not in sql_template
+            and "${" not in sql_template  # skip ${view.field} cross-refs
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
+        ):
+            sql_template = f"${{TABLE}}.{sql_template.strip()}"
+
         # Phase-15.30: Path-C guard. An expression with an aggregate call
         # but no depends_on would get wrapped in this method's outer
         # aggregate (e.g. AVG(SUM(...)/COUNT(...))) and yield wrong numbers.
@@ -1083,6 +1101,15 @@ class SemanticQueryEngine:
 
         measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
         sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
+        # Phase-15.81 v9 — same bare-identifier guard as `_render_measure`.
+        if (
+            sql_template
+            and sql_template != '*'
+            and "${TABLE}" not in sql_template
+            and "${" not in sql_template
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
+        ):
+            sql_template = f"${{TABLE}}.{sql_template.strip()}"
         base_sql = self._render_sql_template(sql_template, view_name)
 
         # Filtered measure inside a pivot: AND the measure's own filter into

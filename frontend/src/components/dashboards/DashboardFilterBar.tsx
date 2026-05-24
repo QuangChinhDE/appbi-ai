@@ -69,6 +69,12 @@ type AddFilterColumnGroup = {
   columns: ColumnInfo[];
 };
 
+type AddFilterDatasetGroup = {
+  datasetKey: string;
+  datasetLabel: string;
+  tables: AddFilterColumnGroup[];
+};
+
 export function DashboardFilterBar({
   columns,
   columnChartCount,
@@ -142,11 +148,14 @@ export function DashboardFilterBar({
   const matchingAvailableColumns = useMemo(
     () => addableColumns.filter((column) => {
       if (!normalizedAddFilterSearch) return true;
+      // Phase-15.81 v8 — match dataset name too so users can jump to a
+      // specific dataset's columns when two datasets share field names.
       const haystack = [
         getColumnDisplayLabel(column),
         getColumnGroupLabel(column),
         column.name,
         column.semanticField,
+        column.datasetName,
       ]
         .filter((value): value is string => Boolean(value))
         .join(' ')
@@ -156,20 +165,35 @@ export function DashboardFilterBar({
     [addableColumns, normalizedAddFilterSearch],
   );
 
-  const groupColumnsByTable = (sourceColumns: ColumnInfo[]): AddFilterColumnGroup[] => {
-    const groups = new Map<string, AddFilterColumnGroup>();
+  // Phase-15.81 v8 — hierarchical Dataset › Table grouping in the
+  // Add-Filter dropdown so users always know which dataset a column
+  // belongs to (e.g. two tables both expose `status`, viewer picks the
+  // right one). Insertion order preserved from the source column list.
+  const groupColumnsByDataset = (sourceColumns: ColumnInfo[]): AddFilterDatasetGroup[] => {
+    const datasets = new Map<string, AddFilterDatasetGroup>();
     for (const column of sourceColumns) {
+      const datasetLabel = column.datasetName
+        ?? (column.datasetId != null ? `Dataset ${column.datasetId}` : 'Unscoped');
+      const datasetKey = column.datasetId != null
+        ? `id:${column.datasetId}`
+        : `name:${datasetLabel}`;
       const semanticView = String(column.semanticField ?? '').split('.')[0]?.trim();
-      const label = getColumnGroupLabel(column);
-      const key = `${column.datasetId ?? 'global'}:${semanticView || label}`;
-      const existing = groups.get(key);
-      if (existing) {
-        existing.columns.push(column);
-      } else {
-        groups.set(key, { key, label, columns: [column] });
+      const tableLabel = getColumnGroupLabel(column);
+      const tableKey = `${datasetKey}:${semanticView || tableLabel}`;
+
+      let dataset = datasets.get(datasetKey);
+      if (!dataset) {
+        dataset = { datasetKey, datasetLabel, tables: [] };
+        datasets.set(datasetKey, dataset);
       }
+      let table = dataset.tables.find((t) => t.key === tableKey);
+      if (!table) {
+        table = { key: tableKey, label: tableLabel, columns: [] };
+        dataset.tables.push(table);
+      }
+      table.columns.push(column);
     }
-    return Array.from(groups.values());
+    return Array.from(datasets.values());
   };
 
   // ── Mutators ───────────────────────────────────────────────────
@@ -358,18 +382,28 @@ export function DashboardFilterBar({
     );
   };
 
-  const renderColumnGroups = (groups: AddFilterColumnGroup[]) => (
-    <>
-      {groups.map((group) => (
-        <div key={group.key} className="py-1">
-          <div className="sticky top-[49px] z-10 border-y border-[rgb(var(--border-line))] bg-surface-2/95 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary backdrop-blur">
-            {group.label}
+  const renderDatasetGroups = (sourceColumns: ColumnInfo[]) => {
+    const datasetGroups = groupColumnsByDataset(sourceColumns);
+    return (
+      <>
+        {datasetGroups.map((dataset) => (
+          <div key={dataset.datasetKey} className="py-1">
+            <div className="sticky top-[49px] z-10 border-y border-[rgb(var(--border-line))] bg-brand/5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand backdrop-blur">
+              {dataset.datasetLabel}
+            </div>
+            {dataset.tables.map((table) => (
+              <div key={table.key}>
+                <div className="bg-surface-2/95 px-4 py-1 text-[10px] font-medium text-text-tertiary">
+                  {table.label}
+                </div>
+                {table.columns.map(renderColumnOption)}
+              </div>
+            ))}
           </div>
-          {group.columns.map(renderColumnOption)}
-        </div>
-      ))}
-    </>
-  );
+        ))}
+      </>
+    );
+  };
 
   // ── Render ─────────────────────────────────────────────────────
   return (
@@ -519,12 +553,10 @@ export function DashboardFilterBar({
                     </div>
                   </div>
 
-                  {/* ── Date filter section ─────────────────────────── */}
+                  {/* ── Date / Field filter sections ─────────────────── */}
                   {(() => {
                     const dateColumns = matchingAvailableColumns.filter(c => c.type === 'date');
                     const fieldColumns = matchingAvailableColumns.filter(c => c.type !== 'date');
-                    const dateGroups = groupColumnsByTable(dateColumns);
-                    const fieldGroups = groupColumnsByTable(fieldColumns);
                     return (
                       <>
                         {dateColumns.length > 0 && (
@@ -533,7 +565,7 @@ export function DashboardFilterBar({
                               <Calendar className="w-3 h-3" />
                               Date filters
                             </div>
-                            {renderColumnGroups(dateGroups)}
+                            {renderDatasetGroups(dateColumns)}
                           </div>
                         )}
                         {fieldColumns.length > 0 && (
@@ -542,7 +574,7 @@ export function DashboardFilterBar({
                               <Filter className="w-3 h-3" />
                               Field filters
                             </div>
-                            {renderColumnGroups(fieldGroups)}
+                            {renderDatasetGroups(fieldColumns)}
                           </div>
                         )}
                       </>

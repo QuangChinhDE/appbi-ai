@@ -122,6 +122,20 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // Phase-15.81 v12 — stage filter slot edits (all-pages + per-page)
+  // into draft_snapshot so Publish flushes layout + filter together.
+  // Either field may be omitted; pass [] to clear that scope's draft.
+  updateDraftFilters: async (
+    dashboardId: number,
+    body: {
+      filters_config?: Array<Record<string, any>>;
+      pages_config?: Array<Record<string, any>>;
+    }
+  ): Promise<Dashboard> => {
+    const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, body);
+    return response.data;
+  },
+
   publishDraft: async (dashboardId: number): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/publish`);
     return response.data;

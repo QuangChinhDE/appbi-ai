@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
@@ -123,57 +123,14 @@ function normalizeLegacyDateFilter(filter: TypedFilter, dateColumn: ColumnInfo |
   };
 }
 
-// Phase-15.78 — URL persistence for applied filters. Tester report (X.6):
-// "shareable dashboard with filter state already applied" was not possible
-// because filter state lived only in React state + server config. We now
-// mirror appliedGlobalFilters into `?f=<base64-json>` so a teammate can
-// open the same dashboard view by sharing the URL.
-//
-// Phase-15.80 — encoded payload is the typed Filter union directly
-// (kind/mode/values/range/preset) instead of the legacy
-// operator/value/type triple. Carries an explicit `v: 2` discriminator
-// so we can spot legacy v1 payloads and convert them through
-// fromBaseFilter() before adoption.
-const URL_FILTER_PARAM = 'f';
-const URL_FILTER_VERSION = 2;
-
-function encodeFiltersForUrl(filters: TypedFilter[]): string | null {
-  if (filters.length === 0) return null;
-  try {
-    const payload = { v: URL_FILTER_VERSION, filters };
-    return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-  } catch {
-    return null;
-  }
-}
-
-function decodeFiltersFromUrl(raw: string | null): TypedFilter[] | null {
-  if (!raw) return null;
-  try {
-    const json = decodeURIComponent(escape(atob(raw)));
-    const parsed = JSON.parse(json);
-    // v2 payload: { v: 2, filters: TypedFilter[] }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.v === URL_FILTER_VERSION) {
-      return Array.isArray(parsed.filters) ? parsed.filters as TypedFilter[] : null;
-    }
-    // v1 payload: BaseFilter[] (Phase-15.78). Convert through fromBaseFilter
-    // so old shared links still work; failed conversions are dropped.
-    if (Array.isArray(parsed)) {
-      return (parsed as BaseFilter[])
-        .map((b) => fromBaseFilter(b))
-        .filter((f): f is TypedFilter => f !== null);
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+// Phase-15.81 v7 — URL filter param `?f=` was removed.
+// The /dashboards/[id] route is the DA-only edit surface; nobody
+// shares this URL with viewers (public viewers use /d/[token]).
+// Filter state lives in dashboard.filters_config + pages_config —
+// no second source of truth needed.
 
 export default function DashboardDetailPage() {
   const params = useParams();
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const dashboardId = Number(params.id);
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
@@ -229,14 +186,6 @@ export default function DashboardDetailPage() {
   // Refs for filter seeding
   const filtersSeededRef = React.useRef(false);
   const filtersSnapshotRef = React.useRef<string>('[]');
-  // Phase-15.79 — when filters were seeded from a shared `?f=` URL param,
-  // we suppress the DB-write side-effect of handleApplyFilters until the
-  // user has explicitly modified the filter set. Otherwise an editor
-  // opening a teammate's share link could click Apply (e.g. after adding
-  // their own filter) and accidentally overwrite the dashboard's saved
-  // filters_config with the URL state. The flag flips to false the first
-  // time DashboardFilterBar reports a draft change.
-  const filtersHydratedFromUrlRef = React.useRef(false);
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
@@ -352,11 +301,6 @@ export default function DashboardDetailPage() {
   // True when no chart queries are still in-flight
   const allChartsReady = chartsFetching === 0 && totalChartCount > 0;
 
-  const hasPendingFilterChanges = React.useMemo(
-    () => JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters),
-    [draftGlobalFilters, appliedGlobalFilters],
-  );
-
   React.useEffect(() => {
     if (currentPageId !== activePageId) {
       setCurrentPageId(activePageId);
@@ -367,35 +311,24 @@ export default function DashboardDetailPage() {
     setLocalPagesConfig(null);
   }, [dashboard?.pages_config]);
 
-  // Seed globalFilters from dashboard.filters_config once when dashboard first loads.
-  // Phase-15.78 — when the URL carries an `?f=` param (shared link), it
-  // takes precedence over the server-side default so the viewer lands on
-  // the same filter state the sender saw. URL filters are NOT persisted
-  // back to the dashboard — they're a per-session override.
+  // Seed globalFilters from dashboard.filters_config once when the
+  // dashboard first loads. DB stores legacy BaseFilter[]; convert
+  // through fromBaseFilter() so in-memory state is union-typed.
+  // Failed conversions (corrupt rows, custom operators we haven't
+  // modeled) drop silently — they wouldn't render on the new UI.
   React.useEffect(() => {
     if (!dashboard || filtersSeededRef.current) return;
     filtersSeededRef.current = true;
-    // Phase-15.80 — DB stores filters_config as legacy BaseFilter[]
-    // (Phase-15.78 and earlier). Convert through fromBaseFilter() when
-    // seeding so the in-memory state is union-typed. Filters that fail
-    // conversion (corrupt rows, custom operators we haven't modeled)
-    // are dropped silently — they wouldn't have rendered correctly on
-    // the new UI anyway.
     const legacyServerDefault: BaseFilter[] = Array.isArray(dashboard.filters_config)
       ? dashboard.filters_config as BaseFilter[]
       : [];
-    const serverDefault: TypedFilter[] = legacyServerDefault
+    const initial: TypedFilter[] = legacyServerDefault
       .map((b) => fromBaseFilter(b))
       .filter((f): f is TypedFilter => f !== null);
-    const fromUrl = decodeFiltersFromUrl(searchParams?.get(URL_FILTER_PARAM) ?? null);
-    const initial = fromUrl ?? serverDefault;
     filtersSnapshotRef.current = JSON.stringify(initial);
-    // Phase-15.79 — mark URL-hydrated state so handleApplyFilters can
-    // skip DB persistence until the user has explicitly edited the set.
-    filtersHydratedFromUrlRef.current = fromUrl != null;
     setDraftGlobalFilters(initial);
     setAppliedGlobalFilters(initial);
-  }, [dashboard, searchParams]);
+  }, [dashboard]);
 
   React.useEffect(() => {
     if (!crossFilterState) return;
@@ -414,11 +347,21 @@ export default function DashboardDetailPage() {
     filtersSnapshotRef.current = current;
   }, [appliedGlobalFilters]);
 
-  // Phase-15.80 — legacy BaseFilter[] view of the applied union filters,
-  // memoised so ChartTile / DashboardGrid / DashboardCanvas (which still
-  // consume BaseFilter) get a stable reference per real filter change.
-  // Inactive filters drop out — the legacy execution path expects only
-  // applicable predicates.
+  // Phase-15.80 — legacy BaseFilter[] view of typed union filters,
+  // memoised so downstream components (FilterPane editor, ChartTile)
+  // get a stable reference. Two projections:
+  //   • draft   → the FilterPane editor reads/writes this (keeps
+  //     half-built filter cards with empty value alive while DA picks
+  //     a value — toBaseFilter drops inactive entries so we project
+  //     directly from `value`-bearing fields without isFilterActive).
+  //   • applied → what the chart-data API consumes. Only ACTIVE
+  //     filters survive (engine can't run `IN ()`).
+  const draftGlobalFiltersLegacy = React.useMemo<BaseFilter[]>(
+    () => draftGlobalFilters
+      .map((f) => toBaseFilter(f, { allowInactive: true }))
+      .filter((b): b is BaseFilter => b !== null),
+    [draftGlobalFilters],
+  );
   const appliedGlobalFiltersLegacy = React.useMemo<BaseFilter[]>(
     () => appliedGlobalFilters
       .map((f) => toBaseFilter(f))
@@ -426,79 +369,60 @@ export default function DashboardDetailPage() {
     [appliedGlobalFilters],
   );
 
-  // Phase-15.81 — PowerBI-style "Filters on this page" scope. Lives on
-  // pages_config[activePage].filters. Auto-saves through persistPagesConfig
-  // (no draft/applied — page filters apply immediately, like PBI).
+  // Phase-15.81 v11 — PowerBI-style "Filters on this page" scope.
+  // Lives on pages_config[activePage].filters. Setup follows the same
+  // draft → Apply gate as all-pages; the DA can wire slots up without
+  // each click re-querying BigQuery. `activePageFilters` is the
+  // server-persisted set (what the public viewer sees); the editor
+  // edits `draftPageFilters` locally until Apply pushes them through.
   const activePageFilters = React.useMemo<BaseFilter[]>(
     () => Array.isArray(currentPage?.filters) ? currentPage!.filters as BaseFilter[] : [],
     [currentPage],
   );
-  // Phase-15.81 — combined view fed into DashboardGrid/Canvas/ChartTile.
-  // All-pages + per-page filters merge into the same `globalFilters` prop
-  // because both apply to every chart on the page; per-visual filters
-  // come in through tile layout.tileFilters and are handled inside
-  // ChartTile (see Phase-15.81 wire-up there).
-  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(
-    () => [...appliedGlobalFiltersLegacy, ...activePageFilters],
-    [appliedGlobalFiltersLegacy, activePageFilters],
+  const [draftPageFilters, setDraftPageFilters] = useState<BaseFilter[]>([]);
+  // Reset draft whenever the active page (or server-saved set) changes
+  // — opening a different page should show its own persisted slots,
+  // not the previous page's draft.
+  const pageFiltersServerSignatureRef = React.useRef<string>('');
+  React.useEffect(() => {
+    const sig = `${activePageId}::${JSON.stringify(activePageFilters)}`;
+    if (pageFiltersServerSignatureRef.current === sig) return;
+    pageFiltersServerSignatureRef.current = sig;
+    setDraftPageFilters(activePageFilters);
+  }, [activePageId, activePageFilters]);
+
+  // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
+  // the Apply button surfaces when a DA edits page filters too.
+  const hasPendingFilterChanges = React.useMemo(
+    () =>
+      JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters)
+      || JSON.stringify(draftPageFilters) !== JSON.stringify(activePageFilters),
+    [draftGlobalFilters, appliedGlobalFilters, draftPageFilters, activePageFilters],
   );
-  // Phase-15.81 — "Filters on this visual" focus state. Click a tile to
-  // populate the "Filters on this visual" section of FilterPane. Per-tile
-  // filters persist in tile layout.tileFilters (auto-save on edit).
+
+  // Combined view fed into DashboardGrid/Canvas/ChartTile. Both scopes
+  // contribute to the chart WHERE; per-page wins on field collision
+  // (PowerBI page-level override semantic, mirrors the public viewer
+  // seed effect's "page entries take precedence" rule). Driven by
+  // APPLIED state — adding a half-built filter card mustn't shake the
+  // chart grid.
+  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(() => {
+    const byKey = new Map<string, BaseFilter>();
+    for (const f of appliedGlobalFiltersLegacy) byKey.set(getFilterKey(f), f);
+    for (const f of activePageFilters) byKey.set(getFilterKey(f), f);
+    return Array.from(byKey.values());
+  }, [appliedGlobalFiltersLegacy, activePageFilters]);
+  // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
+  // Per-visual filters were removed from FilterPane: each chart edits
+  // its own filters inside the chart editor, so a focused-tile filter
+  // scope here was redundant.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
   // Phase-15.81 — replace the old top-bar popover with a docked right-hand
   // FilterPane sidebar. Persisted in window only (intentionally not URL),
   // since pane state is a viewing preference.
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
 
-  const focusedTile = React.useMemo(
-    () => visibleDashboardCharts.find((dc) => dc.id === focusedTileId) ?? null,
-    [visibleDashboardCharts, focusedTileId],
-  );
-  const visualFiltersForFocused = React.useMemo<BaseFilter[]>(
-    () => {
-      const layout = focusedTile?.layout as Record<string, any> | undefined;
-      return Array.isArray(layout?.tileFilters) ? layout!.tileFilters as BaseFilter[] : [];
-    },
-    [focusedTile],
-  );
-  const focusedTileLabel = React.useMemo(() => {
-    if (!focusedTile) return null;
-    const layout = focusedTile.layout as Record<string, any> | undefined;
-    return (layout?.custom_title?.trim?.() || focusedTile.chart?.name) ?? `Chart ${focusedTile.chart_id}`;
-  }, [focusedTile]);
-
-  // Phase-15.78 — mirror appliedGlobalFilters into the URL `?f=` param so
-  // the dashboard view is shareable. We replace (not push) so the back
-  // button still walks page-level navigation rather than per-filter
-  // history entries. Skip on initial mount before the seed effect runs.
-  React.useEffect(() => {
-    if (!filtersSeededRef.current || !pathname) return;
-    const encoded = encodeFiltersForUrl(appliedGlobalFilters);
-    const next = new URLSearchParams(searchParams?.toString() ?? '');
-    if (encoded) {
-      next.set(URL_FILTER_PARAM, encoded);
-    } else {
-      next.delete(URL_FILTER_PARAM);
-    }
-    const qs = next.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    // searchParams intentionally excluded from deps: it changes whenever
-    // we write here, which would loop. We read it once per applied change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appliedGlobalFilters, pathname, router]);
   // Filter changes are applied explicitly via the Apply action.
-  //
-  //
-  //
-  //
-  //
-        // silent — filters remain active in session even if save fails
-  //
-  //
-  //
-  //
-  //
   //
 
   // Layout edits (Phase-15.66) — pure local state, NO auto-save.
@@ -852,44 +776,82 @@ export default function DashboardDetailPage() {
     setEditedName('');
   };
 
-  const handleApplyFilters = async () => {
-    setAppliedGlobalFilters(draftGlobalFilters);
-    if (!canEditResource) return;
-
-    // Phase-15.79 — when the draft state is still the pristine URL
-    // hydrate (no user mutation since open), don't promote it to the
-    // dashboard's saved filters_config. Otherwise an editor opening a
-    // teammate's `?f=` share link could overwrite the dashboard default
-    // for every other viewer just by clicking Apply. Inform them with a
-    // toast so the behaviour isn't silent.
-    if (filtersHydratedFromUrlRef.current) {
-      toast.info(
-        'Đang xem filter từ link chia sẻ. Chỉnh sửa filter trước khi Apply để lưu làm mặc định.',
-      );
+  // Phase-15.81 v12 — Apply filter slot edits.
+  //
+  // Two variants so DA doesn't pay a re-query bill they didn't ask for:
+  //   • `scope='page'`  → push THIS page's draft to applied + stage
+  //     pages_config draft. All-pages stays untouched.
+  //   • `scope='all'`   → push BOTH scopes (all-pages + this-page)
+  //     to applied + stage both draft fields in one round-trip.
+  //
+  // "Applied" here is the in-session state ChartTile reads from; chart
+  // grid re-queries BigQuery only after this point. Persistence routes
+  // through the dashboard's shared draft_snapshot so Publish flushes
+  // filter + layout to the public link together (no longer writes
+  // straight to live `filters_config` / `pages_config`).
+  const handleApplyFilters = async (scope: 'page' | 'all') => {
+    if (scope === 'all') {
+      setAppliedGlobalFilters(draftGlobalFilters);
+    }
+    if (!canEditResource) {
+      // Viewers still get the in-session apply but no DB write.
       return;
     }
 
     setIsApplyingFilters(true);
     try {
-      // Phase-15.80 — DB schema (filters_config) is still legacy
-      // BaseFilter[]. Project union → BaseFilter via toBaseFilter for
-      // the wire format; inactive filters return null and are dropped.
-      // Save is best-effort so dropped filters in transit aren't fatal.
-      const legacyForSave = draftGlobalFilters
-        .map((f) => toBaseFilter(f))
-        .filter((b): b is BaseFilter => b !== null);
-      await dashboardApi.update(dashboardId, { filters_config: legacyForSave });
+      // Build the payload for the draft endpoint. We always send the
+      // FULL slot list for the scope being applied (including empty-
+      // value slots — that's the DA-authored inventory).
+      const body: { filters_config?: BaseFilter[]; pages_config?: any[] } = {};
+
+      if (scope === 'all') {
+        body.filters_config = draftGlobalFilters
+          .map((f) => toBaseFilter(f, { allowInactive: true }))
+          .filter((b): b is BaseFilter => b !== null);
+      }
+
+      if (activePageId) {
+        // Stage the new pages_config (full page array, with current
+        // page's filters set to the draft set). For scope='all' this
+        // still ships since the DA may have touched both scopes in
+        // the same session.
+        const nextPages = dashboardPages.map((p) => {
+          if (p.id !== activePageId) return p;
+          return draftPageFilters.length > 0
+            ? { ...p, filters: draftPageFilters }
+            // Strip the `filters` field when empty so Reset feels clean.
+            : (() => { const { filters: _drop, ...rest } = p as any; return rest; })();
+        });
+        body.pages_config = nextPages;
+        // Mirror locally so the editor state stays consistent until
+        // refetch lands.
+        setLocalPagesConfig(nextPages);
+      }
+
+      await dashboardApi.updateDraftFilters(dashboardId, body);
+      // Refresh dashboard so draft overlay surfaces from server.
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
       filtersSnapshotRef.current = JSON.stringify(draftGlobalFilters);
+      toast.success(
+        scope === 'all'
+          ? 'Đã lưu nháp filter cho toàn dashboard. Bấm "Lưu & xuất bản" để công khai.'
+          : 'Đã lưu nháp filter cho trang hiện tại.',
+      );
     } catch (error) {
       console.error('Failed to save dashboard filters:', error);
+      setLocalPagesConfig(null);
       toast.error('Applied in this session, but failed to save dashboard filters.');
     } finally {
       setIsApplyingFilters(false);
     }
   };
 
+  // Phase-15.81 v11 — Reset abandons unsaved slot/value edits on BOTH
+  // scopes by restoring from the last applied/server snapshot.
   const handleResetFilters = () => {
     setDraftGlobalFilters(appliedGlobalFilters);
+    setDraftPageFilters(activePageFilters);
   };
 
   const persistPagesConfig = useCallback(async (pages: DashboardPageConfig[]) => {
@@ -904,39 +866,6 @@ export default function DashboardDetailPage() {
       throw error;
     }
   }, [dashboardId, updateDashboardMutation]);
-
-  // Phase-15.81 — write "Filters on this page" back to pages_config.
-  // Auto-saves immediately (unlike all-pages which has draft/apply). User
-  // can blame me later if this turns out too aggressive for their flow.
-  const handleSetPageFilters = useCallback(async (nextFilters: BaseFilter[]) => {
-    if (!activePageId) return;
-    const nextPages = dashboardPages.map((p) =>
-      p.id === activePageId ? { ...p, filters: nextFilters.length > 0 ? nextFilters : undefined } : p
-    );
-    try {
-      await persistPagesConfig(nextPages);
-    } catch {
-      /* persistPagesConfig already rolls back localPagesConfig */
-    }
-  }, [activePageId, dashboardPages, persistPagesConfig]);
-
-  // Phase-15.81 — write "Filters on this visual" back to the tile's
-  // layout.tileFilters via the existing updateLayout endpoint. The layout
-  // JSON is pass-through on the BE so no schema change is needed.
-  const handleSetVisualFilters = useCallback(async (nextFilters: BaseFilter[]) => {
-    if (!focusedTile) return;
-    const layout = (focusedTile.layout as Record<string, any> | undefined) ?? {};
-    try {
-      await dashboardApi.updateLayout(dashboardId, [{
-        id: focusedTile.id,
-        layout: { ...layout, tileFilters: nextFilters.length > 0 ? nextFilters : undefined },
-      }]);
-      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    } catch (error) {
-      console.error('Failed to save tile filters:', error);
-      toast.error('Failed to save filters on this visual.');
-    }
-  }, [focusedTile, dashboardId, queryClient]);
 
   const handleAddPage = async () => {
     const nextPage: DashboardPageConfig = {
@@ -1167,6 +1096,7 @@ export default function DashboardDetailPage() {
             tableLabel: view.table_display_name ?? view.name,
             type: semanticDimensionToFilterType(dimension.type),
             datasetId: binding.datasetId,
+            datasetName: model.dataset_name,
             semanticField,
           });
         }
@@ -1315,6 +1245,7 @@ export default function DashboardDetailPage() {
       type: 'date',
       semanticField: orderedSemanticFields[0],
       datasetId: firstDatasetId,
+      datasetName: firstModel?.dataset_name,
       defaultLinkedFields: orderedSemanticFields.slice(1),
       chartCoverage: chartsWithDate.size,
       datasetChartCount: totalDashboardChartCount,
@@ -1337,7 +1268,17 @@ export default function DashboardDetailPage() {
   }, [calendarDateColumns]);
 
   const activeSemanticDistinctTargets = React.useMemo(() => {
-    if (semanticColumnsResult.columns.length === 0 || draftGlobalFilters.length === 0) {
+    // Phase-15.81 v11 — quét cả 2 scope ở trạng thái DRAFT (cả
+    // all-pages và this-page). Trước đây quét applied/server-persisted
+    // page filters → card vừa kéo vào "Filters on this page" chưa
+    // Apply không có distinct values, checklist trống. Project draft
+    // với allowInactive=true để giữ slot rỗng (DA chưa chọn value).
+    const legacyDraftAll = draftGlobalFilters
+      .map((f) => toBaseFilter(f, { allowInactive: true }))
+      .filter((b): b is BaseFilter => b !== null);
+    const combinedFilters: BaseFilter[] = [...legacyDraftAll, ...draftPageFilters];
+
+    if (semanticColumnsResult.columns.length === 0 || combinedFilters.length === 0) {
       return [];
     }
 
@@ -1346,7 +1287,7 @@ export default function DashboardDetailPage() {
     );
     const activeColumns = new Map<string, ColumnInfo>();
 
-    for (const filter of draftGlobalFilters) {
+    for (const filter of combinedFilters) {
       const key = getFilterKey(filter);
       const column = columnsByKey.get(key);
       if (!column?.datasetId || !column.semanticField) continue;
@@ -1354,22 +1295,15 @@ export default function DashboardDetailPage() {
       activeColumns.set(key, column);
     }
 
-    // Phase-15.80 — getDistinctValueFilterContext + the BE distinct-values
-    // endpoint both speak legacy BaseFilter, so project the typed draft set
-    // through toBaseFilter at the boundary. Inactive filters drop out
-    // (cascade only respects "applied" filters anyway).
-    const legacyDraft = draftGlobalFilters
-      .map((f) => toBaseFilter(f))
-      .filter((b): b is BaseFilter => b !== null);
     return Array.from(activeColumns.values()).map((column) => {
-      const filterContext = getDistinctValueFilterContext(legacyDraft, column);
+      const filterContext = getDistinctValueFilterContext(combinedFilters, column);
       return {
         column,
         filterContext,
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [draftGlobalFilters, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, draftPageFilters, semanticColumnsResult.columns]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
@@ -2023,30 +1957,25 @@ export default function DashboardDetailPage() {
             <FilterPane
               columns={resolvedAvailableColumns}
               distinctValues={resolvedDistinctValues}
-              visualFilters={visualFiltersForFocused}
-              visualLabel={focusedTileLabel}
-              onChangeVisualFilters={handleSetVisualFilters}
-              pageFilters={activePageFilters}
+              pageFilters={draftPageFilters}
               pageLabel={currentPage?.name ?? 'Untitled page'}
-              onChangePageFilters={handleSetPageFilters}
-              allFilters={appliedGlobalFiltersLegacy}
+              onChangePageFilters={setDraftPageFilters}
+              allFilters={draftGlobalFiltersLegacy}
               onChangeAllFilters={(nextLegacy) => {
-                // Same boundary as the popover used: bridge legacy → union
-                // for state, and treat as a user edit (clears URL-hydrate
-                // guard, marks draft pending until Apply).
-                filtersHydratedFromUrlRef.current = false;
+                // Phase-15.81 v11 — DA is wiring up filter slots; do
+                // NOT push to `applied` here. The chart grid keeps its
+                // current data until the DA clicks Apply, so adding /
+                // tweaking a filter card doesn't fire a BigQuery query
+                // per keystroke. `allowInactive` bridge preserves the
+                // empty-value card the user just dropped.
                 const nextUnion = nextLegacy
                   .map((b) => fromBaseFilter(b))
                   .filter((f): f is TypedFilter => f !== null);
                 setDraftGlobalFilters(nextUnion);
-                // FilterPane auto-applies dashboard-wide changes for parity
-                // with PBI's "Filters on all pages" behaviour. Apply still
-                // saves to DB via handleApplyFilters but bypasses the
-                // draft buffer that the legacy popover used.
-                setAppliedGlobalFilters(nextUnion);
               }}
               hasPendingChanges={hasPendingFilterChanges}
-              onApply={handleApplyFilters}
+              onApplyPage={() => handleApplyFilters('page')}
+              onApplyAll={() => handleApplyFilters('all')}
               onReset={handleResetFilters}
               isApplying={isApplyingFilters}
             />

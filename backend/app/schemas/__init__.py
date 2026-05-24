@@ -33,6 +33,7 @@ from app.schemas.schemas import (
     PublicLinkResponse,
     DashboardResponse,
     DashboardAddChartRequest,
+    DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,
 
@@ -134,6 +135,7 @@ __all__ = [
     "PublicLinkResponse",
     "DashboardResponse",
     "DashboardAddChartRequest",
+    "DashboardUpdateDraftFiltersRequest",
     "DashboardUpdateLayoutRequest",
     "DashboardUpdateWidgetRequest",
     

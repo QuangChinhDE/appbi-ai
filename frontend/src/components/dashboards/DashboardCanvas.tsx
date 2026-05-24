@@ -46,7 +46,10 @@ interface DashboardCanvasProps {
   emptyMessage?: string;
   canEdit?: boolean;
   allowAppearanceEdit?: boolean;
-  /** Phase-15.81 — focus prop for FilterPane "this visual" scope. */
+  /** Phase-15.81 v6 — focus prop for Canvas highlight only. The
+   *  FilterPane "this visual" scope was removed; focus is now just a
+   *  UI signal that survives so the user can see which tile they last
+   *  clicked. */
   focusedDashboardChartId?: number | null;
   onFocusChart?: (dashboardChartId: number) => void;
 }

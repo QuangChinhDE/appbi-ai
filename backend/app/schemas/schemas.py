@@ -626,6 +626,17 @@ class DashboardUpdateWidgetRequest(BaseModel):
     widget_config: Dict[str, Any]
 
 
+# Phase-15.81 v12 — filter draft staging request. Either field may be
+# omitted to leave that scope untouched; passing an empty list clears
+# the draft entry for that scope. The route writes both to
+# draft_snapshot so layout/filter drafts share the publish/discard
+# lifecycle.
+class DashboardUpdateDraftFiltersRequest(BaseModel):
+    """Schema for staging filter slot edits into draft_snapshot."""
+    filters_config: Optional[List[Dict[str, Any]]] = None
+    pages_config: Optional[List[Dict[str, Any]]] = None
+
+
 # Query Execution Schemas
 class QueryExecuteRequest(BaseModel):
     """Schema for executing an ad-hoc query."""

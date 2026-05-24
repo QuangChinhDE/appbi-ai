@@ -31,6 +31,7 @@ from app.schemas import (
     DashboardShareRequest,
     DashboardResponse,
     DashboardAddChartRequest,
+    DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,
     PublicLinkCreate,
@@ -1401,7 +1402,14 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     relationship loading can race in ways where the transient attrs
     don't survive `model_validate`. Building the dict ourselves is the
     bullet-proof path; the cost is one extra serialization but the
-    endpoint is editor-only and already cheap."""
+    endpoint is editor-only and already cheap.
+
+    Phase-15.81 v12 — draft pipeline now also covers filter config
+    (all-pages `filters_config` and per-page `pages_config[i].filters`).
+    The editor reads the OVERLAY of draft on top of live so the user
+    sees their unsaved slot edits; public viewers continue to read the
+    raw live fields until Publish merges the draft down.
+    """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     snapshot = dash.draft_snapshot or {}
     layouts_map = snapshot.get("layouts") if isinstance(snapshot, dict) else None
@@ -1413,18 +1421,38 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
                 normalized_layouts[int(k)] = v
             except (TypeError, ValueError):
                 continue
+
+    # Phase-15.81 v12 — overlay draft filters onto the response so the
+    # editor sees pending slot edits. Draft values fully REPLACE the
+    # live one when present (same semantic as layouts_map).
+    draft_filters_config = (
+        snapshot.get("filters_config") if isinstance(snapshot, dict) else None
+    )
+    draft_pages_config = (
+        snapshot.get("pages_config") if isinstance(snapshot, dict) else None
+    )
+
     # Round-trip via from_attributes for the live fields, then override.
     base = DashboardResponse.model_validate(dash, from_attributes=True)
-    enriched = base.model_copy(update={
+    overrides: Dict[str, Any] = {
         "draft_layouts": normalized_layouts,
-        "has_draft": bool(normalized_layouts),
-    })
+    }
+    if isinstance(draft_filters_config, list):
+        overrides["filters_config"] = draft_filters_config
+    if isinstance(draft_pages_config, list):
+        overrides["pages_config"] = draft_pages_config
+
+    has_filter_draft = isinstance(draft_filters_config, list) or isinstance(draft_pages_config, list)
+    overrides["has_draft"] = bool(normalized_layouts) or has_filter_draft
+
+    enriched = base.model_copy(update=overrides)
     logger.info(
-        "draft_serialize dashboard_id=%s snapshot_keys=%s layouts_count=%s has_draft=%s",
+        "draft_serialize dashboard_id=%s snapshot_keys=%s layouts_count=%s has_filter_draft=%s has_draft=%s",
         dash.id,
         list(snapshot.keys()) if isinstance(snapshot, dict) else type(snapshot).__name__,
         len(normalized_layouts) if normalized_layouts else 0,
-        bool(normalized_layouts),
+        has_filter_draft,
+        overrides["has_draft"],
     )
     return enriched
 
@@ -1685,6 +1713,44 @@ def update_dashboard_draft_layout(
     return _serialize_dashboard_with_draft(db, dash, current_user)
 
 
+@router.put("/{dashboard_id}/draft-filters", response_model=DashboardResponse)
+def update_dashboard_draft_filters(
+    dashboard_id: int,
+    request: DashboardUpdateDraftFiltersRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stage filter-slot edits (all-pages + per-page) into draft_snapshot.
+
+    Phase-15.81 v12 — DA configures the slot inventory the public link
+    will expose. We share draft_snapshot with the layout-edit path so
+    Publish flushes both in one shot. Public viewers keep seeing the
+    last-published filter config until the editor publishes.
+
+    Body fields:
+      * `filters_config` (optional) — full all-pages slot array.
+      * `pages_config`   (optional) — full pages_config array (with
+        nested `.filters` per page).
+
+    Either omitted field leaves that scope unchanged in the draft.
+    """
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    snapshot = dict(dash.draft_snapshot or {})
+    if request.filters_config is not None:
+        snapshot["filters_config"] = list(request.filters_config)
+    if request.pages_config is not None:
+        snapshot["pages_config"] = list(request.pages_config)
+    dash.draft_snapshot = snapshot
+    flag_modified(dash, "draft_snapshot")
+    db.commit()
+    db.refresh(dash)
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
 @router.post("/{dashboard_id}/publish", response_model=DashboardResponse)
 def publish_dashboard_draft(
     dashboard_id: int,
@@ -1693,14 +1759,21 @@ def publish_dashboard_draft(
 ):
     """Apply draft_snapshot onto live columns + dashboard_chart rows,
     then clear the snapshot. Public viewers see the new state on their
-    next fetch."""
+    next fetch.
+
+    Phase-15.81 v12 — publish now also flushes filter-slot drafts
+    (`filters_config` for all-pages and `pages_config` for per-page)
+    so a single Publish action ships layout + filter edits to the
+    public link together.
+    """
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
     snapshot = dash.draft_snapshot or {}
+
+    # ── Layouts ──
     layouts_map = snapshot.get("layouts") or {}
-    # Apply layout changes onto the live DashboardChart rows.
     if layouts_map:
         rows = (
             db.query(DashboardChart)
@@ -1714,6 +1787,17 @@ def publish_dashboard_draft(
                 merged = {**(row.layout or {}), **new_layout}
                 row.layout = merged
                 flag_modified(row, "layout")
+
+    # ── Filter slots ──
+    draft_filters_config = snapshot.get("filters_config")
+    if isinstance(draft_filters_config, list):
+        dash.filters_config = draft_filters_config
+        flag_modified(dash, "filters_config")
+    draft_pages_config = snapshot.get("pages_config")
+    if isinstance(draft_pages_config, list):
+        dash.pages_config = draft_pages_config
+        flag_modified(dash, "pages_config")
+
     dash.draft_snapshot = None
     flag_modified(dash, "draft_snapshot")
     db.commit()

@@ -2,20 +2,13 @@
 
 // Phase-15.81 — PowerBI-style Filter Pane.
 //
-// Two new sidebars dock the dashboard editor:
+// Right-dock pane with two scope sections:
+//   ▼ this page   → pages_config.filters on the active page
+//   ▼ all pages   → existing dashboard.filters_config
 //
-//   ┌──────────┐┌──────────────────────────────┐┌───────────────────┐
-//   │ FIELDS   ││  Dashboard canvas            ││ FILTERS           │
-//   │ (drag    ││                              ││ ▼ this visual     │
-//   │  source) ││  [chart] [chart] [chart]     ││ ▼ this page       │
-//   │          ││                              ││ ▼ all pages       │
-//   └──────────┘└──────────────────────────────┘└───────────────────┘
-//
-// Drag a field from FieldList → drop onto one of the 3 sections in
-// FilterPane. Sections own filter scope:
-//   - this visual → currentLayout.tileFilters on the focused tile
-//   - this page   → pages_config.filters on the active page
-//   - all pages   → existing dashboard.filters_config (Phase-15.78 path)
+// Per-visual filters were removed: each chart already owns its own
+// filter config inside the chart editor, so a third "this visual"
+// scope here was redundant.
 //
 // FilterCardPBI renders each filter card. It's a thin wrapper around the
 // Phase-15.78 internals (Pencil rename, single/multi toggle, range slider)
@@ -253,20 +246,12 @@ export function FilterCardPBI({ filter, distinctValues = [], onChange, onRemove 
             <Pencil className="h-3 w-3 flex-shrink-0 text-text-quaternary opacity-0 transition-opacity group-hover/label:opacity-100" />
           </button>
         )}
-        {isFilterValueActive(filter) && (
-          <button
-            type="button"
-            onClick={() => {
-              if (filter.operator === 'in' || filter.operator === 'not_in') return updateValue([]);
-              if (filter.operator === 'between') return updateValue(['', '']);
-              return updateValue('');
-            }}
-            title="Clear value"
-            className="rounded p-0.5 text-text-quaternary hover:bg-surface-1 hover:text-text-secondary"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        )}
+        {/* Phase-15.81 v13 — single X (remove the whole filter slot).
+            Earlier UI rendered Clear-value + Remove-slot side by side
+            so an active card showed two Xs while an empty card showed
+            one; DA found this jarring and asked us to mirror the
+            simpler all-pages affordance everywhere. Clearing a value
+            is now: remove the slot and re-add the column (rare op). */}
         <button
           type="button"
           onClick={onRemove}
@@ -558,15 +543,11 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
 // Visual scope shows the focused tile's title; clicking a tile elsewhere
 // in the canvas should focus it (parent owns focused-tile state).
 //
-type Scope = 'visual' | 'page' | 'all';
+type Scope = 'page' | 'all';
 
 export interface FilterPaneProps {
   columns: ColumnInfo[];
   distinctValues: Record<string, string[]>;
-  /** "Filters on this visual" — null when no tile is focused. */
-  visualFilters: BaseFilter[];
-  visualLabel: string | null;
-  onChangeVisualFilters: (next: BaseFilter[]) => void;
   /** "Filters on this page" */
   pageFilters: BaseFilter[];
   pageLabel: string;
@@ -574,11 +555,15 @@ export interface FilterPaneProps {
   /** "Filters on all pages" — the existing dashboard-wide slicer set. */
   allFilters: BaseFilter[];
   onChangeAllFilters: (next: BaseFilter[]) => void;
-  /** Apply / reset for the all-pages set (matches existing
-   *  draft/applied semantic). Visual + page filters auto-apply on edit
-   *  because they live on the layout JSON and are auto-saved. */
+  /** Phase-15.81 v12 — Apply split into two scopes so a DA tweaking
+   *  just one page doesn't pay the re-query bill for every other page.
+   *  • onApplyPage → save + re-query for the active page only.
+   *  • onApplyAll  → save + re-query for the whole dashboard.
+   *  Each section's Apply button uses its own callback. Reset reverts
+   *  both scopes' drafts. */
   hasPendingChanges?: boolean;
-  onApply?: () => void;
+  onApplyPage?: () => void;
+  onApplyAll?: () => void;
   onReset?: () => void;
   isApplying?: boolean;
 }
@@ -586,20 +571,18 @@ export interface FilterPaneProps {
 export function FilterPane({
   columns,
   distinctValues,
-  visualFilters,
-  visualLabel,
-  onChangeVisualFilters,
   pageFilters,
   pageLabel,
   onChangePageFilters,
   allFilters,
   onChangeAllFilters,
   hasPendingChanges = false,
-  onApply,
+  onApplyPage,
+  onApplyAll,
   onReset,
   isApplying = false,
 }: FilterPaneProps) {
-  const [expanded, setExpanded] = useState<Record<Scope, boolean>>({ visual: true, page: true, all: true });
+  const [expanded, setExpanded] = useState<Record<Scope, boolean>>({ page: true, all: true });
 
   const columnsByKey = useMemo(() => {
     const map = new Map<string, ColumnInfo>();
@@ -632,8 +615,8 @@ export function FilterPane({
       label: getColumnDisplayLabel(col),
       datePreset,
     };
-    const target = scope === 'visual' ? visualFilters : scope === 'page' ? pageFilters : allFilters;
-    const setter = scope === 'visual' ? onChangeVisualFilters : scope === 'page' ? onChangePageFilters : onChangeAllFilters;
+    const target = scope === 'page' ? pageFilters : allFilters;
+    const setter = scope === 'page' ? onChangePageFilters : onChangeAllFilters;
     // Don't add twice for the same column
     if (target.some((f) => (f.fieldKey ?? f.field) === columnKey)) {
       // eslint-disable-next-line no-console
@@ -658,19 +641,6 @@ export function FilterPane({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <Section
-          scope="visual"
-          title="Filters on this visual"
-          subtitle={visualLabel ?? 'Click a chart to focus it'}
-          expanded={expanded.visual}
-          onToggle={() => setExpanded((p) => ({ ...p, visual: !p.visual }))}
-          filters={visualFilters}
-          columns={columns}
-          onAddFilter={(key) => sectionAddFilter('visual', key)}
-          onChange={onChangeVisualFilters}
-          distinctValues={distinctValues}
-          disabled={visualLabel == null}
-        />
         <Section
           scope="page"
           title="Filters on this page"
@@ -697,33 +667,56 @@ export function FilterPane({
         />
       </div>
 
-      {/* Apply bar — only relevant for the dashboard-wide (all-pages)
-          draft/applied state machine. Visual/page filters auto-save. */}
-      {onApply && (
-        <div className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2">
-          {onReset && (
-            <button
-              type="button"
-              onClick={onReset}
-              disabled={!hasPendingChanges}
-              className="rounded border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Reset
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onApply}
-            disabled={!hasPendingChanges || isApplying}
-            className={`ml-auto inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:bg-brand/40 ${
-              hasPendingChanges && !isApplying
-                ? 'bg-brand hover:bg-brand-hover ring-2 ring-brand/30 ring-offset-1 shadow-md'
-                : 'bg-brand hover:bg-brand-hover'
-            }`}
-          >
-            <Check className="h-3 w-3" />
-            {isApplying ? 'Applying...' : 'Apply (all pages)'}
-          </button>
+      {/* Phase-15.81 v12 — Apply bar with two scope buttons.
+          • Apply this page → only re-queries the active page.
+          • Apply all pages → re-queries every chart on the dashboard
+            (use when wiring up a dashboard-wide filter).
+          Reset bỏ mọi unsaved edits trên cả 2 scope. */}
+      {(onApplyPage || onApplyAll) && (
+        <div className="flex flex-col gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2">
+          <div className="flex items-center gap-2">
+            {onReset && (
+              <button
+                type="button"
+                onClick={onReset}
+                disabled={!hasPendingChanges}
+                className="rounded border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Reset
+              </button>
+            )}
+            {onApplyPage && (
+              <button
+                type="button"
+                onClick={onApplyPage}
+                disabled={!hasPendingChanges || isApplying}
+                className="ml-auto inline-flex items-center gap-1 rounded border border-brand/40 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/10 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Save draft + re-query the active page only"
+              >
+                <Check className="h-3 w-3" />
+                {isApplying ? 'Applying...' : 'Apply this page'}
+              </button>
+            )}
+            {onApplyAll && (
+              <button
+                type="button"
+                onClick={onApplyAll}
+                disabled={!hasPendingChanges || isApplying}
+                className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:bg-brand/40 ${
+                  hasPendingChanges && !isApplying
+                    ? 'bg-brand hover:bg-brand-hover ring-2 ring-brand/30 ring-offset-1 shadow-md'
+                    : 'bg-brand hover:bg-brand-hover'
+                }`}
+                title="Save draft + re-query every chart on the dashboard"
+              >
+                <Check className="h-3 w-3" />
+                {isApplying ? 'Applying...' : 'Apply all pages'}
+              </button>
+            )}
+          </div>
+          <p className="text-[10px] text-text-quaternary">
+            Apply lưu nháp filter. Bấm "Lưu &amp; xuất bản" trên topbar khi muốn đẩy ra public link.
+          </p>
         </div>
       )}
     </div>
@@ -737,17 +730,17 @@ interface SectionProps {
   expanded: boolean;
   onToggle: () => void;
   filters: BaseFilter[];
-  /** Phase-15.81 — full column list so the inline "+ Add filter" picker
-   *  can show what's available. Drag-and-drop from a side FieldList was
-   *  killed per DA feedback: a sidebar far from the FilterPane meant a
-   *  long mouse travel for the common action. Picker is right here. */
+  /** Phase-15.81 v6 — full column list so the inline "+ Add filter"
+   *  picker can show what's available. The original drag-and-drop entry
+   *  point (FieldList sidebar) was removed; drop handlers stay here so
+   *  future drag sources (e.g. chart-tile pill) can still target the
+   *  section without re-wiring. */
   columns: ColumnInfo[];
   onAddFilter: (columnKey: string) => void;
   onChange: (next: BaseFilter[]) => void;
   distinctValues: Record<string, string[]>;
-  disabled?: boolean;
 }
-function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, disabled }: SectionProps) {
+function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues }: SectionProps) {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -783,7 +776,6 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
       {expanded && (
         <div
           onDragEnter={(e) => {
-            if (disabled) return;
             const types = Array.from(e.dataTransfer.types || []);
             if (!types.includes(APPBI_FIELD_MIME)) return;
             e.preventDefault();
@@ -798,7 +790,6 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
             }
           }}
           onDragOver={(e) => {
-            if (disabled) return;
             const types = Array.from(e.dataTransfer.types || []);
             if (types.includes(APPBI_FIELD_MIME)) {
               e.preventDefault();
@@ -808,7 +799,6 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
           onDrop={(e) => {
             dragCounterRef.current = 0;
             setIsDragOver(false);
-            if (disabled) return;
             const payload = readDragField(e);
             if (!payload) return;
             e.preventDefault();
@@ -816,12 +806,10 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
           }}
           className={`space-y-2 px-2 py-2 transition-colors ${
             isDragOver ? 'bg-brand/10 ring-1 ring-inset ring-brand/40' : ''
-          } ${disabled ? 'opacity-40' : ''}`}
+          }`}
         >
           {filters.length === 0 && (
-            <p className="px-1 text-[11px] text-text-quaternary">
-              {disabled ? 'Click a chart first to add per-visual filters' : 'No filters yet'}
-            </p>
+            <p className="px-1 text-[11px] text-text-quaternary">No filters yet</p>
           )}
           {filters.map((f) => (
             <FilterCardPBI
@@ -836,27 +824,25 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
           {/* Phase-15.81 — inline "+ Add filter" picker. Click → expand
               a search + grouped column list. Pick a column → onAddFilter
               fires and we collapse the picker. */}
-          {!disabled && (
-            <div className="pt-1">
-              {!isAddOpen ? (
-                <button
-                  type="button"
-                  onClick={() => setIsAddOpen(true)}
-                  disabled={addable.length === 0}
-                  className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Plus className="h-3 w-3" />
-                  {addable.length === 0 ? 'All fields already used here' : 'Add filter'}
-                </button>
-              ) : (
-                <AddFilterPicker
-                  columns={addable}
-                  onPick={(key) => { onAddFilter(key); setIsAddOpen(false); }}
-                  onCancel={() => setIsAddOpen(false)}
-                />
-              )}
-            </div>
-          )}
+          <div className="pt-1">
+            {!isAddOpen ? (
+              <button
+                type="button"
+                onClick={() => setIsAddOpen(true)}
+                disabled={addable.length === 0}
+                className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus className="h-3 w-3" />
+                {addable.length === 0 ? 'All fields already used here' : 'Add filter'}
+              </button>
+            ) : (
+              <AddFilterPicker
+                columns={addable}
+                onPick={(key) => { onAddFilter(key); setIsAddOpen(false); }}
+                onCancel={() => setIsAddOpen(false)}
+              />
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -865,9 +851,19 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
 
 // ─── Inline column picker — opens under a section's + Add filter ────────
 //
-// Searchable, grouped list. ESC closes; Enter on the search input adds the
-// first matching column. Avoid stealing focus from the dashboard since the
-// picker lives inside the right-dock pane.
+// Searchable, hierarchically grouped list:
+//   Dataset name
+//   └─ Table name
+//        Field A
+//        Field B
+//
+// Phase-15.81 v8 — surface dataset + table for every field so users
+// pick from a known scope when two datasets carry the same column
+// name (e.g. `status` on Orders and on Tickets). Search matches the
+// field, the table, AND the dataset string so typing the table name
+// jumps straight to its fields.
+//
+// ESC closes; Enter on the search input adds the first matching field.
 //
 function AddFilterPicker({ columns, onPick, onCancel }: {
   columns: ColumnInfo[];
@@ -878,29 +874,67 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const groups = useMemo(() => {
+  const tableLabelOf = (col: ColumnInfo) =>
+    col.tableLabel
+    ?? col.semanticField?.split('.')[0]
+    ?? 'Other';
+  const datasetLabelOf = (col: ColumnInfo) =>
+    col.datasetName
+    ?? (col.datasetId != null ? `Dataset ${col.datasetId}` : 'Unscoped');
+
+  // Build a two-level grouping: dataset → table → columns. Stable
+  // insertion order: datasets/tables appear in the order their first
+  // column was discovered, matches the existing field-list ordering.
+  const datasetGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
     const matched = q
       ? columns.filter((c) => {
-          const label = getColumnDisplayLabel(c).toLowerCase();
-          return label.includes(q) || c.name.toLowerCase().includes(q);
+          const haystack = [
+            getColumnDisplayLabel(c),
+            c.name,
+            c.semanticField ?? '',
+            tableLabelOf(c),
+            datasetLabelOf(c),
+          ].join(' ').toLowerCase();
+          return haystack.includes(q);
         })
       : columns;
-    const byGroup = new Map<string, ColumnInfo[]>();
+
+    type TableBucket = { tableKey: string; tableLabel: string; cols: ColumnInfo[] };
+    type DatasetBucket = { datasetKey: string; datasetLabel: string; tables: Map<string, TableBucket> };
+    const datasets = new Map<string, DatasetBucket>();
+
     for (const col of matched) {
-      const groupKey = col.datasetId != null
-        ? `Dataset ${col.datasetId}`
-        : (col.semanticField?.split('.')[0] ?? 'Columns');
-      const arr = byGroup.get(groupKey) ?? [];
-      arr.push(col);
-      byGroup.set(groupKey, arr);
+      const datasetLabel = datasetLabelOf(col);
+      const tableLabel = tableLabelOf(col);
+      // Keyed by id when available so two datasets with the same name
+      // don't collide; same idea for tables (use view name from semantic
+      // field when possible).
+      const datasetKey = col.datasetId != null ? `id:${col.datasetId}` : `name:${datasetLabel}`;
+      const tableKey = col.semanticField?.split('.')[0] ?? `label:${tableLabel}`;
+
+      let dsBucket = datasets.get(datasetKey);
+      if (!dsBucket) {
+        dsBucket = { datasetKey, datasetLabel, tables: new Map() };
+        datasets.set(datasetKey, dsBucket);
+      }
+      let tableBucket = dsBucket.tables.get(tableKey);
+      if (!tableBucket) {
+        tableBucket = { tableKey, tableLabel, cols: [] };
+        dsBucket.tables.set(tableKey, tableBucket);
+      }
+      tableBucket.cols.push(col);
     }
-    return Array.from(byGroup.entries()).map(([name, cols]) => ({ name, cols }));
+
+    return Array.from(datasets.values()).map((d) => ({
+      ...d,
+      tables: Array.from(d.tables.values()),
+    }));
   }, [columns, search]);
 
   const firstMatch = useMemo(
-    () => groups.flatMap((g) => g.cols)[0] ?? null,
-    [groups],
+    () => datasetGroups.flatMap((d) => d.tables.flatMap((t) => t.cols))[0] ?? null,
+    [datasetGroups],
   );
 
   return (
@@ -916,35 +950,47 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
             if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
             if (e.key === 'Enter' && firstMatch) { e.preventDefault(); onPick(getColumnKey(firstMatch)); }
           }}
-          placeholder="Search columns..."
+          placeholder="Search dataset, table, or field..."
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
         />
       </div>
-      <div className="max-h-64 overflow-y-auto space-y-1">
-        {groups.length === 0 && (
+      <div className="max-h-72 overflow-y-auto space-y-2">
+        {datasetGroups.length === 0 && (
           <p className="px-1 py-2 text-center text-[11px] text-text-quaternary">No columns match</p>
         )}
-        {groups.map((group) => (
-          <div key={group.name}>
-            <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
-              {group.name}
+        {datasetGroups.map((ds) => (
+          <div key={ds.datasetKey}>
+            <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand">
+              {ds.datasetLabel}
             </p>
-            <div className="space-y-0.5">
-              {group.cols.map((col) => {
-                const key = getColumnKey(col);
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => onPick(key)}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
-                    title={col.semanticField ?? col.name}
-                  >
-                    <FieldIcon type={col.type} />
-                    <span className="truncate">{getColumnDisplayLabel(col)}</span>
-                  </button>
-                );
-              })}
+            <div className="space-y-1.5 pl-1">
+              {ds.tables.map((tb) => (
+                <div key={tb.tableKey}>
+                  <p className="px-1 pb-0.5 text-[10px] font-medium text-text-tertiary">
+                    {tb.tableLabel}
+                  </p>
+                  <div className="space-y-0.5">
+                    {tb.cols.map((col) => {
+                      const key = getColumnKey(col);
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => onPick(key)}
+                          className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
+                          title={col.semanticField ?? col.name}
+                        >
+                          <FieldIcon type={col.type} />
+                          <span className="truncate flex-1">{getColumnDisplayLabel(col)}</span>
+                          <span className="text-[10px] text-text-quaternary truncate max-w-[40%]">
+                            {col.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}

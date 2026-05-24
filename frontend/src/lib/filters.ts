@@ -175,9 +175,13 @@ export function isFilterActive(filter: Filter): boolean {
 
 /** Project a typed filter onto the legacy `BaseFilter` shape that the
  *  chart-data API + applyFiltersToRows / serverFilters already consume.
- *  Returns null when the typed filter is inactive (engine should skip). */
-export function toBaseFilter(f: Filter): BaseFilter | null {
-  if (!isFilterActive(f)) return null;
+ *  Returns null when the typed filter is inactive (engine should skip).
+ *  When `allowInactive=true` is passed, an empty filter (e.g. a freshly
+ *  added card whose value the user hasn't picked yet) is also projected
+ *  — for editor UIs that need to show every authored slot, not just
+ *  the executable ones. */
+export function toBaseFilter(f: Filter, opts?: { allowInactive?: boolean }): BaseFilter | null {
+  if (!isFilterActive(f) && !opts?.allowInactive) return null;
   const common = {
     id: f.id,
     field: f.field,
@@ -357,6 +361,10 @@ export interface ColumnInfo {
   label?: string;
   tableLabel?: string;
   datasetId?: number;
+  /** Friendly dataset name (e.g. "AppBI Tasks") for the column picker.
+   *  Populated alongside datasetId when the column comes from a known
+   *  semantic dataset; absent for legacy non-semantic columns. */
+  datasetName?: string;
   semanticField?: string;
   defaultLinkedFields?: string[];
   chartCoverage?: number;

@@ -25,11 +25,18 @@ export function normalizeDashboardPages(
   const normalized: DashboardPageConfig[] = [];
   const seenIds = new Set<string>();
   for (const page of pages) {
-    const id = String(page?.id ?? '').trim();
-    const name = String(page?.name ?? '').trim();
+    if (!page || typeof page !== 'object') continue;
+    const id = String(page.id ?? '').trim();
+    const name = String(page.name ?? '').trim();
     if (!id || seenIds.has(id)) continue;
     seenIds.add(id);
+    // Preserve every authored field (filters, layout overrides, future
+    // additions) — only enforce id + a non-empty name. Stripping unknown
+    // fields here was the cause of "Filters on this page" cards
+    // disappearing right after save: server refetch returned the
+    // filters, normalize() threw them away, derived state lost them.
     normalized.push({
+      ...page,
       id,
       name: name || `Page ${normalized.length + 1}`,
     });

@@ -228,6 +228,12 @@ export default function EmbedDashboardPage() {
   const skipCrossFilterRefreshRef = useRef<string | null>(null);
   const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
   const seededFiltersForTokenRef = useRef<string | null>(null);
+  // Phase-15.81 v6 — mirror of appliedViewerFilters for the seed effect
+  // (see d/[token]/page.tsx for the rationale).
+  const appliedViewerFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => {
+    appliedViewerFiltersRef.current = appliedViewerFilters;
+  }, [appliedViewerFilters]);
 
   const clearTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -329,7 +335,9 @@ export default function EmbedDashboardPage() {
     const merged: BaseFilter[] = [];
     if (!isFirstSeed) {
       const existingByKey = new Map<string, BaseFilter>();
-      for (const f of appliedViewerFilters) existingByKey.set(f.fieldKey ?? f.field, f);
+      // Read from ref (not closure) so page switch right after an edit
+      // doesn't drop the just-typed selection.
+      for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
@@ -340,7 +348,6 @@ export default function EmbedDashboardPage() {
     setDraftViewerFilters(merged);
     setAppliedViewerFilters(merged);
     appliedFilterSignatureRef.current = JSON.stringify(merged);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
@@ -397,21 +404,17 @@ export default function EmbedDashboardPage() {
     }
 
     try {
-      // Phase-15.81 — see d/[token]/page.tsx for the full 3-source merge
-      // commentary. Embed viewer follows the same model: top-bar set
-      // already contains all-pages + active-page filters (handled by the
-      // seed effect), so we only need to add tile filters + per-link
-      // hidden constraints here.
+      // Phase-15.81 v6 — see d/[token]/page.tsx commentary. Embed
+      // viewer follows the same model: top-bar set already contains
+      // all-pages + active-page filters (handled by the seed effect).
+      // Per-visual tileFilters removed; we only add per-link hidden
+      // constraints here.
       const linkHiddenFilters: BaseFilter[] = Array.isArray((dashboard as any)?.public_link_hidden_filters)
         ? ((dashboard as any).public_link_hidden_filters as BaseFilter[])
         : [];
       const entries = await runWithConcurrency(
         targetCharts,
         async (dashboardChart) => {
-          const tileLayout = dashboardChart.layout as Record<string, any> | undefined;
-          const tileScopeFilters: BaseFilter[] = Array.isArray(tileLayout?.tileFilters)
-            ? (tileLayout.tileFilters as BaseFilter[])
-            : [];
           const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
@@ -419,7 +422,6 @@ export default function EmbedDashboardPage() {
               : appliedViewerFilters;
           const requestFilters = [
             ...baseViewerFilters,
-            ...tileScopeFilters,
             ...linkHiddenFilters,
           ];
           try {

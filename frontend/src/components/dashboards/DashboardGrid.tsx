@@ -75,9 +75,10 @@ interface DashboardGridProps {
   themeConfig?: DashboardThemeConfig | null;
   /** When true, skip IntersectionObserver lazy loading — render all charts immediately. */
   disableLazy?: boolean;
-  /** Phase-15.81 — focus state for FilterPane "Filters on this visual"
-   *  scope. Grid passes focusedDashboardChartId through; the focused tile
-   *  renders a brand-ring and click toggles focus via onFocusChart. */
+  /** Phase-15.81 v6 — focus state for Grid highlight only. The
+   *  "Filters on this visual" scope was removed; Grid still passes
+   *  focusedDashboardChartId through so the focused tile renders a
+   *  brand-ring while editing, and click toggles focus. */
   focusedDashboardChartId?: number | null;
   onFocusChart?: (dashboardChartId: number) => void;
 }

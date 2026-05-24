@@ -179,6 +179,12 @@ def _build_public_calendar_filter_fields(db: Session, dash: Dashboard) -> list[d
     if not ordered_semantic_fields:
         return []
 
+    single_dataset_id = next(iter(dataset_ids)) if len(dataset_ids) == 1 else None
+    single_dataset_name = (
+        (dataset_models.get(single_dataset_id) or {}).get("dataset_name")
+        if single_dataset_id is not None
+        else None
+    )
     return [{
         "key": ordered_semantic_fields[0],
         "name": "date",
@@ -186,7 +192,8 @@ def _build_public_calendar_filter_fields(db: Session, dash: Dashboard) -> list[d
         "tableLabel": table_labels_by_field.get(ordered_semantic_fields[0]),
         "type": "date",
         "semanticField": ordered_semantic_fields[0],
-        "datasetId": next(iter(dataset_ids)) if len(dataset_ids) == 1 else None,
+        "datasetId": single_dataset_id,
+        "datasetName": single_dataset_name,
         "defaultLinkedFields": ordered_semantic_fields[1:],
         "chartCoverage": len(charts_with_calendar),
         "datasetChartCount": total_dashboard_chart_count,
@@ -248,6 +255,7 @@ def _resolve_semantic_field_metadata(
         "tableLabel": view.get("table_display_name") or view.get("name"),
         "type": _semantic_dimension_to_filter_type(dim_type),
         "datasetId": dataset_id,
+        "datasetName": model.get("dataset_name"),
         "semanticField": semantic_field,
     }
 
@@ -391,6 +399,7 @@ def _build_public_filter_fields(
                     "tableLabel": view.get("table_display_name") or view.get("name"),
                     "type": _semantic_dimension_to_filter_type(dimension.get("type")),
                     "datasetId": dataset_id,
+                    "datasetName": model.get("dataset_name"),
                     "semanticField": semantic_field,
                 }
 
@@ -480,9 +489,16 @@ def _sanitize_public_viewer_filters(
 def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
     """Dedupe filter list by (datasetId, semanticField); later entries win.
 
-    Used to combine DA-defined access filters with viewer overrides so the
-    viewer's value supersedes the default rather than AND-ing into an empty
-    set (e.g. Level=3 AND Level=1).
+    Phase-15.81 v4 — callers must order filters so the higher-priority
+    source comes LAST:
+
+      viewer top-bar overrides → hidden link filters (Loại 2)
+
+    Rationale: a DA-stamped hidden constraint must never be relaxable by
+    a viewer choosing a different value for the same field. Top-bar
+    slicers (Loại 1) reach this function via `viewer_filters` (the FE
+    seeds the slicer state from dashboard.filters_config then sends what
+    the viewer settled on), so we treat them as overrides, not defaults.
     """
     by_key: dict[tuple, dict] = {}
     order: list[tuple] = []
@@ -643,9 +659,30 @@ def get_public_dashboard(
     # We attach (B) to a non-public field so FE merges it into chart-data
     # requests but doesn't render it. The top-bar slicer set served to FE
     # comes from (A) only.
+    #
+    # Phase-15.81 v6 — build available_filter_fields from BOTH the
+    # all-pages set (dash.filters_config) AND every per-page filter set
+    # (pages_config[i].filters), de-duped by (datasetId, semanticField).
+    # The FE viewer seeds the top-bar slicer from active page + all
+    # pages, so the picker (Add Filter modal) must offer the SAME field
+    # surface — otherwise the picker hides legitimate per-page slots and
+    # the viewer can't re-create or relabel a filter DA defined on
+    # another page.
     top_bar_filters = list(dash.filters_config or [])
+    pages_filters_flat: list[dict] = []
+    for page in dash.pages_config or []:
+        if not isinstance(page, dict):
+            continue
+        for f in page.get("filters") or []:
+            if isinstance(f, dict):
+                pages_filters_flat.append(f)
+    field_inventory = _dedupe_filters_by_field([*pages_filters_flat, *top_bar_filters])
+    # public_filters_config still mirrors only the all-pages set; per-
+    # page filters reach the viewer via dash.pages_config (FE seed
+    # effect handles activation by page). available_filter_fields,
+    # however, is the picker inventory and MUST cover both scopes.
     dash.public_filters_config = top_bar_filters
-    dash.available_filter_fields = _build_public_filter_fields(db, dash, top_bar_filters)
+    dash.available_filter_fields = _build_public_filter_fields(db, dash, field_inventory)
     # New: pass link's hidden filters as a separate field for the FE viewer
     # to merge silently into every chart-data request. Empty list when the
     # legacy share_token path is used (legacy never had per-link filters).
@@ -1900,9 +1937,11 @@ def get_public_filter_distinct_values(
         viewer_filters,
     )
 
+    # Hidden link filters (Loại 2) win over viewer overrides via
+    # "later-wins" dedupe — see chart-data endpoint comment for rationale.
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *sanitized_viewer_filters,
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
 
     try:
@@ -1985,9 +2024,13 @@ def get_public_chart_data(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
+    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
+    # link) MUST win over viewer overrides: a viewer can never relax a
+    # hidden constraint. Dedupe uses "later wins", so put hidden filters
+    # last.
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *viewer_filters,
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
 
     try:
@@ -2077,9 +2120,13 @@ def get_dashboard_ai_context(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
+    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
+    # link) MUST win over viewer overrides: a viewer can never relax a
+    # hidden constraint. Dedupe uses "later wins", so put hidden filters
+    # last.
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *viewer_filters,
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
 
     try:
@@ -2162,8 +2209,8 @@ async def chat_dashboard_ai(
         # context the LLM sees matches what the dashboard is rendering.
         viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
         combined_filters = _dedupe_filters_by_field([
-            *[item for item in (public_filters or []) if isinstance(item, dict)],
             *[item for item in viewer_filters_body if isinstance(item, dict)],
+            *[item for item in (public_filters or []) if isinstance(item, dict)],
         ])
         try:
             context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
@@ -2423,9 +2470,13 @@ def get_dashboard_ai_briefing_guess(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
+    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
+    # link) MUST win over viewer overrides: a viewer can never relax a
+    # hidden constraint. Dedupe uses "later wins", so put hidden filters
+    # last.
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *viewer_filters,
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
 
     try:
@@ -2506,8 +2557,8 @@ async def post_dashboard_ai_briefing_brief(
 
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *[item for item in viewer_filters_body if isinstance(item, dict)],
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
     recon = build_proactive_recon(ctx)
@@ -2774,8 +2825,8 @@ async def chat_dashboard_ai_agent(
     # line ~1864 â€” later entries (viewer overrides) win via dedupe.
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
     combined_filters = _dedupe_filters_by_field([
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
         *[item for item in viewer_filters_body if isinstance(item, dict)],
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
     ])
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
 

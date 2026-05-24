@@ -1514,7 +1514,21 @@ def _execute_semantic_chart_runtime(
         "_limit": effective_limit,
     }
     cache_identifier = f"semantic_chart::{model_id or 'model'}::{explore_id or explore_name}"
-    cache_filters = sorted(engine_filters.items())
+    # Phase-15.81 v10 — query_cache._canonicalize_filters expects a list
+    # of {field, operator, value} dicts and silently skips anything else.
+    # The semantic-runtime path previously passed
+    # `sorted(engine_filters.items())` which is a list of tuples, so
+    # every request canonicalised down to an empty filter list. That
+    # collapsed the cache key across "no filter", "metatype=task" and
+    # "date BETWEEN ..." into one bucket — the first response served
+    # every subsequent call, including Dashboard requests that the user
+    # saw as "no data". Project the dict back into the wire-format
+    # dicts the cache layer understands.
+    cache_filters = [
+        {"field": field, "operator": cond.get("operator"), "value": cond.get("value")}
+        for field, cond in sorted(engine_filters.items())
+        if isinstance(cond, dict)
+    ]
 
     if cache_enabled:
         cached = query_cache.get_cached(

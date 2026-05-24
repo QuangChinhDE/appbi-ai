@@ -51,10 +51,10 @@ interface ChartTileProps {
   availablePages?: DashboardPageConfig[];
   currentPageId?: string | null;
   onMoveToPage?: (pageId: string) => void;
-  /** Phase-15.81 — PowerBI-style "Filters on this visual" focus. When
-   *  isFocused is true, the tile draws a brand-coloured ring so the user
-   *  knows which visual the FilterPane "this visual" section refers to.
-   *  onFocus is called on tile body click. */
+  /** Phase-15.81 v6 — tile focus is a Canvas/Grid highlight signal only
+   *  (the FilterPane "Filters on this visual" scope was removed). Kept
+   *  so Canvas can outline the most-recently-clicked tile during layout
+   *  edits. onFocus fires on tile body click. */
   isFocused?: boolean;
   onFocus?: (dashboardChartId: number) => void;
 }
@@ -243,15 +243,24 @@ function ChartTileBase({
     return filters;
   }, [chart?.parameters, instanceParameters]);
 
-  // Phase-15.81 — "Filters on this visual" (PowerBI-style) lives on the
-  // tile's layout JSON. Read here and merge into serverFilters alongside
-  // page-scope + cross-filters. Visual filters are the most specific
-  // scope so they're appended last, but de-dupe by (field, op, value)
-  // means duplicates with broader scopes collapse to a single SQL clause.
-  const tileFilters = useMemo<BaseFilter[]>(
-    () => Array.isArray(currentLayout?.tileFilters) ? currentLayout.tileFilters as BaseFilter[] : [],
-    [currentLayout],
-  );
+  // Phase-15.81 v6 — "Filters on this visual" was removed from the
+  // FilterPane UI (per-visual filtering moved into each chart's own
+  // editor). Runtime stops honoring `layout.tileFilters` so legacy tile
+  // configs don't keep silently AND-ing extra predicates that the user
+  // can no longer see or edit. Saved tile layouts may still carry the
+  // field; one warn per tile mount keeps it visible during cleanup.
+  useEffect(() => {
+    if (Array.isArray(currentLayout?.tileFilters) && currentLayout.tileFilters.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[ChartTile] Ignoring legacy layout.tileFilters on dashboardChartId=',
+        dashboardChartId,
+        '— per-visual scope was removed. Save the tile to drop the dead field.',
+      );
+    }
+    // Intentionally fire once per dashboardChartId, not per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardChartId]);
 
   // Build server-side filters from dashboard + global filters for server-side push-down
   const serverFilters = useMemo(() => {
@@ -301,11 +310,11 @@ function ChartTileBase({
       }
     };
 
-    [...globalFilters, ...crossFilters, ...tileFilters].forEach(appendServerFilters);
+    [...globalFilters, ...crossFilters].forEach(appendServerFilters);
     dashboardFilters.forEach(appendServerFilters);
 
     return filters.length > 0 ? filters : undefined;
-  }, [globalFilters, crossFilters, dashboardFilters, tileFilters, parameterFilters, chartSemanticBinding]);
+  }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
 
   // Track which active global filters this chart could NOT consume. The
   // dashboard filter bar fan-outs every global filter to every tile, but
@@ -606,10 +615,9 @@ function ChartTileBase({
         rows = applyFiltersToRows(rows, applicableDashboardFilters);
       }
     }
-    // Phase-15.81 — tileFilters (per-visual scope) join the runtime set
-    // alongside globalFilters + crossFilters when the client-side path is
-    // active (non-pre-aggregated charts).
-    const runtimeFilters = [...globalFilters, ...crossFilters, ...tileFilters];
+    // Phase-15.81 v6 — per-visual tileFilters removed; runtime set is
+    // global + cross only.
+    const runtimeFilters = [...globalFilters, ...crossFilters];
     if (runtimeFilters.length > 0 && rows.length > 0) {
       const applicable = resolveClientFilters(runtimeFilters);
       if (applicable.length > 0) {
@@ -617,7 +625,7 @@ function ChartTileBase({
       }
     }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, tileFilters, preAggregated, chartSemanticBinding]);
+  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, preAggregated, chartSemanticBinding]);
 
   const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown } | null) => {
     if (!onSelectCrossFilter) return;
@@ -769,10 +777,11 @@ function ChartTileBase({
             ? 'border-brand/50 ring-2 ring-brand/40'
             : 'border-[rgb(var(--border-line))]'
       }`}
-      // Phase-15.81 — click body to focus this tile in the FilterPane
-      // (so "Filters on this visual" applies to it). onMouseDown
-      // stop-prop so the click doesn't fire on drag-handle text or
-      // remove/menu buttons.
+      // Phase-15.81 v6 — click body marks this tile as focused for
+      // Canvas/Grid highlight only (the FilterPane "this visual"
+      // scope was removed). onMouseDown stop-prop on inner buttons
+      // keeps the focus click from firing during drag-handle / menu
+      // interactions.
       onClick={onFocus ? () => onFocus(dashboardChartId) : undefined}
     >
       {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
