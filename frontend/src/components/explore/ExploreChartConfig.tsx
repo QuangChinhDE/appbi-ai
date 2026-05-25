@@ -154,6 +154,25 @@ export interface DataLabelConfig extends DataLabelStyle {
   autoHideOverlap?: boolean;
   /** Per-series overrides keyed by metricKey / breakdown value. */
   overrides?: Record<string, DataLabelStyle>;
+  /**
+   * Phase-15.90 — STACKED_BAR has two visually-distinct label kinds
+   * that need DIFFERENT colour/background defaults:
+   *
+   *   - Segment labels sit INSIDE a coloured bar segment. They need
+   *     high-contrast text (usually white) and rarely a background.
+   *   - Total labels sit ABOVE the stack on the chart background. They
+   *     need a dark text colour (usually black / text-secondary) and
+   *     can use a translucent background for readability.
+   *
+   * `segmentStyle` and `totalStyle` are STACKED_BAR-only overrides. When
+   * absent, the renderer falls back to chart-level `DataLabelConfig`
+   * fields plus its own sensible defaults (white for segment text,
+   * text-secondary for total text). Tweaking these does NOT mutate
+   * `overrides[seriesKey]` — those remain per-series overrides for
+   * individual segments only.
+   */
+  segmentStyle?: DataLabelStyle;
+  totalStyle?: DataLabelStyle;
 }
 
 export interface MetricConfig {
@@ -1827,6 +1846,141 @@ function DataLabelsEditor({
               Background helps readability on dark themes / cluttered charts.
             </p>
           </div>
+
+          {/* Phase-15.90 — STACKED_BAR-only: tách Segment vs Total color.
+              Reason: segment labels sit ON a coloured bar (need contrast,
+              usually white); total labels sit ON the chart background
+              (need a dark colour). One shared `fontColor` couldn't serve
+              both — picking black made segments invisible on dark bars
+              while picking white made the total invisible on the chart
+              bg. Two independent setting groups solve it. */}
+          {chartType === 'STACKED_BAR' && isAll && (() => {
+            const mode = styleConfig.stackedBarLabelMode ?? 'total';
+            const showSeg = mode === 'segment' || mode === 'both';
+            const showTot = mode === 'total' || mode === 'both';
+            const seg = dlc.segmentStyle ?? {};
+            const tot = dlc.totalStyle ?? {};
+            const patchSegment = (patch: DataLabelStyle) => {
+              const next = { ...seg, ...patch };
+              // Drop keys that match the chart-level defaults so the
+              // override stays sparse and "reset" is the natural state.
+              const cleaned: DataLabelStyle = {};
+              (Object.keys(next) as (keyof DataLabelStyle)[]).forEach((k) => {
+                const v = next[k];
+                if (v !== undefined && v !== null && v !== '') cleaned[k] = v as never;
+              });
+              patchConfig({
+                ...dlc,
+                segmentStyle: Object.keys(cleaned).length === 0 ? undefined : cleaned,
+              });
+            };
+            const patchTotal = (patch: DataLabelStyle) => {
+              const next = { ...tot, ...patch };
+              const cleaned: DataLabelStyle = {};
+              (Object.keys(next) as (keyof DataLabelStyle)[]).forEach((k) => {
+                const v = next[k];
+                if (v !== undefined && v !== null && v !== '') cleaned[k] = v as never;
+              });
+              patchConfig({
+                ...dlc,
+                totalStyle: Object.keys(cleaned).length === 0 ? undefined : cleaned,
+              });
+            };
+            return (
+              <div className="mt-3 pt-2 border-t border-[rgb(var(--border-line))]">
+                <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
+                  Stacked Bar — separate colors
+                </label>
+                <p className="text-[10px] text-text-quaternary mb-2">
+                  Segment labels (inside bars) and Stack total labels (above bars)
+                  each get their own colour. Leave blank to inherit the Font &amp;
+                  background above.
+                </p>
+                {showSeg && (
+                  <div className="rounded border border-[rgb(var(--border-line))] p-2 mb-1.5">
+                    <div className="text-[11px] font-semibold text-text-secondary mb-1.5">
+                      Segment label (inside coloured bar)
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={seg.fontColor ?? '#ffffff'}
+                        onChange={(e) => patchSegment({ fontColor: e.target.value })}
+                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                        title="Segment text color"
+                      />
+                      <span className="text-[11px] text-text-tertiary flex-1">Text</span>
+                      <button
+                        type="button"
+                        onClick={() => patchSegment({ fontColor: undefined })}
+                        className="text-[10px] text-text-quaternary hover:text-text-tertiary underline-offset-2 hover:underline"
+                        title="Reset to chart-level Font & background"
+                      >
+                        reset
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <input
+                        type="checkbox"
+                        checked={seg.background ?? false}
+                        onChange={(e) => patchSegment({ background: e.target.checked })}
+                        className="h-3.5 w-3.5"
+                      />
+                      <input
+                        type="color"
+                        value={seg.backgroundColor ?? '#000000'}
+                        onChange={(e) => patchSegment({ backgroundColor: e.target.value, background: true })}
+                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                        title="Segment background color"
+                      />
+                      <span className="text-[11px] text-text-tertiary flex-1">Background chip</span>
+                    </div>
+                  </div>
+                )}
+                {showTot && (
+                  <div className="rounded border border-[rgb(var(--border-line))] p-2">
+                    <div className="text-[11px] font-semibold text-text-secondary mb-1.5">
+                      Stack total label (above bar)
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={tot.fontColor ?? '#1a1a1a'}
+                        onChange={(e) => patchTotal({ fontColor: e.target.value })}
+                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                        title="Total text color"
+                      />
+                      <span className="text-[11px] text-text-tertiary flex-1">Text</span>
+                      <button
+                        type="button"
+                        onClick={() => patchTotal({ fontColor: undefined })}
+                        className="text-[10px] text-text-quaternary hover:text-text-tertiary underline-offset-2 hover:underline"
+                        title="Reset to chart-level Font & background"
+                      >
+                        reset
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <input
+                        type="checkbox"
+                        checked={tot.background ?? false}
+                        onChange={(e) => patchTotal({ background: e.target.checked })}
+                        className="h-3.5 w-3.5"
+                      />
+                      <input
+                        type="color"
+                        value={tot.backgroundColor ?? '#ffffff'}
+                        onChange={(e) => patchTotal({ backgroundColor: e.target.value, background: true })}
+                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                        title="Total background color"
+                      />
+                      <span className="text-[11px] text-text-tertiary flex-1">Background chip</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>

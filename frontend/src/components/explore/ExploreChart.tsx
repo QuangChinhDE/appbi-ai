@@ -449,6 +449,82 @@ function resolveDataLabelStyle(
 }
 
 /**
+ * Phase-15.90 — STACKED_BAR segment label resolver.
+ *
+ * Precedence (first match wins):
+ *   1. Per-series override (`overrides[seriesKey].fontColor` etc.)
+ *   2. STACKED-specific segment style (`segmentStyle.fontColor`)
+ *   3. Chart-level DataLabelConfig (`dlc.fontColor`)
+ *   4. Built-in segment default ('#fff' for fontColor — segments sit
+ *      on a coloured bar, white is the safe default)
+ *
+ * Note the IMPORTANT distinction vs the chart-level resolver: when no
+ * explicit colour is set anywhere, segment fontColor defaults to '#fff'
+ * directly — not the 'currentColor' sentinel. This lets the renderer
+ * skip the "if currentColor then white" remapping that previously
+ * tripped up users who explicitly chose a dark colour (the colour
+ * stuck) vs users who left it default (the colour also stuck on a
+ * different code path). One source of truth = no surprise.
+ */
+function resolveSegmentLabelStyle(
+  style: ChartStyleConfig | undefined,
+  seriesKey: string,
+): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
+  format?: NumberFormat;
+}) | null {
+  const dlc = style?.dataLabelConfig;
+  const enabled = dlc?.enabled ?? style?.showDataLabels ?? false;
+  if (!enabled) return null;
+
+  const override = dlc?.overrides?.[seriesKey];
+  const seg = dlc?.segmentStyle;
+  return {
+    position: (override?.position ?? seg?.position ?? dlc?.position ?? 'center') as DataLabelPosition,
+    rotation: (override?.rotation ?? seg?.rotation ?? dlc?.rotation ?? 0) as DataLabelRotation,
+    fontSize: override?.fontSize ?? seg?.fontSize ?? dlc?.fontSize ?? (style?.fontSize ?? 11),
+    fontColor: override?.fontColor ?? seg?.fontColor ?? dlc?.fontColor ?? '#fff',
+    background: override?.background ?? seg?.background ?? dlc?.background ?? false,
+    backgroundColor: override?.backgroundColor ?? seg?.backgroundColor ?? dlc?.backgroundColor ?? 'rgba(0,0,0,0.45)',
+    format: override?.format ?? seg?.format ?? dlc?.format,
+  };
+}
+
+/**
+ * Phase-15.90 — STACKED_BAR total label resolver.
+ *
+ * Precedence:
+ *   1. STACKED-specific total style (`totalStyle.fontColor`)
+ *   2. Chart-level DataLabelConfig (`dlc.fontColor`)
+ *   3. Built-in total default ('rgb(var(--text-secondary))' — dark
+ *      text on the chart background)
+ *
+ * No per-series overrides apply to the total — it's a chart-wide
+ * label, not a series label. This is the bug fix DA reported: tweaking
+ * "Apply to: Sales hunt" used to bleed into the stack total because
+ * the old code passed series.key to resolveDataLabelStyle.
+ */
+function resolveTotalLabelStyle(
+  style: ChartStyleConfig | undefined,
+): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
+  format?: NumberFormat;
+}) | null {
+  const dlc = style?.dataLabelConfig;
+  const enabled = dlc?.enabled ?? style?.showDataLabels ?? false;
+  if (!enabled) return null;
+
+  const tot = dlc?.totalStyle;
+  return {
+    position: 'top',  // total is always above the stack — position fixed
+    rotation: (tot?.rotation ?? dlc?.rotation ?? 0) as DataLabelRotation,
+    fontSize: tot?.fontSize ?? dlc?.fontSize ?? (style?.fontSize ?? 11),
+    fontColor: tot?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))',
+    background: tot?.background ?? dlc?.background ?? false,
+    backgroundColor: tot?.backgroundColor ?? dlc?.backgroundColor ?? 'rgba(255,255,255,0.85)',
+    format: tot?.format ?? dlc?.format,
+  };
+}
+
+/**
  * Phase-15.84 — collision registry for the "auto-hide overlap" feature.
  *
  * Earlier draft used an Array<LabelBBox> and pushed on every label
@@ -1922,18 +1998,23 @@ function ExploreChartInner({
                 const showTotalLabels = showDataLabels && !isPercent && (
                   stackMode === 'total' || stackMode === 'both'
                 );
-                // Chart-level DL style for the TOTAL label (uses series.key=''
-                // so it walks through dlc.{position,fontSize,...} not
-                // overrides[topSeries]). Position 'top' is the only one
-                // meaningful for the total — the rest pin to the segment.
+                // Phase-15.90 — total label uses its own resolver with
+                // dedicated `totalStyle` fields. Independent of segment
+                // colour so the two never need to share a single
+                // fontColor setting (DA-reported conflict: black text
+                // looks right on the chart bg for total but disappears
+                // on a dark bar segment).
                 const totalDL = showTotalLabels
-                  ? resolveDataLabelStyle(style, '')
+                  ? resolveTotalLabelStyle(style)
                   : null;
                 return displaySeries.map((series, i) => {
                   const isTopOfStack = i === displaySeries.length - 1;
-                  // Per-series resolved style (override > chart-level).
+                  // Phase-15.90 — segment resolver has its own defaults
+                  // (white text, semi-opaque dark background) tuned for
+                  // labels inside coloured bar segments. Per-series
+                  // override still wins when set.
                   const segDL = showSegmentLabels
-                    ? resolveDataLabelStyle(style, series.key)
+                    ? resolveSegmentLabelStyle(style, series.key)
                     : null;
                   return (
                     <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
@@ -1973,7 +2054,7 @@ function ExploreChartInner({
                                 )}
                                 <text x={cx} y={cy}
                                   textAnchor="middle" dominantBaseline="middle"
-                                  fill={segDL.fontColor === 'currentColor' ? '#fff' : segDL.fontColor}
+                                  fill={segDL.fontColor}
                                   fontSize={segDL.fontSize}
                                   style={{ pointerEvents: 'none' }}>
                                   {text}
@@ -2026,7 +2107,7 @@ function ExploreChartInner({
                                 )}
                                 <text x={cx} y={cy}
                                   textAnchor="middle" dominantBaseline="middle"
-                                  fill={segDL.fontColor === 'currentColor' ? '#fff' : segDL.fontColor}
+                                  fill={segDL.fontColor}
                                   fontSize={segDL.fontSize}
                                   style={{ pointerEvents: 'none' }}>
                                   {text}
@@ -2061,9 +2142,10 @@ function ExploreChartInner({
                                 })
                               : formatNumber(total, sf);
                             const approxW = text.length * totalDL.fontSize * 0.6;
-                            const totalColor = totalDL.fontColor === 'currentColor'
-                              ? 'rgb(var(--text-secondary))'
-                              : totalDL.fontColor;
+                            // Phase-15.90 — total resolver now defaults
+                            // directly to text-secondary; no sentinel
+                            // remapping needed.
+                            const totalColor = totalDL.fontColor;
                             const rotate = totalDL.rotation !== 0
                               ? `rotate(${totalDL.rotation} ${cx} ${cy})`
                               : undefined;
