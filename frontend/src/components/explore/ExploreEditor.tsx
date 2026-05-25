@@ -27,6 +27,7 @@ import {
   type ChartRoleConfig,
   type ChartStyleConfig,
   type MetricConfig,
+  type NumberFormat,
   DEFAULT_STYLE_CONFIG,
   getChartRoleConfigRequirementMessage,
   getChartRoleConfigValidationMessage,
@@ -1016,6 +1017,42 @@ export function ExploreEditor({
     }
     return map;
   }, [datasetModel]);
+
+  /**
+   * Phase-15.93 — build {qualified-or-bare field → NumberFormat} map from
+   * the dataset's semantic measures. Lets KPI / chart number-format default
+   * to the format declared on the measure (eg. percent for CR1, currency
+   * for revenue) instead of falling back to 'compact' when the user hasn't
+   * set a chart-level Number Format.
+   *
+   * Maps MeasureFormat.kind → NumberFormat (the ChartStyleConfig type):
+   *   - 'percent'  → 'percent'
+   *   - 'currency' → 'currency'
+   *   - 'number'   → 'number'
+   *   - 'duration' / 'custom' → skipped (no NumberFormat equivalent;
+   *     chart picks its own default rather than mis-format)
+   *
+   * Style-level overrides (seriesFormats, numberFormat) still win — this
+   * is only the default when nothing else is set.
+   */
+  const semanticFormatMap = useMemo(() => {
+    if (!datasetModel?.views) return undefined;
+    const map = new Map<string, NumberFormat>();
+    const mapKind = (kind: string | undefined): NumberFormat | undefined => {
+      if (kind === 'percent' || kind === 'currency' || kind === 'number') return kind;
+      return undefined;
+    };
+    for (const view of datasetModel.views) {
+      for (const measure of view.measures ?? []) {
+        const fmt = mapKind(measure.format?.kind);
+        if (!fmt) continue;
+        map.set(`${view.name}.${measure.name}`, fmt);
+        if (!map.has(measure.name)) map.set(measure.name, fmt);
+      }
+    }
+    return map.size > 0 ? map : undefined;
+  }, [datasetModel]);
+
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);
   const resolvedBackLabel = backLabel ?? (embedded ? 'Back to dashboard' : 'All Charts');
@@ -3065,6 +3102,7 @@ export function ExploreEditor({
                         onStyleConfigChange={setChartStyleConfig}
                         preAggregated={displayedQueryState.chartPreAggregated}
                         labelMap={semanticLabelMap}
+                        formatMap={semanticFormatMap}
                       />
                     </div>
                   </div>

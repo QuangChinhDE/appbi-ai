@@ -1074,6 +1074,12 @@ export interface ExploreChartProps {
   /** Phase-4: map qualified-or-bare field → display label, so legends and
    *  tooltips show measure.label instead of SQL identifiers. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
+  /** Phase-15.93: map qualified-or-bare field → NumberFormat declared on
+   *  the semantic measure. Used as the DEFAULT for KPI / chart number
+   *  formatting when the user hasn't set styleConfig.numberFormat (or a
+   *  per-series override). Lets a CR1 measure with format.kind='percent'
+   *  render as "30%" instead of "0.3" out of the box. */
+  formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
 }
 
 function ExploreChartInner({
@@ -1086,6 +1092,7 @@ function ExploreChartInner({
   preAggregated = false,
   onSelectDataPoint,
   labelMap,
+  formatMap,
 }: ExploreChartProps) {
   const style = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   const PALETTE = useMemo(
@@ -1565,8 +1572,22 @@ function ExploreChartInner({
     // instead of the global numberFormat. Lets a $-format KPI sit next
     // to a %-format KPI on the same dashboard without forcing them to
     // share the global setting.
+    //
+    // Phase-15.93 — semantic measure format wins over the 'compact'
+    // fallback. Precedence (first match wins):
+    //   1. seriesFormats[metric]   (per-series UI override)
+    //   2. numberFormat            (chart-wide UI setting)
+    //   3. formatMap[metric]       (declared on the semantic Measure)
+    //   4. 'compact'               (legacy default)
+    // Without (3), a measure declared as `format.kind='percent'` (eg.
+    // CR1 = MQL/Lead nhận) renders as 0.3 instead of 30% until DA
+    // manually picks a Number Format — surprising for a setting that
+    // already exists upstream.
     const kpiMetricKey = metricKey(kpiMetric);
-    const kpiFormat = style.seriesFormats?.[kpiMetricKey] ?? style.numberFormat ?? 'compact';
+    const kpiFormat = style.seriesFormats?.[kpiMetricKey]
+      ?? style.numberFormat
+      ?? formatMap?.get(kpiMetricKey)
+      ?? 'compact';
     const kpiDecimals = style.seriesDecimalPlaces?.[kpiMetricKey] ?? style.decimalPlaces;
     return (
       <div className="h-full flex flex-col">
