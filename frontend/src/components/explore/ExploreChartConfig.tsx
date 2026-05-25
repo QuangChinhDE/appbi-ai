@@ -4429,19 +4429,26 @@ export function ExploreChartConfig({
             />
           )}
 
-          {/* Phase-15.82 — advanced presentation features grouped behind a
-              collapsed disclosure. DA shouldn't have to scroll past
-              annotation/calc-field editors just to change number format. */}
-          <Disclosure
-            title="Advanced (annotations, calc fields, drill, mix)"
-            hint="PowerBI-style extras: per-series format, custom tooltip fields, data-label templates, annotations, conditional colors, calculated fields, and chart-type mix. All optional — leave them blank to render with the standard layout."
-          >
-          {/* Phase-15.82 — free-form series mix (BAR_LINE / mixed chart). */}
+          {/* Phase-15.87 — DA-reported: the old single "Advanced
+              (annotations, calc fields, drill, mix)" disclosure dumped 7
+              unrelated features into one wall of UI. Tooltip Extra Fields
+              alone rendered ~80 column chips that buried every other
+              control. Split into focused sub-disclosures so each feature
+              is discoverable on its own and DA can collapse the ones
+              they're not using.
+
+              Each section is its own <Disclosure> (collapsed by default
+              so the Style tab still feels tidy). Pick "Open advanced
+              tools" expand-all if you want to skim everything; otherwise
+              open just what you need. */}
+
+          {/* Phase-15.82 — free-form series mix (BAR_LINE only) */}
           {chartType === 'BAR_LINE' && availableSeriesKeys.length > 0 && (
+            <Disclosure
+              title="Series mix (free-form)"
+              hint="Render each BAR_LINE series as a bar / line / area independently. Leave on (default) to keep the legacy bars + line layout."
+            >
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
-                Series mix (free-form)
-              </label>
               <div className="space-y-1.5">
                 {availableSeriesKeys.map(({ key, label }) => (
                   <div key={key} className="flex items-center gap-2">
@@ -4473,11 +4480,16 @@ export function ExploreChartConfig({
                 Override per-series render type. Leaving all on (default) keeps the legacy bars + line metric layout.
               </p>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — per-series number format. Lets DA mix % and currency
               series in one chart. Empty = inherit global numberFormat. */}
           {!isTableLike && availableSeriesKeys.length > 0 && (
+            <Disclosure
+              title="Per-series number format"
+              hint="Override the chart's global Number Format on a per-series basis. Example: bar series in VND, line series in %. Falls back to the chart's global format when blank."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
                 Per-series format
@@ -4530,13 +4542,20 @@ export function ExploreChartConfig({
               </div>
               <p className="mt-1 text-[10px] text-text-quaternary">Overrides global Number Format below.</p>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — tooltip extra fields. Chip-style toggle list so
               DA doesn't have to discover Ctrl/Cmd-click on a native
               multi-select (the previous draft used <select multiple>, which
-              tested poorly with non-power users). */}
+              tested poorly with non-power users). Phase-15.87: own
+              Disclosure because the chip list can run to 80+ entries
+              and the old shared panel made everything below unreachable. */}
           {!isTableLike && availableColumns.length > 0 && (
+            <Disclosure
+              title="Tooltip extra fields"
+              hint="Pick additional row columns to surface in the chart's hover tooltip. Useful for context like region / sales rep / category that isn't on the axis."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Tooltip extra fields
@@ -4571,10 +4590,15 @@ export function ExploreChartConfig({
                 Click a column to toggle it into the chart tooltip.
               </p>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — data label template (PowerBI-style). */}
           {!isScatterLike && (
+            <Disclosure
+              title="Data label template"
+              hint="Customise the text rendered next to each data point. Tokens: {value} {label} {series} {dimension} {percent}. Blank uses the chart's default label."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Data label template
@@ -4590,10 +4614,15 @@ export function ExploreChartConfig({
                 Tokens: {'{value}'} {'{label}'} {'{series}'} {'{dimension}'} {'{percent}'}
               </p>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — chart annotations (manual reference lines). */}
           {!isTableLike && !isScatterLike && (
+            <Disclosure
+              title="Annotations"
+              hint="Draw manual reference lines on the chart (eg. quota = 5M, launch date). Each annotation pins to either the X or Y axis."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Annotations
@@ -4684,10 +4713,15 @@ export function ExploreChartConfig({
                 </button>
               </div>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — conditional color rules for bar/line series. */}
           {!isTableLike && !isScatterLike && !isPieLike && (
+            <Disclosure
+              title="Conditional series colors"
+              hint="Repaint individual bar cells when their value matches a rule (eg. red if revenue < 0). Currently applied to vertical Bar charts."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Conditional series colors
@@ -4759,12 +4793,17 @@ export function ExploreChartConfig({
               </div>
               <p className="mt-1 text-[10px] text-text-quaternary">Currently applied to vertical Bar charts.</p>
             </div>
+            </Disclosure>
           )}
 
           {/* Phase-15.82 — inline calculated fields (DAX-lite).
               UX: surface the available metric keys as click-to-insert chips
               so DA doesn't have to memorise the `agg__field` convention. */}
           {!isTableLike && !isScatterLike && (
+            <Disclosure
+              title="Calculated fields"
+              hint="Add derived series using a tiny formula language. Click a series chip to insert a reference, then combine with + - * / and parentheses. Renders on LINE/AREA/BAR family."
+            >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Calculated fields
@@ -4862,8 +4901,8 @@ export function ExploreChartConfig({
                 Click a series chip to insert it as a reference. Renders as an additional line on LINE/AREA charts.
               </p>
             </div>
+            </Disclosure>
           )}
-          </Disclosure>
 
           {/* Phase-15.84 — Data Labels editor (replaces the bare on/off
               toggle that used to live here). Wrapped in its own

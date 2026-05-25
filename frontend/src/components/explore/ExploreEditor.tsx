@@ -1724,6 +1724,31 @@ export function ExploreEditor({
       }
       return unique;
     }
+    // Phase-15.87 — Advanced name-value charts (FUNNEL, TREEMAP,
+    // MAP_REGION, BOXPLOT, WORD_CLOUD, WATERFALL) render one slice/stage
+    // per distinct dimension value, not per metric. DA-reported bug:
+    // editing FUNNEL Series colors only listed the metric key
+    // (`tong_lead_nhan`) instead of the 5 stages (Lead/MQL/SAL/etc.).
+    // Mirror PIE: compute slices client-side from rows + dimension.
+    const NAME_VALUE_ADVANCED = new Set<string>(['FUNNEL', 'TREEMAP', 'MAP_REGION', 'BOXPLOT', 'WORD_CLOUD', 'WATERFALL']);
+    if (NAME_VALUE_ADVANCED.has(chartType) && normalizedRoleConfig.dimension) {
+      const seen = new Set<string>();
+      const unique: { key: string; label: string }[] = [];
+      for (const row of rows) {
+        const name = String((row as any)[normalizedRoleConfig.dimension] ?? 'Unknown');
+        if (seen.has(name)) continue;
+        seen.add(name);
+        unique.push({ key: name, label: name });
+        if (unique.length >= 24) break;
+      }
+      return [...unique, ...calcFieldSeries];
+    }
+    // Phase-15.87 — RADAR keys series by metricKey (one polygon per
+    // metric). Model.categoricalSeries already has the right shape;
+    // calc fields don't render in radar.
+    if (chartType === 'RADAR') {
+      return (model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label }));
+    }
     return [
       ...(model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label })),
       ...calcFieldSeries,
