@@ -1194,25 +1194,70 @@ export default function DashboardDetailPage() {
     const chartsWithDate = new Set<number>();
     const datasetIds = new Set<number>();
 
-    // Heuristic: a view is "calendar/date-dim" when its name contains
-    // calendar/date markers in a position that suggests dimension role.
-    // We deliberately keep this loose — DA-named tables vary widely
-    // ("dim_date", "calendar", "d_date", "date_dim") — and rely on
-    // calendarFieldMappings (Path A) as the authoritative signal.
-    const isCalendarViewName = (viewName: string): boolean => {
-      const n = viewName.toLowerCase().trim();
-      return (
-        n === 'date' || n === 'calendar'
-        || n.startsWith('dim_date') || n.startsWith('d_date')
-        || n.startsWith('date_dim') || n.startsWith('calendar_')
-        || n.endsWith('_calendar') || n.endsWith('_date_dim')
-      );
+    // Phase-15.81 v17 — calendar-table detection now uses TWO signals
+    // instead of relying solely on view-name patterns:
+    //
+    //   1. Name pattern (cheap, high precision): `date`, `calendar`,
+    //      `dim_date*`, `d_date*`, `date_dim*`, `calendar_*`,
+    //      `*_calendar`, `*_date_dim`, `bc_date`, `fact_date_*` (rare
+    //      but DAs use these too).
+    //   2. Date-column density (catches DA-named calendar tables that
+    //      don't match the patterns): a true calendar dim table
+    //      typically exposes 8+ date/datetime columns (date, year,
+    //      quarter, month, week, day_of_month, month_start_date,
+    //      week_end_date, ISO_week, …). Fact tables usually have 1–4
+    //      (created_at, updated_at, deleted_at, occasionally one
+    //      domain timestamp). The cut-off is loose on purpose — pure
+    //      fact tables almost never cross 6 date columns, while
+    //      calendar tables comfortably do.
+    //
+    // Either signal is sufficient. The DA-reported bug ("Date filter
+    // mapped to fact_act") happened because the fact table sorted
+    // alphabetically before any calendar table whose name didn't
+    // match the v14 patterns. Density signal catches that case.
+    const CALENDAR_NAME_PATTERN = /(^|_)(dim_date|d_date|date_dim|calendar)(_|$)|^date$|^calendar$|(_|^)bc_date(_|$)|(_|^)fact_date(_|$)/i;
+    const CALENDAR_DATE_COUNT_THRESHOLD = 6;
+
+    const calendarViewsByDataset = new Map<number, Set<string>>();
+    for (const [datasetId, model] of datasetModelsById.entries()) {
+      const calendarViews = new Set<string>();
+      for (const view of model.views ?? []) {
+        const viewName = String(view.name || '').trim();
+        if (!viewName) continue;
+        let dateColumnCount = 0;
+        for (const dim of view.dimensions ?? []) {
+          const dimType = String(dim.type ?? '').toLowerCase();
+          const isDateType = dimType === 'date' || dimType === 'datetime';
+          if (isDateType || nameSuggestsDate(dim.name ?? '')) {
+            dateColumnCount += 1;
+          }
+        }
+        const matchesName = CALENDAR_NAME_PATTERN.test(viewName);
+        const dense = dateColumnCount >= CALENDAR_DATE_COUNT_THRESHOLD;
+        if (matchesName || dense) {
+          calendarViews.add(viewName);
+        }
+      }
+      calendarViewsByDataset.set(datasetId, calendarViews);
+    }
+
+    const isCalendarViewName = (viewName: string, datasetId?: number): boolean => {
+      const n = String(viewName || '').trim();
+      if (!n) return false;
+      if (datasetId != null) {
+        const set = calendarViewsByDataset.get(datasetId);
+        if (set && set.has(n)) return true;
+      }
+      // Cross-dataset fallback (multi-dataset dashboards) — pure name
+      // match. Avoids losing detection when we don't know which
+      // dataset the view belongs to in the calling context.
+      return CALENDAR_NAME_PATTERN.test(n);
     };
 
-    // First pass: collect date/datetime dimension names from every
-    // dataset model. v14 — also accept fields whose stored type is
-    // `string` but whose name strongly suggests a date column (DA
-    // forgot to set the type in the data model UI).
+    // Collect date/datetime dimension names from every dataset model.
+    // v14 — also accept fields whose stored type is `string` but whose
+    // name strongly suggests a date column (DA forgot to set the type
+    // in the data model UI).
     const dateDimensionFieldsByDataset = new Map<number, Set<string>>();
     for (const [datasetId, model] of datasetModelsById.entries()) {
       const dateFields = new Set<string>();
@@ -1281,7 +1326,7 @@ export default function DashboardDetailPage() {
         for (const candidate of candidates) {
           if (!dateFieldsForDataset.has(candidate)) continue;
           const [viewName] = candidate.split('.', 1);
-          if (isCalendarViewName(viewName)) {
+          if (isCalendarViewName(viewName, datasetId)) {
             calendarSemanticFields.add(candidate);
           } else {
             factSemanticFields.add(candidate);
