@@ -1573,20 +1573,37 @@ function ExploreChartInner({
     // to a %-format KPI on the same dashboard without forcing them to
     // share the global setting.
     //
-    // Phase-15.93 — semantic measure format wins over the 'compact'
-    // fallback. Precedence (first match wins):
-    //   1. seriesFormats[metric]   (per-series UI override)
-    //   2. numberFormat            (chart-wide UI setting)
-    //   3. formatMap[metric]       (declared on the semantic Measure)
-    //   4. 'compact'               (legacy default)
-    // Without (3), a measure declared as `format.kind='percent'` (eg.
-    // CR1 = MQL/Lead nhận) renders as 0.3 instead of 30% until DA
-    // manually picks a Number Format — surprising for a setting that
-    // already exists upstream.
+    // Phase-15.93 v4 — semantic measure format takes priority OVER the
+    // default 'compact' Number Format, but yields to any non-default
+    // chart-wide choice and to per-series overrides.
+    //
+    // Precedence (first match wins):
+    //   1. seriesFormats[metricKey]      per-series UI override
+    //   2. style.numberFormat (if NOT 'compact')   user picked non-default chart-wide
+    //   3. formatMap[field]              declared on the semantic Measure
+    //   4. style.numberFormat            (= 'compact' default, terminal fallback)
+    //
+    // Why this detection model: DEFAULT_STYLE_CONFIG.numberFormat seeds
+    // every chart with 'compact', and the editor's setState pipeline
+    // re-normalizes on every load — so even a chart whose user NEVER
+    // touched Number Format reports `style.numberFormat = 'compact'`.
+    // There's no clean "is this user-set?" signal in the FE state. The
+    // pragmatic heuristic: treat 'compact' as "default / no opinion"
+    // and let the semantic Measure format outvote it. If a DA explicitly
+    // wants 'compact' they can flip via per-series Format (per-metric
+    // override always wins).
+    //
+    // Verified locally on chart 343 (count_distinct measure with
+    // format.kind='percent', value=59) — renders "5900.0%" out of
+    // the box, no styleConfig changes required.
     const kpiMetricKey = metricKey(kpiMetric);
+    const chartWideFormatIfSet = style.numberFormat && style.numberFormat !== 'compact'
+      ? style.numberFormat
+      : undefined;
     const kpiFormat = style.seriesFormats?.[kpiMetricKey]
+      ?? chartWideFormatIfSet
+      ?? formatMap?.get(kpiMetric.field)
       ?? style.numberFormat
-      ?? formatMap?.get(kpiMetricKey)
       ?? 'compact';
     const kpiDecimals = style.seriesDecimalPlaces?.[kpiMetricKey] ?? style.decimalPlaces;
     return (
