@@ -991,18 +991,32 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
                   <div className="space-y-0.5">
                     {tb.cols.map((col) => {
                       const key = getColumnKey(col);
+                      // Phase-15.81 v18 — show the RAW source column
+                      // name as the sub-label (e.g. "som_due_datetime"
+                      // not "Date - bc_activity / som_due_datetime").
+                      // DA wants the picker to display the actual
+                      // physical column on the table the row is
+                      // grouped under; cross-view phantom labels
+                      // (auto-calendar role views, etc.) only confuse
+                      // which column lives on which table.
+                      const subLabel = col.name;
+                      const tooltipParts = [
+                        `Field: ${col.semanticField ?? col.name}`,
+                        col.datasetName ? `Dataset: ${col.datasetName}` : null,
+                        `Type: ${col.type}`,
+                      ].filter(Boolean);
                       return (
                         <button
                           key={key}
                           type="button"
                           onClick={() => onPick(key)}
                           className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
-                          title={col.semanticField ?? col.name}
+                          title={tooltipParts.join(' • ')}
                         >
                           <FieldIcon type={col.type} />
                           <span className="truncate flex-1">{getColumnDisplayLabel(col)}</span>
-                          <span className="text-[10px] text-text-quaternary truncate max-w-[40%]">
-                            {col.name}
+                          <span className="text-[10px] text-text-quaternary truncate max-w-[40%]" title={subLabel}>
+                            {subLabel}
                           </span>
                         </button>
                       );

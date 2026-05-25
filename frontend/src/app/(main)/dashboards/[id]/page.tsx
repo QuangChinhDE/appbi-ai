@@ -1353,15 +1353,24 @@ export default function DashboardDetailPage() {
     // last resort (no calendar table in the model — legacy datasets).
     const primarySemanticField = orderedCalendarFields[0] ?? orderedFactFields[0];
     const linkedFields = orderedSemanticFields.filter((f) => f !== primarySemanticField);
-    const [primaryViewName] = primarySemanticField.split('.', 1);
+    const [primaryViewName, primaryFieldName] = primarySemanticField.split('.', 2);
     const firstDatasetId = datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined;
     const firstModel = firstDatasetId ? datasetModelsById.get(firstDatasetId) : undefined;
     const primaryView = firstModel?.views.find((view) => view.name === primaryViewName);
+    // Phase-15.81 v18 — resolve the primary field's actual dimension
+    // label so the picker row reads correctly. Previously the entry
+    // was hard-coded `name='date'` + `label='Date'`, which DAs read as
+    // "the bc_activity table has a Date column" — they don't. The
+    // entry is a composite slot that fans out across every reachable
+    // date column; surfacing the primary field's real name + table
+    // makes the binding visible at a glance.
+    const primaryDimension = primaryView?.dimensions.find((d) => d.name === primaryFieldName);
+    const primaryLabel = getFriendlyFieldLabel(primaryDimension?.label ?? primaryFieldName ?? 'date');
 
     return [{
       key: primarySemanticField,
-      name: 'date',
-      label: 'Date',
+      name: primaryFieldName || 'date',
+      label: primaryLabel || 'Date',
       tableLabel: primaryView?.table_display_name ?? primaryView?.name,
       type: 'date',
       semanticField: primarySemanticField,
