@@ -79,19 +79,30 @@ function semanticDimensionToFilterType(type: string | undefined): FilterType {
 // raw column. Treat well-known date-name suffixes as evidence the
 // column IS a date so we route it through the calendar filter
 // fan-out path instead of the field picker.
-const DATE_NAME_HINTS = [
-  '_at', '_date', '_time', '_datetime',
-  'date', 'time', 'datetime', 'timestamp',
-  'add_time', 'update_time', 'close_time', 'lost_time', 'transfer_date',
-  'created', 'modified', 'expired', 'payment_date',
+//
+// Phase-15.81 v19 — tighten the pattern set after a DA-reported
+// false positive: `created_by_user_id` was matching the bare
+// `created` startsWith rule and got swept into the Date fan-out
+// alongside real date columns, sent up to the BE as a BETWEEN
+// filter on an integer FK column, and triggered 400 because the
+// engine refused to cast an integer to DATE. Standalone English
+// participles (`created`, `modified`, `expired`) almost never
+// identify a true date column on their own; they're prefixes of
+// FK / status / role columns just as often. Restrict the hint
+// set to compound terms (`*_at`, `*_date`, `*_time`, …) plus the
+// exact bare `date` / `time` / `datetime` / `timestamp` literals.
+const DATE_NAME_SUFFIXES = [
+  '_at', '_date', '_time', '_datetime', '_timestamp',
 ];
+const DATE_NAME_EXACT = new Set([
+  'date', 'time', 'datetime', 'timestamp',
+]);
 
 function nameSuggestsDate(fieldName: string): boolean {
   const n = (fieldName ?? '').toLowerCase().trim();
   if (!n) return false;
-  return DATE_NAME_HINTS.some((hint) =>
-    n === hint || n.endsWith(hint) || n.startsWith(hint),
-  );
+  if (DATE_NAME_EXACT.has(n)) return true;
+  return DATE_NAME_SUFFIXES.some((suffix) => n.endsWith(suffix));
 }
 
 function resolveDimensionFilterType(
@@ -1342,16 +1353,28 @@ export default function DashboardDetailPage() {
 
     // Build the final ordered list: calendar fields first (primary
     // candidates), then fact fields as linkedFields fan-out.
+    //
+    // Phase-15.81 v19 — only emit the composite "Date" entry when a
+    // calendar bucket exists. Earlier code fell back to the first
+    // fact-table date column when there was no calendar dim. That
+    // ended up creating one composite that fanned out across every
+    // unrelated date column in every fact table — when DA clicked
+    // it, the resulting WHERE merged 30+ BETWEEN predicates that the
+    // BE refused (400). Without a calendar dim there's no logical
+    // primary to anchor a global Date filter on, so let the DA pick
+    // the per-table date column they actually want from the field
+    // section instead.
     const orderedCalendarFields = Array.from(calendarSemanticFields).sort();
+    if (orderedCalendarFields.length === 0) return [];
+
     const orderedFactFields = Array.from(factSemanticFields)
       .filter((f) => !calendarSemanticFields.has(f))
       .sort();
     const orderedSemanticFields = [...orderedCalendarFields, ...orderedFactFields];
-    if (orderedSemanticFields.length === 0) return [];
 
-    // Pick primary: first calendar field, else first fact field as
-    // last resort (no calendar table in the model — legacy datasets).
-    const primarySemanticField = orderedCalendarFields[0] ?? orderedFactFields[0];
+    // Pick primary from the calendar bucket — guaranteed to exist
+    // because of the early return above.
+    const primarySemanticField = orderedCalendarFields[0];
     const linkedFields = orderedSemanticFields.filter((f) => f !== primarySemanticField);
     const [primaryViewName, primaryFieldName] = primarySemanticField.split('.', 2);
     const firstDatasetId = datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined;
@@ -1452,9 +1475,21 @@ export default function DashboardDetailPage() {
     return values;
   }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
 
+  // Phase-15.81 v19 — keep date columns in the field picker AS WELL
+  // AS surfacing them via the composite "Date" entry. Previously
+  // `column.type !== 'date'` hid every date column entirely; DA who
+  // wanted to bind a single-table date filter (e.g. only filter the
+  // calendar table's `date` without fanning out to every fact's
+  // timestamp) had no way to reach it. Drop only the field that
+  // backs the composite entry to avoid showing the same row twice.
+  const compositeDateKey = calendarDateColumns[0]?.key;
   const semanticFieldColumns = React.useMemo(
-    () => semanticColumnsResult.columns.filter((column) => column.type !== 'date'),
-    [semanticColumnsResult.columns],
+    () => semanticColumnsResult.columns.filter((column) => {
+      // Hide ONLY the field that the composite "Date" entry already
+      // represents — every other date column stays visible.
+      return getColumnKey(column) !== compositeDateKey;
+    }),
+    [semanticColumnsResult.columns, compositeDateKey],
   );
   const semanticFilterChartCount = React.useMemo(() => {
     const next = new Map(semanticColumnsResult.chartCount);
