@@ -1378,13 +1378,28 @@ class SemanticQueryEngine:
 
             view_name, _ = self._parse_field_ref(field_ref)
 
-            # Apply time grain if specified
-            if field_ref in time_grains:
-                field_sql = self._render_dimension_with_time_grain(
-                    field_ref, view_name, time_grains[field_ref]
+            # Phase-15.81 v20 — runtime filters can carry refs that the
+            # current view no longer exposes (FE auto-fan-out picked a
+            # column that doesn't exist on the chart's view, schema
+            # drift after a dataset edit, etc.). Drop the offender with
+            # a warning rather than raising — the alternative is a
+            # 400 that brings down every chart on the dashboard for a
+            # single mis-targeted ref. Same defensive contract as
+            # live_query._build_where_clause: filters that can't be
+            # rendered are skipped, not fatal.
+            try:
+                # Apply time grain if specified
+                if field_ref in time_grains:
+                    field_sql = self._render_dimension_with_time_grain(
+                        field_ref, view_name, time_grains[field_ref]
+                    )
+                else:
+                    field_sql = self._render_dimension(field_ref, view_name)
+            except ValueError as exc:
+                self.warnings.append(
+                    f"Filter dropped — field {field_ref!r}: {exc}"
                 )
-            else:
-                field_sql = self._render_dimension(field_ref, view_name)
+                continue
 
             # Null-state operators don't take a value.
             if operator == "is_null":
