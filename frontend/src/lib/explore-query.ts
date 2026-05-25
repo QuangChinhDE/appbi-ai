@@ -923,11 +923,19 @@ export function buildExploreExecuteRequest(args: {
 
     const queryMetrics = buildChartQueryMetrics(chartType, normalized);
     const selectedMetricFields = new Set(queryMetrics.map((metric) => metric.field));
+    const rowDimension = normalized.tableRowDimension;
 
     if (normalized.selectedColumns && normalized.selectedColumns.length > 0) {
       const selectedColumnSet = new Set(normalized.selectedColumns);
       const tableDimensions = normalized.selectedColumns.filter((field) => !selectedMetricFields.has(field));
       const tableMeasures = queryMetrics.filter((metric) => selectedColumnSet.has(metric.field));
+
+      // Always include the chosen row dimension even if user forgot to tick it
+      // in Visible Columns — without it BE GROUPs only by measures and emits
+      // one aggregate row with no dimension column.
+      if (rowDimension && !tableDimensions.includes(rowDimension)) {
+        tableDimensions.unshift(rowDimension);
+      }
 
       if (tableDimensions.length > 0) {
         request.dimensions = tableDimensions;
@@ -939,10 +947,15 @@ export function buildExploreExecuteRequest(args: {
         }));
       }
     } else if (queryMetrics.length > 0) {
+      if (rowDimension) {
+        request.dimensions = [rowDimension];
+      }
       request.measures = queryMetrics.map((metric) => ({
         field: metric.field,
         function: metric.agg,
       }));
+    } else if (rowDimension) {
+      request.dimensions = [rowDimension];
     }
     return request;
   }

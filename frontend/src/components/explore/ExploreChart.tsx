@@ -466,9 +466,26 @@ function resolveDataLabelStyle(
  * stuck) vs users who left it default (the colour also stuck on a
  * different code path). One source of truth = no surprise.
  */
+// Pick black or white text based on perceived background luminance.
+// Returns '#000' for light backgrounds, '#fff' for dark. Defensive
+// against missing / non-hex inputs.
+function pickContrastingTextColor(bgHex?: string): string {
+  if (!bgHex || typeof bgHex !== 'string') return '#fff';
+  const hex = bgHex.trim().replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(hex) && !/^[0-9a-fA-F]{3}$/.test(hex)) return '#fff';
+  const expand = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  const r = parseInt(expand.slice(0, 2), 16);
+  const g = parseInt(expand.slice(2, 4), 16);
+  const b = parseInt(expand.slice(4, 6), 16);
+  // Relative luminance (per WCAG)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#000' : '#fff';
+}
+
 function resolveSegmentLabelStyle(
   style: ChartStyleConfig | undefined,
   seriesKey: string,
+  barFill?: string,
 ): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
   format?: NumberFormat;
 }) | null {
@@ -478,11 +495,15 @@ function resolveSegmentLabelStyle(
 
   const override = dlc?.overrides?.[seriesKey];
   const seg = dlc?.segmentStyle;
+  // Default fontColor: only fall to auto-contrast when neither override,
+  // segment style, nor chart-level fontColor was set. Otherwise the
+  // user's explicit pick must win.
+  const explicit = override?.fontColor ?? seg?.fontColor ?? dlc?.fontColor;
   return {
     position: (override?.position ?? seg?.position ?? dlc?.position ?? 'center') as DataLabelPosition,
     rotation: (override?.rotation ?? seg?.rotation ?? dlc?.rotation ?? 0) as DataLabelRotation,
     fontSize: override?.fontSize ?? seg?.fontSize ?? dlc?.fontSize ?? (style?.fontSize ?? 11),
-    fontColor: override?.fontColor ?? seg?.fontColor ?? dlc?.fontColor ?? '#fff',
+    fontColor: explicit ?? pickContrastingTextColor(barFill),
     background: override?.background ?? seg?.background ?? dlc?.background ?? false,
     backgroundColor: override?.backgroundColor ?? seg?.backgroundColor ?? dlc?.backgroundColor ?? 'rgba(0,0,0,0.45)',
     format: override?.format ?? seg?.format ?? dlc?.format,
@@ -2009,15 +2030,16 @@ function ExploreChartInner({
                   : null;
                 return displaySeries.map((series, i) => {
                   const isTopOfStack = i === displaySeries.length - 1;
-                  // Phase-15.90 — segment resolver has its own defaults
-                  // (white text, semi-opaque dark background) tuned for
-                  // labels inside coloured bar segments. Per-series
-                  // override still wins when set.
+                  const barFill = getSeriesColor(series.key, i);
+                  // Phase-15.91 — pass barFill so the resolver can pick a
+                  // contrasting default label colour (black on light bars,
+                  // white on dark) when the user hasn't set fontColor
+                  // explicitly. Fixes DA "label text invisible on red".
                   const segDL = showSegmentLabels
-                    ? resolveSegmentLabelStyle(style, series.key)
+                    ? resolveSegmentLabelStyle(style, series.key, barFill)
                     : null;
                   return (
-                    <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
+                    <Bar key={series.key} dataKey={series.key} stackId="s" fill={barFill}
                       name={series.label}
                       hide={hiddenSeries.has(series.key)}
                       barSize={barSize}

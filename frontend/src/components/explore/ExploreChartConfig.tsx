@@ -3026,6 +3026,25 @@ export function ExploreChartConfig({
     (patch: Partial<ChartStyleConfig>) => onStyleConfigChange({ ...styleConfig, ...patch }),
     [styleConfig, onStyleConfigChange]
   );
+  // Phase-15.91 — collapse the 7 advanced disclosures (Series mix,
+  // Per-series format, Tooltip extras, Data label template, Annotations,
+  // Conditional colors, Calc fields) behind a single toggle. DA complained
+  // the Style tab was overwhelming on first open. Persist the choice in
+  // localStorage so power users don't have to click every visit.
+  const [showAdvancedTools, setShowAdvancedTools] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try { return window.localStorage.getItem('explore.showAdvancedTools') === 'true'; }
+    catch { return false; }
+  });
+  const toggleAdvancedTools = useCallback(() => {
+    setShowAdvancedTools((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem('explore.showAdvancedTools', String(next)); }
+      catch {}
+      return next;
+    });
+  }, []);
+
   // Phase-13.4: set / clear a per-field time grain. Keep timeGrains
   // undefined when empty so legacy chart configs that never used
   // grains stay byte-identical (no spurious diff on save).
@@ -4651,19 +4670,24 @@ export function ExploreChartConfig({
             />
           )}
 
-          {/* Phase-15.87 — DA-reported: the old single "Advanced
-              (annotations, calc fields, drill, mix)" disclosure dumped 7
-              unrelated features into one wall of UI. Tooltip Extra Fields
-              alone rendered ~80 column chips that buried every other
-              control. Split into focused sub-disclosures so each feature
-              is discoverable on its own and DA can collapse the ones
-              they're not using.
+          {/* Phase-15.91 — single "Show advanced tools" toggle hides the 7
+              power-user disclosures (Series mix, Per-series format, Tooltip
+              extras, Label template, Annotations, Conditional colors, Calc
+              fields) from the default Setup view. DA reported these felt
+              "too advent" on first open. localStorage-backed so power users
+              keep them open across sessions. */}
+          <button
+            type="button"
+            onClick={toggleAdvancedTools}
+            className="flex w-full items-center justify-between rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
+          >
+            <span>{showAdvancedTools ? 'Hide advanced tools' : 'Show advanced tools'}</span>
+            <span className="text-text-quaternary">
+              {showAdvancedTools ? '−' : '+'} Series mix, per-series format, label template, annotations, conditional colors, calculated fields
+            </span>
+          </button>
 
-              Each section is its own <Disclosure> (collapsed by default
-              so the Style tab still feels tidy). Pick "Open advanced
-              tools" expand-all if you want to skim everything; otherwise
-              open just what you need. */}
-
+          {showAdvancedTools && (<>
           {/* Phase-15.82 — free-form series mix (BAR_LINE only) */}
           {chartType === 'BAR_LINE' && availableSeriesKeys.length > 0 && (
             <Disclosure
@@ -5121,20 +5145,35 @@ export function ExploreChartConfig({
                         className="w-full px-1.5 py-1 text-[11px] font-mono border border-[rgb(var(--border-line))] rounded bg-surface-1"
                       />
                       {availableSeriesKeys.length > 0 ? (
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {availableSeriesKeys.map(({ key, label }) => (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => insertToken('${' + key + '}')}
-                              className="px-1.5 py-0.5 text-[10px] rounded bg-surface-2 hover:bg-surface-3 text-text-secondary border border-[rgb(var(--border-line))]"
-                              title={`Insert reference to ${label}`}
-                            >
-                              {label}
-                            </button>
-                          ))}
-                          <span className="text-[10px] text-text-quaternary self-center ml-1">+ - * / ( )</span>
-                        </div>
+                        <>
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {availableSeriesKeys.map(({ key, label }) => (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => insertToken('${' + key + '}')}
+                                className="px-1.5 py-0.5 text-[10px] rounded bg-brand/10 hover:bg-brand/20 text-brand border border-brand/30"
+                                title={`Insert reference to ${label}`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Phase-15.91 — clickable operator chips so DA doesn't have to type. */}
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {[' + ', ' - ', ' * ', ' / ', '(', ')'].map((op) => (
+                              <button
+                                key={op}
+                                type="button"
+                                onClick={() => insertToken(op)}
+                                className="px-1.5 py-0.5 text-[10px] rounded bg-surface-2 hover:bg-surface-3 text-text-secondary border border-[rgb(var(--border-line))] font-mono"
+                                title={`Insert ${op.trim()}`}
+                              >
+                                {op.trim()}
+                              </button>
+                            ))}
+                          </div>
+                        </>
                       ) : (
                         // Phase-15.88 — DA-reported: empty chip strip with
                         // "Type, or click a chip below to insert" placeholder
@@ -5169,6 +5208,7 @@ export function ExploreChartConfig({
             </div>
             </Disclosure>
           )}
+          </>)}
 
           {/* Phase-15.84 — Data Labels editor (replaces the bare on/off
               toggle that used to live here). Wrapped in its own
