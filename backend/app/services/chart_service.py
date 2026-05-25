@@ -131,9 +131,10 @@ def _role_config_needs_semantic_runtime(
     role_config: dict,
     binding: dict[str, Any],
     base_view_name: str,
+    runtime_filters: list[dict] | None = None,
 ) -> bool:
-    """Route to semantic runtime when role_config uses joined fields or any
-    declared semantic field in qualified form.
+    """Route to semantic runtime when role_config OR a runtime filter uses
+    joined fields or any declared semantic field in qualified form.
 
     Cross-view fields require JOIN resolution. Same-view qualified semantic
     measures/dimensions also need the semantic engine because they may be
@@ -150,6 +151,17 @@ def _role_config_needs_semantic_runtime(
     to the same null bucket. Now: any dotted `view.field` ref ALWAYS
     routes semantic regardless of binding state, because the live
     builder cannot honour them either way.
+
+    Phase-15.81 v15 — `runtime_filters` now also feeds the decision.
+    Earlier routing only inspected metric/dim refs, so a chart whose
+    metric is bare (e.g. `tong_lead_nhan`) but whose base filter
+    references a joined view (e.g. `dataset_table_345.payment_date`)
+    routed to the legacy live builder. The live builder cannot JOIN,
+    so the joined-view filter got silently dropped on the second-pass
+    `_normalize_runtime_filters_for_chart` re-normalisation and the
+    Dashboard returned unfiltered rows that diverged from Explore.
+    Detecting filter refs here pulls the query back to the semantic
+    runtime which CAN materialise the JOIN.
     """
     base = (base_view_name or "").strip()
 
@@ -186,6 +198,32 @@ def _role_config_needs_semantic_runtime(
         # measure/dim (formula, filter, alias rather than a raw column).
         if ref in semantic_fields or ref in semantic_measures:
             return True
+
+    # Phase-15.81 v15 — scan filter refs the same way. A base filter on a
+    # joined view forces semantic routing even when the role config is
+    # bare-column only.
+    for filt in runtime_filters or []:
+        if not isinstance(filt, dict):
+            continue
+        for key in ("semanticField", "fieldKey", "field"):
+            ref = str(filt.get(key) or "").strip()
+            if not ref or "." not in ref:
+                continue
+            view_part, _ = ref.split(".", 1)
+            if not base or (view_part.strip() and view_part.strip() != base):
+                return True
+            if ref in semantic_fields or ref in semantic_measures:
+                return True
+        # linkedFields can also point to joined views even when the
+        # primary semanticField sits on the base view (DA-built Date
+        # filter with fan-out across calendar + fact dim_date).
+        for linked in filt.get("linkedFields") or []:
+            ref = str(linked or "").strip()
+            if not ref or "." not in ref:
+                continue
+            view_part, _ = ref.split(".", 1)
+            if not base or (view_part.strip() and view_part.strip() != base):
+                return True
 
     return False
 
@@ -1678,10 +1716,21 @@ def _execute_chart_runtime_for_table(
         else {}
     )
     base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
+    # Phase-15.81 v15 — give the routing helper visibility into both
+    # base filters (saved on chart_config) and the runtime overrides
+    # (dashboard slicers, public link constraints) so a joined-view
+    # filter pulls the query to the semantic runtime regardless of
+    # how the metric is shaped.
+    routing_filters = merge_chart_query_filters(
+        chart_config,
+        extra_filters=raw_extra_filters,
+        context=filter_context,
+    )
     needs_semantic_runtime = _role_config_needs_semantic_runtime(
         role_config,
         binding,
         base_view_name_for_routing,
+        runtime_filters=routing_filters,
     )
     live_role_config = _strip_nonsemantic_base_view_refs_from_role_config(
         role_config,
