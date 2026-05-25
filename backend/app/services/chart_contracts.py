@@ -262,6 +262,33 @@ def resolve_chart_query_filters(
     return get_chart_editor_filters(config)
 
 
+def _filter_dedupe_key(filt: dict[str, Any]) -> tuple[Any, ...]:
+    """Phase-15.81 v16 — dedupe key now includes the semantic scope (the
+    qualified `view.col` ref and the dataset id) on top of `field` +
+    `operator`. Earlier code keyed only on `(field, operator)` which
+    collapsed two distinct semantic filters whenever the bare column
+    happened to repeat across views (e.g. every fact table in a CRM
+    schema has `_extracted_at`). A dashboard-wide Date filter on
+    `dataset_table_343._extracted_at` then silently dropped a chart's
+    own base filter on `dataset_table_145._extracted_at` because the
+    bare names collided, so the saved chart ran without its own
+    predicate. Including semanticField/datasetId stops the collision
+    while still letting runtime override the SAME semantic filter
+    (e.g. viewer narrows the date range further on the same column).
+    """
+    semantic = (
+        filt.get("semanticField")
+        or filt.get("fieldKey")
+        or ""
+    )
+    return (
+        str(semantic).strip().lower(),
+        str(filt.get("field") or "").strip().lower(),
+        str(filt.get("operator") or "").strip().lower(),
+        filt.get("datasetId"),
+    )
+
+
 def merge_chart_query_filters(
     config: dict[str, Any] | None,
     extra_filters: list[dict] | None = None,
@@ -272,10 +299,12 @@ def merge_chart_query_filters(
     if not extra:
         return base
 
-    # Deduplicate: when extra_filters (runtime/dashboard) target the same field+operator
-    # as a base filter, the runtime value takes precedence.
-    extra_keys = {(f["field"], f["operator"]) for f in extra}
-    merged = [f for f in base if (f["field"], f["operator"]) not in extra_keys]
+    # Deduplicate: when extra_filters (runtime/dashboard) target the same
+    # semantic scope as a base filter, the runtime value wins. See
+    # `_filter_dedupe_key` for the v16 fix to the bare-name collision
+    # that previously dropped base filters across views.
+    extra_keys = {_filter_dedupe_key(f) for f in extra}
+    merged = [f for f in base if _filter_dedupe_key(f) not in extra_keys]
     merged.extend(extra)
     return merged
 
