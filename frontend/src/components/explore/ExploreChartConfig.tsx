@@ -1667,7 +1667,7 @@ function DataLabelsEditor({
   return (
     <div className="space-y-3">
       <Toggle
-        label="Data Labels"
+        label="Enabled"
         checked={enabled}
         onChange={(v) => patchConfig({ ...dlc, enabled: v })}
       />
@@ -1846,6 +1846,56 @@ function DataLabelsEditor({
               Background helps readability on dark themes / cluttered charts.
             </p>
           </div>
+
+          {/* (iv) Value format — Phase-15.91. Surfaces DataLabelStyle.format
+              that was already declared in the type and read by the renderer
+              (resolveDataLabelStyle line ~446) but never had a UI control.
+              Per PBI: Data labels panel owns its OWN display-units pick,
+              independent of the chart's global Number Format. Falls back
+              to chart-level numberFormat / per-series seriesFormats when
+              left at "(inherit)". */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">
+              Value format
+            </label>
+            <select
+              value={currentStyle.format ?? ''}
+              onChange={(e) => patchTarget({ format: e.target.value === '' ? undefined : (e.target.value as NumberFormat) })}
+              className="w-full px-2 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+            >
+              <option value="">(inherit chart Number Format)</option>
+              <option value="auto">Auto (raw)</option>
+              <option value="compact">Compact (1.2K, 3.4M)</option>
+              <option value="number">Full Number (1,234)</option>
+              <option value="percent">Percent (%)</option>
+              <option value="currency">Currency ($)</option>
+            </select>
+            <p className="text-[10px] text-text-quaternary mt-1">
+              Overrides display units for the data label only. Tooltip / axis stay on the chart-level Number Format.
+            </p>
+          </div>
+
+          {/* (v) Template — Phase-15.91. Moved here from a separate
+              Disclosure so all data-label controls live in ONE panel
+              (PowerBI parity). Template is a CHART-WIDE setting — only
+              editable when "Apply settings to" is "All series". */}
+          {isAll && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Template
+              </label>
+              <input
+                type="text"
+                value={styleConfig.dataLabelTemplate ?? ''}
+                placeholder="{label}: {value}"
+                onChange={(e) => updStyle({ dataLabelTemplate: e.target.value || undefined })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 font-mono"
+              />
+              <p className="text-[10px] text-text-quaternary mt-1">
+                Tokens: {'{value}'} {'{label}'} {'{series}'} {'{dimension}'} {'{percent}'}. Blank uses the chart's default label.
+              </p>
+            </div>
+          )}
 
           {/* Phase-15.90 — STACKED_BAR-only: tách Segment vs Total color.
               Reason: segment labels sit ON a coloured bar (need contrast,
@@ -4737,9 +4787,6 @@ export function ExploreChartConfig({
               hint="Override the chart's global Number Format on a per-series basis. Example: bar series in VND, line series in %. Falls back to the chart's global format when blank."
             >
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
-                Per-series format
-              </label>
               <div className="space-y-1.5">
                 {availableSeriesKeys.map(({ key, label }) => (
                   <div key={key} className="flex items-center gap-2">
@@ -4857,29 +4904,10 @@ export function ExploreChartConfig({
             </Disclosure>
           )}
 
-          {/* Phase-15.82 — data label template (PowerBI-style). */}
-          {!isScatterLike && (
-            <Disclosure
-              title="Data label template"
-              hint="Customise the text rendered next to each data point. Tokens: {value} {label} {series} {dimension} {percent}. Blank uses the chart's default label."
-            >
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Data label template
-              </label>
-              <input
-                type="text"
-                value={styleConfig.dataLabelTemplate ?? ''}
-                placeholder="{label}: {value}"
-                onChange={(e) => updStyle({ dataLabelTemplate: e.target.value || undefined })}
-                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 font-mono"
-              />
-              <p className="mt-1 text-[10px] text-text-quaternary">
-                Tokens: {'{value}'} {'{label}'} {'{series}'} {'{dimension}'} {'{percent}'}
-              </p>
-            </div>
-            </Disclosure>
-          )}
+          {/* Phase-15.91 — "Data label template" Disclosure removed. The
+              template input now lives INSIDE the Data Labels Disclosure
+              below, alongside Value format / Position / Font, matching
+              PowerBI's single-panel layout. See DataLabelsEditor. */}
 
           {/* Phase-15.82 — chart annotations (manual reference lines).
               Phase-15.88 — restrict to cartesian charts. Renderer only
@@ -4893,9 +4921,6 @@ export function ExploreChartConfig({
               hint="Draw manual reference lines on the chart (eg. quota = 5M, launch date). Each annotation pins to either the X or Y axis. Cartesian charts only."
             >
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Annotations
-              </label>
               <div className="space-y-1.5">
                 {(styleConfig.annotations ?? []).map((annotation, idx) => (
                   <div key={annotation.id} className="rounded border border-[rgb(var(--border-line))] p-2 space-y-1">
@@ -5087,9 +5112,6 @@ export function ExploreChartConfig({
               hint="Add derived series using a tiny formula language. Click a series chip to insert a reference, then combine with + - * / and parentheses. Only renders on LINE / AREA / BAR family charts."
             >
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Calculated fields
-              </label>
               <div className="space-y-1.5">
                 {(styleConfig.calculatedFields ?? []).map((field, idx) => {
                   const expressionId = `calc-expr-${field.id}`;
@@ -5321,7 +5343,7 @@ export function ExploreChartConfig({
       {supportsBenchmarkLine && (
         <Disclosure title="Benchmark Line" hint="Optional reference line for the numeric axis.">
           <Toggle
-            label="Benchmark line"
+            label="Enable benchmark"
             checked={normalizedStyleConfig.showBenchmarkLine ?? false}
             onChange={v => updStyle({ showBenchmarkLine: v })}
           />
