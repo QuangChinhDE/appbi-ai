@@ -151,6 +151,25 @@ const COLOR_SWATCHES = [
   '#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed',
   '#0891b2', '#db2777', '#65a30d', '#ea580c', '#475569',
 ];
+
+/**
+ * Phase-15.88 — debounced color input. Drives a native `<input type=color>`
+ * but only commits the value to the parent on blur (not on every drag
+ * tick). Eliminates the popover-closing chatter DA reported.
+ */
+function ColorInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  const [local, setLocal] = React.useState(value);
+  React.useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <input
+      type="color"
+      value={local}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => { if (local !== value) onCommit(local); }}
+      style={{ width: 30, height: 22, padding: 0, border: 'none' }}
+    />
+  );
+}
 interface CustomLegendProps {
   payload?: Array<{ value: string; dataKey?: string; color?: string }>;
   hiddenSeries: Set<string>;
@@ -171,6 +190,17 @@ function CustomLegend({
   onColorChange,
   onColorReset,
 }: CustomLegendProps) {
+  // Phase-15.88 — controlled Popover state. Earlier each <Popover.Root>
+  // was uncontrolled, defaulting to closed. Picking a swatch fired
+  // onColorChange → parent state update → ExploreChart re-render →
+  // Recharts re-instantiates Legend → CustomLegend re-mounts with all
+  // new Popover instances closed. User had to re-open after every
+  // colour click (DA-reported "death by 1000 clicks").
+  //
+  // Lifting open-key into local state keeps the popover open across the
+  // chart re-renders triggered by colour changes; only an explicit
+  // outside-click or ESC closes it.
+  const [openKey, setOpenKey] = React.useState<string | null>(null);
   return (
     <ul
       style={{
@@ -198,7 +228,10 @@ function CustomLegend({
         return (
           <li key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {canEditColor ? (
-              <Popover.Root>
+              <Popover.Root
+                open={openKey === key}
+                onOpenChange={(v) => setOpenKey(v ? key : null)}
+              >
                 <Popover.Trigger asChild>
                   <button
                     type="button"
@@ -243,11 +276,14 @@ function CustomLegend({
                       ))}
                     </div>
                     <div style={{ marginTop: 6, display: 'flex', gap: 4, alignItems: 'center' }}>
-                      <input
-                        type="color"
+                      {/* Phase-15.88 — native color picker fires onChange on
+                          every intermediate hue while the user drags. Each
+                          tick triggered a chart re-render AND closed the
+                          popover. Commit only on blur / explicit "Apply"
+                          so the drag UX stays smooth. */}
+                      <ColorInput
                         value={swatchColor.startsWith('#') ? swatchColor : '#000000'}
-                        onChange={(e) => onColorChange?.(key, e.target.value)}
-                        style={{ width: 30, height: 22, padding: 0, border: 'none' }}
+                        onCommit={(v) => onColorChange?.(key, v)}
                       />
                       {onColorReset && seriesColors?.[key] && (
                         <button
@@ -450,8 +486,12 @@ function buildDataLabelContent(opts: {
   style: ChartStyleConfig;
   registry: LabelRegistry;
   orientation: 'vertical' | 'horizontal' | 'point';
+  /** Phase-15.88 — chart's X-axis dimension field name. Used to look up
+   *  {dimension} token explicitly instead of grabbing `Object.keys()[0]`
+   *  which broke when BE returned rows with measure-first ordering. */
+  xField?: string;
 }): (props: any) => React.ReactNode {
-  const { resolved, seriesKey, seriesLabel, style, registry, orientation } = opts;
+  const { resolved, seriesKey, seriesLabel, style, registry, orientation, xField } = opts;
   if (!resolved) return () => null;
   const { position, rotation, fontSize, fontColor, background, backgroundColor, autoHideOverlap } = resolved;
   // Phase-15.84 bugfix — format precedence:
@@ -468,12 +508,22 @@ function buildDataLabelContent(opts: {
     : style;
   const formatLabel = (value: any, payload?: any) => {
     if (style.dataLabelTemplate) {
+      // Phase-15.88 — resolve {dimension} via the explicit xField when
+      // available. Fall back to first-key only when no xField is known
+      // (eg. SCATTER where dim isn't on the row payload). The old
+      // first-key heuristic silently picked a measure column when BE
+      // emitted measures-first ordering.
+      const dimensionValue = payload
+        ? (xField && Object.prototype.hasOwnProperty.call(payload, xField)
+            ? payload[xField]
+            : payload[Object.keys(payload)[0]])
+        : undefined;
       return renderTemplatedLabel({
         template: style.dataLabelTemplate,
         value,
         seriesKey,
         seriesLabel,
-        dimensionValue: payload ? payload[Object.keys(payload)[0]] : undefined,
+        dimensionValue,
         style: styleForLabel,
       });
     }
@@ -1206,6 +1256,9 @@ function ExploreChartInner({
       style,
       registry: labelRegistry,
       orientation,
+      // Phase-15.88 — pass chart's x-axis dimension field so template
+      // {dimension} token resolves reliably (vs the old first-key trick).
+      xField,
     });
   };
   const showDots = style.showDots ?? true;

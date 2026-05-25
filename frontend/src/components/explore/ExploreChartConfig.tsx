@@ -2742,6 +2742,15 @@ interface ExploreChartConfigProps {
   /** Series keys (metric keys or breakdown values) available for per-series color override. */
   availableSeriesKeys?: { key: string; label: string }[];
   /**
+   * Phase-15.88 — columns the BE actually returns in chart rows after the
+   * query runs. Distinct from `availableColumns` (the full dataset
+   * column catalogue). Tooltip extra fields MUST be picked from this
+   * set, otherwise CustomTooltip lookups return undefined and the
+   * feature silently no-ops — DA's "I tick the chip and nothing shows
+   * up" report.
+   */
+  chartResultColumns?: string[];
+  /**
    * Phase-15.1: drill-down hierarchy map. Keyed by qualified parent field
    * name; value is the list of qualified child field names declared via
    * DimensionDefinition.parent. When the chart's dimension has children
@@ -2787,6 +2796,7 @@ export function ExploreChartConfig({
   readOnly,
   mode = 'full',
   availableSeriesKeys = [],
+  chartResultColumns = [],
   dimChildrenMap,
   declaredMeasureRefs,
   baseViewName,
@@ -4551,44 +4561,62 @@ export function ExploreChartConfig({
               tested poorly with non-power users). Phase-15.87: own
               Disclosure because the chip list can run to 80+ entries
               and the old shared panel made everything below unreachable. */}
-          {!isTableLike && availableColumns.length > 0 && (
+          {/* Phase-15.88 CRITICAL FIX — chip list now sourced from
+              `chartResultColumns` (BE actually returned this column),
+              NOT `availableColumns` (full dataset catalogue). DA-reported
+              bug: user ticked a chip, hovered the chart, tooltip showed
+              NOTHING extra. Root cause: chip was for a dataset column
+              the chart's GROUP BY never selected, so CustomTooltip
+              lookup `row[field]` returned undefined and silently skipped.
+              When chartResultColumns is empty (query not run yet) we
+              fall back to availableColumns with a clear hint. */}
+          {!isTableLike && (
             <Disclosure
               title="Tooltip extra fields"
-              hint="Pick additional row columns to surface in the chart's hover tooltip. Useful for context like region / sales rep / category that isn't on the axis."
+              hint="Pick row columns to surface in the hover tooltip. Only columns that the chart's query actually returns will display."
             >
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Tooltip extra fields
-              </label>
-              <div className="flex flex-wrap gap-1">
-                {availableColumns.map((col: any) => {
-                  const selected = (styleConfig.tooltipExtraFields ?? []).includes(col.name);
-                  return (
-                    <button
-                      key={col.name}
-                      type="button"
-                      onClick={() => {
-                        const current = styleConfig.tooltipExtraFields ?? [];
-                        const next = selected
-                          ? current.filter((f) => f !== col.name)
-                          : [...current, col.name];
-                        updStyle({ tooltipExtraFields: next.length === 0 ? undefined : next });
-                      }}
-                      className={`px-1.5 py-0.5 text-[11px] rounded border transition-colors ${
-                        selected
-                          ? 'bg-brand text-white border-brand'
-                          : 'bg-surface-1 text-text-secondary border-[rgb(var(--border-line))] hover:bg-surface-2'
-                      }`}
-                      title={col.name}
-                    >
-                      {col.label || col.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="mt-1 text-[10px] text-text-quaternary">
-                Click a column to toggle it into the chart tooltip.
-              </p>
+              {chartResultColumns.length === 0 ? (
+                <p className="text-[11px] text-text-tertiary italic">
+                  Run the query first — the chip list shows only columns the chart's GROUP BY selects.
+                </p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-1">
+                    {chartResultColumns.map((colName) => {
+                      const selected = (styleConfig.tooltipExtraFields ?? []).includes(colName);
+                      // Lookup display label from full availableColumns if it
+                      // happens to be in the dataset catalogue; else show raw.
+                      const meta = availableColumns.find((c: any) => c.name === colName);
+                      const label = meta?.label || colName;
+                      return (
+                        <button
+                          key={colName}
+                          type="button"
+                          onClick={() => {
+                            const current = styleConfig.tooltipExtraFields ?? [];
+                            const next = selected
+                              ? current.filter((f) => f !== colName)
+                              : [...current, colName];
+                            updStyle({ tooltipExtraFields: next.length === 0 ? undefined : next });
+                          }}
+                          className={`px-1.5 py-0.5 text-[11px] rounded border transition-colors ${
+                            selected
+                              ? 'bg-brand text-white border-brand'
+                              : 'bg-surface-1 text-text-secondary border-[rgb(var(--border-line))] hover:bg-surface-2'
+                          }`}
+                          title={colName}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[10px] text-text-quaternary">
+                    Click a column to toggle it into the chart tooltip.
+                  </p>
+                </>
+              )}
             </div>
             </Disclosure>
           )}
@@ -4617,11 +4645,16 @@ export function ExploreChartConfig({
             </Disclosure>
           )}
 
-          {/* Phase-15.82 — chart annotations (manual reference lines). */}
-          {!isTableLike && !isScatterLike && (
+          {/* Phase-15.82 — chart annotations (manual reference lines).
+              Phase-15.88 — restrict to cartesian charts. Renderer only
+              emits <ReferenceLine> in BAR/LINE/AREA/COMBO/SCATTER paths;
+              showing the editor on PIE/DONUT/FUNNEL/RADAR/MATRIX was
+              the classic "code mà chạy không được" case — user adds
+              annotation, runs query, nothing shows. */}
+          {(['LINE', 'AREA', 'TIME_SERIES', 'BAR', 'HORIZONTAL_BAR', 'STACKED_BAR', 'GROUPED_BAR', 'BAR_LINE', 'SCATTER'] as string[]).includes(chartType) && (
             <Disclosure
               title="Annotations"
-              hint="Draw manual reference lines on the chart (eg. quota = 5M, launch date). Each annotation pins to either the X or Y axis."
+              hint="Draw manual reference lines on the chart (eg. quota = 5M, launch date). Each annotation pins to either the X or Y axis. Cartesian charts only."
             >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
@@ -4716,11 +4749,17 @@ export function ExploreChartConfig({
             </Disclosure>
           )}
 
-          {/* Phase-15.82 — conditional color rules for bar/line series. */}
-          {!isTableLike && !isScatterLike && !isPieLike && (
+          {/* Phase-15.82 — conditional color rules for bar/line series.
+              Phase-15.88 — restrict to BAR + HORIZONTAL_BAR. STACKED_BAR /
+              GROUPED_BAR / BAR_LINE renderers don't emit <Cell> children,
+              so the rule was silently dropped. LINE/AREA have a single
+              stroke and can't paint per-point conditionally without a
+              different render path. Hide the editor for incompatible
+              chart types instead of accepting input that does nothing. */}
+          {(['BAR', 'HORIZONTAL_BAR'] as string[]).includes(chartType) && (
             <Disclosure
               title="Conditional series colors"
-              hint="Repaint individual bar cells when their value matches a rule (eg. red if revenue < 0). Currently applied to vertical Bar charts."
+              hint="Repaint individual bar cells when their value matches a rule (eg. red if revenue < 0). Applies to BAR and HORIZONTAL_BAR."
             >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
@@ -4791,18 +4830,25 @@ export function ExploreChartConfig({
                   + Add color rule
                 </button>
               </div>
-              <p className="mt-1 text-[10px] text-text-quaternary">Currently applied to vertical Bar charts.</p>
+              <p className="mt-1 text-[10px] text-text-quaternary">Applied to BAR and HORIZONTAL_BAR charts.</p>
             </div>
             </Disclosure>
           )}
 
           {/* Phase-15.82 — inline calculated fields (DAX-lite).
               UX: surface the available metric keys as click-to-insert chips
-              so DA doesn't have to memorise the `agg__field` convention. */}
-          {!isTableLike && !isScatterLike && (
+              so DA doesn't have to memorise the `agg__field` convention.
+
+              Phase-15.88 — restrict to Recharts cartesian chart types.
+              AdvancedExploreCharts.tsx (FUNNEL/TREEMAP/RADAR/MAP/BOXPLOT/
+              WATERFALL/SUNBURST) never invokes `applyCalculatedFields`,
+              so the previous "show on every non-table non-scatter chart"
+              guard silently accepted user input then dropped it on render.
+              DA-reported "code mà chạy không được". */}
+          {(['LINE', 'AREA', 'TIME_SERIES', 'BAR', 'HORIZONTAL_BAR', 'STACKED_BAR', 'GROUPED_BAR', 'BAR_LINE'] as string[]).includes(chartType) && (
             <Disclosure
               title="Calculated fields"
-              hint="Add derived series using a tiny formula language. Click a series chip to insert a reference, then combine with + - * / and parentheses. Renders on LINE/AREA/BAR family."
+              hint="Add derived series using a tiny formula language. Click a series chip to insert a reference, then combine with + - * / and parentheses. Only renders on LINE / AREA / BAR family charts."
             >
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
@@ -4862,7 +4908,7 @@ export function ExploreChartConfig({
                         }}
                         className="w-full px-1.5 py-1 text-[11px] font-mono border border-[rgb(var(--border-line))] rounded bg-surface-1"
                       />
-                      {availableSeriesKeys.length > 0 && (
+                      {availableSeriesKeys.length > 0 ? (
                         <div className="flex flex-wrap gap-1 pt-1">
                           {availableSeriesKeys.map(({ key, label }) => (
                             <button
@@ -4877,6 +4923,14 @@ export function ExploreChartConfig({
                           ))}
                           <span className="text-[10px] text-text-quaternary self-center ml-1">+ - * / ( )</span>
                         </div>
+                      ) : (
+                        // Phase-15.88 — DA-reported: empty chip strip with
+                        // "Type, or click a chip below to insert" placeholder
+                        // confused users into thinking the feature was broken.
+                        // Make the prerequisite explicit.
+                        <p className="text-[10px] text-warning pt-1">
+                          Run the query first to see series chips. Or type a reference manually like {'${sum__revenue}'}.
+                        </p>
                       )}
                     </div>
                   );

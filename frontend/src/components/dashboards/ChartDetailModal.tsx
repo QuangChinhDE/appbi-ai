@@ -750,6 +750,7 @@ export function ChartDetailModal({
                   sortLimitColumns={sortLimitColumns}
                   tableDisplayColumns={appearanceColumns}
                   availableSeriesKeys={previewSeriesKeys}
+                  chartResultColumns={runtimeRows[0] ? Object.keys(runtimeRows[0]) : []}
                   queryMode={queryMode}
                   mode="styleOnly"
                   onChartTypeChange={() => {}}

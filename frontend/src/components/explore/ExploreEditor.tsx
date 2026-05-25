@@ -2870,6 +2870,16 @@ export function ExploreEditor({
                     validationMessage={activeValidationMessage}
                     readOnly={!resPerms.canEdit}
                     availableSeriesKeys={previewSeriesKeys}
+                    chartResultColumns={
+                      // Phase-15.88 — feed actual BE-returned column names
+                      // to ExploreChartConfig so Tooltip extra fields chip
+                      // list only offers columns that exist in the result
+                      // (instead of the whole dataset catalogue that mostly
+                      // wouldn't render in tooltips).
+                      displayedQueryState?.chartRows?.[0]
+                        ? Object.keys(displayedQueryState.chartRows[0])
+                        : []
+                    }
                     dimChildrenMap={dimHierarchy.childrenOf}
                     declaredMeasureRefs={declaredMeasureRefs}
                     baseViewName={selectedSemanticView?.name ?? null}
