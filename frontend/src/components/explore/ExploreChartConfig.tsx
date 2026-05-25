@@ -2087,7 +2087,7 @@ function FormatGroup({
   children,
 }: {
   title: string;
-  /** Show ⚫ dot when any setting in this group differs from defaults. */
+  /** Show brand dot when any setting in this group differs from defaults. */
   hasCustomization: boolean;
   defaultOpen?: boolean;
   /** False = hide group entirely (filtered out by search). */
@@ -2099,26 +2099,36 @@ function FormatGroup({
   const [open, setOpen] = useState(defaultOpen);
   if (!matchesSearch) return null;
   const isOpen = searchActive ? true : open;
+  // Style parity with Disclosure (line ~2050) — same border, surface,
+  // radius, typography. Difference: FormatGroup uses text-text-secondary
+  // (vs text-tertiary) because it's a level above Disclosure in the
+  // hierarchy, plus a brand dot to signal customisation at-a-glance.
   return (
-    <div className="space-y-2">
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2/70 px-3 py-2">
       <button
         type="button"
         onClick={() => setOpen(!open)}
         disabled={searchActive}
-        className="flex w-full items-center gap-2 px-1 py-1.5 text-left hover:bg-surface-2/40 rounded transition-colors disabled:hover:bg-transparent"
+        className="group flex w-full items-center justify-between py-1 disabled:cursor-default"
       >
-        <ChevronDown
-          className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${isOpen ? '' : '-rotate-90'}`}
-        />
-        <span
-          className={`h-1.5 w-1.5 rounded-full ${hasCustomization ? 'bg-brand' : 'bg-text-quaternary/40'}`}
-          title={hasCustomization ? 'Has custom settings' : 'Default settings'}
-        />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
-          {title}
+        <span className="flex items-center gap-2 text-xs font-semibold text-text-secondary uppercase tracking-wide">
+          <span
+            className={`h-1.5 w-1.5 rounded-full transition-colors ${
+              hasCustomization ? 'bg-brand' : 'bg-text-quaternary/40'
+            }`}
+            title={hasCustomization ? 'Has custom settings' : 'Default settings'}
+          />
+          <span>{title}</span>
         </span>
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+        />
       </button>
-      {isOpen && <div className="space-y-2 pl-1">{children}</div>}
+      {isOpen && (
+        <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -4685,22 +4695,25 @@ export function ExploreChartConfig({
           title="Format"
           description="Style the chart. Visual covers the everyday controls; open Axes & Scale or Advanced when you need extra tuning."
         >
-        {/* Phase-15.92 — search box: filter groups by keyword. */}
+        {/* Phase-15.92 v2 — search box. Style aligned with the surface-1
+            inputs used throughout the panel (border-strong + bg-surface-1
+            + same py / text size as other text inputs). */}
         <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-quaternary pointer-events-none" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-quaternary pointer-events-none" />
           <input
             type="text"
             value={formatSearch}
             onChange={e => setFormatSearch(e.target.value)}
             placeholder="Search settings (eg. axis, label, color)…"
-            className="w-full pl-7 pr-7 py-1.5 text-xs border border-[rgb(var(--border-line))] rounded-md bg-surface-1"
+            className="w-full pl-8 pr-8 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 placeholder:text-text-quaternary focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand/40 transition-colors"
           />
           {formatSearch && (
             <button
               type="button"
               onClick={() => setFormatSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-secondary"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-text-quaternary hover:text-text-secondary rounded"
               title="Clear search"
+              aria-label="Clear search"
             >
               <X className="h-3 w-3" />
             </button>
@@ -4758,7 +4771,8 @@ export function ExploreChartConfig({
               swatch preview of the currently-selected palette. The old
               5-card layout took ~30% of the panel's height for a one-off
               pick; dropdown collapses it to one row while still showing
-              the colours. */}
+              the colours. Style matches the other selects in the panel
+              (border-strong + bg-surface-1 + same px-2 py-1.5 text-xs). */}
           {(() => {
             const activePaletteName = styleConfig.palette || 'default';
             const activePalette = CHART_PALETTES.find(p => p.name === activePaletteName) ?? CHART_PALETTES[0];
@@ -4775,11 +4789,14 @@ export function ExploreChartConfig({
                       <option key={p.name} value={p.name}>{p.label}</option>
                     ))}
                   </select>
-                  <div className="flex items-center gap-0.5" title={`${activePalette.label} palette`}>
-                    {activePalette.colors.slice(0, 6).map((c, i) => (
+                  <div
+                    className="flex shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1"
+                    title={`${activePalette.label} palette preview`}
+                  >
+                    {activePalette.colors.slice(0, 5).map((c, i) => (
                       <div
                         key={i}
-                        className="h-4 w-4 rounded-sm border border-[rgb(var(--border-line))]"
+                        className="h-3.5 w-3.5 rounded-sm"
                         style={{ backgroundColor: c }}
                       />
                     ))}
