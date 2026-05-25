@@ -184,6 +184,21 @@ export interface ChartStyleConfig {
   dataLabelPosition?: 'top' | 'center' | 'inside' | 'outside';
   /** Phase-15.84 — granular data-label settings. See DataLabelConfig. */
   dataLabelConfig?: DataLabelConfig;
+  /**
+   * Phase-15.89 — STACKED_BAR has TWO independent label concepts:
+   *
+   *   - 'segment': value text inside each segment of the stack (one
+   *     per series per row). Use this when DA wants to read "Region A
+   *     = 12, Region B = 5" at a glance.
+   *   - 'total':   value text above the top of the stack showing the
+   *     SUM of segments. Use this when only the column total matters.
+   *   - 'both':    render both (segment values inside + total above).
+   *
+   * Defaults to 'total' for backward compat (legacy STACKED rendered
+   * only the top-of-stack total). Percent mode is unaffected — it
+   * always renders per-segment % inside each segment.
+   */
+  stackedBarLabelMode?: 'segment' | 'total' | 'both';
   // Number formatting
   numberFormat?: NumberFormat;
   currencySymbol?: string;
@@ -1557,11 +1572,15 @@ function DataLabelsEditor({
   availableSeriesKeys,
   updStyle,
   applicableForChart,
+  chartType,
 }: {
   styleConfig: ChartStyleConfig;
   availableSeriesKeys: { key: string; label: string }[];
   updStyle: (patch: Partial<ChartStyleConfig>) => void;
   applicableForChart: boolean;
+  /** Phase-15.89 — needed so STACKED_BAR can surface its own
+   *  segment-vs-total label mode toggle. */
+  chartType?: string;
 }) {
   const [target, setTarget] = useState<ApplyTarget>('__all__');
   const dlc: DataLabelConfig = styleConfig.dataLabelConfig ?? {};
@@ -1670,6 +1689,45 @@ function DataLabelsEditor({
               </button>
             )}
           </div>
+
+          {/* Phase-15.89 — STACKED_BAR-specific control. Lets DA pick
+              between "show one number per segment", "one total above the
+              stack", or both. The rest of the editor (position, font,
+              colour) applies to whichever labels actually render. */}
+          {chartType === 'STACKED_BAR' && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                Stack label mode
+              </label>
+              <div className="flex flex-wrap gap-1">
+                {([
+                  { value: 'segment', label: 'Per segment', desc: 'Show value inside each segment' },
+                  { value: 'total', label: 'Stack total', desc: 'Show sum above the top of the stack' },
+                  { value: 'both', label: 'Both', desc: 'Show segment values AND stack total' },
+                ] as const).map((opt) => {
+                  const active = (styleConfig.stackedBarLabelMode ?? 'total') === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => updStyle({ stackedBarLabelMode: opt.value })}
+                      title={opt.desc}
+                      className={`px-1.5 py-1 text-[11px] rounded border ${
+                        active
+                          ? 'bg-brand text-white border-brand'
+                          : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[10px] text-text-quaternary">
+                Percent stacks (100%) always show segment values regardless of this setting.
+              </p>
+            </div>
+          )}
 
           {/* (ii) Position + rotation + auto-hide */}
           <div>
@@ -4981,6 +5039,7 @@ export function ExploreChartConfig({
                   availableSeriesKeys={availableSeriesKeys}
                   updStyle={updStyle}
                   applicableForChart
+                  chartType={chartType}
                 />
               </Disclosure>
             );

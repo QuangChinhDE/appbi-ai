@@ -1898,114 +1898,197 @@ function ExploreChartInner({
                 )}
               />
               {renderLegend()}
-              {displaySeries.map((series, i) => {
-                const isTopOfStack = i === displaySeries.length - 1;
-                // Percent mode: each segment shows its own % inside the bar.
-                // Normal mode: only the top segment shows total above the bar.
-                const showLabel = showDataLabels && (isPercent || isTopOfStack);
-                // Phase-15.84 — resolve the user's DataLabelStyle so the
-                // STACKED percent / stack-total labels respect font size,
-                // text color, background, rotation, and per-series overrides
-                // (previously hardcoded to #fff / 11pt / no background).
-                const resolvedDL = showLabel ? resolveDataLabelStyle(style, series.key) : null;
-                const dlFontSize = resolvedDL?.fontSize ?? (fontSize - 1);
-                const dlPercentColor = resolvedDL?.fontColor ?? '#fff';
-                const dlTotalColor = resolvedDL?.fontColor ?? 'rgb(var(--text-secondary))';
-                const dlBackground = resolvedDL?.background ?? false;
-                const dlBgColor = resolvedDL?.backgroundColor ?? 'rgba(255,255,255,0.85)';
-                const dlRotation = resolvedDL?.rotation ?? 0;
-                return (
-                  <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
-                    name={series.label}
-                    hide={hiddenSeries.has(series.key)}
-                    barSize={barSize}
-                    radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
-                    {showLabel && isPercent && (
-                      <LabelList
-                        dataKey={series.key}
-                        position="center"
-                        content={(props: any) => {
-                          const { x, y, width, height, value, index } = props;
-                          const total = stackTotalsByIndex[index] || 0;
-                          if (!total) return null;
-                          const pct = (Number(value) / total) * 100;
-                          if (pct < 4) return null;
-                          const cx = x + width / 2;
-                          const cy = y + height / 2;
-                          const text = `${pct.toFixed(0)}%`;
-                          const approxW = text.length * dlFontSize * 0.6;
-                          return (
-                            <g transform={dlRotation !== 0 ? `rotate(${dlRotation} ${cx} ${cy})` : undefined}>
-                              {dlBackground && (
-                                <rect x={cx - approxW / 2 - 3} y={cy - dlFontSize / 2 - 1}
-                                      width={approxW + 6} height={dlFontSize + 2}
-                                      rx={2} ry={2} fill={dlBgColor} />
-                              )}
-                              <text x={cx} y={cy}
-                                textAnchor="middle" dominantBaseline="middle"
-                                fill={dlPercentColor} fontSize={dlFontSize}
-                                style={{ pointerEvents: 'none' }}>
-                                {text}
-                              </text>
-                            </g>
-                          );
-                        }}
-                      />
-                    )}
-                    {showLabel && !isPercent && (
-                      <LabelList
-                        dataKey={series.key}
-                        position="top"
-                        content={(props: any) => {
-                          const { x, y, width, index, payload } = props;
-                          const total = stackTotalsByIndex[index] || 0;
-                          if (!total) return null;
-                          const cx = x + width / 2;
-                          const cy = Math.max(12, y - 6);
-                          // Phase-15.86 — STACKED stack-total label now
-                          // respects `dataLabelTemplate` (tokens
-                          // {value}/{label}/{dimension}/{percent}) and the
-                          // standard seriesFormats precedence (override >
-                          // seriesFormats[top-segment] > dlc.format >
-                          // global). Previously hardcoded formatNumber.
-                          const effectiveFormat = resolvedDL?.format
-                            ?? style.seriesFormats?.[series.key]
-                            ?? style.numberFormat;
-                          const styleForLabel = effectiveFormat
-                            ? { ...style, numberFormat: effectiveFormat }
-                            : style;
-                          const text = style.dataLabelTemplate
-                            ? renderTemplatedLabel({
-                                template: style.dataLabelTemplate,
-                                value: total,
-                                seriesKey: series.key,
-                                seriesLabel: series.label,
-                                dimensionValue: payload?.[xField ?? ''],
-                                style: styleForLabel,
-                              })
-                            : formatNumber(total, styleForLabel);
-                          const approxW = text.length * dlFontSize * 0.6;
-                          return (
-                            <g transform={dlRotation !== 0 ? `rotate(${dlRotation} ${cx} ${cy})` : undefined}>
-                              {dlBackground && (
-                                <rect x={cx - approxW / 2 - 3} y={cy - dlFontSize}
-                                      width={approxW + 6} height={dlFontSize + 4}
-                                      rx={2} ry={2} fill={dlBgColor} />
-                              )}
-                              <text x={cx} y={cy}
-                                textAnchor="middle"
-                                fill={dlTotalColor} fontSize={dlFontSize}
-                                style={{ pointerEvents: 'none' }}>
-                                {text}
-                              </text>
-                            </g>
-                          );
-                        }}
-                      />
-                    )}
-                  </Bar>
+              {(() => {
+                // Phase-15.89 — STACKED_BAR has TWO label concepts:
+                //
+                //   - Per-segment: value text inside each bar segment
+                //     (one per series per row). Position/rotation/font
+                //     resolved from per-series override. User-facing
+                //     setting: stackedBarLabelMode ∈ {segment,both} or
+                //     isPercent==true.
+                //   - Stack total: value text above the top of the stack.
+                //     Single label per row, uses CHART-LEVEL DataLabelConfig
+                //     (not the top-of-stack series' override — semantically
+                //     it's the chart total, not "the top series").
+                //     Setting: stackedBarLabelMode ∈ {total,both} when
+                //     !isPercent.
+                //
+                // Default mode is 'total' for backward compat (legacy
+                // STACKED rendered only the top-of-stack total).
+                const stackMode = style.stackedBarLabelMode ?? 'total';
+                const showSegmentLabels = showDataLabels && (
+                  isPercent || stackMode === 'segment' || stackMode === 'both'
                 );
-              })}
+                const showTotalLabels = showDataLabels && !isPercent && (
+                  stackMode === 'total' || stackMode === 'both'
+                );
+                // Chart-level DL style for the TOTAL label (uses series.key=''
+                // so it walks through dlc.{position,fontSize,...} not
+                // overrides[topSeries]). Position 'top' is the only one
+                // meaningful for the total — the rest pin to the segment.
+                const totalDL = showTotalLabels
+                  ? resolveDataLabelStyle(style, '')
+                  : null;
+                return displaySeries.map((series, i) => {
+                  const isTopOfStack = i === displaySeries.length - 1;
+                  // Per-series resolved style (override > chart-level).
+                  const segDL = showSegmentLabels
+                    ? resolveDataLabelStyle(style, series.key)
+                    : null;
+                  return (
+                    <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
+                      name={series.label}
+                      hide={hiddenSeries.has(series.key)}
+                      barSize={barSize}
+                      radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
+                      {/* Per-segment % label (percent mode) */}
+                      {segDL && isPercent && (
+                        <LabelList
+                          dataKey={series.key}
+                          content={(props: any) => {
+                            const { x, y, width, height, value, index } = props;
+                            const total = stackTotalsByIndex[index] || 0;
+                            if (!total) return null;
+                            const pct = (Number(value) / total) * 100;
+                            if (pct < 4) return null;
+                            // Position relative to segment (top/center/bottom).
+                            const pos = segDL.position;
+                            const cx = x + width / 2;
+                            const cy = pos === 'top' || pos === 'insideTop'
+                              ? y + segDL.fontSize - 1
+                              : pos === 'bottom' || pos === 'insideBottom'
+                                ? y + height - 4
+                                : y + height / 2; // inside/center default
+                            const text = `${pct.toFixed(0)}%`;
+                            const approxW = text.length * segDL.fontSize * 0.6;
+                            const rotate = segDL.rotation !== 0
+                              ? `rotate(${segDL.rotation} ${cx} ${cy})`
+                              : undefined;
+                            return (
+                              <g transform={rotate}>
+                                {segDL.background && (
+                                  <rect x={cx - approxW / 2 - 3} y={cy - segDL.fontSize / 2 - 1}
+                                        width={approxW + 6} height={segDL.fontSize + 2}
+                                        rx={2} ry={2} fill={segDL.backgroundColor} />
+                                )}
+                                <text x={cx} y={cy}
+                                  textAnchor="middle" dominantBaseline="middle"
+                                  fill={segDL.fontColor === 'currentColor' ? '#fff' : segDL.fontColor}
+                                  fontSize={segDL.fontSize}
+                                  style={{ pointerEvents: 'none' }}>
+                                  {text}
+                                </text>
+                              </g>
+                            );
+                          }}
+                        />
+                      )}
+                      {/* Per-segment value label (normal mode segment/both) */}
+                      {segDL && !isPercent && (stackMode === 'segment' || stackMode === 'both') && (
+                        <LabelList
+                          dataKey={series.key}
+                          content={(props: any) => {
+                            const { x, y, width, height, value, payload } = props;
+                            if (value == null || value === 0) return null;
+                            // Skip when segment too narrow to fit text.
+                            if (height < segDL.fontSize + 2) return null;
+                            const pos = segDL.position;
+                            const cx = x + width / 2;
+                            const cy = pos === 'top' || pos === 'insideTop'
+                              ? y + segDL.fontSize
+                              : pos === 'bottom' || pos === 'insideBottom'
+                                ? y + height - 4
+                                : y + height / 2; // inside/center default
+                            const fmt = segDL.format
+                              ?? style.seriesFormats?.[series.key]
+                              ?? style.numberFormat;
+                            const sf = fmt ? { ...style, numberFormat: fmt } : style;
+                            const text = style.dataLabelTemplate
+                              ? renderTemplatedLabel({
+                                  template: style.dataLabelTemplate,
+                                  value,
+                                  seriesKey: series.key,
+                                  seriesLabel: series.label,
+                                  dimensionValue: payload?.[xField ?? ''],
+                                  style: sf,
+                                })
+                              : formatNumber(value, sf, series.key);
+                            const approxW = text.length * segDL.fontSize * 0.6;
+                            const rotate = segDL.rotation !== 0
+                              ? `rotate(${segDL.rotation} ${cx} ${cy})`
+                              : undefined;
+                            return (
+                              <g transform={rotate}>
+                                {segDL.background && (
+                                  <rect x={cx - approxW / 2 - 3} y={cy - segDL.fontSize / 2 - 1}
+                                        width={approxW + 6} height={segDL.fontSize + 2}
+                                        rx={2} ry={2} fill={segDL.backgroundColor} />
+                                )}
+                                <text x={cx} y={cy}
+                                  textAnchor="middle" dominantBaseline="middle"
+                                  fill={segDL.fontColor === 'currentColor' ? '#fff' : segDL.fontColor}
+                                  fontSize={segDL.fontSize}
+                                  style={{ pointerEvents: 'none' }}>
+                                  {text}
+                                </text>
+                              </g>
+                            );
+                          }}
+                        />
+                      )}
+                      {/* Stack total label — only emit on the top-of-stack
+                          series so it renders ONCE per row. Uses chart-
+                          level DL config (totalDL), not series override. */}
+                      {totalDL && isTopOfStack && (
+                        <LabelList
+                          dataKey={series.key}
+                          content={(props: any) => {
+                            const { x, y, width, index, payload } = props;
+                            const total = stackTotalsByIndex[index] || 0;
+                            if (!total) return null;
+                            const cx = x + width / 2;
+                            const cy = Math.max(12, y - 6);
+                            const fmt = totalDL.format ?? style.numberFormat;
+                            const sf = fmt ? { ...style, numberFormat: fmt } : style;
+                            const text = style.dataLabelTemplate
+                              ? renderTemplatedLabel({
+                                  template: style.dataLabelTemplate,
+                                  value: total,
+                                  seriesKey: 'stack-total',
+                                  seriesLabel: 'Total',
+                                  dimensionValue: payload?.[xField ?? ''],
+                                  style: sf,
+                                })
+                              : formatNumber(total, sf);
+                            const approxW = text.length * totalDL.fontSize * 0.6;
+                            const totalColor = totalDL.fontColor === 'currentColor'
+                              ? 'rgb(var(--text-secondary))'
+                              : totalDL.fontColor;
+                            const rotate = totalDL.rotation !== 0
+                              ? `rotate(${totalDL.rotation} ${cx} ${cy})`
+                              : undefined;
+                            return (
+                              <g transform={rotate}>
+                                {totalDL.background && (
+                                  <rect x={cx - approxW / 2 - 3} y={cy - totalDL.fontSize}
+                                        width={approxW + 6} height={totalDL.fontSize + 4}
+                                        rx={2} ry={2} fill={totalDL.backgroundColor} />
+                                )}
+                                <text x={cx} y={cy}
+                                  textAnchor="middle"
+                                  fill={totalColor} fontSize={totalDL.fontSize}
+                                  style={{ pointerEvents: 'none' }}>
+                                  {text}
+                                </text>
+                              </g>
+                            );
+                          }}
+                        />
+                      )}
+                    </Bar>
+                  );
+                });
+              })()}
               {renderBenchmarkLine('y')}
               {renderAnnotations()}
             </BarChart>,

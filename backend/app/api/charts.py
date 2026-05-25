@@ -647,6 +647,8 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "calculatedFields",
     # Phase-15.84 — granular data-label config (DataLabelConfig).
     "dataLabelConfig",
+    # Phase-15.89 — STACKED_BAR label mode ('segment' | 'total' | 'both').
+    "stackedBarLabelMode",
 }
 
 
