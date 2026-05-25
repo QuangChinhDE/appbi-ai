@@ -2037,10 +2037,16 @@ function DataLabelsEditor({
   );
 }
 
-function Disclosure({ title, hint, defaultOpen = false, children }: {
+function Disclosure({ title, hint, defaultOpen = false, children, forceOpen, hidden }: {
   title: string; hint?: string; defaultOpen?: boolean; children: React.ReactNode;
+  /** Phase-15.92 — when set, parent (eg. search filter) overrides local open state. */
+  forceOpen?: boolean;
+  /** Phase-15.92 — hide entirely when filtered out by search. */
+  hidden?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  if (hidden) return null;
+  const isOpen = forceOpen ?? open;
   return (
     <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2/70 px-3 py-2">
       <button
@@ -2052,9 +2058,67 @@ function Disclosure({ title, hint, defaultOpen = false, children }: {
           <span>{title}</span>
           {hint && <HelpTooltip text={hint} />}
         </span>
-        <ChevronDown className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
-      {open && <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">{children}</div>}
+      {isOpen && <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * Phase-15.92 — FormatGroup: PowerBI-style group header that wraps a set
+ * of related Disclosures (sections). Each group shows:
+ *
+ *   - A coloured dot indicator (⚫ active / ⚪ default) telling DA at a
+ *     glance whether anything in this group has been customised.
+ *   - A collapse caret so DA can fold whole groups.
+ *
+ * Search integration: when `matchesSearch=false`, the group hides
+ * entirely. When `matchesSearch=true` AND `searchActive=true`, the
+ * group force-opens so matched sections inside are visible without an
+ * extra click.
+ */
+function FormatGroup({
+  title,
+  hasCustomization,
+  defaultOpen = true,
+  matchesSearch = true,
+  searchActive = false,
+  children,
+}: {
+  title: string;
+  /** Show ⚫ dot when any setting in this group differs from defaults. */
+  hasCustomization: boolean;
+  defaultOpen?: boolean;
+  /** False = hide group entirely (filtered out by search). */
+  matchesSearch?: boolean;
+  /** Indicates the user has typed in the search box — force-open matching groups. */
+  searchActive?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!matchesSearch) return null;
+  const isOpen = searchActive ? true : open;
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        disabled={searchActive}
+        className="flex w-full items-center gap-2 px-1 py-1.5 text-left hover:bg-surface-2/40 rounded transition-colors disabled:hover:bg-transparent"
+      >
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${isOpen ? '' : '-rotate-90'}`}
+        />
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${hasCustomization ? 'bg-brand' : 'bg-text-quaternary/40'}`}
+          title={hasCustomization ? 'Has custom settings' : 'Default settings'}
+        />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-text-secondary">
+          {title}
+        </span>
+      </button>
+      {isOpen && <div className="space-y-2 pl-1">{children}</div>}
     </div>
   );
 }
@@ -3076,25 +3140,6 @@ export function ExploreChartConfig({
     (patch: Partial<ChartStyleConfig>) => onStyleConfigChange({ ...styleConfig, ...patch }),
     [styleConfig, onStyleConfigChange]
   );
-  // Phase-15.91 — collapse the 7 advanced disclosures (Series mix,
-  // Per-series format, Tooltip extras, Data label template, Annotations,
-  // Conditional colors, Calc fields) behind a single toggle. DA complained
-  // the Style tab was overwhelming on first open. Persist the choice in
-  // localStorage so power users don't have to click every visit.
-  const [showAdvancedTools, setShowAdvancedTools] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try { return window.localStorage.getItem('explore.showAdvancedTools') === 'true'; }
-    catch { return false; }
-  });
-  const toggleAdvancedTools = useCallback(() => {
-    setShowAdvancedTools((prev) => {
-      const next = !prev;
-      try { window.localStorage.setItem('explore.showAdvancedTools', String(next)); }
-      catch {}
-      return next;
-    });
-  }, []);
-
   // Phase-13.4: set / clear a per-field time grain. Keep timeGrains
   // undefined when empty so legacy chart configs that never used
   // grains stay byte-identical (no spurious diff on save).
@@ -3201,8 +3246,18 @@ export function ExploreChartConfig({
   const chartSortRules = normalizedStyleConfig.chartSortRules ?? [];
   const sortLimitCols = sortLimitColumns;
   const quickViewStep = isStyleOnly ? 'Step 1' : 'Step 3';
-  const advancedStep = isStyleOnly ? 'Step 2' : 'Step 4';
   const tableSectionStep = isStyleOnly ? 'Step 1' : 'Step 2';
+  // Phase-15.92 — Format-pane search. Lets DA jump directly to a group
+  // by keyword (eg. "axis", "label", "color"). Match is case-insensitive,
+  // checked against a fixed bag of keywords per FormatGroup below. Empty
+  // query = all groups visible.
+  const [formatSearch, setFormatSearch] = useState('');
+  const formatSearchActive = formatSearch.trim().length > 0;
+  const formatSearchLower = formatSearch.trim().toLowerCase();
+  const matchesFormatSearch = useCallback((keywords: string[]) => {
+    if (!formatSearchActive) return true;
+    return keywords.some((k) => k.toLowerCase().includes(formatSearchLower));
+  }, [formatSearchActive, formatSearchLower]);
   const kpiSetupStep = isStyleOnly ? 'Step 1' : 'Step 3';
   const currentChartTypeMeta = useMemo(
     () => CHART_TYPE_GRID.find((item) => item.value === chartType) ?? DEFAULT_CHART_TYPE_META,
@@ -4619,13 +4674,51 @@ export function ExploreChartConfig({
       )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: General ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
+      {/* Phase-15.92 — Format pane (PowerBI-style). Merges what used to be
+          two SectionPanels ("Quick View" + "Advanced") into a single
+          "Format" panel with 3 collapsible FormatGroups: Visual / Axes &
+          Scale / Advanced. The "Most-used Settings" inner Disclosure was
+          removed — its content lives directly under the Visual group. */}
       {showQuickView && (
         <SectionPanel
           step={quickViewStep}
-          title="Quick View"
-          description="Keep the most-used presentation controls together, then open Advanced only if the preview still needs extra tuning."
+          title="Format"
+          description="Style the chart. Visual covers the everyday controls; open Axes & Scale or Advanced when you need extra tuning."
         >
-        <Disclosure title="Most-used Settings" defaultOpen>
+        {/* Phase-15.92 — search box: filter groups by keyword. */}
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-quaternary pointer-events-none" />
+          <input
+            type="text"
+            value={formatSearch}
+            onChange={e => setFormatSearch(e.target.value)}
+            placeholder="Search settings (eg. axis, label, color)…"
+            className="w-full pl-7 pr-7 py-1.5 text-xs border border-[rgb(var(--border-line))] rounded-md bg-surface-1"
+          />
+          {formatSearch && (
+            <button
+              type="button"
+              onClick={() => setFormatSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-quaternary hover:text-text-secondary"
+              title="Clear search"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+
+        <FormatGroup
+          title="Visual"
+          defaultOpen
+          matchesSearch={matchesFormatSearch(['visual', 'chart title', 'color palette', 'series colors', 'number format', 'legend', 'data labels', 'donut', 'stack mode'])}
+          searchActive={formatSearchActive}
+          hasCustomization={Boolean(
+            styleConfig.chartTitle || styleConfig.palette || styleConfig.seriesColors ||
+            styleConfig.numberFormat || styleConfig.legendPosition ||
+            styleConfig.dataLabelConfig?.enabled || styleConfig.showDataLabels ||
+            styleConfig.pieInnerRadius || styleConfig.stackMode === 'percent'
+          )}
+        >
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           {/* Chart Title */}
           <div>
@@ -4661,44 +4754,40 @@ export function ExploreChartConfig({
             </div>
           )}
 
-          <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1.5 block">Color Palette</label>
-            <div className="space-y-1.5">
-              {CHART_PALETTES.map(p => (
-                <button
-                  key={p.name}
-                  type="button"
-                  onClick={() => updStyle({ palette: p.name })}
-                  className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                    (styleConfig.palette || 'default') === p.name
-                      ? 'border-brand/40 bg-brand/10'
-                      : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className={`text-xs font-medium ${
-                      (styleConfig.palette || 'default') === p.name ? 'text-brand' : 'text-text-secondary'
-                    }`}>
-                      {p.label}
-                    </span>
-                    {(styleConfig.palette || 'default') === p.name && (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
-                    )}
-                  </div>
-
-                  <div className="mt-2 flex items-center gap-1">
-                    {p.colors.slice(0, 6).map((c, i) => (
+          {/* Phase-15.92 — compact Color Palette: dropdown + inline
+              swatch preview of the currently-selected palette. The old
+              5-card layout took ~30% of the panel's height for a one-off
+              pick; dropdown collapses it to one row while still showing
+              the colours. */}
+          {(() => {
+            const activePaletteName = styleConfig.palette || 'default';
+            const activePalette = CHART_PALETTES.find(p => p.name === activePaletteName) ?? CHART_PALETTES[0];
+            return (
+              <div>
+                <label className="text-xs font-semibold text-text-secondary mb-1 block">Color Palette</label>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={activePaletteName}
+                    onChange={e => updStyle({ palette: e.target.value as ChartPaletteName })}
+                    className="flex-1 px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                  >
+                    {CHART_PALETTES.map(p => (
+                      <option key={p.name} value={p.name}>{p.label}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-0.5" title={`${activePalette.label} palette`}>
+                    {activePalette.colors.slice(0, 6).map((c, i) => (
                       <div
                         key={i}
-                        className="h-3.5 w-3.5 rounded-sm border border-white/70"
+                        className="h-4 w-4 rounded-sm border border-[rgb(var(--border-line))]"
                         style={{ backgroundColor: c }}
                       />
                     ))}
                   </div>
-                </button>
-              ))}
-            </div>
-          </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Per-series color overrides (visible when chart has identifiable series).
               Phase-15.82 bugfix — DA reported the list rendering raw timestamps
@@ -4720,24 +4809,62 @@ export function ExploreChartConfig({
             />
           )}
 
-          {/* Phase-15.91 — single "Show advanced tools" toggle hides the 7
-              power-user disclosures (Series mix, Per-series format, Tooltip
-              extras, Label template, Annotations, Conditional colors, Calc
-              fields) from the default Setup view. DA reported these felt
-              "too advent" on first open. localStorage-backed so power users
-              keep them open across sessions. */}
-          <button
-            type="button"
-            onClick={toggleAdvancedTools}
-            className="flex w-full items-center justify-between rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
-          >
-            <span>{showAdvancedTools ? 'Hide advanced tools' : 'Show advanced tools'}</span>
-            <span className="text-text-quaternary">
-              {showAdvancedTools ? '−' : '+'} Series mix, per-series format, label template, annotations, conditional colors, calculated fields
-            </span>
-          </button>
+          {/* Phase-15.92 — Number Format moved up from end of panel so
+              the basic display unit setting sits next to other common
+              controls instead of below the Advanced cluster. */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
+            <select value={styleConfig.numberFormat || 'compact'}
+              onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+              <option value="auto">Auto (raw)</option>
+              <option value="compact">Compact (1.2K, 3.4M)</option>
+              <option value="number">Full Number (1,234)</option>
+              <option value="percent">Percent (%)</option>
+              <option value="currency">Currency ($)</option>
+            </select>
+          </div>
 
-          {showAdvancedTools && (<>
+          {/* Phase-15.92 — Legend moved up alongside Number Format. */}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
+            <select value={styleConfig.legendPosition || 'bottom'}
+              onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+              <option value="top">Top</option>
+              <option value="bottom">Bottom</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+              <option value="none">Hidden</option>
+            </select>
+          </div>
+        </FormatGroup>
+
+        {/* Phase-15.92 — Advanced group. Replaces the old "Show advanced
+            tools" button. Default collapsed so first-time DA sees a clean
+            panel; power users expand once and the FormatGroup state
+            persists for the editor session. Contains the power-user
+            disclosures: Series mix, Per-series fmt, Tooltip extras,
+            Annotations, Conditional colors, Calc fields, Data Labels. */}
+        <FormatGroup
+          title="Advanced"
+          defaultOpen={false}
+          matchesSearch={matchesFormatSearch(['advanced', 'series mix', 'per-series', 'tooltip', 'annotation', 'conditional', 'calculated', 'data label', 'template'])}
+          searchActive={formatSearchActive}
+          hasCustomization={Boolean(
+            (styleConfig.seriesRenderAs && Object.keys(styleConfig.seriesRenderAs).length > 0) ||
+            (styleConfig.seriesFormats && Object.keys(styleConfig.seriesFormats).length > 0) ||
+            (styleConfig.tooltipExtraFields && styleConfig.tooltipExtraFields.length > 0) ||
+            styleConfig.dataLabelTemplate ||
+            (styleConfig.annotations && styleConfig.annotations.length > 0) ||
+            (styleConfig.seriesConditionalRules && styleConfig.seriesConditionalRules.length > 0) ||
+            (styleConfig.calculatedFields && styleConfig.calculatedFields.length > 0)
+          )}
+        >
+          <>
+            {/* Phase-15.92 — Data Labels moved here (was after the Advanced
+                button). Keeping it in Advanced means default Visual stays
+                minimal; DA who wants labels opens Advanced once. */}
           {/* Phase-15.82 — free-form series mix (BAR_LINE only) */}
           {chartType === 'BAR_LINE' && availableSeriesKeys.length > 0 && (
             <Disclosure
@@ -5230,17 +5357,8 @@ export function ExploreChartConfig({
             </div>
             </Disclosure>
           )}
-          </>)}
 
-          {/* Phase-15.84 — Data Labels editor (replaces the bare on/off
-              toggle that used to live here). Wrapped in its own
-              Disclosure so it stays out of the way until DA opens it.
-              Hidden entirely for:
-                - SCATTER / BUBBLE: use `scatterLabelField` instead
-                - PODIUM: medal renders its own value text
-                - KPI / GAUGE / BULLET: no data points to label
-                - TABLE / MATRIX: no labels (cells already show values)
-              */}
+          {/* Data Labels — moved into Advanced group (Phase-15.92). */}
           {(() => {
             const noLabelTypes = new Set(['PODIUM', 'KPI', 'GAUGE', 'BULLET']);
             const hideEditor = isScatterLike || isTableLike || noLabelTypes.has(chartType);
@@ -5260,46 +5378,37 @@ export function ExploreChartConfig({
               </Disclosure>
             );
           })()}
-
-          {/* Number format */}
-          <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
-            <select value={styleConfig.numberFormat || 'compact'}
-              onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
-              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="auto">Auto (raw)</option>
-              <option value="compact">Compact (1.2K, 3.4M)</option>
-              <option value="number">Full Number (1,234)</option>
-              <option value="percent">Percent (%)</option>
-              <option value="currency">Currency ($)</option>
-            </select>
-          </div>
-
-          {/* Legend position */}
-          <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
-            <select value={styleConfig.legendPosition || 'bottom'}
-              onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
-              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="top">Top</option>
-              <option value="bottom">Bottom</option>
-              <option value="left">Left</option>
-              <option value="right">Right</option>
-              <option value="none">Hidden</option>
-            </select>
-          </div>
-
-        </Disclosure>
+          </>
+        </FormatGroup>
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Axis ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-        </SectionPanel>
-      )}
-      {hasAdvancedControls && (
-        <SectionPanel
-          step={advancedStep}
-          title="Advanced"
-          description="Open these only when you need extra control over scale, reference lines, or chart-specific shape details."
-        >
+        {/* Phase-15.92 — Axes & Scale group (was a separate "Advanced"
+            SectionPanel as Step 4). Merged into the Format pane so DA
+            only sees ONE step for styling, matching PBI's single
+            "Format" pane. Contains all the scale / axis / shape /
+            reference-line / sort controls. */}
+        {hasAdvancedControls && (
+          <FormatGroup
+            title="Axes & Scale"
+            defaultOpen={false}
+            matchesSearch={matchesFormatSearch(['axis', 'axes', 'scale', 'grid', 'benchmark', 'bar', 'line', 'dual', 'time', 'granularity', 'point', 'sort', 'limit'])}
+            searchActive={formatSearchActive}
+            hasCustomization={Boolean(
+              styleConfig.xAxisLabel || styleConfig.yAxisLabel ||
+              (styleConfig.yAxisMin !== undefined && styleConfig.yAxisMin !== '') ||
+              (styleConfig.yAxisMax !== undefined && styleConfig.yAxisMax !== '') ||
+              styleConfig.showGrid === false ||
+              styleConfig.showBenchmarkLine ||
+              styleConfig.barRadius !== undefined ||
+              styleConfig.barSize !== undefined ||
+              styleConfig.lineStyle === 'dashed' ||
+              styleConfig.lineWidth !== undefined ||
+              styleConfig.dualYAxis ||
+              styleConfig.timeGranularity ||
+              styleConfig.scatterLabelField ||
+              (chartSortRules && chartSortRules.length > 0)
+            )}
+          >
         {hasAxis && (
         <Disclosure title="Axes & Scale">
           <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
@@ -5549,6 +5658,8 @@ export function ExploreChartConfig({
               explicit feature rather than a default cap. */}
         </Disclosure>
       )}
+          </FormatGroup>
+        )}
         </SectionPanel>
       )}
     </div>
