@@ -177,13 +177,42 @@ export function FieldList({ columns }: FieldListProps) {
 //   - Body: search + checklist (multi), radio list (single), preset+range
 //     (date), or input pair + slider (number between).
 //
+/** Phase-15.94 — cascading filters that the BE could not apply when
+ * loading this card's distinct values. Rendered as an amber banner at
+ * the top of the body so the user understands why the list might look
+ * shorter or wider than expected. */
+export interface FilterCardDroppedInfo {
+  field: string;
+  reason: string;
+  detail?: string;
+}
+
 interface FilterCardPBIProps {
   filter: BaseFilter;
   distinctValues?: string[];
+  /** Optional list of cascading filters the BE dropped when computing
+   * distinctValues for this card. */
+  droppedFilters?: FilterCardDroppedInfo[];
   onChange: (next: BaseFilter) => void;
   onRemove: () => void;
 }
-export function FilterCardPBI({ filter, distinctValues = [], onChange, onRemove }: FilterCardPBIProps) {
+
+function dropReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'no_join_path':
+      return 'không có đường JOIN giữa hai view';
+    case 'view_not_found':
+      return 'không tìm thấy view trong dataset';
+    case 'field_not_on_view':
+      return 'view không có cột tương ứng';
+    case 'no_field':
+      return 'filter thiếu field';
+    default:
+      return reason;
+  }
+}
+
+export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onChange, onRemove }: FilterCardPBIProps) {
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState(filter.label ?? '');
   const [search, setSearch] = useState('');
@@ -283,6 +312,23 @@ export function FilterCardPBI({ filter, distinctValues = [], onChange, onRemove 
 
       {/* Body */}
       <div className="px-2 py-2 space-y-1.5">
+        {/* Phase-15.94 — dropped-cascade banner */}
+        {droppedFilters && droppedFilters.length > 0 && (
+          <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+            <p className="font-medium">Một số filter bị bỏ qua khi tải danh sách này</p>
+            <ul className="mt-0.5 list-disc pl-4 text-amber-700">
+              {droppedFilters.slice(0, 3).map((d, i) => (
+                <li key={`${d.field}-${i}`}>
+                  <span className="font-mono">{d.field}</span> — {dropReasonLabel(d.reason)}
+                </li>
+              ))}
+              {droppedFilters.length > 3 && (
+                <li>+{droppedFilters.length - 3} filter khác…</li>
+              )}
+            </ul>
+          </div>
+        )}
+
         {/* Mode toggle (categorical only) */}
         {supportsModeToggle && (
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
@@ -567,6 +613,10 @@ type Scope = 'page' | 'all';
 export interface FilterPaneProps {
   columns: ColumnInfo[];
   distinctValues: Record<string, string[]>;
+  /** Phase-15.94 — cascading filters the BE could not apply when computing
+   * each card's distinct values. Keyed by the card's columnKey (fieldKey
+   * || field). Each entry feeds the in-card amber banner. */
+  droppedFiltersByColumn?: Record<string, FilterCardDroppedInfo[]>;
   /** "Filters on this page" */
   pageFilters: BaseFilter[];
   pageLabel: string;
@@ -590,6 +640,7 @@ export interface FilterPaneProps {
 export function FilterPane({
   columns,
   distinctValues,
+  droppedFiltersByColumn,
   pageFilters,
   pageLabel,
   onChangePageFilters,
@@ -671,6 +722,7 @@ export function FilterPane({
           onAddFilter={(key) => sectionAddFilter('page', key)}
           onChange={onChangePageFilters}
           distinctValues={distinctValues}
+          droppedFiltersByColumn={droppedFiltersByColumn}
         />
         <Section
           scope="all"
@@ -683,6 +735,7 @@ export function FilterPane({
           onAddFilter={(key) => sectionAddFilter('all', key)}
           onChange={onChangeAllFilters}
           distinctValues={distinctValues}
+          droppedFiltersByColumn={droppedFiltersByColumn}
         />
       </div>
 
@@ -758,8 +811,9 @@ interface SectionProps {
   onAddFilter: (columnKey: string) => void;
   onChange: (next: BaseFilter[]) => void;
   distinctValues: Record<string, string[]>;
+  droppedFiltersByColumn?: Record<string, FilterCardDroppedInfo[]>;
 }
-function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues }: SectionProps) {
+function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, droppedFiltersByColumn }: SectionProps) {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -835,6 +889,7 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
               key={f.id}
               filter={f}
               distinctValues={distinctValues[f.fieldKey ?? f.field] ?? []}
+              droppedFilters={droppedFiltersByColumn?.[f.fieldKey ?? f.field]}
               onChange={(next) => onChange(filters.map((x) => x.id === next.id ? next : x))}
               onRemove={() => onChange(filters.filter((x) => x.id !== f.id))}
             />

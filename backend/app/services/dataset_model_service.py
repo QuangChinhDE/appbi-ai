@@ -2214,7 +2214,17 @@ def get_distinct_field_values(
     field: str,
     limit: int = 200,
     filters: list[dict] | None = None,
-) -> list[str]:
+) -> dict:
+    """Return distinct values + dropped-filter diagnostics.
+
+    Shape: ``{"values": [...], "dropped_filters": [{...}]}``. Returning a
+    dict (instead of just ``list[str]``) is the Phase-15.94 fix for the
+    silently-broken cascading dropdown: when a cascading filter targets
+    a view that has no join path to the dropdown's owner view, the
+    dropdown previously returned a shorter list and the user assumed
+    the data was wrong. Now the dropped filters surface to the FE so the
+    user sees a banner naming which filters were ignored.
+    """
     if "." not in field:
         raise ValueError("Field must be qualified as view.field")
 
@@ -2381,11 +2391,56 @@ def get_distinct_field_values(
             return f"{field_expression} IS NOT NULL"
         return None
 
+    def _record_dropped(
+        dropped: list[dict],
+        filter_condition: dict,
+        reason: str,
+        detail: str,
+    ) -> None:
+        """Append a structured diagnostic for one dropped cascading filter."""
+        record = {
+            "field": str(
+                filter_condition.get("field")
+                or filter_condition.get("semanticField")
+                or ""
+            ),
+            "semantic_field": filter_condition.get("semanticField") or filter_condition.get("fieldKey"),
+            "operator": filter_condition.get("operator"),
+            "reason": reason,
+            "detail": detail,
+        }
+        if not any(
+            (
+                existing.get("field") == record["field"]
+                and existing.get("operator") == record["operator"]
+                and existing.get("reason") == record["reason"]
+            )
+            for existing in dropped
+        ):
+            dropped.append(record)
+        logger.warning(
+            "[distinct-values] dropped filter field=%s reason=%s detail=%s",
+            record["field"],
+            reason,
+            detail,
+        )
+
     def _build_distinct_sql(
         base_sql: str,
         datasource_obj,
         dialect: str,
+        dropped: list[dict],
     ) -> str:
+        """Phase-15.94 — Cascading filter strategy switched from
+        `LEFT JOIN dim_X ... WHERE dim_X.col = ...` (which acted as an
+        INNER JOIN and silently dropped base rows lacking a match) to
+        per-filter EXISTS subqueries that preserve base cardinality.
+
+        When the resolver cannot find a join path from this dropdown's
+        owner view to the cascading filter's view, the filter is
+        recorded in `dropped` (so the FE can show a banner) instead of
+        being silently skipped.
+        """
         base_alias = "_appbi_base"
         target_expr = f"{base_alias}.{_quote_identifier(field_name, dialect)}"
         normalized_filters = [
@@ -2411,14 +2466,12 @@ def get_distinct_field_values(
         from app.services.semantic_join_resolver import SemanticJoinResolver
 
         model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
-        # Use bidirectional=True so views that are normally join *targets*
+        # bidirectional=True so views that are normally join *targets*
         # (e.g. "users" in orders→users) can still reach the explore base
         # view when resolving cascading filter conditions.
         resolver = SemanticJoinResolver(db, model, view_name, bidirectional=True)
         view_cache: dict[str, SemanticView | None] = {}
-        materialized_steps: dict[tuple[str, str], str] = {}
-        join_clauses: list[str] = []
-        next_join_index = 0
+        next_exists_index = [0]
 
         def _get_view(node_or_view: str) -> SemanticView | None:
             actual_view = resolver.view_for_node(node_or_view) or node_or_view
@@ -2446,82 +2499,207 @@ def get_distinct_field_values(
             view_cache[actual_view] = result
             return result
 
-        def _alias_for_node(node: str) -> str | None:
-            nonlocal next_join_index
-            if node == view_name:
-                return base_alias
+        def _next_alias() -> str:
+            alias = f"_appbi_distinct_exists_{next_exists_index[0]}"
+            next_exists_index[0] += 1
+            return alias
+
+        def _build_exists_for_path(node: str, name: str) -> str | None:
+            """Build an `EXISTS (SELECT 1 FROM ...)` subquery whose
+            inner JOIN chain mirrors the resolver path and whose first
+            hop correlates back to the outer base_alias.
+
+            Returns None when:
+            - the path cannot be resolved
+            - any view along the path is missing
+            - the back-edge to base_alias cannot be expressed
+            The caller is expected to also evaluate the filter
+            predicate on the leaf table inside the EXISTS body.
+            """
             path = resolver.resolve_path(node)
-            if path is None:
+            if path is None or path.is_empty():
                 return None
 
-            prev_alias = base_alias
-            last_alias = prev_alias
-            for step in path.steps:
-                cache_key = (prev_alias, step.edge.to_node)
-                existing_alias = materialized_steps.get(cache_key)
-                if existing_alias is not None:
-                    last_alias = existing_alias
-                    prev_alias = existing_alias
-                    continue
+            # Materialise the path's joins inside the EXISTS body.
+            # SQL shape:
+            #   EXISTS (
+            #     SELECT 1
+            #     FROM <first_hop_rel> AS d0
+            #     [INNER JOIN <next_hop_rel> AS d1 ON ...]*
+            #     WHERE <correlation back to base_alias>
+            #       AND <leaf filter predicate>
+            #   )
+            # We render the first hop as a bare FROM (no ON) and push
+            # its correlation condition into the WHERE clause — SQL
+            # forbids `ON` directly after `FROM`. Subsequent hops use
+            # INNER JOIN ... ON ... as usual.
+            inner_aliases: list[str] = []
+            inner_views: list[SemanticView] = []
+            sql_pieces: list[str] = []
+            correlation_predicates: list[str] = []
+            prev_alias: str | None = None
 
+            for step in path.steps:
                 joined_view = _get_view(step.edge.to_node)
                 if joined_view is None:
                     return None
                 relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
                 if not relation:
                     return None
-                new_alias = f"_appbi_distinct_join_{next_join_index}"
-                next_join_index += 1
-                condition = _render_step_join_condition(
-                    step.edge,
-                    from_alias=prev_alias,
-                    to_alias=new_alias,
-                )
-                to_col = step.edge.to_column
-                if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
-                    from_col = step.edge.from_column
-                    if from_col and _semantic_view_has_field(joined_view, from_col):
-                        condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
-                    else:
-                        condition = None
-                if not condition:
-                    return None
-                join_kw = (step.edge.type or "left").upper()
-                join_clauses.append(
-                    f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} "
-                    f"ON {condition}"
-                )
-                materialized_steps[cache_key] = new_alias
-                last_alias = new_alias
+                new_alias = _next_alias()
+                inner_aliases.append(new_alias)
+                inner_views.append(joined_view)
+
+                if prev_alias is None:
+                    # First hop: correlate back to the outer base view
+                    # via the edge from-column / to-column pair so the
+                    # EXISTS is bound to the outer row, not a Cartesian
+                    # product. The condition lives in the WHERE clause.
+                    condition = _render_step_join_condition(
+                        step.edge,
+                        from_alias=base_alias,
+                        to_alias=new_alias,
+                    )
+                    to_col = step.edge.to_column
+                    if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
+                        from_col = step.edge.from_column
+                        if from_col and _semantic_view_has_field(joined_view, from_col):
+                            condition = f"{base_alias}.{from_col} = {new_alias}.{from_col}"
+                        else:
+                            condition = None
+                    if not condition:
+                        return None
+                    sql_pieces.append(f"FROM {_wrap_live_sql_relation(relation)} AS {new_alias}")
+                    correlation_predicates.append(condition)
+                else:
+                    condition = _render_step_join_condition(
+                        step.edge,
+                        from_alias=prev_alias,
+                        to_alias=new_alias,
+                    )
+                    to_col = step.edge.to_column
+                    if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
+                        from_col = step.edge.from_column
+                        if from_col and _semantic_view_has_field(joined_view, from_col):
+                            condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
+                        else:
+                            condition = None
+                    if not condition:
+                        return None
+                    join_kw = (step.edge.type or "inner").upper()
+                    # Inside EXISTS we don't need outer joins — base
+                    # cardinality is already preserved by the EXISTS
+                    # wrapper. Force INNER so the predicate is strict.
+                    if join_kw in {"LEFT", "RIGHT", "FULL"}:
+                        join_kw = "INNER"
+                    sql_pieces.append(
+                        f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} ON {condition}"
+                    )
+
                 prev_alias = new_alias
 
-            return last_alias
+            leaf_alias = inner_aliases[-1]
+            leaf_view = inner_views[-1]
+            if not _semantic_view_has_field(leaf_view, name):
+                return None
+            leaf_expr = f"{leaf_alias}.{_quote_identifier(name, dialect)}"
+            predicate = _render_filter_condition(leaf_expr, filter_condition)
+            if not predicate:
+                return None
 
-        filter_conditions: list[str] = []
+            where_parts_inner = [*correlation_predicates, predicate]
+            body_parts = [
+                "SELECT 1",
+                *sql_pieces,
+                f"WHERE {' AND '.join(where_parts_inner)}",
+            ]
+            return "EXISTS (" + " ".join(body_parts) + ")"
+
+        exists_clauses: list[str] = []
+        base_predicates: list[str] = []
         for filter_condition in normalized_filters:
-            for node, name in _qualified_filter_refs(filter_condition):
-                alias = _alias_for_node(node)
-                if not alias:
-                    continue
-                view_obj = _get_view(node)
-                if view_obj is not None and not _semantic_view_has_field(view_obj, name):
-                    continue
-                expression = f"{alias}.{_quote_identifier(name, dialect)}"
-                condition = _render_filter_condition(expression, filter_condition)
-                if condition:
-                    filter_conditions.append(condition)
-                    break
+            refs = _qualified_filter_refs(filter_condition)
+            if not refs:
+                _record_dropped(
+                    dropped,
+                    filter_condition,
+                    "no_field",
+                    "filter has no usable field reference",
+                )
+                continue
 
-        where_parts = [f"{target_expr} IS NOT NULL", *filter_conditions]
-        joins = " ".join(join_clauses)
+            handled = False
+            last_no_path = False
+            last_view = None
+            last_field_missing = False
+            for node, name in refs:
+                # Self-reference on the dropdown's own view — render
+                # directly without an EXISTS wrapper.
+                if node == view_name:
+                    view_obj = _get_view(node)
+                    if view_obj is not None and not _semantic_view_has_field(view_obj, name):
+                        last_field_missing = True
+                        last_view = node
+                        continue
+                    field_expr = f"{base_alias}.{_quote_identifier(name, dialect)}"
+                    predicate = _render_filter_condition(field_expr, filter_condition)
+                    if predicate:
+                        base_predicates.append(predicate)
+                        handled = True
+                        break
+                    continue
+
+                view_obj = _get_view(node)
+                if view_obj is None:
+                    last_view = node
+                    continue
+                if not _semantic_view_has_field(view_obj, name):
+                    last_field_missing = True
+                    last_view = node
+                    continue
+
+                clause = _build_exists_for_path(node, name)
+                if clause is None:
+                    last_no_path = True
+                    last_view = node
+                    continue
+                exists_clauses.append(clause)
+                handled = True
+                break
+
+            if not handled:
+                if last_field_missing:
+                    _record_dropped(
+                        dropped,
+                        filter_condition,
+                        "field_not_on_view",
+                        f"field not declared on view {last_view!r}",
+                    )
+                elif last_no_path:
+                    _record_dropped(
+                        dropped,
+                        filter_condition,
+                        "no_join_path",
+                        f"no join path from {view_name!r} to {last_view!r}",
+                    )
+                else:
+                    _record_dropped(
+                        dropped,
+                        filter_condition,
+                        "view_not_found",
+                        f"view {last_view!r} not found in dataset {dataset_id}",
+                    )
+
+        where_parts = [f"{target_expr} IS NOT NULL", *base_predicates, *exists_clauses]
         return (
             f"SELECT DISTINCT {target_expr} AS value "
             f"FROM ({base_sql}) AS {base_alias} "
-            f"{joins} "
             f"WHERE {' AND '.join(where_parts)} "
             f"ORDER BY 1 "
             f"LIMIT {limit}"
         )
+
+    dropped: list[dict] = []
 
     if view.dataset_table_id is None:
         sql_source = str(view.sql_table_name or "").strip()
@@ -2544,10 +2722,11 @@ def get_distinct_field_values(
         dialect = _dialect_for_ds_type(ds_type)
         base_relation = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
         base_sql = f"SELECT * FROM {base_relation}"
-        sql = _build_distinct_sql(base_sql, datasource_for_view, dialect)
+        sql = _build_distinct_sql(base_sql, datasource_for_view, dialect, dropped)
         source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
         table_identifier = f"semantic_view:{view_name}:{source_hash}"
-        return execute_distinct_sql(datasource_for_view, table_identifier, sql)
+        values = execute_distinct_sql(datasource_for_view, table_identifier, sql)
+        return {"values": values, "dropped_filters": dropped}
 
     db_table = db.query(DatasetTable).filter(
         DatasetTable.id == view.dataset_table_id,
@@ -2576,9 +2755,10 @@ def get_distinct_field_values(
         dialect = _dialect_for_ds_type(ds_type)
         calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
-        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect)
+        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped)
         table_identifier = f"calendar_view:{dataset_id}:{view_name}"
-        return execute_distinct_sql(cal_datasource, table_identifier, sql)
+        values = execute_distinct_sql(cal_datasource, table_identifier, sql)
+        return {"values": values, "dropped_filters": dropped}
 
     live_table = db_table
     datasource = (
@@ -2601,13 +2781,14 @@ def get_distinct_field_values(
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
         plan = resolve_dataset_table_relation(datasource, live_table)
-        sql = _build_distinct_sql(plan.sql, datasource, dialect)
+        sql = _build_distinct_sql(plan.sql, datasource, dialect, dropped)
         table_identifier = build_dataset_table_cache_identifier(live_table)
         return execute_distinct_sql(datasource, table_identifier, sql)
 
     if datasource is None:
         raise ValueError("Data source not found")
-    return fetch_live_values()
+    values = fetch_live_values()
+    return {"values": values, "dropped_filters": dropped}
 
 
 # ===========================================================================

@@ -173,7 +173,8 @@ export function PublicLinksManager({
   const baseDistinctValues: Record<string, string[]> = Object.keys(propDistinctValues ?? {}).length > 0
     ? propDistinctValues ?? {}
     : dv;
-  const activeDistinctValues = useFilterDistinctValues(activeColumns, formFilters, baseDistinctValues);
+  const { distinctValues: activeDistinctValues, droppedFiltersByColumn: activeDroppedFilters } =
+    useFilterDistinctValues(activeColumns, formFilters, baseDistinctValues);
   const requiresPasswordValue = passwordEnabled && (
     view === 'create'
     || changePassword

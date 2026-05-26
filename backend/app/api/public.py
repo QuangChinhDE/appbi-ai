@@ -1945,15 +1945,17 @@ def get_public_filter_distinct_values(
     ])
 
     try:
+        result = get_distinct_field_values(
+            db,
+            dataset_id,
+            field,
+            limit=limit,
+            filters=combined_filters,
+        )
         return {
             "field": field,
-            "values": get_distinct_field_values(
-                db,
-                dataset_id,
-                field,
-                limit=limit,
-                filters=combined_filters,
-            ),
+            "values": result.get("values", []),
+            "dropped_filters": result.get("dropped_filters", []),
         }
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

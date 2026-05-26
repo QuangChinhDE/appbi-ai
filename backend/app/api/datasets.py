@@ -3995,9 +3995,11 @@ def get_dataset_model_distinct_values(
             raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
 
     try:
+        result = get_distinct_field_values(db, dataset_id, field, limit=limit, filters=filter_context)
         return {
             "field": field,
-            "values": get_distinct_field_values(db, dataset_id, field, limit=limit, filters=filter_context),
+            "values": result.get("values", []),
+            "dropped_filters": result.get("dropped_filters", []),
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

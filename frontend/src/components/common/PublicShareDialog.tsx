@@ -49,11 +49,8 @@ export function PublicShareDialog({
     () => JSON.stringify(publicFilters) !== JSON.stringify(savedPublicFilters),
     [publicFilters, savedPublicFilters],
   );
-  const resolvedDistinctValues = useFilterDistinctValues(
-    availableColumns,
-    publicFilters,
-    distinctValues,
-  );
+  const { distinctValues: resolvedDistinctValues, droppedFiltersByColumn: resolvedDroppedFilters } =
+    useFilterDistinctValues(availableColumns, publicFilters, distinctValues);
 
   useEffect(() => {
     const next = currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters;

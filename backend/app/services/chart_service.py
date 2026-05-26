@@ -486,6 +486,17 @@ def _plain_field_is_supported_by_binding(
     if not target:
         return False
 
+    # Bug #1 fix (2026-05-26): when the caller passes a qualified field
+    # like "dataset_table_145.metatype" but forgets the parallel
+    # `semanticField` key, treat it as a semantic ref and defer to the
+    # semantic-binding check instead of silently dropping it. This was
+    # the source of "dashboard filter does nothing" — URL filters, AI
+    # Bot calls, and any non-FE consumer were sending qualified refs
+    # without the redundant semanticField pair, and the runtime tagged
+    # every one as `binding_unsupported`.
+    if "." in target:
+        return _semantic_field_is_supported_by_binding(binding, target)
+
     base_view_name = str(binding.get("baseViewName") or "").strip()
     mapped_field_names = {
         str(key).strip()
@@ -571,6 +582,12 @@ def _normalize_runtime_filters_for_chart(
             or filt.get("fieldKey")
             or ""
         ).strip()
+        # Bug #1 fix (2026-05-26): infer semanticField from a qualified
+        # `field` ref so external/URL/AI-Bot callers that omit the
+        # parallel key go through the same join-graph routing as FE.
+        if not semantic_field and isinstance(filt.get("field"), str) and "." in filt["field"]:
+            semantic_field = filt["field"].strip()
+            filt = {**filt, "semanticField": semantic_field}
         if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
             _record_dropped_filter(
                 diagnostics,

@@ -174,9 +174,18 @@ export interface GenerateModelResponse {
   generated: boolean;
 }
 
+export interface DroppedFilterInfo {
+  field: string;
+  semantic_field?: string | null;
+  operator?: string | null;
+  reason: 'no_field' | 'no_join_path' | 'view_not_found' | 'field_not_on_view' | string;
+  detail?: string;
+}
+
 export interface DistinctFieldValuesResponse {
   field: string;
   values: string[];
+  dropped_filters?: DroppedFilterInfo[];
 }
 
 export interface JoinSuggestionResponse {

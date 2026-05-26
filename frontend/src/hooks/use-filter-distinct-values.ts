@@ -2,7 +2,11 @@
 
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { fetchDatasetModelDistinctValues, modelKeys } from '@/hooks/use-dataset-model';
+import {
+  fetchDatasetModelDistinctValues,
+  modelKeys,
+  type DroppedFilterInfo,
+} from '@/hooks/use-dataset-model';
 import {
   getColumnKey,
   getDistinctValueFilterContext,
@@ -11,11 +15,20 @@ import {
   type ColumnInfo,
 } from '@/lib/filters';
 
+export interface FilterDistinctValuesResult {
+  /** Distinct values keyed by columnKey (legacy shape — DashboardFilterBar reads this). */
+  distinctValues: Record<string, string[]>;
+  /** Dropped cascading filters reported by BE, keyed by the dropdown's columnKey.
+   * Empty array when nothing was dropped. Used to render the "filters bị bỏ qua"
+   * banner inside the affected FilterCard. */
+  droppedFiltersByColumn: Record<string, DroppedFilterInfo[]>;
+}
+
 export function useFilterDistinctValues(
   columns: ColumnInfo[],
   filters: BaseFilter[],
   fallbackDistinctValues: Record<string, string[]>,
-) {
+): FilterDistinctValuesResult {
   const activeSemanticDistinctTargets = useMemo(() => {
     if (columns.length === 0 || filters.length === 0) {
       return [];
@@ -55,14 +68,20 @@ export function useFilterDistinctValues(
 
   return useMemo(() => {
     const mergedValues: Record<string, string[]> = { ...fallbackDistinctValues };
+    const droppedByColumn: Record<string, DroppedFilterInfo[]> = {};
 
     activeSemanticDistinctTargets.forEach(({ column }, index) => {
-      const values = semanticDistinctQueries[index]?.data?.values;
-      if (values) {
-        mergedValues[getColumnKey(column)] = values;
+      const queryData = semanticDistinctQueries[index]?.data;
+      if (!queryData) return;
+      const columnKey = getColumnKey(column);
+      if (queryData.values) {
+        mergedValues[columnKey] = queryData.values;
+      }
+      if (Array.isArray(queryData.dropped_filters) && queryData.dropped_filters.length > 0) {
+        droppedByColumn[columnKey] = queryData.dropped_filters;
       }
     });
 
-    return mergedValues;
+    return { distinctValues: mergedValues, droppedFiltersByColumn: droppedByColumn };
   }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries]);
 }

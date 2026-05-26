@@ -1475,6 +1475,20 @@ export default function DashboardDetailPage() {
     return values;
   }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
 
+  // Phase-15.94 — cascading dropped filters surfaced by BE so the
+  // FilterCard can render an explicit banner instead of silently
+  // showing a shorter values list. Keyed by columnKey.
+  const semanticDistinctDroppedFilters = React.useMemo(() => {
+    const dropped: Record<string, Array<{ field: string; reason: string; detail?: string }>> = {};
+    activeSemanticDistinctTargets.forEach(({ column }, index) => {
+      const list = semanticDistinctQueries[index]?.data?.dropped_filters;
+      if (Array.isArray(list) && list.length > 0) {
+        dropped[getColumnKey(column)] = list as Array<{ field: string; reason: string; detail?: string }>;
+      }
+    });
+    return dropped;
+  }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
+
   // Phase-15.81 v19 — keep date columns in the field picker AS WELL
   // AS surfacing them via the composite "Date" entry. Previously
   // `column.type !== 'date'` hid every date column entirely; DA who
@@ -2122,6 +2136,7 @@ export default function DashboardDetailPage() {
             <FilterPane
               columns={resolvedAvailableColumns}
               distinctValues={resolvedDistinctValues}
+              droppedFiltersByColumn={semanticDistinctDroppedFilters}
               pageFilters={draftPageFilters}
               pageLabel={currentPage?.name ?? 'Untitled page'}
               onChangePageFilters={setDraftPageFilters}
