@@ -1464,6 +1464,12 @@ export default function DashboardDetailPage() {
       queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
+      // Phase-15.95 — cap retries so a recurring 500 (e.g. unsupported
+      // CTE inside EXISTS, BQ syntax issue) shows the empty-values
+      // state quickly instead of looking like a hang for ~15s default
+      // backoff × 3 retries.
+      retry: 1,
+      retryDelay: 1000,
     })),
   });
 

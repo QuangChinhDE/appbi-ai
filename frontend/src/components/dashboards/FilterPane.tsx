@@ -207,6 +207,10 @@ function dropReasonLabel(reason: string): string {
       return 'view không có cột tương ứng';
     case 'no_field':
       return 'filter thiếu field';
+    case 'cte_in_subquery':
+      return 'view ngu​ồn dùng WITH/CTE — không cascade được trong dropdown';
+    case 'sql_error':
+      return 'SQL bị lỗi khi chạy';
     default:
       return reason;
   }

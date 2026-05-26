@@ -63,6 +63,8 @@ export function useFilterDistinctValues(
       queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
+      retry: 1,
+      retryDelay: 1000,
     })),
   });
 

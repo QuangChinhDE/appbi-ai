@@ -2504,21 +2504,20 @@ def get_distinct_field_values(
             next_exists_index[0] += 1
             return alias
 
-        def _build_exists_for_path(node: str, name: str) -> str | None:
+        def _build_exists_for_path(node: str, name: str) -> tuple[str | None, str | None]:
             """Build an `EXISTS (SELECT 1 FROM ...)` subquery whose
             inner JOIN chain mirrors the resolver path and whose first
             hop correlates back to the outer base_alias.
 
-            Returns None when:
-            - the path cannot be resolved
-            - any view along the path is missing
-            - the back-edge to base_alias cannot be expressed
-            The caller is expected to also evaluate the filter
-            predicate on the leaf table inside the EXISTS body.
+            Returns ``(clause, drop_reason)``. ``clause`` is the SQL or
+            None when something prevents rendering; ``drop_reason`` is
+            an optional code (``no_join_path``,
+            ``cte_in_subquery``, ``view_not_found``) so the caller can
+            record an accurate diagnostic in ``dropped_filters``.
             """
             path = resolver.resolve_path(node)
             if path is None or path.is_empty():
-                return None
+                return None, "no_join_path"
 
             # Materialise the path's joins inside the EXISTS body.
             # SQL shape:
@@ -2542,10 +2541,21 @@ def get_distinct_field_values(
             for step in path.steps:
                 joined_view = _get_view(step.edge.to_node)
                 if joined_view is None:
-                    return None
+                    return None, "view_not_found"
                 relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
                 if not relation:
-                    return None
+                    return None, "view_not_found"
+                # Phase-15.95 — BigQuery (and most engines) reject `WITH`
+                # clauses inside a subquery used as a table relation. The
+                # EXISTS-based cascade puts each relation two-levels-deep
+                # (EXISTS → SELECT 1 → FROM (rel)), so any CTE-prefixed
+                # derived view breaks the whole query with a `Syntax
+                # error: Unexpected keyword SELECT` 500. Detect it here
+                # and skip the filter via a dropped_filters entry, so
+                # the FE banner explains why instead of hanging.
+                stripped_rel = str(relation or "").strip().lstrip("(").lstrip()
+                if stripped_rel.lower().startswith("with "):
+                    return None, "cte_in_subquery"
                 new_alias = _next_alias()
                 inner_aliases.append(new_alias)
                 inner_views.append(joined_view)
@@ -2568,7 +2578,7 @@ def get_distinct_field_values(
                         else:
                             condition = None
                     if not condition:
-                        return None
+                        return None, "no_join_path"
                     sql_pieces.append(f"FROM {_wrap_live_sql_relation(relation)} AS {new_alias}")
                     correlation_predicates.append(condition)
                 else:
@@ -2585,7 +2595,7 @@ def get_distinct_field_values(
                         else:
                             condition = None
                     if not condition:
-                        return None
+                        return None, "no_join_path"
                     join_kw = (step.edge.type or "inner").upper()
                     # Inside EXISTS we don't need outer joins — base
                     # cardinality is already preserved by the EXISTS
@@ -2601,11 +2611,11 @@ def get_distinct_field_values(
             leaf_alias = inner_aliases[-1]
             leaf_view = inner_views[-1]
             if not _semantic_view_has_field(leaf_view, name):
-                return None
+                return None, "field_not_on_view"
             leaf_expr = f"{leaf_alias}.{_quote_identifier(name, dialect)}"
             predicate = _render_filter_condition(leaf_expr, filter_condition)
             if not predicate:
-                return None
+                return None, "no_join_path"
 
             where_parts_inner = [*correlation_predicates, predicate]
             body_parts = [
@@ -2613,7 +2623,7 @@ def get_distinct_field_values(
                 *sql_pieces,
                 f"WHERE {' AND '.join(where_parts_inner)}",
             ]
-            return "EXISTS (" + " ".join(body_parts) + ")"
+            return "EXISTS (" + " ".join(body_parts) + ")", None
 
         exists_clauses: list[str] = []
         base_predicates: list[str] = []
@@ -2629,16 +2639,15 @@ def get_distinct_field_values(
                 continue
 
             handled = False
-            last_no_path = False
+            last_reason: str | None = None
             last_view = None
-            last_field_missing = False
             for node, name in refs:
                 # Self-reference on the dropdown's own view — render
                 # directly without an EXISTS wrapper.
                 if node == view_name:
                     view_obj = _get_view(node)
                     if view_obj is not None and not _semantic_view_has_field(view_obj, name):
-                        last_field_missing = True
+                        last_reason = "field_not_on_view"
                         last_view = node
                         continue
                     field_expr = f"{base_alias}.{_quote_identifier(name, dialect)}"
@@ -2651,16 +2660,17 @@ def get_distinct_field_values(
 
                 view_obj = _get_view(node)
                 if view_obj is None:
+                    last_reason = "view_not_found"
                     last_view = node
                     continue
                 if not _semantic_view_has_field(view_obj, name):
-                    last_field_missing = True
+                    last_reason = "field_not_on_view"
                     last_view = node
                     continue
 
-                clause = _build_exists_for_path(node, name)
+                clause, exists_reason = _build_exists_for_path(node, name)
                 if clause is None:
-                    last_no_path = True
+                    last_reason = exists_reason or "no_join_path"
                     last_view = node
                     continue
                 exists_clauses.append(clause)
@@ -2668,27 +2678,23 @@ def get_distinct_field_values(
                 break
 
             if not handled:
-                if last_field_missing:
-                    _record_dropped(
-                        dropped,
-                        filter_condition,
-                        "field_not_on_view",
-                        f"field not declared on view {last_view!r}",
-                    )
-                elif last_no_path:
-                    _record_dropped(
-                        dropped,
-                        filter_condition,
-                        "no_join_path",
-                        f"no join path from {view_name!r} to {last_view!r}",
-                    )
-                else:
-                    _record_dropped(
-                        dropped,
-                        filter_condition,
-                        "view_not_found",
-                        f"view {last_view!r} not found in dataset {dataset_id}",
-                    )
+                detail_by_reason = {
+                    "field_not_on_view": f"field not declared on view {last_view!r}",
+                    "no_join_path": f"no join path from {view_name!r} to {last_view!r}",
+                    "view_not_found": f"view {last_view!r} not found in dataset {dataset_id}",
+                    "cte_in_subquery": (
+                        f"view {last_view!r} is a CTE-backed derived table; "
+                        "BigQuery rejects WITH clauses inside subqueries used "
+                        "as table relations. Filter cannot be cascaded here."
+                    ),
+                }
+                reason = last_reason or "view_not_found"
+                _record_dropped(
+                    dropped,
+                    filter_condition,
+                    reason,
+                    detail_by_reason.get(reason, reason),
+                )
 
         where_parts = [f"{target_expr} IS NOT NULL", *base_predicates, *exists_clauses]
         return (
@@ -2700,6 +2706,35 @@ def get_distinct_field_values(
         )
 
     dropped: list[dict] = []
+
+    def _safe_execute(label: str, runner) -> list[str]:
+        """Phase-15.95 — Never let a distinct-values SQL error escape as
+        a 500. The cascading EXISTS path can synthesise SQL that the
+        target engine rejects (e.g. BigQuery refuses `WITH ...` inside
+        a FROM subquery). Catch the failure, record it in
+        ``dropped_filters`` with reason ``sql_error``, return an empty
+        list so the FE shows "no values" + banner instead of hanging on
+        retries.
+        """
+        try:
+            return runner()
+        except ValueError:
+            raise  # cost guard / config errors stay as 400
+        except Exception as exc:  # noqa: BLE001 — broad on purpose
+            logger.exception(
+                "[distinct-values] %s failed for dataset=%s field=%s",
+                label,
+                dataset_id,
+                field,
+            )
+            dropped.append({
+                "field": field,
+                "semantic_field": field,
+                "operator": None,
+                "reason": "sql_error",
+                "detail": str(exc)[:300],
+            })
+            return []
 
     if view.dataset_table_id is None:
         sql_source = str(view.sql_table_name or "").strip()
@@ -2725,7 +2760,7 @@ def get_distinct_field_values(
         sql = _build_distinct_sql(base_sql, datasource_for_view, dialect, dropped)
         source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
         table_identifier = f"semantic_view:{view_name}:{source_hash}"
-        values = execute_distinct_sql(datasource_for_view, table_identifier, sql)
+        values = _safe_execute("semantic_view", lambda: execute_distinct_sql(datasource_for_view, table_identifier, sql))
         return {"values": values, "dropped_filters": dropped}
 
     db_table = db.query(DatasetTable).filter(
@@ -2757,7 +2792,7 @@ def get_distinct_field_values(
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped)
         table_identifier = f"calendar_view:{dataset_id}:{view_name}"
-        values = execute_distinct_sql(cal_datasource, table_identifier, sql)
+        values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_datasource, table_identifier, sql))
         return {"values": values, "dropped_filters": dropped}
 
     live_table = db_table
@@ -2787,7 +2822,7 @@ def get_distinct_field_values(
 
     if datasource is None:
         raise ValueError("Data source not found")
-    values = fetch_live_values()
+    values = _safe_execute("live_table", fetch_live_values)
     return {"values": values, "dropped_filters": dropped}
 
 
