@@ -1349,6 +1349,17 @@ class LiveQueryService:
                 datasource.id, table_identifier, chart_type, cache_role_config, all_filters
             )
             if cached is not None:
+                # Phase-15.96 — see _execute_semantic_chart_runtime comment.
+                # Cache key only covers filters that passed normalization,
+                # so two requests whose ONLY difference is the dropped
+                # filter share a cache slot. Re-stamp `_debug.dropped_filters`
+                # with THIS request's diagnostics before returning.
+                try:
+                    cached_debug = dict(cached.get("_debug") or {})
+                    cached_debug["dropped_filters"] = list(local_drops)
+                    cached = {**cached, "_debug": cached_debug}
+                except Exception:
+                    logger.debug("Failed to overlay dropped_filters onto cached live response", exc_info=True)
                 return cached
 
         # Build aggregation SQL
@@ -1491,6 +1502,13 @@ class LiveQueryService:
                 all_filters,
             )
             if cached is not None:
+                # Phase-15.96 — see _execute_semantic_chart_runtime comment.
+                try:
+                    cached_debug = dict(cached.get("_debug") or {})
+                    cached_debug["dropped_filters"] = list(local_drops)
+                    cached = {**cached, "_debug": cached_debug}
+                except Exception:
+                    logger.debug("Failed to overlay dropped_filters onto cached live response", exc_info=True)
                 return cached
 
         base_table = f"({normalized_sql_query}) AS _appbi_live"

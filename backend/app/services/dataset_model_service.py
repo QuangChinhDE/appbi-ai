@@ -2570,13 +2570,20 @@ def get_distinct_field_values(
                         from_alias=base_alias,
                         to_alias=new_alias,
                     )
-                    to_col = step.edge.to_column
-                    if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
-                        from_col = step.edge.from_column
-                        if from_col and _semantic_view_has_field(joined_view, from_col):
-                            condition = f"{base_alias}.{from_col} = {new_alias}.{from_col}"
-                        else:
-                            condition = None
+                    # Phase-15.97 — Bug D: dropped the "to_col not declared
+                    # as dim/measure" fallback. `_semantic_view_has_field`
+                    # only scans DECLARED dimensions/measures, but a join
+                    # column doesn't need to be a dimension to be valid
+                    # SQL. The old safeguard mis-fired on reverse edges
+                    # (bidirectional resolver: BC_key on dim is the join
+                    # key but NOT declared as a dimension) and silently
+                    # rewrote the condition to use `from_col` on both
+                    # sides — producing `base.bc_key = inner.bc_key`
+                    # instead of `base.bc_key = inner.BC_key`, which
+                    # BigQuery rejects when case-sensitive. Trust the
+                    # edge's declared from_column/to_column; if a column
+                    # truly doesn't exist, BQ surfaces a clean SQL error
+                    # which `_safe_execute` records as `sql_error`.
                     if not condition:
                         return None, "no_join_path"
                     sql_pieces.append(f"FROM {_wrap_live_sql_relation(relation)} AS {new_alias}")
@@ -2587,13 +2594,7 @@ def get_distinct_field_values(
                         from_alias=prev_alias,
                         to_alias=new_alias,
                     )
-                    to_col = step.edge.to_column
-                    if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
-                        from_col = step.edge.from_column
-                        if from_col and _semantic_view_has_field(joined_view, from_col):
-                            condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
-                        else:
-                            condition = None
+                    # Phase-15.97 — same Bug D fix as above.
                     if not condition:
                         return None, "no_join_path"
                     join_kw = (step.edge.type or "inner").upper()
@@ -2711,10 +2712,15 @@ def get_distinct_field_values(
         """Phase-15.95 — Never let a distinct-values SQL error escape as
         a 500. The cascading EXISTS path can synthesise SQL that the
         target engine rejects (e.g. BigQuery refuses `WITH ...` inside
-        a FROM subquery). Catch the failure, record it in
-        ``dropped_filters`` with reason ``sql_error``, return an empty
-        list so the FE shows "no values" + banner instead of hanging on
-        retries.
+        a FROM subquery). Catch the failure, record it as a
+        ``dropped_filters`` entry per cascading filter so the FE banner
+        identifies the *cascade* (not the dropdown's own column) as the
+        broken slot. Phase-15.97 — earlier code stamped the
+        ``dropped.field`` with the OUTER ``field`` closure variable
+        (the target column being loaded), which caused the FE banner to
+        say "X bị bỏ qua" where X was the target, not the offending
+        filter. Now we attach one drop entry per active cascading
+        filter so the banner names each filter accurately.
         """
         try:
             return runner()
@@ -2722,18 +2728,42 @@ def get_distinct_field_values(
             raise  # cost guard / config errors stay as 400
         except Exception as exc:  # noqa: BLE001 — broad on purpose
             logger.exception(
-                "[distinct-values] %s failed for dataset=%s field=%s",
+                "[distinct-values] %s failed for dataset=%s target_field=%s",
                 label,
                 dataset_id,
                 field,
             )
-            dropped.append({
-                "field": field,
-                "semantic_field": field,
-                "operator": None,
-                "reason": "sql_error",
-                "detail": str(exc)[:300],
-            })
+            detail = str(exc)[:300]
+            cascading_filters = [
+                item for item in (filters or [])
+                if isinstance(item, dict)
+                and (item.get("field") or item.get("semanticField") or item.get("fieldKey"))
+            ]
+            if cascading_filters:
+                for fc in cascading_filters:
+                    dropped.append({
+                        "field": str(
+                            fc.get("field")
+                            or fc.get("semanticField")
+                            or fc.get("fieldKey")
+                            or ""
+                        ),
+                        "semantic_field": fc.get("semanticField") or fc.get("fieldKey"),
+                        "operator": fc.get("operator"),
+                        "reason": "sql_error",
+                        "detail": detail,
+                    })
+            else:
+                # No cascading filters in payload — record the failure
+                # generically so the FE still surfaces "something
+                # broke" instead of returning a misleading empty list.
+                dropped.append({
+                    "field": "__distinct_values__",
+                    "semantic_field": None,
+                    "operator": None,
+                    "reason": "sql_error",
+                    "detail": detail,
+                })
             return []
 
     if view.dataset_table_id is None:

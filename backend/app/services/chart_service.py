@@ -450,6 +450,75 @@ def _semantic_field_is_supported_by_binding(
     return bool(base_view_name and semantic_ref.startswith(f"{base_view_name}."))
 
 
+def _rewrite_calendar_filter_to_role(
+    binding: dict[str, Any],
+    semantic_field: str,
+    raw_field: str | None,
+) -> dict[str, Any] | None:
+    """Phase-15.96 Bug B — translate a filter ref to the raw generated
+    calendar view (e.g. ``dataset_table_185.date``) into the chart's
+    role-played calendar alias (``dataset_table_182__extracted_at__date_dim.date``)
+    when the binding exposes the same calendar column under a role
+    view. Returns the override dict (``{semanticField, fieldKey, field,
+    calendarField, calendarSourceField}``) or ``None`` when no
+    unambiguous translation is possible.
+
+    Rationale: a dashboard-level Date filter is configured against the
+    calendar view the user picks in the Add-Filter dropdown — that is
+    the **raw** ``Date`` table, named ``dataset_table_<calendar_id>``.
+    But each chart's binding only carries the per-base-view *role*
+    alias the model uses to join the calendar in (one role per fact
+    column). Without this rewrite, every chart that uses a calendar-
+    joined column drops the filter as ``binding_unsupported`` even
+    though the join is exactly there.
+    """
+    sem_ref = str(semantic_field or "").strip()
+    if not sem_ref or "." not in sem_ref:
+        return None
+    sem_view, sem_field_name = sem_ref.split(".", 1)
+    sem_view = sem_view.strip()
+    sem_field_name = sem_field_name.strip()
+    if not sem_view or not sem_field_name:
+        return None
+
+    # Heuristic: a raw calendar view is exposed when the binding's
+    # `calendarFieldMappings` mention any role with `calendarField` equal
+    # to our field name. We only rewrite when there's exactly one
+    # matching role (multi-role bindings are ambiguous and stay
+    # dropped — DA should target the role view directly).
+    mappings = [
+        m for m in (binding.get("calendarFieldMappings") or [])
+        if isinstance(m, dict)
+        and str(m.get("calendarField") or "").strip() == sem_field_name
+    ]
+    role_refs = sorted({
+        str(m.get("semanticField") or "").strip()
+        for m in mappings
+        if str(m.get("semanticField") or "").strip()
+        and "." in str(m.get("semanticField") or "")
+    })
+    if len(role_refs) != 1:
+        return None
+    role_ref = role_refs[0]
+    role_view, _role_field = role_ref.split(".", 1)
+    # Don't rewrite if the source ref already targets the role view —
+    # that case is handled by the normal binding-supported check.
+    if sem_view == role_view:
+        return None
+    matched = next(
+        (m for m in mappings if str(m.get("semanticField") or "").strip() == role_ref),
+        None,
+    )
+    source_field = str((matched or {}).get("sourceField") or "").strip()
+    return {
+        "semanticField": role_ref,
+        "fieldKey": role_ref,
+        "field": raw_field if raw_field else sem_field_name,
+        "calendarField": sem_field_name,
+        "calendarSourceField": source_field or sem_field_name,
+    }
+
+
 def _resolve_legacy_calendar_filter_for_binding(
     binding: dict[str, Any],
     field_name: str,
@@ -588,6 +657,18 @@ def _normalize_runtime_filters_for_chart(
         if not semantic_field and isinstance(filt.get("field"), str) and "." in filt["field"]:
             semantic_field = filt["field"].strip()
             filt = {**filt, "semanticField": semantic_field}
+        # Phase-15.96 — Bug B fix: filter targeting the raw generated
+        # calendar view (e.g. `dataset_table_185.date`) is not exposed
+        # directly by per-chart bindings; bindings only carry the
+        # role-played alias (`dataset_table_182__extracted_at__date_dim.date`).
+        # Try to rewrite the ref to a matching calendar role exposed by
+        # this chart's binding before checking support, so dashboard
+        # Date filters reach charts that use a calendar-joined column.
+        if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
+            rewritten = _rewrite_calendar_filter_to_role(binding, semantic_field, filt.get("field"))
+            if rewritten is not None:
+                filt = {**filt, **rewritten}
+                semantic_field = rewritten.get("semanticField") or semantic_field
         if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
             _record_dropped_filter(
                 diagnostics,
@@ -1606,6 +1687,23 @@ def _execute_semantic_chart_runtime(
             datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
         )
         if cached is not None:
+            # Phase-15.96 — `cache_filters` only contains filters that
+            # made it past `_normalize_runtime_filters_for_chart`. Two
+            # requests whose only difference is the dropped filter (e.g.
+            # one sends a calendar Date ref, another sends a CTE-view
+            # ref — both get binding_unsupported and stripped) collapse
+            # onto the same cache slot. Without overriding
+            # `_debug.dropped_filters` here, the cached response carries
+            # the dropped log of the FIRST request and re-serves it for
+            # the SECOND, lying about which filter was actually dropped.
+            # Fix: rebuild the dropped log from this request's
+            # `filter_diagnostics` before returning.
+            try:
+                cached_debug = dict(cached.get("_debug") or {})
+                cached_debug["dropped_filters"] = list(filter_diagnostics)
+                cached = {**cached, "_debug": cached_debug}
+            except Exception:
+                logger.debug("Failed to overlay dropped_filters onto cached chart response", exc_info=True)
             return cached
 
     # BigQuery cost guard (mirrors LiveQueryService behavior).
