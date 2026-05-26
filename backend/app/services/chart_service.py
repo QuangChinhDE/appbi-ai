@@ -825,7 +825,16 @@ def _adapt_live_sql_for_semantic_filters(
         if model_id
         else None
     )
-    resolver = SemanticJoinResolver(db, model, base_view_name)
+    # bidirectional=True so snowflake schemas resolve correctly: when the
+    # chart base is a dim (e.g. bc_owner) and the filter references another
+    # dim (e.g. Date) that only connects through a shared fact (bc_deal /
+    # bc_revenue), the resolver must be able to traverse the fact in the
+    # *reverse* direction of the stored join. Without this, resolve_path()
+    # returns None for the cross-dim target and the filter is silently
+    # dropped — matching the user-reported "Date filter không ăn vào chart
+    # bc_owner" symptom. The engine path (semantic_query_engine.py) already
+    # uses bidirectional=True for the same reason.
+    resolver = SemanticJoinResolver(db, model, base_view_name, bidirectional=True)
 
     try:
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
