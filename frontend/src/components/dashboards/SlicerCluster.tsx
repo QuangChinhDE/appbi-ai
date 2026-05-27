@@ -295,15 +295,19 @@ export function SlicerCluster({
     // `rgba(var(--brand-rgb), a)` referenced a non-existent variable so
     // the border/bg silently dropped — that's why the box had no
     // visible frame.
+    // Public (lockSlots): no container chrome — the Tableau-style cards
+    // provide their own borders, so the cluster sits transparently like
+    // a clean filter bar (Looker/Metabase). Editor: a dashed brand frame
+    // + faint tint so the author knows this zone is for slicers.
     background: effectiveLayout.background
-      ?? (lockSlots ? 'rgb(var(--surface-1))' : 'rgb(var(--brand) / 0.05)'),
+      ?? (lockSlots ? 'transparent' : 'rgb(var(--brand) / 0.05)'),
     border:
       effectiveLayout.border === 'none'
         ? '1px solid transparent'
         : effectiveLayout.border === 'solid'
           ? '1px solid rgb(var(--border-line))'
           : lockSlots
-            ? '1px solid rgb(var(--border-line))'
+            ? '1px solid transparent'
             : '1.5px dashed rgb(var(--brand) / 0.55)',
     borderRadius: 8,
     padding: 8,

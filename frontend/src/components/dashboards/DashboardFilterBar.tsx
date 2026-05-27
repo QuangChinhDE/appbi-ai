@@ -1089,32 +1089,42 @@ function FilterCard({
   //   'bottom' → Top bar: buttons flow in a row; the popover opens
   //              BELOW the button (over the charts beneath).
   const openRight = popoverPlacement === 'right';
+  // Tableau-style slicer CARD: field name as a small title on top, the
+  // current value + chevron below, thin even border. Active (has a real
+  // value) = brand-tinted border so it reads as "filtering"; "Tất cả" =
+  // neutral. Top bar → fixed-width cards line up evenly; Left column →
+  // full-width.
   return (
     <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block'}>
       <button
         type="button"
         onClick={() => setPopoverOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition-colors ${
-          openRight ? 'w-full justify-between' : ''
+        className={`flex flex-col items-stretch gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 text-left align-top transition-colors ${
+          openRight ? 'w-full' : 'w-[190px]'
         } ${
           popoverOpen
-            ? 'border-brand bg-brand/10 text-brand'
-            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+            ? 'border-brand ring-1 ring-brand/30'
+            : hasValue
+              ? 'border-brand/45 hover:border-brand'
+              : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
         }`}
         title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
       >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="font-medium text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
-          <span className="text-text-quaternary">:</span>
-          <span className="max-w-[10rem] truncate">{valueSummary}</span>
-        </span>
-        <span className="flex flex-shrink-0 items-center gap-1">
+        <span className="flex items-center justify-between gap-1">
+          <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+            {getFilterDisplayLabel(f)}
+          </span>
           {selected.length > 1 && (
-            <span className="rounded-full bg-brand/15 px-1.5 text-xs font-semibold text-brand">
+            <span className="flex-shrink-0 rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand">
               {selected.length}
             </span>
           )}
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
+        </span>
+        <span className="flex items-center justify-between gap-1.5">
+          <span className={`truncate text-sm ${hasValue ? 'font-medium text-text-primary' : 'text-text-tertiary'}`}>
+            {valueSummary}
+          </span>
+          <ChevronDown className={`h-3.5 w-3.5 flex-shrink-0 text-text-quaternary transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
         </span>
       </button>
       {popoverOpen && (
