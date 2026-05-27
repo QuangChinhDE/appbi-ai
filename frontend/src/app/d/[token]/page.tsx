@@ -1200,7 +1200,7 @@ export default function PublicDashboardPage() {
         {/* Phase-G — when the slicer cluster is on the Left, lay it as a
             column beside the chart grid (flex-row). Top mode keeps the
             cluster stacked above (rendered in the header section). */}
-        <div className={slicerClusterPositionLeft ? 'flex flex-row items-start gap-3' : ''}>
+        <div className={slicerClusterPositionLeft ? 'flex flex-row items-stretch gap-3' : ''}>
         {slicerClusterPositionLeft && showFilterControls && (
           <div className="w-[300px] flex-shrink-0">
             {slicerClusterNode}

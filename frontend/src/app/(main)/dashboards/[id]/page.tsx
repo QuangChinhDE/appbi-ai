@@ -2171,7 +2171,7 @@ export default function DashboardDetailPage() {
         <div
           className={
             (draftSlicerClusterLayout?.position === 'left')
-              ? 'flex flex-row items-start gap-3'
+              ? 'flex flex-row items-stretch gap-3'
               : ''
           }
           style={

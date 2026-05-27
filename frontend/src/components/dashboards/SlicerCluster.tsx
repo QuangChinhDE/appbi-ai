@@ -332,8 +332,12 @@ export function SlicerCluster({
         ? (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : '280px')
         : undefined,
     flex: effectiveLayout.position === 'left' ? '0 0 auto' : undefined,
-    // Height: only honor hPx in free mode; top/left auto-fit content.
-    height: isFree && effectiveLayout.hPx ? `${effectiveLayout.hPx}px` : undefined,
+    // Height: in 'left' the cluster fills the column to the bottom of
+    // the report (parent flex uses items-stretch) so the frame runs the
+    // full dashboard length. Free honors hPx; top auto-fits content.
+    height: effectiveLayout.position === 'left'
+      ? '100%'
+      : (isFree && effectiveLayout.hPx ? `${effectiveLayout.hPx}px` : undefined),
     maxWidth: isFree ? undefined : '100%',
     // Phase-G3 — free overlay positioning.
     ...(isFree
@@ -433,7 +437,7 @@ export function SlicerCluster({
   return (
     <div
       ref={containerRef}
-      className="slicer-cluster mb-3 bg-brand-soft/30"
+      className="slicer-cluster mb-3"
       data-slicer-cluster-position={effectiveLayout.position}
       data-slicer-cluster-direction={effectiveLayout.direction}
       style={containerStyle}
