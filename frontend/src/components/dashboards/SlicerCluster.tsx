@@ -24,7 +24,7 @@
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { LayoutGrid, MoveHorizontal, MoveVertical, Image as ImageIcon, X, Settings2, Link2 } from 'lucide-react';
+import { Image as ImageIcon, X, Settings2, Link2 } from 'lucide-react';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import {
   type BaseFilter,
@@ -85,7 +85,11 @@ export function SlicerCluster({
   isApplying,
   lockSlots = false,
 }: SlicerClusterProps) {
-  const effectiveLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
+  const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
+  // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
+  // Any dashboard saved with position='free' falls back to 'top'.
+  const effectiveLayout: SlicerClusterLayout =
+    rawLayout.position === 'free' ? { ...rawLayout, position: 'top' } : rawLayout;
 
   // Split slicers_config into real slicer entries and image entries.
   // DashboardFilterBar consumes only the real slicers (BaseFilter[]);
@@ -141,10 +145,6 @@ export function SlicerCluster({
         img.id === id ? { ...img, ...patch } : img,
       ),
     ]);
-  };
-
-  const handleDirectionChange = (direction: 'horizontal' | 'vertical' | 'grid') => {
-    onLayoutChange?.({ ...effectiveLayout, direction });
   };
 
   const handlePositionChange = (position: 'top' | 'left' | 'free') => {
@@ -318,20 +318,14 @@ export function SlicerCluster({
       : {}),
   };
 
-  const innerLayout = (() => {
-    switch (effectiveLayout.direction) {
-      case 'vertical':
-        return { display: 'flex', flexDirection: 'column' as const, gap: effectiveLayout.gap ?? 8 };
-      case 'grid':
-        return {
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-          gap: effectiveLayout.gap ?? 8,
-        };
-      default:
-        return { display: 'flex', flexDirection: 'row' as const, gap: effectiveLayout.gap ?? 8, flexWrap: 'wrap' as const };
-    }
-  })();
+  // Layout direction is derived from position now (no separate toggle):
+  //   left → column: the filter bar (cards stacked full-width via
+  //          stackVertical) sits on top, images below.
+  //   top  → row, wrapping: bar + images flow horizontally.
+  const isLeft = effectiveLayout.position === 'left';
+  const innerLayout: React.CSSProperties = isLeft
+    ? { display: 'flex', flexDirection: 'column', gap: effectiveLayout.gap ?? 8 }
+    : { display: 'flex', flexDirection: 'row', gap: effectiveLayout.gap ?? 8, flexWrap: 'wrap', alignItems: 'flex-start' };
 
   return (
     <div
@@ -349,71 +343,30 @@ export function SlicerCluster({
           onPointerMove={handleHeaderPointerMove}
           onPointerUp={handleHeaderPointerUp}
         >
-          {isFree && <span title="Kéo để di chuyển" className="text-text-quaternary">⠿</span>}
           <span className="font-emphasis text-brand">Slicer</span>
           <span className="text-text-tertiary">— viewer luôn thấy & chỉnh được</span>
-          <span className="ml-auto inline-flex items-center gap-1" title="Vị trí cụm slicer">
+          {/* Position toggle. Top = thanh ngang trên charts (slicer dàn
+              hàng). Left = cột dọc bên trái (slicer xếp từ trên xuống,
+              full-width cột). Layout direction tự suy ra từ position —
+              không cần toggle riêng. */}
+          <span className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] p-0.5" title="Vị trí cụm slicer">
             <button
               type="button"
               onClick={() => handlePositionChange('top')}
-              className={`rounded px-1.5 py-1 text-tiny ${effectiveLayout.position === 'top' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Top — phía trên charts"
+              className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'top' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
+              title="Top — thanh ngang phía trên charts"
             >
-              Top
+              ▤ Top
             </button>
             <button
               type="button"
               onClick={() => handlePositionChange('left')}
-              className={`rounded px-1.5 py-1 text-tiny ${effectiveLayout.position === 'left' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Left — cột dọc bên trái charts"
+              className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'left' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
+              title="Left — cột dọc bên trái charts (slicer xếp từ trên xuống)"
             >
-              Left
-            </button>
-            <button
-              type="button"
-              onClick={() => handlePositionChange('free')}
-              className={`rounded px-1.5 py-1 text-tiny ${effectiveLayout.position === 'free' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Free — kéo thả tự do (overlay)"
-            >
-              Free
+              ▥ Left
             </button>
           </span>
-          <span className="inline-flex items-center gap-1" title="Layout direction">
-            <button
-              type="button"
-              onClick={() => handleDirectionChange('horizontal')}
-              className={`rounded p-1 ${effectiveLayout.direction === 'horizontal' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Horizontal"
-            >
-              <MoveHorizontal className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDirectionChange('vertical')}
-              className={`rounded p-1 ${effectiveLayout.direction === 'vertical' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Vertical"
-            >
-              <MoveVertical className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDirectionChange('grid')}
-              className={`rounded p-1 ${effectiveLayout.direction === 'grid' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Grid"
-            >
-              <LayoutGrid className="h-3.5 w-3.5" />
-            </button>
-          </span>
-          {isFree && (effectiveLayout.wPx || effectiveLayout.hPx) && (
-            <button
-              type="button"
-              onClick={() => onLayoutChange?.({ ...effectiveLayout, wPx: undefined, hPx: undefined })}
-              className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-text-tertiary hover:bg-surface-2"
-              title="Reset cluster size to auto"
-            >
-              ⟲ Reset size
-            </button>
-          )}
           <label
             className="inline-flex cursor-pointer items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-text-secondary hover:bg-surface-2"
             title="Thêm ảnh (logo) vào cluster"
@@ -444,7 +397,7 @@ export function SlicerCluster({
       <div style={innerLayout}>
         <div
           className="min-w-0"
-          style={effectiveLayout.direction === 'vertical' ? { width: '100%' } : { flex: 1, minWidth: 220 }}
+          style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 220 }}
         >
           <DashboardFilterBar
             columns={columns}
@@ -459,6 +412,7 @@ export function SlicerCluster({
             initialExpanded
             embedded
             lockSlots={lockSlots}
+            stackVertical={isLeft}
           />
         </div>
         {imageEntries.map((img) => (

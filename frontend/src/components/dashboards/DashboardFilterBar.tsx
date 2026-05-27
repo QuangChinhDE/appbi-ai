@@ -61,6 +61,11 @@ interface DashboardFilterBarProps {
    * can only change values within those slots. Hides Add Filter / per-card Remove
    * / Clear-all controls. Used on public-link viewer page. */
   lockSlots?: boolean;
+  /** Phase-G — force filter cards into a single full-width column.
+   * Used by the slicer cluster's 'left'/vertical layout where the
+   * responsive viewport-based grid would otherwise crush cards into a
+   * narrow column. */
+  stackVertical?: boolean;
 }
 
 type AddFilterColumnGroup = {
@@ -88,6 +93,7 @@ export function DashboardFilterBar({
   initialExpanded = true,
   embedded = false,
   lockSlots = false,
+  stackVertical = false,
 }: DashboardFilterBarProps) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
@@ -602,8 +608,14 @@ export function DashboardFilterBar({
       </div>
 
       {/* ── Filter cards ──────────────────────────────────────────── */}
+      {/* Phase-G fix — `stackVertical` forces a single full-width
+          column. The default responsive grid keys off VIEWPORT
+          breakpoints (sm/lg/xl), not container width, so when this bar
+          is embedded in a narrow column (slicer cluster in 'left' mode,
+          ~280px) it still tried 4 columns and crushed the cards. The
+          slicer cluster passes stackVertical for left/vertical layout. */}
       {isExpanded && filters.length > 0 && (
-        <div className="px-3 pb-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div className={`px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
           {filters.map(f => {
             // Conflict-detection signal: when the user picks values that have
             // no intersection (e.g. Role=SDR & Phòng=BE.E), the cascading
