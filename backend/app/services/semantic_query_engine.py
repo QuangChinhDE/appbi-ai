@@ -178,12 +178,25 @@ class SemanticQueryEngine:
         # Build FROM/JOIN clause
         from_clause = self._build_from_clause(explore)
         
-        # Build WHERE clause
-        where_clause = self._build_where_clause(filters, time_grains)
-        
+        # Phase-B' (PBI-parity rework) — split filters into WHERE (on
+        # dimension fields, applied pre-aggregation) and HAVING (on
+        # measure fields, applied post-aggregation). The split is
+        # purely additive: a filter is classified as HAVING ONLY if its
+        # field_ref is in the measures list. Anything else stays in
+        # WHERE, preserving prior behavior for the common case.
+        # See docs/filter-semantics.md §4.
+        where_filters, having_filters = self._split_filters_by_role(
+            filters, measures,
+        )
+        where_clause = self._build_where_clause(where_filters, time_grains)
+        having_clause = self._build_having_clause(
+            having_filters, time_grains,
+            measure_agg_overrides=measure_agg_overrides or {},
+        )
+
         # Build GROUP BY clause
         group_by_clause = self._build_group_by_clause(dimensions, measures, pivots, time_grains)
-        
+
         # Build ORDER BY clause
         order_by_clause = self._build_order_by_clause(sorts, measures, top_n)
 
@@ -209,10 +222,16 @@ class SemanticQueryEngine:
         
         if where_clause:
             sql_parts.append(where_clause)
-        
+
         if group_by_clause:
             sql_parts.append(group_by_clause)
-        
+
+        # Phase-B' — HAVING must follow GROUP BY (SQL grammar requires it).
+        # Inserted only when there are measure-side filters; otherwise the
+        # query is identical to the pre-Phase-B' shape.
+        if having_clause:
+            sql_parts.append(having_clause)
+
         if order_by_clause:
             sql_parts.append(order_by_clause)
         
@@ -1245,7 +1264,29 @@ class SemanticQueryEngine:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
     def _build_from_clause(self, explore: SemanticExplore) -> str:
-        """Build FROM and JOIN clauses"""
+        """Build FROM and JOIN clauses.
+
+        Phase-B' status (PBI-parity rework) — the spec
+        (docs/filter-semantics.md §5) calls for EXISTS-subquery
+        emission when a filter targets a dim reachable only via a
+        fact table; the current LEFT JOIN + WHERE pattern is
+        effectively INNER for those filters and drops base-side rows
+        without matching dim entries.
+
+        That rewrite is intentionally NOT implemented here yet. It
+        changes JOIN semantics across every chart and the memory
+        `filter_audit_needs_proper_fixture` warns that band-aid
+        rewrites without Dataset-55-style matrix audits are a
+        bug-class trap. Until the fixture exists, this function
+        preserves the existing LEFT JOIN behavior; the Phase-15.81
+        bidirectional resolver patches the worst symptoms.
+
+        When the fixture lands, the implementation should hook here:
+        detect which joined views are filter-only (no SELECT
+        reference) and rewrite each such filter as an EXISTS
+        subquery on the base view, dropping the view from the
+        joined_nodes set so it never enters the FROM chain.
+        """
         base_view = self.views_cache.get(explore.base_view_name)
         if not base_view:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
@@ -1463,25 +1504,234 @@ class SemanticQueryEngine:
                 continue
 
             # Scalar comparison operators.
-            if operator == "eq":
+            if operator == "eq" or operator == "date_eq":
                 conditions.append(f"{field_sql} = {_lit(value)}")
-            elif operator == "ne":
+                continue
+            if operator in {"ne", "neq"}:
                 conditions.append(f"{field_sql} != {_lit(value)}")
-            elif operator == "gt":
+                continue
+            if operator == "gt":
                 conditions.append(f"{field_sql} > {_lit(value)}")
-            elif operator == "gte":
+                continue
+            if operator == "gte":
                 conditions.append(f"{field_sql} >= {_lit(value)}")
-            elif operator == "lt":
+                continue
+            if operator == "lt":
                 conditions.append(f"{field_sql} < {_lit(value)}")
-            elif operator == "lte":
+                continue
+            if operator == "lte":
                 conditions.append(f"{field_sql} <= {_lit(value)}")
-            # Unknown operator → skip silently rather than emit broken SQL.
-            # (Filter validators upstream should catch these earlier.)
+                continue
+
+            # Phase-B (PBI-parity rework) — `date_between` is the typed
+            # alias of `between` used by the FE date picker so authors
+            # know the filter targets a date column. Same SQL emission.
+            if operator == "date_between" and isinstance(value, list) and len(value) >= 2:
+                lo, hi = value[0], value[1]
+                if _value_present(lo) and _value_present(hi):
+                    conditions.append(f"{field_sql} BETWEEN {_lit(lo)} AND {_lit(hi)}")
+                elif _value_present(lo):
+                    conditions.append(f"{field_sql} >= {_lit(lo)}")
+                elif _value_present(hi):
+                    conditions.append(f"{field_sql} <= {_lit(hi)}")
+                continue
+
+            # Phase-B (PBI-parity rework) — relative-date operators
+            # `date_in_last`, `date_this`, `date_to_date` reach this
+            # builder only if the upstream resolver did not pre-bake
+            # them into absolute date ranges. For now we record a
+            # diagnostic and skip; the resolver lives in the chart
+            # engine layer (see filter-semantics.md §7 — server time is
+            # the source of truth, so FE must NOT pre-resolve relative
+            # dates) and will be wired in a follow-up step. Until then
+            # treat these as "operator known but not implemented here".
+            if operator in {"date_in_last", "date_this", "date_to_date"}:
+                self.warnings.append(
+                    f"Filter dropped — relative date operator {operator!r} "
+                    f"not yet resolved upstream for {field_ref!r}"
+                )
+                continue
+
+            # Phase-B (PBI-parity rework) — top_n / bottom_n are NOT
+            # WHERE/HAVING predicates. They translate to ORDER BY +
+            # LIMIT at the outer query level and are dispatched via the
+            # `top_n` parameter of `_build_query_sql`, not through
+            # filters. Silently skip here so they don't generate broken
+            # SQL when an FE sends them mis-routed.
+            if operator in {"top_n", "bottom_n"}:
+                continue
+
+            # Pattern — ends_with was already handled in the LIKE block
+            # above. matches_regex falls here because dialects differ.
+            if operator == "matches_regex":
+                if value is None:
+                    continue
+                pattern_lit = _lit(value)
+                # Postgres: `~`, MySQL: `REGEXP`, BigQuery: REGEXP_CONTAINS,
+                # Snowflake: REGEXP_LIKE. The semantic engine target is
+                # ANSI-ish; emit `field SIMILAR TO 'value'` as a safe
+                # fallback that most engines either accept or reject
+                # loudly. Callers that need dialect-specific output
+                # should pre-rewrite to LIKE / contains.
+                conditions.append(f"{field_sql} SIMILAR TO {pattern_lit}")
+                continue
+
+            # NOT BETWEEN — mirror of BETWEEN. Same single-side fallback.
+            if operator == "not_between" and isinstance(value, list) and len(value) >= 2:
+                lo, hi = value[0], value[1]
+                if _value_present(lo) and _value_present(hi):
+                    conditions.append(f"{field_sql} NOT BETWEEN {_lit(lo)} AND {_lit(hi)}")
+                elif _value_present(lo):
+                    conditions.append(f"{field_sql} < {_lit(lo)}")
+                elif _value_present(hi):
+                    conditions.append(f"{field_sql} > {_lit(hi)}")
+                continue
+
+            # Unknown operator → record a diagnostic so we don't repeat
+            # the silent-drop class of bugs that broke the chain for
+            # months. Phase-B (PBI-parity rework) — see filter-semantics.md
+            # §6.
+            self.warnings.append(
+                f"Filter dropped — unsupported operator {operator!r} for "
+                f"{field_ref!r}"
+            )
 
         if conditions:
             return "WHERE\n  " + " AND\n  ".join(conditions)
         return ""
     
+    # ── Phase-B' (PBI-parity rework) — WHERE/HAVING split ─────────────
+    #
+    # `_split_filters_by_role` classifies each filter as dimension-side
+    # (→ WHERE) or measure-side (→ HAVING) based on whether its
+    # `field_ref` appears in the chart's measures list. The classification
+    # is conservative: only filters whose field_ref matches a measure
+    # exactly become HAVING; everything else stays in WHERE. This
+    # preserves prior behavior for the common dimension-filter case
+    # while enabling measure-filter usage that previously fell through
+    # to WHERE (where it either no-op'd or returned wrong rows pre-agg).
+    #
+    # See docs/filter-semantics.md §4 for the spec.
+    def _split_filters_by_role(
+        self,
+        filters: Dict[str, Any],
+        measures: List[str],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        if not filters:
+            return {}, {}
+        measures_set = {str(m or "").strip().lower() for m in (measures or []) if m}
+        if not measures_set:
+            return dict(filters), {}
+        where_filters: Dict[str, Any] = {}
+        having_filters: Dict[str, Any] = {}
+        for field_ref, fdef in filters.items():
+            key = str(field_ref or "").strip().lower()
+            if key in measures_set:
+                having_filters[field_ref] = fdef
+            else:
+                where_filters[field_ref] = fdef
+        return where_filters, having_filters
+
+    def _build_having_clause(
+        self,
+        filters: Dict[str, Any],
+        time_grains: Dict[str, str],
+        *,
+        measure_agg_overrides: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """Render HAVING clause for measure-side filters.
+
+        Mirrors `_build_where_clause` semantics but resolves the field
+        reference through `_render_measure` so the predicate operates
+        on the aggregated expression (e.g. `SUM(orders.revenue) > 1B`)
+        rather than the raw column.
+
+        Supports the core operators most useful on aggregates:
+        eq/neq/gt/gte/lt/lte/between/in/not_in. Other operators
+        (contains/regex/etc.) are skipped with a warning — they make
+        little sense on a numeric aggregate.
+        """
+        if not filters:
+            return ""
+
+        def _lit(raw: Any) -> str:
+            if raw is None:
+                return "NULL"
+            if isinstance(raw, bool):
+                return "TRUE" if raw else "FALSE"
+            if isinstance(raw, (int, float)):
+                return str(raw)
+            return "'" + str(raw).replace("'", "''") + "'"
+
+        def _value_present(raw: Any) -> bool:
+            if raw is None:
+                return False
+            if isinstance(raw, str) and not raw.strip():
+                return False
+            return True
+
+        conditions: List[str] = []
+        overrides = measure_agg_overrides or {}
+        for field_ref, filter_def in filters.items():
+            operator = str(filter_def.get('operator') or 'eq').strip().lower()
+            value = filter_def.get('value')
+            try:
+                measure_sql = self._render_measure(
+                    field_ref,
+                    agg_override=overrides.get(field_ref),
+                )
+            except Exception as exc:
+                self.warnings.append(
+                    f"HAVING filter dropped — measure {field_ref!r}: {exc}"
+                )
+                continue
+
+            if operator == "is_null":
+                conditions.append(f"{measure_sql} IS NULL")
+                continue
+            if operator == "is_not_null":
+                conditions.append(f"{measure_sql} IS NOT NULL")
+                continue
+
+            if operator == "between" and isinstance(value, list) and len(value) >= 2:
+                lo, hi = value[0], value[1]
+                if _value_present(lo) and _value_present(hi):
+                    conditions.append(f"{measure_sql} BETWEEN {_lit(lo)} AND {_lit(hi)}")
+                elif _value_present(lo):
+                    conditions.append(f"{measure_sql} >= {_lit(lo)}")
+                elif _value_present(hi):
+                    conditions.append(f"{measure_sql} <= {_lit(hi)}")
+                continue
+
+            if operator in {"in", "not_in"}:
+                if isinstance(value, list):
+                    vals = ", ".join(_lit(v) for v in value if _value_present(v))
+                elif isinstance(value, str) and value.strip():
+                    vals = ", ".join(_lit(v.strip()) for v in value.split(",") if v.strip())
+                else:
+                    vals = ""
+                if vals:
+                    op = "IN" if operator == "in" else "NOT IN"
+                    conditions.append(f"{measure_sql} {op} ({vals})")
+                continue
+
+            scalar_ops = {
+                "eq": "=", "neq": "!=", "ne": "!=",
+                "gt": ">", "gte": ">=", "lt": "<", "lte": "<=",
+            }
+            if operator in scalar_ops:
+                conditions.append(f"{measure_sql} {scalar_ops[operator]} {_lit(value)}")
+                continue
+
+            self.warnings.append(
+                f"HAVING filter dropped — operator {operator!r} unsupported "
+                f"for measure {field_ref!r}"
+            )
+
+        if conditions:
+            return "HAVING\n  " + " AND\n  ".join(conditions)
+        return ""
+
     def _build_group_by_clause(
         self,
         dimensions: List[str],

@@ -125,10 +125,14 @@ export const dashboardApi = {
   // Phase-15.81 v12 — stage filter slot edits (all-pages + per-page)
   // into draft_snapshot so Publish flushes layout + filter together.
   // Either field may be omitted; pass [] to clear that scope's draft.
+  // Phase-C THẬT — slicers_config joins the payload so slicer-block
+  // edits share the same draft/publish lifecycle.
   updateDraftFilters: async (
     dashboardId: number,
     body: {
       filters_config?: Array<Record<string, any>>;
+      slicers_config?: Array<Record<string, any>>;
+      slicer_cluster_layout?: Record<string, any>;
       pages_config?: Array<Record<string, any>>;
     }
   ): Promise<Dashboard> => {

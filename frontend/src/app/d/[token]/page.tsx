@@ -19,6 +19,7 @@ import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -304,6 +305,64 @@ export default function PublicDashboardPage() {
     [activePageId, dashboard?.dashboard_charts],
   );
 
+  // Phase-F (PBI-parity rework) — collect filter entries with
+  // `publicMode === 'locked'` for the banner row. Locked entries are
+  // applied at the chart-data layer (BE enforces) but the viewer is
+  // shown a read-only "ⓘ Đang lọc theo …" line so they understand
+  // the data scope. `hidden` entries do not appear here by design —
+  // see docs/filter-semantics.md §2.2/§9.
+  const lockedBannerEntries = useMemo(() => {
+    const result: { field: string; label?: string; value: any }[] = [];
+    const collect = (entries: any[]) => {
+      for (const e of entries || []) {
+        if (!e || typeof e !== 'object') continue;
+        const mode = e.publicMode ?? 'visible';
+        if (mode !== 'locked') continue;
+        if (e.showBanner === false) continue;
+        result.push({ field: e.field, label: e.label, value: e.value });
+      }
+    };
+    if (dashboard) {
+      collect((dashboard as any).filters_config || []);
+      const page = dashboardPages.find((p) => p.id === activePageId);
+      if (page) {
+        collect((page as any).filters || []);
+      }
+    }
+    return result;
+  }, [dashboard, dashboardPages, activePageId]);
+
+  // Phase-F THẬT (PBI-parity rework) — override-allowed filters list
+  // for the "Xem chi tiết" mini-pane. Entries with publicMode='visible'
+  // and allowOverride=true are editable by the viewer (the BE merger
+  // routes their values as `viewer_filter` layer, which overrides
+  // dashboard defaults but loses to `link_locked`).
+  const overridableFilterEntries = useMemo(() => {
+    const result: { field: string; label?: string; value: any; semanticField?: string; type?: string }[] = [];
+    const collect = (entries: any[]) => {
+      for (const e of entries || []) {
+        if (!e || typeof e !== 'object') continue;
+        const mode = e.publicMode ?? 'visible';
+        if (mode !== 'visible') continue;
+        if (!e.allowOverride) continue;
+        result.push({ field: e.field, label: e.label, value: e.value, semanticField: e.semanticField, type: e.type });
+      }
+    };
+    if (dashboard) {
+      collect((dashboard as any).filters_config || []);
+      const page = dashboardPages.find((p) => p.id === activePageId);
+      if (page) {
+        collect((page as any).filters || []);
+      }
+    }
+    return result;
+  }, [dashboard, dashboardPages, activePageId]);
+
+  // Mini-pane open/close state. Only relevant when there's at least
+  // one locked entry OR one override-allowed entry — otherwise the
+  // [Xem chi tiết] button never renders.
+  const [isMiniPaneOpen, setIsMiniPaneOpen] = useState(false);
+
   useEffect(() => {
     if (currentPageId !== activePageId) {
       setCurrentPageId(activePageId);
@@ -341,13 +400,49 @@ export default function PublicDashboardPage() {
   // doesn't drop their in-session selections.
   useEffect(() => {
     if (!dashboard || !token) return;
-    const allPagesSeed = Array.isArray(dashboard.public_filters_config)
-      ? (dashboard.public_filters_config as BaseFilter[])
+    // Phase-C (PBI-parity rework) — the top-bar slicer surface now
+    // reads `dashboard.slicers_config` (Phase-A new column) when
+    // present. Filter-pane entries from `filters_config` ALSO surface
+    // here when their `publicMode` is 'visible' (default) so authors
+    // who haven't yet promoted to slicers still get the same viewer
+    // experience. Entries with publicMode='locked' or 'hidden' fall
+    // through to chart-data without rendering as slicers — locked
+    // ones will surface in the banner row (Phase F), hidden ones
+    // never surface at all.
+    //
+    // Legacy fallback: pre-Phase-A dashboards still send
+    // `public_filters_config` only. Treat that as the slicer source
+    // so old shared links keep working.
+    const slicersFromConfig = Array.isArray((dashboard as any).slicers_config)
+      ? ((dashboard as any).slicers_config as BaseFilter[])
       : [];
+    const filtersAsSlicers = Array.isArray((dashboard as any).filters_config)
+      ? ((dashboard as any).filters_config as BaseFilter[]).filter((f) => {
+          const mode = (f as any).publicMode ?? 'visible';
+          return mode === 'visible';
+        })
+      : [];
+    const legacyPublicConfig = (slicersFromConfig.length === 0 && filtersAsSlicers.length === 0)
+      ? (Array.isArray(dashboard.public_filters_config)
+          ? (dashboard.public_filters_config as BaseFilter[])
+          : [])
+      : [];
+    const allPagesSeed: BaseFilter[] = [
+      ...slicersFromConfig,
+      ...filtersAsSlicers,
+      ...legacyPublicConfig,
+    ];
     const activePageObj = dashboardPages.find((p) => p.id === activePageId);
-    const pageSeed: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
-      ? ((activePageObj as any).filters as BaseFilter[])
+    const rawPageSlicers = Array.isArray((activePageObj as any)?.slicers)
+      ? ((activePageObj as any).slicers as BaseFilter[])
       : [];
+    const rawPageFilters = Array.isArray((activePageObj as any)?.filters)
+      ? ((activePageObj as any).filters as BaseFilter[]).filter((f) => {
+          const mode = (f as any).publicMode ?? 'visible';
+          return mode === 'visible';
+        })
+      : [];
+    const pageSeed: BaseFilter[] = [...rawPageSlicers, ...rawPageFilters];
     // De-dupe by fieldKey; per-page entries take precedence over all-pages
     // when the same field appears in both (rare, but tester intent: page-
     // level override semantics). On token change we reset; on page switch
@@ -880,19 +975,162 @@ export default function PublicDashboardPage() {
                 </div>
               )}
 
+              {/* Phase-F THẬT (PBI-parity rework) — banner for locked
+                  filters + [Xem chi tiết] toggle. Click opens mini-pane
+                  with locked entries (read-only, 🔒) plus override-allowed
+                  entries (editable). See docs/filter-semantics.md §9 +
+                  user-approved wireframe. */}
+              {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+                <div
+                  className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
+                  style={publicTheme.neutralPillStyle}
+                  data-public-locked-banner
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    {lockedBannerEntries.length > 0 ? (
+                      <>
+                        <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
+                        {lockedBannerEntries.map((entry, i) => (
+                          <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
+                            <span className="opacity-70">🔒</span>
+                            <span className="font-medium">{entry.label ?? entry.field}</span>
+                            <span className="text-text-quaternary">=</span>
+                            <span className="font-mono">
+                              {Array.isArray(entry.value)
+                                ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
+                                : String(entry.value ?? '')}
+                            </span>
+                          </span>
+                        ))}
+                      </>
+                    ) : (
+                      <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsMiniPaneOpen((v) => !v)}
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                    >
+                      {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
+                    </button>
+                  </div>
+                  {isMiniPaneOpen && (
+                    <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                      {lockedBannerEntries.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                            Bộ lọc cố định (do người chia sẻ link cấu hình)
+                          </div>
+                          {lockedBannerEntries.map((entry, i) => (
+                            <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                              <span>🔒</span>
+                              <span className="font-medium">{entry.label ?? entry.field}</span>
+                              <span className="text-text-quaternary">=</span>
+                              <span className="font-mono text-text-secondary">
+                                {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                              </span>
+                              <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {overridableFilterEntries.length > 0 && (
+                        <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
+                          <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                            Bộ lọc có thể chỉnh
+                          </div>
+                          {overridableFilterEntries.map((entry, i) => {
+                            const currentDraft = draftViewerFilters.find(
+                              (f) => f.field === entry.field || f.semanticField === entry.semanticField,
+                            );
+                            const displayValue = currentDraft?.value ?? entry.value;
+                            return (
+                              <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                                <span>👁</span>
+                                <span className="font-medium">{entry.label ?? entry.field}</span>
+                                <span className="text-text-quaternary">=</span>
+                                <input
+                                  type="text"
+                                  value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const nextValue = raw.includes(',')
+                                      ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                                      : raw;
+                                    setDraftViewerFilters((prev) => {
+                                      const others = prev.filter(
+                                        (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
+                                      );
+                                      return [
+                                        ...others,
+                                        {
+                                          ...(currentDraft ?? {}),
+                                          id: currentDraft?.id ?? `override-${entry.field}`,
+                                          field: entry.field,
+                                          semanticField: entry.semanticField,
+                                          type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
+                                          operator: (currentDraft?.operator ?? 'in') as any,
+                                          value: nextValue,
+                                        } as any,
+                                      ];
+                                    });
+                                  }}
+                                  placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                                  className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
+                                />
+                              </div>
+                            );
+                          })}
+                          <div className="mt-2 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleApplyFilters()}
+                              disabled={!hasPendingFilterChanges}
+                              className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {showFilterControls && (
                 <div className="[&>div]:mb-0">
-                  <DashboardFilterBar
+                  {/* Phase-G — wrap in SlicerCluster so images (logos)
+                      saved on dashboard.slicer_cluster_layout also
+                      render here. Slicer interaction stays the same;
+                      images render as inline cells. lockSlots=true
+                      hides editor affordances. */}
+                  <SlicerCluster
+                    children={[
+                      ...draftViewerFilters,
+                      // Pull image children from dashboard.slicers_config
+                      // (BE-side they live alongside slicer entries;
+                      // viewer just renders them as decoration).
+                      ...(((dashboard as any)?.slicers_config || []).filter(
+                        (c: any) => c && typeof c === 'object' && c.type === 'image',
+                      )),
+                    ]}
+                    onChildrenChange={(next) => {
+                      // Strip images on round-trip; viewer can't edit them.
+                      setDraftViewerFilters(
+                        (next as any[]).filter(
+                          (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
+                        ),
+                      );
+                    }}
+                    layout={(dashboard as any)?.slicer_cluster_layout || null}
                     columns={availableFilterColumns}
                     columnChartCount={availableFilterChartCount}
                     distinctValues={resolvedDistinctValues}
-                    filters={draftViewerFilters}
-                    onFiltersChange={setDraftViewerFilters}
                     hasPendingChanges={hasPendingFilterChanges}
                     onApply={handleApplyFilters}
                     onReset={handleResetFilters}
                     isApplying={isApplyingFilters}
-                    initialExpanded={false}
                     lockSlots
                   />
                 </div>

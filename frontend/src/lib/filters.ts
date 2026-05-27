@@ -13,15 +13,35 @@ export type FilterOperator =
   | 'contains'
   | 'not_contains'
   | 'starts_with'
+  | 'ends_with'
+  | 'matches_regex'
   | 'gt'
   | 'lt'
   | 'gte'
   | 'lte'
   | 'between'
+  | 'not_between'
   | 'is_null'
-  | 'is_not_null';
+  | 'is_not_null'
+  | 'date_eq'
+  | 'date_between'
+  | 'date_in_last'
+  | 'date_this'
+  | 'date_to_date'
+  | 'top_n'
+  | 'bottom_n';
 
 export type FilterType = 'text' | 'number' | 'date' | 'dropdown';
+
+// Phase-B (PBI-parity rework) — every dashboard filter-pane entry
+// carries a `publicMode` flag that drives how the public-link viewer
+// sees it. See docs/filter-semantics.md §2.2.
+//   - 'visible' → viewer sees value in mini-pane, may override if
+//                 `allowOverride === true`
+//   - 'locked'  → value enforced; viewer sees read-only banner row
+//                 when `showBanner !== false`
+//   - 'hidden'  → value enforced; viewer is unaware the field exists
+export type FilterPublicMode = 'visible' | 'locked' | 'hidden';
 
 export type DatePreset =
   | 'custom'
@@ -71,6 +91,12 @@ export interface BaseFilter {
   value: any;                // string | number | [min,max] | array
   label?: string;            // optional user-friendly label
   datePreset?: DatePreset;   // for date filters: selected preset or 'custom'
+  // Phase-B (PBI-parity rework) — public-link behavior. All fields
+  // optional and default-backwards-compatible: an entry without
+  // `publicMode` behaves as `visible` with no override.
+  publicMode?: FilterPublicMode;
+  allowOverride?: boolean;
+  showBanner?: boolean;
 }
 
 /**
@@ -80,6 +106,104 @@ export interface BaseFilter {
  */
 export interface DashboardFilter extends BaseFilter {
   datasetId: number; // dataset this filter targets
+}
+
+// Phase-B (PBI-parity rework) — slicer entry is structurally identical
+// to a DashboardFilter but lives in `Dashboard.slicers_config` and
+// renders as a canvas block via SlicerBar instead of as a row in the
+// Filter pane. Per spec §2.1 slicers are always visible to viewers
+// (no `publicMode` toggle on them — visibility on a public link is
+// controlled at the link-manager level instead).
+export interface SlicerEntry extends DashboardFilter {
+  /** Optional grid/canvas placement. When omitted, the FE auto-stacks
+   *  the slicer inside the SlicerBar at the top of the canvas. */
+  layout?: {
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    xPx?: number;
+    yPx?: number;
+    wPx?: number;
+    hPx?: number;
+    z?: number;
+    pageId?: string;
+  };
+}
+
+// Phase-G — image child of the slicer cluster (logos, icons,
+// decoration). Lives in `slicers_config` alongside real slicer
+// entries; the BE filter pipeline skips them via
+// `normalize_filter_conditions` so they never reach the SQL builder.
+export interface SlicerImageEntry {
+  id: string;
+  type: 'image';
+  /** Image URL or base64 data: URI. */
+  src: string;
+  alt?: string;
+  /** CSS object-fit value. Default 'contain'. */
+  fit?: 'contain' | 'cover' | 'fill';
+  /** Optional click target — opens in a new tab. Useful for logos. */
+  link?: string;
+  /** Display size in px; omit to fill the cluster cell. */
+  widthPx?: number;
+  heightPx?: number;
+}
+
+/** Union of children that can live inside `slicers_config` after Phase-G. */
+export type SlicerClusterChild = SlicerEntry | SlicerImageEntry;
+
+export function isSlicerImageEntry(child: any): child is SlicerImageEntry {
+  return child != null && typeof child === 'object' && (child as any).type === 'image';
+}
+
+// Phase-G — cluster-level layout metadata. Stored on
+// `Dashboard.slicer_cluster_layout`. Undefined/null → use the default
+// auto-stacked top-bar layout (backward compat).
+export interface SlicerClusterLayout {
+  /** Where the cluster lives on the canvas.
+   *   'top'  — stacked above the chart grid (default)
+   *   'left' — vertical column to the left of the grid
+   *   'free' — author dragged/resized; uses x/y/w/h or pixel coords */
+  position?: 'top' | 'left' | 'free';
+  /** 12-col grid coords (used when dashboard.layout_mode === 'grid'). */
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  /** Pixel coords (used when dashboard.layout_mode === 'canvas'). */
+  xPx?: number;
+  yPx?: number;
+  wPx?: number;
+  hPx?: number;
+  z?: number;
+  /** Direction children are laid out inside the cluster. */
+  direction?: 'horizontal' | 'vertical' | 'grid';
+  /** Pixel gap between children. */
+  gap?: number;
+  /** Background CSS color or 'transparent'. */
+  background?: string;
+  /** Border style. */
+  border?: 'none' | 'dashed' | 'solid';
+}
+
+// Phase-B (PBI-parity rework) — entry inside
+// `DashboardPublicLink.filters_config`. Carries either a hard value
+// override (locked, `hidden=false`) OR a "drop this field from the
+// public viewer entirely" marker (`hidden=true`). The merge layer at
+// BE treats the two cases differently — see filter-semantics.md §2.3
+// and `filter_layered_merge.py`.
+export interface PublicLinkFilterEntry {
+  id?: string;
+  field: string;
+  fieldKey?: string;
+  semanticField?: string;
+  datasetId?: number;
+  operator?: FilterOperator;
+  value?: any;
+  /** When true, the field is removed from the public viewer entirely.
+   *  Cannot be overridden by viewer. */
+  hidden?: boolean;
 }
 
 // ─── Phase-15.80: Typed Filter discriminated union ────────────────────────

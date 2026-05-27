@@ -1425,8 +1425,16 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     # Phase-15.81 v12 — overlay draft filters onto the response so the
     # editor sees pending slot edits. Draft values fully REPLACE the
     # live one when present (same semantic as layouts_map).
+    # Phase-A (PBI rework) — `slicers_config` joins the overlay set so
+    # slicer edits stage / publish along the same path.
     draft_filters_config = (
         snapshot.get("filters_config") if isinstance(snapshot, dict) else None
+    )
+    draft_slicers_config = (
+        snapshot.get("slicers_config") if isinstance(snapshot, dict) else None
+    )
+    draft_slicer_cluster_layout = (
+        snapshot.get("slicer_cluster_layout") if isinstance(snapshot, dict) else None
     )
     draft_pages_config = (
         snapshot.get("pages_config") if isinstance(snapshot, dict) else None
@@ -1439,10 +1447,19 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     }
     if isinstance(draft_filters_config, list):
         overrides["filters_config"] = draft_filters_config
+    if isinstance(draft_slicers_config, list):
+        overrides["slicers_config"] = draft_slicers_config
+    if isinstance(draft_slicer_cluster_layout, dict):
+        overrides["slicer_cluster_layout"] = draft_slicer_cluster_layout
     if isinstance(draft_pages_config, list):
         overrides["pages_config"] = draft_pages_config
 
-    has_filter_draft = isinstance(draft_filters_config, list) or isinstance(draft_pages_config, list)
+    has_filter_draft = (
+        isinstance(draft_filters_config, list)
+        or isinstance(draft_slicers_config, list)
+        or isinstance(draft_slicer_cluster_layout, dict)
+        or isinstance(draft_pages_config, list)
+    )
     overrides["has_draft"] = bool(normalized_layouts) or has_filter_draft
 
     enriched = base.model_copy(update=overrides)
@@ -1742,6 +1759,10 @@ def update_dashboard_draft_filters(
     snapshot = dict(dash.draft_snapshot or {})
     if request.filters_config is not None:
         snapshot["filters_config"] = list(request.filters_config)
+    if request.slicers_config is not None:
+        snapshot["slicers_config"] = list(request.slicers_config)
+    if request.slicer_cluster_layout is not None:
+        snapshot["slicer_cluster_layout"] = dict(request.slicer_cluster_layout)
     if request.pages_config is not None:
         snapshot["pages_config"] = list(request.pages_config)
     dash.draft_snapshot = snapshot
@@ -1788,11 +1809,19 @@ def publish_dashboard_draft(
                 row.layout = merged
                 flag_modified(row, "layout")
 
-    # ── Filter slots ──
+    # ── Filter / slicer slots ──
     draft_filters_config = snapshot.get("filters_config")
     if isinstance(draft_filters_config, list):
         dash.filters_config = draft_filters_config
         flag_modified(dash, "filters_config")
+    draft_slicers_config = snapshot.get("slicers_config")
+    if isinstance(draft_slicers_config, list):
+        dash.slicers_config = draft_slicers_config
+        flag_modified(dash, "slicers_config")
+    draft_slicer_cluster_layout = snapshot.get("slicer_cluster_layout")
+    if isinstance(draft_slicer_cluster_layout, dict):
+        dash.slicer_cluster_layout = draft_slicer_cluster_layout
+        flag_modified(dash, "slicer_cluster_layout")
     draft_pages_config = snapshot.get("pages_config")
     if isinstance(draft_pages_config, list):
         dash.pages_config = draft_pages_config

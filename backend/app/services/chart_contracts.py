@@ -61,14 +61,21 @@ _VALID_CHART_QUERY_MODES = {
     CHART_QUERY_MODE_GENERATED,
     CHART_QUERY_MODE_CUSTOM,
 }
+
+# Canonical operator vocabulary. Phase-B of the PBI-parity rework
+# extends this with date-relative and top-N operators (see
+# docs/filter-semantics.md §7). Aliases on the left, canonical key on
+# the right. Order does not matter; the lookup is dict-based.
 _OPERATOR_MAP = {
+    # Scalar equality
     "=": "eq",
     "==": "eq",
     "eq": "eq",
     "!=": "neq",
     "<>": "neq",
     "neq": "neq",
-    "ne": "neq",        # canonical alias used by MeasureFilter / semantic schema
+    "ne": "neq",
+    # Scalar comparison
     ">": "gt",
     "gt": "gt",
     ">=": "gte",
@@ -77,16 +84,65 @@ _OPERATOR_MAP = {
     "lt": "lt",
     "<=": "lte",
     "lte": "lte",
+    # Pattern
     "like": "like",
     "contains": "contains",
     "not_contains": "not_contains",
     "starts_with": "starts_with",
+    "ends_with": "ends_with",
+    "matches_regex": "matches_regex",
+    # List
     "in": "in",
+    "not in": "not_in",
     "not_in": "not_in",
+    # Range
     "between": "between",
+    "not_between": "not_between",
+    # Null-state
     "is_null": "is_null",
+    "is null": "is_null",
     "is_not_null": "is_not_null",
+    "is not null": "is_not_null",
+    # Date — absolute
+    "date_eq": "date_eq",
+    "date_between": "date_between",
+    # Date — relative (FE may also send these; the SQL builder resolves
+    # them to absolute date ranges at query time so server clock is the
+    # source of truth — see filter-semantics.md §7).
+    "date_in_last": "date_in_last",
+    "date_this": "date_this",
+    "date_to_date": "date_to_date",
+    # Measure-only — compiled to ORDER BY + LIMIT, not WHERE/HAVING.
+    "top_n": "top_n",
+    "bottom_n": "bottom_n",
 }
+
+# Phase-B — structured drop reasons. All filter-drop sites should
+# pass one of these constants to `_record_dropped_filter()` so the FE
+# can render localized messages and the analytics layer can aggregate
+# reliably. New reasons go here as additive enum members; never silently
+# rename one in use.
+FILTER_DROP_NO_FIELD = "no_field"
+FILTER_DROP_EMPTY_VALUE = "empty_value"
+FILTER_DROP_UNKNOWN_FIELD = "unknown_field"
+FILTER_DROP_DATASET_MISMATCH = "dataset_mismatch"
+FILTER_DROP_BINDING_UNSUPPORTED = "binding_unsupported"
+FILTER_DROP_UNREACHABLE_VIEW = "unreachable_view"
+FILTER_DROP_UNSUPPORTED_OPERATOR = "unsupported_operator"
+FILTER_DROP_NOT_IN_PUBLIC_WHITELIST = "not_in_public_whitelist"
+FILTER_DROP_LINK_HIDDEN = "link_hidden"
+
+KNOWN_FILTER_DROP_REASONS = frozenset({
+    FILTER_DROP_NO_FIELD,
+    FILTER_DROP_EMPTY_VALUE,
+    FILTER_DROP_UNKNOWN_FIELD,
+    FILTER_DROP_DATASET_MISMATCH,
+    FILTER_DROP_BINDING_UNSUPPORTED,
+    FILTER_DROP_UNREACHABLE_VIEW,
+    FILTER_DROP_UNSUPPORTED_OPERATOR,
+    FILTER_DROP_NOT_IN_PUBLIC_WHITELIST,
+    FILTER_DROP_LINK_HIDDEN,
+})
 CHART_FILTER_CONTEXT_DEFAULT = "default"
 CHART_FILTER_CONTEXT_DASHBOARD = "dashboard"
 _VALID_CHART_FILTER_CONTEXTS = {
@@ -203,9 +259,19 @@ def normalize_filter_conditions(
     always emits a WARNING log for the drop regardless of caller. Callers
     that don't care about diagnostics (older sites) just pass nothing
     and keep the original silent-drop ergonomics.
+
+    Phase-G — entries with `type='image'` are decorative children of
+    the slicer cluster (logos, etc.). They live in `slicers_config`
+    alongside real filter slicers but are NOT query predicates; skip
+    them silently so the SQL pipeline never sees them. Doing the skip
+    here means every downstream consumer (chart engine, layered merge,
+    distinct-values endpoint) inherits the behavior for free.
     """
     normalized: list[dict] = []
     for filt in filters or []:
+        if isinstance(filt, dict) and str(filt.get("type") or "").lower() == "image":
+            # Phase-G — slicer cluster image child, not a filter predicate.
+            continue
         field = filt.get("field")
         if not field:
             _record_dropped_filter(diagnostics, filt, "no_field")
@@ -263,18 +329,28 @@ def resolve_chart_query_filters(
 
 
 def _filter_dedupe_key(filt: dict[str, Any]) -> tuple[Any, ...]:
-    """Phase-15.81 v16 — dedupe key now includes the semantic scope (the
-    qualified `view.col` ref and the dataset id) on top of `field` +
-    `operator`. Earlier code keyed only on `(field, operator)` which
-    collapsed two distinct semantic filters whenever the bare column
-    happened to repeat across views (e.g. every fact table in a CRM
-    schema has `_extracted_at`). A dashboard-wide Date filter on
+    """Phase-15.81 v16 — dedupe key includes the semantic scope (the
+    qualified `view.col` ref and the dataset id) on top of `field`.
+    Earlier code keyed only on `(field, operator)` which collapsed two
+    distinct semantic filters whenever the bare column happened to
+    repeat across views (e.g. every fact table in a CRM schema has
+    `_extracted_at`). A dashboard-wide Date filter on
     `dataset_table_343._extracted_at` then silently dropped a chart's
     own base filter on `dataset_table_145._extracted_at` because the
     bare names collided, so the saved chart ran without its own
     predicate. Including semanticField/datasetId stops the collision
     while still letting runtime override the SAME semantic filter
     (e.g. viewer narrows the date range further on the same column).
+
+    Phase-B' (PBI-parity rework) — operator REMOVED from the key.
+    Reason: the spec (docs/filter-semantics.md §3) says viewer slicer
+    OVERRIDES dashboard filter on the same field regardless of the
+    operator each layer used. Keeping operator in the key produced a
+    silent two-filters-on-same-field bug: dashboard's `eq A` and
+    viewer's `in [B]` got DIFFERENT keys → both survived dedupe → SQL
+    became `WHERE col = A AND col IN (B)` → empty result. With
+    semanticField + datasetId in the key, the bare-name collision the
+    v16 fix targeted is still avoided.
     """
     semantic = (
         filt.get("semanticField")
@@ -284,7 +360,6 @@ def _filter_dedupe_key(filt: dict[str, Any]) -> tuple[Any, ...]:
     return (
         str(semantic).strip().lower(),
         str(filt.get("field") or "").strip().lower(),
-        str(filt.get("operator") or "").strip().lower(),
         filt.get("datasetId"),
     )
 

@@ -350,6 +350,54 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
           </div>
         )}
 
+        {/* Phase-D (PBI-parity rework) — public-mode dropdown.
+            Controls how this filter behaves on a public link:
+              👁 Visible — viewer sees value in mini-pane, may override
+                          if allowOverride is on (default off).
+              🔒 Locked  — value enforced, viewer sees a read-only banner
+                          row instead of an editable slicer.
+              🚫 Hidden  — value enforced, viewer never sees the field
+                          (silent WHERE).
+            See docs/filter-semantics.md §2.2. */}
+        <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
+          <span title="Hành vi của filter trên link public">Public:</span>
+          <select
+            value={(filter as any).publicMode ?? 'visible'}
+            onChange={(e) => {
+              const next = e.target.value as 'visible' | 'locked' | 'hidden';
+              onChange({ ...filter, publicMode: next } as any);
+            }}
+            className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-[10px] outline-none focus:ring-1 focus:ring-brand"
+            title="Cách filter này xuất hiện cho người xem qua link public"
+          >
+            <option value="visible">👁 Visible</option>
+            <option value="locked">🔒 Locked</option>
+            <option value="hidden">🚫 Hidden</option>
+          </select>
+          {((filter as any).publicMode ?? 'visible') === 'visible' && (
+            <label className="ml-1 inline-flex items-center gap-1" title="Cho phép viewer chỉnh giá trị qua mini-pane">
+              <input
+                type="checkbox"
+                checked={Boolean((filter as any).allowOverride)}
+                onChange={(e) => onChange({ ...filter, allowOverride: e.target.checked } as any)}
+                className="h-3 w-3"
+              />
+              <span>override</span>
+            </label>
+          )}
+          {((filter as any).publicMode ?? 'visible') === 'locked' && (
+            <label className="ml-1 inline-flex items-center gap-1" title="Hiện banner 'Đang lọc theo…' cho viewer">
+              <input
+                type="checkbox"
+                checked={(filter as any).showBanner !== false}
+                onChange={(e) => onChange({ ...filter, showBanner: e.target.checked } as any)}
+                className="h-3 w-3"
+              />
+              <span>banner</span>
+            </label>
+          )}
+        </div>
+
         {/* Body by type */}
         {filter.type === 'date'
           ? <DateBody filter={filter} onUpdateValue={updateValue} onUpdateOperator={updateOperator} onUpdatePreset={(p) => {

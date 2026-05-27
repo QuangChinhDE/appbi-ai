@@ -31,6 +31,8 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { FilterPane } from '@/components/dashboards/FilterPane';
+import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
@@ -193,6 +195,22 @@ export default function DashboardDetailPage() {
   // that still consume BaseFilter (DashboardFilterBar internals, ChartTile).
   const [draftGlobalFilters, setDraftGlobalFilters] = useState<TypedFilter[]>([]);
   const [appliedGlobalFilters, setAppliedGlobalFilters] = useState<TypedFilter[]>([]);
+  // Phase-C THẬT (PBI-parity rework) — slicer state.
+  // Lives in `Dashboard.slicers_config` (separate from filters_config).
+  // Renders as a canvas-block SlicerBar above the grid in edit mode.
+  // Per spec §2.1 slicers are always visible to viewers — no
+  // publicMode/locked/hidden toggle here. Public-link overrides
+  // happen at the link manager level (link_locked / link_hidden).
+  // Mixed: slicer entries (BaseFilter shape) + image entries
+  // (SlicerImageEntry shape with type='image'). Type widened to `any[]`
+  // so the cluster component can store both without forcing a
+  // discriminated union at every call site.
+  const [draftGlobalSlicers, setDraftGlobalSlicers] = useState<any[]>([]);
+  const [appliedGlobalSlicers, setAppliedGlobalSlicers] = useState<any[]>([]);
+  // Phase-G — cluster-level layout (position/direction/gap/etc.).
+  const [draftSlicerClusterLayout, setDraftSlicerClusterLayout] = useState<any | null>(null);
+  const [appliedSlicerClusterLayout, setAppliedSlicerClusterLayout] = useState<any | null>(null);
+  const slicersSeededRef = React.useRef(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
     sourceChartId: number;
@@ -375,6 +393,24 @@ export default function DashboardDetailPage() {
     setAppliedGlobalFilters(initial);
   }, [dashboard]);
 
+  // Phase-C THẬT — seed slicer state from dashboard.slicers_config.
+  // Same pattern as the filter seed above but stays in legacy
+  // BaseFilter[] shape (the SlicerBar component reads/writes it
+  // directly without the TypedFilter union round-trip).
+  // Phase-G — also seed the cluster layout (position/direction/gap).
+  React.useEffect(() => {
+    if (!dashboard || slicersSeededRef.current) return;
+    slicersSeededRef.current = true;
+    const seed = Array.isArray((dashboard as any).slicers_config)
+      ? ((dashboard as any).slicers_config as any[])
+      : [];
+    setDraftGlobalSlicers(seed);
+    setAppliedGlobalSlicers(seed);
+    const layoutSeed = (dashboard as any).slicer_cluster_layout || null;
+    setDraftSlicerClusterLayout(layoutSeed);
+    setAppliedSlicerClusterLayout(layoutSeed);
+  }, [dashboard]);
+
   React.useEffect(() => {
     if (!crossFilterState) return;
     const sourceExists = visibleDashboardCharts.some(
@@ -438,11 +474,16 @@ export default function DashboardDetailPage() {
 
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
+  // Phase-C THẬT — slicer drafts also count toward pending.
   const hasPendingFilterChanges = React.useMemo(
     () =>
       JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters)
-      || JSON.stringify(draftPageFilters) !== JSON.stringify(activePageFilters),
-    [draftGlobalFilters, appliedGlobalFilters, draftPageFilters, activePageFilters],
+      || JSON.stringify(draftPageFilters) !== JSON.stringify(activePageFilters)
+      || JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+      || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout),
+    [draftGlobalFilters, appliedGlobalFilters, draftPageFilters, activePageFilters,
+     draftGlobalSlicers, appliedGlobalSlicers,
+     draftSlicerClusterLayout, appliedSlicerClusterLayout],
   );
 
   // Combined view fed into DashboardGrid/Canvas/ChartTile. Both scopes
@@ -451,12 +492,24 @@ export default function DashboardDetailPage() {
   // seed effect's "page entries take precedence" rule). Driven by
   // APPLIED state — adding a half-built filter card mustn't shake the
   // chart grid.
+  // Phase-C THẬT — slicers (#1) and filters (#2) both contribute to
+  // the chart WHERE in internal mode. Layer order matches BE
+  // make_dashboard_layers: chart_base < dashboard_filter < dashboard_slicer.
+  // Later layers override earlier on same field, so slicers win over
+  // filters when they hit the same column (matches PBI behavior:
+  // viewer-interactive slicer overrides the canvas-hidden filter).
   const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(() => {
     const byKey = new Map<string, BaseFilter>();
     for (const f of appliedGlobalFiltersLegacy) byKey.set(getFilterKey(f), f);
     for (const f of activePageFilters) byKey.set(getFilterKey(f), f);
+    // Phase-G — skip image children (they're decorative, not filters);
+    // defensive guard even though BE also drops them.
+    for (const f of appliedGlobalSlicers) {
+      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
+      byKey.set(getFilterKey(f as BaseFilter), f as BaseFilter);
+    }
     return Array.from(byKey.values());
-  }, [appliedGlobalFiltersLegacy, activePageFilters]);
+  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers]);
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -848,12 +901,27 @@ export default function DashboardDetailPage() {
       // Build the payload for the draft endpoint. We always send the
       // FULL slot list for the scope being applied (including empty-
       // value slots — that's the DA-authored inventory).
-      const body: { filters_config?: BaseFilter[]; pages_config?: any[] } = {};
+      // Phase-C THẬT — slicers travel under their own key in the same
+      // draft payload so a single Apply round-trip ships filter pane +
+      // slicer edits together.
+      const body: {
+        filters_config?: BaseFilter[];
+        slicers_config?: any[];
+        slicer_cluster_layout?: Record<string, any>;
+        pages_config?: any[];
+      } = {};
 
       if (scope === 'all') {
         body.filters_config = draftGlobalFilters
           .map((f) => toBaseFilter(f, { allowInactive: true }))
           .filter((b): b is BaseFilter => b !== null);
+        body.slicers_config = draftGlobalSlicers;
+        setAppliedGlobalSlicers(draftGlobalSlicers);
+        // Phase-G — ship cluster layout in the same Apply round-trip.
+        if (draftSlicerClusterLayout) {
+          body.slicer_cluster_layout = draftSlicerClusterLayout;
+          setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
+        }
       }
 
       if (activePageId) {
@@ -1426,10 +1494,20 @@ export default function DashboardDetailPage() {
     // page filters → card vừa kéo vào "Filters on this page" chưa
     // Apply không có distinct values, checklist trống. Project draft
     // với allowInactive=true để giữ slot rỗng (DA chưa chọn value).
+    // Phase-C THẬT — slicers (Dashboard.slicers_config) cũng là filter
+    // active trên page khi đã được Apply, nên cũng tham gia vào
+    // distinct-values context để dropdown cascade đúng. Bỏ qua nhánh
+    // này là inconsistency với public viewer (memory
+    // `dashboard_filter_dual_path` từng cảnh báo 2 nhánh distinct
+    // values lệch nhau gây bug khó tìm).
     const legacyDraftAll = draftGlobalFilters
       .map((f) => toBaseFilter(f, { allowInactive: true }))
       .filter((b): b is BaseFilter => b !== null);
-    const combinedFilters: BaseFilter[] = [...legacyDraftAll, ...draftPageFilters];
+    const combinedFilters: BaseFilter[] = [
+      ...legacyDraftAll,
+      ...draftPageFilters,
+      ...draftGlobalSlicers,
+    ];
 
     if (semanticColumnsResult.columns.length === 0 || combinedFilters.length === 0) {
       return [];
@@ -1456,7 +1534,7 @@ export default function DashboardDetailPage() {
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [draftGlobalFilters, draftPageFilters, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, semanticColumnsResult.columns]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
@@ -2060,8 +2138,50 @@ export default function DashboardDetailPage() {
           </div>
         )}
 
-        {/* Dashboard Grid or Canvas */}
-        <div ref={dashboardContentRef}>
+        {/* Phase-G3 — SlicerCluster arrangement honors layout.position:
+            'top'  → block above charts (default)
+            'left' → flex-row [cluster | charts]
+            'free' → absolute overlay (cluster positions itself; the
+                     wrapper just provides position:relative anchor). */}
+        <div
+          className={
+            (draftSlicerClusterLayout?.position === 'left')
+              ? 'flex flex-row items-start gap-3'
+              : ''
+          }
+          style={
+            (draftSlicerClusterLayout?.position === 'free')
+              ? { position: 'relative' }
+              : undefined
+          }
+        >
+        {(draftGlobalSlicers.length > 0 || canEditResource) && (
+          <SlicerCluster
+            children={draftGlobalSlicers}
+            onChildrenChange={setDraftGlobalSlicers}
+            layout={draftSlicerClusterLayout}
+            onLayoutChange={setDraftSlicerClusterLayout}
+            columns={resolvedAvailableColumns}
+            columnChartCount={resolvedColumnChartCount}
+            distinctValues={resolvedDistinctValues}
+            hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+              || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
+            onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
+            onReset={canEditResource ? () => {
+              setDraftGlobalSlicers(appliedGlobalSlicers);
+              setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
+            } : undefined}
+            isApplying={isApplyingFilters}
+            lockSlots={!canEditResource}
+          />
+        )}
+
+        {/* Dashboard Grid or Canvas. When the slicer cluster is on the
+            left, this area flexes to fill the remaining width. */}
+        <div
+          ref={dashboardContentRef}
+          className={draftSlicerClusterLayout?.position === 'left' ? 'min-w-0 flex-1' : ''}
+        >
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
@@ -2108,6 +2228,7 @@ export default function DashboardDetailPage() {
           />
         )}
         </div>
+        </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
 
         {/* Hidden off-screen ChartTiles for non-active pages — pre-warm React Query cache.
             Renders only ChartTile (no grid layout) to avoid WidthProvider / layout interference. */}

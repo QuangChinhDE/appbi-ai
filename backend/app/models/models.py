@@ -139,9 +139,37 @@ class Dashboard(Base):
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
     
-    # Store dashboard-level filters as JSON (hybrid approach v1)
-    # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown", "operator": "in", "value": ["US"]}]
+    # Store dashboard-level FILTER PANE entries as JSON.
+    # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown",
+    #             "operator": "in", "value": ["US"], "public_mode": "visible",
+    #             "allow_override": false}]
+    # `public_mode` ∈ {"visible", "locked", "hidden"} controls behavior on
+    # public links; `allow_override` lets viewers change a visible-banner
+    # value via the mini-pane. See docs/filter-semantics.md §2.2.
     filters_config = Column(JSON, nullable=True, default=list)
+
+    # Phase-A — slicer-visual entries (separate from filters pane). Each
+    # entry renders as a canvas block in the SlicerBar. Slicers are
+    # always visible to viewers; public visibility differences are
+    # expressed at the public-link level (DashboardPublicLink.filters_config).
+    # Same field shape as filters_config except `public_mode` is implicit-visible.
+    # Phase-G — image children (logos etc.) ALSO live in this list as
+    # entries with `type='image'`. They render inside the same cluster
+    # as slicers; the filter pipeline skips them since they are not
+    # query predicates.
+    slicers_config = Column(JSON, nullable=True, default=list)
+
+    # Phase-G — slicer cluster layout metadata. NULL means "use default
+    # top-bar auto-stack layout" (backward compatible). Shape:
+    #   {
+    #     position: 'top' | 'left' | 'free',
+    #     x, y, w, h (12-col grid coords when dashboard.layout_mode='grid'),
+    #     xPx, yPx, wPx, hPx (pixel coords when 'canvas'),
+    #     direction: 'horizontal' | 'vertical' | 'grid',
+    #     gap, background, border
+    #   }
+    slicer_cluster_layout = Column(JSON, nullable=True)
+
     pages_config = Column(JSON, nullable=True, default=list)
 
     # Layout mode: "grid" (react-grid-layout, default) or "canvas" (free positioning)
@@ -163,12 +191,16 @@ class Dashboard(Base):
     # columns. Clicking "Lưu / Publish" applies the snapshot onto the
     # live columns + dashboard_charts rows, then clears this field.
     # Shape: {
-    #   name?, description?, filters_config?, pages_config?, layout_mode?,
-    #   theme_config?, canvas_config?, public_filters_config?,
+    #   name?, description?, filters_config?, slicers_config?,
+    #   pages_config?, layout_mode?, theme_config?, canvas_config?,
+    #   public_filters_config?, layouts?,
     #   dashboard_charts?: [
     #     {id?, chart_id?, widget_type, widget_config, layout, parameters}
     #   ]
     # }
+    # Phase-A (PBI rework): `slicers_config` was added so slicer-block
+    # edits share the same draft / publish lifecycle as filter-pane
+    # edits and layout edits.
     draft_snapshot = Column(JSON, nullable=True)
 
     # Timestamps

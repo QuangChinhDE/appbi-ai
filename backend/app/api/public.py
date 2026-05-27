@@ -33,6 +33,11 @@ from app.services.dashboard_ai_bot.public_link_config import (
     resolve_public_ai_critique_enabled,
     sanitize_report_context_note,
 )
+from app.services.filter_layered_merge import (
+    make_public_layers,
+    merge_layered_filters,
+    split_link_filters_locked_vs_hidden,
+)
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -486,6 +491,59 @@ def _sanitize_public_viewer_filters(
     return sanitized
 
 
+def _build_public_chart_filters(
+    dash: Dashboard,
+    link_filters_config: list[dict] | None,
+    viewer_filters: list[dict] | None,
+    *,
+    context_for_log: str = "public_chart",
+) -> list[dict]:
+    """Phase-B (PBI-parity rework) — single layered merge for every
+    public endpoint that fetches chart data.
+
+    Precedence (see docs/filter-semantics.md §3):
+
+      chart_base  (handled inside ChartService.get_chart_data)
+        < dashboard_filter (Dashboard.filters_config)
+        < dashboard_slicer (Dashboard.slicers_config — Phase-A column)
+        < viewer_slicer    (FE-sent runtime filter list)
+        < viewer_filter    (mini-pane overrides — reserved, empty until Phase F)
+        < link_locked      (DashboardPublicLink.filters_config, value-bearing entries)
+
+    `link_hidden` entries on the public link drop the matching field
+    entirely (no banner, no slicer — see filter-semantics.md §2.3).
+
+    Centralizing this means every endpoint that talks to the chart
+    engine for a public viewer applies the same precedence — the
+    chart-data endpoint, the distinct-values endpoint, and every AI
+    bot endpoint that summarizes chart data. The memory
+    `dashboard_ai_bot_filters` calls out the previous drift between
+    those sites; this helper closes it.
+    """
+    locked_link, hidden_link = split_link_filters_locked_vs_hidden(
+        item for item in (link_filters_config or []) if isinstance(item, dict)
+    )
+    merge_diagnostics: list[dict] = []
+    merged = merge_layered_filters(
+        make_public_layers(
+            dashboard_filters=list(getattr(dash, "filters_config", None) or []),
+            dashboard_slicers=list(getattr(dash, "slicers_config", None) or []),
+            viewer_slicers=list(viewer_filters or []),
+            viewer_filters=[],  # mini-pane overrides — wired in Phase F
+            link_locked=locked_link,
+            link_hidden=hidden_link,
+        ),
+        diagnostics=merge_diagnostics,
+    )
+    if merge_diagnostics:
+        logger.info(
+            "filter_merge context=%s dropped=%s",
+            context_for_log,
+            [d.get("reason") for d in merge_diagnostics],
+        )
+    return merged
+
+
 def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
     """Dedupe filter list by (datasetId, semanticField); later entries win.
 
@@ -669,14 +727,30 @@ def get_public_dashboard(
     # the viewer can't re-create or relabel a filter DA defined on
     # another page.
     top_bar_filters = list(dash.filters_config or [])
+    # Phase-C (PBI-parity rework) — slicers and filters both feed the
+    # public viewer's top-bar inventory. Slicers always reach the
+    # viewer; filter-pane entries reach the viewer only when their
+    # publicMode is 'visible' (the default). Locked / hidden ones
+    # stay in `filters_config` for BE chart-data merging but do NOT
+    # show up as pickable fields.
+    top_bar_slicers = list(getattr(dash, "slicers_config", None) or [])
     pages_filters_flat: list[dict] = []
+    pages_slicers_flat: list[dict] = []
     for page in dash.pages_config or []:
         if not isinstance(page, dict):
             continue
         for f in page.get("filters") or []:
             if isinstance(f, dict):
                 pages_filters_flat.append(f)
-    field_inventory = _dedupe_filters_by_field([*pages_filters_flat, *top_bar_filters])
+        for s in page.get("slicers") or []:
+            if isinstance(s, dict):
+                pages_slicers_flat.append(s)
+    field_inventory = _dedupe_filters_by_field([
+        *pages_filters_flat,
+        *pages_slicers_flat,
+        *top_bar_filters,
+        *top_bar_slicers,
+    ])
     # public_filters_config still mirrors only the all-pages set; per-
     # page filters reach the viewer via dash.pages_config (FE seed
     # effect handles activation by page). available_filter_fields,
@@ -1937,12 +2011,12 @@ def get_public_filter_distinct_values(
         viewer_filters,
     )
 
-    # Hidden link filters (Loại 2) win over viewer overrides via
-    # "later-wins" dedupe — see chart-data endpoint comment for rationale.
-    combined_filters = _dedupe_filters_by_field([
-        *sanitized_viewer_filters,
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        sanitized_viewer_filters,
+        context_for_log=f"distinct_values:{token}:{dataset_id}:{field}",
+    )
 
     try:
         result = get_distinct_field_values(
@@ -2026,14 +2100,12 @@ def get_public_chart_data(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
-    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
-    # link) MUST win over viewer overrides: a viewer can never relax a
-    # hidden constraint. Dedupe uses "later wins", so put hidden filters
-    # last.
-    combined_filters = _dedupe_filters_by_field([
-        *viewer_filters,
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        viewer_filters,
+        context_for_log=f"chart_data:{token}:{chart_id}",
+    )
 
     try:
         return ChartService.get_chart_data(
@@ -2122,14 +2194,12 @@ def get_dashboard_ai_context(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
-    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
-    # link) MUST win over viewer overrides: a viewer can never relax a
-    # hidden constraint. Dedupe uses "later wins", so put hidden filters
-    # last.
-    combined_filters = _dedupe_filters_by_field([
-        *viewer_filters,
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        viewer_filters,
+        context_for_log=f"ai_bot:{token}",
+    )
 
     try:
         context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
@@ -2209,11 +2279,16 @@ async def chat_dashboard_ai(
     else:
         # Merge viewer slicer filters with link-level public filters so the
         # context the LLM sees matches what the dashboard is rendering.
+        # Phase-B (PBI-parity rework) — routed through the shared
+        # layered-merge helper so this site stays aligned with the
+        # chart-data endpoint precedence (memory `dashboard_ai_bot_filters`).
         viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-        combined_filters = _dedupe_filters_by_field([
-            *[item for item in viewer_filters_body if isinstance(item, dict)],
-            *[item for item in (public_filters or []) if isinstance(item, dict)],
-        ])
+        combined_filters = _build_public_chart_filters(
+            dash,
+            public_filters,
+            [item for item in viewer_filters_body if isinstance(item, dict)],
+            context_for_log=f"ai_bot_chat:{token}",
+        )
         try:
             context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
         except Exception:
@@ -2472,14 +2547,12 @@ def get_dashboard_ai_briefing_guess(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
-    # Hidden link filters (Loại 2 — DA-stamped constraints on this share
-    # link) MUST win over viewer overrides: a viewer can never relax a
-    # hidden constraint. Dedupe uses "later wins", so put hidden filters
-    # last.
-    combined_filters = _dedupe_filters_by_field([
-        *viewer_filters,
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        viewer_filters,
+        context_for_log=f"ai_bot:{token}",
+    )
 
     try:
         ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
@@ -2558,10 +2631,12 @@ async def post_dashboard_ai_briefing_brief(
     briefing.confirmed = True
 
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    combined_filters = _dedupe_filters_by_field([
-        *[item for item in viewer_filters_body if isinstance(item, dict)],
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        [item for item in viewer_filters_body if isinstance(item, dict)],
+        context_for_log=f"ai_bot_briefing:{token}",
+    )
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
     recon = build_proactive_recon(ctx)
     user_prompt = build_executive_brief_user_prompt(
@@ -2822,14 +2897,15 @@ async def chat_dashboard_ai_agent(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
 
     captured_key = effective_key
-    # Merge link-level public filters with viewer-applied slicer filters from
-    # the dashboard UI. Same pattern as the public chart-data endpoint at
-    # line ~1864 â€” later entries (viewer overrides) win via dedupe.
+    # Merge link-level public filters with viewer-applied slicer filters
+    # from the dashboard UI through the shared layered-merge helper.
     viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    combined_filters = _dedupe_filters_by_field([
-        *[item for item in viewer_filters_body if isinstance(item, dict)],
-        *[item for item in (public_filters or []) if isinstance(item, dict)],
-    ])
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        [item for item in viewer_filters_body if isinstance(item, dict)],
+        context_for_log=f"ai_bot_chat_extra:{token}",
+    )
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
 
     # Phase A + B: parse briefing + state, default-construct if missing.

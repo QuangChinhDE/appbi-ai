@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Link2, Copy, Check, Trash2, Globe, Filter, Plus,
+  Link2, Copy, Check, Trash2, Globe, Filter, Plus, X,
   Eye, EyeOff, Clock, Loader2, ArrowLeft, Lock, Code2, Sparkles,
 } from 'lucide-react';
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
@@ -60,11 +60,35 @@ export function PublicLinksManager({
   const [dv, setDv] = useState<Record<string, string[]>>(propDistinctValues ?? {});
   const [columnsLoading, setColumnsLoading] = useState(false);
 
+  // Phase-E THẬT (PBI-parity rework) — inherited entries from the
+  // owning dashboard. Each one renders a 3-radio Show / Lock-with-value
+  // / Hide row. See docs/filter-semantics.md §2.3 and the wireframe
+  // confirmed by the user (Slicer #1 + Filter #2 sections).
+  const [inheritedSlicers, setInheritedSlicers] = useState<BaseFilter[]>([]);
+  const [inheritedFilters, setInheritedFilters] = useState<BaseFilter[]>([]);
+  // Per-inherited-entry action; keyed by stable fieldKey or field.
+  // `action: 'show'` → don't add anything to link.filters_config
+  //                    (viewer sees the entry exactly as the dashboard
+  //                    set it).
+  // `action: 'lock'` → write {field, operator, value, hidden: false}
+  //                    using the override value the author entered.
+  // `action: 'hide'` → write {field, hidden: true} so the BE merger
+  //                    drops the field entirely.
+  type LinkEntryAction = { action: 'show' | 'lock' | 'hide'; value?: any };
+  const [linkActions, setLinkActions] = useState<Record<string, LinkEntryAction>>({});
+
   const [view, setView] = useState<ModalView>('list');
   const [editingLink, setEditingLink] = useState<PublicLink | null>(null);
 
   const [formName, setFormName] = useState('');
   const [formFilters, setFormFilters] = useState<BaseFilter[]>([]);
+  // Phase-E (PBI-parity rework) — per-link "hidden field" markers.
+  // Each entry stores a `field` (and optional `semanticField`/`datasetId`)
+  // that the public viewer should never see — neither as a slicer nor
+  // as a banner row. Persisted into the link's filters_config alongside
+  // value-bearing locked entries via the `hidden: true` marker.
+  // See docs/filter-semantics.md §2.3.
+  const [formHiddenFields, setFormHiddenFields] = useState<string[]>([]);
   const [formAppearance, setFormAppearance] = useState<PublicLinkAppearanceConfig>(DEFAULT_APPEARANCE);
   const [formPassword, setFormPassword] = useState('');
   const [passwordEnabled, setPasswordEnabled] = useState(false);
@@ -87,6 +111,21 @@ export function PublicLinksManager({
   };
 
   const fetchColumnData = useCallback(async () => {
+    // Always refresh inherited entries from BE even when the parent
+    // pre-supplied columns — slicers_config + filters_config travel
+    // on the dashboard object, not on the column list.
+    try {
+      const dash = await dashboardApi.getById(dashboardId);
+      setInheritedSlicers(Array.isArray((dash as any).slicers_config)
+        ? ((dash as any).slicers_config as BaseFilter[])
+        : []);
+      setInheritedFilters(Array.isArray((dash as any).filters_config)
+        ? ((dash as any).filters_config as BaseFilter[])
+        : []);
+    } catch {
+      // non-critical — section just renders empty
+    }
+
     if ((propColumns?.length ?? 0) > 0) return;
     setColumnsLoading(true);
     try {
@@ -233,7 +272,18 @@ export function PublicLinksManager({
     try {
       const link = await dashboardApi.createPublicLink(dashboardId, {
         name: formName.trim(),
-        filters_config: formFilters,
+        // Phase-E THẬT — merge into the single `filters_config` payload:
+        //   linkActions['lock']  → {field, value, hidden:false}
+        //   linkActions['hide']  → {field, hidden:true}
+        //   linkActions['show']  → not in payload (inherit)
+        // Plus escape-hatch formFilters + formHiddenFields for advanced
+        // cases not covered by inherited entries.
+        filters_config: buildLinkFiltersPayload(
+          linkActions,
+          [...inheritedSlicers, ...inheritedFilters],
+          formFilters,
+          formHiddenFields,
+        ),
         appearance_config: formAppearance,
         password,
       });
@@ -263,7 +313,18 @@ export function PublicLinksManager({
       }
       const updated = await dashboardApi.updatePublicLink(dashboardId, editingLink.id, {
         name: formName.trim() || undefined,
-        filters_config: formFilters,
+        // Phase-E THẬT — merge into the single `filters_config` payload:
+        //   linkActions['lock']  → {field, value, hidden:false}
+        //   linkActions['hide']  → {field, hidden:true}
+        //   linkActions['show']  → not in payload (inherit)
+        // Plus escape-hatch formFilters + formHiddenFields for advanced
+        // cases not covered by inherited entries.
+        filters_config: buildLinkFiltersPayload(
+          linkActions,
+          [...inheritedSlicers, ...inheritedFilters],
+          formFilters,
+          formHiddenFields,
+        ),
         appearance_config: formAppearance,
         ...passwordField,
       });
@@ -305,7 +366,22 @@ export function PublicLinksManager({
   const openEdit = (link: PublicLink) => {
     setEditingLink(link);
     setFormName(link.name);
-    setFormFilters((link.filters_config ?? []) as BaseFilter[]);
+    // Phase-E THẬT — parse the link's filters_config back into:
+    //   linkActions       — entries matching an inherited dashboard
+    //                       slicer/filter, rendered via the 3-radio UI
+    //   formFilters       — extra locked entries that do NOT match
+    //                       any inherited row (legacy / advanced)
+    //   formHiddenFields  — extra hide markers without an inherited row
+    {
+      const raw = (link.filters_config ?? []) as any[];
+      const parsed = parseExistingLinkFilters(
+        raw,
+        [...inheritedSlicers, ...inheritedFilters],
+      );
+      setLinkActions(parsed.actions);
+      setFormFilters(parsed.leftover);
+      setFormHiddenFields(parsed.leftoverHidden);
+    }
     setFormAppearance({
       ...normalizePublicLinkAppearance(link.appearance_config),
       // normalizePublicLinkAppearance strips AI bot fields (they are not in
@@ -337,6 +413,8 @@ export function PublicLinksManager({
   const resetForm = () => {
     setFormName('');
     setFormFilters([]);
+    setFormHiddenFields([]);
+    setLinkActions({});
     setFormAppearance(DEFAULT_APPEARANCE);
     setFormPassword('');
     setPasswordEnabled(false);
@@ -344,6 +422,103 @@ export function PublicLinksManager({
     setChangePassword(false);
     setPreviewMode('public');
     setEditingLink(null);
+  };
+
+  // Phase-E THẬT — stable key matching an inherited entry to a link
+  // override row. Mirrors the BE dedupe shape (semanticField first,
+  // then bare field, then datasetId).
+  const entryKey = (entry: { field: string; semanticField?: string; datasetId?: number }): string => {
+    const sem = (entry.semanticField || '').toLowerCase();
+    const ds = entry.datasetId ?? '';
+    return sem ? `${ds}|${sem}` : `${ds}|${entry.field.toLowerCase()}`;
+  };
+
+  // Serialize linkActions + escape-hatch formFilters/formHiddenFields
+  // into the BE wire shape for `DashboardPublicLink.filters_config`.
+  // See docs/filter-semantics.md §2.3.
+  const buildLinkFiltersPayload = (
+    actions: Record<string, LinkEntryAction>,
+    inherited: BaseFilter[],
+    extraLocked: BaseFilter[],
+    extraHidden: string[],
+  ): any[] => {
+    const out: any[] = [];
+    const inheritedByKey = new Map<string, BaseFilter>();
+    for (const e of inherited) inheritedByKey.set(entryKey(e), e);
+    const handledKeys = new Set<string>();
+    for (const [key, act] of Object.entries(actions)) {
+      const inheritedEntry = inheritedByKey.get(key);
+      if (!inheritedEntry) continue;
+      handledKeys.add(key);
+      if (act.action === 'show') continue;
+      if (act.action === 'hide') {
+        out.push({
+          field: inheritedEntry.field,
+          semanticField: inheritedEntry.semanticField,
+          datasetId: inheritedEntry.datasetId,
+          hidden: true,
+        });
+        continue;
+      }
+      // 'lock': write the override value back, fall back to the
+      // dashboard's saved value if the author hasn't entered one.
+      // Phase-E fix — align operator with value shape. When the
+      // override value is an array (e.g. user typed "A, B, C"), force
+      // operator to `in`/`not_in`; otherwise the inherited `eq` would
+      // emit invalid SQL `WHERE field = ('A','B','C')`.
+      const overrideValue = act.value !== undefined ? act.value : inheritedEntry.value;
+      const inheritedOp = (inheritedEntry as any).operator || 'in';
+      const effectiveOp = Array.isArray(overrideValue)
+        ? (inheritedOp === 'not_in' ? 'not_in' : 'in')
+        : inheritedOp;
+      out.push({
+        field: inheritedEntry.field,
+        semanticField: inheritedEntry.semanticField,
+        datasetId: inheritedEntry.datasetId,
+        operator: effectiveOp,
+        value: overrideValue,
+      });
+    }
+    for (const f of extraLocked) {
+      if (handledKeys.has(entryKey(f as any))) continue;
+      out.push(f);
+    }
+    for (const f of extraHidden) {
+      out.push({ field: f, hidden: true });
+    }
+    return out;
+  };
+
+  // Parse an existing link.filters_config back into linkActions +
+  // escape-hatch arrays, splitting by whether each entry matches an
+  // inherited dashboard entry (action-based) or not (legacy/extra).
+  const parseExistingLinkFilters = (
+    raw: any[],
+    inherited: BaseFilter[],
+  ): { actions: Record<string, LinkEntryAction>; leftover: BaseFilter[]; leftoverHidden: string[] } => {
+    const inheritedByKey = new Map<string, BaseFilter>();
+    for (const e of inherited) inheritedByKey.set(entryKey(e), e);
+    const actions: Record<string, LinkEntryAction> = {};
+    const leftover: BaseFilter[] = [];
+    const leftoverHidden: string[] = [];
+    for (const entry of raw || []) {
+      if (!entry || typeof entry !== 'object') continue;
+      const key = entryKey(entry);
+      if (inheritedByKey.has(key)) {
+        if (entry.hidden === true) {
+          actions[key] = { action: 'hide' };
+        } else {
+          actions[key] = { action: 'lock', value: entry.value };
+        }
+      } else {
+        if (entry.hidden === true) {
+          if (typeof entry.field === 'string' && entry.field) leftoverHidden.push(entry.field);
+        } else {
+          leftover.push(entry as BaseFilter);
+        }
+      }
+    }
+    return { actions, leftover, leftoverHidden };
   };
 
   const goBack = () => {
@@ -911,10 +1086,173 @@ export function PublicLinksManager({
                   onChange={setFormAppearance}
                 />
 
+                {/* Phase-E THẬT (PBI-parity rework) — primary surface:
+                    per-inherited-entry 3-radio Show / Lock / Hide. The
+                    section is split by source — slicers (#1) inherit
+                    from `Dashboard.slicers_config`, filters (#2) from
+                    `Dashboard.filters_config`. Per-link override here;
+                    the BE layered-merge module is what makes the
+                    precedence stick (link_locked > viewer_slicer >
+                    dashboard_*). See docs/filter-semantics.md §2 and
+                    the wireframe approved by the user. */}
+                {(inheritedSlicers.length > 0 || inheritedFilters.length > 0) && (
+                  <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+                    <div className="flex items-center gap-2 text-text-primary">
+                      <Filter className="h-4 w-4 text-brand" />
+                      <h3 className="text-small font-strong">Filter cho link này</h3>
+                    </div>
+                    <p className="mt-2 text-caption leading-6 text-text-tertiary">
+                      Kế thừa từ dashboard. Mỗi entry chọn hành vi: 👁 Show — viewer thấy & chỉnh; 🔒 Lock — khoá giá trị, viewer thấy banner; 🚫 Hide — viewer không thấy.
+                    </p>
+
+                    {inheritedSlicers.length > 0 && (
+                      <div className="mt-4">
+                        <div className="mb-2 text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                          Slicer (canvas, viewer luôn thấy)
+                        </div>
+                        <div className="space-y-2">
+                          {inheritedSlicers.map((entry) => {
+                            const key = entryKey(entry as any);
+                            const act = linkActions[key] ?? { action: 'show' };
+                            return (
+                              <div
+                                key={`slicer-${key}`}
+                                className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
+                              >
+                                <div className="font-emphasis text-caption text-text-primary">
+                                  {entry.label || entry.semanticField || entry.field}
+                                </div>
+                                <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
+                                  {(['show', 'lock', 'hide'] as const).map((opt) => (
+                                    <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
+                                      <input
+                                        type="radio"
+                                        name={`act-${key}`}
+                                        checked={act.action === opt}
+                                        onChange={() =>
+                                          setLinkActions((prev) => ({
+                                            ...prev,
+                                            [key]: { action: opt, value: opt === 'lock' ? (prev[key]?.value ?? entry.value) : undefined },
+                                          }))
+                                        }
+                                      />
+                                      <span>
+                                        {opt === 'show' && '👁 Show'}
+                                        {opt === 'lock' && '🔒 Lock'}
+                                        {opt === 'hide' && '🚫 Hide'}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                                {act.action === 'lock' && (
+                                  <div className="mt-2">
+                                    <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
+                                    <input
+                                      type="text"
+                                      value={Array.isArray(act.value) ? act.value.join(', ') : String(act.value ?? '')}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
+                                        setLinkActions((prev) => ({
+                                          ...prev,
+                                          [key]: { action: 'lock', value: next },
+                                        }));
+                                      }}
+                                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                                      className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
+                                    />
+                                    <p className="mt-1 text-tiny text-text-quaternary">
+                                      Phân cách bằng dấu phẩy nếu có nhiều giá trị. Để trống = dùng giá trị dashboard mặc định.
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {inheritedFilters.length > 0 && (
+                      <div className="mt-5">
+                        <div className="mb-2 text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                          Filter pane (sidebar, viewer không thấy mặc định)
+                        </div>
+                        <div className="space-y-2">
+                          {inheritedFilters.map((entry) => {
+                            const key = entryKey(entry as any);
+                            // Default for filter-pane entries: respect dashboard's publicMode
+                            const dashboardMode = (entry as any).publicMode || 'visible';
+                            const defaultAction: LinkEntryAction['action'] =
+                              dashboardMode === 'hidden' ? 'hide'
+                              : dashboardMode === 'locked' ? 'lock'
+                              : 'show';
+                            const act = linkActions[key] ?? { action: defaultAction, value: defaultAction === 'lock' ? entry.value : undefined };
+                            return (
+                              <div
+                                key={`filter-${key}`}
+                                className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
+                              >
+                                <div className="font-emphasis text-caption text-text-primary">
+                                  {entry.label || entry.semanticField || entry.field}
+                                  <span className="ml-2 rounded bg-surface-1 px-1.5 py-0.5 text-tiny font-normal text-text-tertiary">
+                                    dashboard: {dashboardMode}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
+                                  {(['show', 'lock', 'hide'] as const).map((opt) => (
+                                    <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
+                                      <input
+                                        type="radio"
+                                        name={`act-${key}`}
+                                        checked={act.action === opt}
+                                        onChange={() =>
+                                          setLinkActions((prev) => ({
+                                            ...prev,
+                                            [key]: { action: opt, value: opt === 'lock' ? (prev[key]?.value ?? entry.value) : undefined },
+                                          }))
+                                        }
+                                      />
+                                      <span>
+                                        {opt === 'show' && '👁 Show'}
+                                        {opt === 'lock' && '🔒 Lock'}
+                                        {opt === 'hide' && '🚫 Hide'}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                                {act.action === 'lock' && (
+                                  <div className="mt-2">
+                                    <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
+                                    <input
+                                      type="text"
+                                      value={Array.isArray(act.value) ? act.value.join(', ') : String(act.value ?? '')}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
+                                        setLinkActions((prev) => ({
+                                          ...prev,
+                                          [key]: { action: 'lock', value: next },
+                                        }));
+                                      }}
+                                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                                      className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
                   <div className="flex items-center gap-2 text-text-primary">
                     <Filter className="h-4 w-4 text-brand" />
-                    <h3 className="text-small font-strong">Access filters</h3>
+                    <h3 className="text-small font-strong">Access filters (advanced — escape hatch)</h3>
                   </div>
                   <p className="mt-2 text-caption leading-6 text-text-tertiary">
                     Restrict the data available through this link. Viewer filters on the public page operate on top of these rules.
@@ -951,6 +1289,68 @@ export function PublicLinksManager({
                     )}
                   </div>
                 </div>
+
+                {/* Phase-E (PBI-parity rework) — hidden-field markers for
+                    this link. Author picks fields to drop from the public
+                    viewer entirely (no slicer, no banner). Persisted as
+                    `{field, hidden: true}` entries inside the link's
+                    filters_config; the BE layered-merge module reads the
+                    flag via split_link_filters_locked_vs_hidden.
+                    See docs/filter-semantics.md §2.3. */}
+                {activeColumns.length > 0 && (
+                  <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+                    <div className="flex items-center gap-2 text-text-primary">
+                      <X className="h-4 w-4 text-warning" />
+                      <h3 className="text-small font-strong">Hidden fields (drop from viewer)</h3>
+                    </div>
+                    <p className="mt-2 text-caption leading-6 text-text-tertiary">
+                      Pick fields to remove from the public viewer entirely on this link. Viewer sees no slicer, no banner, no chance to override. Use sparingly — this is a row-level-security tool, not a UI toggle.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {formHiddenFields.length === 0 && (
+                        <span className="text-tiny text-text-tertiary">No fields hidden.</span>
+                      )}
+                      {formHiddenFields.map((fieldName) => (
+                        <span
+                          key={fieldName}
+                          className="inline-flex items-center gap-1 rounded border border-warning/30 bg-warning/10 px-2 py-0.5 text-caption text-warning"
+                        >
+                          🚫 <span className="font-mono">{fieldName}</span>
+                          <button
+                            type="button"
+                            onClick={() => setFormHiddenFields((prev) => prev.filter((f) => f !== fieldName))}
+                            className="ml-1 rounded p-0.5 hover:bg-warning/20"
+                            title="Remove from hidden list"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-3">
+                      <label className="block text-tiny text-text-tertiary">Add a field to hide:</label>
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (!v) return;
+                          setFormHiddenFields((prev) => (prev.includes(v) ? prev : [...prev, v]));
+                        }}
+                        className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-caption outline-none focus:ring-1 focus:ring-brand"
+                      >
+                        <option value="">— pick a field —</option>
+                        {activeColumns
+                          .filter((c) => !formHiddenFields.includes(c.name))
+                          .map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.label || c.name}
+                              {c.datasetName ? ` · ${c.datasetName}` : ''}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
 
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
                   <div className="flex items-center gap-2 text-text-primary">

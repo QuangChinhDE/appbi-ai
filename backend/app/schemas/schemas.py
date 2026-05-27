@@ -505,7 +505,17 @@ class DashboardBase(BaseModel):
     """Base schema for dashboard."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    filters_config: Optional[List[Dict[str, Any]]] = None  # Dashboard-level filters (hybrid v1)
+    # Filter-pane entries (Dashboard.filters_config). See
+    # `app.schemas.filter_entry.FilterEntry` for the canonical shape.
+    filters_config: Optional[List[Dict[str, Any]]] = None
+    # Slicer-visual entries (Dashboard.slicers_config). See
+    # `app.schemas.filter_entry.SlicerEntry` for the canonical shape.
+    # Slicers render as canvas blocks; filters render in the side pane.
+    # Phase-G — image children (type='image') ALSO live in this list.
+    slicers_config: Optional[List[Dict[str, Any]]] = None
+    # Phase-G — cluster layout metadata. NULL = default top-bar
+    # auto-stack (backward compatible). Shape documented in models.
+    slicer_cluster_layout: Optional[Dict[str, Any]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
     # Layout mode + theme + canvas geometry. Defaults preserve existing behavior.
@@ -524,6 +534,8 @@ class DashboardUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
+    slicers_config: Optional[List[Dict[str, Any]]] = None
+    slicer_cluster_layout: Optional[Dict[str, Any]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
     layout_mode: Optional[str] = None
@@ -596,6 +608,8 @@ class DashboardResponse(DashboardBase):
     updated_at: datetime
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
+    slicers_config: Optional[List[Dict[str, Any]]] = None
+    slicer_cluster_layout: Optional[Dict[str, Any]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     # Phase-15.81 — hidden per-link constraint set. Populated only on the
     # /public/dashboards/{token} response (server stuffs the link's own
@@ -645,8 +659,18 @@ class DashboardUpdateWidgetRequest(BaseModel):
 # draft_snapshot so layout/filter drafts share the publish/discard
 # lifecycle.
 class DashboardUpdateDraftFiltersRequest(BaseModel):
-    """Schema for staging filter slot edits into draft_snapshot."""
+    """Schema for staging filter / slicer slot edits into draft_snapshot.
+
+    Each field is optional — omitting it leaves that scope untouched in
+    the draft snapshot; passing `[]` clears the entry for that scope.
+    `slicers_config` was added in Phase-A of the PBI-parity rework so
+    slicer edits share the same draft/publish lifecycle as filters and
+    layouts. Phase-G added `slicer_cluster_layout` so cluster
+    position/size/direction also travels through the draft pipeline.
+    """
     filters_config: Optional[List[Dict[str, Any]]] = None
+    slicers_config: Optional[List[Dict[str, Any]]] = None
+    slicer_cluster_layout: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
 
 

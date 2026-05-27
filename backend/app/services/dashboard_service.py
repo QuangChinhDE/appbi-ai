@@ -163,6 +163,8 @@ class DashboardService:
                 description=dashboard.description,
                 owner_id=owner_id,
                 filters_config=dashboard.filters_config or [],
+                slicers_config=dashboard.slicers_config or [],
+                slicer_cluster_layout=dashboard.slicer_cluster_layout,
                 public_filters_config=dashboard.public_filters_config or [],
                 pages_config=dashboard.pages_config or [DEFAULT_DASHBOARD_PAGE],
                 layout_mode=dashboard.layout_mode or "grid",
