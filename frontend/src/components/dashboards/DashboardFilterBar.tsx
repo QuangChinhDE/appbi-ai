@@ -307,6 +307,14 @@ export function DashboardFilterBar({
       return { ...f, label: next || undefined };
     }));
 
+  // Phase-G — per-slicer card width (collapsed-card mode). Persisted on
+  // the slicer entry so the public link renders the same width the
+  // author dragged. `undefined` → default card width.
+  const updateWidth = (filterId: string, widthPx: number | undefined) =>
+    onFiltersChange(filters.map(f => (
+      f.id === filterId ? { ...f, widthPx } as BaseFilter : f
+    )));
+
   // Phase-15.78 — toggle dropdown mode (multi vs single). Operator is
   // the source of truth: `in` = multi, `eq` = single. Switching modes
   // coerces the value: array → first element when going single, scalar
@@ -677,6 +685,7 @@ export function DashboardFilterBar({
                 lockSlots={lockSlots}
                 collapsedPopover={collapsedSlicers}
                 popoverPlacement={stackVertical ? 'right' : 'bottom'}
+                onUpdateWidth={(w) => updateWidth(f.id, w)}
               />
             );
           })}
@@ -748,6 +757,9 @@ interface FilterCardProps {
    * button. 'right' for the Left-column cluster (opens beside, over
    * charts); 'bottom' for the Top bar (opens below). */
   popoverPlacement?: 'bottom' | 'right';
+  /** Phase-G — persist the card width after the author drags its right
+   * edge (collapsed-card mode, editor only). */
+  onUpdateWidth?: (widthPx: number | undefined) => void;
 }
 
 interface DashboardFilterBarPropsWithExtras extends DashboardFilterBarProps {
@@ -782,6 +794,7 @@ function FilterCard({
   lockSlots = false,
   collapsedPopover = false,
   popoverPlacement = 'bottom',
+  onUpdateWidth,
 }: FilterCardProps) {
   const [showLinked, setShowLinked] = useState(false);
   const [isEditingLabel, setIsEditingLabel] = useState(false);
@@ -799,6 +812,40 @@ function FilterCard({
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [popoverOpen]);
+
+  // Phase-G — per-card width resize (collapsed slicer card, editor only,
+  // horizontal). ResizeObserver reads borderBoxSize (NOT contentRect) to
+  // avoid the box-sizing shrink loop, debounced, persisted via
+  // onUpdateWidth. Disabled in left/vertical mode (cards are full-width
+  // there) and on the public viewer (no onUpdateWidth passed).
+  const cardResizeRef = useRef<HTMLDivElement>(null);
+  const cardWidthBaselineRef = useRef<number | null>(null);
+  const cardWidthDebounceRef = useRef<number | null>(null);
+  const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement !== 'right';
+  useEffect(() => {
+    if (!canResizeCard || !cardResizeRef.current) {
+      cardWidthBaselineRef.current = null;
+      return;
+    }
+    const el = cardResizeRef.current;
+    const obs = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const bb = (entry as any).borderBoxSize;
+      const w = bb && bb.length ? Math.round(bb[0].inlineSize) : Math.round(entry.contentRect.width);
+      if (cardWidthBaselineRef.current == null) { cardWidthBaselineRef.current = w; return; }
+      if (Math.abs(cardWidthBaselineRef.current - w) < 3) return;
+      cardWidthBaselineRef.current = w;
+      if (cardWidthDebounceRef.current) window.clearTimeout(cardWidthDebounceRef.current);
+      cardWidthDebounceRef.current = window.setTimeout(() => onUpdateWidth?.(w), 300);
+    });
+    obs.observe(el);
+    return () => {
+      obs.disconnect();
+      if (cardWidthDebounceRef.current) window.clearTimeout(cardWidthDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canResizeCard]);
 
   const isMultiSelect = f.operator === 'in' || f.operator === 'not_in';
   const selected: string[] = isMultiSelect && Array.isArray(f.value) ? f.value : [];
@@ -1089,51 +1136,82 @@ function FilterCard({
   //   'bottom' → Top bar: buttons flow in a row; the popover opens
   //              BELOW the button (over the charts beneath).
   const openRight = popoverPlacement === 'right';
-  // Tableau-style slicer CARD: field name as a small title on top, the
-  // current value + chevron below, thin even border. Active (has a real
-  // value) = brand-tinted border so it reads as "filtering"; "Tất cả" =
-  // neutral. Top bar → fixed-width cards line up evenly; Left column →
-  // full-width.
+  // Tableau-style slicer CARD: field name as a small EDITABLE title on
+  // top (double-click to rename, editor only), current value + chevron
+  // below, thin even border. Active (real value) = brand-tinted border.
+  // Top bar → cards line up; author can drag the right edge to widen
+  // (resize:horizontal, persisted via onUpdateWidth). Left column →
+  // full-width (no manual resize; the column width controls it).
+  const cardWidthStyle: React.CSSProperties = openRight
+    ? { width: '100%' }
+    : {
+        width: f.widthPx ? `${f.widthPx}px` : '190px',
+        ...(canResizeCard ? { resize: 'horizontal' as const, overflow: 'hidden', minWidth: 140 } : {}),
+      };
   return (
-    <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block'}>
-      <button
-        type="button"
-        onClick={() => setPopoverOpen((v) => !v)}
-        className={`flex flex-col items-stretch gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 text-left align-top transition-colors ${
-          openRight ? 'w-full' : 'w-[190px]'
-        } ${
+    <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block align-top'}>
+      <div
+        ref={cardResizeRef}
+        style={cardWidthStyle}
+        className={`flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
           popoverOpen
             ? 'border-brand ring-1 ring-brand/30'
             : hasValue
-              ? 'border-brand/45 hover:border-brand'
-              : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
+              ? 'border-brand/45'
+              : 'border-[rgb(var(--border-line))]'
         }`}
-        title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
       >
+        {/* Title row — editable label (double-click in editor). */}
         <span className="flex items-center justify-between gap-1">
-          <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
-            {getFilterDisplayLabel(f)}
-          </span>
+          {isEditingLabel && !lockSlots ? (
+            <input
+              autoFocus
+              value={labelDraft}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onBlur={() => { onUpdateLabel(labelDraft); setIsEditingLabel(false); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { onUpdateLabel(labelDraft); setIsEditingLabel(false); }
+                if (e.key === 'Escape') { setLabelDraft(f.label ?? ''); setIsEditingLabel(false); }
+              }}
+              placeholder={getFilterDisplayLabel(f)}
+              className="min-w-0 flex-1 rounded border border-brand/40 bg-surface-2 px-1 py-0.5 text-[11px] font-semibold uppercase tracking-wide outline-none focus:ring-1 focus:ring-brand"
+            />
+          ) : (
+            <span
+              className="group/lbl flex min-w-0 items-center gap-1 truncate text-[11px] font-semibold uppercase tracking-wide text-text-tertiary"
+              onDoubleClick={lockSlots ? undefined : () => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
+              title={lockSlots ? undefined : 'Double-click để đổi tên'}
+            >
+              <span className="truncate">{getFilterDisplayLabel(f)}</span>
+              {!lockSlots && <Pencil className="h-2.5 w-2.5 flex-shrink-0 text-text-quaternary opacity-0 transition-opacity group-hover/lbl:opacity-100" />}
+            </span>
+          )}
           {selected.length > 1 && (
             <span className="flex-shrink-0 rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand">
               {selected.length}
             </span>
           )}
         </span>
-        <span className="flex items-center justify-between gap-1.5">
+        {/* Value row — opens the popover. */}
+        <button
+          type="button"
+          onClick={() => setPopoverOpen((v) => !v)}
+          className="flex items-center justify-between gap-1.5 text-left"
+          title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
+        >
           <span className={`truncate text-sm ${hasValue ? 'font-medium text-text-primary' : 'text-text-tertiary'}`}>
             {valueSummary}
           </span>
           <ChevronDown className={`h-3.5 w-3.5 flex-shrink-0 text-text-quaternary transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
-        </span>
-      </button>
+        </button>
+      </div>
       {popoverOpen && (
         <div
           className={`absolute z-50 w-[280px] max-h-[60vh] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl ${
             openRight
-              // Open to the right of the column, aligned to the button top.
+              // Open to the right of the column, aligned to the card top.
               ? 'left-full top-0 ml-2'
-              // Open below the button.
+              // Open below the card.
               : 'left-0 top-full mt-1'
           }`}
         >

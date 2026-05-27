@@ -97,6 +97,10 @@ export interface BaseFilter {
   publicMode?: FilterPublicMode;
   allowOverride?: boolean;
   showBanner?: boolean;
+  // Phase-G — per-slicer card width in px (collapsed slicer card mode).
+  // Author drags the card's right edge; persisted so the public link
+  // shows the same width. Undefined → default card width.
+  widthPx?: number;
 }
 
 /**
