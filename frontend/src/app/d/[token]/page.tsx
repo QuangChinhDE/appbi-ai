@@ -788,6 +788,11 @@ export default function PublicDashboardPage() {
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
   const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
+  // Phase-G — honor the slicer cluster's saved position on the public
+  // link. 'left' lays the cluster as a column beside the charts; 'top'
+  // (default) stacks it above. ('free' was removed → treated as top.)
+  const slicerClusterPositionLeft =
+    ((dashboard as any)?.slicer_cluster_layout?.position) === 'left';
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -903,6 +908,38 @@ export default function PublicDashboardPage() {
       h: layout.h || 4,
     };
   });
+
+  // Phase-G — single SlicerCluster node reused in both placements:
+  // stacked above the grid (top) or as a left column (left). Defined
+  // here so it can sit beside the grid section in left mode.
+  const slicerClusterNode = showFilterControls ? (
+    <div className="[&>div]:mb-0">
+      <SlicerCluster
+        children={[
+          ...draftViewerFilters,
+          ...(((dashboard as any)?.slicers_config || []).filter(
+            (c: any) => c && typeof c === 'object' && c.type === 'image',
+          )),
+        ]}
+        onChildrenChange={(next) => {
+          setDraftViewerFilters(
+            (next as any[]).filter(
+              (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
+            ),
+          );
+        }}
+        layout={(dashboard as any)?.slicer_cluster_layout || null}
+        columns={availableFilterColumns}
+        columnChartCount={availableFilterChartCount}
+        distinctValues={resolvedDistinctValues}
+        hasPendingChanges={hasPendingFilterChanges}
+        onApply={handleApplyFilters}
+        onReset={handleResetFilters}
+        isApplying={isApplyingFilters}
+        lockSlots
+      />
+    </div>
+  ) : null;
 
   return (
     <DashboardThemeProvider
@@ -1098,43 +1135,10 @@ export default function PublicDashboardPage() {
                 </div>
               )}
 
-              {showFilterControls && (
-                <div className="[&>div]:mb-0">
-                  {/* Phase-G — wrap in SlicerCluster so images (logos)
-                      saved on dashboard.slicer_cluster_layout also
-                      render here. Slicer interaction stays the same;
-                      images render as inline cells. lockSlots=true
-                      hides editor affordances. */}
-                  <SlicerCluster
-                    children={[
-                      ...draftViewerFilters,
-                      // Pull image children from dashboard.slicers_config
-                      // (BE-side they live alongside slicer entries;
-                      // viewer just renders them as decoration).
-                      ...(((dashboard as any)?.slicers_config || []).filter(
-                        (c: any) => c && typeof c === 'object' && c.type === 'image',
-                      )),
-                    ]}
-                    onChildrenChange={(next) => {
-                      // Strip images on round-trip; viewer can't edit them.
-                      setDraftViewerFilters(
-                        (next as any[]).filter(
-                          (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
-                        ),
-                      );
-                    }}
-                    layout={(dashboard as any)?.slicer_cluster_layout || null}
-                    columns={availableFilterColumns}
-                    columnChartCount={availableFilterChartCount}
-                    distinctValues={resolvedDistinctValues}
-                    hasPendingChanges={hasPendingFilterChanges}
-                    onApply={handleApplyFilters}
-                    onReset={handleResetFilters}
-                    isApplying={isApplyingFilters}
-                    lockSlots
-                  />
-                </div>
-              )}
+              {/* Top mode renders the slicer cluster here (stacked
+                  above charts). Left mode renders it BESIDE the grid in
+                  the flex-row wrapper below instead. */}
+              {showFilterControls && !slicerClusterPositionLeft && slicerClusterNode}
 
               {showLiveState && (
                 <div className="flex flex-col gap-3">
@@ -1193,9 +1197,18 @@ export default function PublicDashboardPage() {
           )}
         </section>
 
+        {/* Phase-G — when the slicer cluster is on the Left, lay it as a
+            column beside the chart grid (flex-row). Top mode keeps the
+            cluster stacked above (rendered in the header section). */}
+        <div className={slicerClusterPositionLeft ? 'flex flex-row items-start gap-3' : ''}>
+        {slicerClusterPositionLeft && showFilterControls && (
+          <div className="w-[300px] flex-shrink-0">
+            {slicerClusterNode}
+          </div>
+        )}
         <section
           ref={gridSectionRef}
-          className={`w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
+          className={`rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
           style={publicTheme.canvasFrameStyle}
         >
           {visibleDashboardCharts.length === 0 ? (
@@ -1268,6 +1281,7 @@ export default function PublicDashboardPage() {
             </div>
           )}
         </section>
+        </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
       </main>
 
       {dashboard?.public_link_appearance?.ai_bot_enabled === true && (

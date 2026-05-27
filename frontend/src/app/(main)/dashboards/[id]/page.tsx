@@ -411,6 +411,31 @@ export default function DashboardDetailPage() {
     setAppliedSlicerClusterLayout(layoutSeed);
   }, [dashboard]);
 
+  // Phase-G — auto-stage the cluster layout (position/direction/size)
+  // into the draft the moment it changes. It's a structural/visual
+  // setting, not a filter value, so it must NOT wait for the filter
+  // "Apply" — it behaves like chart-layout edits (auto-staged). Without
+  // this, an author who picks "Left" then clicks the top-level
+  // "Lưu & xuất bản" loses the change: it never reached draft_snapshot,
+  // so Publish flushed nothing and the public link never saw it.
+  React.useEffect(() => {
+    if (!canEditResource || !dashboard || !slicersSeededRef.current) return;
+    if (JSON.stringify(draftSlicerClusterLayout) === JSON.stringify(appliedSlicerClusterLayout)) return;
+    const t = window.setTimeout(() => {
+      dashboardApi
+        .updateDraftFilters(dashboardId, { slicer_cluster_layout: draftSlicerClusterLayout ?? {} })
+        .then(() => {
+          setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
+          // Refresh so has_draft + the "Lưu & xuất bản" button reflect
+          // the staged change.
+          queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+        })
+        .catch((e) => console.error('Failed to stage slicer cluster layout:', e));
+    }, 500);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftSlicerClusterLayout, appliedSlicerClusterLayout, canEditResource, dashboardId]);
+
   React.useEffect(() => {
     if (!crossFilterState) return;
     const sourceExists = visibleDashboardCharts.some(
