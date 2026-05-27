@@ -424,30 +424,33 @@ export function DashboardFilterBar({
       {/* ── Header bar ────────────────────────────────────────────── */}
       <div className={`flex items-center gap-2 flex-wrap ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
         {/* Phase-G — cluster controls injected by SlicerCluster so the
-            slicer zone has ONE header (badge + position + image) instead
-            of two stacked rows. */}
+            slicer zone has ONE header (badge + config menu) instead of
+            two stacked rows. */}
         {headerExtras}
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
-        >
-          <Filter className="w-4 h-4 text-brand" />
-          <span>Filters</span>
-          {activeCount > 0 && (
-            <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold">
-              {activeCount}
-            </span>
-          )}
-          {isExpanded
-            ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
-            : <ChevronRight className="w-3.5 h-3.5 text-text-quaternary" />}
-        </button>
+        {/* Filters label / expand toggle. In collapsedSlicers mode the
+            slicers are always-visible buttons + the cluster has its own
+            ⛃ badge, so this redundant label is hidden to declutter. */}
+        {!collapsedSlicers && (
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
+          >
+            <Filter className="w-4 h-4 text-brand" />
+            <span>Filters</span>
+            {activeCount > 0 && (
+              <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold">
+                {activeCount}
+              </span>
+            )}
+            {isExpanded
+              ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
+              : <ChevronRight className="w-3.5 h-3.5 text-text-quaternary" />}
+          </button>
+        )}
 
-        {hasPendingChanges && (
-          // Phase-15.78 — make pending-changes signal louder. Tester
-          // reported users tweak a filter and walk away thinking it
-          // applied. Pulse + amber stripe + explicit "unapplied" wording
-          // catches the eye without blocking other dashboard controls.
+        {/* Unapplied-changes pill — hidden in collapsedSlicers (the
+            Apply button below already pulses when pending). */}
+        {hasPendingChanges && !collapsedSlicers && (
           <span
             className="inline-flex items-center gap-1 rounded-full border-2 border-amber-400 bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold text-amber-900 shadow-sm animate-pulse"
             title="You have filter changes that haven't been applied yet. Click Apply to update the dashboard."
@@ -493,7 +496,10 @@ export function DashboardFilterBar({
             </button>
           )}
 
-          {onApply && (
+          {/* Apply — in collapsedSlicers mode only render when there are
+              pending changes (a permanently-visible disabled Apply was
+              pure clutter). Other modes keep the always-visible button. */}
+          {onApply && (!collapsedSlicers || hasPendingChanges) && (
             <button
               onClick={onApply}
               disabled={!hasPendingChanges || isApplying}
@@ -508,7 +514,10 @@ export function DashboardFilterBar({
             </button>
           )}
 
-          {!lockSlots && filters.length > 0 && (
+          {/* "Clear all" hidden in collapsedSlicers — per-slicer clear
+              lives inside each popover; a top-level clear-all just added
+              noise. */}
+          {!lockSlots && !collapsedSlicers && filters.length > 0 && (
             <button
               onClick={() => onFiltersChange([])}
               className="text-xs text-text-quaternary hover:text-danger transition-colors"
@@ -625,12 +634,12 @@ export function DashboardFilterBar({
           is embedded in a narrow column (slicer cluster in 'left' mode,
           ~280px) it still tried 4 columns and crushed the cards. The
           slicer cluster passes stackVertical for left/vertical layout. */}
-      {isExpanded && filters.length > 0 && (
+      {(isExpanded || collapsedSlicers) && filters.length > 0 && (
         <div className={
           collapsedSlicers
             // Collapsed slicer mode: row of compact buttons (vertical
             // stack when stackVertical/left). Each button opens a popover.
-            ? `px-3 pb-3 flex gap-2 ${stackVertical ? 'flex-col items-stretch' : 'flex-row flex-wrap items-start'}`
+            ? `px-3 pb-3 pt-1 flex gap-2 ${stackVertical ? 'flex-col items-stretch' : 'flex-row flex-wrap items-start'}`
             : `px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`
         }>
           {filters.map(f => {

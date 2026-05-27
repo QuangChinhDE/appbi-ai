@@ -107,6 +107,21 @@ export function SlicerCluster({
     return { slicerEntries: slicers, imageEntries: images };
   }, [children]);
 
+  // Phase-G — config menu (gear) state. Holds position toggle + Add
+  // Image so the header stays uncluttered.
+  const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const configMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!configMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (configMenuRef.current && !configMenuRef.current.contains(e.target as Node)) {
+        setConfigMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [configMenuOpen]);
+
   const handleSlicersChange = (nextSlicers: BaseFilter[]) => {
     // Merge: keep image children in their current order, replace the
     // slicer entries with the new set. Images live at the END so they
@@ -275,8 +290,13 @@ export function SlicerCluster({
     //   editor → prominent brand dashed border + brand-soft tint
     //   public → subtle solid border that just groups the slicers
     // An explicit author override (border='none'/'solid') still wins.
+    // NOTE: the brand color var is `--brand` (space-separated RGB);
+    // use the project's `rgb(var(--brand) / a)` syntax. The earlier
+    // `rgba(var(--brand-rgb), a)` referenced a non-existent variable so
+    // the border/bg silently dropped — that's why the box had no
+    // visible frame.
     background: effectiveLayout.background
-      ?? (lockSlots ? 'rgb(var(--surface-1))' : 'rgba(var(--brand-rgb), 0.04)'),
+      ?? (lockSlots ? 'rgb(var(--surface-1))' : 'rgb(var(--brand) / 0.05)'),
     border:
       effectiveLayout.border === 'none'
         ? '1px solid transparent'
@@ -284,7 +304,7 @@ export function SlicerCluster({
           ? '1px solid rgb(var(--border-line))'
           : lockSlots
             ? '1px solid rgb(var(--border-line))'
-            : '1.5px dashed rgba(var(--brand-rgb), 0.55)',
+            : '1.5px dashed rgb(var(--brand) / 0.55)',
     borderRadius: 8,
     padding: 8,
     gap: effectiveLayout.gap ?? 8,
@@ -340,47 +360,69 @@ export function SlicerCluster({
   // ONE header row instead of two. Editor only (hidden when lockSlots).
   const clusterControls = lockSlots ? null : (
     <>
-      <span className="inline-flex items-center gap-1 rounded bg-brand px-2 py-0.5 text-tiny font-emphasis uppercase tracking-wide text-text-inverse">
+      <span
+        className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-brand px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wide text-text-inverse"
+        title="Vùng bộ lọc (slicer) cho viewer — không đặt chart ở đây"
+      >
         ⛃ Slicer
       </span>
-      <span className="hidden text-tiny text-text-tertiary sm:inline">Vùng bộ lọc cho viewer</span>
-      <span className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] p-0.5" title="Vị trí cụm slicer">
+      {/* Config gear — holds the rarely-used setup controls (position +
+          add image) so the header stays clean. */}
+      <div ref={configMenuRef} className="relative flex-shrink-0">
         <button
           type="button"
-          onClick={() => handlePositionChange('top')}
-          className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'top' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-          title="Top — thanh ngang phía trên charts"
+          onClick={() => setConfigMenuOpen((v) => !v)}
+          className={`inline-flex items-center gap-1 rounded border px-1.5 py-1 text-tiny transition-colors ${
+            configMenuOpen
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+          }`}
+          title="Tuỳ chỉnh cụm slicer (vị trí, ảnh)"
         >
-          ▤ Top
+          <Settings2 className="h-3.5 w-3.5" />
         </button>
-        <button
-          type="button"
-          onClick={() => handlePositionChange('left')}
-          className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'left' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-          title="Left — cột dọc bên trái charts (slicer xếp từ trên xuống)"
-        >
-          ▥ Left
-        </button>
-      </span>
-      <label
-        className="inline-flex cursor-pointer items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny text-text-secondary hover:bg-surface-2"
-        title="Thêm ảnh (logo) vào cụm slicer"
-      >
-        <ImageIcon className="h-3.5 w-3.5" />
-        <span>+ Image</span>
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) {
-              void handleAddImage(file);
-              e.target.value = '';
-            }
-          }}
-        />
-      </label>
+        {configMenuOpen && (
+          <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
+            <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">Vị trí cụm</div>
+            <div className="mb-2 flex gap-1">
+              <button
+                type="button"
+                onClick={() => handlePositionChange('top')}
+                className={`flex-1 rounded border px-2 py-1 text-tiny ${effectiveLayout.position === 'top' ? 'border-brand bg-brand text-text-inverse' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'}`}
+              >
+                ▤ Top
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePositionChange('left')}
+                className={`flex-1 rounded border px-2 py-1 text-tiny ${effectiveLayout.position === 'left' ? 'border-brand bg-brand text-text-inverse' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'}`}
+              >
+                ▥ Left
+              </button>
+            </div>
+            <label
+              className="flex cursor-pointer items-center gap-1.5 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
+              title="Thêm ảnh (logo) vào cụm slicer"
+            >
+              <ImageIcon className="h-3.5 w-3.5" />
+              <span>Thêm ảnh / logo</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    void handleAddImage(file);
+                    e.target.value = '';
+                    setConfigMenuOpen(false);
+                  }
+                }}
+              />
+            </label>
+          </div>
+        )}
+      </div>
     </>
   );
 
