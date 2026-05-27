@@ -813,39 +813,40 @@ function FilterCard({
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [popoverOpen]);
 
-  // Phase-G — per-card width resize (collapsed slicer card, editor only,
-  // horizontal). ResizeObserver reads borderBoxSize (NOT contentRect) to
-  // avoid the box-sizing shrink loop, debounced, persisted via
-  // onUpdateWidth. Disabled in left/vertical mode (cards are full-width
-  // there) and on the public viewer (no onUpdateWidth passed).
-  const cardResizeRef = useRef<HTMLDivElement>(null);
-  const cardWidthBaselineRef = useRef<number | null>(null);
-  const cardWidthDebounceRef = useRef<number | null>(null);
+  // Phase-G — per-card width via a CUSTOM drag handle (NOT CSS resize +
+  // ResizeObserver, which fought React's controlled width and snapped
+  // the card back mid-drag). Mirrors chart resize: dragging updates a
+  // LOCAL live width on the FE; releasing commits it to the draft via
+  // onUpdateWidth. Persisting to BE still happens only on the slicer
+  // Apply / dashboard Publish — not during the drag.
+  // Enabled only on the Top bar in the editor (Left cards are
+  // full-width; the public viewer passes no onUpdateWidth).
   const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement !== 'right';
-  useEffect(() => {
-    if (!canResizeCard || !cardResizeRef.current) {
-      cardWidthBaselineRef.current = null;
-      return;
-    }
-    const el = cardResizeRef.current;
-    const obs = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const bb = (entry as any).borderBoxSize;
-      const w = bb && bb.length ? Math.round(bb[0].inlineSize) : Math.round(entry.contentRect.width);
-      if (cardWidthBaselineRef.current == null) { cardWidthBaselineRef.current = w; return; }
-      if (Math.abs(cardWidthBaselineRef.current - w) < 3) return;
-      cardWidthBaselineRef.current = w;
-      if (cardWidthDebounceRef.current) window.clearTimeout(cardWidthDebounceRef.current);
-      cardWidthDebounceRef.current = window.setTimeout(() => onUpdateWidth?.(w), 300);
-    });
-    obs.observe(el);
-    return () => {
-      obs.disconnect();
-      if (cardWidthDebounceRef.current) window.clearTimeout(cardWidthDebounceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canResizeCard]);
+  const [liveWidth, setLiveWidth] = useState<number | null>(null);
+  const widthDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const cardResizeRef = useRef<HTMLDivElement>(null);
+
+  const onWidthHandleDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startW = cardResizeRef.current?.offsetWidth ?? f.widthPx ?? 190;
+    widthDragRef.current = { startX: e.clientX, startW };
+    setLiveWidth(startW);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onWidthHandleMove = (e: React.PointerEvent) => {
+    if (!widthDragRef.current) return;
+    const next = Math.max(140, Math.round(widthDragRef.current.startW + (e.clientX - widthDragRef.current.startX)));
+    setLiveWidth(next);
+  };
+  const onWidthHandleUp = (e: React.PointerEvent) => {
+    if (!widthDragRef.current) return;
+    const finalW = liveWidth;
+    widthDragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    if (finalW != null) onUpdateWidth?.(finalW);
+    setLiveWidth(null);
+  };
 
   const isMultiSelect = f.operator === 'in' || f.operator === 'not_in';
   const selected: string[] = isMultiSelect && Array.isArray(f.value) ? f.value : [];
@@ -1139,21 +1140,18 @@ function FilterCard({
   // Tableau-style slicer CARD: field name as a small EDITABLE title on
   // top (double-click to rename, editor only), current value + chevron
   // below, thin even border. Active (real value) = brand-tinted border.
-  // Top bar → cards line up; author can drag the right edge to widen
-  // (resize:horizontal, persisted via onUpdateWidth). Left column →
+  // Top bar → cards line up; author drags the right-edge handle to widen
+  // (controlled liveWidth, committed to draft on release). Left column →
   // full-width (no manual resize; the column width controls it).
   const cardWidthStyle: React.CSSProperties = openRight
     ? { width: '100%' }
-    : {
-        width: f.widthPx ? `${f.widthPx}px` : '190px',
-        ...(canResizeCard ? { resize: 'horizontal' as const, overflow: 'hidden', minWidth: 140 } : {}),
-      };
+    : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140 };
   return (
     <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block align-top'}>
       <div
         ref={cardResizeRef}
         style={cardWidthStyle}
-        className={`flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
+        className={`relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
           popoverOpen
             ? 'border-brand ring-1 ring-brand/30'
             : hasValue
@@ -1161,6 +1159,17 @@ function FilterCard({
               : 'border-[rgb(var(--border-line))]'
         }`}
       >
+        {/* Right-edge width drag handle (editor, Top mode). Custom
+            pointer-drag → live FE width; commit to draft on release. */}
+        {canResizeCard && (
+          <span
+            onPointerDown={onWidthHandleDown}
+            onPointerMove={onWidthHandleMove}
+            onPointerUp={onWidthHandleUp}
+            className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize rounded-r-lg hover:bg-brand/30"
+            title="Kéo để chỉnh rộng"
+          />
+        )}
         {/* Title row — editable label (double-click in editor). */}
         <span className="flex items-center justify-between gap-1">
           {isEditingLabel && !lockSlots ? (
