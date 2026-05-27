@@ -1566,7 +1566,16 @@ export default function DashboardDetailPage() {
       const key = getFilterKey(filter);
       const column = columnsByKey.get(key);
       if (!column?.datasetId || !column.semanticField) continue;
-      if (column.type !== 'dropdown' && column.type !== 'text') continue;
+      // Fetch distinct values for categorical columns (dropdown/text) AND
+      // for numeric/date columns used as a multi-select slicer
+      // (operator 'in'/'not_in' → value checklist). Without the latter a
+      // numeric dimension like `year` rendered an EMPTY checklist while the
+      // BE already had the cascaded values — an FE↔BE parity gap. Range /
+      // scalar number+date modes (between/eq/gt…) keep their own UI and
+      // don't need a distinct list.
+      const isCategorical = column.type === 'dropdown' || column.type === 'text';
+      const isListMode = filter.operator === 'in' || filter.operator === 'not_in';
+      if (!isCategorical && !isListMode) continue;
       activeColumns.set(key, column);
     }
 

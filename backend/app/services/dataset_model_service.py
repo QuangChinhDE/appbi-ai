@@ -2208,6 +2208,47 @@ def remove_join(
     }
 
 
+def _distinct_filter_targets_self(
+    view_name: str,
+    field_name: str,
+    condition: dict,
+) -> bool:
+    """True when ``condition`` filters the SAME field a distinct-values
+    dropdown is being computed for.
+
+    A slicer's option list must always show its FULL set of values,
+    cascaded only by filters on OTHER fields — never by a filter on the
+    dropdown's own field. The FE drops the target via
+    ``getDistinctValueFilterContext``; this mirrors that on the BE so the
+    public path (where ``_build_public_chart_filters`` re-injects the
+    dashboard's saved slicer/filter default for this very field) doesn't
+    pin the dropdown to its own current value.
+
+    Prefers qualified ``view.field`` matching to avoid colliding with a
+    same-named field on a different view (e.g. ``orders.country`` vs
+    ``users.country``); only falls back to bare-field matching when the
+    condition carries no qualified reference at all.
+    """
+    candidates: list[str] = []
+    for key in ("semanticField", "fieldKey", "field"):
+        raw = condition.get(key)
+        if raw:
+            candidates.append(str(raw).strip())
+    linked = condition.get("linkedFields")
+    if isinstance(linked, list):
+        candidates.extend(str(lf).strip() for lf in linked if lf)
+    candidates = [c for c in candidates if c]
+    has_qualified = any("." in c for c in candidates)
+    for cand in candidates:
+        if "." in cand:
+            node, name = cand.split(".", 1)
+            if node.strip() == view_name and name.strip() == field_name:
+                return True
+        elif not has_qualified and cand == field_name:
+            return True
+    return False
+
+
 def get_distinct_field_values(
     db: Session,
     dataset_id: int,
@@ -2230,6 +2271,25 @@ def get_distinct_field_values(
 
     view_name, field_name = field.split(".", 1)
     limit = max(1, min(int(limit), 500))
+
+    # A slicer's option list must always show its FULL set of values,
+    # cascaded only by filters on OTHER fields — never by a filter on
+    # the dropdown's own field. The FE excludes the target via
+    # getDistinctValueFilterContext, but on the public path the layered
+    # merge (_build_public_chart_filters) re-injects the dashboard's
+    # saved slicer/filter default for this very field, which would pin
+    # the dropdown to its own current value and make it look "stuck".
+    # Strip any incoming filter that references the target field (incl.
+    # via linkedFields), mirroring the FE's getDistinctValueFilterContext.
+    if filters:
+        kept: list[dict] = []
+        for item in filters:
+            if isinstance(item, dict) and _distinct_filter_targets_self(
+                view_name, field_name, item
+            ):
+                continue
+            kept.append(item)
+        filters = kept
 
     dataset_table_ids = [
         row.id

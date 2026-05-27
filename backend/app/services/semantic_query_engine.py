@@ -175,9 +175,47 @@ class SemanticQueryEngine:
                         alias=self._pivot_column_alias(measure_name, pval)
                     ))
         
-        # Build FROM/JOIN clause
-        from_clause = self._build_from_clause(explore)
-        
+        # Phase-B' (PBI-parity rework) — separate SELECT-side views (those
+        # projected via dimensions / measures / pivots / sorts / windows /
+        # calc) from views referenced ONLY by filters. Only SELECT-side
+        # views (+ base + the hops needed to reach them) enter the FROM
+        # JOIN chain. Filter-only views are applied as EXISTS subqueries so
+        # filtering a fact through a shared dimension to another fact's
+        # column doesn't fan out and double-count the measure.
+        def _views_of(refs) -> set[str]:
+            out: set[str] = set()
+            for ref in refs:
+                if ref and isinstance(ref, str) and "." in ref:
+                    try:
+                        out.add(self._parse_field_ref(ref)[0])
+                    except ValueError:
+                        pass
+            return out
+
+        select_side_refs: List[str] = list(dimensions) + list(measures) + list(pivots)
+        select_side_refs.extend(
+            str(sort.get("field") or "") for sort in sorts if sort.get("field")
+        )
+        for wf in window_functions:
+            base_measure = str(wf.get("base_measure") or "").strip()
+            if base_measure:
+                select_side_refs.append(base_measure)
+            select_side_refs.extend(str(i or "").strip() for i in (wf.get("partition_by") or []) if str(i or "").strip())
+            select_side_refs.extend(str(i or "").strip() for i in (wf.get("order_by") or []) if str(i or "").strip())
+        for cf in calculated_fields:
+            select_side_refs.extend(
+                re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}", str(cf.get("sql") or ""))
+            )
+        select_side_views = _views_of(select_side_refs) | {explore.base_view_name}
+        filter_views = _views_of(list((filters or {}).keys()))
+
+        # Build FROM/JOIN clause (only SELECT-side views + base + hops).
+        from_clause, joined_nodes = self._build_from_clause(
+            explore, target_views=select_side_views,
+        )
+        # Filter views that never made it into the FROM chain → EXISTS.
+        exists_views = filter_views - joined_nodes
+
         # Phase-B' (PBI-parity rework) — split filters into WHERE (on
         # dimension fields, applied pre-aggregation) and HAVING (on
         # measure fields, applied post-aggregation). The split is
@@ -188,7 +226,9 @@ class SemanticQueryEngine:
         where_filters, having_filters = self._split_filters_by_role(
             filters, measures,
         )
-        where_clause = self._build_where_clause(where_filters, time_grains)
+        where_clause = self._build_where_clause(
+            where_filters, time_grains, exists_views=exists_views, explore=explore,
+        )
         having_clause = self._build_having_clause(
             having_filters, time_grains,
             measure_agg_overrides=measure_agg_overrides or {},
@@ -401,7 +441,7 @@ class SemanticQueryEngine:
         dim_sql = self._render_dimension(pivot_field, view_name)
         
         # Build simple query
-        from_clause = self._build_from_clause(explore)
+        from_clause, _ = self._build_from_clause(explore)
         where_clause = self._build_where_clause(filters, {})
         
         query = f"SELECT DISTINCT {dim_sql} AS pval {from_clause}"
@@ -1263,44 +1303,51 @@ class SemanticQueryEngine:
             if keyword in sql_upper:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
-    def _build_from_clause(self, explore: SemanticExplore) -> str:
+    def _build_from_clause(
+        self,
+        explore: SemanticExplore,
+        target_views: set[str] | None = None,
+    ) -> tuple[str, set[str]]:
         """Build FROM and JOIN clauses.
 
-        Phase-B' status (PBI-parity rework) — the spec
-        (docs/filter-semantics.md §5) calls for EXISTS-subquery
-        emission when a filter targets a dim reachable only via a
-        fact table; the current LEFT JOIN + WHERE pattern is
-        effectively INNER for those filters and drops base-side rows
-        without matching dim entries.
+        Phase-B' (PBI-parity rework) — `target_views`, when provided,
+        restricts the FROM chain to the SELECT-side views (dimensions /
+        measures / pivots / sorts) plus the base and any intermediate
+        hops needed to reach them. Views referenced ONLY by filters are
+        deliberately left OUT of the JOIN chain by the caller and applied
+        as EXISTS subqueries instead (see `_build_where_clause`). This
+        fixes the snowflake fan-out bug: filtering a fact through a
+        shared dimension to ANOTHER fact's column (e.g.
+        ``revenue -> owner -> deal`` where owner->deal is one-to-many)
+        used to JOIN the far table and multiply the base rows, double-
+        counting the measure. EXISTS filters as set-membership without
+        fan-out, matching Power BI.
 
-        That rewrite is intentionally NOT implemented here yet. It
-        changes JOIN semantics across every chart and the memory
-        `filter_audit_needs_proper_fixture` warns that band-aid
-        rewrites without Dataset-55-style matrix audits are a
-        bug-class trap. Until the fixture exists, this function
-        preserves the existing LEFT JOIN behavior; the Phase-15.81
-        bidirectional resolver patches the worst symptoms.
+        When `target_views` is None (e.g. the pivot-value fetch) the old
+        behavior is preserved: every view in `views_cache` is joined.
 
-        When the fixture lands, the implementation should hook here:
-        detect which joined views are filter-only (no SELECT
-        reference) and rewrite each such filter as an EXISTS
-        subquery on the base view, dropping the view from the
-        joined_nodes set so it never enters the FROM chain.
+        Returns ``(from_clause, joined_nodes)`` so the caller knows which
+        views actually entered the FROM chain (the complement of that set
+        among the filter views is what must be rendered as EXISTS).
         """
         base_view = self.views_cache.get(explore.base_view_name)
         if not base_view:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
-        
+
         # Determine base table name
         base_table = base_view.sql_table_name or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
-        
-        resolver = self._resolver
-        if resolver is None:
-            return from_clause
 
         joined_nodes: set[str] = {explore.base_view_name}
-        target_nodes = sorted(set(self.views_cache.keys()) - joined_nodes)
+        resolver = self._resolver
+        if resolver is None:
+            return from_clause, joined_nodes
+
+        if target_views is None:
+            candidate_nodes = set(self.views_cache.keys())
+        else:
+            candidate_nodes = set(target_views)
+        target_nodes = sorted(candidate_nodes - joined_nodes)
         for target_node in target_nodes:
             path = resolver.resolve_path(target_node)
             if path is None:
@@ -1339,7 +1386,7 @@ class SemanticQueryEngine:
                 )
                 joined_nodes.add(edge.to_node)
 
-        return from_clause
+        return from_clause, joined_nodes
 
     def _render_edge_join_condition(self, edge) -> str:
         """Render a JOIN ON condition for a resolved join edge."""
@@ -1372,8 +1419,21 @@ class SemanticQueryEngine:
 
         return rendered
     
-    def _build_where_clause(self, filters: Dict[str, Any], time_grains: Dict[str, str]) -> str:
+    def _build_where_clause(
+        self,
+        filters: Dict[str, Any],
+        time_grains: Dict[str, str],
+        exists_views: set[str] | None = None,
+        explore: SemanticExplore | None = None,
+    ) -> str:
         """Build WHERE clause from filters.
+
+        Phase-B' (PBI-parity rework) — `exists_views` names the views that
+        are referenced ONLY by filters (not projected in SELECT) and were
+        therefore left OUT of the FROM JOIN chain. Filters on those views
+        are emitted as EXISTS subqueries (set-membership, no fan-out)
+        instead of predicates on a joined alias. Everything else keeps the
+        plain-predicate behavior. See `_build_from_clause`.
 
         Phase-15.19: the operator set was lagging FilterBuilder for months.
         FE generates `between`, `is_null`, `is_not_null`, and `not_contains`
@@ -1412,12 +1472,23 @@ class SemanticQueryEngine:
                 return False
             return True
 
-        conditions = []
+        where_conditions: list[str] = []      # base / select-side predicates
+        exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
         for field_ref, filter_def in filters.items():
             operator = str(filter_def.get('operator') or 'eq').strip().lower()
             value = filter_def.get('value')
 
             view_name, _ = self._parse_field_ref(field_ref)
+
+            # Phase-B' — route this filter's predicate(s) to the EXISTS
+            # group for its view when the view is filter-only (not in the
+            # FROM chain); otherwise to the top-level WHERE list. All the
+            # `conditions.append(...)` below write to whichever bucket
+            # `conditions` points at for this iteration.
+            if exists_views and view_name in exists_views:
+                conditions = exists_groups.setdefault(view_name, [])
+            else:
+                conditions = where_conditions
 
             # Phase-15.81 v20 — runtime filters can carry refs that the
             # current view no longer exposes (FE auto-fan-out picked a
@@ -1596,9 +1667,64 @@ class SemanticQueryEngine:
                 f"{field_ref!r}"
             )
 
-        if conditions:
-            return "WHERE\n  " + " AND\n  ".join(conditions)
+        # Phase-B' — fold each filter-only view's predicates into one EXISTS
+        # subquery that materialises the join path from the base view and
+        # correlates back to it, so the filter constrains the base rows
+        # without the FROM-chain fan-out that double-counts measures.
+        for view_node, preds in exists_groups.items():
+            clause = self._build_filter_exists_clause(explore, view_node, preds)
+            if clause:
+                where_conditions.append(clause)
+            else:
+                self.warnings.append(
+                    f"Filter on '{view_node}' dropped — no join path from base "
+                    f"for EXISTS rewrite"
+                )
+
+        if where_conditions:
+            return "WHERE\n  " + " AND\n  ".join(where_conditions)
         return ""
+
+    def _build_filter_exists_clause(
+        self,
+        explore: SemanticExplore | None,
+        target_node: str,
+        predicates: List[str],
+    ) -> str | None:
+        """Build ``EXISTS (SELECT 1 FROM <path> WHERE <corr> AND <preds>)`` for a
+        filter-only view, mirroring the distinct-values EXISTS builder.
+
+        The resolver path's first hop becomes the EXISTS ``FROM`` relation and
+        its join condition is pushed into the EXISTS ``WHERE`` as the
+        correlation back to the outer base alias (SQL forbids ``ON`` directly
+        after ``FROM``); subsequent hops are ``INNER JOIN ... ON``. `predicates`
+        already reference ``target_node.<col>`` which is aliased inside the body.
+        """
+        resolver = self._resolver
+        if resolver is None or not predicates:
+            return None
+        path = resolver.resolve_path(target_node)
+        if path is None or not path.steps:
+            return None
+        pieces: list[str] = []
+        correlation: str | None = None
+        for idx, step in enumerate(path.steps):
+            edge = step.edge
+            try:
+                join_view = self._get_view_for_node(edge.to_node)
+            except ValueError:
+                return None
+            relation = join_view.sql_table_name or edge.to_view
+            condition = self._render_edge_join_condition(edge)
+            if not condition:
+                return None
+            if idx == 0:
+                pieces.append(f"FROM {relation} AS {edge.to_node}")
+                correlation = condition
+            else:
+                pieces.append(f"INNER JOIN {relation} AS {edge.to_node} ON {condition}")
+        body_where = [correlation, *predicates] if correlation else list(predicates)
+        return "EXISTS (SELECT 1 " + " ".join(pieces) + " WHERE " + " AND ".join(body_where) + ")"
     
     # ── Phase-B' (PBI-parity rework) — WHERE/HAVING split ─────────────
     #

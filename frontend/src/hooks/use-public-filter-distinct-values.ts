@@ -32,7 +32,13 @@ export function usePublicFilterDistinctValues(
       const key = getFilterKey(filter);
       const column = columnsByKey.get(key);
       if (!column?.datasetId || !column.semanticField) continue;
-      if (column.type !== 'dropdown' && column.type !== 'text') continue;
+      // Parity with the editor: categorical columns always, plus
+      // numeric/date columns used as a multi-select slicer
+      // ('in'/'not_in' → value checklist). Otherwise a numeric dim like
+      // `year` shows an empty checklist though the BE has the values.
+      const isCategorical = column.type === 'dropdown' || column.type === 'text';
+      const isListMode = filter.operator === 'in' || filter.operator === 'not_in';
+      if (!isCategorical && !isListMode) continue;
       activeColumns.set(key, column);
     }
 
