@@ -52,6 +52,33 @@ interface SlicerClusterProps {
   /** When true, hides editor affordances (add slicer / add image /
    *  direction toggle / drag handles). Set on public viewer. */
   lockSlots?: boolean;
+  /** When true, slicers render as STATIC read-only chips — no
+   *  interactive controls, no value editing. The author's default
+   *  slicer values still filter the charts, but the viewer cannot
+   *  change them. Used on the public link per the product decision
+   *  "public chỉ xem, không chỉnh". Images still render. */
+  readOnly?: boolean;
+}
+
+// Format a slicer entry's value for read-only chip display.
+function formatSlicerValue(entry: any): string {
+  const v = entry?.value;
+  const op = entry?.operator;
+  if (v == null || v === '') return 'Tất cả';
+  if (Array.isArray(v)) {
+    if (v.length === 0) return 'Tất cả';
+    // Date range stored as [start, end] for between/date_between.
+    if ((op === 'between' || op === 'date_between') && v.length >= 2) {
+      const [a, b] = v;
+      if (a && b) return `${a} → ${b}`;
+      if (a) return `≥ ${a}`;
+      if (b) return `≤ ${b}`;
+      return 'Tất cả';
+    }
+    const shown = v.slice(0, 3).join(', ');
+    return v.length > 3 ? `${shown} +${v.length - 3}` : shown;
+  }
+  return String(v);
 }
 
 const DEFAULT_LAYOUT: SlicerClusterLayout = {
@@ -84,6 +111,7 @@ export function SlicerCluster({
   onReset,
   isApplying,
   lockSlots = false,
+  readOnly = false,
 }: SlicerClusterProps) {
   const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
   // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
@@ -395,26 +423,54 @@ export function SlicerCluster({
           When there are NO children, DashboardFilterBar still renders
           its empty-state + Add Filter button (assuming canEdit). */}
       <div style={innerLayout}>
-        <div
-          className="min-w-0"
-          style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 220 }}
-        >
-          <DashboardFilterBar
-            columns={columns}
-            columnChartCount={columnChartCount}
-            distinctValues={distinctValues}
-            filters={slicerEntries}
-            onFiltersChange={handleSlicersChange}
-            hasPendingChanges={hasPendingChanges}
-            onApply={onApply}
-            onReset={onReset}
-            isApplying={isApplying}
-            initialExpanded
-            embedded
-            lockSlots={lockSlots}
-            stackVertical={isLeft}
-          />
-        </div>
+        {readOnly ? (
+          /* Public read-only mode — static chips, no interaction.
+             The author's default slicer values still filter the charts
+             (seeded upstream); the viewer just sees what's applied. */
+          <div
+            className="min-w-0"
+            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
+          >
+            {slicerEntries.length === 0 ? (
+              <span className="text-tiny text-text-tertiary px-1">Không có bộ lọc.</span>
+            ) : (
+              <div className={isLeft ? 'flex flex-col gap-1.5' : 'flex flex-row flex-wrap gap-1.5 items-center'}>
+                {slicerEntries.map((s: any, i: number) => (
+                  <span
+                    key={s.id ?? `${s.field}-${i}`}
+                    className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-caption"
+                    title={`${s.label ?? s.field} = ${formatSlicerValue(s)}`}
+                  >
+                    <span className="font-medium text-text-secondary">{s.label ?? s.field}</span>
+                    <span className="text-text-quaternary">:</span>
+                    <span className="font-mono text-text-primary">{formatSlicerValue(s)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            className="min-w-0"
+            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 220 }}
+          >
+            <DashboardFilterBar
+              columns={columns}
+              columnChartCount={columnChartCount}
+              distinctValues={distinctValues}
+              filters={slicerEntries}
+              onFiltersChange={handleSlicersChange}
+              hasPendingChanges={hasPendingChanges}
+              onApply={onApply}
+              onReset={onReset}
+              isApplying={isApplying}
+              initialExpanded
+              embedded
+              lockSlots={lockSlots}
+              stackVertical={isLeft}
+            />
+          </div>
+        )}
         {imageEntries.map((img) => (
           <ImageCell
             key={img.id}

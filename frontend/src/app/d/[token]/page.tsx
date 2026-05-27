@@ -1132,6 +1132,7 @@ export default function PublicDashboardPage() {
                     onReset={handleResetFilters}
                     isApplying={isApplyingFilters}
                     lockSlots
+                    readOnly
                   />
                 </div>
               )}
