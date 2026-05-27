@@ -517,22 +517,41 @@ export default function DashboardDetailPage() {
   // seed effect's "page entries take precedence" rule). Driven by
   // APPLIED state — adding a half-built filter card mustn't shake the
   // chart grid.
-  // Phase-C THẬT — slicers (#1) and filters (#2) both contribute to
-  // the chart WHERE in internal mode. Layer order matches BE
-  // make_dashboard_layers: chart_base < dashboard_filter < dashboard_slicer.
-  // Later layers override earlier on same field, so slicers win over
-  // filters when they hit the same column (matches PBI behavior:
-  // viewer-interactive slicer overrides the canvas-hidden filter).
+  // Phase-H — editor precedence MUST match the BE public merge order
+  // (filter-semantics.md §3 / filter_layered_merge._LAYER_ORDER):
+  //
+  //   visible filters (default) < slicers < locked/hidden filters (authoritative)
+  //
+  // Later sets override earlier ones on the same field key. The key fix:
+  // a publicMode=locked/hidden dashboard filter is AUTHORITATIVE — it
+  // must win over a slicer on the same field, so it's applied LAST.
+  // (No link layer in the editor preview.) Without this split the editor
+  // preview diverged from the public link, which is what users hit.
   const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(() => {
+    const isAuthoritative = (f: BaseFilter) =>
+      f.publicMode === 'locked' || f.publicMode === 'hidden';
+    // Phase-H — dedupe key MUST match the BE `_filter_dedupe_key`
+    // (semanticField/fieldKey, field, datasetId — operator-agnostic) so
+    // the editor preview collapses the same set the public merge does.
+    // The old getFilterKey (fieldKey ?? semanticField ?? field, no
+    // datasetId) could group/split differently → editor ≠ public.
+    const dedupeKey = (f: BaseFilter) => {
+      const sem = String(f.semanticField ?? f.fieldKey ?? '').trim().toLowerCase();
+      const field = String(f.field ?? '').trim().toLowerCase();
+      const ds = f.datasetId ?? '';
+      return `${sem}|${field}|${ds}`;
+    };
+    const allFilters = [...appliedGlobalFiltersLegacy, ...activePageFilters];
     const byKey = new Map<string, BaseFilter>();
-    for (const f of appliedGlobalFiltersLegacy) byKey.set(getFilterKey(f), f);
-    for (const f of activePageFilters) byKey.set(getFilterKey(f), f);
-    // Phase-G — skip image children (they're decorative, not filters);
-    // defensive guard even though BE also drops them.
+    // 1) visible filter defaults
+    for (const f of allFilters) if (!isAuthoritative(f)) byKey.set(dedupeKey(f), f);
+    // 2) slicers (skip decorative image children)
     for (const f of appliedGlobalSlicers) {
       if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      byKey.set(getFilterKey(f as BaseFilter), f as BaseFilter);
+      byKey.set(dedupeKey(f as BaseFilter), f as BaseFilter);
     }
+    // 3) locked/hidden filters — authoritative, applied last so they win
+    for (const f of allFilters) if (isAuthoritative(f)) byKey.set(dedupeKey(f), f);
     return Array.from(byKey.values());
   }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers]);
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).

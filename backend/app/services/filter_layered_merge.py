@@ -40,21 +40,36 @@ from app.services.chart_contracts import (
 
 # Public source labels — keep stable, FE / analytics may key on these.
 LAYER_CHART_BASE = "chart_base"
-LAYER_DASHBOARD_FILTER = "dashboard_filter"
-LAYER_DASHBOARD_SLICER = "dashboard_slicer"
-LAYER_VIEWER_SLICER = "viewer_slicer"
-LAYER_VIEWER_FILTER = "viewer_filter"
-LAYER_LINK_LOCKED = "link_locked"
-LAYER_LINK_HIDDEN = "link_hidden"
+LAYER_DASHBOARD_FILTER = "dashboard_filter"              # publicMode=visible defaults
+LAYER_DASHBOARD_SLICER = "dashboard_slicer"              # slicer defaults
+LAYER_VIEWER_SLICER = "viewer_slicer"                    # viewer's interactive choice
+LAYER_VIEWER_FILTER = "viewer_filter"                    # viewer mini-pane override
+LAYER_DASHBOARD_FILTER_LOCKED = "dashboard_filter_locked"  # publicMode=locked/hidden — authoritative
+LAYER_LINK_LOCKED = "link_locked"                        # per-link locked — most authoritative
+LAYER_LINK_HIDDEN = "link_hidden"                        # drop field entirely
 
-# Canonical priority order. The merger walks this exact list; passing
-# layers in any other order has no effect on precedence.
+# Canonical priority order (Phase-H, PBI/RLS model). Walk this exact
+# list; later layers override earlier ones on the same field key.
+#
+#   defaults (overridable by viewer):
+#     chart_base < dashboard_filter(visible) < dashboard_slicer
+#   viewer's interactive choice:
+#     < viewer_slicer < viewer_filter
+#   ── "locked" boundary — author-enforced, viewer CANNOT relax ──
+#     < dashboard_filter_locked (publicMode locked/hidden) < link_locked
+#   field removal:
+#     + link_hidden (drops the field from the output)
+#
+# Key fix vs the original order: locked/hidden dashboard filters now sit
+# ABOVE the viewer layers, so a slicer or viewer choice on the same
+# field can no longer relax an author lock.
 _LAYER_ORDER: tuple[str, ...] = (
     LAYER_CHART_BASE,
     LAYER_DASHBOARD_FILTER,
     LAYER_DASHBOARD_SLICER,
     LAYER_VIEWER_SLICER,
     LAYER_VIEWER_FILTER,
+    LAYER_DASHBOARD_FILTER_LOCKED,
     LAYER_LINK_LOCKED,
     LAYER_LINK_HIDDEN,
 )
@@ -166,18 +181,23 @@ def make_dashboard_layers(
     *,
     chart_base: Optional[List[Dict[str, Any]]] = None,
     dashboard_filters: Optional[List[Dict[str, Any]]] = None,
+    dashboard_filters_locked: Optional[List[Dict[str, Any]]] = None,
     dashboard_slicers: Optional[List[Dict[str, Any]]] = None,
+    viewer_slicers: Optional[List[Dict[str, Any]]] = None,
 ) -> List[FilterLayer]:
-    """Layers active in INTERNAL viewing (no public link in the chain).
+    """Layers active in INTERNAL viewing (editor preview, no public link).
 
-    Internal viewers see dashboard filters and slicers exactly as the
-    author saved them, with no public-link overrides and no viewer
-    overrides per spec §3.
+    Same precedence as public minus the link layers. `viewer_slicers`
+    carries the author's currently-applied slicer/filter selections in
+    the editor preview, so locked dashboard filters still win over them
+    (parity with public).
     """
     return [
         FilterLayer(LAYER_CHART_BASE, chart_base or []),
         FilterLayer(LAYER_DASHBOARD_FILTER, dashboard_filters or []),
         FilterLayer(LAYER_DASHBOARD_SLICER, dashboard_slicers or []),
+        FilterLayer(LAYER_VIEWER_SLICER, viewer_slicers or []),
+        FilterLayer(LAYER_DASHBOARD_FILTER_LOCKED, dashboard_filters_locked or []),
     ]
 
 
@@ -185,22 +205,55 @@ def make_public_layers(
     *,
     chart_base: Optional[List[Dict[str, Any]]] = None,
     dashboard_filters: Optional[List[Dict[str, Any]]] = None,
+    dashboard_filters_locked: Optional[List[Dict[str, Any]]] = None,
     dashboard_slicers: Optional[List[Dict[str, Any]]] = None,
     viewer_slicers: Optional[List[Dict[str, Any]]] = None,
     viewer_filters: Optional[List[Dict[str, Any]]] = None,
     link_locked: Optional[List[Dict[str, Any]]] = None,
     link_hidden: Optional[List[Dict[str, Any]]] = None,
 ) -> List[FilterLayer]:
-    """Layers active for a PUBLIC viewer fetching chart data."""
+    """Layers active for a PUBLIC viewer fetching chart data.
+
+    `dashboard_filters` = publicMode=visible defaults (overridable).
+    `dashboard_filters_locked` = publicMode locked/hidden (authoritative,
+    above the viewer layers — viewer can't relax them).
+    """
     return [
         FilterLayer(LAYER_CHART_BASE, chart_base or []),
         FilterLayer(LAYER_DASHBOARD_FILTER, dashboard_filters or []),
         FilterLayer(LAYER_DASHBOARD_SLICER, dashboard_slicers or []),
         FilterLayer(LAYER_VIEWER_SLICER, viewer_slicers or []),
         FilterLayer(LAYER_VIEWER_FILTER, viewer_filters or []),
+        FilterLayer(LAYER_DASHBOARD_FILTER_LOCKED, dashboard_filters_locked or []),
         FilterLayer(LAYER_LINK_LOCKED, link_locked or []),
         FilterLayer(LAYER_LINK_HIDDEN, link_hidden or []),
     ]
+
+
+def split_dashboard_filters_by_public_mode(
+    items: Sequence[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Split `Dashboard.filters_config` into (visible_defaults, authoritative).
+
+    - visible_defaults: publicMode == 'visible' (or unset). Low-precedence
+      defaults the viewer can override via a slicer/mini-pane.
+    - authoritative: publicMode in {'locked', 'hidden'}. High-precedence;
+      the viewer cannot relax them. (Hidden ones additionally aren't
+      rendered — the FE already excludes them from the slicer seed.)
+
+    Reads both camelCase `publicMode` and legacy `public_mode`.
+    """
+    visible: List[Dict[str, Any]] = []
+    authoritative: List[Dict[str, Any]] = []
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        mode = str(raw.get("publicMode") or raw.get("public_mode") or "visible").lower()
+        if mode in ("locked", "hidden"):
+            authoritative.append(raw)
+        else:
+            visible.append(raw)
+    return visible, authoritative
 
 
 # ---------------------------------------------------------------------------

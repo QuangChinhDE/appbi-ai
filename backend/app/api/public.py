@@ -36,6 +36,7 @@ from app.services.dashboard_ai_bot.public_link_config import (
 from app.services.filter_layered_merge import (
     make_public_layers,
     merge_layered_filters,
+    split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
 
@@ -523,10 +524,18 @@ def _build_public_chart_filters(
     locked_link, hidden_link = split_link_filters_locked_vs_hidden(
         item for item in (link_filters_config or []) if isinstance(item, dict)
     )
+    # Phase-H — split the dashboard filter pane by publicMode so locked/
+    # hidden entries land in the authoritative tier (above the viewer
+    # layers) instead of the low default tier. Visible ones stay as
+    # overridable defaults.
+    visible_filters, authoritative_filters = split_dashboard_filters_by_public_mode(
+        list(getattr(dash, "filters_config", None) or [])
+    )
     merge_diagnostics: list[dict] = []
     merged = merge_layered_filters(
         make_public_layers(
-            dashboard_filters=list(getattr(dash, "filters_config", None) or []),
+            dashboard_filters=visible_filters,
+            dashboard_filters_locked=authoritative_filters,
             dashboard_slicers=list(getattr(dash, "slicers_config", None) or []),
             viewer_slicers=list(viewer_filters or []),
             viewer_filters=[],  # mini-pane overrides — wired in Phase F

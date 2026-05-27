@@ -531,21 +531,15 @@ export default function PublicDashboardPage() {
     }
 
     try {
-      // Phase-15.81 v6 — chart-data request merges two viewer-visible
-      // sources plus one hidden source:
-      //   1. appliedViewerFilters (top-bar, includes BOTH all-pages and
-      //      active-page filter sets — see seed effect above).
-      //   2. dashboard.public_link_hidden_filters (per-link hidden
-      //      constraints set in the Public Links modal; viewer cannot
-      //      see / change them, but BE applies them to every WHERE).
-      // Per-visual `tile.layout.tileFilters` is no longer honored —
-      // the per-visual scope was removed; each chart owns its own
-      // filters via its config now. BE also merges link.filters_config
-      // server-side, so dedupe handles the overlap.
-      const linkHiddenFilters: BaseFilter[] = Array.isArray((dashboard as any)?.public_link_hidden_filters)
-        ? ((dashboard as any).public_link_hidden_filters as BaseFilter[])
-        : [];
-
+      // Phase-H — the chart-data request now sends ONLY the viewer's
+      // interactive choices (top-bar slicers/filters + an optional
+      // cross-filter). The link's own filters (locked + hidden) are
+      // applied SERVER-SIDE by _build_public_chart_filters from
+      // DashboardPublicLink.filters_config — the FE no longer re-sends
+      // `public_link_hidden_filters`. Re-sending them used to double-feed
+      // the merge (link entries landed in the viewer_slicer layer AND the
+      // link_locked/link_hidden layers), which was fragile and could let
+      // the viewer-layer copy fight the authoritative link layer.
       const entries = await runWithConcurrency(
         targetCharts,
         async (dashboardChart) => {
@@ -554,10 +548,7 @@ export default function PublicDashboardPage() {
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
-          const requestFilters = [
-            ...baseViewerFilters,
-            ...linkHiddenFilters,
-          ];
+          const requestFilters = baseViewerFilters;
           try {
             const data = await publicDashboardApi.getChartData(
               token,
