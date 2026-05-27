@@ -157,28 +157,66 @@ export function SlicerCluster({
     onLayoutChange?.({ ...effectiveLayout, position, direction: nextDirection });
   };
 
-  // Phase-G2 — ResizeObserver captures user's corner-drag (CSS
+  // Phase-G2 — ResizeObserver captures the author's corner-drag (CSS
   // `resize` handle in editor mode) and persists into the layout.
-  // Debounced to avoid spamming the draft endpoint on every pixel of
-  // mousemove. Viewer mode renders fixed-size; only editor lets the
-  // author drag.
+  //
+  // Bug fix (feedback-loop "thu lại dần dần"): we MUST read
+  // `borderBoxSize`, not `contentRect`. Tailwind sets
+  // `box-sizing: border-box` globally, so the CSS `width` we write back
+  // is a BORDER-box width — but `contentRect` reports the CONTENT box
+  // (minus padding+border ≈ 18px). Feeding contentRect back into a
+  // border-box `width` shrank the element by ~18px every observer tick,
+  // creating an infinite shrink loop + the "ResizeObserver loop
+  // completed with undelivered notifications" console error. Reading
+  // borderBoxSize keeps wPx == the CSS width → stable, no drift.
+  //
+  // We also (a) defer the state write out of the observer callback via
+  // setTimeout (avoids the loop-notification error) and (b) ignore
+  // sub-threshold jitter (<3px) so a 1px reflow doesn't churn the draft.
   const containerRef = useRef<HTMLDivElement>(null);
   const lastSizeRef = useRef<{ w: number; h: number } | null>(null);
   const debounceRef = useRef<number | null>(null);
+  // Only capture size in free mode (the only place an explicit
+  // footprint is meaningful + the resize handle is shown).
+  const captureSize = !lockSlots && effectiveLayout.position === 'free';
   useEffect(() => {
-    if (lockSlots || !containerRef.current) return;
+    // Reset baseline whenever capture toggles off so re-enabling
+    // doesn't compare against a stale size.
+    if (!captureSize) {
+      lastSizeRef.current = null;
+      return;
+    }
+    if (!containerRef.current) return;
     const el = containerRef.current;
     const observer = new ResizeObserver((entries) => {
-      const cr = entries[0]?.contentRect;
-      if (!cr) return;
-      const w = Math.round(cr.width);
-      const h = Math.round(cr.height);
+      const entry = entries[0];
+      if (!entry) return;
+      // Prefer borderBoxSize (matches the border-box CSS width we set).
+      let w: number;
+      let h: number;
+      const bb = (entry as any).borderBoxSize;
+      if (bb && bb.length) {
+        const box = bb[0];
+        w = Math.round(box.inlineSize);
+        h = Math.round(box.blockSize);
+      } else {
+        // Fallback for older browsers: add back padding+border (18px).
+        w = Math.round(entry.contentRect.width) + 18;
+        h = Math.round(entry.contentRect.height) + 18;
+      }
       // Skip the first observation (initial mount sets the baseline).
       if (lastSizeRef.current == null) {
         lastSizeRef.current = { w, h };
         return;
       }
-      if (lastSizeRef.current.w === w && lastSizeRef.current.h === h) return;
+      // Ignore sub-threshold jitter to avoid churning the draft on
+      // 1px layout reflows.
+      if (
+        Math.abs(lastSizeRef.current.w - w) < 3 &&
+        Math.abs(lastSizeRef.current.h - h) < 3
+      ) {
+        return;
+      }
       lastSizeRef.current = { w, h };
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => {
@@ -191,7 +229,7 @@ export function SlicerCluster({
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lockSlots]);
+  }, [captureSize]);
 
   // Phase-G3 — 'free' mode: cluster floats over the canvas as an
   // absolute overlay. The author drags the header to move it
@@ -242,21 +280,28 @@ export function SlicerCluster({
     borderRadius: 8,
     padding: 8,
     gap: effectiveLayout.gap ?? 8,
-    // Phase-G2 — editor mode gets a browser-native resize handle on
-    // the bottom-right corner (4-corner-drag would need a custom
-    // gesture controller; bottom-right is the standard browser
-    // affordance for resize:both). Viewer keeps fixed bounds.
-    resize: lockSlots ? undefined : 'both',
+    // Phase-G2 fix — the browser resize handle is enabled ONLY in
+    // 'free' mode. In 'top' the cluster is full-width (auto) and in
+    // 'left' it's a fixed-width column; forcing explicit wPx/hPx there
+    // both broke responsive layout AND fed the ResizeObserver shrink
+    // loop. Free mode is the only place an explicit footprint makes
+    // sense (it floats), so resize + size-capture live only there.
+    resize: (isFree && !lockSlots) ? 'both' : undefined,
     overflow: 'visible',
     minHeight: 80,
     minWidth: 220,
-    // Phase-G3 — in 'left' mode the cluster is a narrow column;
-    // default to 280px unless the author resized it explicitly.
-    width: effectiveLayout.wPx
-      ? `${effectiveLayout.wPx}px`
-      : (effectiveLayout.position === 'left' ? '280px' : undefined),
+    // Width:
+    //   free → explicit wPx (if set)
+    //   left → fixed column (wPx override or 280px default)
+    //   top  → auto (full-width, responsive — ignore wPx)
+    width: isFree
+      ? (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : undefined)
+      : effectiveLayout.position === 'left'
+        ? (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : '280px')
+        : undefined,
     flex: effectiveLayout.position === 'left' ? '0 0 auto' : undefined,
-    height: effectiveLayout.hPx ? `${effectiveLayout.hPx}px` : undefined,
+    // Height: only honor hPx in free mode; top/left auto-fit content.
+    height: isFree && effectiveLayout.hPx ? `${effectiveLayout.hPx}px` : undefined,
     maxWidth: isFree ? undefined : '100%',
     // Phase-G3 — free overlay positioning.
     ...(isFree
@@ -359,7 +404,7 @@ export function SlicerCluster({
               <LayoutGrid className="h-3.5 w-3.5" />
             </button>
           </span>
-          {(effectiveLayout.wPx || effectiveLayout.hPx) && (
+          {isFree && (effectiveLayout.wPx || effectiveLayout.hPx) && (
             <button
               type="button"
               onClick={() => onLayoutChange?.({ ...effectiveLayout, wPx: undefined, hPx: undefined })}
