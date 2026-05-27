@@ -52,33 +52,6 @@ interface SlicerClusterProps {
   /** When true, hides editor affordances (add slicer / add image /
    *  direction toggle / drag handles). Set on public viewer. */
   lockSlots?: boolean;
-  /** When true, slicers render as STATIC read-only chips — no
-   *  interactive controls, no value editing. The author's default
-   *  slicer values still filter the charts, but the viewer cannot
-   *  change them. Used on the public link per the product decision
-   *  "public chỉ xem, không chỉnh". Images still render. */
-  readOnly?: boolean;
-}
-
-// Format a slicer entry's value for read-only chip display.
-function formatSlicerValue(entry: any): string {
-  const v = entry?.value;
-  const op = entry?.operator;
-  if (v == null || v === '') return 'Tất cả';
-  if (Array.isArray(v)) {
-    if (v.length === 0) return 'Tất cả';
-    // Date range stored as [start, end] for between/date_between.
-    if ((op === 'between' || op === 'date_between') && v.length >= 2) {
-      const [a, b] = v;
-      if (a && b) return `${a} → ${b}`;
-      if (a) return `≥ ${a}`;
-      if (b) return `≤ ${b}`;
-      return 'Tất cả';
-    }
-    const shown = v.slice(0, 3).join(', ');
-    return v.length > 3 ? `${shown} +${v.length - 3}` : shown;
-  }
-  return String(v);
 }
 
 const DEFAULT_LAYOUT: SlicerClusterLayout = {
@@ -111,7 +84,6 @@ export function SlicerCluster({
   onReset,
   isApplying,
   lockSlots = false,
-  readOnly = false,
 }: SlicerClusterProps) {
   const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
   // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
@@ -298,13 +270,21 @@ export function SlicerCluster({
   }, []);
 
   const containerStyle: React.CSSProperties = {
-    background: effectiveLayout.background ?? 'transparent',
+    // Phase-G — the cluster is ALWAYS a clearly demarcated box so users
+    // know this zone is dedicated to slicers (not a generic container).
+    //   editor → prominent brand dashed border + brand-soft tint
+    //   public → subtle solid border that just groups the slicers
+    // An explicit author override (border='none'/'solid') still wins.
+    background: effectiveLayout.background
+      ?? (lockSlots ? 'rgb(var(--surface-1))' : 'rgba(var(--brand-rgb), 0.04)'),
     border:
       effectiveLayout.border === 'none'
         ? '1px solid transparent'
         : effectiveLayout.border === 'solid'
           ? '1px solid rgb(var(--border-line))'
-          : '1px dashed rgba(var(--brand-rgb), 0.3)',
+          : lockSlots
+            ? '1px solid rgb(var(--border-line))'
+            : '1.5px dashed rgba(var(--brand-rgb), 0.55)',
     borderRadius: 8,
     padding: 8,
     gap: effectiveLayout.gap ?? 8,
@@ -355,6 +335,55 @@ export function SlicerCluster({
     ? { display: 'flex', flexDirection: 'column', gap: effectiveLayout.gap ?? 8 }
     : { display: 'flex', flexDirection: 'row', gap: effectiveLayout.gap ?? 8, flexWrap: 'wrap', alignItems: 'flex-start' };
 
+  // Phase-G — cluster controls injected into DashboardFilterBar's single
+  // header (badge + position toggle + Add Image), so the slicer zone has
+  // ONE header row instead of two. Editor only (hidden when lockSlots).
+  const clusterControls = lockSlots ? null : (
+    <>
+      <span className="inline-flex items-center gap-1 rounded bg-brand px-2 py-0.5 text-tiny font-emphasis uppercase tracking-wide text-text-inverse">
+        ⛃ Slicer
+      </span>
+      <span className="hidden text-tiny text-text-tertiary sm:inline">Vùng bộ lọc cho viewer</span>
+      <span className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] p-0.5" title="Vị trí cụm slicer">
+        <button
+          type="button"
+          onClick={() => handlePositionChange('top')}
+          className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'top' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
+          title="Top — thanh ngang phía trên charts"
+        >
+          ▤ Top
+        </button>
+        <button
+          type="button"
+          onClick={() => handlePositionChange('left')}
+          className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'left' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
+          title="Left — cột dọc bên trái charts (slicer xếp từ trên xuống)"
+        >
+          ▥ Left
+        </button>
+      </span>
+      <label
+        className="inline-flex cursor-pointer items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny text-text-secondary hover:bg-surface-2"
+        title="Thêm ảnh (logo) vào cụm slicer"
+      >
+        <ImageIcon className="h-3.5 w-3.5" />
+        <span>+ Image</span>
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              void handleAddImage(file);
+              e.target.value = '';
+            }
+          }}
+        />
+      </label>
+    </>
+  );
+
   return (
     <div
       ref={containerRef}
@@ -363,114 +392,34 @@ export function SlicerCluster({
       data-slicer-cluster-direction={effectiveLayout.direction}
       style={containerStyle}
     >
-      {!lockSlots && (
-        <div
-          className="mb-2 flex items-center gap-2 px-1 text-tiny"
-          style={isFree ? { cursor: 'move' } : undefined}
-          onPointerDown={handleHeaderPointerDown}
-          onPointerMove={handleHeaderPointerMove}
-          onPointerUp={handleHeaderPointerUp}
-        >
-          <span className="font-emphasis text-brand">Slicer</span>
-          <span className="text-text-tertiary">— viewer luôn thấy & chỉnh được</span>
-          {/* Position toggle. Top = thanh ngang trên charts (slicer dàn
-              hàng). Left = cột dọc bên trái (slicer xếp từ trên xuống,
-              full-width cột). Layout direction tự suy ra từ position —
-              không cần toggle riêng. */}
-          <span className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] p-0.5" title="Vị trí cụm slicer">
-            <button
-              type="button"
-              onClick={() => handlePositionChange('top')}
-              className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'top' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Top — thanh ngang phía trên charts"
-            >
-              ▤ Top
-            </button>
-            <button
-              type="button"
-              onClick={() => handlePositionChange('left')}
-              className={`rounded px-2 py-0.5 text-tiny ${effectiveLayout.position === 'left' ? 'bg-brand text-text-inverse' : 'hover:bg-surface-2'}`}
-              title="Left — cột dọc bên trái charts (slicer xếp từ trên xuống)"
-            >
-              ▥ Left
-            </button>
-          </span>
-          <label
-            className="inline-flex cursor-pointer items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-text-secondary hover:bg-surface-2"
-            title="Thêm ảnh (logo) vào cluster"
-          >
-            <ImageIcon className="h-3.5 w-3.5" />
-            <span>+ Image</span>
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  void handleAddImage(file);
-                  e.target.value = '';
-                }
-              }}
-            />
-          </label>
-        </div>
-      )}
-
       {/* Children rendered with direction-aware layout. Slicers go
-          through DashboardFilterBar (with embedded=true so it doesn't
-          wrap itself in another card); images render as inline cells.
-          When there are NO children, DashboardFilterBar still renders
-          its empty-state + Add Filter button (assuming canEdit). */}
+          through DashboardFilterBar (collapsed-popover buttons); the
+          cluster controls (badge + position + Add Image) ride in that
+          bar's SINGLE header via headerExtras. Images render as inline
+          cells after the bar. */}
       <div style={innerLayout}>
-        {readOnly ? (
-          /* Public read-only mode — static chips, no interaction.
-             The author's default slicer values still filter the charts
-             (seeded upstream); the viewer just sees what's applied. */
-          <div
-            className="min-w-0"
-            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
-          >
-            {slicerEntries.length === 0 ? (
-              <span className="text-tiny text-text-tertiary px-1">Không có bộ lọc.</span>
-            ) : (
-              <div className={isLeft ? 'flex flex-col gap-1.5' : 'flex flex-row flex-wrap gap-1.5 items-center'}>
-                {slicerEntries.map((s: any, i: number) => (
-                  <span
-                    key={s.id ?? `${s.field}-${i}`}
-                    className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-caption"
-                    title={`${s.label ?? s.field} = ${formatSlicerValue(s)}`}
-                  >
-                    <span className="font-medium text-text-secondary">{s.label ?? s.field}</span>
-                    <span className="text-text-quaternary">:</span>
-                    <span className="font-mono text-text-primary">{formatSlicerValue(s)}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div
-            className="min-w-0"
-            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 220 }}
-          >
-            <DashboardFilterBar
-              columns={columns}
-              columnChartCount={columnChartCount}
-              distinctValues={distinctValues}
-              filters={slicerEntries}
-              onFiltersChange={handleSlicersChange}
-              hasPendingChanges={hasPendingChanges}
-              onApply={onApply}
-              onReset={onReset}
-              isApplying={isApplying}
-              initialExpanded
-              embedded
-              lockSlots={lockSlots}
-              stackVertical={isLeft}
-            />
-          </div>
-        )}
+        <div
+          className="min-w-0"
+          style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
+        >
+          <DashboardFilterBar
+            columns={columns}
+            columnChartCount={columnChartCount}
+            distinctValues={distinctValues}
+            filters={slicerEntries}
+            onFiltersChange={handleSlicersChange}
+            hasPendingChanges={hasPendingChanges}
+            onApply={onApply}
+            onReset={onReset}
+            isApplying={isApplying}
+            initialExpanded
+            embedded
+            lockSlots={lockSlots}
+            stackVertical={isLeft}
+            collapsedSlicers
+            headerExtras={clusterControls}
+          />
+        </div>
         {imageEntries.map((img) => (
           <ImageCell
             key={img.id}

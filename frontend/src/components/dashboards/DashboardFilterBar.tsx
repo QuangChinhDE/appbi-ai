@@ -66,6 +66,11 @@ interface DashboardFilterBarProps {
    * responsive viewport-based grid would otherwise crush cards into a
    * narrow column. */
   stackVertical?: boolean;
+  /** Phase-G — render each filter as a collapsed button that opens its
+   * value controls in a floating popover (overlay) instead of an
+   * always-expanded inline card. Used by the slicer cluster (editor +
+   * public). */
+  collapsedSlicers?: boolean;
 }
 
 type AddFilterColumnGroup = {
@@ -94,7 +99,9 @@ export function DashboardFilterBar({
   embedded = false,
   lockSlots = false,
   stackVertical = false,
-}: DashboardFilterBarProps) {
+  collapsedSlicers = false,
+  headerExtras,
+}: DashboardFilterBarPropsWithExtras) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
@@ -415,7 +422,11 @@ export function DashboardFilterBar({
   return (
     <div className={embedded ? 'border-t border-[rgba(255,255,255,0.06)]' : 'mb-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm'}>
       {/* ── Header bar ────────────────────────────────────────────── */}
-      <div className={`flex items-center gap-2 ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
+      <div className={`flex items-center gap-2 flex-wrap ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
+        {/* Phase-G — cluster controls injected by SlicerCluster so the
+            slicer zone has ONE header (badge + position + image) instead
+            of two stacked rows. */}
+        {headerExtras}
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
@@ -615,7 +626,13 @@ export function DashboardFilterBar({
           ~280px) it still tried 4 columns and crushed the cards. The
           slicer cluster passes stackVertical for left/vertical layout. */}
       {isExpanded && filters.length > 0 && (
-        <div className={`px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
+        <div className={
+          collapsedSlicers
+            // Collapsed slicer mode: row of compact buttons (vertical
+            // stack when stackVertical/left). Each button opens a popover.
+            ? `px-3 pb-3 flex gap-2 ${stackVertical ? 'flex-col items-stretch' : 'flex-row flex-wrap items-start'}`
+            : `px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`
+        }>
           {filters.map(f => {
             // Conflict-detection signal: when the user picks values that have
             // no intersection (e.g. Role=SDR & Phòng=BE.E), the cascading
@@ -649,6 +666,8 @@ export function DashboardFilterBar({
                 onRemove={() => removeFilter(f.id)}
                 conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
                 lockSlots={lockSlots}
+                collapsedPopover={collapsedSlicers}
+                popoverPlacement={stackVertical ? 'right' : 'bottom'}
               />
             );
           })}
@@ -710,6 +729,24 @@ interface FilterCardProps {
   conflictingFilterLabels?: string[];
   /** Slicer-mode flag from parent: hides per-card remove (X) button. */
   lockSlots?: boolean;
+  /** Phase-G — render as a collapsed button that opens the value
+   * controls in a floating popover (overlay) instead of an
+   * always-expanded inline card. Used by the slicer cluster (editor +
+   * public) so a long value list overlays content below rather than
+   * stretching the layout. */
+  collapsedPopover?: boolean;
+  /** Phase-G — where the popover opens relative to the collapsed
+   * button. 'right' for the Left-column cluster (opens beside, over
+   * charts); 'bottom' for the Top bar (opens below). */
+  popoverPlacement?: 'bottom' | 'right';
+}
+
+interface DashboardFilterBarPropsWithExtras extends DashboardFilterBarProps {
+  /** Phase-G — extra controls injected at the START of the header bar
+   * (before the Filters label). The slicer cluster passes its badge +
+   * position toggle + Add Image here so everything lives in a SINGLE
+   * header row instead of two stacked headers. */
+  headerExtras?: React.ReactNode;
 }
 
 function FilterCard({
@@ -734,10 +771,25 @@ function FilterCard({
   onRemove,
   conflictingFilterLabels,
   lockSlots = false,
+  collapsedPopover = false,
+  popoverPlacement = 'bottom',
 }: FilterCardProps) {
   const [showLinked, setShowLinked] = useState(false);
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState(f.label ?? '');
+  // Phase-G — popover open state for collapsed slicer mode.
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const popoverWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (popoverWrapRef.current && !popoverWrapRef.current.contains(e.target as Node)) {
+        setPopoverOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [popoverOpen]);
 
   const isMultiSelect = f.operator === 'in' || f.operator === 'not_in';
   const selected: string[] = isMultiSelect && Array.isArray(f.value) ? f.value : [];
@@ -794,7 +846,27 @@ function FilterCard({
     datasetId: f.datasetId,
   });
 
-  return (
+  // Phase-G — short value summary for the collapsed slicer button.
+  const valueSummary: string = (() => {
+    if (isMultiSelect) {
+      if (selected.length === 0) return 'Tất cả';
+      if (selected.length === 1) return String(selected[0]);
+      return `${selected[0]} +${selected.length - 1}`;
+    }
+    if (f.type === 'date') {
+      if (f.datePreset && f.datePreset !== 'custom') {
+        return DATE_PRESET_LABELS[f.datePreset] ?? String(f.datePreset);
+      }
+      if (Array.isArray(f.value) && (f.value[0] || f.value[1])) {
+        return `${f.value[0] ?? '…'} → ${f.value[1] ?? '…'}`;
+      }
+      return 'Tất cả';
+    }
+    if (f.value == null || f.value === '') return 'Tất cả';
+    return String(f.value);
+  })();
+
+  const cardContent = (
     <div className="bi-fade-in border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
       {/* Card header */}
       <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
@@ -986,6 +1058,67 @@ function FilterCard({
               })}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+
+  // Phase-G — default: render the card inline (editor filter pane,
+  // public-link manager, etc.).
+  if (!collapsedPopover) return cardContent;
+
+  // Collapsed slicer mode: a compact button that opens the card in a
+  // floating popover. The popover is absolutely positioned so a long
+  // value list OVERLAYS the content below instead of stretching the
+  // layout (per the public-viewer UX request). Width is capped + the
+  // value list inside scrolls.
+  //
+  // Placement depends on the cluster layout:
+  //   'right'  → Left-column cluster: buttons stack full-width down the
+  //              column; the popover opens to the RIGHT (over the
+  //              charts) so it doesn't cover the buttons below it.
+  //   'bottom' → Top bar: buttons flow in a row; the popover opens
+  //              BELOW the button (over the charts beneath).
+  const openRight = popoverPlacement === 'right';
+  return (
+    <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block'}>
+      <button
+        type="button"
+        onClick={() => setPopoverOpen((v) => !v)}
+        className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+          openRight ? 'w-full justify-between' : ''
+        } ${
+          popoverOpen
+            ? 'border-brand bg-brand/10 text-brand'
+            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
+        }`}
+        title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="font-medium text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
+          <span className="text-text-quaternary">:</span>
+          <span className="max-w-[10rem] truncate">{valueSummary}</span>
+        </span>
+        <span className="flex flex-shrink-0 items-center gap-1">
+          {selected.length > 1 && (
+            <span className="rounded-full bg-brand/15 px-1.5 text-xs font-semibold text-brand">
+              {selected.length}
+            </span>
+          )}
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
+        </span>
+      </button>
+      {popoverOpen && (
+        <div
+          className={`absolute z-50 w-[280px] max-h-[60vh] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl ${
+            openRight
+              // Open to the right of the column, aligned to the button top.
+              ? 'left-full top-0 ml-2'
+              // Open below the button.
+              : 'left-0 top-full mt-1'
+          }`}
+        >
+          {cardContent}
         </div>
       )}
     </div>
