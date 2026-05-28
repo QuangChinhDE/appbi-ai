@@ -1706,6 +1706,9 @@ class SemanticQueryEngine:
         path = resolver.resolve_path(target_node)
         if path is None or not path.steps:
             return None
+        # Lazy import to avoid a cross-module top-level cycle.
+        from app.services.dataset_model_service import relation_has_nested_cte
+
         pieces: list[str] = []
         correlation: str | None = None
         for idx, step in enumerate(path.steps):
@@ -1715,6 +1718,21 @@ class SemanticQueryEngine:
             except ValueError:
                 return None
             relation = join_view.sql_table_name or edge.to_view
+            # Phase-B' — bail when a hop's relation embeds a nested CTE
+            # (the user's production case: `WITH a AS (WITH b AS (...))`
+            # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
+            # BigQuery rejects it as `Syntax error: Unexpected keyword
+            # SELECT`. Skipping here surfaces a warning + drops the filter
+            # cleanly instead of emitting broken multi-KB SQL.
+            stripped = str(relation or "").strip().lstrip("(").lstrip()
+            if stripped.lower().startswith("with ") or relation_has_nested_cte(relation):
+                self.warnings.append(
+                    f"Filter on '{target_node}' dropped — view "
+                    f"'{edge.to_node}' is backed by a nested-CTE source_query "
+                    f"that cannot be safely embedded in an EXISTS subquery on "
+                    f"BigQuery. Refactor the source_query to a single-level CTE."
+                )
+                return None
             condition = self._render_edge_join_condition(edge)
             if not condition:
                 return None

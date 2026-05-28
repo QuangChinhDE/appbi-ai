@@ -2208,6 +2208,28 @@ def remove_join(
     }
 
 
+_NESTED_CTE_RE = re.compile(r"\bWITH\s+\w+\s+AS\s*\(", re.IGNORECASE)
+
+
+def relation_has_nested_cte(relation: str | None) -> bool:
+    """True when a view's baked relation embeds a nested ``WITH ... AS (... WITH ... AS (``
+    construct that BigQuery rejects when used inside a subquery-as-table.
+
+    The pre-existing guard ``startswith("with ")`` only catches relations that
+    are themselves a bare CTE; sql_query sources are baked as
+    ``(SELECT * FROM (WITH ... AS (...)) AS _src)`` and the inner ``WITH`` is
+    invisible to that check. When the user's source_query itself nests CTEs —
+    ``WITH a AS (WITH b AS (...) SELECT...)`` — embedding the wrapped form in
+    an EXISTS / JOIN body lands BQ on ``Syntax error: Unexpected keyword SELECT``
+    (production log, 2026-05-27). Single-CTE wraps (count == 1) BigQuery DOES
+    accept (verified on dataset 55 table 186 = v_top_tasks_per_project's
+    ``WITH ranked AS (...) SELECT ...``), so this only fires for nested CTEs.
+    """
+    if not relation:
+        return False
+    return len(_NESTED_CTE_RE.findall(str(relation))) >= 2
+
+
 def _distinct_filter_targets_self(
     view_name: str,
     field_name: str,
@@ -2605,16 +2627,18 @@ def get_distinct_field_values(
                 relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
                 if not relation:
                     return None, "view_not_found"
-                # Phase-15.95 — BigQuery (and most engines) reject `WITH`
-                # clauses inside a subquery used as a table relation. The
-                # EXISTS-based cascade puts each relation two-levels-deep
+                # Phase-15.95 — BigQuery rejects `WITH` clauses inside a
+                # subquery used as a table relation. The EXISTS-based
+                # cascade puts each relation two-levels-deep
                 # (EXISTS → SELECT 1 → FROM (rel)), so any CTE-prefixed
-                # derived view breaks the whole query with a `Syntax
-                # error: Unexpected keyword SELECT` 500. Detect it here
-                # and skip the filter via a dropped_filters entry, so
-                # the FE banner explains why instead of hanging.
+                # derived view breaks the whole query with a
+                # `Syntax error: Unexpected keyword SELECT` 500. Detect
+                # both shapes: (a) the relation itself starts with WITH,
+                # and (b) the relation is the standard sql_query wrap
+                # `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`
+                # whose nested CTEs only appear via a regex count.
                 stripped_rel = str(relation or "").strip().lstrip("(").lstrip()
-                if stripped_rel.lower().startswith("with "):
+                if stripped_rel.lower().startswith("with ") or relation_has_nested_cte(relation):
                     return None, "cte_in_subquery"
                 new_alias = _next_alias()
                 inner_aliases.append(new_alias)

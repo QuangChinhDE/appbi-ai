@@ -944,6 +944,17 @@ class DataSourceConnectionService:
                 #      bug, can't auto-fix without breaking semantics.
                 err_msg = str(first_err)
                 if "ambiguous" not in err_msg.lower():
+                    # The INFO preview above is truncated at 1500 chars,
+                    # which hides the real failure site when the engine
+                    # emits a multi-KB nested-CTE / EXISTS chain that BQ
+                    # rejects (e.g. "Unexpected keyword SELECT at [419:76]").
+                    # Dump the FULL SQL on ERROR so DA can match the line/col
+                    # in the BQ error to the exact emitted text.
+                    logger.error(
+                        "[bq_sql_failed] BigQuery rejected query (full SQL follows). "
+                        "err=%s\n----- FULL SQL -----\n%s\n----- END SQL -----",
+                        err_msg, query,
+                    )
                     raise
                 logger.warning(
                     "[bq_dedup] ambiguous-column error received. SQL=%s",
