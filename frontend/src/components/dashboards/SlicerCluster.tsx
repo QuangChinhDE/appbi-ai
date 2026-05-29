@@ -118,6 +118,11 @@ export function SlicerCluster({
   // Phase-G — config menu (gear) state. Holds position toggle + Add
   // Image so the header stays uncluttered.
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  // Phase-13 — slicer cluster collapses by default; viewer / DA reveals
+  // it via a small toggle button. Was always-expanded → noisy on first
+  // page load for dashboards with many slicers. Default hidden matches
+  // Looker / PBI's "filters drawer" pattern.
+  const [isCollapsed, setIsCollapsed] = useState(true);
   const configMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!configMenuOpen) return;
@@ -478,54 +483,108 @@ export function SlicerCluster({
     </>
   );
 
+  // Phase-13 — count of slicers that currently carry a non-empty value
+  // (so the toggle button can show a "3" badge like Linear / GitHub UI).
+  const activeSlicerCount = useMemo(() => {
+    let n = 0;
+    for (const s of slicerEntries) {
+      const v = (s as any)?.value;
+      if (Array.isArray(v) ? v.length > 0 : (v != null && String(v).trim() !== '')) n += 1;
+    }
+    return n;
+  }, [slicerEntries]);
+
   return (
     <div
       ref={containerRef}
       className="slicer-cluster mb-3"
       data-slicer-cluster-position={effectiveLayout.position}
       data-slicer-cluster-direction={effectiveLayout.direction}
-      style={containerStyle}
+      style={isCollapsed ? undefined : containerStyle}
     >
-      {/* Children rendered with direction-aware layout. Slicers go
-          through DashboardFilterBar (collapsed-popover buttons); the
-          cluster controls (badge + position + Add Image) ride in that
-          bar's SINGLE header via headerExtras. Images render as inline
-          cells after the bar. */}
-      <div style={innerLayout}>
-        <div
-          className="min-w-0"
-          style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
-        >
-          <DashboardFilterBar
-            columns={columns}
-            columnChartCount={columnChartCount}
-            distinctValues={distinctValues}
-            distinctStatus={distinctStatus}
-            distributeChildren={effectiveLayout.distribute === 'auto'}
-            filters={slicerEntries}
-            onFiltersChange={handleSlicersChange}
-            hasPendingChanges={hasPendingChanges}
-            onApply={onApply}
-            onReset={onReset}
-            isApplying={isApplying}
-            initialExpanded
-            embedded
-            lockSlots={lockSlots}
-            stackVertical={isLeft}
-            collapsedSlicers
-            headerExtras={clusterControls}
-          />
+      {/* Phase-13 — collapsed-by-default toggle. The slicer bar used to
+          always render expanded which crowded the dashboard on first
+          load; PowerBI / Looker hide their filter pane by default. The
+          toggle shows the field count + active filter count so the
+          viewer can see at-a-glance whether filters are applied without
+          opening it. */}
+      {isCollapsed ? (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(false)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-tiny text-text-secondary shadow-linear-sm transition-colors hover:bg-surface-2"
+            title={
+              activeSlicerCount > 0
+                ? `Mở bộ lọc (${activeSlicerCount} đang áp dụng)`
+                : 'Mở bộ lọc'
+            }
+          >
+            <span aria-hidden>⛃</span>
+            <span>Bộ lọc</span>
+            {slicerEntries.length > 0 && (
+              <span
+                className={`inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+                  activeSlicerCount > 0
+                    ? 'bg-brand text-text-inverse'
+                    : 'bg-surface-2 text-text-tertiary'
+                }`}
+              >
+                {activeSlicerCount > 0 ? activeSlicerCount : slicerEntries.length}
+              </span>
+            )}
+          </button>
         </div>
-        {imageEntries.map((img) => (
-          <ImageCell
-            key={img.id}
-            img={img}
-            editable={!lockSlots}
-            onUpdate={(patch) => handleUpdateImage(img.id, patch)}
-            onRemove={() => handleRemoveImage(img.id)}
-          />
-        ))}
-      </div>
+      ) : (
+        // Children rendered with direction-aware layout. Slicers go
+        // through DashboardFilterBar (collapsed-popover buttons); the
+        // cluster controls (badge + position + Add Image) ride in that
+        // bar's SINGLE header via headerExtras. Images render as inline
+        // cells after the bar. Right-edge "X" collapses the cluster.
+        <div className="relative" style={innerLayout}>
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(true)}
+            title="Ẩn bộ lọc"
+            className="absolute right-1 top-1 z-10 inline-flex h-6 w-6 items-center justify-center rounded text-text-tertiary hover:bg-surface-2"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+          <div
+            className="min-w-0"
+            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
+          >
+            <DashboardFilterBar
+              columns={columns}
+              columnChartCount={columnChartCount}
+              distinctValues={distinctValues}
+              distinctStatus={distinctStatus}
+              distributeChildren={effectiveLayout.distribute === 'auto'}
+              filters={slicerEntries}
+              onFiltersChange={handleSlicersChange}
+              hasPendingChanges={hasPendingChanges}
+              onApply={onApply}
+              onReset={onReset}
+              isApplying={isApplying}
+              initialExpanded
+              embedded
+              lockSlots={lockSlots}
+              stackVertical={isLeft}
+              collapsedSlicers
+              headerExtras={clusterControls}
+            />
+          </div>
+          {imageEntries.map((img) => (
+            <ImageCell
+              key={img.id}
+              img={img}
+              editable={!lockSlots}
+              onUpdate={(patch) => handleUpdateImage(img.id, patch)}
+              onRemove={() => handleRemoveImage(img.id)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
