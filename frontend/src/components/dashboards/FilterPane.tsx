@@ -713,7 +713,11 @@ export function FilterPane({
   onReset,
   isApplying = false,
 }: FilterPaneProps) {
-  const [expanded, setExpanded] = useState<Record<Scope, boolean>>({ page: true, all: true });
+  // Phase-15 — default both sections COLLAPSED so opening the FilterPane
+  // doesn't immediately render every existing filter card. Matches the
+  // SlicerCluster's default-collapse pattern (Phase-13). DA clicks the
+  // section header to reveal cards.
+  const [expanded, setExpanded] = useState<Record<Scope, boolean>>({ page: false, all: false });
 
   const columnsByKey = useMemo(() => {
     const map = new Map<string, ColumnInfo>();

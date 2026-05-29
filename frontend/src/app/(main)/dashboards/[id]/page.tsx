@@ -663,9 +663,9 @@ export default function DashboardDetailPage() {
   const handleSaveDraft = async () => {
     const ok = await flushLocalLayoutsToDraft();
     if (ok) {
-      toast.success('Đã lưu nháp.');
+      toast.success('Draft saved.');
     } else {
-      toast.error('Lưu nháp thất bại — thử lại.');
+      toast.error('Failed to save draft — please try again.');
     }
   };
 
@@ -673,14 +673,14 @@ export default function DashboardDetailPage() {
     // Flush any pending local edits into draft first, then publish.
     const ok = await flushLocalLayoutsToDraft();
     if (!ok) {
-      toast.error('Không lưu được nháp — chưa thể xuất bản.');
+      toast.error("Couldn't save draft — publish aborted.");
       return;
     }
     try {
       await publishDashboardMutation.mutateAsync(dashboardId);
-      toast.success('Đã xuất bản — public link cập nhật phiên bản mới.');
+      toast.success('Published — public link now serves the new version.');
     } catch (err) {
-      toast.error('Xuất bản thất bại — thử lại.');
+      toast.error('Publish failed — please try again.');
     }
   };
 
@@ -689,9 +689,9 @@ export default function DashboardDetailPage() {
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
-        toast.success('Đã quay lại phiên bản đã xuất bản.');
+        toast.success('Reverted to the published version.');
       } catch (err) {
-        toast.error('Không huỷ được nháp BE — thử lại.');
+        toast.error("Couldn't discard the BE draft — please try again.");
       }
     }
   };
@@ -701,7 +701,7 @@ export default function DashboardDetailPage() {
       if (!dashboard) return;
       const defaults: Record<string, any> = {
         text: { template: 'Hello {{today()}}', align: 'left', fontSize: 18 },
-        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: 'Còn lại' },
+        countdown: { target: new Date(Date.now() + 7 * 86400000).toISOString(), label: 'Time left' },
         image: { url: '', fit: 'contain' },
         shape: { kind: 'rect', color: '#facc15' },
         parameter_switcher: {
@@ -992,8 +992,8 @@ export default function DashboardDetailPage() {
       filtersSnapshotRef.current = JSON.stringify(draftGlobalFilters);
       toast.success(
         scope === 'all'
-          ? 'Đã lưu nháp filter cho toàn dashboard. Bấm "Lưu & xuất bản" để công khai.'
-          : 'Đã lưu nháp filter cho trang hiện tại.',
+          ? 'Filter draft saved for the whole dashboard. Click "Save & publish" to go live.'
+          : 'Filter draft saved for the current page.',
       );
     } catch (error) {
       console.error('Failed to save dashboard filters:', error);
@@ -1984,11 +1984,11 @@ export default function DashboardDetailPage() {
                         }`}
                         title={
                           hasLocalLayoutChanges
-                            ? 'Có thay đổi chưa lưu — nhấn Lưu nháp hoặc Lưu & xuất bản để giữ.'
-                            : 'Có bản nháp đã lưu chưa xuất bản. Share link vẫn dùng bản cũ.'
+                            ? 'Unsaved changes — click Save draft or Save & publish to keep them.'
+                            : 'A draft is saved but not yet published. The share link still serves the previous version.'
                         }
                       >
-                        {hasLocalLayoutChanges ? 'Chưa lưu' : 'Bản nháp'}
+                        {hasLocalLayoutChanges ? 'Unsaved' : 'Draft'}
                       </span>
                       <button
                         type="button"
@@ -1998,10 +1998,10 @@ export default function DashboardDetailPage() {
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                        title="Lưu bản nháp lên server (share link vẫn dùng bản đã xuất bản gần nhất)"
+                        title="Save draft to the server (the share link still serves the last published version)"
                       >
                         {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Lưu nháp
+                        Save draft
                       </button>
                       <button
                         type="button"
@@ -2011,19 +2011,19 @@ export default function DashboardDetailPage() {
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
-                        title="Áp dụng thay đổi lên public share link"
+                        title="Push the changes to the public share link"
                       >
                         {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Lưu & xuất bản
+                        Save &amp; publish
                       </button>
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
                         disabled={discardDraftMutation.isPending}
                         className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                        title="Bỏ thay đổi, quay về bố cục đã xuất bản"
+                        title="Discard changes and revert to the published layout"
                       >
-                        Huỷ
+                        Discard
                       </button>
                     </div>
                   )}
@@ -2459,10 +2459,10 @@ export default function DashboardDetailPage() {
           isOpen={isDiscardConfirmOpen}
           onClose={() => setIsDiscardConfirmOpen(false)}
           onConfirm={handleDiscardAll}
-          title="Huỷ thay đổi bố cục?"
-          description="Mọi thay đổi (local + bản nháp đã lưu) sẽ bị xoá. Dashboard quay về bố cục đã xuất bản gần nhất. Hành động này không hoàn tác được."
-          confirmLabel="Huỷ thay đổi"
-          cancelLabel="Giữ lại"
+          title="Discard layout changes?"
+          description="All changes (local edits + saved draft) will be discarded. The dashboard reverts to the last published layout. This cannot be undone."
+          confirmLabel="Discard changes"
+          cancelLabel="Keep editing"
           variant="warning"
         />
 

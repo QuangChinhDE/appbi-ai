@@ -383,7 +383,7 @@ export function SlicerCluster({
     <>
       <span
         className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-brand px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wide text-text-inverse"
-        title="Vùng bộ lọc (slicer) cho viewer — không đặt chart ở đây"
+        title="Slicer zone for the viewer — do not place charts here"
       >
         ⛃ Slicer
       </span>
@@ -398,13 +398,13 @@ export function SlicerCluster({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Tuỳ chỉnh cụm slicer (vị trí, ảnh)"
+          title="Customize slicer cluster (position, image)"
         >
           <Settings2 className="h-3.5 w-3.5" />
         </button>
         {configMenuOpen && (
           <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
-            <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">Vị trí cụm</div>
+            <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">Position</div>
             <div className="mb-2 flex gap-1">
               <button
                 type="button"
@@ -426,7 +426,7 @@ export function SlicerCluster({
                 `flex-1`. When OFF, each card keeps the drag-set width.
                 Toggling ON also CLEARS every existing widthPx so a later
                 toggle OFF gives a clean baseline (no stale narrow widths). */}
-            <div className="mb-2 mt-2 px-1 text-tiny font-emphasis text-text-tertiary">Sắp xếp</div>
+            <div className="mb-2 mt-2 px-1 text-tiny font-emphasis text-text-tertiary">Layout</div>
             <button
               type="button"
               onClick={() => {
@@ -448,21 +448,21 @@ export function SlicerCluster({
                   ? 'border-brand bg-brand/10 text-brand'
                   : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
               }`}
-              title="Mỗi slicer chia đều bề rộng hàng (bỏ width thủ công đã kéo)"
+              title="Distribute each slicer evenly across the row (clears manual drag widths)"
             >
               <span aria-hidden>⇔</span>
               <span>
                 {effectiveLayout.distribute === 'auto'
-                  ? 'Tự động giãn cách (đang bật)'
-                  : 'Tự động giãn cách'}
+                  ? 'Auto-distribute (on)'
+                  : 'Auto-distribute'}
               </span>
             </button>
             <label
               className="flex cursor-pointer items-center gap-1.5 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
-              title="Thêm ảnh (logo) vào cụm slicer"
+              title="Add an image (logo) to the slicer cluster"
             >
               <ImageIcon className="h-3.5 w-3.5" />
-              <span>Thêm ảnh / logo</span>
+              <span>Add image / logo</span>
               <input
                 type="file"
                 accept="image/*"
@@ -516,12 +516,12 @@ export function SlicerCluster({
             className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-tiny text-text-secondary shadow-linear-sm transition-colors hover:bg-surface-2"
             title={
               activeSlicerCount > 0
-                ? `Mở bộ lọc (${activeSlicerCount} đang áp dụng)`
-                : 'Mở bộ lọc'
+                ? `Show filters (${activeSlicerCount} active)`
+                : 'Show filters'
             }
           >
             <span aria-hidden>⛃</span>
-            <span>Bộ lọc</span>
+            <span>Filters</span>
             {slicerEntries.length > 0 && (
               <span
                 className={`inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
@@ -545,7 +545,7 @@ export function SlicerCluster({
           <button
             type="button"
             onClick={() => setIsCollapsed(true)}
-            title="Ẩn bộ lọc"
+            title="Hide filters"
             className="absolute right-1 top-1 z-10 inline-flex h-6 w-6 items-center justify-center rounded text-text-tertiary hover:bg-surface-2"
           >
             <X className="h-3.5 w-3.5" />

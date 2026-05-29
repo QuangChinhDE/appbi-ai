@@ -101,6 +101,19 @@ export interface BaseFilter {
   // Author drags the card's right edge; persisted so the public link
   // shows the same width. Undefined → default card width.
   widthPx?: number;
+  // Phase-14 — Looker-style interaction type the DA picked when creating
+  // this filter (Dropdown / Fixed list / Input box / Advanced / Slider /
+  // Checkbox / Date range). FilterCard renders the body UI from THIS
+  // first, falling back to (operator + col.type) for legacy filters that
+  // pre-date Phase-9.
+  interactionType?:
+    | 'dropdown'
+    | 'fixed_list'
+    | 'input'
+    | 'advanced'
+    | 'slider'
+    | 'checkbox'
+    | 'date_range';
 }
 
 /**

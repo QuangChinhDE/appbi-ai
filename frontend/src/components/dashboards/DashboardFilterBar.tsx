@@ -78,24 +78,24 @@ interface SlicerInteractionMeta {
 const SLICER_INTERACTIONS: readonly SlicerInteractionMeta[] = [
   {
     id: 'dropdown',
-    label: 'Danh sách thả xuống',
-    description: 'Dropdown đa chọn — phổ biến nhất',
+    label: 'Dropdown',
+    description: 'Multi-select dropdown — most common',
     icon: ChevronDown,
     compatibleColumnTypes: ['dropdown', 'text'],
     defaultOperator: 'in',
   },
   {
     id: 'fixed_list',
-    label: 'Danh sách cố định',
-    description: 'Checklist luôn mở rộng, không thu gọn',
+    label: 'Fixed-size list',
+    description: 'Always-expanded checklist (no collapse)',
     icon: List,
     compatibleColumnTypes: ['dropdown', 'text'],
     defaultOperator: 'in',
   },
   {
     id: 'input',
-    label: 'Hộp nhập',
-    description: 'Nhập tự do (chứa, bắt đầu bằng…)',
+    label: 'Input box',
+    description: 'Free-form text (contains, starts with…)',
     icon: TextCursor,
     // AppBI's `semanticDimensionToFilterType` maps string columns to
     // 'dropdown' by default (only legacy non-semantic text columns end up
@@ -106,31 +106,31 @@ const SLICER_INTERACTIONS: readonly SlicerInteractionMeta[] = [
   },
   {
     id: 'advanced',
-    label: 'Bộ lọc nâng cao',
-    description: 'Tự chọn toán tử (eq/ne/gt/lt/…)',
+    label: 'Advanced filter',
+    description: 'Pick the operator (eq / ne / gt / lt / …)',
     icon: Settings2,
     compatibleColumnTypes: ['text', 'dropdown', 'number', 'date'],
     defaultOperator: 'eq',
   },
   {
     id: 'slider',
-    label: 'Thanh trượt',
-    description: 'Range slider cho số',
+    label: 'Slider',
+    description: 'Range slider for numeric values',
     icon: SlidersHorizontal,
     compatibleColumnTypes: ['number'],
     defaultOperator: 'between',
   },
   {
     id: 'checkbox',
-    label: 'Hộp đánh dấu',
-    description: 'On/Off (yes/no, 0/1)',
+    label: 'Checkbox',
+    description: 'On / Off (yes/no, 0/1)',
     icon: CheckSquare,
     compatibleColumnTypes: ['number', 'text', 'dropdown'],
     defaultOperator: 'eq',
   },
   {
     id: 'date_range',
-    label: 'Phạm vi ngày',
+    label: 'Date range',
     description: 'Date range + preset (this month, last week…)',
     icon: Calendar,
     compatibleColumnTypes: ['date'],
@@ -423,6 +423,10 @@ export function DashboardFilterBar({
       value,
       label:        getColumnDisplayLabel(col),
       datePreset,
+      // Phase-14 — persist the picked interaction so the card body
+      // dispatches to the right UI (input box / slider / checkbox / …)
+      // rather than re-inferring from col.type.
+      interactionType: interaction,
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
@@ -757,7 +761,7 @@ export function DashboardFilterBar({
                     <div className="py-1">
                       <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
                         <Filter className="w-3 h-3" />
-                        Thêm một tùy chọn kiểm soát
+                        Add a control
                       </div>
                       <ul className="py-1">
                         {SLICER_INTERACTIONS.map((m) => {
@@ -777,7 +781,7 @@ export function DashboardFilterBar({
                                   // Re-focus the search field once the column step renders.
                                   setTimeout(() => addFilterSearchRef.current?.focus(), 60);
                                 }}
-                                title={disabled ? 'Không có cột nào tương thích với kiểu này' : undefined}
+                                title={disabled ? 'No columns compatible with this type' : undefined}
                                 className={`w-full flex items-start gap-3 px-3 py-2 text-left text-sm transition-colors ${
                                   disabled
                                     ? 'opacity-40 cursor-not-allowed'
@@ -792,7 +796,7 @@ export function DashboardFilterBar({
                                   </div>
                                 </div>
                                 <span className="text-[10px] text-text-quaternary mt-1">
-                                  {compatCount} cột
+                                  {compatCount} {compatCount === 1 ? 'column' : 'columns'}
                                 </span>
                               </button>
                             </li>
@@ -814,7 +818,7 @@ export function DashboardFilterBar({
                             className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary hover:text-brand"
                           >
                             <ArrowLeft className="w-3 h-3" />
-                            Đổi kiểu
+                            Change type
                           </button>
                           <span className="text-[11px] text-text-quaternary">/</span>
                           <span className="text-[11px] font-semibold text-text-secondary truncate">
@@ -828,7 +832,7 @@ export function DashboardFilterBar({
                             type="text"
                             value={addFilterSearch}
                             onChange={(e) => setAddFilterSearch(e.target.value)}
-                            placeholder="Tìm cột..."
+                            placeholder="Search columns..."
                             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
                             onKeyDown={(e) => {
                               if (e.key === 'Escape') {
@@ -852,8 +856,8 @@ export function DashboardFilterBar({
                       ) : (
                         <p className="px-3 py-3 text-xs text-text-quaternary italic">
                           {compatibleColumns.length === 0
-                            ? 'Không có cột nào tương thích với kiểu này.'
-                            : 'Không khớp tìm kiếm.'}
+                            ? 'No columns compatible with this type.'
+                            : 'No search match.'}
                         </p>
                       )}
                     </>
@@ -1160,7 +1164,7 @@ function FilterCard({
   // Phase-G — short value summary for the collapsed slicer button.
   const valueSummary: string = (() => {
     if (isMultiSelect) {
-      if (selected.length === 0) return 'Tất cả';
+      if (selected.length === 0) return 'All';
       if (selected.length === 1) return String(selected[0]);
       return `${selected[0]} +${selected.length - 1}`;
     }
@@ -1171,9 +1175,9 @@ function FilterCard({
       if (Array.isArray(f.value) && (f.value[0] || f.value[1])) {
         return `${f.value[0] ?? '…'} → ${f.value[1] ?? '…'}`;
       }
-      return 'Tất cả';
+      return 'All';
     }
-    if (f.value == null || f.value === '') return 'Tất cả';
+    if (f.value == null || f.value === '') return 'All';
     return String(f.value);
   })();
 
@@ -1265,8 +1269,15 @@ function FilterCard({
         {/* Phase-15.78 — multi/single mode toggle for dropdown/text filters.
             Operator `in` → multi-select checklist (legacy behaviour);
             `eq` → single-select dropdown (PowerBI-style). Hidden on
-            number/date because they have their own operator UI. */}
-        {supportsDropdownModeToggle && (
+            number/date because they have their own operator UI.
+            Phase-14 — also hidden when an explicit interactionType locks
+            the body shape (input / checkbox / slider / advanced / etc).
+            Only the legacy `dropdown` and `fixed_list` interactions still
+            support multi↔single toggling on the fly. */}
+        {supportsDropdownModeToggle
+          && (!f.interactionType
+              || f.interactionType === 'dropdown'
+              || f.interactionType === 'fixed_list') && (
           <div className="mb-2 flex items-center gap-1 text-[11px] text-text-tertiary">
             <span className="opacity-70">Mode:</span>
             <button
@@ -1281,7 +1292,49 @@ function FilterCard({
             </button>
           </div>
         )}
-        {isMultiSelect ? (
+        {/* Phase-14 — interaction-aware dispatch. When `f.interactionType`
+            is present, route to the body that matches the DA's pick at
+            the Looker picker step. Legacy filters (pre-Phase-9, no
+            interactionType) fall through to the operator/type inference
+            below — same behaviour as before this commit. */}
+        {f.interactionType === 'input' ? (
+          <TextInputBody
+            filter={f}
+            onUpdateValue={onUpdateValue}
+            onUpdateOperator={onUpdateOperator}
+          />
+        ) : f.interactionType === 'checkbox' ? (
+          <CheckboxBody filter={f} onUpdateValue={onUpdateValue} />
+        ) : f.interactionType === 'slider' ? (
+          // Slider == range body directly. Skip NumberBody's operator
+          // picker (slider IS the operator — between).
+          <NumberRangeBody filter={f} onUpdateValue={onUpdateValue} />
+        ) : f.interactionType === 'date_range' ? (
+          <DateBody
+            filter={f}
+            onUpdateValue={onUpdateValue}
+            onUpdateOperator={onUpdateOperator}
+            onUpdateDatePreset={onUpdateDatePreset}
+          />
+        ) : f.interactionType === 'advanced' ? (
+          // String / dropdown → operator picker + text input. Number /
+          // date → existing NumberBody / DateBody (they're already
+          // operator-pickable).
+          f.type === 'number' ? (
+            <NumberBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} />
+          ) : f.type === 'date' ? (
+            <DateBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} onUpdateDatePreset={onUpdateDatePreset} />
+          ) : (
+            <StringAdvancedBody
+              filter={f}
+              onUpdateValue={onUpdateValue}
+              onUpdateOperator={onUpdateOperator}
+            />
+          )
+        ) : isMultiSelect ? (
+          // 'dropdown' / 'fixed_list' (and legacy multi) → multi-checklist.
+          // `fixed_list` keeps the same UI but the parent slot is rendered
+          // always-expanded (no popover collapse) when collapsedPopover=false.
           <MultiSelectBody
             values={mergedValues}
             filteredValues={filteredValues}
@@ -1837,6 +1890,161 @@ function NumberRangeBody({
 }
 
 // ── Number filter body ──────────────────────────────────────────
+// ── Phase-14: bodies for Looker-style interactions that didn't have a
+// matching renderer pre-Phase-9. Each maps to one entry in
+// SLICER_INTERACTIONS:
+//   TextInputBody    → 'input'    (free-form `contains` search)
+//   CheckboxBody     → 'checkbox' (boolean-ish toggle)
+//   StringAdvancedBody → 'advanced' on text/dropdown columns
+
+// "Input box" — free-form text. Operator stays at 'contains' / 'starts_with'
+// / 'ends_with' / 'eq'; value is a string. Matches PowerBI's "Text filter"
+// and Looker's "Input box". DA can switch the predicate flavor via a
+// compact dropdown next to the input.
+function TextInputBody({
+  filter: f,
+  onUpdateValue,
+  onUpdateOperator,
+}: {
+  filter: BaseFilter;
+  onUpdateValue: (v: any) => void;
+  onUpdateOperator: (op: FilterOperator) => void;
+}) {
+  const opLabel: Record<string, string> = {
+    contains: 'contains',
+    starts_with: 'starts with',
+    ends_with: 'ends with',
+    eq: 'equals',
+    ne: 'not equals',
+  };
+  // If filter was created with a non-text-style operator (e.g. 'in'),
+  // reset to a sensible default the first time the body renders. The
+  // caller's `addFilter` sets `contains` for the input interaction so this
+  // is just a safety net.
+  const op = (opLabel[f.operator] ? f.operator : 'contains') as FilterOperator;
+  const value = typeof f.value === 'string' ? f.value : '';
+  return (
+    <div className="space-y-2">
+      <select
+        value={op}
+        onChange={(e) => onUpdateOperator(e.target.value as FilterOperator)}
+        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+      >
+        {(['contains', 'starts_with', 'ends_with', 'eq', 'ne'] as FilterOperator[]).map((o) => (
+          <option key={o} value={o}>{opLabel[o]}</option>
+        ))}
+      </select>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onUpdateValue(e.target.value)}
+        placeholder="Enter value..."
+        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+      />
+    </div>
+  );
+}
+
+// "Checkbox" — boolean-ish on/off. Three explicit states (None / On / Off)
+// rendered as three buttons. Saves as 'eq' against the user's preferred
+// truthy literal (default '1' / '0' — DA can override via the small text
+// inputs below for boolean columns stored as 'true'/'false' etc).
+function CheckboxBody({
+  filter: f,
+  onUpdateValue,
+}: {
+  filter: BaseFilter;
+  onUpdateValue: (v: any) => void;
+}) {
+  const current = typeof f.value === 'string' ? f.value : '';
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-3 gap-1">
+        <button
+          type="button"
+          onClick={() => onUpdateValue('')}
+          className={`rounded border px-2 py-1.5 text-xs transition-colors ${
+            current === ''
+              ? 'border-brand bg-brand/10 text-brand'
+              : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+          }`}
+        >
+          Any
+        </button>
+        <button
+          type="button"
+          onClick={() => onUpdateValue('1')}
+          className={`rounded border px-2 py-1.5 text-xs transition-colors ${
+            current === '1' || current === 'true' || current === 'yes' || current === 'on'
+              ? 'border-brand bg-brand text-text-inverse'
+              : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+          }`}
+        >
+          ✓ On
+        </button>
+        <button
+          type="button"
+          onClick={() => onUpdateValue('0')}
+          className={`rounded border px-2 py-1.5 text-xs transition-colors ${
+            current === '0' || current === 'false' || current === 'no' || current === 'off'
+              ? 'border-brand bg-brand text-text-inverse'
+              : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+          }`}
+        >
+          ✕ Off
+        </button>
+      </div>
+      <p className="text-[10px] text-text-quaternary leading-tight">
+        Boolean columns stored as &quot;1&quot;/&quot;0&quot; or &quot;true&quot;/&quot;false&quot; both match. Need a custom literal? Use the &quot;Advanced filter&quot; type instead.
+      </p>
+    </div>
+  );
+}
+
+// "Advanced filter" on a text/dropdown column — exposes the full operator
+// menu (eq / ne / contains / starts_with / ends_with / is_null /
+// is_not_null) and a value field. Power-user mode; for the common cases
+// DA picks Dropdown / Input directly.
+function StringAdvancedBody({
+  filter: f,
+  onUpdateValue,
+  onUpdateOperator,
+}: {
+  filter: BaseFilter;
+  onUpdateValue: (v: any) => void;
+  onUpdateOperator: (op: FilterOperator) => void;
+}) {
+  const op = f.operator;
+  const value = typeof f.value === 'string' ? f.value : '';
+  const usesValue = !(op === 'is_null' || op === 'is_not_null');
+  return (
+    <div className="space-y-2">
+      <select
+        value={op}
+        onChange={(e) => onUpdateOperator(e.target.value as FilterOperator)}
+        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+      >
+        <option value="eq">= equals</option>
+        <option value="ne">≠ not equals</option>
+        <option value="contains">⊂ contains</option>
+        <option value="starts_with">⊂ starts with</option>
+        <option value="ends_with">⊃ ends with</option>
+        <option value="is_null">∅ is empty</option>
+        <option value="is_not_null">≠∅ is not empty</option>
+      </select>
+      {usesValue && (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onUpdateValue(e.target.value)}
+          placeholder="Value..."
+          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+        />
+      )}
+    </div>
+  );
+}
+
 function NumberBody({
   filter: f,
   onUpdateValue,
