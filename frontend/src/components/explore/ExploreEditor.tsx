@@ -164,30 +164,64 @@ function QueryInspector({
         )}
 
         {/* ── SQL block ─────────────────────────────────────────── */}
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-              SQL - {sqlSource === 'backend' ? 'backend emitted' : 'frontend preview'}
+        {/* Phase-3 per-measure isolation: when the BE split execution into
+            N parallel queries, render one labeled <pre> per group instead
+            of only the first SQL. Single-SQL path unchanged. */}
+        {debug?.sql_emitted_per_group && debug.sql_emitted_per_group.length > 1 ? (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+                SQL - per-measure isolation ({debug.sql_emitted_per_group.length} queries
+                {debug.merge_dimension ? `, merged on ${debug.merge_dimension}` : ''})
+              </div>
             </div>
-            {sql && (
-              <button
-                onClick={onCopy}
-                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1"
-              >
-                {copied ? 'Copied' : 'Copy SQL'}
-              </button>
+            {debug.sql_emitted_per_group.map((g, idx) => (
+              <div key={`${g.fact_view}-${idx}`} className="flex flex-col gap-1">
+                <div className="flex items-center justify-between text-[10px] text-text-tertiary">
+                  <span>
+                    Group <code className="font-mono">{g.fact_view}</code>
+                  </span>
+                  {g.sql && (
+                    <button
+                      onClick={() => navigator.clipboard.writeText(g.sql).catch(() => {})}
+                      className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-secondary hover:bg-surface-1"
+                    >
+                      Copy
+                    </button>
+                  )}
+                </div>
+                <pre className="overflow-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] font-mono leading-relaxed text-text-secondary">
+                  {g.sql || '-- (empty)'}
+                </pre>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
+                SQL - {sqlSource === 'backend' ? 'backend emitted' : 'frontend preview'}
+              </div>
+              {sql && (
+                <button
+                  onClick={onCopy}
+                  className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1"
+                >
+                  {copied ? 'Copied' : 'Copy SQL'}
+                </button>
+              )}
+            </div>
+            {sql ? (
+              <pre className="overflow-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] font-mono leading-relaxed text-text-secondary">
+                {sql}
+              </pre>
+            ) : (
+              <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] italic text-text-quaternary">
+                No SQL yet. Run the chart first.
+              </div>
             )}
           </div>
-          {sql ? (
-            <pre className="overflow-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] font-mono leading-relaxed text-text-secondary">
-              {sql}
-            </pre>
-          ) : (
-            <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] italic text-text-quaternary">
-              No SQL yet. Run the chart first.
-            </div>
-          )}
-        </div>
+        )}
 
         {/* ── Hints ─────────────────────────────────────────────── */}
         <div className="mt-1 rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-2 text-[10px] leading-snug text-text-quaternary">
@@ -289,6 +323,16 @@ interface ExploreQueryState {
     execution_time_ms?: number;
     row_count?: number;
     warnings?: string[];
+    /**
+     * Phase-3 per-measure isolation — when the engine split a multi-fact
+     * chart into N parallel queries, the per-group SQL list is surfaced
+     * here so the Query tab can show every emitted statement instead of
+     * only the first one. ``sql_emitted`` keeps the first group's SQL
+     * for back-compat.
+     */
+    sql_emitted_per_group?: Array<{ fact_view: string; sql: string }>;
+    queries_count?: number;
+    merge_dimension?: string | null;
   };
 }
 

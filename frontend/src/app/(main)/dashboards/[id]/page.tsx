@@ -1612,6 +1612,29 @@ export default function DashboardDetailPage() {
     return values;
   }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
 
+  // Phase-7.6 — per-column distinct query status. Without this the slicer
+  // dropdown couldn't tell "still fetching" from "fetched and got []", and
+  // showed "Loading values..." indefinitely when a cross-list filter (e.g.
+  // a page filter on `project.dept_id` with no join path to `dept.name`)
+  // produced 0 cascade results. With the status the FilterCard renders a
+  // clear "No values match current filter" message in the latter case.
+  const semanticDistinctStatus = React.useMemo(() => {
+    const status: Record<string, {
+      isLoading: boolean;
+      isError: boolean;
+      hasFilterContext: boolean;
+    }> = {};
+    activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
+      const q = semanticDistinctQueries[index];
+      status[getColumnKey(column)] = {
+        isLoading: Boolean(q?.isLoading || q?.isFetching),
+        isError: Boolean(q?.isError),
+        hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
+      };
+    });
+    return status;
+  }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
+
   // Phase-15.94 — cascading dropped filters surfaced by BE so the
   // FilterCard can render an explicit banner instead of silently
   // showing a shorter values list. Keyed by columnKey.
@@ -2217,6 +2240,7 @@ export default function DashboardDetailPage() {
             columns={resolvedAvailableColumns}
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
+            distinctStatus={semanticDistinctStatus}
             hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
               || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
             onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
@@ -2316,6 +2340,7 @@ export default function DashboardDetailPage() {
             <FilterPane
               columns={resolvedAvailableColumns}
               distinctValues={resolvedDistinctValues}
+              distinctStatus={semanticDistinctStatus}
               droppedFiltersByColumn={semanticDistinctDroppedFilters}
               pageFilters={draftPageFilters}
               pageLabel={currentPage?.name ?? 'Untitled page'}

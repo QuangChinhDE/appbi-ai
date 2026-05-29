@@ -456,21 +456,39 @@ def _rewrite_calendar_filter_to_role(
     raw_field: str | None,
 ) -> dict[str, Any] | None:
     """Phase-15.96 Bug B — translate a filter ref to the raw generated
-    calendar view (e.g. ``dataset_table_185.date``) into the chart's
-    role-played calendar alias (``dataset_table_182__extracted_at__date_dim.date``)
-    when the binding exposes the same calendar column under a role
-    view. Returns the override dict (``{semanticField, fieldKey, field,
-    calendarField, calendarSourceField}``) or ``None`` when no
-    unambiguous translation is possible.
+    calendar view into the chart's role-played calendar alias. Returns
+    the override dict or ``None``.
 
-    Rationale: a dashboard-level Date filter is configured against the
-    calendar view the user picks in the Add-Filter dropdown — that is
-    the **raw** ``Date`` table, named ``dataset_table_<calendar_id>``.
-    But each chart's binding only carries the per-base-view *role*
-    alias the model uses to join the calendar in (one role per fact
-    column). Without this rewrite, every chart that uses a calendar-
-    joined column drops the filter as ``binding_unsupported`` even
-    though the join is exactly there.
+    Single-role rewrite path: when exactly ONE calendar role matches the
+    filter's column, returns the override dict to merge into the filter.
+    Multi-role cases are handled by :func:`_rewrite_calendar_filter_to_all_roles`
+    which expands the filter into N AND'd filters (one per role).
+    """
+    rewrites = _rewrite_calendar_filter_to_all_roles(binding, semantic_field, raw_field)
+    if rewrites is None or len(rewrites) != 1:
+        return None
+    return rewrites[0]
+
+
+def _rewrite_calendar_filter_to_all_roles(
+    binding: dict[str, Any],
+    semantic_field: str,
+    raw_field: str | None,
+) -> list[dict[str, Any]] | None:
+    """G5 (PBI parity) — return EVERY calendar role that exposes the
+    requested column, so the caller can expand a single raw-calendar
+    filter into one filter per role (AND'd in WHERE clause).
+
+    Empty list / ``None`` means "no rewrite possible". Single-element
+    list keeps the legacy single-role behavior intact.
+
+    Rationale: a dashboard-level Date filter targets the raw Date table
+    (``dataset_table_<calendar_id>.year``) but each chart's binding only
+    exposes role aliases. With ONE role match the rewrite is unambiguous.
+    With MULTIPLE roles (e.g. a deal table joined to calendar both as
+    ``created_date`` and ``closed_date``), the legacy code dropped the
+    filter silently — which violated PBI parity: PBI applies the
+    intersection (filter passes IFF every role satisfies the predicate).
     """
     sem_ref = str(semantic_field or "").strip()
     if not sem_ref or "." not in sem_ref:
@@ -481,11 +499,6 @@ def _rewrite_calendar_filter_to_role(
     if not sem_view or not sem_field_name:
         return None
 
-    # Heuristic: a raw calendar view is exposed when the binding's
-    # `calendarFieldMappings` mention any role with `calendarField` equal
-    # to our field name. We only rewrite when there's exactly one
-    # matching role (multi-role bindings are ambiguous and stay
-    # dropped — DA should target the role view directly).
     mappings = [
         m for m in (binding.get("calendarFieldMappings") or [])
         if isinstance(m, dict)
@@ -497,26 +510,29 @@ def _rewrite_calendar_filter_to_role(
         if str(m.get("semanticField") or "").strip()
         and "." in str(m.get("semanticField") or "")
     })
-    if len(role_refs) != 1:
+    if not role_refs:
         return None
-    role_ref = role_refs[0]
-    role_view, _role_field = role_ref.split(".", 1)
-    # Don't rewrite if the source ref already targets the role view —
-    # that case is handled by the normal binding-supported check.
-    if sem_view == role_view:
-        return None
-    matched = next(
-        (m for m in mappings if str(m.get("semanticField") or "").strip() == role_ref),
-        None,
-    )
-    source_field = str((matched or {}).get("sourceField") or "").strip()
-    return {
-        "semanticField": role_ref,
-        "fieldKey": role_ref,
-        "field": raw_field if raw_field else sem_field_name,
-        "calendarField": sem_field_name,
-        "calendarSourceField": source_field or sem_field_name,
-    }
+
+    out: list[dict[str, Any]] = []
+    for role_ref in role_refs:
+        role_view, _role_field = role_ref.split(".", 1)
+        # Skip when the source ref already targets the role view — that case
+        # falls through the normal binding-supported check.
+        if sem_view == role_view:
+            continue
+        matched = next(
+            (m for m in mappings if str(m.get("semanticField") or "").strip() == role_ref),
+            None,
+        )
+        source_field = str((matched or {}).get("sourceField") or "").strip()
+        out.append({
+            "semanticField": role_ref,
+            "fieldKey": role_ref,
+            "field": raw_field if raw_field else sem_field_name,
+            "calendarField": sem_field_name,
+            "calendarSourceField": source_field or sem_field_name,
+        })
+    return out or None
 
 
 def _resolve_legacy_calendar_filter_for_binding(
@@ -611,6 +627,7 @@ def _normalize_runtime_filters_for_chart(
     *,
     include_joined_semantic: bool = False,
     diagnostics: list[dict] | None = None,
+    db=None,
 ) -> list[dict]:
     """Filter the incoming runtime filter list down to what's safely
     applicable to *this* chart's semantic binding.
@@ -620,7 +637,16 @@ def _normalize_runtime_filters_for_chart(
     `{field, semantic_field, operator, reason, detail}`. Chart-data
     endpoints forward this into `ChartDebugInfo.dropped_filters` so the
     user can see exactly which filters their tile ignored and why.
-    Reasons: dataset_mismatch, binding_unsupported, unreachable_view.
+    Reasons: dataset_mismatch, binding_unsupported, unreachable_view,
+    plus the Phase-2 propagation drops: wrong_direction, ambiguous_path,
+    no_primary_key.
+
+    Phase 2.3 — when ``db`` is supplied AND ``FEATURE_PROPAGATION_ENGINE_V2``
+    is on, the joined-view support check is replaced by a call to
+    :func:`resolve_filter_propagation`. The propagation engine considers
+    cardinality + cross_filter direction (PBI parity) rather than the
+    binding's flat ``reachableViews`` set. Callers that don't pass ``db``
+    (legacy / non-DB contexts) keep the original behavior.
     """
     normalized_filters = normalize_filter_conditions(filters, diagnostics=diagnostics)
     if not normalized_filters:
@@ -633,6 +659,44 @@ def _normalize_runtime_filters_for_chart(
     )
     dataset_id = binding.get("datasetId")
     base_view_name = str(binding.get("baseViewName") or "").strip()
+
+    # Phase 2.3 — lazy-bind a propagation resolver when DB + flag are present.
+    # The resolver inspects cardinality/cross_filter edges in the semantic
+    # model; when it can't be built (no model_id, model missing, exception),
+    # propagation routing is skipped and we fall back to legacy binding-check.
+    _prop_resolver = None
+    _prop_helpers = None
+    try:
+        from app.core.config import settings as _prop_settings
+        if (
+            db is not None
+            and bool(getattr(_prop_settings, "FEATURE_PROPAGATION_ENGINE_V2", False))
+            and base_view_name
+        ):
+            model_id = binding.get("modelId") or binding.get("model_id")
+            if model_id:
+                from app.models.semantic import SemanticModel
+                from app.services.semantic_join_resolver import SemanticJoinResolver
+                from app.services.filter_propagation import (
+                    resolve_filter_propagation,
+                    PropagationMode,
+                )
+                _model = (
+                    db.query(SemanticModel)
+                    .filter(SemanticModel.id == model_id)
+                    .first()
+                )
+                if _model is not None:
+                    _prop_resolver = SemanticJoinResolver(
+                        db, _model, base_view_name, bidirectional=False,
+                    )
+                    _prop_helpers = (resolve_filter_propagation, PropagationMode)
+    except Exception:
+        # Defensive: never let propagation wiring fail this normalizer; legacy
+        # path is correct + reachable, just less precise. Log at debug level.
+        logger.debug("Propagation resolver init failed in filter normalizer", exc_info=True)
+        _prop_resolver = None
+        _prop_helpers = None
 
     result: list[dict] = []
     for filt in normalized_filters:
@@ -664,19 +728,42 @@ def _normalize_runtime_filters_for_chart(
         # Try to rewrite the ref to a matching calendar role exposed by
         # this chart's binding before checking support, so dashboard
         # Date filters reach charts that use a calendar-joined column.
+        #
+        # G5 PBI parity — when a chart exposes >1 calendar role (e.g. fact
+        # joined to calendar as both created_date and closed_date), the
+        # legacy single-role rewrite dropped the filter silently. We now
+        # expand it into ONE filter PER ROLE; downstream WHERE assembly
+        # ANDs them so the row passes only when EVERY role satisfies the
+        # predicate (intersection semantics — matches PBI default when a
+        # user adds a date filter to a multi-role chart).
         if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
-            rewritten = _rewrite_calendar_filter_to_role(binding, semantic_field, filt.get("field"))
-            if rewritten is not None:
-                filt = {**filt, **rewritten}
-                semantic_field = rewritten.get("semanticField") or semantic_field
-        if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
-            _record_dropped_filter(
-                diagnostics,
-                filt,
-                "binding_unsupported",
-                f"semantic field {semantic_field!r} is not exposed by this chart's binding",
+            multi = _rewrite_calendar_filter_to_all_roles(
+                binding, semantic_field, filt.get("field"),
             )
-            continue
+            if multi and len(multi) > 1:
+                # Expand: emit one filter per role with identical operator/value.
+                # Skip the downstream single-filter append (`result.append(filt)`)
+                # by recording each expansion directly and `continue`-ing.
+                for rw in multi:
+                    expanded = {**filt, **rw}
+                    result.append(expanded)
+                continue
+            if multi and len(multi) == 1:
+                filt = {**filt, **multi[0]}
+                semantic_field = multi[0].get("semanticField") or semantic_field
+        if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
+            # Phase 2.3 — when the propagation engine is wired, DEFER to it.
+            # The binding's reachableViews set is a flat (no-cardinality, no-
+            # direction) snapshot; the engine has richer knowledge. Skip this
+            # legacy drop and let the engine decide downstream.
+            if _prop_resolver is None or _prop_helpers is None:
+                _record_dropped_filter(
+                    diagnostics,
+                    filt,
+                    "binding_unsupported",
+                    f"semantic field {semantic_field!r} is not exposed by this chart's binding",
+                )
+                continue
 
         if not semantic_field or "." not in semantic_field:
             legacy_calendar_filter = _resolve_legacy_calendar_filter_for_binding(binding, filt.get("field"))
@@ -704,6 +791,42 @@ def _normalize_runtime_filters_for_chart(
         if semantic_view == base_view_name:
             result.append(filt)
             continue
+
+        # Phase 2.3 — when the propagation engine is wired, ask IT whether
+        # the filter is applicable instead of trusting the binding's flat
+        # ``reachableViews`` set. The engine encodes cardinality + direction
+        # rules (PBI parity) so a filter rejected here for `wrong_direction`
+        # would otherwise have silently propagated incorrectly through the
+        # SELECT-side JOIN chain. Drop reasons surfaced to UI via diagnostics.
+        if _prop_resolver is not None and _prop_helpers is not None:
+            _resolve_prop, _Mode = _prop_helpers
+            try:
+                prop = _resolve_prop(
+                    _prop_resolver,
+                    base_view_name,
+                    semantic_field,
+                )
+            except Exception:
+                logger.debug(
+                    "Propagation resolve failed for filter %r", semantic_field,
+                    exc_info=True,
+                )
+                prop = None
+            if prop is not None and prop.mode == _Mode.DROP:
+                _record_dropped_filter(
+                    diagnostics,
+                    filt,
+                    (prop.reason.value if prop.reason else "unreachable_view"),
+                    prop.detail or (
+                        f"propagation engine rejected {semantic_field!r}: no valid path"
+                    ),
+                )
+                continue
+            if prop is not None:
+                # PLAIN / JOIN_CHAIN / EXISTS / SYMMETRIC all keep the filter;
+                # downstream SQL engine handles emission shape per mode.
+                result.append(filt)
+                continue
 
         if include_joined_semantic:
             # Only forward joined-view filters when the target view is
@@ -816,14 +939,26 @@ def _build_live_relation_for_semantic_view(
     return sql_table_name or None
 
 
+_LEADING_SQL_KW_RE = re.compile(r"^(?:select|with)\b", re.IGNORECASE)
+
+
 def _wrap_live_sql_relation(relation: str) -> str:
+    """Wrap a raw `SELECT ...` / `WITH ...` subquery in parens so it can sit
+    after `FROM`/`JOIN`. The original check used ``startswith("select ")`` —
+    a literal SPACE — which silently MISSED multi-line queries like the
+    generated_calendar proxy (``SELECT\\n  d AS date, ...``). The unwrapped
+    relation then landed in the distinct-values EXISTS as
+    ``FROM SELECT d AS date, ...`` and BigQuery rejected the whole query
+    with ``Unexpected keyword SELECT`` (production log 2026-05-28).
+    Use a word-boundary regex so any whitespace (space, newline, tab) after
+    the keyword counts.
+    """
     text = str(relation or "").strip().rstrip(";")
     if not text:
         return text
-    lowered = text.lower()
     if text.startswith("("):
         return text
-    if lowered.startswith("select ") or lowered.startswith("with "):
+    if _LEADING_SQL_KW_RE.match(text):
         return f"({text})"
     return text
 
@@ -900,6 +1035,7 @@ def _adapt_live_sql_for_semantic_filters(
         chart_config,
         filters,
         include_joined_semantic=True,
+        db=db,
     )
     if not normalized_filters:
         return None, []
@@ -1556,6 +1692,7 @@ def _execute_semantic_chart_runtime(
         ),
         include_joined_semantic=True,
         diagnostics=filter_diagnostics,
+        db=db,
     )
 
     _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
@@ -1795,6 +1932,88 @@ def _execute_semantic_chart_runtime(
     return result
 
 
+def _dispatch_per_measure_isolation(
+    db: Session,
+    datasource,
+    db_table,
+    chart_type,
+    base_chart_config: dict,
+    *,
+    plan,                           # PerMeasurePlan — typed lazily to avoid cycle
+    extra_filters: list | None,
+    filter_context: str | None,
+    limit_override: int | None,
+) -> Dict[str, Any]:
+    """Run a multi-fact chart as N parallel single-fact queries + Python merge.
+
+    Phase-3 entry point. The plan has already been validated by
+    :func:`per_measure_planner.plan_per_measure_execution`. Each group's
+    chart_config is built by :func:`per_measure_executor.build_group_chart_config`
+    and executed via a fresh recursive call to :func:`_execute_chart_runtime_for_table`
+    — this guarantees the legacy single-query path runs for each group
+    (i.e., this dispatch only recurses ONCE: the inner call sees a
+    single-fact config so the planner returns ``enabled=False``).
+
+    Each thread opens its own ``SessionLocal()`` because SQLAlchemy Session
+    instances are not thread-safe. The outer ``db`` session stays bound to
+    the request and is left untouched.
+    """
+    from app.core.database import SessionLocal
+    from app.services.per_measure_executor import (
+        execute_groups_parallel,
+        merge_group_results,
+    )
+
+    def _runner(group_cfg: dict) -> Dict[str, Any]:
+        # Fresh session per thread — SQLAlchemy session is not thread-safe.
+        local_db = SessionLocal()
+        try:
+            return _execute_chart_runtime_for_table(
+                local_db, datasource, db_table, chart_type, group_cfg,
+                extra_filters=extra_filters,
+                filter_context=filter_context,
+                limit_override=limit_override,
+            )
+        finally:
+            local_db.close()
+
+    group_results = execute_groups_parallel(plan, base_chart_config, runner=_runner)
+    merged_data = merge_group_results(plan, group_results)
+
+    # Compose debug payload. `sql_emitted` keeps the str shape (first group's
+    # SQL) for back-compat with FE Query tab; `sql_emitted_per_group` is the
+    # new list of per-group SQL with fact_view labels. Dropped filters from
+    # every group are concatenated with a `group_fact_view` annotation.
+    sql_per_group = [
+        {"fact_view": g["fact_view"], "sql": g.get("sql") or ""}
+        for g in group_results
+    ]
+    primary_sql = sql_per_group[0]["sql"] if sql_per_group else ""
+    all_dropped: list[dict] = []
+    all_warnings: list[str] = []
+    for g in group_results:
+        for d in g.get("dropped_filters") or []:
+            if isinstance(d, dict):
+                all_dropped.append({**d, "group_fact_view": g["fact_view"]})
+        for w in g.get("warnings") or []:
+            all_warnings.append(f"[{g['fact_view']}] {w}")
+
+    debug_payload = {
+        "routing": "per_measure_isolation",
+        "sql_emitted": primary_sql,
+        "sql_emitted_per_group": sql_per_group,
+        "queries_count": len(group_results),
+        "dropped_filters": all_dropped,
+        "warnings": all_warnings,
+        "merge_dimension": plan.shared_dimensions[0] if plan.shared_dimensions else None,
+    }
+    return {
+        "data": merged_data,
+        "pre_aggregated": False,
+        "_debug": debug_payload,
+    }
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -1810,12 +2029,40 @@ def _execute_chart_runtime_for_table(
 
     All queries are routed through LiveQueryService to execute directly
     on the source database (BigQuery / PostgreSQL / MySQL).
+
+    Phase 3 (PBI-parity, feature-flagged) — if the chart's measures span
+    MULTIPLE fact views and FEATURE_PER_MEASURE_ISOLATION is on, dispatch
+    the workload as one parallel query per fact view, then merge results
+    in Python. Mirrors PowerBI / Tableau "context isolation per measure".
+    Falls back to the single-query path when the planner declines (single
+    fact, calc dependency across facts, pivot chart, flag off, …).
     """
     from app.services.live_query_service import LiveQueryService, _dialect_for_ds_type
     from app.models.dataset import Dataset
+    from app.services.per_measure_planner import plan_per_measure_execution
+    from app.core.config import settings
 
     filter_context = normalize_chart_filter_context(filter_context)
     chart_config = chart_config or {}
+
+    # ── Phase 3 — try per-measure isolation BEFORE legacy path. ────────
+    # Planner is a pure decision function; failures bail to the legacy path.
+    try:
+        _per_measure_plan = plan_per_measure_execution(
+            chart_config,
+            feature_enabled=bool(getattr(settings, "FEATURE_PER_MEASURE_ISOLATION", False)),
+        )
+    except Exception as _pm_exc:
+        logger.warning("[per_measure] planner failed; falling back to legacy: %s", _pm_exc)
+        _per_measure_plan = None
+    if _per_measure_plan is not None and _per_measure_plan.enabled:
+        return _dispatch_per_measure_isolation(
+            db, datasource, db_table, chart_type, chart_config,
+            plan=_per_measure_plan,
+            extra_filters=extra_filters,
+            filter_context=filter_context,
+            limit_override=limit_override,
+        )
     role_config = with_table_hyperlink_query_columns(
         chart_type,
         get_chart_active_role_config(chart_config),
@@ -1824,16 +2071,7 @@ def _execute_chart_runtime_for_table(
     filters = resolve_chart_query_filters(chart_config, filter_context)
     custom_sql = get_chart_custom_sql(chart_config)
     raw_extra_filters = list(extra_filters or [])
-    # Phase-15.78: collect drops from the pre-normalisation step so the
-    # live_query routing path can forward them into _debug.dropped_filters.
-    # Semantic-runtime path takes its own diagnostics list inside
-    # _execute_semantic_chart_runtime; this list only covers the live path.
-    live_filter_diagnostics: list[dict] = []
-    normalized_extra_filters = _normalize_runtime_filters_for_chart(
-        chart_config,
-        extra_filters,
-        diagnostics=live_filter_diagnostics,
-    )
+
     binding = (
         chart_config.get("semanticBinding")
         if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
@@ -1856,6 +2094,25 @@ def _execute_chart_runtime_for_table(
         base_view_name_for_routing,
         runtime_filters=routing_filters,
     )
+
+    # Phase-15.78 + Phase-7.3 — normalise extra_filters ONLY for the live
+    # path. Previously this ran unconditionally before the routing decision,
+    # which dropped every joined-view filter as `binding_unsupported` (the
+    # live path can't honour them) and emitted spurious warning logs for
+    # charts that would actually go through `_execute_semantic_chart_runtime`
+    # which re-normalises with `include_joined_semantic=True` and applies
+    # them correctly. Charts routed to semantic get the raw filter list now.
+    live_filter_diagnostics: list[dict] = []
+    if needs_semantic_runtime:
+        # Semantic runtime owns its own normalize + diagnostics.
+        normalized_extra_filters = list(extra_filters or [])
+    else:
+        normalized_extra_filters = _normalize_runtime_filters_for_chart(
+            chart_config,
+            extra_filters,
+            diagnostics=live_filter_diagnostics,
+            db=db,
+        )
     live_role_config = _strip_nonsemantic_base_view_refs_from_role_config(
         role_config,
         binding,

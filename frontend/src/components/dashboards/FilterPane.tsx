@@ -665,6 +665,14 @@ type Scope = 'page' | 'all';
 export interface FilterPaneProps {
   columns: ColumnInfo[];
   distinctValues: Record<string, string[]>;
+  /** Phase-7.6 — per-column distinct query status; lets cards distinguish
+   * "still fetching" from "fetched and got []" so the dropdown doesn't
+   * show "Loading values..." forever after a cross-list filter returns 0. */
+  distinctStatus?: Record<string, {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  }>;
   /** Phase-15.94 — cascading filters the BE could not apply when computing
    * each card's distinct values. Keyed by the card's columnKey (fieldKey
    * || field). Each entry feeds the in-card amber banner. */
@@ -692,6 +700,7 @@ export interface FilterPaneProps {
 export function FilterPane({
   columns,
   distinctValues,
+  distinctStatus,
   droppedFiltersByColumn,
   pageFilters,
   pageLabel,

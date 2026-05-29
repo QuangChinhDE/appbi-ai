@@ -21,6 +21,12 @@ class SemanticView(Base):
     dimensions = Column(JSON, nullable=False, default=list)  # List of dimension definitions
     measures = Column(JSON, nullable=False, default=list)  # List of measure definitions
     description = Column(String, nullable=True)
+    # Phase-1 (PBI-parity) — declared primary key column(s) for this view.
+    # JSON list of column names (e.g. ["id"] or composite ["customer_id", "date"]).
+    # Used by Phase-4 symmetric aggregates to dedupe fan-out before SUM/COUNT and
+    # by distinct-count correctness. Null = undeclared; engine falls back to the
+    # Phase-B' EXISTS rewrite (commit 5f8b7fd) which is correct but slower.
+    primary_key = Column(JSON, nullable=True, default=None)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

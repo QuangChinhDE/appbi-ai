@@ -1708,6 +1708,65 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     }
 
 
+def set_view_primary_key(
+    db: Session,
+    view_id: int,
+    primary_key_columns: list[str] | None,
+) -> dict:
+    """Declare (or clear) the primary key column(s) for a semantic view.
+
+    Phase-1 (PBI-parity migration). The PK is consumed by:
+      * Phase-4 symmetric-aggregate emitter (MD5/FARM_FINGERPRINT trick) — when
+        a measure is computed across a JOIN that fans out, the engine uses
+        ``SUM(DISTINCT hash(pk)*S + col)`` to dedupe before aggregating.
+      * Distinct-count measures — ``COUNTD(view)`` is rendered as
+        ``COUNT(DISTINCT view.<pk>)`` rather than full-row distinct.
+
+    Pass ``None`` or ``[]`` to clear. Validates that each column appears either
+    as a declared dimension/measure or in the underlying table's columns_cache.
+    Idempotent; safe to call multiple times.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    if not view:
+        raise ValueError(f"Semantic view id={view_id} not found")
+
+    if not primary_key_columns:
+        view.primary_key = None
+    else:
+        cols = [str(c).strip() for c in primary_key_columns if c and str(c).strip()]
+        if not cols:
+            view.primary_key = None
+        else:
+            # Validate: columns must exist on the view (as dim/measure) OR in
+            # the underlying DatasetTable.columns_cache so they're queryable.
+            declared = (
+                {str(d.get("name") or "").strip() for d in (view.dimensions or []) if isinstance(d, dict)}
+                | {str(m.get("name") or "").strip() for m in (view.measures or []) if isinstance(m, dict)}
+            )
+            declared.discard("")
+            known = set(declared)
+            if view.dataset_table_id is not None:
+                tbl = db.query(DatasetTable).filter(DatasetTable.id == view.dataset_table_id).first()
+                if tbl and isinstance(tbl.columns_cache, dict):
+                    cached = tbl.columns_cache.get("columns") or []
+                    for c in cached:
+                        n = str((c or {}).get("name") or "").strip()
+                        if n:
+                            known.add(n)
+            unknown = [c for c in cols if c not in known]
+            if unknown:
+                raise ValueError(
+                    f"Primary key columns not found on view {view.name!r}: {unknown}. "
+                    f"Declared/cached columns: {sorted(known)[:20]}{'...' if len(known) > 20 else ''}"
+                )
+            view.primary_key = cols
+    flag_modified(view, "primary_key")
+    db.commit()
+    return {"view_id": view.id, "view_name": view.name, "primary_key": view.primary_key}
+
+
 def add_join(
     db: Session,
     dataset_id: int,
@@ -1722,6 +1781,8 @@ def add_join(
     alias: str | None = None,
     is_active: bool = True,
     cross_filter: str = "single",
+    cardinality: str | None = None,             # ← Phase-1 NEW
+    primary_key_on_to_view: list[str] | None = None,  # ← Phase-1 NEW
     force: bool = False,
 ) -> dict:
     """
@@ -1788,6 +1849,25 @@ def add_join(
 
     normalized_join_type = _normalize_join_type(join_type)
     normalized_relationship = _normalize_relationship_type(relationship)
+    # Phase-1 (PBI-parity) — explicit cardinality drives the Phase-2 propagation
+    # engine and Phase-4 symmetric aggregates. Caller can pass `cardinality=...`
+    # directly; otherwise we map the legacy `relationship` string through the
+    # canonical alias table (resolver module). Default 'many_to_one' matches
+    # the FK→PK star-schema majority.
+    from app.services.semantic_join_resolver import (
+        ALLOWED_CARDINALITY, normalize_cardinality,
+    )
+    raw_card = cardinality if cardinality is not None else relationship
+    cardinality_canonical = normalize_cardinality(raw_card)
+    if cardinality_canonical not in ALLOWED_CARDINALITY:
+        raise ValueError(
+            f"Invalid cardinality {cardinality!r}; allowed: {sorted(ALLOWED_CARDINALITY)}"
+        )
+    # Validate cross_filter explicitly so callers (incl. MCP tools) get a clear
+    # error instead of silent fallback to 'single'.
+    cf_lower = (cross_filter or "single").strip().lower()
+    if cf_lower not in ("single", "both"):
+        raise ValueError(f"Invalid cross_filter {cross_filter!r}; must be 'single' or 'both'")
     # Phase-3b: many-to-many is allowed but risky (cartesian fan-out can double
     # aggregates). We accept the relationship and surface a warning to the
     # caller via the response; the UI shows a red banner in RelationshipDialog
@@ -1832,7 +1912,9 @@ def add_join(
         "to_columns": normalized_to_columns,
         # Phase-3b additions
         "is_active": bool(is_active),
-        "cross_filter": cross_filter if cross_filter in ("single", "both") else "single",
+        "cross_filter": cf_lower,
+        # Phase-1 (PBI-parity) — explicit canonical cardinality drives propagation.
+        "cardinality": cardinality_canonical,
     }
 
     # Update an exact existing join, otherwise append so one pair of tables can
@@ -1868,11 +1950,35 @@ def add_join(
     explore.joins = joins
     db.commit()
     db.refresh(explore)
-    return {
+
+    # Phase-1 — surface advisory warnings the caller (or UI dialog) should show.
+    warnings: list[str] = []
+    if cardinality_canonical == "many_to_many" and cf_lower == "both":
+        warnings.append(
+            "cross_filter='both' on many_to_many relationship may cause ambiguous "
+            "filter propagation. Consider introducing a bridge table instead."
+        )
+
+    # Phase-1 — optionally declare PK on the join target view in the same call.
+    # Convenient for relationship dialogs that capture PK alongside the join.
+    pk_result = None
+    if primary_key_on_to_view:
+        try:
+            pk_result = set_view_primary_key(db, to_view_id, primary_key_on_to_view)
+        except ValueError as exc:
+            # Don't fail the join creation — surface as warning instead.
+            warnings.append(f"primary_key_on_to_view ignored: {exc}")
+
+    response: dict = {
         "explore_id": explore.id,
         "base_view_name": explore.base_view_name,
         "joins": explore.joins,
     }
+    if warnings:
+        response["warnings"] = warnings
+    if pk_result is not None:
+        response["primary_key_set"] = pk_result
+    return response
 
 
 def _resolve_semantic_view_table(

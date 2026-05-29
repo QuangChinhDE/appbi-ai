@@ -87,6 +87,36 @@ class Settings(BaseSettings):
 
     # Workboard mini-app builder module — bundled with the core stack.
     WORKBOARDS_ENABLED: bool = True
+
+    # ── Filter-system migration toggles (PBI-parity migration) ──────────
+    # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
+    # callers begin opting-in once golden-harness + production smoke-tests pass.
+    # Documented in docs/filter-migration-pbi-parity.md and per-phase files
+    # under docs/phases/.
+
+    # Phase 2 — replaces ad-hoc reachability checks with explicit propagation
+    # rules (cardinality + cross_filter aware). Reduces silent-drop and
+    # ambiguous-path bugs; drops are surfaced with explicit `reason`.
+    FEATURE_PROPAGATION_ENGINE_V2: bool = False
+
+    # Phase 3 — multi-fact charts emit one SQL query per fact (parallel),
+    # results merged in Python. Eliminates fan-out across distinct facts and
+    # leverages BigQuery slot parallelism.
+    FEATURE_PER_MEASURE_ISOLATION: bool = False
+
+    # Phase 4 — Looker-style MD5/FARM_FINGERPRINT symmetric aggregates when
+    # the engine must JOIN through a 1:N hop AND a view declares primary_key.
+    # When primary_key is absent, the Phase-B' EXISTS rewrite stays as fallback.
+    FEATURE_SYMMETRIC_AGGREGATES: bool = False
+
+    # Phase 4.3 — empirical bench (see memory/symmetric_postgres_pessimization.md)
+    # showed Looker symmetric is 53× SLOWER than EXISTS on Postgres at 1M rows.
+    # This list is the allow-list of dialects where the symmetric form is
+    # emitted; on any other dialect the renderer falls through to the legacy
+    # aggregate (correctness then depends on Phase-2 having routed the filter
+    # through EXISTS instead of SYMMETRIC). Comma-separated; matched
+    # case-insensitively against ``SemanticQueryEngine.database_type``.
+    FEATURE_SYMMETRIC_AGGREGATES_DIALECTS: str = "bigquery"
     AUTH_GOOGLE_CLIENT_ID: str = ""
     AUTH_GOOGLE_CLIENT_SECRET: str = ""
     AUTH_GOOGLE_DATA_REDIRECT_URI: str = ""

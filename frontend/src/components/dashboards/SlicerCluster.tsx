@@ -45,6 +45,12 @@ interface SlicerClusterProps {
   columns: ColumnInfo[];
   columnChartCount: Map<string, number>;
   distinctValues: Record<string, string[]>;
+  /** Phase-7.6 — per-column distinct query status (see DashboardFilterBar). */
+  distinctStatus?: Record<string, {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  }>;
   hasPendingChanges?: boolean;
   onApply?: () => void;
   onReset?: () => void;
@@ -60,6 +66,7 @@ const DEFAULT_LAYOUT: SlicerClusterLayout = {
   gap: 8,
   background: 'transparent',
   border: 'dashed',
+  distribute: 'manual',
 };
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -79,6 +86,7 @@ export function SlicerCluster({
   columns,
   columnChartCount,
   distinctValues,
+  distinctStatus,
   hasPendingChanges,
   onApply,
   onReset,
@@ -408,6 +416,42 @@ export function SlicerCluster({
                 ▥ Left
               </button>
             </div>
+            {/* Phase-10 — Auto-distribute toggle. When ON, slicer cards
+                ignore their manual widthPx and share the row equally via
+                `flex-1`. When OFF, each card keeps the drag-set width.
+                Toggling ON also CLEARS every existing widthPx so a later
+                toggle OFF gives a clean baseline (no stale narrow widths). */}
+            <div className="mb-2 mt-2 px-1 text-tiny font-emphasis text-text-tertiary">Sắp xếp</div>
+            <button
+              type="button"
+              onClick={() => {
+                const next = effectiveLayout.distribute === 'auto' ? 'manual' : 'auto';
+                onLayoutChange?.({ ...effectiveLayout, distribute: next });
+                if (next === 'auto') {
+                  // Clear all per-card widthPx so a later switch back to
+                  // 'manual' starts from a clean baseline.
+                  const cleared = (children || []).map((c) =>
+                    c && typeof c === 'object' && 'widthPx' in c
+                      ? { ...c, widthPx: undefined }
+                      : c,
+                  );
+                  onChildrenChange(cleared);
+                }
+              }}
+              className={`mb-2 flex w-full items-center gap-1.5 rounded border px-2 py-1.5 text-tiny ${
+                effectiveLayout.distribute === 'auto'
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+              }`}
+              title="Mỗi slicer chia đều bề rộng hàng (bỏ width thủ công đã kéo)"
+            >
+              <span aria-hidden>⇔</span>
+              <span>
+                {effectiveLayout.distribute === 'auto'
+                  ? 'Tự động giãn cách (đang bật)'
+                  : 'Tự động giãn cách'}
+              </span>
+            </button>
             <label
               className="flex cursor-pointer items-center gap-1.5 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
               title="Thêm ảnh (logo) vào cụm slicer"
@@ -456,6 +500,8 @@ export function SlicerCluster({
             columns={columns}
             columnChartCount={columnChartCount}
             distinctValues={distinctValues}
+            distinctStatus={distinctStatus}
+            distributeChildren={effectiveLayout.distribute === 'auto'}
             filters={slicerEntries}
             onFiltersChange={handleSlicersChange}
             hasPendingChanges={hasPendingChanges}

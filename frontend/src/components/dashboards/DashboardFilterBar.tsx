@@ -1,7 +1,13 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw, Calendar, Pencil, ToggleLeft, ToggleRight } from 'lucide-react';
+import {
+  Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw,
+  Calendar, Pencil, ToggleLeft, ToggleRight,
+  // Phase-9 — icons for the Looker-style interaction-type picker.
+  List, ListChecks, TextCursor, SlidersHorizontal, CheckSquare, Settings2,
+  ArrowLeft,
+} from 'lucide-react';
 import {
   BaseFilter,
   FilterOperator,
@@ -43,11 +49,114 @@ const TYPE_LABEL: Record<FilterType, string> = {
   dropdown: 'List',
 };
 
+// ─── Phase-9: Looker-style "Add Filter" — pick interaction type first ───
+//
+// Replaces the legacy "pick column → auto-infer operator from column.type"
+// flow with Looker's two-step picker: user explicitly chooses HOW they want
+// the filter to behave (Dropdown / Slider / Date range / …) and then we
+// only show columns the chosen interaction is compatible with. The
+// resulting BaseFilter carries an explicit `operator` + `value` shape that
+// no longer needs to be re-derived from column metadata.
+type SlicerInteractionType =
+  | 'dropdown'      // List, multi-select  — operator='in',       columns: text/dropdown
+  | 'fixed_list'    // List with fixed UI  — operator='in',       columns: text/dropdown (renders inline, not collapsed)
+  | 'input'         // Free-form text      — operator='contains', columns: text
+  | 'advanced'      // Power-user picker   — operator chosen later; any column
+  | 'slider'        // Numeric range       — operator='between',  columns: number
+  | 'checkbox'      // Yes/No toggle       — operator='eq',       columns: number/text representing booleans
+  | 'date_range';   // Date range          — operator='between',  columns: date
+
+interface SlicerInteractionMeta {
+  id: SlicerInteractionType;
+  label: string;          // Vietnamese label per the user's screenshot
+  description: string;    // 1-line hint shown under the label
+  icon: React.ComponentType<{ className?: string }>;
+  compatibleColumnTypes: FilterType[];
+  defaultOperator: FilterOperator;
+}
+
+const SLICER_INTERACTIONS: readonly SlicerInteractionMeta[] = [
+  {
+    id: 'dropdown',
+    label: 'Danh sách thả xuống',
+    description: 'Dropdown đa chọn — phổ biến nhất',
+    icon: ChevronDown,
+    compatibleColumnTypes: ['dropdown', 'text'],
+    defaultOperator: 'in',
+  },
+  {
+    id: 'fixed_list',
+    label: 'Danh sách cố định',
+    description: 'Checklist luôn mở rộng, không thu gọn',
+    icon: List,
+    compatibleColumnTypes: ['dropdown', 'text'],
+    defaultOperator: 'in',
+  },
+  {
+    id: 'input',
+    label: 'Hộp nhập',
+    description: 'Nhập tự do (chứa, bắt đầu bằng…)',
+    icon: TextCursor,
+    // AppBI's `semanticDimensionToFilterType` maps string columns to
+    // 'dropdown' by default (only legacy non-semantic text columns end up
+    // as 'text'). So `input` must cover both so DAs can pick free-text
+    // search on a plain string field.
+    compatibleColumnTypes: ['text', 'dropdown'],
+    defaultOperator: 'contains',
+  },
+  {
+    id: 'advanced',
+    label: 'Bộ lọc nâng cao',
+    description: 'Tự chọn toán tử (eq/ne/gt/lt/…)',
+    icon: Settings2,
+    compatibleColumnTypes: ['text', 'dropdown', 'number', 'date'],
+    defaultOperator: 'eq',
+  },
+  {
+    id: 'slider',
+    label: 'Thanh trượt',
+    description: 'Range slider cho số',
+    icon: SlidersHorizontal,
+    compatibleColumnTypes: ['number'],
+    defaultOperator: 'between',
+  },
+  {
+    id: 'checkbox',
+    label: 'Hộp đánh dấu',
+    description: 'On/Off (yes/no, 0/1)',
+    icon: CheckSquare,
+    compatibleColumnTypes: ['number', 'text', 'dropdown'],
+    defaultOperator: 'eq',
+  },
+  {
+    id: 'date_range',
+    label: 'Phạm vi ngày',
+    description: 'Date range + preset (this month, last week…)',
+    icon: Calendar,
+    compatibleColumnTypes: ['date'],
+    defaultOperator: 'between',
+  },
+];
+
 interface DashboardFilterBarProps {
   columns: ColumnInfo[];
   columnChartCount: Map<string, number>;
   /** Distinct values per column, keyed by stable column key */
   distinctValues: Record<string, string[]>;
+  /**
+   * Phase-7.6 — per-column distinct query status. Lets the FilterCard
+   * tell apart "still fetching" from "fetched and the cascade returned
+   * []". Without this, an empty `values` list always displays as
+   * "Loading values..." even after the query has resolved, which DAs
+   * mistake for a hang (especially when a cross-list filter — page filter
+   * on a view with no join path back to this slicer — legitimately
+   * produces 0 cascade rows).
+   */
+  distinctStatus?: Record<string, {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  }>;
   filters: BaseFilter[];
   onFiltersChange: (filters: BaseFilter[]) => void;
   hasPendingChanges?: boolean;
@@ -71,6 +180,12 @@ interface DashboardFilterBarProps {
    * always-expanded inline card. Used by the slicer cluster (editor +
    * public). */
   collapsedSlicers?: boolean;
+  /** Phase-10 — when true, slicer cards ignore their manual `widthPx` and
+   * share the available row width equally via `flex-1`. Used by the slicer
+   * cluster's "Tự động giãn cách" toggle. Only applies in collapsedSlicers
+   * + horizontal (top) layout; vertical/left and the legacy filter bar
+   * keep their existing behavior. */
+  distributeChildren?: boolean;
 }
 
 type AddFilterColumnGroup = {
@@ -89,6 +204,7 @@ export function DashboardFilterBar({
   columns,
   columnChartCount,
   distinctValues,
+  distinctStatus,
   filters,
   onFiltersChange,
   hasPendingChanges = false,
@@ -100,11 +216,17 @@ export function DashboardFilterBar({
   lockSlots = false,
   stackVertical = false,
   collapsedSlicers = false,
+  distributeChildren = false,
   headerExtras,
 }: DashboardFilterBarPropsWithExtras) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
+  // Phase-9 — Looker-style two-step picker. Step 1: choose interaction type.
+  // Step 2: choose a column compatible with that type. `pickedType=null`
+  // means the panel is still showing the type list; non-null means we've
+  // moved on to the column list.
+  const [pickedType, setPickedType] = useState<SlicerInteractionType | null>(null);
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
   const addFilterSearchRef = useRef<HTMLInputElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
@@ -158,8 +280,19 @@ export function DashboardFilterBar({
     [availableColumns],
   );
 
+  // Phase-9 — when a type has been picked, narrow the column list to the
+  // types compatible with that interaction (slider → numbers only, date_range
+  // → dates only, …). When pickedType is null we're still on the type-picker
+  // screen; the column list isn't shown at all in that case.
+  const compatibleColumns = useMemo(() => {
+    if (!pickedType) return addableColumns;
+    const meta = SLICER_INTERACTIONS.find((m) => m.id === pickedType);
+    if (!meta) return addableColumns;
+    return addableColumns.filter((c) => meta.compatibleColumnTypes.includes(c.type));
+  }, [addableColumns, pickedType]);
+
   const matchingAvailableColumns = useMemo(
-    () => addableColumns.filter((column) => {
+    () => compatibleColumns.filter((column) => {
       if (!normalizedAddFilterSearch) return true;
       // Phase-15.81 v8 — match dataset name too so users can jump to a
       // specific dataset's columns when two datasets share field names.
@@ -175,7 +308,7 @@ export function DashboardFilterBar({
         .toLowerCase();
       return haystack.includes(normalizedAddFilterSearch);
     }),
-    [addableColumns, normalizedAddFilterSearch],
+    [compatibleColumns, normalizedAddFilterSearch],
   );
 
   // Phase-15.81 v8 — hierarchical Dataset › Table grouping in the
@@ -210,12 +343,17 @@ export function DashboardFilterBar({
   };
 
   // ── Mutators ───────────────────────────────────────────────────
-  const addFilter = (columnKey: string, preset?: DatePreset) => {
+  // Phase-9 — operator + initial value come from the chosen interaction
+  // type. The old branching on column.type stays as a SAFE FALLBACK for
+  // call sites that don't yet supply an interaction (legacy / programmatic).
+  const addFilter = (
+    columnKey: string,
+    preset?: DatePreset,
+    interaction?: SlicerInteractionType,
+  ) => {
     const col = columns.find(c => getColumnKey(c) === columnKey);
     if (!col) return;
     if (usedFields.has(columnKey)) return;
-
-    const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
 
     let linkedFields = col.defaultLinkedFields ? [...col.defaultLinkedFields] : undefined;
 
@@ -227,8 +365,51 @@ export function DashboardFilterBar({
       if (!linkedFields.length) linkedFields = undefined;
     }
 
-    const datePreset = col.type === 'date' ? (preset ?? 'this_month') : undefined;
-    const dateValue = datePreset && datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
+    // Resolve operator + initial value from the chosen interaction. When no
+    // interaction is supplied (legacy callers), keep the previous
+    // column-type-driven defaults so the shape stays identical for them.
+    let operator: FilterOperator;
+    let value: any;
+    let datePreset: DatePreset | undefined;
+    if (interaction === 'dropdown' || interaction === 'fixed_list') {
+      operator = 'in';
+      value = [];
+    } else if (interaction === 'input') {
+      operator = 'contains';
+      value = '';
+    } else if (interaction === 'slider') {
+      operator = 'between';
+      value = ['', ''];
+    } else if (interaction === 'checkbox') {
+      operator = 'eq';
+      value = '';
+    } else if (interaction === 'date_range') {
+      operator = 'between';
+      datePreset = preset ?? 'this_month';
+      value = datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
+    } else if (interaction === 'advanced') {
+      // Pick a sensible default per column type; user can switch operator after.
+      if (col.type === 'date') {
+        operator = 'between';
+        datePreset = preset ?? 'this_month';
+        value = datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
+      } else if (col.type === 'number') {
+        operator = 'eq';
+        value = '';
+      } else {
+        operator = 'in';
+        value = [];
+      }
+    } else {
+      // Legacy fallback — unchanged from pre-Phase-9 inference.
+      const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
+      datePreset = col.type === 'date' ? (preset ?? 'this_month') : undefined;
+      const dateValue = datePreset && datePreset !== 'custom'
+        ? computeDatePresetRange(datePreset)
+        : ['', ''];
+      operator = isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte';
+      value = isMultiSelect ? [] : col.type === 'date' ? dateValue : '';
+    }
 
     const newFilter: BaseFilter = {
       id:           `gf-${Date.now()}`,
@@ -238,14 +419,15 @@ export function DashboardFilterBar({
       datasetId:    col.datasetId,
       linkedFields,
       type:         col.type,
-      operator:     isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte',
-      value:        isMultiSelect ? [] : col.type === 'date' ? dateValue : '',
+      operator,
+      value,
       label:        getColumnDisplayLabel(col),
       datePreset,
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
     setAddFilterSearch('');
+    setPickedType(null);
     setIsExpanded(true);
   };
 
@@ -376,7 +558,7 @@ export function DashboardFilterBar({
     return (
       <button
         key={columnKey}
-        onClick={() => addFilter(columnKey)}
+        onClick={() => addFilter(columnKey, undefined, pickedType ?? undefined)}
         title={column.semanticField ?? column.key ?? column.name}
         className="w-full text-left px-3 py-2 text-sm hover:bg-brand/15 flex items-center justify-between gap-3 group"
       >
@@ -534,7 +716,11 @@ export function DashboardFilterBar({
             </button>
           )}
 
-          {/* Add filter dropdown */}
+          {/* Phase-9 — Add filter: Looker-style 2-step picker.
+              Step 1 (pickedType=null): list of interaction types.
+              Step 2 (pickedType set):  list of columns compatible with the
+                                        chosen type, then `addFilter(col, _, type)`
+                                        creates a BaseFilter with explicit operator. */}
           {!lockSlots && (
           <div className="relative">
             <button
@@ -544,6 +730,7 @@ export function DashboardFilterBar({
                 setAddingField(next);
                 if (!next) {
                   setAddFilterSearch('');
+                  setPickedType(null);
                 }
               }}
               disabled={addableColumns.length === 0}
@@ -559,73 +746,117 @@ export function DashboardFilterBar({
                 <div className="fixed inset-0 z-[9998]" onClick={() => {
                   setAddingField(false);
                   setAddFilterSearch('');
+                  setPickedType(null);
                 }} />
                 <div
-                  className="fixed z-[9999] max-h-[min(32rem,70vh)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
+                  className="fixed z-[9999] max-h-[min(34rem,75vh)] w-[26rem] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
                   style={dropdownPos ? { top: dropdownPos.top, right: dropdownPos.right } : { top: 0, right: 0 }}
                 >
-                  {/* Search — always visible, auto-focused */}
-                  <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 p-2">
-                    <div className="relative">
-                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
-                      <input
-                        ref={addFilterSearchRef}
-                        type="text"
-                        value={addFilterSearch}
-                        onChange={(e) => setAddFilterSearch(e.target.value)}
-                        placeholder="Search table or field..."
-                        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') {
-                            setAddingField(false);
-                            setAddFilterSearch('');
-                          } else if (e.key === 'Enter' && matchingAvailableColumns.length > 0) {
-                            addFilter(getColumnKey(matchingAvailableColumns[0]));
-                          }
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* ── Date / Field filter sections ─────────────────── */}
-                  {(() => {
-                    const dateColumns = matchingAvailableColumns.filter(c => c.type === 'date');
-                    const fieldColumns = matchingAvailableColumns.filter(c => c.type !== 'date');
-                    return (
-                      <>
-                        {dateColumns.length > 0 && (
-                          <div className="py-1 border-b border-[rgb(var(--border-line))]">
-                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-teal-600">
-                              <Calendar className="w-3 h-3" />
-                              Date filters
-                            </div>
-                            {renderDatasetGroups(dateColumns)}
-                          </div>
-                        )}
-                        {fieldColumns.length > 0 && (
-                          <div className="py-1">
-                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
-                              <Filter className="w-3 h-3" />
-                              Field filters
-                            </div>
-                            {renderDatasetGroups(fieldColumns)}
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
-
-                  {matchingAvailableColumns.length === 0 && (
-                    addableColumns.length === 0 ? (
-                      <div className="px-3 py-3 text-xs text-text-quaternary">
-                        <p className="font-medium text-text-tertiary">No dashboard filter fields available.</p>
-                        <p className="mt-1">Use chart-level filters for fields that only affect individual charts.</p>
+                  {pickedType === null ? (
+                    // ── Step 1: pick interaction type ────────────────
+                    <div className="py-1">
+                      <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
+                        <Filter className="w-3 h-3" />
+                        Thêm một tùy chọn kiểm soát
                       </div>
-                    ) : (
-                      <p className="px-3 py-3 text-xs text-text-quaternary italic">
-                        No matching shared fields
-                      </p>
-                    )
+                      <ul className="py-1">
+                        {SLICER_INTERACTIONS.map((m) => {
+                          const Icon = m.icon;
+                          const compatCount = addableColumns.filter(
+                            (c) => m.compatibleColumnTypes.includes(c.type),
+                          ).length;
+                          const disabled = compatCount === 0;
+                          return (
+                            <li key={m.id}>
+                              <button
+                                type="button"
+                                disabled={disabled}
+                                onClick={() => {
+                                  setPickedType(m.id);
+                                  setAddFilterSearch('');
+                                  // Re-focus the search field once the column step renders.
+                                  setTimeout(() => addFilterSearchRef.current?.focus(), 60);
+                                }}
+                                title={disabled ? 'Không có cột nào tương thích với kiểu này' : undefined}
+                                className={`w-full flex items-start gap-3 px-3 py-2 text-left text-sm transition-colors ${
+                                  disabled
+                                    ? 'opacity-40 cursor-not-allowed'
+                                    : 'hover:bg-surface-2 cursor-pointer'
+                                }`}
+                              >
+                                <Icon className="w-4 h-4 mt-0.5 text-text-tertiary flex-shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-medium text-text-secondary">{m.label}</div>
+                                  <div className="text-[11px] text-text-quaternary leading-snug truncate">
+                                    {m.description}
+                                  </div>
+                                </div>
+                                <span className="text-[10px] text-text-quaternary mt-1">
+                                  {compatCount} cột
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : (
+                    // ── Step 2: pick column ──────────────────────────
+                    <>
+                      <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 px-2 py-2">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPickedType(null);
+                              setAddFilterSearch('');
+                            }}
+                            className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary hover:text-brand"
+                          >
+                            <ArrowLeft className="w-3 h-3" />
+                            Đổi kiểu
+                          </button>
+                          <span className="text-[11px] text-text-quaternary">/</span>
+                          <span className="text-[11px] font-semibold text-text-secondary truncate">
+                            {SLICER_INTERACTIONS.find((m) => m.id === pickedType)?.label}
+                          </span>
+                        </div>
+                        <div className="relative">
+                          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
+                          <input
+                            ref={addFilterSearchRef}
+                            type="text"
+                            value={addFilterSearch}
+                            onChange={(e) => setAddFilterSearch(e.target.value)}
+                            placeholder="Tìm cột..."
+                            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                if (addFilterSearch) {
+                                  setAddFilterSearch('');
+                                } else {
+                                  setPickedType(null);
+                                }
+                              } else if (e.key === 'Enter' && matchingAvailableColumns.length > 0) {
+                                addFilter(getColumnKey(matchingAvailableColumns[0]), undefined, pickedType);
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {matchingAvailableColumns.length > 0 ? (
+                        <div className="py-1">
+                          {renderDatasetGroups(matchingAvailableColumns)}
+                        </div>
+                      ) : (
+                        <p className="px-3 py-3 text-xs text-text-quaternary italic">
+                          {compatibleColumns.length === 0
+                            ? 'Không có cột nào tương thích với kiểu này.'
+                            : 'Không khớp tìm kiếm.'}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </>
@@ -647,7 +878,15 @@ export function DashboardFilterBar({
           collapsedSlicers
             // Collapsed slicer mode: row of compact buttons (vertical
             // stack when stackVertical/left). Each button opens a popover.
-            ? `px-3 pb-3 pt-1 flex gap-2 ${stackVertical ? 'flex-col items-stretch' : 'flex-row flex-wrap items-start'}`
+            // Phase-10: when `distributeChildren` is on (horizontal mode only),
+            // drop flex-wrap so cards share the row equally via flex-1 below.
+            ? `px-3 pb-3 pt-1 flex gap-2 ${
+                stackVertical
+                  ? 'flex-col items-stretch'
+                  : distributeChildren
+                    ? 'flex-row items-stretch'
+                    : 'flex-row flex-wrap items-start'
+              }`
             : `px-3 pb-3 grid gap-3 ${stackVertical ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`
         }>
           {filters.map(f => {
@@ -665,6 +904,7 @@ export function DashboardFilterBar({
                 filter={f}
                 allColumns={columns}
                 allDistinctValues={distinctValues}
+                distinctStatus={distinctStatus?.[getFilterKey(f)]}
                 usedFields={usedFields}
                 columnChartCount={columnChartCount}
                 filterChartCount={getFilterChartCount(f)}
@@ -686,6 +926,7 @@ export function DashboardFilterBar({
                 collapsedPopover={collapsedSlicers}
                 popoverPlacement={stackVertical ? 'right' : 'bottom'}
                 onUpdateWidth={(w) => updateWidth(f.id, w)}
+                distributeChildren={distributeChildren && !stackVertical}
               />
             );
           })}
@@ -723,6 +964,15 @@ interface FilterCardProps {
   filter: BaseFilter;
   allColumns: ColumnInfo[];
   allDistinctValues: Record<string, string[]>;
+  /** Phase-7.6 — per-column distinct query status for this card's field. */
+  distinctStatus?: {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  };
+  /** Phase-10 — when true, this card stretches via `flex-1` instead of its
+   * manual `widthPx`. Set by SlicerCluster's "Tự động giãn cách" toggle. */
+  distributeChildren?: boolean;
   usedFields: Set<string>;
   columnChartCount: Map<string, number>;
   filterChartCount: number;
@@ -774,6 +1024,8 @@ function FilterCard({
   filter: f,
   allColumns,
   allDistinctValues,
+  distinctStatus,
+  distributeChildren = false,
   usedFields,
   columnChartCount,
   filterChartCount,
@@ -821,7 +1073,9 @@ function FilterCard({
   // Apply / dashboard Publish — not during the drag.
   // Enabled only on the Top bar in the editor (Left cards are
   // full-width; the public viewer passes no onUpdateWidth).
-  const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement !== 'right';
+  // Phase-10 — hide the manual width-drag handle when "Tự động giãn cách"
+  // is on, since the row layout overrides any committed widthPx anyway.
+  const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement !== 'right' && !distributeChildren;
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
   const widthDragRef = useRef<{ startX: number; startW: number } | null>(null);
   const cardResizeRef = useRef<HTMLDivElement>(null);
@@ -1038,6 +1292,7 @@ function FilterCard({
             onSelectAll={() => onSelectAll(mergedValues)}
             onDeselectAll={onDeselectAll}
             conflictingFilterLabels={conflictingFilterLabels}
+            distinctStatus={distinctStatus}
           />
         ) : supportsDropdownModeToggle ? (
           // Phase-15.78 — single-select dropdown for `eq` operator on
@@ -1052,6 +1307,7 @@ function FilterCard({
             onSelect={val => onUpdateValue(val)}
             onClear={() => onUpdateValue('')}
             conflictingFilterLabels={conflictingFilterLabels}
+            distinctStatus={distinctStatus}
           />
         ) : f.type === 'number' ? (
           <NumberBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} />
@@ -1143,11 +1399,24 @@ function FilterCard({
   // Top bar → cards line up; author drags the right-edge handle to widen
   // (controlled liveWidth, committed to draft on release). Left column →
   // full-width (no manual resize; the column width controls it).
+  // Phase-10 — when the slicer cluster has "Tự động giãn cách" on, the
+  // card stretches via flex-1 (set on the OUTER wrapper). We still set a
+  // sensible width on the inner box so the popover anchor doesn't collapse
+  // when the row has only 1 filter.
   const cardWidthStyle: React.CSSProperties = openRight
     ? { width: '100%' }
-    : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140 };
+    : distributeChildren
+      ? { width: '100%', minWidth: 140 }
+      : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140 };
+  // Outer wrapper class: `inline-block` is the legacy fixed-width mode.
+  // With distribute on, switch to `flex-1` so siblings share the row.
+  const outerWrapperClass = openRight
+    ? 'relative block w-full'
+    : distributeChildren
+      ? 'relative flex-1 min-w-0'
+      : 'relative inline-block align-top';
   return (
-    <div ref={popoverWrapRef} className={openRight ? 'relative block w-full' : 'relative inline-block align-top'}>
+    <div ref={popoverWrapRef} className={outerWrapperClass}>
       <div
         ref={cardResizeRef}
         style={cardWidthStyle}
@@ -1244,6 +1513,7 @@ function SingleSelectBody({
   onSelect,
   onClear,
   conflictingFilterLabels,
+  distinctStatus,
 }: {
   values: string[];
   filteredValues: string[];
@@ -1253,10 +1523,23 @@ function SingleSelectBody({
   onSelect: (val: string) => void;
   onClear: () => void;
   conflictingFilterLabels?: string[];
+  distinctStatus?: {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  };
 }) {
   const showConflictBanner =
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0;
+  // Phase-7.6 — when no values AND no in-list conflict, also check if a
+  // cross-list filter (page-level, slicer cluster) was passed via the
+  // distinct query — then we know the dropdown is empty because of the
+  // filter context, NOT because the data hasn't loaded yet.
+  const emptyDueToFilter = values.length === 0
+    && !showConflictBanner
+    && distinctStatus?.hasFilterContext
+    && !distinctStatus.isLoading;
   return (
     <div>
       {showConflictBanner && (
@@ -1291,7 +1574,15 @@ function SingleSelectBody({
         {filteredValues.length === 0 ? (
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
-              ? (showConflictBanner ? 'No matching values' : 'Loading values...')
+              ? (showConflictBanner
+                  ? 'No matching values'
+                  : distinctStatus?.isError
+                    ? 'Failed to load values.'
+                    : emptyDueToFilter
+                      ? 'No values match the active filter on this dashboard.'
+                      : (distinctStatus && !distinctStatus.isLoading)
+                        ? 'No values available.'
+                        : 'Loading values...')
               : 'No match'}
           </p>
         ) : (
@@ -1336,6 +1627,7 @@ function MultiSelectBody({
   onSelectAll,
   onDeselectAll,
   conflictingFilterLabels,
+  distinctStatus,
 }: {
   values: string[];
   filteredValues: string[];
@@ -1346,6 +1638,11 @@ function MultiSelectBody({
   onSelectAll: () => void;
   onDeselectAll: () => void;
   conflictingFilterLabels?: string[];
+  distinctStatus?: {
+    isLoading: boolean;
+    isError: boolean;
+    hasFilterContext: boolean;
+  };
 }) {
   // When the cascading distinct query yields no values BUT other filters
   // are constraining it, surface the combination explicitly so the user
@@ -1354,6 +1651,15 @@ function MultiSelectBody({
   const showConflictBanner =
     values.length === 0
     && (conflictingFilterLabels?.length ?? 0) > 0;
+  // Phase-7.6 — cross-list filter (page filter, slicer cluster filter
+  // outside the current popup's filter list) can also produce 0 cascade
+  // rows. Without `distinctStatus.isLoading=false + hasFilterContext` we'd
+  // keep showing "Loading values..." forever — the BE has already
+  // responded with [].
+  const emptyDueToFilter = values.length === 0
+    && !showConflictBanner
+    && distinctStatus?.hasFilterContext
+    && !distinctStatus.isLoading;
   return (
     <div>
       {showConflictBanner && (
@@ -1397,7 +1703,15 @@ function MultiSelectBody({
         {filteredValues.length === 0 ? (
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
-              ? (showConflictBanner ? 'No matching values' : 'Loading values...')
+              ? (showConflictBanner
+                  ? 'No matching values'
+                  : distinctStatus?.isError
+                    ? 'Failed to load values.'
+                    : emptyDueToFilter
+                      ? 'No values match the active filter on this dashboard.'
+                      : (distinctStatus && !distinctStatus.isLoading)
+                        ? 'No values available.'
+                        : 'Loading values...')
               : 'No match'}
           </p>
         ) : (

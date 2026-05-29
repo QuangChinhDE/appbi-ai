@@ -189,6 +189,15 @@ export interface SlicerClusterLayout {
   background?: string;
   /** Border style. */
   border?: 'none' | 'dashed' | 'solid';
+  /**
+   * Phase-10 — child width strategy in horizontal/top mode.
+   *   'manual' (default) — each filter keeps its drag-set `widthPx`
+   *                        (legacy behavior; flow-wrap when total > container).
+   *   'auto'             — distribute available width equally across all
+   *                        slicers (flex-1); ignores per-card `widthPx`.
+   *                        DA-friendly "Tự động giãn cách" toggle.
+   */
+  distribute?: 'manual' | 'auto';
 }
 
 // Phase-B (PBI-parity rework) — entry inside

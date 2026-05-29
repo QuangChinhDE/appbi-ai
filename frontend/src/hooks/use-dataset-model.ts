@@ -495,6 +495,14 @@ export interface AddJoinParams {
   isActive?: boolean;
   /** Phase-3b: bidirectional filter propagation when set to 'both'. */
   crossFilter?: 'single' | 'both';
+  /**
+   * Phase-1 PBI parity — declared primary key column(s) on the
+   * relationship's "to" view ("one" side for many_to_one cardinality).
+   * Composite PK = list of columns. Engine uses this for symmetric
+   * aggregate (Phase 4) and distinct-count correctness. Null = leave
+   * the view's PK declaration unchanged.
+   */
+  primaryKeyOnToView?: string[] | null;
 }
 
 export function useAddJoin() {
@@ -514,6 +522,11 @@ export function useAddJoin() {
           // Phase-3b extras — server defaults preserve old behaviour if omitted.
           ...(params.isActive !== undefined ? { is_active: params.isActive } : {}),
           ...(params.crossFilter ? { cross_filter: params.crossFilter } : {}),
+          // Phase-1 PBI parity — declare PK on the "to" view; BE applies it
+          // to the SemanticView.primary_key column. Only sent when provided.
+          ...(params.primaryKeyOnToView && params.primaryKeyOnToView.length > 0
+            ? { primary_key_on_to_view: params.primaryKeyOnToView }
+            : {}),
         }
       );
       return response.data;

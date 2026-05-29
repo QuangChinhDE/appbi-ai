@@ -41,6 +41,13 @@ export interface RelationshipDialogValue {
   alias?: string | null;
   isActive?: boolean;
   crossFilter?: CrossFilter;
+  /**
+   * Phase-1 PBI-parity — primary key column(s) on the "one" side view of
+   * this relationship. Used by Phase-4 symmetric aggregates to dedupe
+   * fan-out before SUM/COUNT/AVG. Optional; when omitted the engine falls
+   * back to EXISTS rewrite (correct, slower). Composite PK = list of cols.
+   */
+  primaryKeyOnToView?: string[] | null;
 }
 
 interface RelationshipDialogProps {
@@ -176,6 +183,9 @@ export function RelationshipDialog({
   const [alias, setAlias] = useState<string>(initialValue?.alias ?? '');
   const [isActive, setIsActive] = useState<boolean>(initialValue?.isActive ?? true);
   const [crossFilter, setCrossFilter] = useState<CrossFilter>(initialValue?.crossFilter ?? 'single');
+  const [primaryKeyOnToView, setPrimaryKeyOnToView] = useState<string[]>(
+    initialValue?.primaryKeyOnToView ?? [],
+  );
   const [error, setError] = useState('');
   const [relationshipTouched, setRelationshipTouched] = useState(false);
   const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
@@ -195,6 +205,7 @@ export function RelationshipDialog({
     setAlias(initialValue?.alias ?? '');
     setIsActive(initialValue?.isActive ?? true);
     setCrossFilter(initialValue?.crossFilter ?? 'single');
+    setPrimaryKeyOnToView(initialValue?.primaryKeyOnToView ?? []);
     setError('');
     setRelationshipTouched(false);
     setAutoSuggestRelationship(!initialValue?.relationship);
@@ -333,6 +344,7 @@ export function RelationshipDialog({
         alias: aliasTrimmed || null,
         isActive,
         crossFilter,
+        primaryKeyOnToView: primaryKeyOnToView.length > 0 ? primaryKeyOnToView : null,
       });
       onClose();
     } catch (saveError: unknown) {
@@ -626,6 +638,53 @@ export function RelationshipDialog({
             </p>
           </div>
         </div>
+
+        {/* Phase-1 PBI parity — primary key on the "one" side view. Optional.
+            Visible only when the relationship marks one side unique (m:1 or 1:m
+            or 1:1). Engine uses this for symmetric aggregates (Phase 4) to
+            dedupe fan-out before SUM/COUNT. Blank = leave unchanged. */}
+        {toView && (relationship === 'many_to_one' || relationship === 'one_to_one') && (
+          <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Primary key on {toView.table_display_name || toView.name}{' '}
+              <span className="text-text-quaternary normal-case">(tùy chọn — bật symmetric aggregate)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {toColumns.map((col) => {
+                const checked = primaryKeyOnToView.includes(col.value);
+                return (
+                  <label
+                    key={col.value}
+                    className={`cursor-pointer rounded-md border px-2 py-0.5 text-xs ${
+                      checked
+                        ? 'border-brand bg-brand/10 text-brand'
+                        : 'border-[rgb(var(--border-line))] text-text-secondary'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={checked}
+                      onChange={() =>
+                        setPrimaryKeyOnToView((current) =>
+                          current.includes(col.value)
+                            ? current.filter((c) => c !== col.value)
+                            : [...current, col.value],
+                        )
+                      }
+                    />
+                    {col.label}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-text-quaternary leading-snug">
+              Composite PK = chọn nhiều cột. Bỏ trống = giữ nguyên khai báo
+              hiện tại (engine fallback EXISTS rewrite — đúng nhưng chậm hơn
+              symmetric trên dataset lớn).
+            </p>
+          </div>
+        )}
 
         {fromView && toView && previewPairs.length > 0 && (
           <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary">

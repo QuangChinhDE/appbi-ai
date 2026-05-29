@@ -50,6 +50,10 @@ class SemanticQueryEngine:
         self._resolver: Optional[SemanticJoinResolver] = None
         self._model: Optional[SemanticModel] = None
         self._model_dataset_table_ids: Set[int] = set()
+        # Phase 4 — views whose measures must use the symmetric aggregate form
+        # (Looker MD5 trick) because a SYMMETRIC-mode filter introduced a 1:N
+        # join fan-out at SELECT time. Populated by _build_where_clause.
+        self._symmetric_aggregate_views: Set[str] = set()
     
     def generate_sql(
         self,
@@ -82,6 +86,7 @@ class SemanticQueryEngine:
         self._resolver = None
         self._model = None
         self._model_dataset_table_ids = set()
+        self._symmetric_aggregate_views = set()
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -109,6 +114,12 @@ class SemanticQueryEngine:
             SemanticModel.id == explore.model_id
         ).first()
         self._set_model_scope(model)
+        # Phase 2 — stash model early so _build_where_clause can build a strict
+        # (cross_filter-respecting) resolver for the propagation engine.
+        # NOTE: there's another `self._model = model` later in this function
+        # (kept for legacy code that may run with a different model object) —
+        # this early assignment is purely for the Phase 2 propagation path.
+        self._model = model
         self._resolver = SemanticJoinResolver(
             self.db,
             model,
@@ -227,7 +238,10 @@ class SemanticQueryEngine:
             filters, measures,
         )
         where_clause = self._build_where_clause(
-            where_filters, time_grains, exists_views=exists_views, explore=explore,
+            where_filters, time_grains,
+            exists_views=exists_views,
+            explore=explore,
+            select_side_views=select_side_views,
         )
         having_clause = self._build_having_clause(
             having_filters, time_grains,
@@ -259,7 +273,7 @@ class SemanticQueryEngine:
             "  " + ",\n  ".join(select_parts),
             from_clause,
         ]
-        
+
         if where_clause:
             sql_parts.append(where_clause)
 
@@ -612,6 +626,129 @@ class SemanticQueryEngine:
         # PostgreSQL + DuckDB both support DATE_TRUNC with text-literal grain.
         return f"DATE_TRUNC('{grain}', {base_sql})"
     
+    def _render_symmetric_aggregate(
+        self,
+        view_name: str,
+        base_sql: str,
+        measure_type: str,
+    ) -> Optional[str]:
+        """Render the Looker-style symmetric aggregate form for SUM/COUNT/AVG.
+
+        Phase 4 — defends against fan-out double-counting when a SYMMETRIC
+        propagation mode (filter target is SELECT-side across a 1:N hop) was
+        decided by the Phase-2 engine. The Looker trick:
+
+          symmetric_sum(value)  = SUM(DISTINCT hash(pk) + value) - SUM(DISTINCT hash(pk))
+          symmetric_count(*)    = COUNT(DISTINCT pk)
+          symmetric_avg(value)  = symmetric_sum(value) / symmetric_count(value)
+
+        Each row's PK is hashed into a wide enough integer that adding the
+        measured value can't collide with another row's hash. DISTINCT then
+        deduplicates the fan-out introduced by the JOIN before the aggregate
+        sees it.
+
+        Returns ``None`` to signal the caller should fall back to the legacy
+        aggregate when any of these are true:
+          * ``FEATURE_SYMMETRIC_AGGREGATES`` flag is OFF.
+          * The view is not in ``self._symmetric_aggregate_views``.
+          * The view has no declared ``primary_key``.
+          * ``measure_type`` is not ``sum`` / ``count`` / ``avg``.
+          * The active dialect is not one we have a hash recipe for.
+        """
+        from app.core.config import settings as _settings
+        if not bool(getattr(_settings, "FEATURE_SYMMETRIC_AGGREGATES", False)):
+            return None
+        # Phase 4.3 — dialect allow-list. The Looker form is empirically 53×
+        # SLOWER than EXISTS on Postgres (see memory). Default allow-list is
+        # bigquery-only; admins opt-in to other dialects via env var.
+        _allowed = {
+            d.strip().lower()
+            for d in str(
+                getattr(_settings, "FEATURE_SYMMETRIC_AGGREGATES_DIALECTS", "") or ""
+            ).split(",")
+            if d.strip()
+        }
+        if _allowed and (self.database_type or "").lower() not in _allowed:
+            return None
+        sym_views = getattr(self, "_symmetric_aggregate_views", None) or set()
+        if view_name not in sym_views:
+            return None
+        if measure_type not in {"sum", "count", "avg"}:
+            return None
+        view = self.views_cache.get(view_name)
+        if view is None:
+            return None
+        pk_cols = list(getattr(view, "primary_key", None) or [])
+        if not pk_cols:
+            # Phase-2 should have DROPped with NO_PRIMARY_KEY before reaching
+            # us; defensive fallback if the model changed mid-request.
+            return None
+
+        # Build the PK reference. Single column → CAST(view.col AS VARCHAR);
+        # composite → '|'-separated CAST concat. The hash function below
+        # treats the result as a text key.
+        pk_refs = [f"{view_name}.{col}" for col in pk_cols]
+        if len(pk_refs) == 1:
+            pk_text = f"CAST({pk_refs[0]} AS VARCHAR)"
+        else:
+            joined = " || '|' || ".join(f"CAST({r} AS VARCHAR)" for r in pk_refs)
+            pk_text = f"({joined})"
+
+        # Hash + multiplier choice per dialect. The multiplier keeps the
+        # row's value and the per-row hash in DISJOINT decimal positions in
+        # the encoded NUMERIC, so two rows with different (pk, value) pairs
+        # can never collapse to the same encoded number under DISTINCT.
+        # See R-P4-2 in docs/phases/phase-4-symmetric-aggregates.md.
+        dialect = (self.database_type or "").lower()
+        if dialect == "bigquery":
+            # FARM_FINGERPRINT → INT64 (~±9.2e18). Multiplier 1e18 keeps the
+            # value (assumed |v| < 1e18 for any realistic metric) in lower
+            # decimal positions. Final encoded value fits NUMERIC (38 digits).
+            hash_expr = f"FARM_FINGERPRINT({pk_text})"
+            hash_mult = "1e18"
+        elif dialect in ("postgresql", "postgres"):
+            # MD5 first 60 bits → bigint (~±1.15e18). Multiplier 1e15 is
+            # conservative enough for any realistic metric (|v| < 1e15) and
+            # the product fits Postgres NUMERIC (arbitrary precision).
+            hash_expr = (
+                f"(('x' || SUBSTRING(MD5({pk_text}) FROM 1 FOR 15))::bit(60)::bigint)"
+            )
+            hash_mult = "1e15"
+        elif dialect == "mysql":
+            hash_expr = f"CONV(SUBSTRING(MD5({pk_text}), 1, 15), 16, 10)"
+            hash_mult = "1e15"
+        elif dialect == "duckdb":
+            hash_expr = f"hash({pk_text})"
+            hash_mult = "1e15"
+        else:
+            return None
+
+        # COUNT is the cheap case — counting distinct PKs equals counting
+        # distinct rows pre-fan-out. Filtered COUNT gates on the prebuilt
+        # CASE expression so only filter-passing rows participate.
+        if measure_type == "count":
+            if base_sql.strip() == "*":
+                return f"COUNT(DISTINCT {pk_text})"
+            return f"COUNT(DISTINCT CASE WHEN {base_sql} IS NOT NULL THEN {pk_text} END)"
+
+        # SUM — Looker symmetric form:
+        #   encoded   = CAST(value AS NUMERIC) + CAST(hash AS NUMERIC) * MULT
+        #   sym_sum   = SUM(DISTINCT encoded) - SUM(DISTINCT hash*MULT)
+        # COALESCE(value, 0) avoids NULL → NULL encoded values (DISTINCT would
+        # lump all NULL rows into one bucket and lose the hash signal).
+        hash_part = f"(CAST({hash_expr} AS NUMERIC) * {hash_mult})"
+        encoded = f"(COALESCE(CAST({base_sql} AS NUMERIC), 0) + {hash_part})"
+        sym_sum = f"(SUM(DISTINCT {encoded}) - SUM(DISTINCT {hash_part}))"
+        if measure_type == "sum":
+            return sym_sum
+
+        # AVG = symmetric SUM / symmetric COUNT (only counting rows where the
+        # measured value is non-null — matches plain AVG semantics).
+        sym_count = (
+            f"COUNT(DISTINCT CASE WHEN {base_sql} IS NOT NULL THEN {pk_text} END)"
+        )
+        return f"({sym_sum}) / NULLIF({sym_count}, 0)"
+
     def _render_measure(
         self,
         field_ref: str,
@@ -846,6 +983,21 @@ class SemanticQueryEngine:
             else:
                 gated = f"CASE WHEN {filter_sql} THEN {base_sql} END"
             base_sql = gated
+
+        # Phase 4 — when a SYMMETRIC propagation result for this base view was
+        # recorded by _build_where_clause AND the feature flag is on AND the
+        # view has a declared primary_key, dedupe fan-out via the Looker MD5
+        # trick before aggregating. The helper returns None for any reason
+        # ("not symmetric", "no PK", "flag off", "unknown dialect", ...) and
+        # we fall through to the legacy aggregate path. Context modifiers
+        # (Phase-14 window aggregates) are NOT compatible with the symmetric
+        # form — when both are present, symmetric wins (correctness over the
+        # OVER clause, which can't preserve PK identity).
+        _symmetric_sql = self._render_symmetric_aggregate(
+            view_name, base_sql, measure_type,
+        )
+        if _symmetric_sql is not None:
+            return _symmetric_sql
 
         # Build the aggregate function call (no OVER yet).
         if measure_type == "count":
@@ -1425,6 +1577,7 @@ class SemanticQueryEngine:
         time_grains: Dict[str, str],
         exists_views: set[str] | None = None,
         explore: SemanticExplore | None = None,
+        select_side_views: set[str] | None = None,
     ) -> str:
         """Build WHERE clause from filters.
 
@@ -1474,21 +1627,146 @@ class SemanticQueryEngine:
 
         where_conditions: list[str] = []      # base / select-side predicates
         exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
+        # Defensive default — pivot-value fetch (line ~445) calls this with only
+        # filters + time_grains, so select_side_views may be None there.
+        select_side_views = select_side_views if select_side_views is not None else set()
+        # Phase 2 — collect explicit drop diagnostics (reason + detail) so the
+        # debug payload surfaces propagation decisions to the user. List of
+        # dicts: {field, reason, detail}.
+        propagation_drops: list[dict[str, str]] = []
+        # Phase 4 — accumulate views whose measures must use the symmetric
+        # aggregate form (Looker MD5 trick). Populated when propagation engine
+        # returns SYMMETRIC mode (filter target is a SELECT-side view across a
+        # 1:N hop). _render_measure consults self._symmetric_aggregate_views.
+        symmetric_aggregate_views: set[str] = set()
+        # Phase 2 — feature-flag gate. When ON, route via propagation engine
+        # instead of the binary `exists_views` set-diff. Build a strict
+        # resolver (cross_filter-respecting) here — separate from self._resolver
+        # which stays bidirectional=True for back-compat with the existing
+        # EXISTS body builder + reachability check.
+        from app.core.config import settings as _settings
+        _use_propagation_v2 = bool(getattr(_settings, "FEATURE_PROPAGATION_ENGINE_V2", False))
+        _strict_resolver = None
+        if _use_propagation_v2 and self._model is not None and explore is not None:
+            from app.services.semantic_join_resolver import SemanticJoinResolver as _R
+            _strict_resolver = _R(
+                self.db, self._model, explore.base_view_name, bidirectional=False,
+            )
+
         for field_ref, filter_def in filters.items():
             operator = str(filter_def.get('operator') or 'eq').strip().lower()
             value = filter_def.get('value')
 
             view_name, _ = self._parse_field_ref(field_ref)
 
-            # Phase-B' — route this filter's predicate(s) to the EXISTS
-            # group for its view when the view is filter-only (not in the
-            # FROM chain); otherwise to the top-level WHERE list. All the
-            # `conditions.append(...)` below write to whichever bucket
-            # `conditions` points at for this iteration.
-            if exists_views and view_name in exists_views:
-                conditions = exists_groups.setdefault(view_name, [])
+            # ── Phase 2 routing (feature-flagged) ──────────────────────
+            #
+            # When FEATURE_PROPAGATION_ENGINE_V2 is on, the propagation engine
+            # decides per-filter:
+            #
+            #   PLAIN / JOIN_CHAIN → predicate goes into where_conditions
+            #                        (rendered against base or joined alias).
+            #   EXISTS / SYMMETRIC → predicate goes into the per-view EXISTS
+            #                        bucket (Phase-B' body builder handles it).
+            #                        SYMMETRIC falls back to EXISTS here in
+            #                        Phase 2; Phase 4 will switch it to use
+            #                        the symmetric-aggregate measure emitter.
+            #   DROP               → filter skipped, diagnostic recorded.
+            #
+            # When the flag is OFF, fall through to the Phase-B' binary check.
+            propagated = None
+            if _use_propagation_v2 and _strict_resolver is not None:
+                from app.services.filter_propagation import (
+                    resolve_filter_propagation as _resolve_prop,
+                    PropagationMode as _Mode,
+                )
+                propagated = _resolve_prop(
+                    _strict_resolver,
+                    explore.base_view_name,
+                    field_ref,
+                    select_side_views=select_side_views,
+                )
+                if propagated.mode == _Mode.DROP:
+                    propagation_drops.append({
+                        "field": field_ref,
+                        "reason": (propagated.reason.value if propagated.reason else "unknown"),
+                        "detail": propagated.detail,
+                    })
+                    self.warnings.append(
+                        f"Filter dropped — {field_ref}: {propagated.detail}"
+                    )
+                    continue
+                # PLAIN — filter on base view itself; goes into top-level WHERE.
+                if propagated.mode == _Mode.PLAIN:
+                    conditions = where_conditions
+                # JOIN_CHAIN — forward M:1 path with no fan-out. If the view is
+                # ALSO select-side (joined into FROM for GROUP BY), a plain
+                # predicate on the joined alias is fine. If the view is filter-
+                # only (not projected), the engine WON'T have it in FROM, so
+                # the safe emission is via EXISTS subquery (same result as JOIN
+                # for M:1 forward, no fan-out). Phase-B' already handles this
+                # uniformly via _build_filter_exists_clause.
+                elif propagated.mode == _Mode.JOIN_CHAIN:
+                    if view_name in select_side_views:
+                        conditions = where_conditions
+                    else:
+                        conditions = exists_groups.setdefault(view_name, [])
+                # EXISTS / SYMMETRIC — always EXISTS-bucket. SYMMETRIC also
+                # accumulates the base view name so Phase-4 measure rendering
+                # can dedupe fan-out via the Looker MD5 trick. The filter side
+                # is identical to EXISTS (predicate inside the subquery).
+                #
+                # Phase 4.2 — SYMMETRIC requires a declared primary_key on each
+                # symmetric_views entry; otherwise the Looker trick can't dedupe
+                # and a plain JOIN would silently double-count. When PK is absent
+                # AND the symmetric-aggregate feature flag is ON, we'd rather
+                # DROP the filter with a clear message than emit silently-wrong
+                # SUMs. When the flag is OFF, callers expect legacy behavior so
+                # we let the EXISTS bucket carry it (matches pre-Phase-4 path).
+                else:
+                    if propagated.mode == _Mode.SYMMETRIC:
+                        from app.core.config import settings as _sym_settings
+                        from app.services.filter_propagation import DropReason as _DR
+                        flag_on = bool(getattr(
+                            _sym_settings, "FEATURE_SYMMETRIC_AGGREGATES", False,
+                        ))
+                        missing_pk_views = [
+                            sv for sv in (propagated.symmetric_views or ())
+                            if not (
+                                (self.views_cache.get(sv) or
+                                 self._get_view_for_node(sv)).primary_key or []
+                            )
+                        ]
+                        if flag_on and missing_pk_views:
+                            propagation_drops.append({
+                                "field": field_ref,
+                                "reason": _DR.NO_PRIMARY_KEY.value,
+                                "detail": (
+                                    f"Filter on {field_ref!r} requires symmetric "
+                                    f"aggregation (1:N JOIN with projected target) "
+                                    f"but view(s) {missing_pk_views!r} have no "
+                                    f"primary_key declared. Declare PK in the Data "
+                                    f"Model to enable safe filter propagation."
+                                ),
+                            })
+                            self.warnings.append(
+                                f"Filter dropped — {field_ref}: no primary_key on "
+                                f"{missing_pk_views!r}; cannot dedupe fan-out."
+                            )
+                            continue
+                        for sv in (propagated.symmetric_views or ()):
+                            symmetric_aggregate_views.add(sv)
+                    conditions = exists_groups.setdefault(view_name, [])
             else:
-                conditions = where_conditions
+                # Phase-B' — route this filter's predicate(s) to the EXISTS
+                # group for its view when the view is filter-only (not in the
+                # FROM chain); otherwise to the top-level WHERE list. All the
+                # `conditions.append(...)` below write to whichever bucket
+                # `conditions` points at for this iteration.
+                if exists_views and view_name in exists_views:
+                    conditions = exists_groups.setdefault(view_name, [])
+                else:
+                    conditions = where_conditions
 
             # Phase-15.81 v20 — runtime filters can carry refs that the
             # current view no longer exposes (FE auto-fan-out picked a
@@ -1680,6 +1958,20 @@ class SemanticQueryEngine:
                     f"Filter on '{view_node}' dropped — no join path from base "
                     f"for EXISTS rewrite"
                 )
+
+        # Phase 2 — stash propagation drops on self so the chart-runtime layer
+        # can surface them in `debug.dropped_filters` (structured) alongside
+        # the warnings already pushed onto self.warnings.
+        if propagation_drops:
+            existing = getattr(self, "_propagation_drops", [])
+            self._propagation_drops = existing + propagation_drops
+
+        # Phase 4 — merge any newly observed symmetric-aggregate views onto the
+        # engine instance. _render_measure reads this set later; if the flag is
+        # off the set stays empty and the helper returns None (legacy fallback).
+        if symmetric_aggregate_views:
+            existing_sym = getattr(self, "_symmetric_aggregate_views", set()) or set()
+            self._symmetric_aggregate_views = existing_sym | symmetric_aggregate_views
 
         if where_conditions:
             return "WHERE\n  " + " AND\n  ".join(where_conditions)

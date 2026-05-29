@@ -44,6 +44,51 @@ class JoinEdge:
     # still build the same graph.
     is_active: bool = True
     cross_filter: str = "single"   # "single" | "both"
+    # Phase-1 (PBI-parity migration) additions.  Canonical cardinality drives
+    # the propagation engine (Phase 2) and symmetric-aggregate emitter
+    # (Phase 4). `relationship` is preserved as a legacy alias and carries
+    # the same value when reading legacy JSON via `_edge_from_join_dict`.
+    cardinality: str = "many_to_one"   # "one_to_one" | "one_to_many" | "many_to_one" | "many_to_many"
+    # Synthesised reverse edges are marked so the propagation engine can
+    # distinguish "user-declared forward edge" from "auto reverse"; matters
+    # for direction-respecting filter propagation rules (Phase 2).
+    is_reverse: bool = False
+
+
+# Canonical cardinality vocabulary + alias map (kept in this module so both
+# resolver and add_join validation share one source of truth).
+ALLOWED_CARDINALITY = frozenset({"one_to_one", "one_to_many", "many_to_one", "many_to_many"})
+_CARDINALITY_ALIASES = {
+    "one_to_one": "one_to_one", "one-to-one": "one_to_one", "1:1": "one_to_one",
+    "one_to_many": "one_to_many", "one-to-many": "one_to_many",
+    "1:n": "one_to_many", "1:m": "one_to_many",
+    "many_to_one": "many_to_one", "many-to-one": "many_to_one",
+    "n:1": "many_to_one", "m:1": "many_to_one",
+    "many_to_many": "many_to_many", "many-to-many": "many_to_many",
+    "n:m": "many_to_many", "m:n": "many_to_many",
+}
+_INVERT_CARDINALITY = {
+    "one_to_one": "one_to_one",
+    "one_to_many": "many_to_one",
+    "many_to_one": "one_to_many",
+    "many_to_many": "many_to_many",
+}
+
+
+def normalize_cardinality(raw: str | None) -> str:
+    """Map any input form (1:N, many-to-one, etc.) to canonical value.
+
+    Falls back to ``many_to_one`` (most common star-schema FK→PK case) so
+    legacy ``joins`` JSON without an explicit cardinality still resolves.
+    """
+    if not raw:
+        return "many_to_one"
+    return _CARDINALITY_ALIASES.get(str(raw).strip().lower().replace("-", "_"), "many_to_one")
+
+
+def invert_cardinality(c: str | None) -> str:
+    """Cardinality of the reverse edge — symmetric for 1:1 and N:M."""
+    return _INVERT_CARDINALITY.get(normalize_cardinality(c), "many_to_one")
 
 
 @dataclass(frozen=True)
@@ -84,6 +129,20 @@ class SemanticJoinResolver:
         base_node: str,
         bidirectional: bool = False,
     ) -> None:
+        """Build a join-graph resolver rooted at ``base_node``.
+
+        Args:
+            bidirectional: legacy compat flag. When True, every edge gets a
+                synthetic reverse regardless of its ``cross_filter`` setting —
+                this matches pre-Phase-1 behaviour and is still the default for
+                ``reachable_fields_for_model`` (FE binding hydration).
+                **DEPRECATED:** Phase 2 propagation engine (default OFF) builds
+                its own ``bidirectional=False`` resolver. Plan per
+                ``docs/phases/phase-4-symmetric-aggregates.md`` §4.10: after a
+                month of flag-ON soak in production, flip the default to False
+                and audit remaining callers. Do NOT change the default in this
+                PR — would break binding hydration for legacy charts.
+        """
         self._db = db
         self._model = model
         self._base_node = base_node
@@ -126,6 +185,7 @@ class SemanticJoinResolver:
                     self._bidirectional or edge.cross_filter == "both"
                 )
                 if wants_reverse and edge.from_column and edge.to_column:
+                    inv = invert_cardinality(edge.cardinality)
                     reverse = JoinEdge(
                         from_node=edge.to_node,
                         to_node=edge.from_node,
@@ -134,9 +194,11 @@ class SemanticJoinResolver:
                         sql_on="",
                         from_column=edge.to_column,
                         to_column=edge.from_column,
-                        relationship=edge.relationship,
+                        relationship=inv,
                         is_active=True,
                         cross_filter="both",
+                        cardinality=inv,
+                        is_reverse=True,
                     )
                     self._adj.setdefault(reverse.from_node, []).append(reverse)
                     self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
@@ -158,6 +220,11 @@ class SemanticJoinResolver:
         cross_filter = str(join.get("cross_filter") or "single").strip().lower()
         if cross_filter not in ("single", "both"):
             cross_filter = "single"
+        # Phase-1 — `cardinality` takes precedence; legacy entries (no key) fall
+        # back to `relationship` mapped through `normalize_cardinality`. Default
+        # 'many_to_one' matches the dominant star-schema FK→PK pattern.
+        raw_card = join.get("cardinality") or join.get("relationship")
+        cardinality = normalize_cardinality(raw_card)
         return JoinEdge(
             from_node=from_node,
             to_node=alias,
@@ -169,6 +236,8 @@ class SemanticJoinResolver:
             relationship=(join.get("relationship") or None),
             is_active=is_active,
             cross_filter=cross_filter,
+            cardinality=cardinality,
+            is_reverse=False,
         )
 
     # ── public API ─────────────────────────────────────────────────────
@@ -194,10 +263,13 @@ class SemanticJoinResolver:
         return visited
 
     def resolve_path(self, target_node: str) -> JoinPath | None:
-        """BFS shortest path from base_node to target_node.
+        """BFS shortest path from base_node to target_node (single, back-compat).
 
-        Returns None when target is unreachable. Returns an empty-step path
-        when target equals base_node. Logs a warning on ambiguous ties.
+        Discovery order = insertion order of the adjacency list (deque-driven
+        BFS). This is the SAME algorithm used pre-Phase-1 so all callers that
+        depended on a specific tie-breaking continue to get the same path.
+        Use :meth:`resolve_paths` to enumerate all equal-length paths for
+        explicit disambiguation in the Phase-2 propagation engine.
         """
         if target_node == self._base_node:
             return JoinPath(target_node=target_node, steps=[])
@@ -230,6 +302,84 @@ class SemanticJoinResolver:
                 queue.append(edge.to_node)
 
         return None
+
+    def resolve_paths(self, target_node: str) -> list[JoinPath]:
+        """All equal-length shortest paths from base_node to target_node.
+
+        Phase-1 addition for the Phase-2 propagation engine. Detects ambiguous
+        routing through multiple conformed dims (e.g., ``activity → owner →
+        deal`` vs ``activity → date → deal``). Returns empty list when
+        unreachable. A length-0 path (target == base) returns a single empty
+        path. Each returned path has ``ambiguous = len(paths) > 1``.
+
+        Implementation note: the FIRST path in the returned list matches what
+        :meth:`resolve_path` returns (deterministic, deque-BFS discovery order).
+        Subsequent paths are alternates at the same depth, useful for
+        propagation engine ambiguity detection and role-hint resolution.
+        """
+        # Fast path: ask resolve_path for the canonical first; then enumerate
+        # all OTHER equal-length paths via a depth-tracked BFS reusing the
+        # same adjacency-list ordering for determinism.
+        if target_node == self._base_node:
+            return [JoinPath(target_node=target_node, steps=[])]
+
+        primary = self.resolve_path(target_node)
+        if primary is None:
+            return []
+        primary_depth = len(primary.steps)
+
+        # Depth-tracked BFS — same adj order as resolve_path. Collect every edge
+        # that arrives at a node at its (first-discovered) depth, so the back-
+        # walk only enumerates equal-shortest paths.
+        depth: dict[str, int] = {self._base_node: 0}
+        incoming: dict[str, list[JoinEdge]] = {}
+        queue: deque[tuple[str, int]] = deque([(self._base_node, 0)])
+        while queue:
+            current, d = queue.popleft()
+            if d >= primary_depth:
+                continue
+            for edge in self._adj.get(current, []):
+                to = edge.to_node
+                to_depth = d + 1
+                if to in depth and depth[to] < to_depth:
+                    continue
+                if to not in depth:
+                    depth[to] = to_depth
+                    queue.append((to, to_depth))
+                if depth[to] == to_depth:
+                    incoming.setdefault(to, []).append(edge)
+
+        # Walk back from target through incoming-edge DAG. Defensive cap @ 16
+        # paths to avoid combinatorial blow-up on pathological models.
+        all_edge_seqs: list[list[JoinEdge]] = []
+
+        def _walk(node: str, acc: list[JoinEdge]) -> None:
+            if len(all_edge_seqs) >= 16:
+                return
+            if node == self._base_node:
+                all_edge_seqs.append(list(reversed(acc)))
+                return
+            for edge in incoming.get(node, []):
+                acc.append(edge)
+                _walk(edge.from_node, acc)
+                acc.pop()
+
+        _walk(target_node, [])
+
+        if not all_edge_seqs:
+            # Defensive fallback: the depth-BFS missed something; return primary.
+            return [primary]
+
+        ambiguous = len(all_edge_seqs) > 1
+        return [
+            JoinPath(
+                target_node=target_node,
+                steps=[JoinStep(edge=e, alias_sql=f"_appbi_sem_join_{idx}")
+                       for idx, e in enumerate(seq)],
+                ambiguous=ambiguous,
+            )
+            for seq in all_edge_seqs
+        ]
 
     def _reconstruct_path(
         self,
