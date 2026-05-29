@@ -1680,9 +1680,28 @@ export default function DashboardDetailPage() {
   const resolvedColumnChartCount = hasSemanticFilterColumns
     ? semanticFilterChartCount
     : columnChartCount;
-  const resolvedDistinctValues = hasSemanticFilterColumns
-    ? semanticDistinctValues
-    : distinctValues;
+  // Phase-12 — parity with the public link (`usePublicFilterDistinctValues`)
+  // which MERGES the BE /distinct-values response with chart-row-derived
+  // values (so a column shows options even when the cascade-narrowed BE
+  // query returns []). Previously the editor's A/B choice
+  // `hasSemanticFilterColumns ? api : chart` returned ONLY the API values
+  // and produced misleading "No values match" panels in the editor while
+  // the same field on the public link showed valid options. Merge with
+  // chart-row fallback so the editor sees what the viewer will see.
+  const resolvedDistinctValues = React.useMemo(() => {
+    if (!hasSemanticFilterColumns) return distinctValues;
+    const merged: Record<string, string[]> = { ...distinctValues };
+    for (const [key, vals] of Object.entries(semanticDistinctValues)) {
+      // Prefer the API response when it returned at least one value (it
+      // reflects the cascade context the user actually set). When the API
+      // came back empty BUT the chart-row fallback has values, keep the
+      // fallback — that's the case shown on the public link.
+      if (Array.isArray(vals) && vals.length > 0) {
+        merged[key] = vals;
+      }
+    }
+    return merged;
+  }, [hasSemanticFilterColumns, semanticDistinctValues, distinctValues]);
 
   if (isLoadingDashboard) {
     return (
