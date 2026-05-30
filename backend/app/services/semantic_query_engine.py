@@ -36,6 +36,99 @@ class AmbiguousFieldError(ValueError):
     pass
 
 
+def _build_calendar_expr_from_base(base_sql: str, calendar_field: str, dialect: str) -> str | None:
+    """Wrap a resolved base-column SQL ref in the calendar math for ``calendar_field``.
+
+    Mirrors the column generators in ``dataset_calendar_service.build_calendar_live_sql``
+    so a role-played calendar filter rewritten onto its base fact column
+    emits the SAME predicate the JOIN-to-calendar path would have used —
+    just without the JOIN itself. Used by ``_build_where_clause`` when
+    ``filter_def`` carries the ``calendarField`` metadata stamped by
+    ``chart_service._rewrite_calendar_filter_to_all_roles``.
+
+    Returns ``None`` for unrecognised calendar fields (caller falls back
+    to plain column comparison, which is the safe legacy behaviour).
+    """
+    if not calendar_field or not base_sql:
+        return None
+    field = calendar_field.strip().lower()
+    d = (dialect or "").strip().lower()
+
+    if d == "bigquery":
+        date_expr = f"DATE({base_sql})"
+        year_expr = f"EXTRACT(YEAR FROM {date_expr})"
+        quarter_expr = f"EXTRACT(QUARTER FROM {date_expr})"
+        month_expr = f"EXTRACT(MONTH FROM {date_expr})"
+        iso_week_expr = f"EXTRACT(ISOWEEK FROM {date_expr})"
+        # BigQuery has no ISODOW — derive ISO day-of-week (Mon=1..Sun=7)
+        # from DAYOFWEEK (Sun=1..Sat=7) via the modular trick used by
+        # dataset_calendar_service.build_calendar_live_sql so the
+        # rewritten predicate matches the calendar column exactly.
+        iso_dow_expr = f"MOD(EXTRACT(DAYOFWEEK FROM {date_expr}) + 5, 7) + 1"
+        day_expr = f"EXTRACT(DAY FROM {date_expr})"
+        month_name_expr = f"FORMAT_DATE('%B', {date_expr})"
+        month_short_expr = f"FORMAT_DATE('%b', {date_expr})"
+        day_name_expr = f"FORMAT_DATE('%A', {date_expr})"
+        year_month_expr = f"FORMAT_DATE('%Y-%m', {date_expr})"
+    elif d == "mysql":
+        date_expr = f"DATE({base_sql})"
+        year_expr = f"EXTRACT(YEAR FROM {date_expr})"
+        quarter_expr = f"QUARTER({date_expr})"
+        month_expr = f"EXTRACT(MONTH FROM {date_expr})"
+        iso_week_expr = f"WEEK({date_expr}, 3)"
+        iso_dow_expr = f"(WEEKDAY({date_expr}) + 1)"
+        day_expr = f"EXTRACT(DAY FROM {date_expr})"
+        month_name_expr = f"MONTHNAME({date_expr})"
+        month_short_expr = f"DATE_FORMAT({date_expr}, '%b')"
+        day_name_expr = f"DAYNAME({date_expr})"
+        year_month_expr = f"DATE_FORMAT({date_expr}, '%Y-%m')"
+    elif d == "duckdb":
+        date_expr = f"CAST({base_sql} AS DATE)"
+        year_expr = f"CAST(EXTRACT(YEAR FROM {date_expr}) AS INTEGER)"
+        quarter_expr = f"CAST(EXTRACT(QUARTER FROM {date_expr}) AS INTEGER)"
+        month_expr = f"CAST(EXTRACT(MONTH FROM {date_expr}) AS INTEGER)"
+        iso_week_expr = f"CAST(strftime({date_expr}, '%V') AS INTEGER)"
+        iso_dow_expr = f"CAST(strftime({date_expr}, '%u') AS INTEGER)"
+        day_expr = f"CAST(EXTRACT(DAY FROM {date_expr}) AS INTEGER)"
+        month_name_expr = f"monthname({date_expr})"
+        month_short_expr = f"substr(monthname({date_expr}), 1, 3)"
+        day_name_expr = f"dayname({date_expr})"
+        year_month_expr = f"strftime({date_expr}, '%Y-%m')"
+    else:  # postgresql + fallback
+        date_expr = f"CAST({base_sql} AS DATE)"
+        year_expr = f"EXTRACT(YEAR FROM {date_expr})"
+        quarter_expr = f"EXTRACT(QUARTER FROM {date_expr})"
+        month_expr = f"EXTRACT(MONTH FROM {date_expr})"
+        iso_week_expr = f"EXTRACT(WEEK FROM {date_expr})"
+        iso_dow_expr = f"EXTRACT(ISODOW FROM {date_expr})"
+        day_expr = f"EXTRACT(DAY FROM {date_expr})"
+        month_name_expr = f"TO_CHAR({date_expr}, 'FMMonth')"
+        month_short_expr = f"TO_CHAR({date_expr}, 'Mon')"
+        day_name_expr = f"TO_CHAR({date_expr}, 'FMDay')"
+        year_month_expr = f"TO_CHAR({date_expr}, 'YYYY-MM')"
+
+    expr_map = {
+        "date": date_expr,
+        "year": year_expr,
+        "quarter": quarter_expr,
+        "year_quarter": f"CONCAT(CAST({year_expr} AS STRING), '-Q', CAST({quarter_expr} AS STRING))"
+            if d == "bigquery"
+            else (f"CONCAT(CAST({year_expr} AS CHAR), '-Q', CAST({quarter_expr} AS CHAR))"
+                  if d == "mysql"
+                  else f"CAST({year_expr} AS VARCHAR) || '-Q' || CAST({quarter_expr} AS VARCHAR)"),
+        "month": month_expr,
+        "month_name": month_name_expr,
+        "month_short": month_short_expr,
+        "year_month": year_month_expr,
+        "week_of_year_iso": iso_week_expr,
+        "day_of_month": day_expr,
+        "day_of_week_iso": iso_dow_expr,
+        "day_name": day_name_expr,
+        "is_weekend": f"CASE WHEN {iso_dow_expr} IN (6, 7) THEN TRUE ELSE FALSE END",
+    }
+    return expr_map.get(field)
+
+
 class SemanticQueryEngine:
     """
     Advanced SQL generation engine for semantic queries
@@ -983,6 +1076,19 @@ class SemanticQueryEngine:
             else:
                 gated = f"CASE WHEN {filter_sql} THEN {base_sql} END"
             base_sql = gated
+            # [pbi-filter] confirm declared-measure where_sql/filters got
+            # applied for this query. Charts that route to the legacy live
+            # builder will NOT log this line — that asymmetry was the source
+            # of the "chart preview vs dashboard differ" reports for
+            # measures like ``Lead nhận Marketing`` with internal predicates.
+            # Temporary instrumentation.
+            logger.info(
+                "[pbi-filter] measure-filter applied view=%s measure=%s type=%s where=%s",
+                view_name,
+                measure_def.get("name"),
+                measure_type,
+                filter_sql,
+            )
 
         # Phase 4 — when a SYMMETRIC propagation result for this base view was
         # recorded by _build_where_clause AND the feature flag is on AND the
@@ -1768,6 +1874,26 @@ class SemanticQueryEngine:
                 else:
                     conditions = where_conditions
 
+            # Calendar-rewrite contract: when the chart_service-layer
+            # rewrite collapses a role-played calendar filter onto its
+            # source column, it stamps `calendarField` + `calendarSourceField`
+            # onto the filter dict. We honour that here by emitting a
+            # direct calendar expression (``EXTRACT(YEAR FROM …)``,
+            # ``DATE(…)``, ``CASE WHEN ISODOW IN (6,7) …``) wrapped around
+            # the base column's already-resolved SQL — the role-played
+            # SemanticView is NOT loaded, which fixes the
+            # ``View '…__date_dim' not found`` crash on datasets whose
+            # calendar settings drifted (table removed but auto_calendar
+            # joins persisted), AND makes Dashboard FilterPane (Path B)
+            # emit the same SQL shape as Chart Explore's raw-column filter
+            # (Path A) for time predicates.
+            calendar_field_ref = str(
+                filter_def.get("calendarField")
+                or filter_def.get("calendar_field")
+                or ""
+            ).strip()
+            calendar_field_sql: str | None = None
+
             # Phase-15.81 v20 — runtime filters can carry refs that the
             # current view no longer exposes (FE auto-fan-out picked a
             # column that doesn't exist on the chart's view, schema
@@ -1778,13 +1904,38 @@ class SemanticQueryEngine:
             # live_query._build_where_clause: filters that can't be
             # rendered are skipped, not fatal.
             try:
-                # Apply time grain if specified
                 if field_ref in time_grains:
+                    # Apply time grain if specified
                     field_sql = self._render_dimension_with_time_grain(
                         field_ref, view_name, time_grains[field_ref]
                     )
                 else:
                     field_sql = self._render_dimension(field_ref, view_name)
+                if calendar_field_ref:
+                    # Wrap the resolved base-column SQL in the calendar
+                    # expression for the requested calendar field. The
+                    # base SQL already carries the right view alias + col
+                    # name (matches Chart Explore's raw-column filter),
+                    # so we only add the calendar math on top.
+                    calendar_field_sql = _build_calendar_expr_from_base(
+                        field_sql,
+                        calendar_field_ref,
+                        (self.database_type or "").lower(),
+                    )
+                    if calendar_field_sql:
+                        # [pbi-filter] log expression wrap — DA can grep
+                        # docker logs for this when verifying that a
+                        # dashboard date slicer emitted EXTRACT()/etc
+                        # instead of the legacy JOIN-on-CAST(DATE) path.
+                        # Temporary instrumentation.
+                        logger.info(
+                            "[pbi-filter] where-calendar field=%s calendarField=%s dialect=%s expr=%s",
+                            field_ref,
+                            calendar_field_ref,
+                            (self.database_type or "").lower(),
+                            calendar_field_sql,
+                        )
+                        field_sql = calendar_field_sql
             except ValueError as exc:
                 self.warnings.append(
                     f"Filter dropped — field {field_ref!r}: {exc}"

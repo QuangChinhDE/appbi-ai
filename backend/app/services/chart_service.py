@@ -28,6 +28,7 @@ from app.services.chart_semantic_service import (
     with_chart_semantic_binding,
 )
 from app.services.dataset_calendar_service import (
+    build_calendar_filter_expression,
     build_calendar_live_sql,
     get_calendar_settings,
     is_generated_calendar_table,
@@ -165,25 +166,69 @@ def _role_config_needs_semantic_runtime(
     """
     base = (base_view_name or "").strip()
 
-    # Metric with qualified field always needs semantic — measure formulas,
-    # filtered measures, dataset-scope, and context-modifier measures all
-    # depend on the semantic engine. Live builder has no idea what
-    # `view.metric_name` means.
-    if role_config:
-        for metric in role_config.get("metrics") or []:
-            if isinstance(metric, dict):
-                field = str(metric.get("field") or "").strip()
-                if field and "." in field:
-                    return True
-        for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
-            metric = role_config.get(key)
-            if isinstance(metric, dict):
-                field = str(metric.get("field") or "").strip()
-                if field and "." in field:
-                    return True
-
     semantic_fields = _binding_semantic_fields(binding)
     semantic_measures = _binding_semantic_measure_fields(binding)
+
+    def _metric_needs_semantic(metric: Any) -> bool:
+        """A metric forces semantic routing when its field is qualified
+        (live builder can't resolve cross-view refs) OR when it maps to a
+        DECLARED semantic measure — even if the FE saved the ref bare
+        ('lead_mkt' instead of 'dataset_table_357.lead_mkt').
+
+        The bare-metric case matters because declared measures can carry
+        their own ``where_sql`` / ``filters`` (PBI-parity measure-level
+        filters); the live-query path renders raw aggregates and silently
+        drops those internal filters. Routing such a metric to live would
+        return UN-filtered totals — and the chart would diverge from
+        Explore (which re-routes to semantic the moment any joined-view
+        filter shows up via dashboard slicer). One symptom: same chart
+        shows ``count_distinct(id)`` total in some contexts and the
+        filtered measure total in others, depending on what dashboard
+        filters happen to be applied.
+        """
+        if not isinstance(metric, dict):
+            return False
+        field = str(metric.get("field") or "").strip()
+        if not field:
+            return False
+        if "." in field:
+            return True
+        # Bare metric — promote to semantic ONLY if it matches a declared
+        # measure (not a declared dimension). Declared measures can carry
+        # `where_sql` / `filters` that the live builder silently drops;
+        # declared dimensions used as plain on-the-fly aggregates (e.g.
+        # `SUM(amount)`) work fine on either route, so don't force-route
+        # them here. We check both qualified forms to tolerate datasets
+        # where ``measureFields`` was hydrated via a non-default view alias.
+        candidates = {field}
+        if base:
+            candidates.add(f"{base}.{field}")
+        return any(c in semantic_measures for c in candidates)
+
+    # Metric with qualified field OR with a bare ref that resolves to a
+    # declared semantic measure always needs the semantic engine — measure
+    # formulas, filtered measures, dataset-scope, and context-modifier
+    # measures all depend on it. Live builder has no idea what
+    # ``view.metric_name`` means and silently drops any internal filter.
+    if role_config:
+        for metric in role_config.get("metrics") or []:
+            if _metric_needs_semantic(metric):
+                # [pbi-filter] explain WHY we route semantic — the metric
+                # is qualified or matches a declared measure that may
+                # carry where_sql / filters. Temporary log; remove after
+                # rollout validation.
+                logger.info(
+                    "[pbi-filter] routing=semantic base=%s reason=metric metric=%r",
+                    base, (metric or {}).get("field"),
+                )
+                return True
+        for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+            if _metric_needs_semantic(role_config.get(key)):
+                logger.info(
+                    "[pbi-filter] routing=semantic base=%s reason=%s metric=%r",
+                    base, key, (role_config.get(key) or {}).get("field"),
+                )
+                return True
     for ref in _collect_role_config_field_refs(role_config):
         if "." not in ref:
             continue
@@ -225,6 +270,15 @@ def _role_config_needs_semantic_runtime(
             if not base or (view_part.strip() and view_part.strip() != base):
                 return True
 
+    # [pbi-filter] log the live-route decision too so DA can spot charts
+    # that are NOT going through semantic — these never see measure
+    # where_sql/filters applied. Temporary instrumentation.
+    logger.info(
+        "[pbi-filter] routing=live base=%s metrics=%s n_filters=%d",
+        base,
+        [(m or {}).get("field") for m in (role_config.get("metrics") or [])] if role_config else [],
+        len(runtime_filters or []),
+    )
     return False
 
 
@@ -475,20 +529,44 @@ def _rewrite_calendar_filter_to_all_roles(
     semantic_field: str,
     raw_field: str | None,
 ) -> list[dict[str, Any]] | None:
-    """G5 (PBI parity) — return EVERY calendar role that exposes the
-    requested column, so the caller can expand a single raw-calendar
-    filter into one filter per role (AND'd in WHERE clause).
+    """Calendar-filter rewrite — collapse role-played or raw-calendar
+    references onto the underlying fact source column with calendar
+    metadata. The engine WHERE-builder reads ``calendarField`` +
+    ``calendarSourceField`` and emits a direct expression
+    (``EXTRACT(YEAR FROM ...)`` etc.) on the source column — the SAME
+    SQL shape Chart Explore's raw-column filter produces.
 
-    Empty list / ``None`` means "no rewrite possible". Single-element
-    list keeps the legacy single-role behavior intact.
+    Two convergence wins:
 
-    Rationale: a dashboard-level Date filter targets the raw Date table
-    (``dataset_table_<calendar_id>.year``) but each chart's binding only
-    exposes role aliases. With ONE role match the rewrite is unambiguous.
-    With MULTIPLE roles (e.g. a deal table joined to calendar both as
-    ``created_date`` and ``closed_date``), the legacy code dropped the
-    filter silently — which violated PBI parity: PBI applies the
-    intersection (filter passes IFF every role satisfies the predicate).
+      1. **Identical SQL for the two UI paths.** Chart Explore filter
+         on the raw fact column (Path A) and Dashboard FilterPane
+         filter via the synthetic "Date" composite (Path B) now emit
+         the same WHERE clause shape — fixes the long-standing
+         "filter in chart works, filter in dashboard gives different
+         result" complaint.
+
+      2. **No role-played view dependency.** Earlier code emitted the
+         role-played alias (``dataset_table_<id>__<col>__date_dim``)
+         and trusted the engine to load it as a SemanticView. When
+         calendar settings drift (table removed but auto_calendar
+         joins persist), the engine crashed with
+         ``View '<role>__date_dim' not found``. Now the engine never
+         needs to load the role-played view for filter purposes; the
+         expression is computed directly on the base fact column.
+
+    Two input shapes are handled:
+
+      • **Raw calendar** (``dataset_table_<calendar_id>.year``) — legacy
+        FE codepath. Look up by ``calendarField`` in the binding's
+        ``calendarFieldMappings``; each matching mapping yields ONE
+        rewrite (so a chart with multiple calendar roles produces N
+        AND'd filters — PBI intersection semantics preserved).
+      • **Role-played alias** (``dataset_table_<id>__<col>__date_dim.year``)
+        — current FE Dashboard composite. Look up by ``semanticField``;
+        produces exactly one rewrite.
+
+    Empty list / ``None`` means "no rewrite possible" — caller falls
+    back to the original support check.
     """
     sem_ref = str(semantic_field or "").strip()
     if not sem_ref or "." not in sem_ref:
@@ -499,40 +577,113 @@ def _rewrite_calendar_filter_to_all_roles(
     if not sem_view or not sem_field_name:
         return None
 
-    mappings = [
+    all_mappings = [
         m for m in (binding.get("calendarFieldMappings") or [])
         if isinstance(m, dict)
-        and str(m.get("calendarField") or "").strip() == sem_field_name
     ]
-    role_refs = sorted({
-        str(m.get("semanticField") or "").strip()
-        for m in mappings
-        if str(m.get("semanticField") or "").strip()
-        and "." in str(m.get("semanticField") or "")
-    })
-    if not role_refs:
+    # The base view (fact table) the chart is anchored on. Role-played
+    # date dims are always joined OFF this view, so it's the natural
+    # target for the rewrite — and saves us from reverse-engineering the
+    # base view name out of a slugified role-view alias (where the
+    # column-name component was lowered + non-alnum normalized via
+    # `_slugify` and no longer matches the raw `sourceField` byte-for-byte).
+    base_view = str(binding.get("baseViewName") or "").strip()
+    if not base_view:
         return None
 
+    # Shape detection: does the incoming semanticField match a mapping
+    # exactly (role-played input) or only by its calendar field name
+    # (raw-calendar input)?
+    direct_match = next(
+        (m for m in all_mappings if str(m.get("semanticField") or "").strip() == sem_ref),
+        None,
+    )
+
+    if direct_match is not None:
+        # Role-played input — single rewrite targets one source column on
+        # the chart's base view.
+        source_field = str(direct_match.get("sourceField") or "").strip()
+        calendar_field = str(direct_match.get("calendarField") or "").strip()
+        if not source_field or not calendar_field:
+            return None
+        return [{
+            "semanticField": f"{base_view}.{source_field}",
+            "fieldKey": f"{base_view}.{source_field}",
+            "field": source_field,
+            "calendarField": calendar_field,
+            "calendarSourceField": source_field,
+        }]
+
+    # Raw-calendar input — fan out to every fact role that exposes this
+    # calendar field. PBI intersection semantics: filter applies if
+    # EVERY role satisfies (multi-role facts get AND'd predicates).
+    matching_by_field = [
+        m for m in all_mappings
+        if str(m.get("calendarField") or "").strip() == sem_field_name
+    ]
+    if not matching_by_field:
+        return None
+
+    # Deduplicate by source_field — multiple mappings of the same source
+    # column to different calendar fields shouldn't happen but are
+    # defensively coalesced here. All role-played dims hang off the same
+    # base view, so we always emit on `binding.baseViewName`.
+    seen: set[str] = set()
     out: list[dict[str, Any]] = []
-    for role_ref in role_refs:
-        role_view, _role_field = role_ref.split(".", 1)
-        # Skip when the source ref already targets the role view — that case
-        # falls through the normal binding-supported check.
+    for mapping in matching_by_field:
+        source_field = str(mapping.get("sourceField") or "").strip()
+        calendar_field = str(mapping.get("calendarField") or "").strip()
+        role_ref = str(mapping.get("semanticField") or "").strip()
+        if not source_field or not calendar_field or "." not in role_ref:
+            continue
+        role_view, _ = role_ref.split(".", 1)
+        # Skip rewrite when input already targets the role view itself —
+        # the direct-match branch above already handled that.
         if sem_view == role_view:
             continue
-        matched = next(
-            (m for m in mappings if str(m.get("semanticField") or "").strip() == role_ref),
-            None,
-        )
-        source_field = str((matched or {}).get("sourceField") or "").strip()
+        if source_field in seen:
+            continue
+        seen.add(source_field)
         out.append({
-            "semanticField": role_ref,
-            "fieldKey": role_ref,
-            "field": raw_field if raw_field else sem_field_name,
-            "calendarField": sem_field_name,
-            "calendarSourceField": source_field or sem_field_name,
+            "semanticField": f"{base_view}.{source_field}",
+            "fieldKey": f"{base_view}.{source_field}",
+            "field": source_field,
+            "calendarField": calendar_field,
+            "calendarSourceField": source_field,
         })
     return out or None
+
+
+def _log_calendar_rewrite(
+    semantic_field: str,
+    rewrites: list[dict[str, Any]] | None,
+) -> None:
+    """[pbi-filter] log calendar-filter rewrite events for prod debugging.
+
+    Logs once per filter that was rewritten so DA can grep
+    ``[pbi-filter] calendar-rewrite`` in docker logs and see exactly
+    which dashboard slicer / chart filter got collapsed onto the source
+    column. Temporary instrumentation; remove with the other entries
+    after the rollout is validated.
+    """
+    if not rewrites:
+        return
+    if len(rewrites) == 1:
+        rw = rewrites[0]
+        logger.info(
+            "[pbi-filter] calendar-rewrite single in=%s -> out=%s calendarField=%s sourceField=%s",
+            semantic_field,
+            rw.get("semanticField"),
+            rw.get("calendarField"),
+            rw.get("calendarSourceField"),
+        )
+    else:
+        logger.info(
+            "[pbi-filter] calendar-rewrite fanout in=%s -> %d roles: %s",
+            semantic_field,
+            len(rewrites),
+            [(r.get("semanticField"), r.get("calendarField")) for r in rewrites],
+        )
 
 
 def _resolve_legacy_calendar_filter_for_binding(
@@ -721,25 +872,38 @@ def _normalize_runtime_filters_for_chart(
         if not semantic_field and isinstance(filt.get("field"), str) and "." in filt["field"]:
             semantic_field = filt["field"].strip()
             filt = {**filt, "semanticField": semantic_field}
-        # Phase-15.96 — Bug B fix: filter targeting the raw generated
-        # calendar view (e.g. `dataset_table_185.date`) is not exposed
-        # directly by per-chart bindings; bindings only carry the
-        # role-played alias (`dataset_table_182__extracted_at__date_dim.date`).
-        # Try to rewrite the ref to a matching calendar role exposed by
-        # this chart's binding before checking support, so dashboard
-        # Date filters reach charts that use a calendar-joined column.
+        # Calendar-filter rewrite — runs unconditionally when the filter
+        # ref looks like a calendar reference (raw calendar view OR
+        # role-played alias). The rewrite lands the filter on the
+        # underlying fact column with `calendarField` + `calendarSourceField`
+        # metadata; the WHERE-builder emits a direct expression
+        # (``EXTRACT(YEAR FROM …)``) on the source column, identical to
+        # what Chart Explore's raw-column filter produces.
         #
-        # G5 PBI parity — when a chart exposes >1 calendar role (e.g. fact
-        # joined to calendar as both created_date and closed_date), the
-        # legacy single-role rewrite dropped the filter silently. We now
-        # expand it into ONE filter PER ROLE; downstream WHERE assembly
-        # ANDs them so the row passes only when EVERY role satisfies the
-        # predicate (intersection semantics — matches PBI default when a
-        # user adds a date filter to a multi-role chart).
-        if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
+        # Two reasons to ALWAYS try the rewrite (even when the binding
+        # claims to support the ref):
+        #   1. The role-played alias is in the binding's
+        #      `calendarFieldMappings` — so the legacy support check
+        #      returns True and the legacy code passed it through
+        #      unchanged. The SQL engine then tried to load the
+        #      role-played view as a SemanticView and crashed when
+        #      calendar settings had drifted (no calendar table → no
+        #      role-view rows). Bypassing the JOIN entirely removes
+        #      that fragile dependency.
+        #   2. The rewrite produces the SAME SQL shape as Chart Explore's
+        #      raw-column filter, so Dashboard FilterPane (Path B) and
+        #      Chart Explore (Path A) emit identical predicates — fixes
+        #      "filter in chart works but dashboard filter gives different
+        #      result" complaints.
+        #
+        # PBI intersection semantics preserved: a raw calendar ref on a
+        # chart with multiple calendar roles fans out into N filters
+        # (one per fact role), AND'd downstream.
+        if semantic_field and "." in semantic_field:
             multi = _rewrite_calendar_filter_to_all_roles(
                 binding, semantic_field, filt.get("field"),
             )
+            _log_calendar_rewrite(semantic_field, multi)
             if multi and len(multi) > 1:
                 # Expand: emit one filter per role with identical operator/value.
                 # Skip the downstream single-filter append (`result.append(filt)`)
@@ -1715,10 +1879,22 @@ def _execute_semantic_chart_runtime(
         # charts rarely repeat the same field with multiple operators; if it
         # happens we keep the runtime/dashboard value (which is appended last
         # by merge_chart_query_filters).
-        engine_filters[qualified] = {
+        engine_filt: dict[str, Any] = {
             "operator": operator,
             "value": filt.get("value"),
         }
+        # Forward calendar-rewrite metadata so the engine's WHERE-builder
+        # can emit a direct expression (``EXTRACT(YEAR FROM source)``
+        # etc.) on the base fact column instead of trying to load the
+        # role-played calendar SemanticView. See
+        # `_rewrite_calendar_filter_to_all_roles` for the producer side.
+        calendar_field = filt.get("calendarField") or filt.get("calendar_field")
+        if calendar_field:
+            engine_filt["calendarField"] = calendar_field
+            cal_source = filt.get("calendarSourceField") or filt.get("calendar_source_field")
+            if cal_source:
+                engine_filt["calendarSourceField"] = cal_source
+        engine_filters[qualified] = engine_filt
 
     # Phase-15.83 — DA decision: render every row. The previous code
     # capped chart queries at 1000 (default) / 5000 (with limit_override).
@@ -2456,6 +2632,13 @@ class ChartService:
         filter_context: str | None = None,
     ):
         """Get chart configuration with data."""
+        # [pbi-filter] entry log — correlate downstream routing / measure-
+        # filter / calendar-rewrite logs back to a specific chart-data call.
+        # Temporary debug instrumentation; remove once DA validates parity.
+        logger.info(
+            "[pbi-filter] entry get_chart_data chart_id=%s extra_filters=%d context=%r",
+            chart_id, len(extra_filters or []), filter_context,
+        )
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
