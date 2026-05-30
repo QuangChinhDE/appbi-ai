@@ -1606,59 +1606,6 @@ export function ExploreEditor({
     semanticLabelByColumnName,
   ]);
   const previewRows = previewData?.rows ?? [];
-  const executeRequest = useMemo(
-    () => buildExploreExecuteRequest({
-      chartType,
-      roleConfig: normalizedGeneratedRoleConfig,
-      styleConfig: chartStyleConfig,
-      filters,
-      limit: effectiveQueryLimit,
-    }),
-    [chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit],
-  );
-  const generatedSql = useMemo(
-    () => buildExploreSqlPreview({
-      table: selectedTable,
-      chartType,
-      roleConfig: normalizedGeneratedRoleConfig,
-      styleConfig: chartStyleConfig,
-      filters,
-      limit: effectiveQueryLimit,
-    }),
-    [selectedTable, chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit],
-  );
-  const currentQuerySignature = useMemo(
-    () => buildQuerySignature({
-      datasetId: selectedDatasetId,
-      tableId: selectedTableId,
-      limit: effectiveQueryLimit,
-      sqlMode,
-      chartType,
-      roleConfig: normalizedRoleConfig,
-      styleConfig: chartStyleConfig,
-      filters,
-      request: executeRequest,
-      customSql: customSqlDraft,
-    }),
-    [
-      selectedDatasetId,
-      selectedTableId,
-      effectiveQueryLimit,
-      sqlMode,
-      chartType,
-      normalizedRoleConfig,
-      chartStyleConfig,
-      filters,
-      executeRequest,
-      customSqlDraft,
-    ],
-  );
-  const activeQueryState = sqlMode === 'custom' ? customQueryState : generatedQueryState;
-  const activeLastRunSignature = sqlMode === 'custom'
-    ? customLastRunSignature
-    : generatedLastRunSignature;
-  const isQueryDirty = activeQueryState !== null && currentQuerySignature !== activeLastRunSignature;
-  const isRunningQuery = executeDatasetQuery.isPending || previewChartData.isPending;
   const customConfigColumns = useMemo<ColumnMetadata[] | null>(() => {
     if (!customQueryState?.columns) return null;
     return customQueryState.columns.map((column) => ({
@@ -1696,6 +1643,61 @@ export function ExploreEditor({
   const configColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
     : [...dedupedPreviewColumns, ...semanticColumns];
+  const executeRequest = useMemo(
+    () => buildExploreExecuteRequest({
+      chartType,
+      roleConfig: normalizedGeneratedRoleConfig,
+      styleConfig: chartStyleConfig,
+      filters,
+      limit: effectiveQueryLimit,
+      availableColumns: configColumns,
+    }),
+    [chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit, configColumns],
+  );
+  const generatedSql = useMemo(
+    () => buildExploreSqlPreview({
+      table: selectedTable,
+      chartType,
+      roleConfig: normalizedGeneratedRoleConfig,
+      styleConfig: chartStyleConfig,
+      filters,
+      limit: effectiveQueryLimit,
+      availableColumns: configColumns,
+    }),
+    [selectedTable, chartType, normalizedGeneratedRoleConfig, chartStyleConfig, filters, effectiveQueryLimit, configColumns],
+  );
+  const currentQuerySignature = useMemo(
+    () => buildQuerySignature({
+      datasetId: selectedDatasetId,
+      tableId: selectedTableId,
+      limit: effectiveQueryLimit,
+      sqlMode,
+      chartType,
+      roleConfig: normalizedRoleConfig,
+      styleConfig: chartStyleConfig,
+      filters,
+      request: executeRequest,
+      customSql: customSqlDraft,
+    }),
+    [
+      selectedDatasetId,
+      selectedTableId,
+      effectiveQueryLimit,
+      sqlMode,
+      chartType,
+      normalizedRoleConfig,
+      chartStyleConfig,
+      filters,
+      executeRequest,
+      customSqlDraft,
+    ],
+  );
+  const activeQueryState = sqlMode === 'custom' ? customQueryState : generatedQueryState;
+  const activeLastRunSignature = sqlMode === 'custom'
+    ? customLastRunSignature
+    : generatedLastRunSignature;
+  const isQueryDirty = activeQueryState !== null && currentQuerySignature !== activeLastRunSignature;
+  const isRunningQuery = executeDatasetQuery.isPending || previewChartData.isPending;
   const filterColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
     : [...dedupedPreviewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];

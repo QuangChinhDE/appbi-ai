@@ -3675,6 +3675,7 @@ export function ExploreChartConfig({
                   // has the SQL identifier on hover.
                   const display = colLabel(col);
                   const viewLabel = fieldSourceLabel(col);
+                  const isMeasure = isMeasureField(col);
                   return (
                     <label
                       key={col.name}
@@ -3697,6 +3698,18 @@ export function ExploreChartConfig({
                           <span className="ml-1.5 text-[10px] text-text-quaternary">· {viewLabel}</span>
                         )}
                       </span>
+                      {/* Persistent pill so DA can tell aggregated rows from
+                          raw ones at a glance. Without it, ticking a measure
+                          silently changes query semantics from "list rows"
+                          to "GROUP BY non-measures + auto-agg measures". */}
+                      {isMeasure && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-warning/10 text-warning"
+                          title="This is a semantic measure — selecting it makes the table aggregate by the non-measure columns."
+                        >
+                          Measure
+                        </span>
+                      )}
                       <span className="text-xs text-text-quaternary opacity-0 group-hover:opacity-100">{col.type}</span>
                     </label>
                   );

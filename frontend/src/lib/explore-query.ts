@@ -847,8 +847,18 @@ export function buildExploreExecuteRequest(args: {
   styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null;
   filters: Filter[];
   limit: number;
+  /**
+   * Optional list of column metadata (typically the same `availableColumns`
+   * fed to ExploreChartConfig). Used by the Table chart path to detect
+   * `fieldKind === 'measure'` entries in `selectedColumns` and route them
+   * to `request.measures` with `function: 'auto'` (BE then honours the
+   * measure's declared aggregation). Without this, every column in the
+   * Standard Table picker would be sent as a dimension — which 400s for
+   * semantic measures because the engine can't find them in `view.dimensions`.
+   */
+  availableColumns?: ColumnMetadata[];
 }): ExecuteQueryRequest {
-  const { chartType, roleConfig, styleConfig, filters, limit } = args;
+  const { chartType, roleConfig, styleConfig, filters, limit, availableColumns } = args;
   const normalized = withTableHyperlinkQueryColumns(
     chartType,
     normalizeRoleConfig(chartType, roleConfig),
@@ -927,8 +937,26 @@ export function buildExploreExecuteRequest(args: {
 
     if (normalized.selectedColumns && normalized.selectedColumns.length > 0) {
       const selectedColumnSet = new Set(normalized.selectedColumns);
-      const tableDimensions = normalized.selectedColumns.filter((field) => !selectedMetricFields.has(field));
-      const tableMeasures = queryMetrics.filter((metric) => selectedColumnSet.has(metric.field));
+      // Standard Table mode has no dedicated MetricSlot — `selectedColumns`
+      // mixes declared dimensions and declared measures together. Treat any
+      // entry whose Col.fieldKind is 'measure' as an implicit auto-agg
+      // metric so the BE engine picks up the measure's stored aggregation.
+      const declaredMeasureFieldSet = new Set(
+        (availableColumns ?? [])
+          .filter((column) => column.fieldKind === 'measure')
+          .map((column) => column.name)
+      );
+      const autoMeasureFields = normalized.selectedColumns.filter(
+        (field) => !selectedMetricFields.has(field) && declaredMeasureFieldSet.has(field),
+      );
+      const tableDimensions = normalized.selectedColumns.filter(
+        (field) => !selectedMetricFields.has(field) && !declaredMeasureFieldSet.has(field),
+      );
+      const explicitMeasures = queryMetrics
+        .filter((metric) => selectedColumnSet.has(metric.field))
+        .map((metric) => ({ field: metric.field, function: metric.agg }));
+      const autoMeasures = autoMeasureFields.map((field) => ({ field, function: 'auto' as const }));
+      const tableMeasures = [...explicitMeasures, ...autoMeasures];
 
       // Always include the chosen row dimension even if user forgot to tick it
       // in Visible Columns — without it BE GROUPs only by measures and emits
@@ -941,10 +969,7 @@ export function buildExploreExecuteRequest(args: {
         request.dimensions = tableDimensions;
       }
       if (tableMeasures.length > 0) {
-        request.measures = tableMeasures.map((metric) => ({
-          field: metric.field,
-          function: metric.agg,
-        }));
+        request.measures = tableMeasures;
       }
     } else if (queryMetrics.length > 0) {
       if (rowDimension) {
@@ -1040,13 +1065,14 @@ export function buildExploreSqlPreview(args: {
   styleConfig?: { tableHyperlinkRules?: TableHyperlinkRule[] } | null;
   filters: Filter[];
   limit: number;
+  availableColumns?: ColumnMetadata[];
 }): string {
-  const { table, chartType, roleConfig, styleConfig, filters, limit } = args;
+  const { table, chartType, roleConfig, styleConfig, filters, limit, availableColumns } = args;
   if (!table) {
     return '-- Select a table to see SQL';
   }
 
-  const request = buildExploreExecuteRequest({ chartType, roleConfig, styleConfig, filters, limit });
+  const request = buildExploreExecuteRequest({ chartType, roleConfig, styleConfig, filters, limit, availableColumns });
   const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
   const sourceSql = (table.source_kind === 'sql_query' || table.source_kind === 'derived_table') && table.source_query
     ? `(\n${table.source_query.trim()}\n) AS source_table`

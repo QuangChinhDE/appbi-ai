@@ -902,36 +902,47 @@ def _strip_base_view_qualifiers(
         if isinstance(item, dict) and str((item or {}).get("name") or "").strip()
     }
 
-    def _strip(field: str | None, declared_names: set[str]) -> str | None:
+    # Treat dims∪measures as the "declared semantic" set when deciding whether
+    # a qualified ref can be safely flattened to bare. If a qualified measure
+    # is mistakenly placed in the dimensions list (FE Table chart Standard
+    # mode does exactly this — selectedColumns can hold measures), stripping
+    # it to bare drops every dotted ref from the request and the routing
+    # oracle then sends the whole query down the legacy live-SQL path which
+    # cannot resolve virtual semantic measures. Keeping any declared field
+    # qualified pins the request to the semantic path so the reclassify
+    # step in _execute_semantic_dataset_query can move it back to measures.
+    declared_semantic_names = semantic_dimensions | semantic_measures
+
+    def _strip(field: str | None) -> str | None:
         if not field:
             return field
         if not field.startswith(base_prefix):
             return field
         bare = field[len(base_prefix):]
-        return field if bare in declared_names else bare
+        return field if bare in declared_semantic_names else bare
 
     next_dimensions = [
-        _strip(d, semantic_dimensions)
+        _strip(d)
         for d in (execute_request.dimensions or [])
     ]
     next_measures = [
-        AggregationSpec(field=_strip(m.field, semantic_measures) or m.field, function=m.function)
+        AggregationSpec(field=_strip(m.field) or m.field, function=m.function)
         for m in (execute_request.measures or [])
     ]
     next_filters = [
         FilterCondition(
-            field=_strip(f.field, semantic_dimensions) or f.field,
+            field=_strip(f.field) or f.field,
             operator=f.operator,
             value=f.value,
         )
         for f in (execute_request.filters or [])
     ]
     next_order_by = [
-        OrderBySpec(field=_strip(ob.field, semantic_dimensions) or ob.field, direction=ob.direction)
+        OrderBySpec(field=_strip(ob.field) or ob.field, direction=ob.direction)
         for ob in (execute_request.order_by or [])
     ]
     next_time_grains = {
-        (_strip(field, semantic_dimensions) or field): grain
+        (_strip(field) or field): grain
         for field, grain in (execute_request.time_grains or {}).items()
         if field
     }
@@ -988,17 +999,99 @@ def _execute_semantic_dataset_query(
             return raw
         return raw if "." in raw else f"{view.name}.{raw}"
 
-    dimensions = [qualify(item) for item in (execute_request.dimensions or []) if qualify(item)]
-    measures = [
-        qualify(item.field)
-        for item in (execute_request.measures or [])
-        if item.field
-    ]
-    measure_agg_overrides = {
-        qualify(item.field): str(item.function or "").strip().lower()
-        for item in (execute_request.measures or [])
-        if item.field and item.function
+    # Build a set of declared semantic measure refs (qualified `view.field`)
+    # reachable from this explore — base view + every active joined view.
+    # The chart-data path (chart_service.py:_invoke_semantic_chart_runtime)
+    # already routes a `selectedColumns` entry that matches a declared
+    # measure into the measure tier; the dataset execute path historically
+    # did not, so the Explore preview 400'd ("Dimension 'X' not found in
+    # view 'Y'") for the exact same chart that rendered correctly on a
+    # dashboard. Closing the drift here makes BE the single gatekeeper.
+    declared_measure_refs: set[str] = set()
+    for measure in (view.measures or []):
+        if not isinstance(measure, dict):
+            continue
+        name = str(measure.get("name") or "").strip()
+        if name:
+            declared_measure_refs.add(f"{view.name}.{name}")
+
+    dataset_view_ids = {
+        int(row.id)
+        for row in db.query(DatasetTable.id)
+        .filter(DatasetTable.dataset_id == dataset_obj.id)
+        .all()
     }
+    for join in (explore.joins or []):
+        raw_active = join.get("is_active") if isinstance(join, dict) else None
+        if raw_active is not None and not bool(raw_active):
+            continue
+        join_view_name = str(join.get("view") or "").strip() if isinstance(join, dict) else ""
+        join_node_name = str(join.get("alias") or "").strip() if isinstance(join, dict) else ""
+        join_node_name = join_node_name or join_view_name
+        if not join_view_name or not join_node_name:
+            continue
+        join_view = None
+        if dataset_view_ids:
+            join_view = (
+                db.query(SemanticView)
+                .filter(
+                    SemanticView.name == join_view_name,
+                    SemanticView.dataset_table_id.in_(dataset_view_ids),
+                )
+                .first()
+            )
+        if join_view is None:
+            join_view = (
+                db.query(SemanticView)
+                .filter(
+                    SemanticView.name == join_view_name,
+                    SemanticView.dataset_table_id.is_(None),
+                )
+                .first()
+            )
+        if join_view is None:
+            continue
+        for measure in (join_view.measures or []):
+            if not isinstance(measure, dict):
+                continue
+            name = str(measure.get("name") or "").strip()
+            if name:
+                declared_measure_refs.add(f"{join_node_name}.{name}")
+
+    explicit_measure_refs: list[str] = []
+    measure_agg_overrides: dict[str, str] = {}
+    for item in (execute_request.measures or []):
+        if not item.field:
+            continue
+        qualified = qualify(item.field)
+        if not qualified:
+            continue
+        if qualified not in explicit_measure_refs:
+            explicit_measure_refs.append(qualified)
+        agg = str(item.function or "").strip().lower()
+        if agg:
+            measure_agg_overrides[qualified] = agg
+
+    dimensions: list[str] = []
+    reclassified_refs: list[str] = []
+    for item in (execute_request.dimensions or []):
+        qualified = qualify(item)
+        if not qualified:
+            continue
+        if qualified in declared_measure_refs:
+            if qualified not in explicit_measure_refs and qualified not in reclassified_refs:
+                reclassified_refs.append(qualified)
+            continue
+        if qualified not in dimensions:
+            dimensions.append(qualified)
+
+    if reclassified_refs:
+        logger.info(
+            "execute_dataset auto-reclassified dimensions->measures: dataset=%s table=%s refs=%s",
+            dataset_obj.id, db_table.id, reclassified_refs,
+        )
+
+    measures = explicit_measure_refs + reclassified_refs
 
     # Operator normalisation: external callers (chart contracts, AI tools) may
     # use legacy names — canonicalise to the semantic schema's Literal values.
