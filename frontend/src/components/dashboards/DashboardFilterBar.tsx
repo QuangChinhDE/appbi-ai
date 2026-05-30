@@ -739,7 +739,13 @@ export function DashboardFilterBar({
               }}
               disabled={addableColumns.length === 0}
               title={addableColumns.length === 0 ? 'No dashboard filter fields available' : undefined}
-              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-brand border border-brand/40 rounded-md hover:bg-brand/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              // Phase-17 — chrome that survives any DashboardThemeProvider
+              // background colour. The old `text-brand` on transparent bg
+              // disappeared when the DA painted the canvas with a colour
+              // close to the brand. Solid brand fill + white text +
+              // shadow gives a stable affordance on light, dark and
+              // accent-heavy themes.
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-white bg-brand border border-brand/60 rounded-md shadow-md ring-1 ring-black/5 hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Filter

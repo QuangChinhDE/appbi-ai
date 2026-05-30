@@ -513,7 +513,15 @@ export function SlicerCluster({
           <button
             type="button"
             onClick={() => setIsCollapsed(false)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-tiny text-text-secondary shadow-linear-sm transition-colors hover:bg-surface-2"
+            // Phase-17 — chrome that survives any dashboard `theme_config`
+            // background. The DA can paint the canvas with arbitrary colors
+            // via DashboardThemeProvider; relying on theme tokens
+            // (`bg-surface-1`, `text-text-secondary`) blends the pill into
+            // the very background it's meant to float above. Use a strong
+            // brand accent fill + white icon/text + drop shadow so the
+            // toggle stays legible against light/dark/coloured backgrounds
+            // alike.
+            className="inline-flex items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover"
             title={
               activeSlicerCount > 0
                 ? `Show filters (${activeSlicerCount} active)`
@@ -526,8 +534,8 @@ export function SlicerCluster({
               <span
                 className={`inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
                   activeSlicerCount > 0
-                    ? 'bg-brand text-text-inverse'
-                    : 'bg-surface-2 text-text-tertiary'
+                    ? 'bg-white text-brand'
+                    : 'bg-white/25 text-white'
                 }`}
               >
                 {activeSlicerCount > 0 ? activeSlicerCount : slicerEntries.length}
