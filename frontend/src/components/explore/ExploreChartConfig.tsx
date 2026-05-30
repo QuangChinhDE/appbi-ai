@@ -5391,8 +5391,52 @@ export function ExploreChartConfig({
           {/* Data Labels — moved into Advanced group (Phase-15.92). */}
           {(() => {
             const noLabelTypes = new Set(['PODIUM', 'KPI', 'GAUGE', 'BULLET']);
-            const hideEditor = isScatterLike || isTableLike || noLabelTypes.has(chartType);
-            if (hideEditor) return null;
+            const hideFullEditor = isScatterLike || isTableLike || noLabelTypes.has(chartType);
+            // No-dimension metric / podium / scatter still display a single
+            // formatted value; they just don't have per-point series labels.
+            // Surface JUST the Value format select so DA can pick %/currency/compact
+            // for the displayed number without enabling the full per-series editor.
+            const showCompactFormat = noLabelTypes.has(chartType);
+            if (showCompactFormat) {
+              const dlc = styleConfig.dataLabelConfig ?? {};
+              const currentFormat = dlc.format ?? '';
+              return (
+                <Disclosure
+                  title="Value format"
+                  hint="Pick how the displayed number is rendered. Falls back to the chart-level Number Format when left at (inherit)."
+                >
+                  <div>
+                    <label className="text-xs font-semibold text-text-secondary mb-1 block">
+                      Display units
+                    </label>
+                    <select
+                      value={currentFormat}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        updStyle({
+                          dataLabelConfig: {
+                            ...dlc,
+                            format: next === '' ? undefined : (next as NumberFormat),
+                          },
+                        });
+                      }}
+                      className="w-full px-2 py-1 text-[11px] border border-[rgb(var(--border-line))] rounded bg-surface-1"
+                    >
+                      <option value="">(inherit chart Number Format)</option>
+                      <option value="auto">Auto (raw)</option>
+                      <option value="compact">Compact (1.2K, 3.4M)</option>
+                      <option value="number">Full Number (1,234)</option>
+                      <option value="percent">Percent (%)</option>
+                      <option value="currency">Currency ($)</option>
+                    </select>
+                    <p className="text-[10px] text-text-quaternary mt-1">
+                      Overrides the chart-level Number Format for the displayed value only.
+                    </p>
+                  </div>
+                </Disclosure>
+              );
+            }
+            if (hideFullEditor) return null;
             return (
               <Disclosure
                 title="Data Labels"

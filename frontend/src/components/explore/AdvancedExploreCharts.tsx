@@ -599,6 +599,24 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
   );
 }
 
+/**
+ * Pick the effective NumberFormat for a no-dimension metric chart
+ * (GAUGE / BULLET — mirrors the same precedence Podium/KPI use in
+ * ExploreChart.tsx). DataLabel-level format wins over seriesFormats
+ * which wins over the chart-wide numberFormat. Returns a derived style
+ * so the existing `formatNumber(value, style)` call sites stay untouched.
+ */
+function styleWithEffectiveNumberFormat(
+  style: ChartStyleConfig,
+  seriesKey: string | undefined,
+): ChartStyleConfig {
+  const dlc = style.dataLabelConfig;
+  const dataLabelFormat = (seriesKey && dlc?.overrides?.[seriesKey]?.format) ?? dlc?.format;
+  const perSeriesFormat = seriesKey ? style.seriesFormats?.[seriesKey] : undefined;
+  const effective = dataLabelFormat ?? perSeriesFormat ?? style.numberFormat;
+  return effective ? { ...style, numberFormat: effective } : style;
+}
+
 function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
   // Phase-15.86 — primary arc colour respects seriesColors override.
   // Key = the chart's primary metric key (or 'value' fallback for legacy
@@ -615,14 +633,15 @@ function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: nu
     return `M ${p0.x} ${p0.y} A ${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${p1.x} ${p1.y}`;
   };
   const needle = polar(400, 260, 112, valueEnd);
+  const labelStyle = styleWithEffectiveNumberFormat(style, seriesKey);
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <path d={arc(150, start, end)} fill="none" stroke="rgb(var(--surface-3))" strokeWidth={34} strokeLinecap="round" />
       <path d={arc(150, start, valueEnd)} fill="none" stroke={arcColor} strokeWidth={34} strokeLinecap="round" />
       <line x1={400} y1={260} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
       <circle cx={400} cy={260} r={8} fill="rgb(var(--text-primary))" />
-      <text x={400} y={330} fontSize={34} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, style)}</text>
-      <text x={400} y={354} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, style)}</text>
+      <text x={400} y={330} fontSize={34} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
+      <text x={400} y={354} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, labelStyle)}</text>
     </svg>
   );
 }
@@ -634,15 +653,16 @@ function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: n
   const targetX = 120 + 560 * Math.max(0, safeTarget / max);
   // Phase-15.86 — value bar honours seriesColors override.
   const barColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
+  const labelStyle = styleWithEffectiveNumberFormat(style, seriesKey);
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={120} y={175} width={560} height={70} rx={8} fill="rgb(var(--surface-3))" />
       <rect x={120} y={175} width={valueWidth} height={70} rx={8} fill={barColor} />
       <line x1={targetX} y1={150} x2={targetX} y2={272} stroke="rgb(var(--text-primary))" strokeWidth={4} />
       <text x={120} y={315} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
-      <text x={680} y={315} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, style)}</text>
-      <text x={400} y={130} fontSize={30} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, style)}</text>
-      <text x={400} y={152} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, style)}</text>
+      <text x={680} y={315} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, labelStyle)}</text>
+      <text x={400} y={130} fontSize={30} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
+      <text x={400} y={152} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, labelStyle)}</text>
     </svg>
   );
 }

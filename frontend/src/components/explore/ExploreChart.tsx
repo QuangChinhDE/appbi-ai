@@ -1600,7 +1600,15 @@ function ExploreChartInner({
     const chartWideFormatIfSet = style.numberFormat && style.numberFormat !== 'compact'
       ? style.numberFormat
       : undefined;
-    const kpiFormat = style.seriesFormats?.[kpiMetricKey]
+    // DataLabel-level format (set via the simplified "Value format" disclosure
+    // for KPI/GAUGE/BULLET/PODIUM) wins over every other layer — it's the
+    // explicit display-units pick for THIS card. Falls through the existing
+    // precedence (per-series → chart-wide → semantic measure → default) when
+    // unset.
+    const dlc = style.dataLabelConfig;
+    const dataLabelFormat = dlc?.overrides?.[kpiMetricKey]?.format ?? dlc?.format;
+    const kpiFormat = dataLabelFormat
+      ?? style.seriesFormats?.[kpiMetricKey]
       ?? chartWideFormatIfSet
       ?? formatMap?.get(kpiMetric.field)
       ?? style.numberFormat
@@ -1669,7 +1677,13 @@ function ExploreChartInner({
     // Phase-15.86 — per-metric format precedence (override > seriesFormats >
     // global). Lets DA show podium values as currency on one chart and
     // percent on another within the same dashboard.
-    const podiumFmt = style.seriesFormats?.[valueField] ?? style.numberFormat;
+    // DataLabel "Value format" pick wins when set — Podium reuses the same
+    // simplified disclosure as KPI/GAUGE/BULLET.
+    const podiumDlc = style.dataLabelConfig;
+    const podiumDataLabelFormat = podiumDlc?.overrides?.[valueField]?.format ?? podiumDlc?.format;
+    const podiumFmt = podiumDataLabelFormat
+      ?? style.seriesFormats?.[valueField]
+      ?? style.numberFormat;
     const podiumStyle = podiumFmt ? { ...style, numberFormat: podiumFmt } : style;
     const fmt = (v: any) => formatNumber(Number(v) || 0, podiumStyle, valueField);
     return (
