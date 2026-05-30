@@ -630,7 +630,6 @@ export interface DashboardUpdate {
   description?: string;
   filters_config?: any[];
   public_filters_config?: any[];
-  pages_config?: DashboardPageConfig[];
   layout_mode?: DashboardLayoutMode;
   theme_config?: DashboardThemeConfig | null;
   canvas_config?: DashboardCanvasConfig | null;

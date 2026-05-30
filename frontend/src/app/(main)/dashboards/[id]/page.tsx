@@ -1011,18 +1011,20 @@ export default function DashboardDetailPage() {
     setDraftPageFilters(activePageFilters);
   };
 
+  // Pages CRUD writes go through the draft pipeline (same as filter /
+  // slicer edits) so Publish/Discard treats them atomically. Writing
+  // straight to live `pages_config` would be overwritten by a later
+  // publish flush that copies snapshot.pages_config back onto live.
   const persistPagesConfig = useCallback(async (pages: DashboardPageConfig[]) => {
     setLocalPagesConfig(pages);
     try {
-      await updateDashboardMutation.mutateAsync({
-        id: dashboardId,
-        data: { pages_config: pages },
-      });
+      await dashboardApi.updateDraftFilters(dashboardId, { pages_config: pages });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     } catch (error) {
       setLocalPagesConfig(null);
       throw error;
     }
-  }, [dashboardId, updateDashboardMutation]);
+  }, [dashboardId, queryClient]);
 
   const handleAddPage = async () => {
     const nextPage: DashboardPageConfig = {
@@ -1097,10 +1099,29 @@ export default function DashboardDetailPage() {
 
     try {
       if (chartsToMove.length > 0) {
-        await updateLayoutMutation.mutateAsync({
+        // Stage chart moves into draft_layouts (combined with any pending
+        // local layout overrides) so Discard reverts the move together
+        // with the page delete; otherwise charts would stay moved on
+        // LIVE while the page reappeared on discard.
+        const mergedLayouts: Record<number, Record<string, any>> = {};
+        for (const [id, layout] of Object.entries(localLayoutOverrides)) {
+          mergedLayouts[Number(id)] = layout;
+        }
+        for (const move of chartsToMove) {
+          mergedLayouts[move.id] = {
+            ...(localLayoutOverrides[move.id] ?? {}),
+            ...move.layout,
+          };
+        }
+        const chartLayoutsPayload = Object.entries(mergedLayouts).map(([id, layout]) => ({
+          id: Number(id),
+          layout,
+        }));
+        await updateDraftLayoutMutation.mutateAsync({
           dashboardId,
-          chartLayouts: chartsToMove,
+          chartLayouts: chartLayoutsPayload,
         });
+        setLocalLayoutOverrides({});
       }
       await persistPagesConfig(dashboardPages.filter((page) => page.id !== pendingDeletePageId));
       if (activePageId === pendingDeletePageId) {

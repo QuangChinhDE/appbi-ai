@@ -530,14 +530,21 @@ class DashboardCreate(DashboardBase):
 
 
 class DashboardUpdate(BaseModel):
-    """Schema for updating a dashboard."""
+    """Schema for updating a dashboard.
+
+    `pages_config` intentionally omitted — pages CRUD goes through the
+    draft pipeline at PUT /dashboards/{id}/draft-filters so Publish /
+    Discard can manage it atomically. Writing to live here would be
+    overwritten on the next publish flush. Pydantic v2 default is
+    `extra="ignore"`, so legacy clients still sending pages_config get
+    silently dropped instead of 422'd.
+    """
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None
     slicer_cluster_layout: Optional[Dict[str, Any]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
-    pages_config: Optional[List[Dict[str, Any]]] = None
     layout_mode: Optional[str] = None
     theme_config: Optional[Dict[str, Any]] = None
     canvas_config: Optional[Dict[str, Any]] = None
