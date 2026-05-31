@@ -817,7 +817,101 @@ def _find_semantic_refs_to_columns(
     return refs
 
 
-def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
+def _collect_reachable_bare_names(
+    db: Session,
+    db_table: "DatasetTable",
+) -> tuple[set[str], set[str]]:
+    """Phase-15.98 — gather bare names of declared semantic measures + dims
+    reachable from ``db_table`` for the dataset-execute routing oracle.
+
+    Returns ``(measure_names, dim_names)``:
+      • ``measure_names`` — bare names of every declared measure on the
+        base view OR on any view reachable from base via active joins.
+      • ``dim_names`` — bare names of every declared dimension on the
+        BASE view only (used as shadow-guard set; cross-view dims aren't
+        relevant because their qualified ref is what triggers semantic).
+
+    Returns ``(set(), set())`` when the table has no semantic view yet —
+    in that case the routing oracle's dotted-ref check is the only signal,
+    matching legacy behaviour.
+
+    Uses ``reachable_fields_for_model`` (the same helper Chart binding
+    hydration uses) so the two paths see the same registry. Caches on
+    ``(model_id, base_view_id)`` via lru_cache wouldn't be safe because
+    the model can mutate during a session; for now we accept the per-call
+    DB hit (the path is rare — only Standard Table preview goes through
+    here, and only once per render).
+    """
+    from app.models.semantic import SemanticModel, SemanticView
+    from app.services.dataset_model_service import reachable_fields_for_model
+
+    view = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id == db_table.id)
+        .first()
+    )
+    if view is None:
+        return set(), set()
+
+    model = (
+        db.query(SemanticModel)
+        .filter(SemanticModel.dataset_id == db_table.dataset_id)
+        .first()
+    )
+
+    base_dim_names: set[str] = set()
+    base_measure_names: set[str] = set()
+    for dim in (view.dimensions or []):
+        name = str((dim or {}).get("name") or "").strip()
+        if name:
+            base_dim_names.add(name)
+    for measure in (view.measures or []):
+        name = str((measure or {}).get("name") or "").strip()
+        if name:
+            base_measure_names.add(name)
+
+    reachable_measure_names: set[str] = set(base_measure_names)
+    if model is not None:
+        try:
+            reachable = reachable_fields_for_model(db, model, base_view_name=view.name)
+        except Exception:  # noqa: BLE001 — graceful fall-back
+            reachable = []
+        for field in reachable or []:
+            # Each entry is a qualified ref ``view.field``. The reachable
+            # helper returns BOTH dims and measures; we filter by checking
+            # whether the trailing segment is a declared measure on any
+            # view via direct SemanticView query (cheaper than re-scanning
+            # the model in Python).
+            if not isinstance(field, str) or "." not in field:
+                continue
+            view_part, _, name_part = field.rpartition(".")
+            if not name_part:
+                continue
+            # Defensive: only promote measure-class names to keep the
+            # routing oracle aligned with chart_service._metric_needs_semantic.
+            # We look up the SemanticView by name and check its measures list.
+            joined_view = (
+                db.query(SemanticView)
+                .filter(SemanticView.name == view_part)
+                .first()
+            )
+            if joined_view is None:
+                continue
+            for measure in (joined_view.measures or []):
+                m_name = str((measure or {}).get("name") or "").strip()
+                if m_name == name_part:
+                    reachable_measure_names.add(name_part)
+                    break
+
+    return reachable_measure_names, base_dim_names
+
+
+def _contains_semantic_field_refs(
+    execute_request: ExecuteQueryRequest,
+    *,
+    declared_bare_measure_names: set[str] | None = None,
+    declared_bare_dim_names: set[str] | None = None,
+) -> bool:
     """FE→BE routing oracle: presence of ANY dotted ref ('view.field') in
     dimensions / measures / filters / order_by tells the dataset query
     endpoint (`execute_dataset_query`) to route the request to
@@ -840,7 +934,20 @@ def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
         dataset model is loaded, eliminating the race where preview
         columns arrive first and a bare pick gets locked in.
 
-    This trio is what gives ``has_ref`` consistent input.
+    Phase-15.98 (S2A parity with chart-data routing) — when the caller
+    supplies ``declared_bare_measure_names`` (and optionally
+    ``declared_bare_dim_names``), this oracle ALSO promotes bare
+    measures whose name matches a declared semantic measure on a
+    REACHABLE view. Mirrors ``chart_service._metric_needs_semantic``
+    so Standard Table preview and Chart preview agree on routing for
+    the same chart shape. Without this, a bare cross-table measure
+    silently routed to live_query and dropped its measure-level
+    ``where_sql`` / ``filters``.
+
+    ``declared_bare_dim_names`` plays the shadow-guard role: when the
+    base view also exposes the same bare name, prefer live path so DA's
+    plain-column intent isn't hijacked by a same-named declared measure
+    on a joined view.
     """
     def has_ref(value: Any) -> bool:
         return isinstance(value, str) and "." in value and value.split(".", 1)[0].strip()
@@ -855,6 +962,35 @@ def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
         return True
     if any(has_ref(item) for item in (execute_request.time_grains or {}).keys()):
         return True
+
+    # Phase-15.98 — bare-measure registry parity.
+    declared_measures = declared_bare_measure_names or set()
+    declared_dims = declared_bare_dim_names or set()
+    if declared_measures:
+        for item in (execute_request.measures or []):
+            field = str(getattr(item, "field", None) or "").strip()
+            if not field or "." in field:
+                continue
+            if field not in declared_measures:
+                continue
+            # Shadow guard — base view declares the same bare name as a dim
+            # → DA likely intended the plain column, keep on live path.
+            if field in declared_dims:
+                continue
+            return True
+        for item in (execute_request.dimensions or []):
+            field = str(item or "").strip()
+            if not field or "." in field:
+                continue
+            # Dimensions list may carry declared-dim bare refs that need
+            # semantic resolution (formulas, filters, view aliases).
+            if field in declared_dims and field not in (execute_request.measures or []):
+                # Pure dim path — only force semantic when bare ref maps
+                # to a DECLARED semantic dim cross-view. Same-view bare
+                # raw columns stay live. Skipped for now to avoid
+                # over-routing; rely on FE qualification for dims.
+                pass
+
     return False
 
 
@@ -3668,7 +3804,19 @@ def execute_dataset_table_query(
     # through the semantic engine.
     execute_request = _strip_base_view_qualifiers(db, db_table, execute_request)
 
-    if _contains_semantic_field_refs(execute_request):
+    # Phase-15.98 (S2A parity) — collect bare names of declared semantic
+    # measures + dimensions reachable from this table so the routing oracle
+    # can promote bare cross-view measure refs to the semantic path. Without
+    # this, Standard Table preview silently routes
+    # ``measures=[{"field":"revenue_marketing", ...}]`` to live_query when
+    # ``revenue_marketing`` lives on a JOINED view — the bug DA hit.
+    declared_bare_measures, declared_bare_dims = _collect_reachable_bare_names(db, db_table)
+
+    if _contains_semantic_field_refs(
+        execute_request,
+        declared_bare_measure_names=declared_bare_measures,
+        declared_bare_dim_names=declared_bare_dims,
+    ):
         return _execute_semantic_dataset_query(db, dataset_obj, db_table, execute_request)
 
     # ── Resolve datasource and build live query target ──

@@ -1081,9 +1081,17 @@ class SemanticQueryEngine:
             # builder will NOT log this line — that asymmetry was the source
             # of the "chart preview vs dashboard differ" reports for
             # measures like ``Lead nhận Marketing`` with internal predicates.
+            # ``chart_id`` read from the contextvar set by
+            # ``chart_service.get_chart_data`` so DA can grep one tile.
             # Temporary instrumentation.
+            try:
+                from app.services.chart_service import _pbi_current_chart_id
+                _pbi_cid = _pbi_current_chart_id()
+            except Exception:
+                _pbi_cid = None
             logger.info(
-                "[pbi-filter] measure-filter applied view=%s measure=%s type=%s where=%s",
+                "[pbi-filter] measure-filter applied chart_id=%s view=%s measure=%s type=%s where=%s",
+                _pbi_cid,
                 view_name,
                 measure_def.get("name"),
                 measure_type,
@@ -1928,8 +1936,14 @@ class SemanticQueryEngine:
                         # dashboard date slicer emitted EXTRACT()/etc
                         # instead of the legacy JOIN-on-CAST(DATE) path.
                         # Temporary instrumentation.
+                        try:
+                            from app.services.chart_service import _pbi_current_chart_id
+                            _pbi_cid = _pbi_current_chart_id()
+                        except Exception:
+                            _pbi_cid = None
                         logger.info(
-                            "[pbi-filter] where-calendar field=%s calendarField=%s dialect=%s expr=%s",
+                            "[pbi-filter] where-calendar chart_id=%s field=%s calendarField=%s dialect=%s expr=%s",
+                            _pbi_cid,
                             field_ref,
                             calendar_field_ref,
                             (self.database_type or "").lower(),

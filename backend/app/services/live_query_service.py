@@ -10,6 +10,7 @@ Includes dry-run cost guard for BigQuery.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import date as dt_date, datetime
 from dataclasses import dataclass
@@ -709,10 +710,42 @@ def build_live_agg_query(
     Returns (sql, pre_aggregated).
     Defaults stay conservative (chart 1000, TABLE/raw point charts 5000), while
     preview callers may request a higher limit up to a 5000-row server cap.
+
+    Phase-15.98 (S1A defensive instrumentation) — the live builder has zero
+    awareness of semantic measure metadata. Any ``where_sql`` / ``filters``
+    declared on a declared measure is silently dropped if routing fails to
+    promote the chart to semantic. Routing in
+    ``chart_service._role_config_needs_semantic_runtime`` IS the gate, but
+    if it ever fails-open (incomplete binding, schema drift, MCP-saved
+    chart with bare metric matching a declared measure on a joined view),
+    DA sees a wrong total with no observable reason. Log every BARE metric
+    this builder accepts at DEBUG level so production triage has a
+    greppable trail.
     """
     qi = _quote_identifier
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
     role_config = normalize_chart_role_config(chart_type, role_config)
+
+    # [pbi-filter] live-path bare-metric audit trail. DEBUG (not WARNING)
+    # because the legitimate case (bare metric === physical column on the
+    # base table) is common and benign — only the bare-metric-that-was-a-
+    # declared-measure case is harmful, and that should already have been
+    # promoted to semantic upstream. Surface in logs anyway for grep.
+    if logger.isEnabledFor(logging.DEBUG):
+        _metric_slots: list[tuple[str, Any]] = [("metrics_item", m) for m in (role_config.get("metrics") or [])]
+        for _key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+            _m = role_config.get(_key)
+            if _m:
+                _metric_slots.append((_key, _m))
+        for _slot, _m in _metric_slots:
+            if isinstance(_m, dict):
+                _f = str(_m.get("field") or "").strip()
+                if _f and "." not in _f:
+                    logger.debug(
+                        "[pbi-filter] live_builder accepted bare metric slot=%s field=%r "
+                        "— measure-level where_sql/filters will NOT be applied on this path",
+                        _slot, _f,
+                    )
     row_order_alias = "__appbi_row_order"
     group_order_alias = "__appbi_group_order"
     quoted_row_order_alias = qi(row_order_alias, dialect)

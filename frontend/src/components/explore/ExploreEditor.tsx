@@ -2458,7 +2458,18 @@ export function ExploreEditor({
       return;
     }
 
-    const activeSavedRoleConfig = sqlMode === 'custom' ? customRoleConfig : generatedRoleConfig;
+    // Phase-15.98 (S2B) — run the bare→qualified upgrade once more at save
+    // time so the persisted config is deterministic regardless of when the
+    // user clicked Save relative to semantic-binding hydration. Prior code
+    // only ran `upgradeRoleConfigToQualified` inside the runtime sync /
+    // prune effects, leaving an edge case where a user picks a measure
+    // mid-hydration and saves before the next effect tick — the chart
+    // persists with a bare metric.field that downstream routing has to
+    // re-resolve every render. Idempotent: qualified refs pass through
+    // untouched.
+    const savedGenerated = upgradeRoleConfigToQualified(generatedRoleConfig, qualifiedByBare);
+    const savedCustom = upgradeRoleConfigToQualified(customRoleConfig, qualifiedByBare);
+    const activeSavedRoleConfig = sqlMode === 'custom' ? savedCustom : savedGenerated;
     const tableConditionalFormatting = chartStyleConfig.tableConditionalFormatting;
     const exploreConfig = {
       dataset_id: selectedDatasetId,
@@ -2467,8 +2478,8 @@ export function ExploreEditor({
       chartType,
       queryMode: sqlMode,
       roleConfig: activeSavedRoleConfig,
-      generatedRoleConfig,
-      customRoleConfig,
+      generatedRoleConfig: savedGenerated,
+      customRoleConfig: savedCustom,
       ...(trimmedCustomSql ? { customSql: trimmedCustomSql } : {}),
       styleConfig: chartStyleConfig,
       ...(TABLE_LIKE_CHART_TYPES.has(chartType) && tableConditionalFormatting?.length
