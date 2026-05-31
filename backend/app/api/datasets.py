@@ -843,7 +843,7 @@ def _collect_reachable_bare_names(
     here, and only once per render).
     """
     from app.models.semantic import SemanticModel, SemanticView
-    from app.services.dataset_model_service import reachable_fields_for_model
+    from app.services.semantic_join_resolver import reachable_fields_for_model
 
     view = (
         db.query(SemanticView)
@@ -872,36 +872,20 @@ def _collect_reachable_bare_names(
 
     reachable_measure_names: set[str] = set(base_measure_names)
     if model is not None:
+        # `reachable_fields_for_model` lives in semantic_join_resolver and
+        # returns (nodes, dim_fields, measure_fields) — each *_fields entry
+        # is a qualified `node.name` string and the measure list ALREADY
+        # excludes dims, so we don't need to re-look the view up to filter.
         try:
-            reachable = reachable_fields_for_model(db, model, base_view_name=view.name)
+            _, _, reachable_measure_fields = reachable_fields_for_model(db, model, view)
         except Exception:  # noqa: BLE001 — graceful fall-back
-            reachable = []
-        for field in reachable or []:
-            # Each entry is a qualified ref ``view.field``. The reachable
-            # helper returns BOTH dims and measures; we filter by checking
-            # whether the trailing segment is a declared measure on any
-            # view via direct SemanticView query (cheaper than re-scanning
-            # the model in Python).
+            reachable_measure_fields = []
+        for field in reachable_measure_fields or []:
             if not isinstance(field, str) or "." not in field:
                 continue
-            view_part, _, name_part = field.rpartition(".")
-            if not name_part:
-                continue
-            # Defensive: only promote measure-class names to keep the
-            # routing oracle aligned with chart_service._metric_needs_semantic.
-            # We look up the SemanticView by name and check its measures list.
-            joined_view = (
-                db.query(SemanticView)
-                .filter(SemanticView.name == view_part)
-                .first()
-            )
-            if joined_view is None:
-                continue
-            for measure in (joined_view.measures or []):
-                m_name = str((measure or {}).get("name") or "").strip()
-                if m_name == name_part:
-                    reachable_measure_names.add(name_part)
-                    break
+            _, _, name_part = field.rpartition(".")
+            if name_part:
+                reachable_measure_names.add(name_part)
 
     return reachable_measure_names, base_dim_names
 
