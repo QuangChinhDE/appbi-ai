@@ -2198,23 +2198,56 @@ class SemanticQueryEngine:
         to that FROM-chain alias and the filter constrains the right grain.
         Anchoring to base remains the behaviour for the common single-fact
         case (filter on a dim joined directly to the base) → no regression.
+
+        PATH SELECTION (2026-06 deepening): a filter view (e.g. ``sdr_owner``)
+        is typically reachable from the base via SEVERAL equal-length paths —
+        one through each sibling fact that shares its key (``Date→deal→owner``,
+        ``Date→revenue→owner``, ``Date→activity→owner`` …). ``resolve_path``
+        returns whichever the BFS adjacency order discovers first, which is
+        usually NOT the measure's fact — so the EXISTS correlates to a sibling
+        fact's date back to the base ("this month had a *won deal / activity*
+        by Santiago") instead of to the measure's own deal on ``sdr_key``. We
+        therefore enumerate ALL shortest paths (``resolve_paths``) and pick the
+        one whose correlation anchor lands on the DEEPEST already-joined node —
+        i.e. the path that runs THROUGH the measure's (or a dim's) joined view —
+        so the filter scopes the measure's grain. When only one shortest path
+        exists, or none anchors deeper than the base, the choice is identical to
+        the prior ``resolve_path`` behaviour → no regression.
         """
         resolver = self._resolver
         if resolver is None or not predicates:
             return None
-        path = resolver.resolve_path(target_node)
-        if path is None or not path.steps:
-            return None
 
-        # Pick the deepest already-joined node on the path as the correlation
-        # anchor. `path.steps` runs base→…→target; step.edge.from_node is the
-        # closer-to-base side of each hop. The highest index whose from_node is
-        # in the FROM chain is the most specific anchor (closest to target).
         jn = joined_nodes or set()
-        start_idx = 0
-        for i, step in enumerate(path.steps):
-            if getattr(step.edge, "from_node", None) in jn:
-                start_idx = i
+
+        def _anchor_idx(p) -> int:
+            """Deepest index on ``p.steps`` whose hop SOURCE is already joined.
+
+            ``p.steps`` runs base→…→target; ``step.edge.from_node`` is the
+            closer-to-base side of each hop. The highest such index is the most
+            specific (closest-to-target) correlation anchor available on ``p``.
+            """
+            idx = 0
+            for i, step in enumerate(p.steps):
+                if getattr(step.edge, "from_node", None) in jn:
+                    idx = i
+            return idx
+
+        # Enumerate every equal-length shortest path and prefer the one with the
+        # deepest joined anchor. resolve_paths' first entry == resolve_path, so
+        # the single-path / no-deeper-anchor cases stay byte-identical to before.
+        candidate_paths = [p for p in (resolver.resolve_paths(target_node) or []) if p and p.steps]
+        if not candidate_paths:
+            single = resolver.resolve_path(target_node)
+            candidate_paths = [single] if (single and single.steps) else []
+        if not candidate_paths:
+            return None
+        path = candidate_paths[0]
+        start_idx = _anchor_idx(path)
+        for cand in candidate_paths[1:]:
+            cand_idx = _anchor_idx(cand)
+            if cand_idx > start_idx:
+                path, start_idx = cand, cand_idx
         sub_steps = path.steps[start_idx:]
         if not sub_steps:
             return None
