@@ -335,6 +335,7 @@ class SemanticQueryEngine:
             exists_views=exists_views,
             explore=explore,
             select_side_views=select_side_views,
+            joined_nodes=joined_nodes,
         )
         having_clause = self._build_having_clause(
             having_filters, time_grains,
@@ -1692,6 +1693,7 @@ class SemanticQueryEngine:
         exists_views: set[str] | None = None,
         explore: SemanticExplore | None = None,
         select_side_views: set[str] | None = None,
+        joined_nodes: set[str] | None = None,
     ) -> str:
         """Build WHERE clause from filters.
 
@@ -2140,7 +2142,7 @@ class SemanticQueryEngine:
         # correlates back to it, so the filter constrains the base rows
         # without the FROM-chain fan-out that double-counts measures.
         for view_node, preds in exists_groups.items():
-            clause = self._build_filter_exists_clause(explore, view_node, preds)
+            clause = self._build_filter_exists_clause(explore, view_node, preds, joined_nodes=joined_nodes)
             if clause:
                 where_conditions.append(clause)
             else:
@@ -2172,15 +2174,30 @@ class SemanticQueryEngine:
         explore: SemanticExplore | None,
         target_node: str,
         predicates: List[str],
+        joined_nodes: set[str] | None = None,
     ) -> str | None:
         """Build ``EXISTS (SELECT 1 FROM <path> WHERE <corr> AND <preds>)`` for a
         filter-only view, mirroring the distinct-values EXISTS builder.
 
         The resolver path's first hop becomes the EXISTS ``FROM`` relation and
         its join condition is pushed into the EXISTS ``WHERE`` as the
-        correlation back to the outer base alias (SQL forbids ``ON`` directly
-        after ``FROM``); subsequent hops are ``INNER JOIN ... ON``. `predicates`
+        correlation back to the outer alias (SQL forbids ``ON`` directly after
+        ``FROM``); subsequent hops are ``INNER JOIN ... ON``. `predicates`
         already reference ``target_node.<col>`` which is aliased inside the body.
+
+        Correlation anchor (2026-06 chasm-trap fix): the EXISTS must correlate
+        to the DEEPEST node on the base→target path that is ALREADY in the
+        FROM chain (``joined_nodes``) — NOT blindly to the base view. When a
+        filter-only view attaches (via a shared key) to a non-base view that's
+        already joined — e.g. a measure's fact joined on ``sdr_key`` while the
+        chart is based on a calendar — anchoring to the base turns the intended
+        per-fact-row predicate ("THIS deal is owned by Santiago") into a
+        base-row existence check ("this MONTH has ANY Santiago deal"), which
+        over-counts the measure. We therefore start the EXISTS sub-path at the
+        last step whose source node is already joined, so the correlation ties
+        to that FROM-chain alias and the filter constrains the right grain.
+        Anchoring to base remains the behaviour for the common single-fact
+        case (filter on a dim joined directly to the base) → no regression.
         """
         resolver = self._resolver
         if resolver is None or not predicates:
@@ -2188,12 +2205,26 @@ class SemanticQueryEngine:
         path = resolver.resolve_path(target_node)
         if path is None or not path.steps:
             return None
+
+        # Pick the deepest already-joined node on the path as the correlation
+        # anchor. `path.steps` runs base→…→target; step.edge.from_node is the
+        # closer-to-base side of each hop. The highest index whose from_node is
+        # in the FROM chain is the most specific anchor (closest to target).
+        jn = joined_nodes or set()
+        start_idx = 0
+        for i, step in enumerate(path.steps):
+            if getattr(step.edge, "from_node", None) in jn:
+                start_idx = i
+        sub_steps = path.steps[start_idx:]
+        if not sub_steps:
+            return None
+
         # Lazy import to avoid a cross-module top-level cycle.
         from app.services.dataset_model_service import relation_has_nested_cte
 
         pieces: list[str] = []
         correlation: str | None = None
-        for idx, step in enumerate(path.steps):
+        for idx, step in enumerate(sub_steps):
             edge = step.edge
             try:
                 join_view = self._get_view_for_node(edge.to_node)
@@ -2204,18 +2235,7 @@ class SemanticQueryEngine:
             # (the user's production case: `WITH a AS (WITH b AS (...))`
             # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
             # BigQuery rejects THAT as `Syntax error: Unexpected keyword SELECT`.
-            #
-            # 2026-06-01 FIX: the old guard ALSO bailed on any relation that
-            # merely *starts with* `WITH` (`startswith("with ")`). That was too
-            # broad: a SINGLE-level CTE wrap — `(WITH dep AS (...) SELECT … )` —
-            # is valid inside an EXISTS subquery on BigQuery/Postgres/MySQL
-            # (this function's own docstring + `relation_has_nested_cte` confirm
-            # single-CTE wraps are BQ-safe, verified on dataset 55). Since the
-            # derived-table alias-resolution fix now bakes EVERY calculated
-            # table as exactly such a single-CTE wrap, the blanket check was
-            # silently dropping EVERY filter that targets a calc-table dimension
-            # reached through a join (the snowflake propagation bug). Rely on
-            # `relation_has_nested_cte` alone so single-CTE wraps propagate.
+            # Single-level CTE wraps are BQ-safe (see relation_has_nested_cte).
             if relation_has_nested_cte(relation):
                 self.warnings.append(
                     f"Filter on '{target_node}' dropped — view "
