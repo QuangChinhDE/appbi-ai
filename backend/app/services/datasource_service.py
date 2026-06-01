@@ -187,6 +187,16 @@ def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
 
 
 def _build_gcp_credentials(config: Dict[str, Any]):
+    # Decrypt here so EVERY caller works whether or not it pre-decrypted the
+    # config. Execution paths (list_tables/execute_query) call decrypt_config
+    # upfront, but the schema/type/column-inference paths pass the raw stored
+    # config — there `google_oauth_user_id` is still the "_enc:…" ciphertext,
+    # so `uuid.UUID(...)` raised "Invalid Google OAuth credential owner id."
+    # and BigQuery schema/column inference silently failed (dataset "không
+    # nhận" the BQ columns). decrypt_config is idempotent (skips non-"_enc:"
+    # values) so calling it on an already-decrypted config is a no-op.
+    from app.core.crypto import decrypt_config
+    config = decrypt_config(config)
     auth_mode = str(config.get("auth_mode") or "service_account").strip().lower()
     if auth_mode == "google_oauth":
         google_oauth_user_id = str(config.get("google_oauth_user_id") or "").strip()

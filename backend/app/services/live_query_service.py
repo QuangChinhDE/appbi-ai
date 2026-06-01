@@ -612,11 +612,28 @@ def _build_where_clause(filters: list, dialect: str) -> str:
     """Build a SQL WHERE clause from a list of {field, operator, value} dicts."""
     if not filters:
         return ""
+    from app.services.type_override_service import build_safe_cast_sql
     parts = []
     qi = _quote_identifier
 
     def value_present(value) -> bool:
         return value is not None and not (isinstance(value, str) and not value.strip())
+
+    def _num(col_sql, is_calendar, *vals):
+        # Compare-as-number guard: when the filter value(s) are numeric, cast
+        # the column so the comparison works even if the column is physically
+        # STRING (Airbyte / Google Sheets / CSV store numbers as text, so a
+        # dashboard filter `col >= 10` becomes STRING >= INT64 → BigQuery 400).
+        # The dataset model declared the field numeric, so the analyst's intent
+        # IS a numeric comparison. SAFE_CAST is a no-op on genuine numeric
+        # columns and yields NULL (no match) on non-numeric text — never a
+        # type error. Calendar expressions are already date-typed; skip them.
+        if is_calendar:
+            return col_sql
+        present = [v for v in vals if value_present(v)]
+        if present and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
+            return build_safe_cast_sql(col_sql, "float", dialect)
+        return col_sql
 
     for f in normalize_filter_conditions(filters):
         field = f.get("field", "")
@@ -635,30 +652,33 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             if calendar_field
             else None
         ) or qi(field, dialect)
+        cal = bool(calendar_field)
         if op == "eq":
-            parts.append(f"{qf} = {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value)}")
         elif op == "neq":
-            parts.append(f"{qf} != {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value)}")
         elif op == "gt":
-            parts.append(f"{qf} > {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value)}")
         elif op == "gte":
-            parts.append(f"{qf} >= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} >= {_sql_literal(value)}")
         elif op == "lt":
-            parts.append(f"{qf} < {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} < {_sql_literal(value)}")
         elif op == "lte":
-            parts.append(f"{qf} <= {_sql_literal(value)}")
+            parts.append(f"{_num(qf, cal, value)} <= {_sql_literal(value)}")
         elif op == "between" and isinstance(value, list) and len(value) >= 2:
             lo, hi = value[0], value[1]
+            bf = _num(qf, cal, lo, hi)
             if value_present(lo) and value_present(hi):
-                parts.append(f"{qf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                parts.append(f"{bf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
             elif value_present(lo):
-                parts.append(f"{qf} >= {_sql_literal(lo)}")
+                parts.append(f"{bf} >= {_sql_literal(lo)}")
             elif value_present(hi):
-                parts.append(f"{qf} <= {_sql_literal(hi)}")
+                parts.append(f"{bf} <= {_sql_literal(hi)}")
         elif op == "in" and isinstance(value, list):
-            vals = ", ".join(_sql_literal(v) for v in value if value_present(v))
+            present = [v for v in value if value_present(v)]
+            vals = ", ".join(_sql_literal(v) for v in present)
             if vals:
-                parts.append(f"{qf} IN ({vals})")
+                parts.append(f"{_num(qf, cal, *present)} IN ({vals})")
         elif op == "in" and isinstance(value, str) and value:
             vals = ", ".join(
                 _sql_literal(v.strip()) for v in value.split(",") if v.strip()
@@ -666,9 +686,10 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             if vals:
                 parts.append(f"{qf} IN ({vals})")
         elif op == "not_in" and isinstance(value, list):
-            vals = ", ".join(_sql_literal(v) for v in value if value_present(v))
+            present = [v for v in value if value_present(v)]
+            vals = ", ".join(_sql_literal(v) for v in present)
             if vals:
-                parts.append(f"{qf} NOT IN ({vals})")
+                parts.append(f"{_num(qf, cal, *present)} NOT IN ({vals})")
         elif op == "not_in" and isinstance(value, str) and value:
             vals = ", ".join(
                 _sql_literal(v.strip()) for v in value.split(",") if v.strip()

@@ -12,7 +12,6 @@ import type {
   ColumnMetadata,
   DatasetTable,
   ExecuteQueryRequest,
-  ExecuteQueryResponse,
   FilterCondition as ExecuteFilterCondition,
 } from '@/hooks/use-datasets';
 import type { TableHyperlinkRule } from '@/types/api';
@@ -42,37 +41,6 @@ interface CustomSqlRoleInference {
 }
 
 const TRAILING_ROW_LIMIT_PATTERN = /(?:\blimit\s+\d+\s*(?:offset\s+\d+\s*)?|\boffset\s+\d+\s+limit\s+\d+\s*|\bfetch\s+first\s+\d+\s+rows?\s+only)\s*$/i;
-const AGGREGATED_CHART_TYPES = new Set<ExploreChartType>([
-  'BAR',
-  'HORIZONTAL_BAR',
-  'GROUPED_BAR',
-  'STACKED_BAR',
-  'LINE',
-  'AREA',
-  'TIME_SERIES',
-  'BAR_LINE',
-  'PIE',
-  'DONUT',
-  'RADAR',
-  'POLAR_AREA',
-  'FUNNEL',
-  'GAUGE',
-  'TREEMAP',
-  'WATERFALL',
-  'BUBBLE',
-  'HEATMAP',
-  'MAP_POINT',
-  'MAP_REGION',
-  'BULLET',
-  'SANKEY',
-  'SUNBURST',
-  'RIBBON',
-  'TIMELINE',
-  'WORD_CLOUD',
-  'KPI',
-  'PODIUM',
-]);
-
 const TABLE_LIKE_CHART_TYPES = new Set<ExploreChartType>(['TABLE', 'MATRIX']);
 const SCATTER_LIKE_CHART_TYPES = new Set<ExploreChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
 const RAW_DISTRIBUTION_CHART_TYPES = new Set<ExploreChartType>(['BOXPLOT']);
@@ -1164,158 +1132,6 @@ export function inferQueryColumns(
   });
 }
 
-export function buildExploreChartResult(args: {
-  rows: Record<string, any>[];
-  columns: ColumnMetadata[];
-  chartType: ExploreChartType;
-  roleConfig: ChartRoleConfig;
-  source: QuerySource;
-}): {
-  rows: Record<string, any>[];
-  columns: ColumnMetadata[];
-  preAggregated: boolean;
-} {
-  const { rows, columns, chartType, roleConfig, source } = args;
-  const normalized = normalizeRoleConfig(chartType, roleConfig);
-
-  if (TABLE_LIKE_CHART_TYPES.has(chartType) && isTablePivotConfig(normalized) && normalized.tablePivotMetric) {
-    const pivotMetric = normalized.tablePivotMetric;
-    const aliasMap = new Map<string, string>();
-    for (const sourceKey of metricOutputKeys(pivotMetric)) {
-      aliasMap.set(sourceKey, metricKey(pivotMetric));
-    }
-
-    const chartRows = rows.map((row) => {
-      const nextRow = { ...row };
-      for (const [sourceKey, targetKey] of aliasMap.entries()) {
-        if (sourceKey in nextRow && targetKey !== sourceKey) {
-          nextRow[targetKey] = nextRow[sourceKey];
-        }
-      }
-      return nextRow;
-    });
-
-    const chartColumns = columns.map((column) => {
-      const normalizedName = aliasMap.get(column.name);
-      if (!normalizedName) return column;
-      return {
-        ...column,
-        name: normalizedName,
-        type: 'number',
-      };
-    });
-
-    const rowKeys = new Set(Object.keys(chartRows[0] ?? {}));
-    return {
-      rows: chartRows,
-      columns: chartColumns,
-      preAggregated: source === 'generated' || rowKeys.has(metricKey(pivotMetric)),
-    };
-  }
-
-  if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
-    const selectedColumns = normalized.selectedColumns ?? [];
-    const metrics = buildChartQueryMetrics(chartType, normalized);
-    const aliasMap = new Map<string, string>();
-
-    for (const metric of metrics) {
-      for (const sourceKey of metricOutputKeys(metric)) {
-        aliasMap.set(sourceKey, metric.field);
-      }
-    }
-    for (const column of selectedColumns) {
-      if (!column.includes('.')) continue;
-      const [, rawColumn] = column.split('.', 2);
-      if (rawColumn) {
-        aliasMap.set(rawColumn, column);
-      }
-    }
-
-    if (aliasMap.size === 0) {
-      return { rows, columns, preAggregated: false };
-    }
-
-    const chartRows = rows.map((row) => {
-      const nextRow = { ...row };
-      for (const [sourceKey, targetKey] of aliasMap.entries()) {
-        if (sourceKey in nextRow && !(targetKey in nextRow)) {
-          nextRow[targetKey] = nextRow[sourceKey];
-        }
-      }
-      return nextRow;
-    });
-
-    const chartColumns = columns.map((column) => {
-      const normalizedName = aliasMap.get(column.name);
-      if (!normalizedName || columns.some((item) => item.name === normalizedName)) return column;
-      return {
-        ...column,
-        name: normalizedName,
-        type: metrics.some((metric) => metric.field === normalizedName) ? 'number' : column.type,
-      };
-    });
-
-    return {
-      rows: chartRows,
-      columns: chartColumns,
-      preAggregated: source === 'generated' && metrics.length > 0,
-    };
-  }
-
-  if (!AGGREGATED_CHART_TYPES.has(chartType)) {
-    return { rows, columns, preAggregated: false };
-  }
-
-  const metrics = buildChartQueryMetrics(chartType, normalized);
-  if (metrics.length === 0) {
-    return { rows, columns, preAggregated: false };
-  }
-
-  const aliasMap = new Map<string, string>();
-  for (const metric of metrics) {
-    for (const sourceKey of metricOutputKeys(metric)) {
-      aliasMap.set(sourceKey, metricKey(metric));
-    }
-  }
-
-  const chartRows = rows.map((row) => {
-    const nextRow = { ...row };
-    for (const [sourceKey, targetKey] of aliasMap.entries()) {
-      if (sourceKey in nextRow && targetKey !== sourceKey) {
-        nextRow[targetKey] = nextRow[sourceKey];
-      }
-    }
-    return nextRow;
-  });
-
-  const chartColumns = columns.map((column) => {
-    const normalizedName = aliasMap.get(column.name);
-    if (!normalizedName) return column;
-    return {
-      ...column,
-      name: normalizedName,
-      type: 'number',
-    };
-  });
-
-  if (source === 'generated') {
-    return {
-      rows: chartRows,
-      columns: chartColumns,
-      preAggregated: true,
-    };
-  }
-
-  const rowKeys = new Set(Object.keys(chartRows[0] ?? {}));
-  const hasMetricAliases = metrics.some((metric) => rowKeys.has(metricKey(metric)));
-
-  return {
-    rows: chartRows,
-    columns: chartColumns,
-    preAggregated: hasMetricAliases,
-  };
-}
-
 export function buildQuerySignature(args: {
   datasetId: number | null;
   tableId: number | null;
@@ -1355,6 +1171,3 @@ export function buildQuerySignature(args: {
   });
 }
 
-export function normalizeExecuteResponseColumns(response: ExecuteQueryResponse): ColumnMetadata[] {
-  return inferQueryColumns(response.columns, response.rows);
-}

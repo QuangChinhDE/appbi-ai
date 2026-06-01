@@ -2,10 +2,12 @@
 CRUD service for charts.
 """
 import contextvars
+from copy import deepcopy
 import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 
@@ -39,7 +41,6 @@ from app.services.chart_contracts import (
     normalize_chart_filter_context,
     normalize_chart_role_config,
     normalize_filter_conditions,
-    resolve_chart_query_filters,
     with_table_hyperlink_query_columns,
 )
 from app.services.chart_semantic_service import (
@@ -2145,7 +2146,7 @@ def _execute_semantic_chart_runtime(
     )
 
     _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
-    engine_filters: dict[str, dict] = {}
+    engine_filters: dict[str, list] = {}
     for filt in runtime_filters:
         target_field = str(
             filt.get("semanticField")
@@ -2160,10 +2161,11 @@ def _execute_semantic_chart_runtime(
             continue
         operator = str(filt.get("operator") or "eq").strip().lower()
         operator = _OP_ALIAS.get(operator, operator)
-        # Engine's filter dict uses last-write-wins on field key. Cross-table
-        # charts rarely repeat the same field with multiple operators; if it
-        # happens we keep the runtime/dashboard value (which is appended last
-        # by merge_chart_query_filters).
+        # PBI-parity (2026-05-31): a field may carry MULTIPLE predicates
+        # (chart_base AND runtime on the SAME field). engine_filters maps
+        # field -> LIST of predicates; the engine's WHERE/HAVING builders
+        # expand the list and AND each. Single-predicate fields (the common
+        # case) render identically to before.
         engine_filt: dict[str, Any] = {
             "operator": operator,
             "value": filt.get("value"),
@@ -2179,7 +2181,9 @@ def _execute_semantic_chart_runtime(
             cal_source = filt.get("calendarSourceField") or filt.get("calendar_source_field")
             if cal_source:
                 engine_filt["calendarSourceField"] = cal_source
-        engine_filters[qualified] = engine_filt
+        engine_filters.setdefault(qualified, [])
+        if engine_filt not in engine_filters[qualified]:
+            engine_filters[qualified].append(engine_filt)
 
     # Phase-15.83 — DA decision: render every row. The previous code
     # capped chart queries at 1000 (default) / 5000 (with limit_override).
@@ -2196,6 +2200,24 @@ def _execute_semantic_chart_runtime(
             effective_limit = max(1, int(limit_override))
         except (TypeError, ValueError):
             pass
+
+    # RAW-distribution charts (BOXPLOT) need the per-ROW value spread, not an
+    # aggregate. The semantic engine always GROUP-BYs its dimensions, so a
+    # SUM(value) collapses each category to one point and the box degenerates
+    # to a flat line (no quartiles). Reclassify the value metric(s) as raw
+    # dimensions → the engine emits `SELECT dim, value ... GROUP BY dim, value`,
+    # i.e. the distinct (category, value) pairs that give the box its spread.
+    # Cap the row count so a high-cardinality value column can't scan the
+    # whole table. The FE BoxplotChart reads the raw value via row[field].
+    _raw_distribution_types = {"BOXPLOT"}
+    _normalized_ct = str(getattr(chart_type, "value", chart_type) or "").upper()
+    if _normalized_ct in _raw_distribution_types and measure_refs:
+        for ref in measure_refs:
+            if ref not in dimension_refs:
+                dimension_refs.append(ref)
+        measure_refs = []
+        agg_overrides = {}
+        effective_limit = min(effective_limit, 5000)
 
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
@@ -2278,6 +2300,14 @@ def _execute_semantic_chart_runtime(
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
         "_limit": effective_limit,
+        # Phase-15.xx — time_grains MUST be part of the cache key. Two
+        # requests with identical dimensions/measures but different date
+        # grains (raw daily vs month bucketing) otherwise collapse onto the
+        # same slot: the first (e.g. daily) result is re-served for the
+        # second (month) request, so changing the date-hierarchy drill in
+        # Explore/Dashboard silently returns the prior grain's data.
+        # Same collision class the cache_filters comment below documents.
+        "_time_grains": {k: time_grains[k] for k in sorted(time_grains)} if time_grains else None,
     }
     cache_identifier = f"semantic_chart::{model_id or 'model'}::{explore_id or explore_name}"
     # Phase-15.81 v10 — query_cache._canonicalize_filters expects a list
@@ -2290,9 +2320,20 @@ def _execute_semantic_chart_runtime(
     # every subsequent call, including Dashboard requests that the user
     # saw as "no data". Project the dict back into the wire-format
     # dicts the cache layer understands.
+    #
+    # PBI-parity (2026-05-31) REGRESSION FIX: `engine_filters` now maps
+    # `field -> LIST[predicate]` (a field can carry chart_base AND a
+    # runtime predicate). The old projection had `if isinstance(cond, dict)`
+    # which is FALSE for the list value → cache_filters collapsed to `[]`
+    # for EVERY filtered query, re-collapsing the exact cache-key bucket
+    # this block was written to prevent: the first (no-filter) result was
+    # served for all filtered requests → "filter applied but chart shows
+    # unfiltered total". Flatten each field's predicate list so the cache
+    # key is distinct per filter set again.
     cache_filters = [
         {"field": field, "operator": cond.get("operator"), "value": cond.get("value")}
-        for field, cond in sorted(engine_filters.items())
+        for field, conds in sorted(engine_filters.items())
+        for cond in (conds if isinstance(conds, list) else [conds])
         if isinstance(cond, dict)
     ]
 
@@ -2520,7 +2561,10 @@ def _execute_chart_runtime_for_table(
     from app.core.config import settings
 
     filter_context = normalize_chart_filter_context(filter_context)
-    chart_config = chart_config or {}
+    # Runtime filters are an overlay, not part of the saved chart contract.
+    # Work on an execution-local copy so downstream normalizers/planners can
+    # enrich or reshape config without leaking changes back to Chart.config.
+    chart_config = deepcopy(chart_config or {})
 
     # ── Phase 3 — try per-measure isolation BEFORE legacy path. ────────
     # Planner is a pure decision function; failures bail to the legacy path.
@@ -2545,7 +2589,9 @@ def _execute_chart_runtime_for_table(
         get_chart_active_role_config(chart_config),
         chart_config,
     )
-    filters = resolve_chart_query_filters(chart_config, filter_context)
+    # Base filters are folded with the runtime overlay per call site via
+    # `merge_chart_query_filters(chart_config, extra_filters=…)` (single fold,
+    # runtime-wins), so there is no standalone base-only `filters` variable.
     custom_sql = get_chart_custom_sql(chart_config)
     raw_extra_filters = list(extra_filters or [])
 
@@ -2711,14 +2757,17 @@ def _execute_chart_runtime_for_table(
             )
             if live_sql:
                 return LiveQueryService.execute_chart_query_from_sql(
-                    live_datasource, chart_type, live_role_config, filters, live_sql,
-                    extra_filters=live_filters,
+                    live_datasource, chart_type, live_role_config,
+                    merge_chart_query_filters(chart_config, extra_filters=live_filters, context=filter_context),
+                    live_sql,
+                    extra_filters=[],
                     limit_override=limit_override,
                     dropped_filters_log=live_filter_diagnostics,
                 )
             return LiveQueryService.execute_chart_query(
-                live_datasource, live_proxy_table, chart_type, live_role_config, filters,
-                extra_filters=normalized_extra_filters,
+                live_datasource, live_proxy_table, chart_type, live_role_config,
+                merge_chart_query_filters(chart_config, extra_filters=normalized_extra_filters, context=filter_context),
+                extra_filters=[],
                 limit_override=limit_override,
                 dropped_filters_log=live_filter_diagnostics,
             )
@@ -2733,9 +2782,9 @@ def _execute_chart_runtime_for_table(
             datasource,
             chart_type,
             role_config,
-            filters,
+            merge_chart_query_filters(chart_config, extra_filters=normalized_extra_filters, context=filter_context),
             custom_sql,
-            extra_filters=normalized_extra_filters,
+            extra_filters=[],
             limit_override=limit_override,
             dropped_filters_log=live_filter_diagnostics,
         )
@@ -2763,15 +2812,24 @@ def _execute_chart_runtime_for_table(
         db, datasource, db_table, chart_config, raw_extra_filters,
     )
     if live_sql:
+        # Merge chart_base ⊕ runtime through the single fold so a dashboard
+        # filter OVERRIDES a chart base filter on the same semantic scope
+        # ("runtime value wins"), matching the calendar/derived/public paths.
+        # Previously base (`filters`) and `extra_filters` were passed
+        # separately and AND-ed by LiveQueryService → two predicates on the
+        # same field → empty result instead of the override the design intends.
         return LiveQueryService.execute_chart_query_from_sql(
-            datasource, chart_type, live_role_config, filters, live_sql,
-            extra_filters=live_filters,
+            datasource, chart_type, live_role_config,
+            merge_chart_query_filters(chart_config, extra_filters=live_filters, context=filter_context),
+            live_sql,
+            extra_filters=[],
             limit_override=limit_override,
             dropped_filters_log=live_filter_diagnostics,
         )
     return LiveQueryService.execute_chart_query(
-        datasource, db_table, chart_type, live_role_config, filters,
-        extra_filters=normalized_extra_filters,
+        datasource, db_table, chart_type, live_role_config,
+        merge_chart_query_filters(chart_config, extra_filters=normalized_extra_filters, context=filter_context),
+        extra_filters=[],
         limit_override=limit_override,
         dropped_filters_log=live_filter_diagnostics,
     )
@@ -2796,7 +2854,16 @@ class ChartService:
             auto_generate=auto_generate,
         )
         if next_config != (chart.config or {}):
-            chart.config = next_config
+            # Surface the derived semanticBinding to response-time consumers
+            # (FE reads config.semanticBinding) WITHOUT marking the column
+            # dirty: set_committed_value writes the in-memory value as if it
+            # were loaded from the DB, so a later session flush never
+            # persists the derived binding into the stored config. Persisting
+            # it would (a) go stale when the dataset model changes and
+            # (b) silently overwrite the author's saved config — exactly the
+            # "đè trực tiếp vào config chart" failure mode. The binding is
+            # derived, so it is recomputed on every read regardless.
+            set_committed_value(chart, "config", next_config)
         return chart
     
     @staticmethod
@@ -3202,6 +3269,8 @@ class ChartService:
 
         preview["data"] = result["data"]
         preview["pre_aggregated"] = result["pre_aggregated"]
+        preview["warnings"] = list(result.get("warnings") or [])
+        preview["debug"] = _build_debug_response(result)
         if result.get("execution_time_ms") is not None:
             preview["execution_time_ms"] = result["execution_time_ms"]
 

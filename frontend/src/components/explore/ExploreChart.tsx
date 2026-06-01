@@ -21,7 +21,7 @@ import type {
   MetricConfig,
   NumberFormat,
 } from './ExploreChartConfig';
-import { metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
+import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
 import type { ChartSortRule, TimeGranularity } from '@/types/api';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
@@ -105,9 +105,12 @@ function CustomAxisTick({
   x = 0, y = 0, payload, angle, textAnchor, fontSize, formatter,
   orientation,
 }: CustomAxisTickProps) {
-  const raw = formatter
-    ? formatter(payload?.value)
-    : String(payload?.value ?? '');
+  // A null/empty category member shows as "(blank)" (consistent with the
+  // table cells + breakdown legend) instead of an invisible empty tick.
+  const _v = payload?.value;
+  const raw = (_v === null || _v === undefined || _v === '')
+    ? '(blank)'
+    : (formatter ? formatter(_v) : String(_v));
   // Character budget per orientation/angle. Horizontal X axis has the
   // tightest room (bar-width wide). Rotated labels can be longer because
   // they extend downward into the reserved height. Y axis labels live
@@ -1365,15 +1368,55 @@ function ExploreChartInner({
       xField,
     });
   };
-  const showDots = style.showDots ?? true;
+  // Marker (dot) visibility — Power BI / Tableau parity.
+  // • Explicit ON  → honour the user's choice up to a perf safety-cap so a
+  //   deliberate toggle is never silently ignored on a dense line (the
+  //   "dead control" trap: at >60 points the old `showDots && len<=60` guard
+  //   made the toggle inert with no feedback).
+  // • Explicit OFF → never draw dots.
+  // • Unset        → auto-hide on dense series (clutter-avoidance default).
+  const DOT_DENSITY_CAP = 500; // hard ceiling — never render thousands of <circle>
+  const DOT_AUTO_LIMIT = 60; // default heuristic for the unset case
+  const showDotsPref = style.showDots; // true | false | undefined
+  const dotsForCount = (n: number): boolean => {
+    if (showDotsPref === false) return false;
+    if (showDotsPref === true) return n <= DOT_DENSITY_CAP;
+    return n <= DOT_AUTO_LIMIT;
+  };
   const lineWidth = style.lineWidth ?? 2;
   const areaOpacity = style.areaOpacity ?? 0.6;
   const lineDash = style.lineStyle === 'dashed' ? '8 4' : undefined;
   const chartTitle = style.chartTitle?.trim() || undefined;
-  const pieInnerRadius = style.pieInnerRadius ?? 0;
+  // Donut hole %, interpreted relative to the pie's OUTER radius (see the
+  // <Pie> below). A fresh DONUT defaults to a real hole so it doesn't render
+  // identically to a PIE; PIE defaults to solid (0).
+  const pieInnerRadius = style.pieInnerRadius ?? (type === 'DONUT' ? 55 : 0);
   const stackMode = style.stackMode ?? 'normal';
-  const dualYAxis = style.dualYAxis ?? false;
-  const yAxisRightLabel = style.yAxisRightLabel?.trim() || undefined;
+  // BI-standard (Power BI "Line and clustered column"): the line metric of a
+  // combo chart belongs on a SECONDARY (right) axis when its scale differs
+  // greatly from the bars — a bar metric (revenue 10M) and a line metric
+  // (units 3K) on ONE axis crush the line flat at zero. `style.dualYAxis`
+  // defaults to `false`, so we can't rely on it; instead auto-promote at
+  // runtime when the bar-max and line-max differ ≥5× (and the user hasn't
+  // already turned it on). Similar-scale metrics keep the shared axis.
+  const autoDualYForBarLine = useMemo(() => {
+    if (type !== 'BAR_LINE') return false;
+    const barKeys = comboBarSeries.map((s) => s.key);
+    const lineKey = comboLineSeries?.[0]?.key;
+    if (!lineKey || barKeys.length === 0) return false;
+    const maxAbs = (key: string) => comboData.reduce((m, r) => {
+      const v = Math.abs(Number(r?.[key])); return Number.isFinite(v) && v > m ? v : m;
+    }, 0);
+    const barMax = Math.max(...barKeys.map(maxAbs), 0);
+    const lineMax = maxAbs(lineKey);
+    if (barMax <= 0 || lineMax <= 0) return false;
+    const ratio = barMax > lineMax ? barMax / lineMax : lineMax / barMax;
+    return ratio >= 5;
+  }, [type, comboBarSeries, comboLineSeries, comboData]);
+  const dualYAxis = (style.dualYAxis ?? false) || autoDualYForBarLine;
+  const yAxisRightLabel = style.yAxisRightLabel?.trim()
+    || (type === 'BAR_LINE' ? comboLineSeries?.[0]?.label : undefined)
+    || undefined;
   const scatterLabelField = style.scatterLabelField?.trim() || undefined;
   const benchmarkValue = getBenchmarkValue(style);
   const showBenchmarkLine = Boolean(style.showBenchmarkLine && benchmarkValue !== null);
@@ -1385,9 +1428,27 @@ function ExploreChartInner({
     style.yAxisMin !== '' && style.yAxisMin != null ? Number(style.yAxisMin) : 'auto',
     style.yAxisMax !== '' && style.yAxisMax != null ? Number(style.yAxisMax) : 'auto',
   ];
+  // When the DA sets an explicit Y min/max, Recharts needs allowDataOverflow
+  // to HARD-clamp the band (otherwise a Y Max below the data is silently
+  // ignored and bars/lines overflow — "Y Max does nothing"). Only clamp when a
+  // bound is actually set so auto-scaling is unaffected.
+  const yAxisClamp = (style.yAxisMin !== '' && style.yAxisMin != null)
+    || (style.yAxisMax !== '' && style.yAxisMax != null);
 
-  const xAxisLabel = style.xAxisLabel || undefined;
-  const yAxisLabel = style.yAxisLabel || undefined;
+  // BI-standard (Power BI / Tableau): a cartesian chart labels its axes by
+  // default so you can see WHICH dimension it's grouped by — not blank axes.
+  // Derive the dimension label (X for vertical, category-axis for HBAR) and
+  // the metric label (Y for vertical, value-axis for HBAR). User-entered
+  // xAxisLabel/yAxisLabel always win. Only auto-name the metric axis when a
+  // single metric is plotted (multi-metric → legend disambiguates, so a
+  // single Y title would be misleading).
+  const derivedDimLabel = fieldLabel(xField, labelMap);
+  const derivedMetricLabel = metrics.length === 1 ? metricLabel(metrics[0], labelMap) : undefined;
+  const xAxisLabel = style.xAxisLabel || derivedDimLabel || undefined;
+  const yAxisLabel = style.yAxisLabel || derivedMetricLabel || undefined;
+  // HBAR swaps orientation: category on Y, value on X.
+  const hbarXAxisLabel = style.xAxisLabel || derivedMetricLabel || undefined;
+  const hbarYAxisLabel = style.yAxisLabel || derivedDimLabel || undefined;
 
   const ChartTitleEl = chartTitle ? (
     <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
@@ -1414,7 +1475,7 @@ function ExploreChartInner({
     );
   };
   const renderYAxis = () => (
-    <YAxis tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain}
+    <YAxis tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
   );
   // Phase-15.82 — per-series color override handlers. Writes to
@@ -1648,10 +1709,18 @@ function ExploreChartInner({
   }
 
   if (type === 'PODIUM') {
-    const nameField = style.podiumNameField || dimension || (data[0] && Object.keys(data[0]).find((k) => typeof data[0][k] === 'string'));
+    // Read the adapter's rewritten rows (values remapped to metricKey) — NOT
+    // the raw `data` whose value sits under the BE's qualified ref. Falls
+    // back to raw data only if the adapter produced no categorical rows.
+    const podiumRows = categoricalData.length ? categoricalData : data;
+    const nameField = style.podiumNameField || dimension || (podiumRows[0] && Object.keys(podiumRows[0]).find((k) => typeof podiumRows[0][k] === 'string'));
+    // Prefer the adapter-resolved series key (already matches the rewritten
+    // rows). metricKey(metrics[0]) is the same key post-rewrite; the
+    // first-numeric-key scan is the last-ditch fallback for ad-hoc rows.
     const valueField = style.podiumValueField
+      || categoricalSeries[0]?.key
       || (metrics[0] ? metricKey(metrics[0]) : undefined)
-      || (data[0] && Object.keys(data[0]).find((k) => typeof data[0][k] === 'number'));
+      || (podiumRows[0] && Object.keys(podiumRows[0]).find((k) => typeof podiumRows[0][k] === 'number'));
     if (!nameField || !valueField) {
       return <EmptyState message="Select a name dimension and a value metric to render the podium." />;
     }
@@ -1661,7 +1730,7 @@ function ExploreChartInner({
     // sorted sortedCategoricalData order (which applySortRules + dataLimit
     // both ran on). Otherwise fall back to the legacy "highest value
     // first" so unconfigured podiums still rank correctly.
-    const sortedSource = sortRules.length > 0 ? sortedCategoricalData : [...data].sort((a, b) =>
+    const sortedSource = sortRules.length > 0 ? sortedCategoricalData : [...podiumRows].sort((a, b) =>
       Number(b?.[valueField] ?? 0) - Number(a?.[valueField] ?? 0),
     );
     const ranked = sortedSource.slice(0, top);
@@ -1822,7 +1891,11 @@ function ExploreChartInner({
             <PieChart>
               <Pie data={sortedPieData} dataKey="value" nameKey="name"
                 cx="50%" cy="45%" outerRadius="60%"
-                innerRadius={pieInnerRadius > 0 ? `${pieInnerRadius}%` : undefined}
+                // Hole % is relative to the 60% outer radius — NOT the
+                // container — so it can never exceed the outer radius and blank
+                // the donut (the old `${pieInnerRadius}%` was container-relative,
+                // so an 80% hole = 80% container > 60% outer → empty ring).
+                innerRadius={pieInnerRadius > 0 ? `${(pieInnerRadius / 100) * 60}%` : undefined}
                 onClick={handlePieClick}
                 label={renderPieLabel}
                 labelLine={showDataLabels}
@@ -1885,8 +1958,8 @@ function ExploreChartInner({
           {dimension && pt.label !== undefined && (
             <div className="font-semibold text-text-primary mb-1">{String(pt.label)}</div>
           )}
-          <div className="text-text-secondary">{scatterX}: <span className="font-medium text-text-primary">{formatNumber(pt.x, xFormatStyle, scatterX)}</span></div>
-          <div className="text-text-secondary">{scatterY}: <span className="font-medium text-text-primary">{formatNumber(pt.y, yFormatStyle, scatterY)}</span></div>
+          <div className="text-text-secondary">{fieldLabel(scatterX, labelMap)}: <span className="font-medium text-text-primary">{formatNumber(pt.x, xFormatStyle, scatterX)}</span></div>
+          <div className="text-text-secondary">{fieldLabel(scatterY, labelMap)}: <span className="font-medium text-text-primary">{formatNumber(pt.y, yFormatStyle, scatterY)}</span></div>
           {sourceRow && extras.length > 0 && (
             <div className="mt-1 pt-1 border-t border-[rgb(var(--border-line))]/40">
               {extras.map((field) => {
@@ -1916,15 +1989,15 @@ function ExploreChartInner({
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart onClick={handleScatterClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              <XAxis dataKey="x" name={scatterX} type="number" tick={{ fontSize }}
-                label={{ value: style.xAxisLabel || scatterX, position: 'insideBottom', offset: -5, fontSize }} />
-              <YAxis dataKey="y" name={scatterY} type="number" tick={{ fontSize }}
-                tickFormatter={yAxisTickFormatter(style)}
-                label={{ value: style.yAxisLabel || scatterY, angle: -90, position: 'insideLeft', fontSize }} />
+              <XAxis dataKey="x" name={fieldLabel(scatterX, labelMap)} type="number" tick={{ fontSize }}
+                label={{ value: style.xAxisLabel || fieldLabel(scatterX, labelMap), position: 'insideBottom', offset: -5, fontSize }} />
+              <YAxis dataKey="y" name={fieldLabel(scatterY, labelMap)} type="number" tick={{ fontSize }}
+                tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
+                label={{ value: style.yAxisLabel || fieldLabel(scatterY, labelMap), angle: -90, position: 'insideLeft', fontSize }} />
               <ZAxis range={[40, 40]} />
               <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
               {renderLegend()}
-              <Scatter name={`${scatterX} vs ${scatterY}`} data={sortedScatterPoints} fill={PALETTE[0]}>
+              <Scatter name={`${fieldLabel(scatterX, labelMap)} vs ${fieldLabel(scatterY, labelMap)}`} data={sortedScatterPoints} fill={PALETTE[0]}>
                 {hasPerPointColors && sortedScatterPoints.map((point: any, idx: number) => (
                   <Cell key={`scatter-${idx}`} fill={getSeriesColor(String(point?.label ?? idx), idx)} />
                 ))}
@@ -2286,7 +2359,7 @@ function ExploreChartInner({
                     stroke={getSeriesColor(series.key, i)}
                     fill={getSeriesColor(series.key, i)}
                     fillOpacity={areaOpacity} strokeWidth={lineWidth}
-                    dot={showDots && displayData.length <= 60}
+                    dot={dotsForCount(displayData.length)}
                     strokeDasharray={lineDash}>
                     {showDataLabels && (
                       // Phase-15.84 bugfix — AREA chart was missing its
@@ -2340,7 +2413,7 @@ function ExploreChartInner({
                     hide={hiddenSeries.has(series.key)}
                     stroke={getSeriesColor(series.key, i)}
                     strokeWidth={lineWidth}
-                    dot={showDots && displayData.length <= 60}
+                    dot={dotsForCount(displayData.length)}
                     strokeDasharray={lineDash}>
                     {showDataLabels && (
                       <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
@@ -2388,9 +2461,9 @@ function ExploreChartInner({
           ) as any}
           interval={0}
           width={160}
-          label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
-        <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)}
-          label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
+          label={hbarYAxisLabel ? { value: hbarYAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
+        <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
+          label={hbarXAxisLabel ? { value: hbarXAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
         <Tooltip
           content={(p: any) => (
             <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
@@ -2505,7 +2578,7 @@ function ExploreChartInner({
                           type="monotone"
                           stroke={color}
                           strokeWidth={lineWidth}
-                          dot={showDots && displayData.length <= 60}
+                          dot={dotsForCount(displayData.length)}
                           strokeDasharray={lineDash}
                         >
                           {showDataLabels && (
@@ -2568,7 +2641,7 @@ function ExploreChartInner({
                     <Line dataKey={lineSeries.key} name={lineSeries.label}
                       hide={hiddenSeries.has(lineSeries.key)}
                       type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
-                      dot={showDots && displayData.length <= 60}
+                      dot={dotsForCount(displayData.length)}
                       strokeDasharray={lineDash}
                       yAxisId={dualYAxis ? 'right' : 0}>
                       {showDataLabels && (

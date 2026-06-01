@@ -274,11 +274,6 @@ export interface ExecuteQueryRequest {
   time_grains?: Record<string, 'day' | 'week' | 'month' | 'quarter' | 'year'>;
 }
 
-export interface ExecuteQueryResponse {
-  columns: ColumnMetadata[];
-  rows: Record<string, any>[];
-}
-
 export interface DatasourceTable {
   name: string;
   schema?: string;
@@ -904,47 +899,6 @@ export function useDatasourceTables(datasourceId: number | null, search?: string
       return response.data;
     },
     enabled: datasourceId !== null,
-  });
-}
-
-/**
- * Execute query on dataset table with aggregations
- */
-export function useExecuteDatasetTableQuery(
-  datasetId: number | null,
-  tableId: number | null,
-  request: ExecuteQueryRequest
-) {
-  return useQuery({
-    queryKey: [...datasetKeys.tablePreview(datasetId!, tableId!), request],
-    queryFn: async () => {
-      const response = await api.post<ExecuteQueryResponse>(
-        `/datasets/${datasetId}/tables/${tableId}/execute`,
-        request
-      );
-      return response.data;
-    },
-    enabled: datasetId !== null && tableId !== null,
-  });
-}
-
-export function useExecuteDatasetTableQueryMutation() {
-  return useMutation({
-    mutationFn: async ({
-      datasetId,
-      tableId,
-      request,
-    }: {
-      datasetId: number;
-      tableId: number;
-      request: ExecuteQueryRequest;
-    }) => {
-      const response = await api.post<ExecuteQueryResponse>(
-        `/datasets/${datasetId}/tables/${tableId}/execute`,
-        request
-      );
-      return response.data;
-    },
   });
 }
 

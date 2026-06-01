@@ -208,7 +208,46 @@ export function TableVisualization({
   const liveColumnWidthsRef = useRef<Record<string, number>>(liveColumnWidths);
   const resizeStateRef = useRef<{ column: string; startX: number; startWidth: number } | null>(null);
 
-  const displayRows = rows.slice(0, maxRows);
+  // BI-standard sortable grid (Power BI / Excel): clicking a header sorts the
+  // grid instantly. When the parent supplies `onSortChange` the component is
+  // CONTROLLED (parent owns sort state, e.g. to re-query). Otherwise it falls
+  // back to UNCONTROLLED local sort so the Explore preview / any read-only
+  // table still sorts on click instead of doing nothing.
+  // null = user hasn't clicked a header yet → respect the parent's initial
+  // `sorts` (a read-only consumer may pass a fixed display order). After the
+  // first click in uncontrolled mode, localSorts takes over.
+  const [localSorts, setLocalSorts] = useState<SortConfig[] | null>(null);
+  const effectiveSorts = onSortChange ? sorts : (localSorts ?? sorts);
+
+  // Apply the effective sort to the rows for display. Mixed-type safe: numbers
+  // compare numerically, everything else by locale string; null/undefined sink
+  // to the bottom regardless of direction (standard grid behaviour).
+  const sortedRows = useMemo(() => {
+    if (!effectiveSorts || effectiveSorts.length === 0) return rows;
+    const ordered = [...effectiveSorts].sort((a, b) => a.index - b.index);
+    const arr = [...rows];
+    arr.sort((ra, rb) => {
+      for (const s of ordered) {
+        const va = ra?.[s.field];
+        const vb = rb?.[s.field];
+        const aNull = va === null || va === undefined || va === '';
+        const bNull = vb === null || vb === undefined || vb === '';
+        if (aNull && bNull) continue;
+        if (aNull) return 1;          // nulls last, regardless of direction
+        if (bNull) return -1;
+        const na = parseNumericCellValue(va);
+        const nb = parseNumericCellValue(vb);
+        let cmp: number;
+        if (na !== null && nb !== null) cmp = na - nb;
+        else cmp = String(va).localeCompare(String(vb), undefined, { numeric: true });
+        if (cmp !== 0) return s.direction === 'desc' ? -cmp : cmp;
+      }
+      return 0;
+    });
+    return arr;
+  }, [rows, effectiveSorts]);
+
+  const displayRows = sortedRows.slice(0, maxRows);
   const numericColumns = useMemo(
     () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
     [cols, rows],
@@ -393,43 +432,45 @@ export function TableVisualization({
     );
   }
   
-  // Handle column header click for sorting
+  // Handle column header click for sorting. Cycles asc → desc → none (matches
+  // Power BI / Excel grid). Controlled (onSortChange) or uncontrolled (local).
   const handleHeaderClick = (column: string) => {
-    if (!onSortChange) return;
-    
-    const existingSort = sorts.find(s => s.field === column);
+    const base = effectiveSorts;
+    const existingSort = base.find(s => s.field === column);
     let newSorts: SortConfig[];
-    
+
     if (!existingSort) {
       // Add new sort (ascending) with highest priority (index 0)
       newSorts = [
         { field: column, direction: 'asc', index: 0 },
-        ...sorts.map(s => ({ ...s, index: s.index + 1 }))
+        ...base.map(s => ({ ...s, index: s.index + 1 }))
       ];
     } else if (existingSort.direction === 'asc') {
       // Change to descending
-      newSorts = sorts.map(s => 
+      newSorts = base.map(s =>
         s.field === column ? { ...s, direction: 'desc' as const } : s
       );
     } else {
       // Remove sort
-      newSorts = sorts
+      newSorts = base
         .filter(s => s.field !== column)
         .map((s, idx) => ({ ...s, index: idx }));
     }
-    
-    onSortChange(newSorts);
+
+    if (onSortChange) onSortChange(newSorts);
+    else setLocalSorts(newSorts);
   };
-  
+
   // Get sort indicator for a column
   const getSortIndicator = (column: string) => {
-    const sort = sorts.find(s => s.field === column);
+    const sort = effectiveSorts.find(s => s.field === column);
     if (!sort) {
-      return onSortChange ? <ArrowUpDown className="h-3 w-3 text-text-quaternary" /> : null;
+      // Always show the affordance now that the grid is always sortable.
+      return <ArrowUpDown className="h-3 w-3 text-text-quaternary" />;
     }
     
     const Icon = sort.direction === 'asc' ? ArrowUp : ArrowDown;
-    const priority = sorts.length > 1 ? ` (${sort.index + 1})` : '';
+    const priority = effectiveSorts.length > 1 ? ` (${sort.index + 1})` : '';
     
     return (
       <span className="inline-flex items-center ml-1">
@@ -490,7 +531,7 @@ export function TableVisualization({
                     }}
                     className={clsx(
                       "group/table-header relative border-b-2 border-[rgb(var(--border-line))] px-4 py-3 font-semibold text-text-secondary",
-                      onSortChange && "cursor-pointer hover:bg-surface-2 select-none",
+                      "cursor-pointer hover:bg-surface-2 select-none",
                     )}
                     style={{ textAlign: alignment }}
                     onClick={() => handleHeaderClick(col)}
@@ -722,8 +763,12 @@ function formatCellValue(
     currencySymbol?: string;
   } = {},
 ): string {
+  // BI-standard (Power BI): a null/blank member renders as "(blank)" so a
+  // missing dimension value (e.g. an unmapped snowflake join key) is visible
+  // and distinguishable from an intentional empty string — not an invisible
+  // empty cell that looks like a rendering glitch.
   if (value === null || value === undefined) {
-    return '';
+    return '(blank)';
   }
 
   if (typeof value === 'boolean') {

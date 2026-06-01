@@ -7,7 +7,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation';
 import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
-import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
+import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -16,6 +16,7 @@ import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
 import {
   useChart,
   useCreateChart,
+  useDryRunCreateChart,
   usePreviewChartData,
   useReplaceChartParameters,
   useUpdateChart,
@@ -40,16 +41,14 @@ import { extractApiError } from '@/lib/api-errors';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionDrawer, ChartDescriptionTrigger } from '@/components/explore/ChartDescriptionDrawer';
 import {
-  buildExploreChartResult,
   buildExploreExecuteRequest,
   buildExploreSqlPreview,
   buildQuerySignature,
   inferRoleConfigFromCustomSql,
   inferQueryColumns,
-  normalizeExecuteResponseColumns,
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
-import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
+import type { ChartDebugInfo, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import { getReachableViews } from '@/lib/dataset-model-graph';
 
@@ -316,13 +315,7 @@ interface ExploreQueryState {
    * preview endpoint's `debug` field. Undefined for legacy / cached
    * responses — the inspector falls back to FE-built SQL + warnings.
    */
-  debug?: {
-    sql_emitted?: string;
-    dialect?: string;
-    routing?: string;
-    execution_time_ms?: number;
-    row_count?: number;
-    warnings?: string[];
+  debug?: ChartDebugInfo & {
     /**
      * Phase-3 per-measure isolation — when the engine split a multi-fact
      * chart into N parallel queries, the per-group SQL list is surfaced
@@ -1021,9 +1014,9 @@ export function ExploreEditor({
 
   const createChart = useCreateChart();
   const updateChart = useUpdateChart();
+  const dryRunCreateChart = useDryRunCreateChart();
   const upsertMetadata = useUpsertChartMetadata();
   const replaceParams = useReplaceChartParameters();
-  const executeDatasetQuery = useExecuteDatasetTableQueryMutation();
   const previewChartData = usePreviewChartData();
 
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
@@ -1697,7 +1690,7 @@ export function ExploreEditor({
     ? customLastRunSignature
     : generatedLastRunSignature;
   const isQueryDirty = activeQueryState !== null && currentQuerySignature !== activeLastRunSignature;
-  const isRunningQuery = executeDatasetQuery.isPending || previewChartData.isPending;
+  const isRunningQuery = previewChartData.isPending;
   const filterColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
     : [...dedupedPreviewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];
@@ -1818,7 +1811,7 @@ export function ExploreEditor({
       const seen = new Set<string>();
       const unique: { key: string; label: string }[] = [];
       for (const row of rows) {
-        const name = String((row as any)[normalizedRoleConfig.dimension] ?? 'Unknown');
+        const name = String((row as any)[normalizedRoleConfig.dimension] ?? '(blank)');
         if (seen.has(name)) continue;
         seen.add(name);
         unique.push({ key: name, label: name });
@@ -2297,6 +2290,7 @@ export function ExploreEditor({
           chartPreAggregated: Boolean(previewResponse.pre_aggregated),
           executionTimeMs: previewResponse.execution_time_ms,
           warnings: previewResponse.warnings,
+          debug: previewResponse.debug,
         });
         setCustomLastRunSignature(nextCustomSignature);
       } else {
@@ -2306,29 +2300,38 @@ export function ExploreEditor({
           return;
         }
 
-        const response = await executeDatasetQuery.mutateAsync({
-          datasetId: selectedDatasetId,
-          tableId: selectedTableId,
-          request: executeRequest,
-        });
-        const columns = normalizeExecuteResponseColumns(response);
-        const chartResult = buildExploreChartResult({
-          rows: response.rows,
-          columns,
+        const generatedPreviewConfig = {
+          dataset_id: selectedDatasetId,
+          queryMode: 'generated' as const,
           chartType,
+          limit: effectiveQueryLimit,
           roleConfig: normalizedGeneratedRoleConfig,
-          source: 'generated',
+          generatedRoleConfig: normalizedGeneratedRoleConfig,
+          customRoleConfig: normalizedCustomRoleConfig,
+          styleConfig: chartStyleConfig,
+          filters,
+          baseFilters: filters,
+        };
+        const previewResponse = await previewChartData.mutateAsync({
+          dataset_table_id: selectedTableId,
+          chart_type: chartType,
+          config: generatedPreviewConfig,
+          include_source_sample: false,
         });
+        const chartRows = previewResponse.data ?? [];
+        const chartColumns = inferQueryColumns(Object.keys(chartRows[0] ?? {}), chartRows);
 
         setGeneratedQueryState({
           source: 'generated',
           sql: generatedSql,
-          columns,
-          rows: response.rows,
-          chartRows: chartResult.rows,
-          chartColumns: chartResult.columns,
-          chartPreAggregated: chartResult.preAggregated,
-          warnings: (response as any).warnings,
+          columns: chartColumns,
+          rows: chartRows,
+          chartRows,
+          chartColumns,
+          chartPreAggregated: Boolean(previewResponse.pre_aggregated),
+          executionTimeMs: previewResponse.execution_time_ms,
+          warnings: previewResponse.warnings,
+          debug: previewResponse.debug,
         });
         setGeneratedLastRunSignature(currentQuerySignature);
       }
@@ -2531,6 +2534,29 @@ export function ExploreEditor({
     const hasMetadata = metaDomain || metaIntent || metaMetrics.length || metaDimensions.length || metaTags.length;
 
     try {
+      const dryRunName = chartNameInput.trim() || chart?.name || 'Untitled chart';
+      const dryRun = await dryRunCreateChart.mutateAsync({
+        name: dryRunName,
+        description: chartDescInput.trim() || null,
+        chart_type: chartType as ChartType,
+        dataset_table_id: selectedTableId,
+        config: exploreConfig as unknown as import('@/types/api').ChartConfig,
+      });
+      if (!dryRun.ok) {
+        const failures = [
+          ...(dryRun.validation_errors ?? []),
+          ...(dryRun.runtime_errors ?? []),
+        ];
+        const message = failures[0] || 'Chart config did not pass dataset/runtime validation.';
+        setQueryError(message);
+        toast.error(message);
+        return;
+      }
+      if (dryRun.fe_unrecognised_keys?.length) {
+        toast.warning(`Some chart config keys are not used by Explore: ${dryRun.fe_unrecognised_keys.join(', ')}`);
+      }
+      const normalizedExploreConfig = dryRun.normalized_config as import('@/types/api').ChartConfig;
+
       if (chartId !== null) {
         await updateChart.mutateAsync({
           id: chartId,
@@ -2539,7 +2565,7 @@ export function ExploreEditor({
             description: chartDescInput.trim() || null,
             chart_type: chartType as any,
             dataset_table_id: selectedTableId,
-            config: exploreConfig as unknown as import('@/types/api').ChartConfig,
+            config: normalizedExploreConfig,
           },
         });
         await Promise.all([
@@ -2559,7 +2585,7 @@ export function ExploreEditor({
           description: chartDescInput.trim() || undefined,
           chart_type: chartType as any,
           dataset_table_id: selectedTableId,
-          config: exploreConfig as unknown as import('@/types/api').ChartConfig,
+          config: normalizedExploreConfig,
         });
         await Promise.all([
           hasMetadata ? upsertMetadata.mutateAsync({ id: newChart.id, data: metaPayload }) : Promise.resolve(),
@@ -2836,11 +2862,13 @@ export function ExploreEditor({
             {resPerms.canEdit && (
               <button
                 onClick={handleSaveLook}
-                disabled={!selectedTableId}
+                disabled={!selectedTableId || dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending}
                 className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
-                {saveButtonLabel ?? (chartId ? 'Update' : 'Save')}
+                {dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending
+                  ? 'Saving...'
+                  : (saveButtonLabel ?? (chartId ? 'Update' : 'Save'))}
               </button>
             )}
           </div>

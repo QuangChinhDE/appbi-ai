@@ -595,6 +595,7 @@ def _sql_table_for_table(
     *,
     calendar_dialect: str,
     datasource: DataSource | None = None,
+    db: Optional[Session] = None,
 ) -> str:
     """Build the SQL fragment used as a SemanticView's `sql_table_name`.
 
@@ -608,6 +609,38 @@ def _sql_table_for_table(
         settings = get_calendar_settings(dataset_obj, enabled_default=False)
         return f"({build_calendar_live_sql(settings, calendar_dialect)})"
     if is_derived_table(table) and table.source_query:
+        # Derived (calculated) tables reference OTHER dataset tables by ALIAS
+        # (e.g. `sales`, or `dataset_table_214`). The Explore PREVIEW path
+        # resolves those aliases — rewriting them to fully-qualified physical
+        # refs and pulling dependencies in as CTEs — via
+        # `build_dataset_table_live_query`. The semantic model historically did
+        # NOT: it inlined the raw `source_query`, so a bare `FROM sales` reached
+        # BigQuery unqualified and 400'd ("Table 'sales' must be qualified …").
+        # That was the preview≠query divergence (chart/dashboard broke while the
+        # calc-table preview worked). Reuse the EXACT preview resolver so the
+        # semantic view's SQL is byte-identical to preview (aliases, dep CTEs,
+        # and transformations all applied once) — true parity. Fall back to the
+        # legacy raw wrap only when no db handle is available (background paths).
+        if db is not None:
+            try:
+                from app.services.dataset_table_sql_service import (
+                    build_dataset_table_live_query,
+                )
+
+                _resolved_ds, resolved_sql = build_dataset_table_live_query(
+                    db, dataset_obj, table
+                )
+                # `resolved_sql` is already a complete SELECT (possibly
+                # `WITH … SELECT …`) with transformations applied — wrap in
+                # parens to use it as a subquery; do NOT re-apply transforms.
+                return f"({resolved_sql})"
+            except Exception as exc:  # noqa: BLE001 — never block model gen
+                logger.warning(
+                    "[derived_sql] alias-resolve failed for table %s; falling "
+                    "back to raw wrap (may fail on BigQuery): %s",
+                    getattr(table, "id", None),
+                    exc,
+                )
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "physical_table" and table.source_table_name:
@@ -1013,6 +1046,40 @@ def _apply_db_fk_constraints(
             })
 
 
+def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) -> str:
+    """Pick the column on the FK *target* table that a name-heuristic join
+    should reference.
+
+    Phase-16.4 — replaces the legacy hard-coded `id` PK assumption that broke
+    on warehouse tables (Airbyte / BigQuery / dbt) whose key is `<entity>_id`
+    with NO `id` column: `JOIN ... ON products.id = sales.product_id` then
+    failed with BigQuery "Name id not found inside <table>". Resolution order:
+      1. the target has the SAME column name as the FK (e.g. products.product_id)
+      2. the target has a literal `id` column (classic convention)
+      3. the target has exactly one `*_id` column
+      4. `id` (legacy fallback — preserves old behaviour when nothing matches)
+    """
+    cc = getattr(ref_table, "columns_cache", None)
+    cols = cc.get("columns", []) if isinstance(cc, dict) else (cc if isinstance(cc, list) else [])
+    lower_map: Dict[str, str] = {}
+    for c in cols:
+        if isinstance(c, dict):
+            nm = str(c.get("name") or "").strip()
+            if nm:
+                lower_map.setdefault(nm.lower(), nm)
+    if not lower_map:
+        return "id"
+    fk_lower = (fk_col_name or "").lower()
+    if fk_lower in lower_map:
+        return lower_map[fk_lower]
+    if "id" in lower_map:
+        return lower_map["id"]
+    id_cols = [orig for low, orig in lower_map.items() if low.endswith("_id")]
+    if len(id_cols) == 1:
+        return id_cols[0]
+    return "id"
+
+
 def _detect_fk_joins(
     tables: List[DatasetTable],
     table_views: Dict[int, SemanticView],
@@ -1084,10 +1151,15 @@ def _detect_fk_joins(
             if ref_table is None or ref_view is None or ref_table.id == table.id:
                 continue
 
+            # Phase-16.4 — resolve the REAL target join column (the FK target's
+            # key) instead of the legacy hard-coded `id`. See
+            # `_resolve_heuristic_target_column`.
+            target_col = _resolve_heuristic_target_column(ref_table, raw_col_name)
+
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
                 join.get("view") == ref_view.name
-                and _join_pairs_signature(*_join_columns_from_definition(join)) == ((raw_col_name, "id"),)
+                and _join_pairs_signature(*_join_columns_from_definition(join)) == ((raw_col_name, target_col),)
                 for join in joins_by_source[current_view.name]
             )
             if existing:
@@ -1097,13 +1169,13 @@ def _detect_fk_joins(
                 "name": ref_view.name,
                 "view": ref_view.name,
                 "type": "left",
-                "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_view.name}}}.id",
+                "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_view.name}}}.{target_col}",
                 "relationship": "many_to_one",
                 "from_view": current_view.name,
                 "from_column": raw_col_name,
-                "to_column": "id",
+                "to_column": target_col,
                 "from_columns": [raw_col_name],
-                "to_columns": ["id"],
+                "to_columns": [target_col],
                 "origin": "auto_fk",
                 "managed": True,
             })
@@ -1447,6 +1519,7 @@ def _sync_dataset_model_structure(
                     if getattr(table, "datasource_id", None) is not None
                     else None
                 ),
+                db=db,
             ),
             dataset_table_id=table.id,
             dimensions=dimensions,

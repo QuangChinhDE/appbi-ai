@@ -90,3 +90,39 @@ ai-chat/UPGRADE_PLAN_V2.md
 ai-chat/WORKBOARDS_END_TO_END_DESIGN.md
 backend/README.md
 frontend/README.md
+# Serena MCP — machine-specific config (absolute paths/username) + local LSP cache; do not commit
+.mcp.json
+.vscode/mcp.json
+.serena/
+# E2E (Playwright) — local deps, secrets, run artifacts, saved auth session
+e2e/node_modules/
+e2e/.env
+e2e/.auth/
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/
+e2e/.cache/
+e2e/shots/
+e2e/_*.mjs
+e2e/_*.png
+
+# ── Local QA / test artifacts (screenshots, debug dumps, harnesses) — never push ──
+# Playwright-MCP working dir (page snapshots + screenshots written during testing)
+.playwright-mcp/
+# Loose root-level test screenshots + API response dumps (moved to .artifacts/)
+/*.png
+/req*_resp.json
+# Running QA audit doc (working notes, not project code)
+EXPLORE_CHART_AUDIT.md
+# Chart verification harness (local-only)
+scripts/verify-charts/
+# Backend one-off debug / inspect / repro / bench scripts (local-only)
+backend/test-results/
+backend/scripts/golden/
+backend/scripts/_*.py
+backend/scripts/debug_*.py
+backend/scripts/inspect_*.py
+backend/scripts/dump_*.py
+backend/scripts/repro_*.py
+backend/scripts/bench_*.py
+backend/scripts/regression_*.py

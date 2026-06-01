@@ -5,6 +5,8 @@ import apiClient from '@/lib/api-client';
 import {
   Chart,
   ChartCreate,
+  ChartDryRunCreateRequest,
+  ChartDryRunCreateResponse,
   ChartUpdate,
   ChartDataContext,
   ChartDataResponse,
@@ -30,6 +32,11 @@ export const chartApi = {
 
   create: async (data: ChartCreate): Promise<Chart> => {
     const response = await apiClient.post('/charts/', data);
+    return response.data;
+  },
+
+  dryRunCreate: async (data: ChartDryRunCreateRequest): Promise<ChartDryRunCreateResponse> => {
+    const response = await apiClient.post('/charts/dry-run-create', data);
     return response.data;
   },
 

@@ -425,6 +425,33 @@ export interface ChartUpdate {
   dataset_table_id?: number | null;
 }
 
+export interface ChartConfigChange {
+  path: string;
+  before: any;
+  after: any;
+  reason: string;
+}
+
+export interface ChartDryRunCreateRequest {
+  name: string;
+  chart_type: ChartType | string;
+  dataset_table_id: number;
+  config: ChartConfig | Record<string, any>;
+  description?: string | null;
+}
+
+export interface ChartDryRunCreateResponse {
+  ok: boolean;
+  normalized_config: ChartConfig | Record<string, any>;
+  changes?: ChartConfigChange[];
+  validation_errors?: string[];
+  semantic_warnings?: string[];
+  runtime_errors?: string[];
+  runtime_root_cause?: string | null;
+  runtime_preview_sample?: Record<string, any>[] | null;
+  fe_unrecognised_keys?: string[];
+}
+
 export interface DashboardChartLayout {
   x: number;
   y: number;
@@ -692,6 +719,7 @@ export interface ChartPreviewDataRequest {
   dataset_table_id: number;
   chart_type: string;
   config: Record<string, any>;
+  filters?: Record<string, unknown>[];
   context?: ChartDataContext;
   include_source_sample?: boolean;
   source_sample_limit?: number;
@@ -703,6 +731,8 @@ export interface ChartPreviewDataResponse {
   execution_time_ms?: number;
   /** Phase-3b: warnings from the semantic engine (also returned by preview). */
   warnings?: string[];
+  /** Same BE-side runtime metadata shape as saved chart data. */
+  debug?: ChartDebugInfo;
   source_columns?: string[];
   source_rows?: Record<string, any>[];
 }

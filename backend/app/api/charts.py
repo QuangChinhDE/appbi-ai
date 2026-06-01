@@ -68,6 +68,7 @@ class ChartPreviewDataRequest(BaseModel):
     dataset_table_id: int
     chart_type: str
     config: Dict[str, Any] = Field(default_factory=dict)
+    filters: List[Dict[str, Any]] = Field(default_factory=list)
     context: Optional[str] = None
     include_source_sample: bool = False
     # Phase-15.83 — DA dropped per-chart row caps. Pydantic upper bound
@@ -142,6 +143,8 @@ class ChartPreviewDataResponse(BaseModel):
     data: List[Dict[str, Any]]
     pre_aggregated: bool = False
     execution_time_ms: Optional[float] = None
+    warnings: List[str] = Field(default_factory=list)
+    debug: Optional[Dict[str, Any]] = None
     source_columns: List[str] = Field(default_factory=list)
     source_rows: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -511,6 +514,7 @@ def preview_chart_data(
             payload.dataset_table_id,
             payload.chart_type,
             payload.config,
+            extra_filters=payload.filters,
             filter_context=payload.context,
             include_source_sample=payload.include_source_sample,
             source_sample_limit=payload.source_sample_limit,

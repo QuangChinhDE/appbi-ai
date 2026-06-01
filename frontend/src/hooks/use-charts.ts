@@ -8,6 +8,7 @@ import { chartApi } from '@/lib/api/charts';
 import {
   ChartCreate,
   ChartDataContext,
+  ChartDryRunCreateRequest,
   ChartListParams,
   ChartMetadataUpsert,
   ChartParameterCreate,
@@ -68,6 +69,12 @@ export const useCreateChart = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['charts'] });
     },
+  });
+};
+
+export const useDryRunCreateChart = () => {
+  return useMutation({
+    mutationFn: (data: ChartDryRunCreateRequest) => chartApi.dryRunCreate(data),
   });
 };
 

@@ -361,7 +361,11 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   fontSize: 12,
   chartTitleFontSize: undefined,
   barRadius: 4,
-  showDots: true,
+  // Markers default to Auto (undefined): the renderer shows dots on sparse
+  // series and hides them on dense ones (Power BI parity). 'Always'/'Never'
+  // are explicit overrides set via the Markers select. A forced `true` here
+  // used to clutter 100+-point lines with dots by default.
+  showDots: undefined,
   lineStyle: 'solid',
   showBenchmarkLine: false,
   benchmarkValue: '',
@@ -730,6 +734,26 @@ export function metricLabel(m: MetricConfig, labelMap?: SemanticLabelMap): strin
   if (m.agg === 'auto') return semanticLabel || fieldDisplay;
   const aggName = m.agg === 'count_distinct' ? 'COUNT DISTINCT' : m.agg.toUpperCase();
   return `${aggName} of ${semanticLabel || fieldDisplay}`;
+}
+
+/** Friendly display label for a plain (dimension) field key.
+ * Prefers the semantic label map; otherwise humanises the bare last segment
+ * (e.g. "dataset_table_225.region_name" → "Region Name"). Used to default
+ * axis titles so a chart names its grouping dimension (BI-standard) instead
+ * of leaving axes unlabelled. */
+export function fieldLabel(field: string | null | undefined, labelMap?: SemanticLabelMap): string | undefined {
+  const raw = String(field ?? '').trim();
+  if (!raw) return undefined;
+  const semantic = lookupSemanticLabel(raw, labelMap);
+  if (semantic) return semantic;
+  const bare = raw.includes('.') ? raw.split('.').slice(-1)[0] : raw;
+  // humanise snake/camel → Title Case words
+  return bare
+    .replace(/[_\-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /** recharts dataKey for a MetricConfig */
@@ -3236,10 +3260,21 @@ export function ExploreChartConfig({
   const isPieLike = ['PIE', 'DONUT', 'POLAR_AREA'].includes(chartType);
   const isScatterLike = ['SCATTER', 'BUBBLE', 'MAP_POINT'].includes(chartType);
   const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE', 'WATERFALL'].includes(chartType);
+  // Bars rendered via real Recharts <Bar> (honour barRadius/barSize). WATERFALL
+  // is a hand-rolled SVG that ignores those props → exclude it so the Bar Shape
+  // controls aren't shown-but-dead.
+  const isRechartsBarShape = isBarType && chartType !== 'WATERFALL';
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE', 'RIBBON'].includes(chartType);
-  const hasAxis = ![
-    'PIE', 'DONUT', 'POLAR_AREA', 'KPI', 'GAUGE', 'BULLET', 'TABLE', 'MATRIX',
-    'TREEMAP', 'FUNNEL', 'SANKEY', 'SUNBURST', 'WORD_CLOUD', 'MAP_REGION',
+  // hasAxis = chart is rendered with REAL Recharts cartesian axes (so the
+  // "Axes & Scale" controls — gridlines, X/Y axis label, Y min/max, axis font —
+  // actually take effect). ALLOWLIST, not a blocklist: the previous blocklist
+  // leaked these controls onto SVG-rendered advanced charts (WATERFALL, RADAR,
+  // BUBBLE, HEATMAP, MAP_POINT, BOXPLOT, RIBBON, TIMELINE) whose renderers
+  // ignore every axis field → "DA toggles it, nothing happens". Only the
+  // Recharts cartesian family qualifies. (RIBBON/TIMELINE are SVG → excluded.)
+  const hasAxis = [
+    'BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE',
+    'LINE', 'TIME_SERIES', 'AREA', 'SCATTER',
   ].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
   const supportsDataSection = !isTableLike && !isNoDimensionMetric;
@@ -4757,11 +4792,14 @@ export function ExploreChartConfig({
           {/* PIE: donut hole slider */}
           {isPieLike && (
             <div>
+              {/* DONUT defaults to a real hole (55%) even when unset, mirroring
+                  the renderer — otherwise the slider reads "0% (Pie)" while the
+                  chart shows a donut. */}
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Donut Hole: {styleConfig.pieInnerRadius ?? 0}%
-                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? 0) === 0 ? 'Pie' : 'Donut'})</span>
+                Donut Hole: {styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}%
+                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)) === 0 ? 'Pie' : 'Donut'})</span>
               </label>
-              <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? 0}
+              <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}
                 onChange={e => updStyle({ pieInnerRadius: Number(e.target.value) })}
                 className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
             </div>
@@ -4879,7 +4917,7 @@ export function ExploreChartConfig({
         <FormatGroup
           title="Advanced"
           defaultOpen={false}
-          matchesSearch={matchesFormatSearch(['advanced', 'series mix', 'per-series', 'tooltip', 'annotation', 'conditional', 'calculated', 'data label', 'template'])}
+          matchesSearch={matchesFormatSearch(['advanced', 'series mix', 'per-series', 'tooltip', 'annotation', 'conditional', 'calculated', 'data label', 'template', 'value format', 'format', 'currency', 'percent', 'decimal'])}
           searchActive={formatSearchActive}
           hasCustomization={Boolean(
             (styleConfig.seriesRenderAs && Object.keys(styleConfig.seriesRenderAs).length > 0) ||
@@ -5484,7 +5522,7 @@ export function ExploreChartConfig({
             )}
           >
         {hasAxis && (
-        <Disclosure title="Axes & Scale">
+        <Disclosure title="Range & Gridlines">
           <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
             onChange={v => updStyle({ showGrid: v })} />
           <div>
@@ -5587,7 +5625,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {isBarType && (
+      {isRechartsBarShape && (
         <Disclosure title="Bar Shape">
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Bar Radius: {styleConfig.barRadius ?? 4}px</label>
@@ -5607,8 +5645,20 @@ export function ExploreChartConfig({
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Line options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {isLineType && (
         <Disclosure title="Line Style">
-          <Toggle label="Show Dots" checked={styleConfig.showDots ?? true}
-            onChange={v => updStyle({ showDots: v })} />
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Markers</label>
+            <select
+              value={styleConfig.showDots === true ? 'always' : styleConfig.showDots === false ? 'never' : 'auto'}
+              onChange={e => {
+                const v = e.target.value;
+                updStyle({ showDots: v === 'always' ? true : v === 'never' ? false : undefined });
+              }}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+              <option value="auto">Auto (hide on dense lines)</option>
+              <option value="always">Always show</option>
+              <option value="never">Never</option>
+            </select>
+          </div>
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Style</label>
             <select value={styleConfig.lineStyle || 'solid'}

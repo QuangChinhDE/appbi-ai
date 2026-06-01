@@ -1739,6 +1739,26 @@ class SemanticQueryEngine:
                 return False
             return True
 
+        _dialect = (self.database_type or "").lower()
+
+        def _num(col_sql: str, *vals: Any) -> str:
+            # Compare-as-number guard (mirrors live_query_service._build_where_clause).
+            # When the filter value(s) are numeric, cast the column so the
+            # comparison works even if the column is physically STRING
+            # (Airbyte / Google Sheets / CSV store numbers as text, so a filter
+            # `col >= 10` becomes STRING >= INT64 → BigQuery 400 "No matching
+            # signature for operator >= ... STRING, INT64"). The model declared
+            # the field numeric, so the analyst's intent IS numeric. SAFE_CAST
+            # is a no-op on genuine numeric columns and yields NULL (no match)
+            # on non-numeric text — never a type error.
+            present = [v for v in vals if _value_present(v)]
+            if present and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+            ):
+                from app.services.type_override_service import build_safe_cast_sql
+                return build_safe_cast_sql(col_sql, "float", _dialect)
+            return col_sql
+
         where_conditions: list[str] = []      # base / select-side predicates
         exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
         # Defensive default — pivot-value fetch (line ~445) calls this with only
@@ -1767,7 +1787,11 @@ class SemanticQueryEngine:
                 self.db, self._model, explore.base_view_name, bidirectional=False,
             )
 
-        for field_ref, filter_def in filters.items():
+        for field_ref, filter_def in (
+            (fr, d)
+            for fr, fd in filters.items()
+            for d in (fd if isinstance(fd, list) else [fd])
+        ):
             operator = str(filter_def.get('operator') or 'eq').strip().lower()
             value = filter_def.get('value')
 
@@ -1970,35 +1994,36 @@ class SemanticQueryEngine:
             # we degrade to >= / <= so the user's intent still lands.
             if operator == "between" and isinstance(value, list) and len(value) >= 2:
                 lo, hi = value[0], value[1]
+                bf = _num(field_sql, lo, hi)
                 if _value_present(lo) and _value_present(hi):
-                    conditions.append(f"{field_sql} BETWEEN {_lit(lo)} AND {_lit(hi)}")
+                    conditions.append(f"{bf} BETWEEN {_lit(lo)} AND {_lit(hi)}")
                 elif _value_present(lo):
-                    conditions.append(f"{field_sql} >= {_lit(lo)}")
+                    conditions.append(f"{bf} >= {_lit(lo)}")
                 elif _value_present(hi):
-                    conditions.append(f"{field_sql} <= {_lit(hi)}")
+                    conditions.append(f"{bf} <= {_lit(hi)}")
                 # if both blank → user hasn't filled the picker yet, skip
                 continue
 
             # IN / NOT IN accept list or comma-separated string.
             if operator == "in":
+                present: list[Any] = []
                 if isinstance(value, list):
-                    vals = ", ".join(_lit(v) for v in value if _value_present(v))
+                    present = [v for v in value if _value_present(v)]
                 elif isinstance(value, str) and value.strip():
-                    vals = ", ".join(_lit(v.strip()) for v in value.split(",") if v.strip())
-                else:
-                    vals = ""
+                    present = [v.strip() for v in value.split(",") if v.strip()]
+                vals = ", ".join(_lit(v) for v in present)
                 if vals:
-                    conditions.append(f"{field_sql} IN ({vals})")
+                    conditions.append(f"{_num(field_sql, *present)} IN ({vals})")
                 continue
             if operator == "not_in":
+                present = []
                 if isinstance(value, list):
-                    vals = ", ".join(_lit(v) for v in value if _value_present(v))
+                    present = [v for v in value if _value_present(v)]
                 elif isinstance(value, str) and value.strip():
-                    vals = ", ".join(_lit(v.strip()) for v in value.split(",") if v.strip())
-                else:
-                    vals = ""
+                    present = [v.strip() for v in value.split(",") if v.strip()]
+                vals = ", ".join(_lit(v) for v in present)
                 if vals:
-                    conditions.append(f"{field_sql} NOT IN ({vals})")
+                    conditions.append(f"{_num(field_sql, *present)} NOT IN ({vals})")
                 continue
 
             # Pattern operators need LIKE-escaping for % and _ so DA-typed
@@ -2019,22 +2044,22 @@ class SemanticQueryEngine:
 
             # Scalar comparison operators.
             if operator == "eq" or operator == "date_eq":
-                conditions.append(f"{field_sql} = {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} = {_lit(value)}")
                 continue
             if operator in {"ne", "neq"}:
-                conditions.append(f"{field_sql} != {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} != {_lit(value)}")
                 continue
             if operator == "gt":
-                conditions.append(f"{field_sql} > {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} > {_lit(value)}")
                 continue
             if operator == "gte":
-                conditions.append(f"{field_sql} >= {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} >= {_lit(value)}")
                 continue
             if operator == "lt":
-                conditions.append(f"{field_sql} < {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} < {_lit(value)}")
                 continue
             if operator == "lte":
-                conditions.append(f"{field_sql} <= {_lit(value)}")
+                conditions.append(f"{_num(field_sql, value)} <= {_lit(value)}")
                 continue
 
             # Phase-B (PBI-parity rework) — `date_between` is the typed
@@ -2175,14 +2200,23 @@ class SemanticQueryEngine:
             except ValueError:
                 return None
             relation = join_view.sql_table_name or edge.to_view
-            # Phase-B' — bail when a hop's relation embeds a nested CTE
+            # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
             # (the user's production case: `WITH a AS (WITH b AS (...))`
             # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
-            # BigQuery rejects it as `Syntax error: Unexpected keyword
-            # SELECT`. Skipping here surfaces a warning + drops the filter
-            # cleanly instead of emitting broken multi-KB SQL.
-            stripped = str(relation or "").strip().lstrip("(").lstrip()
-            if stripped.lower().startswith("with ") or relation_has_nested_cte(relation):
+            # BigQuery rejects THAT as `Syntax error: Unexpected keyword SELECT`.
+            #
+            # 2026-06-01 FIX: the old guard ALSO bailed on any relation that
+            # merely *starts with* `WITH` (`startswith("with ")`). That was too
+            # broad: a SINGLE-level CTE wrap — `(WITH dep AS (...) SELECT … )` —
+            # is valid inside an EXISTS subquery on BigQuery/Postgres/MySQL
+            # (this function's own docstring + `relation_has_nested_cte` confirm
+            # single-CTE wraps are BQ-safe, verified on dataset 55). Since the
+            # derived-table alias-resolution fix now bakes EVERY calculated
+            # table as exactly such a single-CTE wrap, the blanket check was
+            # silently dropping EVERY filter that targets a calc-table dimension
+            # reached through a join (the snowflake propagation bug). Rely on
+            # `relation_has_nested_cte` alone so single-CTE wraps propagate.
+            if relation_has_nested_cte(relation):
                 self.warnings.append(
                     f"Filter on '{target_node}' dropped — view "
                     f"'{edge.to_node}' is backed by a nested-CTE source_query "
@@ -2273,7 +2307,11 @@ class SemanticQueryEngine:
 
         conditions: List[str] = []
         overrides = measure_agg_overrides or {}
-        for field_ref, filter_def in filters.items():
+        for field_ref, filter_def in (
+            (fr, d)
+            for fr, fd in filters.items()
+            for d in (fd if isinstance(fd, list) else [fd])
+        ):
             operator = str(filter_def.get('operator') or 'eq').strip().lower()
             value = filter_def.get('value')
             try:

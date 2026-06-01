@@ -519,7 +519,11 @@ export function pivotByBreakdown(
 
   return {
     data: dimOrder.map((d) => pivotMap.get(d)!),
-    series: breakdownKeys.map((key) => ({ key, label: key })),
+    // A null/empty breakdown member keeps its '' data key but must show as
+    // "(blank)" in the legend + series-color editor (BI-standard / consistent
+    // with the table). Otherwise it renders as an unlabelled phantom swatch
+    // that looks like a duplicate series.
+    series: breakdownKeys.map((key) => ({ key, label: key === '' ? '(blank)' : key })),
   };
 }
 
@@ -698,8 +702,23 @@ export function buildExploreChartModel(args: {
   }
 
   if (type === 'PODIUM') {
-    // Podium just needs the raw rows; ChartPreview sorts + slices client-side.
-    return { ...emptyModel };
+    // Podium ranks + slices rows client-side in the renderer. It still needs
+    // the SAME row-key contract as every other categorical chart: the
+    // renderer reads each row's value via `metricKey(metric)`, but the
+    // semantic engine emits the value under the canonical qualified ref
+    // (`view.field`), not `agg__field`. Without the rewrite the renderer
+    // reads `row["sum__view.revenue"]` → undefined → every rank shows 0
+    // (the bug). Rewrite pre-aggregated rows + expose categoricalData/Series
+    // so the renderer can read the resolved key, exactly like KPI/PIE/bar.
+    return {
+      ...emptyModel,
+      categoricalData: rewriteRowsForRecharts(data, metrics, preAggregated),
+      categoricalSeries: metrics.map(metric => ({
+        key: metricKey(metric),
+        label: metricLabel(metric, labelMap),
+        metric,
+      })),
+    };
   }
 
   if (type === 'KPI') {
@@ -751,7 +770,7 @@ export function buildExploreChartModel(args: {
     // PowerBI / Superset behaviour for PIE.
     const pieDataRaw = dimension && metric
       ? filteredAggregated.map(row => ({
-          name: String(row[dimension] ?? 'Unknown'),
+          name: String(row[dimension] ?? '(blank)'),
           value: Number(row[valueField ?? metricKey(metric)]) || 0,
         }))
       : [];

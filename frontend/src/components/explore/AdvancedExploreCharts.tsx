@@ -4,7 +4,7 @@ import React, { useMemo } from 'react';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
 import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
-import { metricKey, metricLabel } from './ExploreChartConfig';
+import { fieldLabel, metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
 
 type ChartRow = Record<string, unknown>;
@@ -258,7 +258,7 @@ function groupByMetric(
   if (!field || !metric) return [];
   const groups = new Map<string, ChartRow[]>();
   for (const row of rows) {
-    const name = String(row[field] ?? 'Unknown');
+    const name = String(row[field] ?? '(blank)');
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name)!.push(row);
   }
@@ -281,8 +281,8 @@ function groupPairs(
   if (!sourceField || !targetField || !metric) return [];
   const groups = new Map<string, ChartRow[]>();
   for (const row of rows) {
-    const source = String(row[sourceField] ?? 'Unknown');
-    const target = String(row[targetField] ?? 'Unknown');
+    const source = String(row[sourceField] ?? '(blank)');
+    const target = String(row[targetField] ?? '(blank)');
     const key = `${source}\u0000${target}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
@@ -469,9 +469,9 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
   preAggregated?: boolean;
 }) {
   if (!field || metrics.length === 0) return <EmptyAdvanced message="Select an axis field and value columns." />;
-  const labels = Array.from(new Set(rows.map((row) => String(row[field] ?? 'Unknown')))).slice(0, 10);
+  const labels = Array.from(new Set(rows.map((row) => String(row[field] ?? '(blank)')))).slice(0, 10);
   if (labels.length < 3) return <EmptyAdvanced message="Radar needs at least three categories." />;
-  const groupedRows = new Map(labels.map((label) => [label, rows.filter((row) => String(row[field] ?? 'Unknown') === label)]));
+  const groupedRows = new Map(labels.map((label) => [label, rows.filter((row) => String(row[field] ?? '(blank)') === label)]));
   const series = metrics.slice(0, 4).map((metric) => ({
     metric,
     values: labels.map((label) => aggregateMetric(groupedRows.get(label) ?? [], metric, preAggregated)),
@@ -622,8 +622,13 @@ function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: nu
   // Key = the chart's primary metric key (or 'value' fallback for legacy
   // saved charts that don't pass one).
   const arcColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
-  const safeTarget = target > 0 ? target : Math.max(value, 1);
-  const pct = Math.max(0, Math.min(value / safeTarget, 1));
+  // BI-standard (Power BI): a gauge with NO target must not pin the needle
+  // full (which falsely reads as "goal met"). When no target is set, scale
+  // the arc to 2× the value so the needle sits mid-arc, and label it honestly
+  // as "No target set" instead of fabricating "Target {value}".
+  const hasTarget = target > 0;
+  const scaleMax = hasTarget ? target : Math.max(value * 2, 1);
+  const pct = Math.max(0, Math.min(value / scaleMax, 1));
   const start = -115;
   const end = 115;
   const valueEnd = start + (end - start) * pct;
@@ -641,16 +646,20 @@ function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: nu
       <line x1={400} y1={260} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
       <circle cx={400} cy={260} r={8} fill="rgb(var(--text-primary))" />
       <text x={400} y={330} fontSize={34} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-      <text x={400} y={354} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, labelStyle)}</text>
+      <text x={400} y={354} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
     </svg>
   );
 }
 
 function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
-  const safeTarget = target > 0 ? target : Math.max(value, 1);
-  const max = Math.max(value, safeTarget) * 1.18;
+  // BI-standard: only draw the target marker + "Target" label when a target
+  // is actually set. With no target, scale to value×1.25 and omit the marker
+  // (previously it drew a target line AT the value position + "Target {value}"
+  // — a fabricated goal that misreads as "exactly met").
+  const hasTarget = target > 0;
+  const max = (hasTarget ? Math.max(value, target) : value * 1.25) || 1;
   const valueWidth = 560 * Math.max(0, value / max);
-  const targetX = 120 + 560 * Math.max(0, safeTarget / max);
+  const targetX = 120 + 560 * Math.max(0, target / max);
   // Phase-15.86 — value bar honours seriesColors override.
   const barColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
   const labelStyle = styleWithEffectiveNumberFormat(style, seriesKey);
@@ -658,11 +667,11 @@ function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: n
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={120} y={175} width={560} height={70} rx={8} fill="rgb(var(--surface-3))" />
       <rect x={120} y={175} width={valueWidth} height={70} rx={8} fill={barColor} />
-      <line x1={targetX} y1={150} x2={targetX} y2={272} stroke="rgb(var(--text-primary))" strokeWidth={4} />
+      {hasTarget && <line x1={targetX} y1={150} x2={targetX} y2={272} stroke="rgb(var(--text-primary))" strokeWidth={4} />}
       <text x={120} y={315} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
       <text x={680} y={315} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, labelStyle)}</text>
       <text x={400} y={130} fontSize={30} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-      <text x={400} y={152} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">Target {formatNumber(safeTarget, labelStyle)}</text>
+      <text x={400} y={152} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
     </svg>
   );
 }
@@ -788,7 +797,7 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
   );
 }
 
-function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggregated, onSelect }: {
+function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggregated, onSelect, labelMap }: {
   rows: ChartRow[];
   type: string;
   roleConfig: ExploreChartModel['roleConfig'];
@@ -797,6 +806,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   palette: string[];
   preAggregated?: boolean;
   onSelect?: (field: string, value: unknown) => void;
+  labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
 }) {
   const { scatterX, scatterY, dimension } = roleConfig;
   if (!scatterX || !scatterY) return <EmptyAdvanced message="Select X and Y numeric columns." />;
@@ -818,8 +828,21 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const maxR = Math.max(...rs, 1);
-  const sx = (value: number) => 70 + ((value - minX) / Math.max(maxX - minX, 1)) * 650;
-  const sy = (value: number) => 360 - ((value - minY) / Math.max(maxY - minY, 1)) * 300;
+  // MAP_POINT geographic projection: when the X/Y fields are longitude/latitude
+  // (by name), place points at their TRUE position via an equirectangular
+  // projection (fixed -180..180 / -90..90) instead of stretching the data
+  // min/max to fill the box — so a point at (lng=105, lat=21) lands where
+  // Hanoi actually is. Name-based only (no value-range guess) so a non-geo
+  // MAP_POINT never gets silently mis-projected. BUBBLE always uses data scale.
+  const isGeoProjected = type === 'MAP_POINT'
+    && /\b(lon|lng|long|longitude)\b/i.test(scatterX)
+    && /\b(lat|latitude)\b/i.test(scatterY);
+  const sx = isGeoProjected
+    ? (value: number) => 70 + ((value + 180) / 360) * 650
+    : (value: number) => 70 + ((value - minX) / Math.max(maxX - minX, 1)) * 650;
+  const sy = isGeoProjected
+    ? (value: number) => 360 - ((value + 90) / 180) * 300
+    : (value: number) => 360 - ((value - minY) / Math.max(maxY - minY, 1)) * 300;
   const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * 20 : 5;
   // Phase-15.86 — BUBBLE/MAP_POINT DataLabels. Master switch shows the
   // dimension label next to each point. fontSize/fontColor per-point
@@ -829,8 +852,8 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={55} y={35} width={690} height={335} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
-      <text x={70} y={394} fontSize={11} fill="rgb(var(--text-tertiary))">{scatterX}</text>
-      <text x={28} y={55} fontSize={11} fill="rgb(var(--text-tertiary))" transform="rotate(-90 28 55)">{scatterY}</text>
+      <text x={70} y={394} fontSize={11} fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
+      <text x={28} y={55} fontSize={11} fill="rgb(var(--text-tertiary))" transform="rotate(-90 28 55)">{fieldLabel(scatterY, labelMap)}</text>
       {points.map((point, index) => {
         const pointKey = String(point.label ?? index);
         const override = dlc?.overrides?.[pointKey];
@@ -945,8 +968,19 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
                   </span>
                 )}
               </div>
+              {/* Choropleth semantics: a region map encodes value as colour
+                  INTENSITY (one hue, darker = higher), not a categorical
+                  per-region colour. Ramp the bar opacity by value share so the
+                  card reads as a region-intensity view even without map
+                  boundaries (a literal boundary choropleth needs a geo topology
+                  dependency we don't bundle). */}
               <div className="mt-2 h-2 rounded-full bg-surface-3">
-                <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: resolveSliceColor(style, palette, item.name, index) }} />
+                <div className="h-2 rounded-full"
+                  style={{
+                    width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`,
+                    backgroundColor: palette[0] ?? resolveSliceColor(style, palette, item.name, index),
+                    opacity: 0.3 + positiveShare(item.value, max) * 0.7,
+                  }} />
               </div>
             </button>
           );
@@ -960,21 +994,46 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
   if (!field || !metric) return <EmptyAdvanced message="Select category and numeric value columns." />;
   const grouped = new Map<string, number[]>();
   for (const row of rows) {
-    const key = String(row[field] ?? 'Unknown');
+    const key = String(row[field] ?? '(blank)');
     const value = metricValueForRawDistribution(row, metric);
     if (!Number.isFinite(value)) continue;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(value);
   }
   const quantile = (values: number[], q: number) => values[Math.floor((values.length - 1) * q)] ?? 0;
+  // Proper Tukey boxplot: whiskers extend to the most extreme value still
+  // within Q1-1.5·IQR / Q3+1.5·IQR; values beyond the fences are OUTLIERS,
+  // drawn as separate dots (not as whisker ends). This is the statistically
+  // correct definition and means a lone 10M row no longer stretches the box —
+  // it shows up as an outlier dot while the box reflects the real spread.
   const stats = Array.from(grouped.entries()).slice(0, 18).map(([name, raw]) => {
     const values = [...raw].sort((a, b) => a - b);
-    return { name, min: values[0] ?? 0, q1: quantile(values, 0.25), med: quantile(values, 0.5), q3: quantile(values, 0.75), max: values[values.length - 1] ?? 0 };
+    const q1 = quantile(values, 0.25);
+    const med = quantile(values, 0.5);
+    const q3 = quantile(values, 0.75);
+    const iqr = q3 - q1;
+    const lowerFence = q1 - 1.5 * iqr;
+    const upperFence = q3 + 1.5 * iqr;
+    const inFence = values.filter((v) => v >= lowerFence && v <= upperFence);
+    const whiskerLow = inFence.length ? inFence[0] : (values[0] ?? 0);
+    const whiskerHigh = inFence.length ? inFence[inFence.length - 1] : (values[values.length - 1] ?? 0);
+    const outliers = values.filter((v) => v < lowerFence || v > upperFence).slice(0, 50);
+    return { name, q1, med, q3, whiskerLow, whiskerHigh, outliers };
   });
   if (!stats.length) return <EmptyAdvanced message="No distribution rows to render." />;
-  const min = Math.min(...stats.map((item) => item.min));
-  const max = Math.max(...stats.map((item) => item.max));
-  const sy = (value: number) => 355 - ((value - min) / Math.max(max - min, 1)) * 300;
+  // Default scale = the whisker range across all boxes so the boxes fill the
+  // plot. Y Min/Y Max override when set (SVG `allowDataOverflow` equivalent:
+  // values outside the range — incl. outlier dots — clamp to the plot edge).
+  const whiskerMin = Math.min(...stats.map((item) => item.whiskerLow));
+  const whiskerMax = Math.max(...stats.map((item) => item.whiskerHigh));
+  const yMinSet = style.yAxisMin !== undefined && style.yAxisMin !== '' && Number.isFinite(Number(style.yAxisMin));
+  const yMaxSet = style.yAxisMax !== undefined && style.yAxisMax !== '' && Number.isFinite(Number(style.yAxisMax));
+  const min = yMinSet ? Number(style.yAxisMin) : whiskerMin;
+  const max = yMaxSet ? Number(style.yAxisMax) : whiskerMax;
+  const sy = (value: number) => {
+    const raw = 355 - ((value - min) / Math.max(max - min, 1)) * 300;
+    return Math.max(55, Math.min(355, raw));
+  };
   const step = 680 / Math.max(stats.length, 1);
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
@@ -992,9 +1051,18 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
         const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <line x1={x} x2={x} y1={sy(item.min)} y2={sy(item.max)} stroke="rgb(var(--text-tertiary))" />
+            {/* Tukey whisker (within 1.5·IQR) with end caps */}
+            <line x1={x} x2={x} y1={sy(item.whiskerLow)} y2={sy(item.whiskerHigh)} stroke="rgb(var(--text-tertiary))" />
+            <line x1={x - boxW / 4} x2={x + boxW / 4} y1={sy(item.whiskerHigh)} y2={sy(item.whiskerHigh)} stroke="rgb(var(--text-tertiary))" />
+            <line x1={x - boxW / 4} x2={x + boxW / 4} y1={sy(item.whiskerLow)} y2={sy(item.whiskerLow)} stroke="rgb(var(--text-tertiary))" />
             <rect x={x - boxW / 2} y={sy(item.q3)} width={boxW} height={Math.max(2, sy(item.q1) - sy(item.q3))} rx={3} fill={boxColor} opacity={0.35} stroke={boxColor} />
             <line x1={x - boxW / 2} x2={x + boxW / 2} y1={sy(item.med)} y2={sy(item.med)} stroke="rgb(var(--text-primary))" strokeWidth={2} />
+            {/* outliers beyond the fences — dots (clamped to the plot edge) */}
+            {item.outliers.map((ov, oi) => (
+              <circle key={oi} cx={x} cy={sy(ov)} r={2.5} fill={boxColor} opacity={0.75}>
+                <title>{`${item.name} · outlier ${formatNumber(ov, styleForLabel)}`}</title>
+              </circle>
+            ))}
             {labelsEnabled && (
               <text x={x + boxW / 2 + 4} y={sy(item.med) + 3} fontSize={labelFontSize} fill={labelFontColor}>
                 {formatNumber(item.med, styleForLabel)}
@@ -1142,12 +1210,39 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
           </path>
         );
       })}
+      {/* Always-on legend for the inner ring — a sunburst is unreadable
+          without it (slice labels only appeared when the DataLabels toggle
+          was on). Lists each source with its colour + value share. */}
+      {inner.map((item, index) => {
+        const sharePct = item.value / total;
+        const label = item.name === '' || item.name == null ? '(blank)' : String(item.name).slice(0, 16);
+        return (
+          <g key={`sb-legend-${item.name}`} transform={`translate(600 ${64 + index * 20})`} className="cursor-pointer" onClick={() => onSelect?.(item.name)}>
+            <rect width={11} height={11} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
+            <text x={17} y={10} fontSize={11} fill="rgb(var(--text-secondary))">
+              {`${label} · ${(sharePct * 100).toFixed(sharePct < 0.1 ? 1 : 0)}%`}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
 
 function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; palette: string[]; style: ChartStyleConfig; onSelect?: (source: string) => void }) {
-  const times = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 20);
+  // RIBBON's X is the time field — the axis MUST be chronological. The BE
+  // returns rows in GROUP-BY order (interleaved by the breakdown column), so
+  // `new Set(...)` insertion order is NOT sorted. Sort by parsed date (string
+  // fallback for non-date sources) BEFORE slicing so the rank-flow reads
+  // left-to-right in time order. TimelineChart already does the equivalent.
+  const times = Array.from(new Set(pairs.map((pair) => pair.source)))
+    .sort((a, b) => {
+      const ta = new Date(String(a)).getTime();
+      const tb = new Date(String(b)).getTime();
+      if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
+      return String(a).localeCompare(String(b));
+    })
+    .slice(0, 20);
   const cats = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 8);
   if (times.length < 2 || cats.length === 0) return <EmptyAdvanced message="Select time, series, and value fields." />;
   const valueMap = new Map(pairs.map((pair) => [`${pair.source}\u0000${pair.target}`, pair.value]));
@@ -1331,8 +1426,12 @@ export function AdvancedExploreChart({
     const staticTarget = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
       ? Number(style.benchmarkValue)
       : Number(style.kpiBenchmarkValue);
-    return Number.isFinite(staticTarget) && staticTarget > 0 ? staticTarget : Math.max(totalValue, 1);
-  }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue, totalValue]);
+    // Return 0 (not the value itself) when NO target is configured. The
+    // gauge/bullet renderers read `target > 0` to decide whether to draw a
+    // target marker / "Target X" label and how to scale. Defaulting to the
+    // value made every target-less gauge read as "goal met at 100%".
+    return Number.isFinite(staticTarget) && staticTarget > 0 ? staticTarget : 0;
+  }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue]);
 
   const emitDimension = (value: unknown) => {
     if (dimension) onSelectDataPoint?.({ field: dimension, value });
@@ -1389,7 +1488,7 @@ export function AdvancedExploreChart({
       ) : type === 'WATERFALL' ? (
         <WaterfallChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
-        <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} />
+        <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
       ) : type === 'HEATMAP' ? (
         <HeatmapChart pairs={pairs} style={style} palette={palette} onSelect={(source) => xField && emitField(xField, source)} />
       ) : type === 'MAP_REGION' ? (

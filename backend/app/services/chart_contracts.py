@@ -369,18 +369,42 @@ def merge_chart_query_filters(
     extra_filters: list[dict] | None = None,
     context: str | None = None,
 ) -> list[dict]:
+    """Fold the chart's own base filters with incoming runtime filters.
+
+    Single chart_base fold for EVERY chart-data path (calendar, derived,
+    physical, custom SQL, semantic, public). Base filters are the chart's
+    saved scope; ``extra_filters`` are the runtime overlay (dashboard /
+    slicer / public-link filters — for the public path already pre-merged by
+    `filter_layered_merge.merge_layered_filters`). On the same semantic scope
+    the runtime value WINS over the base (PBI-parity "viewer narrows the
+    chart's default"); see `_filter_dedupe_key`.
+
+    NOTE: base-internal duplicates are intentionally PRESERVED (only
+    base-vs-extra collisions are deduped). A chart whose base scope is a
+    range expressed as two rows on one field (``>= X`` AND ``<= Y``) must
+    keep both — the operator-agnostic dedupe key would otherwise collapse
+    them. The layered merge dedupes base-internally and so must NOT be used
+    for this fold.
+    """
     base = list(resolve_chart_query_filters(config, context=context))
     extra = normalize_filter_conditions(extra_filters)
     if not extra:
         return base
 
-    # Deduplicate: when extra_filters (runtime/dashboard) target the same
-    # semantic scope as a base filter, the runtime value wins. See
-    # `_filter_dedupe_key` for the v16 fix to the bare-name collision
-    # that previously dropped base filters across views.
-    extra_keys = {_filter_dedupe_key(f) for f in extra}
-    merged = [f for f in base if _filter_dedupe_key(f) not in extra_keys]
-    merged.extend(extra)
+    # PBI parity (product decision 2026-05-31): the chart's BASE filters are
+    # the author's HARD constraint and AND with the runtime overlay
+    # (dashboard / slicer / viewer) — they are NOT overridden by it. A
+    # visual-level filter always narrows the visual regardless of the
+    # page/dashboard filters layered on top (e.g. base `product_id <= 15` +
+    # dashboard `product_id >= 10` → `10 <= product_id <= 15`, not just >= 10).
+    # Keep base + extra (AND); drop only byte-identical predicates so the
+    # WHERE doesn't carry a redundant duplicate term. (Override semantics for
+    # runtime-vs-runtime — viewer narrows dashboard default — are resolved
+    # upstream in `filter_layered_merge.merge_layered_filters`, not here.)
+    merged = list(base)
+    for f in extra:
+        if f not in merged:
+            merged.append(f)
     return merged
 
 
