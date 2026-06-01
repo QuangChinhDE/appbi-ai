@@ -1021,7 +1021,7 @@ export function ExploreEditor({
 
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
-  const { data: datasetModel } = useDatasetModel(selectedDatasetId);
+  const { data: datasetModel, isLoading: isDatasetModelLoading } = useDatasetModel(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
 
   /**
@@ -2109,6 +2109,30 @@ export function ExploreEditor({
     });
   }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare]);
 
+  // UX-2: For NEW TABLE charts, default to the first 10 non-identifier columns
+  // instead of showing all available columns. This prevents overwhelming the
+  // user when a dataset has many columns (e.g. 129). Fires once when columns
+  // become available; does not override if the user has already made a selection.
+  const didInitNewTableRef = useRef(false);
+  useEffect(() => {
+    if (!isNew || chartType !== 'TABLE' || didInitNewTableRef.current) return;
+    if (configColumns.length === 0) return;
+    // normalizeRoleConfig collapses [] to undefined, so undefined means "all cols" here.
+    // Only apply the default when no explicit selection has been made yet.
+    if (normalizedRoleConfig.selectedColumns !== undefined) {
+      didInitNewTableRef.current = true;
+      return;
+    }
+    didInitNewTableRef.current = true;
+    const defaultCols = configColumns
+      .filter((c) => !isIdentifierLikeField(c.name))
+      .slice(0, 10)
+      .map((c) => c.name);
+    if (defaultCols.length > 0) {
+      setGeneratedRoleConfig((prev) => ({ ...prev, selectedColumns: defaultCols }));
+    }
+  }, [isNew, chartType, configColumns, normalizedRoleConfig.selectedColumns]);
+
   // Phase-15.83 — useEffect previously clamped queryLimit to the per-mode
   // cap. Caps removed (NO_LIMIT_SENTINEL); effect deleted.
 
@@ -2350,9 +2374,13 @@ export function ExploreEditor({
     if (isNew || didAutoRunRef.current || !isChartLoaded || !selectedDatasetId || !selectedTableId || !selectedTable) {
       return;
     }
+    // Wait for preview data and dataset model to finish loading before auto-running.
+    // Without this guard the query signature can change once semantic columns arrive,
+    // causing "Run to refresh" to appear immediately after the initial auto-run.
+    if (isPreviewLoading || isDatasetModelLoading) return;
     didAutoRunRef.current = true;
     void handleRunQuery();
-  }, [isNew, isChartLoaded, selectedDatasetId, selectedTableId, selectedTable, currentQuerySignature]);
+  }, [isNew, isChartLoaded, selectedDatasetId, selectedTableId, selectedTable, isPreviewLoading, isDatasetModelLoading, currentQuerySignature]);
 
   /**
    * Phase-15.20 — date-hierarchy drill state for the chart preview header.

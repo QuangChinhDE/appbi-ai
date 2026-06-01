@@ -3,9 +3,16 @@
  */
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Trash2, BarChart3, Clock, Layers, Search, Share2 } from 'lucide-react';
+import {
+  Plus, Trash2, BarChart3, Clock, Layers, Search, Share2, X,
+  BarChart2, BarChart4, BarChartHorizontal, LineChart, AreaChart,
+  Activity, TrendingUp, PieChart, Donut, Radar, CircleDot,
+  ScatterChart, Flame, Boxes, GitBranch, Gauge, Table, Table2,
+  MapPin, Map as MapIcon, Box, Rows3, Workflow, Network, Ribbon,
+  Timer, Cloud, Trophy,
+} from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
@@ -41,6 +48,43 @@ type ExploreListFilters = {
   dashboard?: string;
   dataset?: string;
   source?: string;
+};
+
+const BANNER_DISMISSED_KEY = 'appbi_explore_banner_dismissed_v1';
+
+const CHART_TYPE_ICONS: Record<string, React.ElementType> = {
+  BAR: BarChart3,
+  HORIZONTAL_BAR: BarChartHorizontal,
+  GROUPED_BAR: BarChart4,
+  STACKED_BAR: BarChart2,
+  LINE: LineChart,
+  AREA: AreaChart,
+  TIME_SERIES: Activity,
+  BAR_LINE: TrendingUp,
+  PIE: PieChart,
+  DONUT: Donut,
+  RADAR: Radar,
+  POLAR_AREA: CircleDot,
+  SCATTER: ScatterChart,
+  BUBBLE: CircleDot,
+  HEATMAP: Flame,
+  TREEMAP: Boxes,
+  FUNNEL: GitBranch,
+  GAUGE: Gauge,
+  WATERFALL: BarChart2,
+  MATRIX: Table2,
+  MAP_POINT: MapPin,
+  MAP_REGION: MapIcon,
+  BOXPLOT: Box,
+  BULLET: Rows3,
+  SANKEY: Workflow,
+  SUNBURST: Network,
+  RIBBON: Ribbon,
+  TIMELINE: Timer,
+  WORD_CLOUD: Cloud,
+  KPI: Trophy,
+  PODIUM: Trophy,
+  TABLE: Table,
 };
 
 const CHART_TYPE_LABELS: Record<string, string> = {
@@ -116,6 +160,18 @@ export default function ExplorePage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBannerVisible, setIsBannerVisible] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsBannerVisible(localStorage.getItem(BANNER_DISMISSED_KEY) !== '1');
+    }
+  }, []);
+
+  const dismissBanner = () => {
+    setIsBannerVisible(false);
+    if (typeof window !== 'undefined') localStorage.setItem(BANNER_DISMISSED_KEY, '1');
+  };
 
   const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
   const { data: dashboards = [] } = useDashboards();
@@ -259,19 +315,28 @@ export default function ExplorePage() {
       <PageListLayout
         title={t('module.explore.title')}
         description={description}
-        overview={(
-          <ModuleOverview
-            icon={BarChart3}
-            title={t('overview.explore.title')}
-            description={t('overview.explore.description')}
-            badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
-            stats={[
-              { label: t('overview.explore.saved'), value: allCharts.length, helper: t('overview.explore.savedHelper') },
-              { label: t('overview.explore.types'), value: chartTypesUsed, helper: t('overview.explore.typesHelper') },
-              { label: t('overview.explore.updated'), value: updatedThisWeek, helper: t('overview.explore.updatedHelper') },
-            ]}
-          />
-        )}
+        overview={isBannerVisible ? (
+          <div className="relative">
+            <ModuleOverview
+              icon={BarChart3}
+              title={t('overview.explore.title')}
+              description={t('overview.explore.description')}
+              badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
+              stats={[
+                { label: t('overview.explore.saved'), value: allCharts.length, helper: t('overview.explore.savedHelper') },
+                { label: t('overview.explore.types'), value: chartTypesUsed, helper: t('overview.explore.typesHelper') },
+                { label: t('overview.explore.updated'), value: updatedThisWeek, helper: t('overview.explore.updatedHelper') },
+              ]}
+            />
+            <button
+              onClick={dismissBanner}
+              aria-label="Dismiss overview"
+              className="absolute right-2 top-2 rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : undefined}
         action={canEdit ? (
           <Button
             variant="primary"
@@ -423,6 +488,7 @@ export default function ExplorePage() {
                       const itemPerms = getResourcePermissions(chart.user_permission);
                       const sourceLabel = buildChartSourceLabel(chart);
                       const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
+                      const ChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
 
                       return (
                         <tr
@@ -446,7 +512,7 @@ export default function ExplorePage() {
                             >
                               <div className="flex items-start gap-3">
                                 <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
-                                  <BarChart3 className="h-3.5 w-3.5" />
+                                  <ChartIcon className="h-3.5 w-3.5" />
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{chart.name}</div>
@@ -540,6 +606,7 @@ export default function ExplorePage() {
                     const createdAt = new Date(chart.created_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
                     const itemPerms = getResourcePermissions(chart.user_permission);
                     const sourceLabel = buildChartSourceLabel(chart);
+                    const GridChartIcon = CHART_TYPE_ICONS[chart.chart_type] ?? BarChart3;
 
                     return (
                       <div
@@ -549,7 +616,7 @@ export default function ExplorePage() {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                            <BarChart3 className="h-4 w-4" />
+                            <GridChartIcon className="h-4 w-4" />
                           </div>
                           <div className="flex items-center gap-0.5 opacity-0 transition-all group-hover:opacity-100">
                             {itemPerms.canShare && (

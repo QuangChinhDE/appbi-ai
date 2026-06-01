@@ -136,8 +136,10 @@ export function DashboardGrid({
     if (!isUserGestureRef.current) return;
     isUserGestureRef.current = false;
 
-    const hasChanged = newLayout.some((item, index) => {
-      const oldItem = layouts[index];
+    // Match by item ID (not array index) so reordered arrays don't produce false-positives.
+    const oldById = new Map(layouts.map((l) => [l.i, l]));
+    const hasChanged = newLayout.some((item) => {
+      const oldItem = oldById.get(item.i);
       return (
         oldItem &&
         (item.x !== oldItem.x ||
@@ -187,8 +189,8 @@ export function DashboardGrid({
       draggableHandle=".drag-handle"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      compactType="vertical"
-      preventCollision={false}
+      compactType={null}
+      preventCollision={true}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
