@@ -280,10 +280,19 @@ class SemanticQueryEngine:
         self._isolation_explore = explore
         _stage1_scalar = not (dimensions or pivots or window_functions or calculated_fields)
         if _stage1_scalar and measures:
+            # Group cross-fact measures by view; isolate a view ONLY when EVERY
+            # cross-fact measure on it renders as a scalar aggregate. A view with
+            # any non-scalar measure (formula/percent_of_total/window) is left on
+            # the legacy join path so the scalar-subquery wrap can't emit invalid
+            # multi-row SQL ("Scalar subquery produced more than one element").
+            _cross_by_view: Dict[str, list] = {}
+            for m in measures:
+                mv = self._parse_field_ref(m)[0]
+                if mv != explore.base_view_name:
+                    _cross_by_view.setdefault(mv, []).append(m)
             _iso = {
-                self._parse_field_ref(m)[0]
-                for m in measures
-                if self._parse_field_ref(m)[0] != explore.base_view_name
+                mv for mv, ms in _cross_by_view.items()
+                if all(self._is_scalar_isolatable_measure(m) for m in ms)
             }
             if _iso:
                 self._isolated_measure_views = _iso
@@ -1302,6 +1311,39 @@ class SemanticQueryEngine:
                 return f"{agg_sql} OVER ({over_body})"
 
         return agg_sql
+
+    def _is_scalar_isolatable_measure(self, field_ref: str) -> bool:
+        """A measure can be wrapped as a scalar isolation subquery ONLY if it
+        renders to a SINGLE-ROW scalar aggregate. The non-AGG-wrapped renders in
+        `_render_measure` are: formula/ratio measures (``depends_on`` — may emit
+        a bare dimension column), ``percent_of_total`` (emits ``… OVER ()``), and
+        ``context_modifiers`` (emit a window ``AGG(…) OVER (…)``). Each yields
+        MULTIPLE rows inside ``(SELECT … FROM t)`` → BigQuery "Scalar subquery
+        produced more than one element". Those measures are NOT isolated (they
+        keep the legacy join path); only plain aggregates (sum/count/avg/min/
+        max/count_distinct, incl. filtered CASE-WHEN measures) are isolatable.
+        """
+        try:
+            view_name, field_name = self._parse_field_ref(field_ref)
+            view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        except Exception:
+            return False
+        measures = getattr(view, "measures", None) or []
+        mdef = next(
+            (m for m in measures if isinstance(m, dict) and m.get("name") == field_name),
+            None,
+        )
+        if mdef is None:
+            # Implicit measure (a numeric dimension dragged into Values) →
+            # synthesised as a plain AGG(column) → always scalar.
+            return True
+        if str(mdef.get("type") or "").lower() == "percent_of_total":
+            return False
+        if mdef.get("depends_on"):
+            return False
+        if mdef.get("context_modifiers"):
+            return False
+        return True
 
     def _build_isolated_measure_subquery(
         self,
