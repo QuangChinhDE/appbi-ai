@@ -3270,7 +3270,12 @@ class ChartService:
         raw_limit_override = config.get("limit")
         if raw_limit_override is not None:
             try:
-                limit_override = max(1, min(int(raw_limit_override), 5000))
+                # Phase-15.83 — per-chart row caps were dropped. Clamp to the
+                # 10M sentinel, NOT 5000, so the FE's NO_LIMIT_SENTINEL passes
+                # through and the preview isn't silently capped at 5000 rows
+                # (BigQuery short-circuits on the real row count). The sibling
+                # source-sample cap below was raised then; this one was missed.
+                limit_override = max(1, min(int(raw_limit_override), 10_000_000))
             except (TypeError, ValueError):
                 limit_override = None
         normalized_role_config = normalize_chart_role_config(
