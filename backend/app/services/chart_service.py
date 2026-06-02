@@ -630,7 +630,10 @@ def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
         canonical = str(raw or "").strip()
         if not canonical:
             continue
-        alias = canonical.replace(".", "_")
+        # Must match SemanticQueryEngine._safe_alias: sanitize EVERY
+        # non-identifier char (not just '.') so a space-containing column like
+        # 'Activity Group' maps to the same alias the engine emitted.
+        alias = re.sub(r"[^A-Za-z0-9_]", "_", canonical)
         # Two distinct refs cannot collide on the same alias because the
         # engine itself rejects that case; first-write-wins is safe.
         out.setdefault(alias, canonical)

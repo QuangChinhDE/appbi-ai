@@ -816,15 +816,19 @@ class SemanticQueryEngine:
         # as ambiguous when 2+ joined views share a column name. Detect
         # the bare-identifier case and prepend the placeholder so the
         # template still routes through view_alias substitution.
-        sql_template = dim_def.get('sql') or f"${{TABLE}}.{field_name}"
-        if (
-            sql_template
-            and "${TABLE}" not in sql_template
-            and "${" not in sql_template  # also skip ${view.field} templates
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
-        ):
-            sql_template = f"${{TABLE}}.{sql_template.strip()}"
-        return self._render_sql_template(sql_template, view_alias)
+        raw_sql = dim_def.get('sql')
+        stripped = (raw_sql or "").strip()
+        # Bare column reference (no SQL expression / placeholder) → qualify with
+        # the view alias and QUOTE the column if its name has spaces/special
+        # chars. Plain names ('subject') render byte-identically to before;
+        # names like 'Activity Group' were previously emitted raw + unquoted
+        # ("Activity Group AS …"), which BigQuery rejects ("Expected … BY but
+        # got AS"). When sql is empty, the column is the dimension's own name.
+        if not stripped:
+            return f"{view_alias}.{self._quote_ident(field_name)}"
+        if "${" not in stripped and re.fullmatch(r"[A-Za-z_][\w ]*", stripped):
+            return f"{view_alias}.{self._quote_ident(stripped)}"
+        return self._render_sql_template(raw_sql, view_alias)
     
     def _render_dimension_with_time_grain(
         self,
@@ -3192,9 +3196,26 @@ class SemanticQueryEngine:
         sign = "+" if amount >= 0 else "-"
         return f"({date_expr} {sign} INTERVAL '{abs(amount)} {u}')"
     
+    def _quote_ident(self, name: str) -> str:
+        """Quote a SQL identifier ONLY when it needs it (contains chars outside
+        [A-Za-z0-9_]). Plain identifiers return unquoted so existing SQL stays
+        byte-identical; names with spaces/special chars (e.g. 'Activity Group')
+        get the dialect quote char (backtick on BigQuery/MySQL, double-quote
+        elsewhere)."""
+        name = str(name)
+        if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+            return name
+        dialect = (self.database_type or '').lower()
+        if dialect in ('bigquery', 'mysql'):
+            return '`' + name.replace('`', '') + '`'
+        return '"' + name.replace('"', '') + '"'
+
     def _safe_alias(self, field_ref: str) -> str:
-        """Generate safe SQL alias from field reference"""
-        return field_ref.replace('.', '_')
+        """Generate a safe SQL alias from a field reference. Sanitizes EVERY
+        non-identifier char (not just '.') — a column like 'Activity Group'
+        otherwise yields the alias 'view_Activity Group' with a space, which is
+        invalid SQL. Must match chart_service._build_semantic_alias_map."""
+        return re.sub(r'[^A-Za-z0-9_]', '_', field_ref)
     
     def _pivot_column_alias(self, measure_field: str, pivot_value: str) -> str:
         """Generate alias for pivoted column"""
