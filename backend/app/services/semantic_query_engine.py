@@ -290,6 +290,7 @@ class SemanticQueryEngine:
             # any non-scalar measure (formula/percent_of_total/window) is left on
             # the legacy join path so the scalar-subquery wrap can't emit invalid
             # multi-row SQL ("Scalar subquery produced more than one element").
+            _facts_all = {self._parse_field_ref(m)[0] for m in measures}
             _cross_by_view: Dict[str, list] = {}
             for m in measures:
                 mv = self._parse_field_ref(m)[0]
@@ -299,7 +300,14 @@ class SemanticQueryEngine:
                 mv for mv, ms in _cross_by_view.items()
                 if all(self._is_scalar_isolatable_measure(m) for m in ms)
             }
-            if _iso:
+            # A SINGLE cross-fact measure fact is handled by re-anchor below
+            # (`SELECT agg FROM <fact>` — the FROM-base form, which BigQuery
+            # accepts even when the fact's source_query has a nested WITH; the
+            # scalar-subquery wrap `(SELECT agg FROM (WITH a AS (WITH b …)))`
+            # is what BQ rejected — "Expected … BY but got AS"). Scalar-subquery
+            # isolation is reserved for the multi-fact KPI case (≥2 measure
+            # facts) where the query can't be anchored at one fact.
+            if _iso and len(_facts_all) >= 2:
                 self._isolated_measure_views = _iso
                 self._isolation_active = True
 
@@ -316,7 +324,6 @@ class SemanticQueryEngine:
             not _disable_isolation
             and not _reanchored
             and not self._isolation_active
-            and (dimensions or pivots)
             and measures
         ):
             _facts = {self._parse_field_ref(m)[0] for m in measures}
