@@ -167,6 +167,7 @@ class SemanticQueryEngine:
         measure_agg_overrides: Optional[Dict[str, str]] = None,
         model_id: Optional[int] = None,
         explore_id: Optional[int] = None,
+        _reanchored: bool = False,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -252,7 +253,107 @@ class SemanticQueryEngine:
                 )
             )
         self._load_views(field_refs)
-        
+
+        # ── Diet bug #3: collapse a fanned synthetic-calendar filter to the
+        # fact's PRIMARY calendar relationship (no-op unless a multi-date fact
+        # was fanned). Runs before isolation/where so every path sees the
+        # collapsed form; idempotent on already-clean filters.
+        filters = self._collapse_fanned_calendar_filters(filters, explore.base_view_name)
+
+        # ── Measure isolation (base-invariance — PowerBI/Tableau standard) ──
+        # A measure whose view is NOT the chart's base fact must be evaluated
+        # at ITS OWN grain (an independent aggregate over its own table), not
+        # LEFT-JOINed off the base — otherwise the base fact's key domain
+        # scopes the measure (Tableau's "measures forget their source and adopt
+        # the post-join grain"; our bug #2). We mark cross-fact measure views
+        # here; `_render_measure` emits them as isolated correlated subqueries
+        # and `_build_from_clause` leaves them OUT of the base JOIN chain.
+        #
+        # Stage-1 scope: scalar/KPI charts (no dimensions/pivots/window-fns/
+        # calc-fields). This covers the reported cross-base matrix. Charts with
+        # dimensions keep the legacy path for now (byte-identical) — the
+        # group-by correlation lands in Stage-2.
+        self._chart_filters = dict(filters or {})
+        self._chart_time_grains = dict(time_grains or {})
+        self._isolated_measure_views: set[str] = set()
+        self._isolation_active = False
+        self._isolation_explore = explore
+        _stage1_scalar = not (dimensions or pivots or window_functions or calculated_fields)
+        if _stage1_scalar and measures:
+            _iso = {
+                self._parse_field_ref(m)[0]
+                for m in measures
+                if self._parse_field_ref(m)[0] != explore.base_view_name
+            }
+            if _iso:
+                self._isolated_measure_views = _iso
+                self._isolation_active = True
+
+        # ── Dimensioned chart with cross-fact measure(s) — base-invariance ──
+        # Two cases (both keep the measure at its OWN grain, PowerBI/Tableau):
+        #   • SINGLE measure-fact M (≠ base): RE-ANCHOR the whole query at M
+        #     (reuses the full verified engine incl pivot/window/calc). Group
+        #     dims/pivots unrelated to M → legacy path + warn.
+        #   • MULTIPLE measure-facts (mixed base+cross, or several cross-facts):
+        #     sub-generate each fact independently (re-anchored) and STITCH on
+        #     the shared group dims (skeleton ∪ + NULL-safe LEFT JOINs). Pivot/
+        #     window/calc with multi-fact → legacy path (deferred).
+        if (
+            not _reanchored
+            and not self._isolation_active
+            and (dimensions or pivots)
+            and measures
+        ):
+            _facts = {self._parse_field_ref(m)[0] for m in measures}
+            _cross = _facts - {explore.base_view_name}
+            if _cross and len(_facts) == 1:
+                _m_view = next(iter(_facts))
+                from app.services.semantic_join_resolver import SemanticJoinResolver as _R
+                _m_resolver = _R(self.db, self._model, _m_view, bidirectional=True)
+                _reach = _m_resolver.reachable_nodes()
+                _grp_views = {
+                    self._parse_field_ref(g)[0]
+                    for g in (list(dimensions) + list(pivots or []))
+                }
+                _unrelated = {v for v in _grp_views if v != _m_view and v not in _reach}
+                if not _unrelated:
+                    _cal_view = self._find_calendar_dim_for_measure(_m_resolver, _m_view)
+                    _rebound = self._rebind_calendar_filters(dict(filters or {}), _cal_view)
+                    return self.generate_sql(
+                        explore_name=_m_view,
+                        dimensions=dimensions,
+                        measures=measures,
+                        filters=_rebound,
+                        pivots=pivots,
+                        sorts=sorts,
+                        limit=limit,
+                        window_functions=window_functions,
+                        calculated_fields=calculated_fields,
+                        time_grains=time_grains,
+                        top_n=top_n,
+                        measure_agg_overrides=measure_agg_overrides,
+                        model_id=getattr(self._model, "id", None),
+                        _reanchored=True,
+                    )
+                else:
+                    self.warnings.append(
+                        f"Measure trên bảng '{_m_view}' không liên quan tới dimension "
+                        f"{sorted(_unrelated)} — không thể tách theo các chiều này; "
+                        f"giữ cách tính cũ."
+                    )
+            elif (
+                _cross and len(_facts) >= 2
+                and dimensions
+                and not pivots and not window_functions and not calculated_fields
+            ):
+                _stitched = self._build_dimensioned_multifact_sql(
+                    explore, dimensions, measures, filters, time_grains,
+                    limit, measure_agg_overrides,
+                )
+                if _stitched is not None:
+                    return _stitched
+                # else fall through to the legacy path
+
         # Fetch pivot values if pivoting
         pivot_values = []
         pivot_metadata = []
@@ -310,13 +411,37 @@ class SemanticQueryEngine:
             select_side_refs.extend(
                 re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}", str(cf.get("sql") or ""))
             )
-        select_side_views = _views_of(select_side_refs) | {explore.base_view_name}
+        # Isolated (cross-fact) measure views are evaluated as their own
+        # subqueries — keep them OUT of the base FROM/JOIN chain so the base
+        # can't scope them.
+        select_side_views = (
+            _views_of(select_side_refs) | {explore.base_view_name}
+        ) - self._isolated_measure_views
         filter_views = _views_of(list((filters or {}).keys()))
 
-        # Build FROM/JOIN clause (only SELECT-side views + base + hops).
-        from_clause, joined_nodes = self._build_from_clause(
-            explore, target_views=select_side_views,
+        # When EVERY measure is isolated and there are no base-side projections,
+        # the outer query needs no base table at all — `SELECT (sq1), (sq2)`
+        # returns exactly one row and is maximally base-invariant. Otherwise the
+        # base aggregate (single-fact measures) collapses the base to one row and
+        # the isolated subqueries ride alongside as scalars.
+        _all_measures_isolated = bool(measures) and all(
+            self._parse_field_ref(m)[0] in self._isolated_measure_views
+            for m in measures
         )
+        _omit_from = (
+            self._isolation_active
+            and _all_measures_isolated
+            and not dimensions and not pivots
+        )
+
+        # Build FROM/JOIN clause (only SELECT-side views + base + hops).
+        if _omit_from:
+            from_clause = ""
+            joined_nodes = {explore.base_view_name}
+        else:
+            from_clause, joined_nodes = self._build_from_clause(
+                explore, target_views=select_side_views,
+            )
         # Filter views that never made it into the FROM chain → EXISTS.
         exists_views = filter_views - joined_nodes
 
@@ -327,20 +452,26 @@ class SemanticQueryEngine:
         # field_ref is in the measures list. Anything else stays in
         # WHERE, preserving prior behavior for the common case.
         # See docs/filter-semantics.md §4.
-        where_filters, having_filters = self._split_filters_by_role(
-            filters, measures,
-        )
-        where_clause = self._build_where_clause(
-            where_filters, time_grains,
-            exists_views=exists_views,
-            explore=explore,
-            select_side_views=select_side_views,
-            joined_nodes=joined_nodes,
-        )
-        having_clause = self._build_having_clause(
-            having_filters, time_grains,
-            measure_agg_overrides=measure_agg_overrides or {},
-        )
+        if _omit_from:
+            # No base table → no outer predicates; every filter is bound to the
+            # measure's grain inside its isolated subquery (see _render_measure).
+            where_clause = ""
+            having_clause = ""
+        else:
+            where_filters, having_filters = self._split_filters_by_role(
+                filters, measures,
+            )
+            where_clause = self._build_where_clause(
+                where_filters, time_grains,
+                exists_views=exists_views,
+                explore=explore,
+                select_side_views=select_side_views,
+                joined_nodes=joined_nodes,
+            )
+            having_clause = self._build_having_clause(
+                having_filters, time_grains,
+                measure_agg_overrides=measure_agg_overrides or {},
+            )
 
         # Build GROUP BY clause
         group_by_clause = self._build_group_by_clause(dimensions, measures, pivots, time_grains)
@@ -365,8 +496,9 @@ class SemanticQueryEngine:
         sql_parts = [
             "SELECT",
             "  " + ",\n  ".join(select_parts),
-            from_clause,
         ]
+        if from_clause:
+            sql_parts.append(from_clause)
 
         if where_clause:
             sql_parts.append(where_clause)
@@ -850,6 +982,7 @@ class SemanticQueryEngine:
         agg_override: Optional[str] = None,
         _stack: Optional[Set[str]] = None,
         active_dimensions: Optional[List[str]] = None,
+        _isolate: bool = True,
     ) -> str:
         """Render measure SQL with aggregation.
 
@@ -883,6 +1016,23 @@ class SemanticQueryEngine:
         stack.add(field_ref)
 
         view_name, field_name = self._parse_field_ref(field_ref)
+
+        # ── Measure isolation (base-invariance) ──
+        # When this measure's view is cross-fact (≠ base) and isolation is
+        # active, emit it as an independent aggregate over its OWN table rather
+        # than `AGG(base_join_alias.col)`. `_isolate=False` (set when the
+        # subquery builder re-enters to render the inner plain aggregate, and
+        # by ratio-measure recursion) keeps the legacy path. Single-fact and
+        # non-scalar charts never set `_isolation_active` → byte-identical.
+        if (
+            _isolate
+            and getattr(self, "_isolation_active", False)
+            and view_name in getattr(self, "_isolated_measure_views", set())
+        ):
+            return self._build_isolated_measure_subquery(
+                field_ref, agg_override=agg_override,
+            )
+
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
 
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
@@ -1152,6 +1302,355 @@ class SemanticQueryEngine:
                 return f"{agg_sql} OVER ({over_body})"
 
         return agg_sql
+
+    def _build_isolated_measure_subquery(
+        self,
+        field_ref: str,
+        *,
+        agg_override: Optional[str] = None,
+    ) -> str:
+        """Render a cross-fact measure as an isolated aggregate over its OWN
+        table (base-invariance). The chart's filters are bound to the measure's
+        grain:
+
+          * filter on the measure's own view  → direct predicate on its alias;
+          * filter on a RELATED view           → EXISTS / key-equality via a
+            resolver re-rooted at the measure view (so e.g. a calendar filter
+            binds to the measure's single event-date column — diet bug #3 — and
+            an owner.Team filter binds to ``deal.sdr_key = owner.sdr_key``);
+          * filter on an UNRELATED view         → dropped with a warning (per
+            product decision: never emit a silently-wrong number).
+
+        The inner aggregate is produced by re-entering ``_render_measure`` with
+        ``_isolate=False`` so all existing logic (filtered measures, symmetric
+        aggregates, formula measures) is reused verbatim.
+        """
+        view_name, _ = self._parse_field_ref(field_ref)
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        m_table = view.sql_table_name or view_name
+
+        plain_agg = self._render_measure(
+            field_ref, agg_override=agg_override, _isolate=False,
+        )
+
+        where_sql = ""
+        filters = self._chart_filters or {}
+        if filters:
+            from app.services.semantic_join_resolver import SemanticJoinResolver as _R
+            m_resolver = _R(self.db, self._model, view_name, bidirectional=True)
+            reachable = m_resolver.reachable_nodes()
+
+            # ── Calendar re-binding (diet bug #3 + perf) ──
+            # chart_service rewrites a calendar/Date filter onto the CHART
+            # BASE fact's date column(s) (base-centric). For an isolated
+            # measure the base ≠ measure fact, so that base column is the
+            # wrong grain and, worse, binding it into this subquery forces an
+            # expensive multi-hop EXISTS (the activity/meeting/revenue timeout).
+            # We undo that premature base-fan: any filter carrying calendar
+            # metadata is re-pointed at the MAIN calendar dim, so the generic
+            # EXISTS builder binds it via the measure→Date edge on ONE event-
+            # date column (the cheap path that already makes base=Date correct).
+            cal_view = self._find_calendar_dim_for_measure(m_resolver, view_name)
+            filters = self._rebind_calendar_filters(filters, cal_view)
+            if cal_view:
+                reachable = m_resolver.reachable_nodes()
+
+            bound_filters: Dict[str, Any] = {}
+            for f_ref, f_def in filters.items():
+                f_view, _ = self._parse_field_ref(f_ref)
+                if f_view == view_name or f_view in reachable:
+                    bound_filters[f_ref] = f_def
+                else:
+                    self.warnings.append(
+                        f"Filter '{f_ref}' không liên quan tới measure '{field_ref}' "
+                        f"(bảng '{view_name}') — bỏ qua để tránh số sai âm thầm."
+                    )
+
+            if bound_filters:
+                # Related (non-own) views → EXISTS; own-view filters → direct
+                # predicates. Re-root the resolver at the measure view so the
+                # EXISTS correlation anchors to THIS measure's grain.
+                exists_views = {
+                    self._parse_field_ref(fr)[0]
+                    for fr in bound_filters
+                    if self._parse_field_ref(fr)[0] != view_name
+                }
+                _saved_resolver = self._resolver
+                self._resolver = m_resolver
+                try:
+                    where_sql = self._build_where_clause(
+                        bound_filters,
+                        self._chart_time_grains or {},
+                        exists_views=exists_views,
+                        explore=self._isolation_explore,
+                        select_side_views={view_name},
+                        joined_nodes={view_name},
+                    )
+                finally:
+                    self._resolver = _saved_resolver
+
+        body = f"SELECT {plain_agg} FROM {m_table} AS {view_name}"
+        if where_sql:
+            body += f"\n{where_sql}"
+        return f"({body})"
+
+    def _find_calendar_dim_for_measure(self, m_resolver, m_view: str) -> Optional[str]:
+        """Return the node-id of the MAIN calendar dimension reachable from the
+        measure view, or None. The calendar spine is a ``GENERATE_DATE_ARRAY``
+        source; the standalone "Date" dim (no role-played ``__…_date_dim``
+        suffix) is preferred over per-column role-played date dims, and the
+        shortest path wins ties."""
+        best_node = None
+        best_score = None
+        for node in m_resolver.reachable_nodes():
+            if node == m_view:
+                continue
+            vname = m_resolver.view_for_node(node) or node
+            view = self.views_cache.get(node) or self._find_view_by_name(vname)
+            if view is None:
+                continue
+            src = (
+                (getattr(view, "sql_table_name", "") or "")
+                + " "
+                + (getattr(view, "source_query", "") or "")
+            ).upper()
+            if "GENERATE_DATE_ARRAY" not in src:
+                continue
+            is_role_played = "__" in node and node.endswith("_date_dim")
+            path = m_resolver.resolve_path(node)
+            depth = len(path.steps) if path else 99
+            score = (1 if is_role_played else 0, depth)
+            if best_score is None or score < best_score:
+                best_score, best_node = score, node
+        return best_node
+
+    def _build_dimensioned_multifact_sql(
+        self,
+        explore: SemanticExplore,
+        dimensions: List[str],
+        measures: List[str],
+        filters: Dict[str, Any],
+        time_grains: Dict[str, str],
+        limit: int,
+        measure_agg_overrides: Optional[Dict[str, str]],
+    ) -> Optional[Tuple[str, List[str], List[PivotedColumn]]]:
+        """Stitch a dimensioned chart whose measures span ≥2 facts (mixed
+        base+cross-fact or several cross-facts). Each fact is sub-generated
+        INDEPENDENTLY at its own grain (re-anchored, so base-invariant), then
+        joined on the shared group dims:
+
+            WITH _mf0 AS (<dims, fact0 measures>), _mf1 AS (<dims, fact1 …>),
+                 _skel AS (SELECT dims FROM _mf0 UNION DISTINCT SELECT dims FROM _mf1)
+            SELECT _skel.dims, _mf0.m…, _mf1.m…
+            FROM _skel LEFT JOIN _mf0 ON <null-safe dims> LEFT JOIN _mf1 ON …
+
+        Returns None (→ caller falls back to the legacy path) if any fact can't
+        relate to a group dim, so we never emit a wrong cross-product.
+        """
+        from collections import OrderedDict
+        from app.services.semantic_join_resolver import SemanticJoinResolver as _R
+
+        groups: "OrderedDict[str, List[str]]" = OrderedDict()
+        for m in measures:
+            groups.setdefault(self._parse_field_ref(m)[0], []).append(m)
+
+        dim_aliases = [self._safe_alias(d) for d in dimensions]
+        parts: list[tuple[str, str, list[str]]] = []  # (cte_name, sql, measure_aliases)
+        alias_to_cte: Dict[str, str] = {}
+        model_id = getattr(self._model, "id", None)
+
+        for idx, (fact, fact_measures) in enumerate(groups.items()):
+            m_resolver = _R(self.db, self._model, fact, bidirectional=True)
+            reach = m_resolver.reachable_nodes()
+            unrelated = {
+                self._parse_field_ref(d)[0]
+                for d in dimensions
+                if self._parse_field_ref(d)[0] != fact
+                and self._parse_field_ref(d)[0] not in reach
+            }
+            if unrelated:
+                # Can't break this fact's measures by a dim it doesn't relate to.
+                self.warnings.append(
+                    f"Không tách được measure của bảng '{fact}' theo dimension "
+                    f"{sorted(unrelated)} (multi-fact) — dùng cách tính cũ cho chart này."
+                )
+                return None
+            cal_view = self._find_calendar_dim_for_measure(m_resolver, fact)
+            rebound = self._rebind_calendar_filters(dict(filters or {}), cal_view)
+            try:
+                sub_sql, _sub_cols, _ = self.generate_sql(
+                    explore_name=fact,
+                    dimensions=dimensions,
+                    measures=fact_measures,
+                    filters=rebound,
+                    sorts=[],
+                    limit=limit,
+                    time_grains=time_grains,
+                    measure_agg_overrides=measure_agg_overrides,
+                    model_id=model_id,
+                    _reanchored=True,
+                )
+            except ValueError:
+                return None
+            cte = f"_mf{idx}"
+            m_aliases = [self._safe_alias(m) for m in fact_measures]
+            for a in m_aliases:
+                alias_to_cte[a] = cte
+            parts.append((cte, sub_sql, m_aliases))
+
+        if not dim_aliases or not parts:
+            return None
+
+        cte_defs = ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql, _ in parts)
+        skel_body = "\n  UNION DISTINCT\n  ".join(
+            f"SELECT {', '.join(dim_aliases)} FROM {name}" for name, _, _ in parts
+        )
+        select_cols = [f"_skel.{a}" for a in dim_aliases]
+        # preserve the ORIGINAL measure order (chart maps columns by alias, but
+        # keep it tidy + deterministic)
+        for m in measures:
+            a = self._safe_alias(m)
+            select_cols.append(f"{alias_to_cte[a]}.{a} AS {a}")
+        join_sql = "FROM _skel"
+        for name, _, _ in parts:
+            on = " AND ".join(
+                f"(_skel.{a} = {name}.{a} OR (_skel.{a} IS NULL AND {name}.{a} IS NULL))"
+                for a in dim_aliases
+            )
+            join_sql += f"\nLEFT JOIN {name} ON {on}"
+        sql = (
+            f"WITH {cte_defs},\n_skel AS (\n  {skel_body}\n)\n"
+            "SELECT\n  " + ",\n  ".join(select_cols) + f"\n{join_sql}"
+        )
+        if limit:
+            sql += f"\nLIMIT {limit}"
+        column_names = dim_aliases + [self._safe_alias(m) for m in measures]
+        logger.info(
+            "semantic_emit[multifact] explore=%s facts=%s dims=%s measures=%s",
+            explore.base_view_name, list(groups.keys()), list(dimensions), list(measures),
+        )
+        return sql, column_names, []
+
+    def _collapse_fanned_calendar_filters(
+        self,
+        filters: Dict[str, Any],
+        base_view: str,
+    ) -> Dict[str, Any]:
+        """Diet bug #3 on the SINGLE-FACT path. chart_service fans a synthetic
+        "Date" filter across EVERY role-played date column of a multi-date fact
+        (transfer_date AND won_time AND lost_time …), AND-ing them — NULL-prone
+        roles annihilate the result (base=deal → 2 instead of 7,597).
+
+        We collapse a fan (≥2 calendar filters sharing the same calendarField)
+        down to a SINGLE filter on the dataset's MAIN calendar dim, then let the
+        generic EXISTS builder bind it via the fact→main-calendar edge (the
+        fact's PRIMARY event date — the exact relationship that makes base=Date
+        correct). A fact with a SINGLE date column produces no fan (1 filter) →
+        untouched → byte-identical. Non-calendar filters pass through."""
+        if not filters:
+            return filters
+
+        def _cal_field(defs: list) -> str:
+            for d in defs:
+                if isinstance(d, dict) and (d.get("calendarField") or d.get("calendar_field")):
+                    return str(d.get("calendarField") or d.get("calendar_field") or "").strip()
+            return ""
+
+        # A genuine fan is the SAME synthetic predicate REPLICATED across ≥2
+        # role columns (identical operator+value). We require that identity so
+        # we never merge a power-user's two DIFFERENT date-role filters (which
+        # legitimately intersect). Per calendarField: collect distinct refs and
+        # the set of (operator, value) signatures.
+        def _sig(d: Any) -> tuple:
+            if not isinstance(d, dict):
+                return ("eq", "")
+            return (str(d.get("operator") or "eq").strip().lower(), str(d.get("value")))
+
+        per_field_refs: Dict[str, set] = {}
+        per_field_sigs: Dict[str, set] = {}
+        for f_ref, f_def in filters.items():
+            defs = f_def if isinstance(f_def, list) else [f_def]
+            cf = _cal_field(defs)
+            if not cf:
+                continue
+            per_field_refs.setdefault(cf, set()).add(f_ref)
+            for d in defs:
+                per_field_sigs.setdefault(cf, set()).add(_sig(d))
+        fanned = {
+            cf for cf, refs in per_field_refs.items()
+            if len(refs) >= 2 and len(per_field_sigs.get(cf, set())) == 1
+        }
+        if not fanned:
+            return filters
+
+        cal_view = self._find_calendar_dim_for_measure(self._resolver, base_view)
+        if not cal_view:
+            return filters
+
+        out: Dict[str, Any] = {}
+        added: set[str] = set()
+        for f_ref, f_def in filters.items():
+            defs = f_def if isinstance(f_def, list) else [f_def]
+            cf = _cal_field(defs)
+            if cf in fanned:
+                new_ref = f"{cal_view}.{cf}"
+                if new_ref in added:
+                    continue  # fan already collapsed to this one canonical filter
+                added.add(new_ref)
+                cleaned = [
+                    {k: v for k, v in d.items()
+                     if k not in ("calendarField", "calendar_field",
+                                  "calendarSourceField", "calendar_source_field")}
+                    for d in defs
+                ]
+                if cal_view not in self.views_cache:
+                    v = self._find_view_by_name(cal_view)
+                    if v is not None:
+                        self.views_cache[cal_view] = v
+                out[new_ref] = cleaned if isinstance(f_def, list) else cleaned[0]
+            else:
+                out[f_ref] = f_def
+        return out
+
+    def _rebind_calendar_filters(
+        self,
+        filters: Dict[str, Any],
+        cal_view: Optional[str],
+    ) -> Dict[str, Any]:
+        """Re-point calendar-metadata filters at ``cal_view.<calendarField>`` so
+        the generic WHERE/EXISTS builder binds them via the measure→Date edge
+        (one event-date column) rather than the chart base's fanned columns.
+        Filters without calendar metadata pass through untouched."""
+        if not filters:
+            return filters
+        out: Dict[str, Any] = {}
+        for f_ref, f_def in filters.items():
+            defs = f_def if isinstance(f_def, list) else [f_def]
+            cal_field = next(
+                (
+                    str(d.get("calendarField") or d.get("calendar_field") or "").strip()
+                    for d in defs
+                    if isinstance(d, dict) and (d.get("calendarField") or d.get("calendar_field"))
+                ),
+                "",
+            )
+            if cal_view and cal_field:
+                new_ref = f"{cal_view}.{cal_field}"
+                cleaned = []
+                for d in defs:
+                    d2 = {k: v for k, v in d.items()
+                          if k not in ("calendarField", "calendar_field",
+                                       "calendarSourceField", "calendar_source_field")}
+                    cleaned.append(d2)
+                # ensure the calendar view is loaded for rendering
+                if new_ref.split(".", 1)[0] not in self.views_cache:
+                    v = self._find_view_by_name(cal_view)
+                    if v is not None:
+                        self.views_cache[cal_view] = v
+                out[new_ref] = cleaned if isinstance(f_def, list) else cleaned[0]
+            else:
+                out[f_ref] = f_def
+        return out
 
     def _compute_context_partition(
         self,
