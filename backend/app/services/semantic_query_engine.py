@@ -168,6 +168,7 @@ class SemanticQueryEngine:
         model_id: Optional[int] = None,
         explore_id: Optional[int] = None,
         _reanchored: bool = False,
+        _disable_isolation: bool = False,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -258,7 +259,11 @@ class SemanticQueryEngine:
         # fact's PRIMARY calendar relationship (no-op unless a multi-date fact
         # was fanned). Runs before isolation/where so every path sees the
         # collapsed form; idempotent on already-clean filters.
-        filters = self._collapse_fanned_calendar_filters(filters, explore.base_view_name)
+        # `_disable_isolation` (set by the chart-runtime auto-fallback when the
+        # isolated SQL errored on the datasource) reverts to the pre-isolation
+        # legacy path entirely — no collapse, no isolation/re-anchor/stitch.
+        if not _disable_isolation:
+            filters = self._collapse_fanned_calendar_filters(filters, explore.base_view_name)
 
         # ── Measure isolation (base-invariance — PowerBI/Tableau standard) ──
         # A measure whose view is NOT the chart's base fact must be evaluated
@@ -278,7 +283,7 @@ class SemanticQueryEngine:
         self._isolated_measure_views: set[str] = set()
         self._isolation_active = False
         self._isolation_explore = explore
-        _stage1_scalar = not (dimensions or pivots or window_functions or calculated_fields)
+        _stage1_scalar = (not _disable_isolation) and not (dimensions or pivots or window_functions or calculated_fields)
         if _stage1_scalar and measures:
             # Group cross-fact measures by view; isolate a view ONLY when EVERY
             # cross-fact measure on it renders as a scalar aggregate. A view with
@@ -308,7 +313,8 @@ class SemanticQueryEngine:
         #     the shared group dims (skeleton ∪ + NULL-safe LEFT JOINs). Pivot/
         #     window/calc with multi-fact → legacy path (deferred).
         if (
-            not _reanchored
+            not _disable_isolation
+            and not _reanchored
             and not self._isolation_active
             and (dimensions or pivots)
             and measures

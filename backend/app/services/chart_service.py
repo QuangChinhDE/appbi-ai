@@ -2393,11 +2393,62 @@ def _execute_semantic_chart_runtime(
             "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
             ds_type, dialect, sql[:500],
         )
-        raise ValueError(
-            f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
-            "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
-            "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
-        ) from exc
+        # ── Measure-isolation auto-fallback (safety net) ──
+        # The base-invariance rewrite (measure isolation / re-anchor / multi-
+        # fact stitch) may emit SQL that a specific dataset's source-query
+        # rejects on the datasource (dialect/nesting edge we haven't covered).
+        # Rather than hard-error, retry ONCE with isolation disabled — the
+        # legacy join path. The chart then renders (its measure may be base-
+        # scoped) instead of showing nothing. The original error + the fallback
+        # are logged so the isolated SQL can still be root-caused.
+        try:
+            fb_sql, _fb_cols, _fb_pivot = engine.generate_sql(
+                explore_name=explore_name,
+                dimensions=dimension_refs,
+                measures=measure_refs,
+                filters=engine_filters,
+                sorts=[],
+                limit=effective_limit,
+                time_grains=time_grains or None,
+                measure_agg_overrides=agg_overrides or None,
+                model_id=model_id,
+                explore_id=explore_id,
+                _disable_isolation=True,
+            )
+        except Exception:
+            fb_sql = None
+        if fb_sql and fb_sql != sql:
+            logger.warning(
+                "[measure-isolation] isolated SQL failed on %s (%s); retrying "
+                "legacy (isolation OFF) for chart_id=%s",
+                ds_type, str(exc)[:200], _pbi_current_chart_id(),
+            )
+            try:
+                _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+                    ds_type,
+                    datasource.config,
+                    fb_sql,
+                    timeout_seconds=timeout,
+                    skip_bigquery_cost_check=True,
+                )
+                sql = fb_sql
+                engine.warnings.append(
+                    "Chart này dùng cách tính cũ (measure-isolation tạm tắt do SQL "
+                    "lỗi trên datasource) — số đo có thể phụ thuộc bảng gốc của chart. "
+                    "Báo dev kèm chart_id để xử lý gốc."
+                )
+            except Exception as exc2:
+                raise ValueError(
+                    f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc2}. "
+                    "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+                    "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+                ) from exc2
+        else:
+            raise ValueError(
+                f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+                "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+                "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+            ) from exc
     elapsed_ms = (time.time() - start) * 1000
 
     alias_map = _build_semantic_alias_map(dimension_refs + measure_refs)
