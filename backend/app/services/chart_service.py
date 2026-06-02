@@ -2396,62 +2396,17 @@ def _execute_semantic_chart_runtime(
             "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
             ds_type, dialect, sql[:500],
         )
-        # ── Measure-isolation auto-fallback (safety net) ──
-        # The base-invariance rewrite (measure isolation / re-anchor / multi-
-        # fact stitch) may emit SQL that a specific dataset's source-query
-        # rejects on the datasource (dialect/nesting edge we haven't covered).
-        # Rather than hard-error, retry ONCE with isolation disabled — the
-        # legacy join path. The chart then renders (its measure may be base-
-        # scoped) instead of showing nothing. The original error + the fallback
-        # are logged so the isolated SQL can still be root-caused.
-        try:
-            fb_sql, _fb_cols, _fb_pivot = engine.generate_sql(
-                explore_name=explore_name,
-                dimensions=dimension_refs,
-                measures=measure_refs,
-                filters=engine_filters,
-                sorts=[],
-                limit=effective_limit,
-                time_grains=time_grains or None,
-                measure_agg_overrides=agg_overrides or None,
-                model_id=model_id,
-                explore_id=explore_id,
-                _disable_isolation=True,
-            )
-        except Exception:
-            fb_sql = None
-        if fb_sql and fb_sql != sql:
-            logger.warning(
-                "[measure-isolation] isolated SQL failed on %s (%s); retrying "
-                "legacy (isolation OFF) for chart_id=%s",
-                ds_type, str(exc)[:200], _pbi_current_chart_id(),
-            )
-            try:
-                _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
-                    ds_type,
-                    datasource.config,
-                    fb_sql,
-                    timeout_seconds=timeout,
-                    skip_bigquery_cost_check=True,
-                )
-                sql = fb_sql
-                engine.warnings.append(
-                    "Chart này dùng cách tính cũ (measure-isolation tạm tắt do SQL "
-                    "lỗi trên datasource) — số đo có thể phụ thuộc bảng gốc của chart. "
-                    "Báo dev kèm chart_id để xử lý gốc."
-                )
-            except Exception as exc2:
-                raise ValueError(
-                    f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc2}. "
-                    "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
-                    "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
-                ) from exc2
-        else:
-            raise ValueError(
-                f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
-                "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
-                "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
-            ) from exc
+        # STRICT (PowerBI fail-loud): a generated chart on a modeled dataset
+        # has NO fallback. If the semantic SQL errors on the datasource we
+        # surface it as a 400 with the engine's Vietnamese message — we do NOT
+        # silently degrade to a base-scoped legacy result. (This previously
+        # retried with isolation disabled — removed for strict single-path
+        # correctness: errors must be visible + fixed, not masked.)
+        raise ValueError(
+            f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+            "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+            "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+        ) from exc
     elapsed_ms = (time.time() - start) * 1000
 
     alias_map = _build_semantic_alias_map(dimension_refs + measure_refs)
@@ -2671,6 +2626,25 @@ def _execute_chart_runtime_for_table(
         base_view_name_for_routing,
         runtime_filters=routing_filters,
     )
+
+    # ── STRICT semantic single-path (PowerBI parity) ──
+    # A GENERATED chart on a dataset that HAS a semantic model ALWAYS goes
+    # through the semantic engine — never the single-table live builder, which
+    # cannot JOIN, cannot honour declared/filtered/cross-table measures, and
+    # silently drops joined-view filters (the recurring "wrong total / dropped
+    # filter" class). The ONLY non-semantic escape hatch is an explicit
+    # custom-SQL chart, handled by its own `if custom_sql:` branch below. A
+    # resolved `baseViewName` on the binding is the signal that this chart's
+    # table is backed by a semantic model. When forced, the engine fails LOUD
+    # (missing relationship / ambiguous path / unknown measure) rather than
+    # degrading to a heuristic live result.
+    if not custom_sql and base_view_name_for_routing and not needs_semantic_runtime:
+        logger.info(
+            "[strict-semantic] forcing semantic runtime chart_id=%s base=%s "
+            "(generated chart on modeled dataset; live-builder path disabled)",
+            _pbi_current_chart_id(), base_view_name_for_routing,
+        )
+        needs_semantic_runtime = True
 
     # Phase-15.98 (S6B asymmetry guard) — preview and dashboard tile both
     # reach this function with binding hydrated upstream (preview via
