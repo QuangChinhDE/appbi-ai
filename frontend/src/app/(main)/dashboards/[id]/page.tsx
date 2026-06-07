@@ -850,7 +850,9 @@ export default function DashboardDetailPage() {
         },
         parameters,
       });
-      setIsAddChartModalOpen(false);
+      // Modal-close is owned by AddChartModal now — it closes ONCE after the
+      // whole batch finishes (DA6-F3 multi-add), so adding N charts doesn't
+      // dismiss the picker after the first one.
     } catch (error) {
       console.error('Failed to add chart:', error);
       const detail = (error as any)?.response?.data?.detail;

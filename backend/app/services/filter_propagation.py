@@ -252,6 +252,15 @@ def resolve_filter_propagation(
 def _parse_field_ref(ref: str) -> tuple[str, str, str | None]:
     """Parse ``view.col`` or ``view.col@role`` → ``(view, col, role|None)``.
 
+    NOTE (not the engine's resolver): this is a pure STRING SPLITTER for the
+    propagation engine's optional ``@role`` hint — it does NOT resolve bare refs
+    or check reachability. The single FIELD resolver remains
+    ``SemanticQueryEngine._parse_field_ref`` (unique-reachable / fail-loud); this
+    helper only runs on the ``FEATURE_PROPAGATION_ENGINE_V2`` path (OFF by
+    default), so it is not a live competing resolver. If propagation-v2 is ever
+    enabled, fold the ``@role`` parsing into the compiler and delegate field
+    resolution to the engine.
+
     Whitespace stripped. Returns ``("", "", None)`` for unparseable input
     (caller treats as drop reason ``unreachable_view``).
     """

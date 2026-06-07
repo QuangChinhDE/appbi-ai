@@ -148,6 +148,29 @@ class SemanticQueryEngine:
         # join fan-out at SELECT time. Populated by _build_where_clause.
         self._symmetric_aggregate_views: Set[str] = set()
     
+    def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
+        """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
+        every path compiles to via ``semantic_query_compiler``). Unpacks to
+        ``generate_sql`` (which stays the internal implementation). ``spec``'s
+        ``response_aliases`` / ``diagnostics`` are caller-side extras the engine
+        ignores."""
+        return self.generate_sql(
+            explore_name=spec.explore_name,
+            dimensions=list(spec.dimensions or []),
+            measures=list(spec.measures or []),
+            filters=dict(spec.filters or {}),
+            pivots=list(spec.pivots or []),
+            sorts=list(spec.sorts or []),
+            limit=spec.limit if spec.limit is not None else 10_000_000,
+            window_functions=list(spec.window_functions or []),
+            calculated_fields=list(spec.calculated_fields or []),
+            time_grains=(dict(spec.time_grains) if spec.time_grains else None),
+            top_n=spec.top_n,
+            measure_agg_overrides=(dict(spec.measure_agg_overrides) or None) if spec.measure_agg_overrides else None,
+            model_id=spec.model_id,
+            explore_id=spec.explore_id,
+        )
+
     def generate_sql(
         self,
         explore_name: str,
@@ -290,10 +313,10 @@ class SemanticQueryEngine:
             # any non-scalar measure (formula/percent_of_total/window) is left on
             # the legacy join path so the scalar-subquery wrap can't emit invalid
             # multi-row SQL ("Scalar subquery produced more than one element").
-            _facts_all = {self._parse_field_ref(m)[0] for m in measures}
+            _facts_all = {self._measure_fact_view(m) for m in measures}
             _cross_by_view: Dict[str, list] = {}
             for m in measures:
-                mv = self._parse_field_ref(m)[0]
+                mv = self._measure_fact_view(m)
                 if mv != explore.base_view_name:
                     _cross_by_view.setdefault(mv, []).append(m)
             _iso = {
@@ -326,42 +349,95 @@ class SemanticQueryEngine:
             and not self._isolation_active
             and measures
         ):
-            _facts = {self._parse_field_ref(m)[0] for m in measures}
+            _facts = {self._measure_fact_view(m) for m in measures}
             _cross = _facts - {explore.base_view_name}
             if _cross and len(_facts) == 1:
                 _m_view = next(iter(_facts))
                 from app.services.semantic_join_resolver import SemanticJoinResolver as _R
-                _m_resolver = _R(self.db, self._model, _m_view, bidirectional=True)
-                _reach = _m_resolver.reachable_nodes()
+                _m_resolver = _R(self.db, self._model, _m_view, bidirectional=True)  # calendar only
                 _grp_views = {
                     self._parse_field_ref(g)[0]
                     for g in (list(dimensions) + list(pivots or []))
                 }
-                _unrelated = {v for v in _grp_views if v != _m_view and v not in _reach}
-                if not _unrelated:
-                    _cal_view = self._find_calendar_dim_for_measure(_m_resolver, _m_view)
-                    _rebound = self._rebind_calendar_filters(dict(filters or {}), _cal_view)
-                    return self.generate_sql(
-                        explore_name=_m_view,
-                        dimensions=dimensions,
-                        measures=measures,
-                        filters=_rebound,
-                        pivots=pivots,
-                        sorts=sorts,
-                        limit=limit,
-                        window_functions=window_functions,
-                        calculated_fields=calculated_fields,
-                        time_grains=time_grains,
-                        top_n=top_n,
-                        measure_agg_overrides=measure_agg_overrides,
-                        model_id=getattr(self._model, "id", None),
-                        _reanchored=True,
-                    )
+                _is_cross_table = any(
+                    self._parse_field_ref(mm)[0] != self._measure_fact_view(mm)
+                    for mm in measures
+                )
+                # Relatedness via FORWARD M:1 multi-hop reach (snowflake-safe;
+                # excludes another fact reached only through a 1:N chasm). NOT
+                # `_direct_join_views` (1-hop wrongly marks a 2-hop snowflake dim
+                # like fact→product→category as unrelated) and NOT bidirectional
+                # reach (walks 1:N edges, so a chasm-reachable fact looks related).
+                _m1_safe = self._m1_reachable_views(_m_view)
+                _grp_unrelated = {v for v in _grp_views if v not in _m1_safe}
+                if not _grp_unrelated:
+                    # Every group dim is M:1-reachable from the measure's fact
+                    # (incl. snowflake multi-hop).
+                    if (
+                        not _is_cross_table
+                        and explore.base_view_name in _m1_safe
+                        and _grp_views.issubset(_m1_safe | {explore.base_view_name})
+                    ):
+                        # The chart's BASE is itself on that M:1 spine (a
+                        # dimension-table on the 1-side of the measure fact) and
+                        # the measure is a PLAIN measure on its own view (not a
+                        # cross-SOURCE measure). The NORMAL build from the base
+                        # LEFT-JOINs the measure fact and GROUPs by the base dim,
+                        # preserving EVERY base member (PowerBI: the dimension
+                        # defines the row grain; the measure is blank for members
+                        # with no fact rows — e.g. an owner with no revenue).
+                        # Re-anchoring onto the measure fact would DROP those
+                        # members, so fall through to the normal build (no re-
+                        # anchor, no isolation; single fact joined → no fan-out).
+                        pass
+                    else:
+                        # RE-ANCHOR onto the measure fact and correlate per group
+                        # (measure at its own grain, sliced by the related dim;
+                        # no fan-out). Needed for a cross-SOURCE measure (its own
+                        # grain / nested-WITH source) or when the base is not a
+                        # dim-preserving anchor. KPI (no dims) also lands here.
+                        _cal_view = self._find_calendar_dim_for_measure(_m_resolver, _m_view)
+                        _rebound = self._rebind_calendar_filters(dict(filters or {}), _cal_view)
+                        return self.generate_sql(
+                            explore_name=_m_view,
+                            dimensions=dimensions,
+                            measures=measures,
+                            filters=_rebound,
+                            pivots=pivots,
+                            sorts=sorts,
+                            limit=limit,
+                            window_functions=window_functions,
+                            calculated_fields=calculated_fields,
+                            time_grains=time_grains,
+                            top_n=top_n,
+                            measure_agg_overrides=measure_agg_overrides,
+                            model_id=getattr(self._model, "id", None),
+                            _reanchored=True,
+                        )
+                elif (
+                    _is_cross_table
+                    and _grp_unrelated == _grp_views
+                    and all(self._is_scalar_isolatable_measure(mm) for mm in measures)
+                ):
+                    # EVERY group dim is UNRELATED to the measure's source fact
+                    # (chasm). PowerBI leaves the measure UNFILTERED by an
+                    # unrelated dim → its total repeats per group. Reproduce that
+                    # by ISOLATING the measure (uncorrelated aggregate over its
+                    # own table) while the base supplies the dim — NO legacy
+                    # fan-out. Falls through to the normal build below.
+                    self._isolated_measure_views = {_m_view}
+                    self._isolation_active = True
                 else:
-                    self.warnings.append(
-                        f"Measure trên bảng '{_m_view}' không liên quan tới dimension "
-                        f"{sorted(_unrelated)} — không thể tách theo các chiều này; "
-                        f"giữ cách tính cũ."
+                    # MIXED (some related + some unrelated dims), or a non-scalar
+                    # measure with an unrelated dim, or a non-cross-table measure
+                    # that can't re-anchor onto an unrelated dim. The legacy
+                    # single-FROM build would JOIN through a chasm and FAN OUT →
+                    # FAIL LOUD (wrong number must never render).
+                    raise ValueError(
+                        f"Measure trên bảng '{_m_view}' không thể nhóm/cắt theo dimension "
+                        f"{sorted(_grp_unrelated)} một cách an toàn (không có đường M:1 — "
+                        f"JOIN sẽ fan-out, ra số sai). Thêm/sửa quan hệ trong Data Model, "
+                        f"đổi dimension, hoặc qualify field."
                     )
             elif (
                 _cross and len(_facts) >= 2
@@ -374,7 +450,44 @@ class SemanticQueryEngine:
                 )
                 if _stitched is not None:
                     return _stitched
-                # else fall through to the legacy path
+                # else fall through to the fail-loud guard below (NOT legacy)
+
+        # ── FAIL-LOUD: an unhandled multi-fact chart must NOT reach the legacy
+        # single-FROM build. If the measures span ≥2 distinct FACT grains and
+        # none of the safe paths above took it (scalar isolation for KPIs,
+        # re-anchor for a single cross-fact, or the dimensioned stitch — which
+        # returns None when a fact can't relate to a group dim), the legacy
+        # build below would JOIN those facts and FAN OUT (deals × revenue rows)
+        # → a silently inflated SUM. There is no correct number, so RAISE rather
+        # than render a wrong one. (Re-anchored sub-calls carry a single fact, so
+        # len<2 never trips them; single-fact charts are unaffected.)
+        if not _reanchored and not self._isolation_active and measures:
+            _fact_grains = {self._measure_fact_view(m) for m in measures}
+            if len(_fact_grains) >= 2:
+                raise ValueError(
+                    "Không thể tính các measure từ nhiều bảng fact "
+                    f"({', '.join(sorted(_fact_grains))}) theo cấu hình chart này "
+                    "một cách an toàn — thiếu relationship / ambiguous path, hoặc "
+                    "chart dùng pivot/window/calc cùng measure đa-fact. JOIN các "
+                    "fact sẽ fan-out và nhân SUM lên, nên engine từ chối render số "
+                    "sai. Hãy thêm/sửa quan hệ trong Data Model, đổi dimension, "
+                    "hoặc tách thành nhiều chart."
+                )
+
+        # ── STRICT GRAIN (PowerBI): a measure may only be grouped/pivoted by a
+        # dimension on its OWN fact or one M:1-reachable from it. A dim on
+        # ANOTHER fact (reachable only via a shared dim = chasm) forces a
+        # fan-out JOIN that double-counts the measure — e.g. revenue grouped by
+        # deal.title via the owner/date chasm gave 4000/3600 (NON-deterministic)
+        # vs the true 2400. Fail loud rather than render a silently-wrong number.
+        # Skipped under isolation (a cross-table scalar measure grouped by an
+        # UNRELATED dim is intentionally a repeated total — PBI semantics, not a
+        # fan-out). The multi-fact STITCH (≥2 measure facts) and re-anchor/
+        # isolate paths handle their own grain above, so this guards exactly the
+        # single-fact-grain normal build that the dispatch left untouched. KPIs
+        # (no group dims) + filters (EXISTS, not a grouping JOIN) are unaffected.
+        if not self._isolation_active:
+            self._validate_group_grain(dimensions, pivots, measures)
 
         # Fetch pivot values if pivoting
         pivot_values = []
@@ -419,7 +532,13 @@ class SemanticQueryEngine:
                         pass
             return out
 
-        select_side_refs: List[str] = list(dimensions) + list(measures) + list(pivots)
+        # NOTE: measures are intentionally NOT folded into `select_side_refs`
+        # (whose `_views_of` would key them by their DECLARED view). Measure
+        # views are added below via `_measure_fact_view`, which returns the
+        # source-column view for a cross-table measure — so a cross-table
+        # ``SUM(${B.col})`` declared on base view A contributes B (not A) and
+        # we don't spuriously JOIN A, which would fan-out B and inflate the SUM.
+        select_side_refs: List[str] = list(dimensions) + list(pivots)
         select_side_refs.extend(
             str(sort.get("field") or "") for sort in sorts if sort.get("field")
         )
@@ -436,8 +555,16 @@ class SemanticQueryEngine:
         # Isolated (cross-fact) measure views are evaluated as their own
         # subqueries — keep them OUT of the base FROM/JOIN chain so the base
         # can't scope them.
+        # Include each measure's TRUE fact view (the `source_columns` view for
+        # a cross-table measure declared on the base) so the FROM/JOIN chain
+        # actually contains the table the measure aggregates — otherwise a
+        # cross-table ``SUM(${B.col})`` references B against a table not in
+        # FROM → "Unrecognized name: B". (Re-anchor handles the clean cases
+        # above; this covers the legacy fall-through where re-anchor declined.)
         select_side_views = (
-            _views_of(select_side_refs) | {explore.base_view_name}
+            _views_of(select_side_refs)
+            | {explore.base_view_name}
+            | {self._measure_fact_view(m) for m in measures}
         ) - self._isolated_measure_views
         filter_views = _views_of(list((filters or {}).keys()))
 
@@ -447,7 +574,7 @@ class SemanticQueryEngine:
         # base aggregate (single-fact measures) collapses the base to one row and
         # the isolated subqueries ride alongside as scalars.
         _all_measures_isolated = bool(measures) and all(
-            self._parse_field_ref(m)[0] in self._isolated_measure_views
+            self._measure_fact_view(m) in self._isolated_measure_views
             for m in measures
         )
         _omit_from = (
@@ -1053,7 +1180,7 @@ class SemanticQueryEngine:
         if (
             _isolate
             and getattr(self, "_isolation_active", False)
-            and view_name in getattr(self, "_isolated_measure_views", set())
+            and self._measure_fact_view(field_ref) in getattr(self, "_isolated_measure_views", set())
         ):
             return self._build_isolated_measure_subquery(
                 field_ref, agg_override=agg_override,
@@ -1384,7 +1511,12 @@ class SemanticQueryEngine:
         ``_isolate=False`` so all existing logic (filtered measures, symmetric
         aggregates, formula measures) is reused verbatim.
         """
-        view_name, _ = self._parse_field_ref(field_ref)
+        # Aggregate over the measure's GRAIN view: for a CROSS-TABLE measure
+        # (declared on view A, expression sums ${B.col}) that is B, not A —
+        # otherwise the body would be `SELECT AGG(B.col) FROM A` and reference
+        # B against a table not in its own FROM. For a normal cross-fact
+        # measure `_measure_fact_view` returns the declared view (unchanged).
+        view_name = self._measure_fact_view(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
         m_table = view.sql_table_name or view_name
 
@@ -1483,6 +1615,42 @@ class SemanticQueryEngine:
                 best_score, best_node = score, node
         return best_node
 
+    def _is_calendar_dim_view(self, view_name: Optional[str]) -> bool:
+        """True if ``view_name`` is a calendar/date dimension — either a
+        per-column role-played date-dim (``…__<col>__date_dim``) or a standalone
+        generated calendar (``GENERATE_DATE_ARRAY`` source). Used to treat a date
+        group dimension as a CONFORMED dimension across facts in the multi-fact
+        stitch (every date-dim view carries the identical calendar grain
+        columns — year_month, month, day_name… — with identical values)."""
+        if not view_name:
+            return False
+        if "__" in view_name and view_name.endswith("_date_dim"):
+            return True
+        v = self.views_cache.get(view_name) or self._find_view_by_name(view_name)
+        if v is None:
+            return False
+        src = (
+            (getattr(v, "sql_table_name", "") or "")
+            + " "
+            + (getattr(v, "source_query", "") or "")
+        ).upper()
+        return "GENERATE_DATE_ARRAY" in src
+
+    def _fact_own_calendar_view(self, fact: str, m_resolver) -> Optional[str]:
+        """The calendar/date-dim view this fact OWNS (M:1-reachable, one hop).
+        A fact with a single date column has exactly one date-dim (unambiguous);
+        if it exposes several, prefer the main calendar
+        (``_find_calendar_dim_for_measure``) else the first. Returns None when no
+        calendar is reachable — then a calendar group dim is left unchanged and
+        the unrelated-check declines the stitch, as before."""
+        cals = [v for v in self._m1_reachable_views(fact) if self._is_calendar_dim_view(v)]
+        if not cals:
+            return None
+        if len(cals) == 1:
+            return cals[0]
+        main = self._find_calendar_dim_for_measure(m_resolver, fact)
+        return main if main in cals else cals[0]
+
     def _build_dimensioned_multifact_sql(
         self,
         explore: SemanticExplore,
@@ -1509,9 +1677,15 @@ class SemanticQueryEngine:
         from collections import OrderedDict
         from app.services.semantic_join_resolver import SemanticJoinResolver as _R
 
+        # Group measures by their TRUE fact grain (the source-column view for a
+        # cross-table measure; declared view otherwise) — NOT the declared view.
+        # This MUST match the dispatch in generate_sql (which now keys
+        # `_facts` on `_measure_fact_view`); otherwise a cross-table measure
+        # would be grouped+re-anchored at its declared base and reference its
+        # source column against a table not in FROM ("Unrecognized name").
         groups: "OrderedDict[str, List[str]]" = OrderedDict()
         for m in measures:
-            groups.setdefault(self._parse_field_ref(m)[0], []).append(m)
+            groups.setdefault(self._measure_fact_view(m), []).append(m)
 
         dim_aliases = [self._safe_alias(d) for d in dimensions]
         parts: list[tuple[str, str, list[str]]] = []  # (cte_name, sql, measure_aliases)
@@ -1519,19 +1693,56 @@ class SemanticQueryEngine:
         model_id = getattr(self._model, "id", None)
 
         for idx, (fact, fact_measures) in enumerate(groups.items()):
-            m_resolver = _R(self.db, self._model, fact, bidirectional=True)
-            reach = m_resolver.reachable_nodes()
+            m_resolver = _R(self.db, self._model, fact, bidirectional=True)  # for calendar below
+            # A group dim is safe to stitch on this fact ONLY if it is the fact's
+            # OWN view or a view DIRECTLY joined from the fact (a one-hop M:1
+            # edge — Owner, Date, Org, role-played calendars — which never fans).
+            # A dim that lives on ANOTHER FACT is reachable only via a CHASM
+            # (fact → shared dim ← other fact, a 1:N hop) which WOULD fan this
+            # fact's rows when grouped → UNRELATED → decline → caller fails loud.
+            # (Bidirectional reach is unsafe here: it walks dim→fact 1:N edges
+            # and treats a chasm-reachable other fact as "related".)
+            # ── Conformed-calendar group-dim rebind (galaxy / shared Date). ──
+            # A calendar/date group dimension is a CONFORMED dimension across
+            # facts: each fact joins its OWN role-played date-dim
+            # (fct_sales→…__order_date__date_dim, fct_target→…__month_start_date__
+            # date_dim) but the grain fields (year_month, month, day_name…) are
+            # identical calendar columns with identical values. Re-point a
+            # calendar group dim at THIS fact's own calendar at the same grain so
+            # the fact can be grouped via a clean one-hop M:1 edge (no chasm), and
+            # the wrap below re-aligns it under the ORIGINAL uniform alias so the
+            # skeleton stitches the facts on the (identical) calendar value.
+            # Without this, "revenue vs target by month" across two facts fails
+            # loud even though PowerBI renders it (conformed Date dimension).
+            # Non-calendar dims are NOT rebound — a non-conformed dim on another
+            # fact still trips the unrelated-check below (correct chasm refusal).
+            fact_cal = self._fact_own_calendar_view(fact, m_resolver)
+            fact_dims: List[str] = []
+            cal_realias: List[Tuple[str, str]] = []   # (original_dim, rebound_dim)
+            for d in dimensions:
+                dv, df = self._parse_field_ref(d)
+                if df and fact_cal and dv != fact_cal and self._is_calendar_dim_view(dv):
+                    rebound_d = f"{fact_cal}.{df}"
+                    fact_dims.append(rebound_d)
+                    cal_realias.append((d, rebound_d))
+                else:
+                    fact_dims.append(d)
+
+            # A group dim is safe to stitch on this fact ONLY if it is the fact's
+            # OWN view or one DIRECTLY joined from it (one-hop M:1 — never fans).
+            # A dim reachable only via a chasm WOULD fan when grouped → UNRELATED
+            # → decline → caller fails loud. Checked on the REBOUND dims so a
+            # conformed calendar (now this fact's own date-dim) passes.
+            safe_views = self._m1_reachable_views(fact)
             unrelated = {
                 self._parse_field_ref(d)[0]
-                for d in dimensions
-                if self._parse_field_ref(d)[0] != fact
-                and self._parse_field_ref(d)[0] not in reach
+                for d in fact_dims
+                if self._parse_field_ref(d)[0] not in safe_views
             }
             if unrelated:
-                # Can't break this fact's measures by a dim it doesn't relate to.
                 self.warnings.append(
                     f"Không tách được measure của bảng '{fact}' theo dimension "
-                    f"{sorted(unrelated)} (multi-fact) — dùng cách tính cũ cho chart này."
+                    f"{sorted(unrelated)} (multi-fact, chỉ nối được qua chasm/fan-out) — fail-loud."
                 )
                 return None
             cal_view = self._find_calendar_dim_for_measure(m_resolver, fact)
@@ -1539,7 +1750,7 @@ class SemanticQueryEngine:
             try:
                 sub_sql, _sub_cols, _ = self.generate_sql(
                     explore_name=fact,
-                    dimensions=dimensions,
+                    dimensions=fact_dims,
                     measures=fact_measures,
                     filters=rebound,
                     sorts=[],
@@ -1553,6 +1764,24 @@ class SemanticQueryEngine:
                 return None
             cte = f"_mf{idx}"
             m_aliases = [self._safe_alias(m) for m in fact_measures]
+            if cal_realias:
+                # Re-alias each rebound calendar dim's column back to the ORIGINAL
+                # dim alias so every fact CTE exposes the SAME dim aliases — the
+                # skeleton + LEFT JOINs below then align them on the conformed
+                # calendar value. Non-calendar dims already carry their original
+                # alias; measures pass through unchanged.
+                rebound_by_orig = {orig: rb for orig, rb in cal_realias}
+                out_cols: List[str] = []
+                for d in dimensions:
+                    orig_a = self._safe_alias(d)
+                    if d in rebound_by_orig:
+                        out_cols.append(f"{self._safe_alias(rebound_by_orig[d])} AS {orig_a}")
+                    else:
+                        out_cols.append(orig_a)
+                out_cols.extend(m_aliases)
+                sub_sql = (
+                    "SELECT " + ", ".join(out_cols) + f"\nFROM (\n{sub_sql}\n) AS _mfsrc{idx}"
+                )
             for a in m_aliases:
                 alias_to_cte[a] = cte
             parts.append((cte, sub_sql, m_aliases))
@@ -1990,7 +2219,17 @@ class SemanticQueryEngine:
                 'sql': '${TABLE}.' + field_name,
             }
 
-        measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
+        # Mirror `_render_measure`: an "auto" (or unknown) agg_override means
+        # "use the measure's STORED type", NOT "fallback to SUM". Without this a
+        # declared percent_of_total / count_distinct / avg measure rendered in a
+        # PIVOT cell via agg_override='auto' (what chart roleConfigs ship) was
+        # silently summed.
+        stored_pivot_type = str(measure_def.get('type', 'sum') or 'sum').lower().strip()
+        _pivot_override = str(agg_override or "").lower().strip()
+        _KNOWN_AGGS = {"count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total"}
+        if _pivot_override and _pivot_override not in _KNOWN_AGGS:
+            _pivot_override = ""
+        measure_type = _pivot_override or stored_pivot_type
         sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
         # Phase-15.81 v9 — same bare-identifier guard as `_render_measure`.
         if (
@@ -2013,23 +2252,50 @@ class SemanticQueryEngine:
         
         # Build CASE expression. When the measure carries its own filter, AND
         # it into the pivot predicate so each pivoted column is correctly gated.
-        pivot_pred = f"{pivot_sql} = '{pivot_value}'"
+        # Escape single quotes in the pivot value (e.g. a category "O'Brien").
+        # Raw interpolation here produced invalid/injectable SQL for ANY value
+        # containing a quote — every other predicate uses `_q`/`esc` which double
+        # single quotes; this one path was missed (DA9 white-box). Mirror that.
+        pivot_literal = "'" + str(pivot_value).replace("'", "''") + "'"
+        pivot_pred = f"{pivot_sql} = {pivot_literal}"
         if measure_filter_sql:
             pivot_pred = f"({pivot_pred}) AND ({measure_filter_sql})"
 
-        if measure_type in ["sum", "avg"]:
-            agg_func = measure_type.upper()
+        if measure_type == "sum":
+            # SUM: non-matching rows contribute 0 (correct).
             case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE 0 END"
-            return f"{agg_func}({case_expr})"
+            return f"SUM({case_expr})"
+        elif measure_type == "avg":
+            # AVG: non-matching rows MUST be NULL, not 0 — averaging in 0s drags
+            # the mean toward zero (the column's avg for the pivot value, not
+            # "avg including a 0 for every other row").
+            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE NULL END"
+            return f"AVG({case_expr})"
         elif measure_type == "count":
+            # COUNT = SUM of 1s for matching rows.
             case_expr = f"CASE WHEN {pivot_pred} THEN 1 ELSE 0 END"
             return f"SUM({case_expr})"
         elif measure_type == "count_distinct":
             case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE NULL END"
             return f"COUNT(DISTINCT {case_expr})"
+        elif measure_type in ("min", "max"):
+            # MIN/MAX: non-matching rows MUST be NULL (ELSE 0 would inject a
+            # spurious 0 into a MIN over positive values / a MAX over negatives).
+            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE NULL END"
+            return f"{measure_type.upper()}({case_expr})"
+        elif measure_type == "percent_of_total":
+            # A window measure (`… OVER ()`) has no per-cell pivot CASE form —
+            # fail loud rather than silently summing (the old `else` SUM gave a
+            # wrong number for every non-sum measure here).
+            raise ValueError(
+                f"Measure '{field_name}' (percent_of_total) là measure dạng "
+                f"window — không thể đặt vào cột pivot. Bỏ pivot hoặc đổi measure."
+            )
         else:
-            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE 0 END"
-            return f"SUM({case_expr})"
+            raise ValueError(
+                f"Aggregation '{measure_type}' chưa hỗ trợ trong pivot cho measure "
+                f"'{field_name}'. Dùng sum / avg / count / count_distinct / min / max."
+            )
     
     def _render_window_function(self, wf_def: Dict[str, Any]) -> str:
         """Render window function SQL"""
@@ -2535,10 +2801,18 @@ class SemanticQueryEngine:
                         )
                         field_sql = calendar_field_sql
             except ValueError as exc:
-                self.warnings.append(
-                    f"Filter dropped — field {field_ref!r}: {exc}"
-                )
-                continue
+                # STRICT (#4) — a filter whose field cannot be resolved
+                # (unknown column / schema drift / view not reachable) is a
+                # COMPLETE filter we cannot honour. The old contract skipped
+                # it with a warning, which returns data computed WITHOUT the
+                # filter — the "filter set but chart not filtered / wrong
+                # total" bug class. Fail LOUD so the DA fixes the ref or the
+                # model instead of trusting a silently-wrong number. Soft
+                # skips (blank picker bounds, empty IN-list) are handled
+                # per-operator below and never raise, so they don't reach here.
+                raise ValueError(
+                    f"Filter không áp được: field {field_ref!r} — {exc}"
+                ) from exc
 
             # Null-state operators don't take a value.
             if operator == "is_null":
@@ -2645,11 +2919,15 @@ class SemanticQueryEngine:
             # dates) and will be wired in a follow-up step. Until then
             # treat these as "operator known but not implemented here".
             if operator in {"date_in_last", "date_this", "date_to_date"}:
-                self.warnings.append(
-                    f"Filter dropped — relative date operator {operator!r} "
-                    f"not yet resolved upstream for {field_ref!r}"
+                # STRICT (#4) — a relative-date operator that reaches the SQL
+                # builder un-resolved means the upstream resolver did NOT bake
+                # it into an absolute range; skipping it silently drops the
+                # date filter (chart shows ALL dates). Fail LOUD.
+                raise ValueError(
+                    f"Filter không áp được: toán tử ngày tương đối "
+                    f"{operator!r} cho {field_ref!r} chưa được resolve sang "
+                    f"khoảng ngày tuyệt đối (FE phải pre-resolve trước khi gửi)."
                 )
-                continue
 
             # Phase-B (PBI-parity rework) — top_n / bottom_n are NOT
             # WHERE/HAVING predicates. They translate to ORDER BY +
@@ -2686,13 +2964,12 @@ class SemanticQueryEngine:
                     conditions.append(f"{field_sql} > {_lit(hi)}")
                 continue
 
-            # Unknown operator → record a diagnostic so we don't repeat
-            # the silent-drop class of bugs that broke the chain for
-            # months. Phase-B (PBI-parity rework) — see filter-semantics.md
-            # §6.
-            self.warnings.append(
-                f"Filter dropped — unsupported operator {operator!r} for "
-                f"{field_ref!r}"
+            # Unknown operator. STRICT (#4) — appending no condition would
+            # silently drop the filter (the exact silent-drop bug class that
+            # broke the operator chain for months). Fail LOUD instead.
+            raise ValueError(
+                f"Filter không áp được: toán tử {operator!r} không được hỗ "
+                f"trợ cho {field_ref!r}."
             )
 
         # Phase-B' — fold each filter-only view's predicates into one EXISTS
@@ -2704,9 +2981,14 @@ class SemanticQueryEngine:
             if clause:
                 where_conditions.append(clause)
             else:
-                self.warnings.append(
-                    f"Filter on '{view_node}' dropped — no join path from base "
-                    f"for EXISTS rewrite"
+                # STRICT (#4) — the filter targets a view with no resolvable
+                # join path from the chart's base, so it cannot be applied as
+                # an EXISTS predicate. Dropping it silently returns base rows
+                # unconstrained by the filter (wrong total). Fail LOUD.
+                raise ValueError(
+                    f"Filter trên {view_node!r} không áp được: không có đường "
+                    f"JOIN từ bảng gốc của chart để dựng EXISTS. Kiểm tra quan "
+                    f"hệ trong Data Model."
                 )
 
         # Phase 2 — stash propagation drops on self so the chart-runtime layer
@@ -2813,38 +3095,73 @@ class SemanticQueryEngine:
         # Lazy import to avoid a cross-module top-level cycle.
         from app.services.dataset_model_service import relation_has_nested_cte
 
-        pieces: list[str] = []
-        correlation: str | None = None
-        for idx, step in enumerate(sub_steps):
-            edge = step.edge
-            try:
-                join_view = self._get_view_for_node(edge.to_node)
-            except ValueError:
-                return None
-            relation = join_view.sql_table_name or edge.to_view
-            # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
-            # (the user's production case: `WITH a AS (WITH b AS (...))`
-            # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
-            # BigQuery rejects THAT as `Syntax error: Unexpected keyword SELECT`.
-            # Single-level CTE wraps are BQ-safe (see relation_has_nested_cte).
-            if relation_has_nested_cte(relation):
-                self.warnings.append(
-                    f"Filter on '{target_node}' dropped — view "
-                    f"'{edge.to_node}' is backed by a nested-CTE source_query "
-                    f"that cannot be safely embedded in an EXISTS subquery on "
-                    f"BigQuery. Refactor the source_query to a single-level CTE."
-                )
-                return None
-            condition = self._render_edge_join_condition(edge)
-            if not condition:
-                return None
-            if idx == 0:
-                pieces.append(f"FROM {relation} AS {edge.to_node}")
-                correlation = condition
-            else:
-                pieces.append(f"INNER JOIN {relation} AS {edge.to_node} ON {condition}")
-        body_where = [correlation, *predicates] if correlation else list(predicates)
-        return "EXISTS (SELECT 1 " + " ".join(pieces) + " WHERE " + " AND ".join(body_where) + ")"
+        def _emit(steps) -> str | None:
+            """Build one ``EXISTS (...)`` for a base→target sub-path; None if a
+            hop's relation can't be safely embedded (unknown view / nested CTE)."""
+            pieces: list[str] = []
+            correlation: str | None = None
+            for idx, step in enumerate(steps):
+                edge = step.edge
+                try:
+                    join_view = self._get_view_for_node(edge.to_node)
+                except ValueError:
+                    return None
+                relation = join_view.sql_table_name or edge.to_view
+                # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
+                # (the user's production case: `WITH a AS (WITH b AS (...))`
+                # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
+                # BigQuery rejects THAT as `Syntax error: Unexpected keyword SELECT`.
+                # Single-level CTE wraps are BQ-safe (see relation_has_nested_cte).
+                if relation_has_nested_cte(relation):
+                    self.warnings.append(
+                        f"Filter on '{target_node}' dropped — view "
+                        f"'{edge.to_node}' is backed by a nested-CTE source_query "
+                        f"that cannot be safely embedded in an EXISTS subquery on "
+                        f"BigQuery. Refactor the source_query to a single-level CTE."
+                    )
+                    return None
+                condition = self._render_edge_join_condition(edge)
+                if not condition:
+                    return None
+                if idx == 0:
+                    pieces.append(f"FROM {relation} AS {edge.to_node}")
+                    correlation = condition
+                else:
+                    pieces.append(f"INNER JOIN {relation} AS {edge.to_node} ON {condition}")
+            body_where = [correlation, *predicates] if correlation else list(predicates)
+            return "EXISTS (SELECT 1 " + " ".join(pieces) + " WHERE " + " AND ".join(body_where) + ")"
+
+        single_sql = _emit(sub_steps)
+        # PATH MULTIPLICITY (PowerBI parity). When the chosen anchor is the BASE
+        # itself (start_idx == 0 — there's no deeper joined node to scope to,
+        # i.e. a bare fact/KPI filtered by ANOTHER fact's attribute) AND the
+        # target is reachable via SEVERAL equal-length paths through DIFFERENT
+        # shared conformed dims, PowerBI propagates the filter through EVERY
+        # active relationship and INTERSECTS (AND) the results — not one
+        # arbitrary path (which made the number depend on BFS/model-build order:
+        # revenue ← deal.org_id correlating via date → 2100 vs via owner → 1200).
+        # Emit one EXISTS per distinct shared dim (first hop) and AND them.
+        # When a path anchors DEEPER than the base (start_idx > 0 — the filter
+        # scopes a JOINED measure's grain), keep the single deepest-anchor path
+        # UNCHANGED (the chasm-trap fix above): ANDing sibling-fact paths there
+        # would wrongly over-constrain the measure. Single-path targets are
+        # unaffected (AND-of-one == the single clause; byte-identical SQL).
+        if single_sql is not None and start_idx == 0:
+            base_paths: dict = {}
+            for cand in candidate_paths:
+                if cand.steps and _anchor_idx(cand) == 0:
+                    base_paths.setdefault(cand.steps[0].edge.to_node, cand)
+            if len(base_paths) > 1:
+                clauses: list[str] = []
+                for cand in base_paths.values():
+                    c = _emit(cand.steps)
+                    if c is None:
+                        clauses = []
+                        break
+                    clauses.append(c)
+                if len(clauses) > 1:
+                    return "(" + " AND ".join(clauses) + ")"
+        return single_sql
     
     # ── Phase-B' (PBI-parity rework) — WHERE/HAVING split ─────────────
     #
@@ -3093,6 +3410,158 @@ class SemanticQueryEngine:
             f"và không tìm thấy field '{field_ref}' trong bất kỳ view nào "
             f"của dataset)."
         )
+
+    def _measure_fact_view(self, measure_ref: str) -> str:
+        """The view at whose GRAIN a measure aggregates.
+
+        Normally the measure's DECLARED view (the ``view.`` prefix of the
+        ref). BUT a dataset-scope CROSS-TABLE measure — declared on view A
+        yet whose expression aggregates a column from a single OTHER view B
+        (via ``source_columns``, e.g. ``SUM(${B.deal_value})``) — actually
+        aggregates at B's grain. Return B so the isolation / re-anchor
+        machinery evaluates it there.
+
+        Without this, ``_parse_field_ref`` reports A (which is often the
+        chart's base), the measure is treated as same-fact, B is never added
+        to the FROM/JOIN chain, and the emitted SQL references ``B.col``
+        against a table not in FROM → BigQuery "Unrecognized name: B".
+        """
+        try:
+            declared_view, field = self._parse_field_ref(measure_ref)
+        except ValueError:
+            return measure_ref
+        try:
+            view = self.views_cache.get(declared_view) or self._get_view_for_node(declared_view)
+        except Exception:  # noqa: BLE001 — best effort; fall back to declared view
+            return declared_view
+        mdef = next(
+            (m for m in (view.measures or [])
+             if (m.get("name") == field or m.get("sql_name") == field)),
+            None,
+        )
+        if not mdef or str(mdef.get("scope") or "view") != "dataset":
+            return declared_view
+        src_views = {
+            str(s.get("view") or "").strip()
+            for s in (mdef.get("source_columns") or [])
+            if isinstance(s, dict) and str(s.get("view") or "").strip()
+        }
+        src_views.discard(declared_view)
+        # A SINGLE foreign source view → that view IS the measure's grain.
+        # (Multiple foreign views = a true multi-table formula; keep it on the
+        # declared view so the formula renderer + join collector handle it.)
+        if len(src_views) == 1:
+            return next(iter(src_views))
+        return declared_view
+
+    def _direct_join_views(self, base_view_name: str) -> set[str]:
+        """View names DIRECTLY joined from ``base_view_name``'s explore (one
+        hop — NOT chasm-reachable through a shared dimension).
+
+        Used to reject slicing a cross-table measure by a dimension on an
+        UNRELATED fact: such a dim is only reachable via a chasm (fact →
+        shared dim → other fact), which fans the measure's source rows and
+        silently inflates the aggregate. There is no correct value without a
+        direct relationship, so the caller fails loud instead.
+        """
+        exp = self.db.query(SemanticExplore).filter(
+            SemanticExplore.base_view_name == base_view_name,
+            SemanticExplore.model_id == getattr(self._model, "id", None),
+        ).first()
+        out: set[str] = set()
+        for j in (getattr(exp, "joins", None) or []):
+            if not isinstance(j, dict):
+                continue
+            tgt = j.get("view") or j.get("to_view") or j.get("target") or j.get("name")
+            if tgt:
+                out.add(str(tgt))
+        return out
+
+    def _validate_group_grain(self, dimensions, pivots, measures) -> None:
+        """STRICT grain guard — raise if a group dimension/pivot lives on a fact
+        that is NOT M:1-reachable from a measure's fact (a chasm). Grouping a
+        measure by such a dim forces a fan-out JOIN that double-counts it. See
+        the call site in ``generate_sql`` for the full rationale. No group
+        dims/pivots → no-op (KPIs unaffected)."""
+        group_views: set[str] = set()
+        for ref in list(dimensions or []) + list(pivots or []):
+            try:
+                v = self._parse_field_ref(ref)[0]
+            except Exception:
+                continue
+            if v:
+                group_views.add(v)
+        if not group_views:
+            return
+        for m in (measures or []):
+            try:
+                fact = self._measure_fact_view(m)
+            except Exception:
+                continue
+            if not fact:
+                continue
+            safe = self._m1_reachable_views(fact) | {fact}
+            unsafe = sorted(v for v in group_views if v not in safe)
+            if unsafe:
+                raise ValueError(
+                    f"Measure trên bảng '{fact}' không thể nhóm/pivot theo "
+                    f"dimension {unsafe} (không có đường M:1 — JOIN sẽ fan-out, "
+                    f"ra số sai). Các chiều này thuộc bảng fact khác / chỉ nối "
+                    f"qua shared dim (chasm). Đổi chiều, thêm quan hệ M:1 trong "
+                    f"Data Model, hoặc bỏ measure khỏi chart."
+                )
+
+    def _m1_reachable_views(self, fact: str) -> set[str]:
+        """Views reachable from ``fact`` by following the join graph FORWARD
+        (transitively) along non-fanning edges — every hop maps a ``fact`` row
+        to a SINGLE target row.
+
+        A group dimension on such a view is safe to aggregate ``fact``'s
+        measures by, including SNOWFLAKE dims (sales → product → category, all
+        many-to-one). A dimension that lives on ANOTHER FACT is NOT reached:
+        the forward graph only contains ``fact → dim → parent-dim`` edges; an
+        other fact joins TO a shared dim (the reverse edge lives in that fact's
+        own explore), so reaching it would require a one-to-many hop (a chasm)
+        which we never traverse.
+
+        Strictly better than ``_direct_join_views`` (one hop — too strict for
+        snowflakes) and bidirectional ``reachable_nodes`` (walks 1:N edges, so
+        it treats chasm-reachable facts as related → silent fan-out).
+        """
+        model_id = getattr(self._model, "id", None)
+        _M1 = {"many_to_one", "one_to_one"}
+        seen: set[str] = {fact}
+        frontier: list[str] = [fact]
+        while frontier:
+            cur = frontier.pop()
+            exp = self.db.query(SemanticExplore).filter(
+                SemanticExplore.base_view_name == cur,
+                SemanticExplore.model_id == model_id,
+            ).first()
+            for j in (getattr(exp, "joins", None) or []):
+                if not isinstance(j, dict):
+                    continue
+                card = str(
+                    j.get("relationship") or j.get("cardinality") or j.get("type") or ""
+                ).strip().lower().replace("-", "_").replace(" ", "_")
+                # STRICT (PowerBI parity): traverse ONLY an EXPLICITLY
+                # many_to_one / one_to_one hop. An empty / unknown / garbage
+                # cardinality is NOT assumed M:1-safe — on a galaxy schema a
+                # missing-cardinality edge can fan out (or reach another fact),
+                # so guessing M:1 risks a silently-wrong number. Unknown →
+                # NOT reachable → the caller (re-anchor / stitch) fails loud,
+                # prompting the modeller to DECLARE the relationship in the Data
+                # Model rather than the engine guessing it. (generate-model
+                # backfills cardinality, so real explores carry explicit values.)
+                if card not in _M1:
+                    continue
+                tgt = str(
+                    j.get("view") or j.get("to_view") or j.get("target") or j.get("name") or ""
+                ).strip()
+                if tgt and tgt not in seen:
+                    seen.add(tgt)
+                    frontier.append(tgt)
+        return seen
     
     def _render_sql_template(self, template: str, view_alias: str) -> str:
         """Render a SQL template with semantic placeholders.

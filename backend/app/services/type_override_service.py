@@ -319,12 +319,27 @@ def build_safe_cast_sql(
         cleaned = (
             f"REGEXP_REPLACE(REGEXP_REPLACE({trimmed}, '[\\s\\u00A0]', '', 'g'), ',', '', 'g')"
         )
-        return f"TRY_CAST({cleaned} AS BIGINT)"
+        if dialect == "duckdb":
+            return f"TRY_CAST({cleaned} AS BIGINT)"
+        # Postgres (+ generic relational): NO `TRY_CAST` and the type is BIGINT;
+        # a non-numeric string must yield NULL (not raise), so regex-guard the
+        # CAST — mirrors the MySQL branch above and the date `~` branches below.
+        return (
+            f"CASE WHEN {cleaned} ~ '^-?[0-9]+$' "
+            f"THEN CAST({cleaned} AS BIGINT) ELSE NULL END"
+        )
     if normalized == "float":
         cleaned = (
             f"REGEXP_REPLACE(REGEXP_REPLACE({trimmed}, '[\\s\\u00A0]', '', 'g'), ',', '', 'g')"
         )
-        return f"TRY_CAST({cleaned} AS DOUBLE)"
+        if dialect == "duckdb":
+            return f"TRY_CAST({cleaned} AS DOUBLE)"
+        # Postgres (+ generic): `DOUBLE PRECISION` (Postgres has no `DOUBLE` type
+        # nor `TRY_CAST`); regex-guard so non-numeric text → NULL, never a 42601.
+        return (
+            f"CASE WHEN {cleaned} ~ '^[-+]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)$' "
+            f"THEN CAST({cleaned} AS DOUBLE PRECISION) ELSE NULL END"
+        )
     if normalized == "boolean":
         return (
             "CASE "

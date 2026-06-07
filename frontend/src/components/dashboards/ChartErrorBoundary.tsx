@@ -14,21 +14,25 @@ interface State {
  * Catches rendering errors in a single ChartTile so one broken chart
  * cannot crash the entire dashboard page.
  */
-export class ChartErrorBoundary extends React.Component<
-  React.PropsWithChildren<{
-    chartId: number;
-    dashboardChartId?: number;
-    onRemove?: (dashboardChartId: number) => void;
-    isRemoving?: boolean;
-  }>,
-  State
-> {
-  constructor(props: React.PropsWithChildren<{
-    chartId: number;
-    dashboardChartId?: number;
-    onRemove?: (dashboardChartId: number) => void;
-    isRemoving?: boolean;
-  }>) {
+type ChartErrorBoundaryProps = React.PropsWithChildren<{
+  chartId: number;
+  dashboardChartId?: number;
+  onRemove?: (dashboardChartId: number) => void;
+  isRemoving?: boolean;
+  /**
+   * When this value changes, a previously-caught error is auto-cleared so the
+   * boundary re-renders its children. Used by the Explore preview: a chart can
+   * throw while rendering a STALE result from a different chart type (e.g.
+   * switching a ran Matrix → Grouped Bar before the new query returns); once
+   * the fresh result arrives the boundary should recover on its own instead of
+   * stranding a "couldn't render" fallback until the user clicks Retry.
+   * Dashboards don't pass it, so their behaviour is unchanged.
+   */
+  resetKey?: unknown;
+}>;
+
+export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps, State> {
+  constructor(props: ChartErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, detailsOpen: false };
   }
@@ -39,6 +43,13 @@ export class ChartErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error) {
     console.error(`[ChartErrorBoundary] chart ${this.props.chartId} crashed:`, error);
+  }
+
+  componentDidUpdate(prevProps: ChartErrorBoundaryProps) {
+    // Auto-recover when the inputs that produced the error have changed.
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false, message: undefined, detailsOpen: false });
+    }
   }
 
   private retry = () => {

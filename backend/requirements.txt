@@ -1,5 +1,9 @@
 # FastAPI and Server
 fastapi==0.109.0
+# Pin Starlette to FastAPI 0.109.0's required range (>=0.35.0,<0.36.0). Without
+# this, a clean `pip install`/CI resolve can pull Starlette 1.x, which breaks
+# import/test collection. Keeps the full local + CI test run reproducible.
+starlette==0.35.1
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 

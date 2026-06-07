@@ -1942,7 +1942,9 @@ class DatasetQualityService:
 
         if not enabled_rules:
             run.status = "completed"
-            run.score = 100.0
+            # No enabled rules ⇒ nothing was checked. Do NOT report a green 100%
+            # (that falsely reassures); leave score unset so the UI shows "no run".
+            run.score = None
             run.results = {}
             run.completed_at = datetime.utcnow()
             db.commit()
@@ -1983,7 +1985,12 @@ class DatasetQualityService:
             run.progress_done = idx
             db.commit()
 
-        score = round(passed_count / scorable_count * 100, 1) if scorable_count else 100.0
+        # When nothing was actually scored — every enabled rule skipped (e.g. all
+        # targets are generated_calendar tables, or none could be compiled) — do
+        # NOT report a falsely-reassuring 100%. Emit None so the UI shows "no run"
+        # (and the e-mail/PDF show "—") instead of a green perfect score for a
+        # dataset where zero checks executed. (DA9-2)
+        score = round(passed_count / scorable_count * 100, 1) if scorable_count else None
 
         run.status = "completed"
         run.score = score

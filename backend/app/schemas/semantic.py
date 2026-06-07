@@ -530,6 +530,10 @@ class TopNDefinition(BaseModel):
 class SemanticQueryRequest(BaseModel):
     """Request to execute a semantic query (v2 with advanced features)"""
     explore: str  # Explore name
+    # Bind the query to a SPECIFIC model (PowerBI-style — a query belongs to one
+    # model). Disambiguates an explore name shared across models; when omitted
+    # the route FAILS LOUD if the name is ambiguous rather than guessing.
+    model_id: int | None = None
     dimensions: List[str] = []  # Qualified field names like "orders.order_date"
     measures: List[str] = []  # Qualified field names like "orders.total_revenue"
     filters: Dict[str, FilterCondition] = {}  # Field name -> filter condition

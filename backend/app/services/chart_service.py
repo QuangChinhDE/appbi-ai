@@ -35,6 +35,7 @@ from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParamete
 from app.core.logging import get_logger
 from app.services.chart_contracts import (
     _record_dropped_filter,
+    enforce_no_hard_dropped_filters,
     get_chart_active_role_config,
     get_chart_custom_sql,
     merge_chart_query_filters,
@@ -126,141 +127,6 @@ def _collect_role_config_field_refs(role_config: dict) -> list[str]:
     return refs
 
 
-def _auto_qualify_role_config_metrics(config: dict | None) -> dict | None:
-    """Phase-15.98 (S2B/S4A save-time normalize) — promote BARE metric.field
-    refs to QUALIFIED ``view.field`` form at chart save time, mirroring the
-    routing helper's bare-metric registry lookup.
-
-    Called from ``ChartService.create`` and ``ChartService.update`` AFTER
-    ``with_chart_semantic_binding`` has hydrated ``config["semanticBinding"]``.
-    The binding carries qualified ``measureFields`` /
-    ``reachableMeasureFields``; if the FE saved a bare metric (e.g.
-    ``"revenue_marketing"``) and exactly one declared measure with that
-    bare name exists on a reachable view, rewrite the saved ref to its
-    fully qualified form so downstream routing + engine resolution is
-    deterministic.
-
-    Same SAFETY GUARDS as the routing helper:
-
-      • Shadow guard — if the base view exposes a same-named field as a
-        declared dim/measure, DA most likely intended the same-view
-        column (plain on-the-fly aggregate). Leave the ref bare; live
-        path will handle it.
-
-      • Ambiguity guard — if multiple reachable views declare a measure
-        with the same bare name, picking one would be guessing. Leave
-        bare and emit a warning so DA can disambiguate via the picker.
-
-    Idempotent: a metric already in qualified form is untouched.
-
-    Why this matters: prior to this hook, a chart whose metric was saved
-    bare (because the FE's ``upgradeRoleConfigToQualified`` ran with an
-    empty ``qualifiedByBare`` map — Audit E vector S2B) would persist
-    bare FOREVER unless the user reopened + saved again. Every render
-    would re-run routing detection. Normalising at save time pins the
-    decision once and removes the fragility from runtime.
-    """
-    if not isinstance(config, dict):
-        return config
-    role_config = config.get("roleConfig")
-    if not isinstance(role_config, dict):
-        return config
-    binding = config.get("semanticBinding")
-    if not isinstance(binding, dict):
-        return config
-
-    base = str(binding.get("baseViewName") or "").strip()
-    measures_set = {
-        str(value).strip()
-        for value in [
-            *(binding.get("measureFields") or []),
-            *(binding.get("reachableMeasureFields") or []),
-        ]
-        if str(value or "").strip()
-    }
-    fields_set = {
-        str(value).strip()
-        for value in [
-            *(binding.get("dimensionFields") or []),
-            *(binding.get("measureFields") or []),
-            *(binding.get("reachableDimensionFields") or []),
-            *(binding.get("reachableMeasureFields") or []),
-            *((binding.get("fieldMap") or {}).values()),
-        ]
-        if str(value or "").strip()
-    }
-
-    if not measures_set:
-        return config
-
-    def _resolve(field: str) -> str | None:
-        f = (field or "").strip()
-        if not f or "." in f:
-            return None
-        # Tier 1 — same-view fast path. Don't bother with cross-view scan
-        # because routing would have promoted anyway via same-view lookup.
-        if base and f"{base}.{f}" in measures_set:
-            return f"{base}.{f}"
-        # Tier 2 — cross-view trailing-segment scan.
-        cross_view_matches = [
-            q for q in measures_set
-            if "." in q and q.rpartition(".")[2] == f and q.rpartition(".")[0] != base
-        ]
-        if not cross_view_matches:
-            return None
-        # Shadow guard — same logic as routing helper.
-        if base and f"{base}.{f}" in fields_set:
-            return None
-        # Ambiguity guard.
-        if len(cross_view_matches) > 1:
-            logger.warning(
-                "[pbi-filter] save-qualify skipped chart=? metric=%r reason=ambiguous matches=%r",
-                f, cross_view_matches,
-            )
-            return None
-        return cross_view_matches[0]
-
-    def _promote_metric(metric: Any) -> tuple[Any, bool]:
-        if not isinstance(metric, dict):
-            return metric, False
-        field = metric.get("field")
-        if not isinstance(field, str):
-            return metric, False
-        qualified = _resolve(field)
-        if not qualified:
-            return metric, False
-        next_metric = {**metric, "field": qualified}
-        logger.info(
-            "[pbi-filter] save-qualify metric.field %r -> %r",
-            field, qualified,
-        )
-        return next_metric, True
-
-    next_role = dict(role_config)
-    changed = False
-
-    metrics = next_role.get("metrics")
-    if isinstance(metrics, list):
-        new_metrics: list[Any] = []
-        for m in metrics:
-            promoted, did = _promote_metric(m)
-            new_metrics.append(promoted)
-            if did:
-                changed = True
-        if changed:
-            next_role["metrics"] = new_metrics
-
-    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
-        promoted, did = _promote_metric(next_role.get(key))
-        if did:
-            next_role[key] = promoted
-            changed = True
-
-    if not changed:
-        return config
-    return {**config, "roleConfig": next_role}
-
-
 def _binding_semantic_fields(binding: dict[str, Any]) -> set[str]:
     fields = {
         str(value).strip()
@@ -337,47 +203,30 @@ def _role_config_needs_semantic_runtime(
     def _metric_needs_semantic(metric: Any) -> bool:
         """A metric forces semantic routing when its field is qualified
         (live builder can't resolve cross-view refs) OR when it maps to a
-        DECLARED semantic measure with where_sql / filters that the live
-        builder silently drops.
+        DECLARED same-view semantic measure (which may be a formula /
+        filtered measure / alias rather than a physical column).
 
-        Bare-metric matching has THREE tiers:
+        STRICT (PowerBI parity) — bare-metric matching has only TWO tiers:
 
-          1. same-view lookup — ``{field}`` or ``{base}.{field}`` in
-             measure registry. Cheapest, deterministic. Always promote.
+          1. qualified ``view.field`` → semantic (live builder can't JOIN).
 
-          2. cross-view trailing-segment scan — declared measure with the
-             same bare name lives on a JOINED view (e.g. chart base =
-             ``dataset_table_188`` (bc_owner), metric.field =
-             ``"revenue_marketing"``, declared on
-             ``dataset_table_193.revenue_marketing`` with
-             ``where_sql='source_name = ''Marketing'''``). Promote ONLY
-             when SAFE — see guards below.
+          2. bare ``{field}`` / ``{base}.{field}`` that maps to a declared
+             same-view measure → semantic.
 
-          3. otherwise — leave on live path (plain on-the-fly aggregate
-             over a physical column).
+        Anything else returns False here. It does NOT mean "route to live":
+        the strict force-gate in ``_execute_chart_runtime_for_table`` routes
+        EVERY generated chart on a modeled dataset to the semantic engine
+        regardless of this function's result. The engine then resolves a
+        bare ref DETERMINISTICALLY (unique reachable view → qualify) or fails
+        LOUD via ``_parse_field_ref`` (``AmbiguousFieldError`` when 2+ loaded
+        views share the name → 400 with a "qualify it as view.field" hint;
+        ValueError when the field exists on no reachable view).
 
-        SAFETY GUARDS for cross-view tier (Phase-15.98, post-adversarial):
-
-          • **Shadow guard** — if ``{base}.{field}`` is already in the
-            base view's declared dimension/measure set, the bare metric
-            ALMOST CERTAINLY refers to that same-view field (plain
-            aggregate intent). Forcing semantic in that case would let
-            the engine bind to a cross-view declared measure of the same
-            name → silent wrong data on the wrong table. Skip promotion.
-
-          • **Ambiguity guard** — if MULTIPLE joined views declare a
-            measure with the same bare name, the semantic engine's
-            ``_parse_field_ref`` would raise ``AmbiguousFieldError`` at
-            execute time. Better to stay on live (which is at least
-            consistent with prior behaviour and surfaces the underlying
-            naming collision via the S1A defensive log) than to hard-fail
-            a chart that used to render. Skip promotion.
-
-        Adversarially-verified: the two refuting lenses in
-        ``filter-triet-de-fix-v2`` workflow (Performance/over-routing,
-        Ambiguity) flagged exactly these two failure modes. The guards
-        close them; everything else (back-compat for 21 golden cases,
-        coverage of 5 chart-shape scenarios) was already safe.
+        The previous tier-3 "cross-view trailing-segment scan" — which
+        GUESSED a bare metric onto a same-named cross-view measure and, on
+        miss/shadow/ambiguity, fell back to the live builder — is removed.
+        That guess-then-fallback was the root of the recurring "wrong total
+        / dropped filter / silent-wrong-table" class. No more guessing.
         """
         if not isinstance(metric, dict):
             return False
@@ -386,52 +235,20 @@ def _role_config_needs_semantic_runtime(
             return False
         if "." in field:
             return True
-        # Tier 1 — same-view lookup. Fast path, no scan.
+        # Tier 1 — same-view declared measure lookup. Deterministic, no scan.
         if field in semantic_measures:
             return True
         if base and f"{base}.{field}" in semantic_measures:
             return True
-        # Tier 2 — cross-view trailing-segment scan.
-        cross_view_matches: list[str] = []
-        for qualified in semantic_measures:
-            if "." not in qualified:
-                continue
-            view_part, _, name_part = qualified.rpartition(".")
-            if name_part == field and view_part and view_part != base:
-                cross_view_matches.append(qualified)
-        if not cross_view_matches:
-            return False
-        # Shadow guard — the bare metric likely refers to a same-view
-        # physical column, not the cross-view declared measure. The
-        # binding's semantic_fields set is the source of truth FE rendered
-        # in the column picker; if the field is exposed on the base view
-        # there, prefer the live path (which will SUM the raw column).
-        if base and f"{base}.{field}" in semantic_fields:
-            logger.info(
-                "[pbi-filter] routing=skip-cross-table-promote chart_id=%s base=%s metric=%r "
-                "reason=base_view_shadow matched=%r",
-                _pbi_current_chart_id(), base, field, cross_view_matches,
-            )
-            return False
-        # Ambiguity guard — multiple joined views declare a measure with
-        # this bare name. Semantic engine cannot deterministically pick;
-        # skip promotion to avoid AmbiguousFieldError regression.
-        if len(cross_view_matches) > 1:
-            logger.warning(
-                "[pbi-filter] routing=skip-cross-table-promote chart_id=%s base=%s metric=%r "
-                "reason=ambiguous matches=%r — FE should qualify the ref to disambiguate",
-                _pbi_current_chart_id(), base, field, cross_view_matches,
-            )
-            return False
-        # Single unambiguous cross-view match, base view doesn't shadow →
-        # safe to promote semantic. The engine's `_parse_field_ref` will
-        # qualify the bare ref to the matched view.
-        logger.info(
-            "[pbi-filter] routing=semantic chart_id=%s base=%s reason=bare_metric_cross_table "
-            "metric=%r matched=%r",
-            _pbi_current_chart_id(), base, field, cross_view_matches[0],
-        )
-        return True
+        # STRICT — NO cross-view bare-ref GUESS. A bare metric that is not a
+        # same-view declared measure is NOT heuristically promoted to a
+        # cross-view measure here (the old "auto-guess then fall back to live"
+        # pattern). The strict force-gate in `_execute_chart_runtime_for_table`
+        # already routes every generated chart on a modeled dataset to the
+        # semantic engine, which then resolves the bare ref DETERMINISTICALLY
+        # (unique reachable view) or fails LOUD (ambiguous / unknown) via
+        # `_parse_field_ref`. We never guess-then-fallback.
+        return False
 
     # Metric with qualified field OR with a bare ref that resolves to a
     # declared semantic measure always needs the semantic engine — measure
@@ -2005,126 +1822,89 @@ def _execute_semantic_chart_runtime(
 
     semantic_measure_fields = _binding_semantic_measure_fields(binding)
     semantic_fields_all = _binding_semantic_fields(binding)
-    legacy_selected_measure_refs: list[str] = []
+    # Bare-name view of declared measures → lets the shared classifier reclassify
+    # a BARE measure ref (e.g. an old / MCP / API chart that stored
+    # `scatterX: "total_revenue"` without a view prefix) into the measure tier
+    # WITHOUT guessing the view (the engine resolves it). Passed to
+    # `classify_semantic_roles` below — the role classification + the
+    # qualified/bare measure test now live ONCE in semantic_query_compiler,
+    # shared with the preview + direct-API paths (no per-path drift).
+    semantic_measure_bare_names = {f.rpartition(".")[2] for f in semantic_measure_fields if f}
 
     def qualify(field: str | None) -> str:
-        raw = str(field or "").strip()
-        if not raw:
-            return raw
-        return raw if "." in raw else f"{base_view_name}.{raw}"
+        """STRICT contract — return the dimension ref UNCHANGED.
 
-    def qualify_metric(field: str | None) -> str:
-        """Phase-15.98 — bare metric refs need cross-view lookup to find the
-        declared measure's OWNER view, not the chart's base view. Mirrors
-        ``_metric_needs_semantic`` and ``_auto_qualify_role_config_metrics``
-        so runtime resolution agrees with save-time + routing decisions.
-
-        Same SAFETY GUARDS:
-          • Shadow guard — if base view exposes ``{base}.{field}`` as a
-            declared dim/measure, treat the bare ref as same-view; the
-            implicit-measure fallback in ``_render_measure`` will handle
-            the SUM(physical_column) case.
-          • Ambiguity guard — multiple cross-view declared measures with
-            the same bare name → fall back to base-view qualification
-            (routing helper already declined to promote, so we shouldn't
-            be on the semantic path; defensive only).
-
-        For OLD charts saved before the save-time auto-qualify hook
-        landed (Phase-15.98 Fix 4), this runtime hook keeps the
-        cross-view fix working without requiring DA to re-save every
-        chart. New charts get qualified at save and skip this branch.
+        The semantic engine's ``_parse_field_ref`` is the SINGLE resolver: a
+        qualified ``view.field`` passes through; a BARE dim is resolved
+        deterministically by the engine (unique reachable view) or fails LOUD
+        (ambiguous / unknown). chart_service no longer pre-qualifies bare dims
+        to the base view — that masked genuinely cross-view dims and the
+        engine's own ambiguity/missing fail-loud (and was a second resolution
+        path that could drift from the engine).
         """
-        raw = str(field or "").strip()
-        if not raw:
-            return raw
-        if "." in raw:
-            return raw
-        # Tier 1 — same-view fast path.
-        if base_view_name and f"{base_view_name}.{raw}" in semantic_measure_fields:
-            return f"{base_view_name}.{raw}"
-        # Tier 2 — cross-view trailing-segment scan.
-        cross_view_matches = [
-            q for q in semantic_measure_fields
-            if "." in q and q.rpartition(".")[2] == raw and q.rpartition(".")[0] != base_view_name
-        ]
-        if not cross_view_matches:
-            return f"{base_view_name}.{raw}" if base_view_name else raw
-        # Shadow guard — base view exposes the bare name.
-        if base_view_name and f"{base_view_name}.{raw}" in semantic_fields_all:
-            return f"{base_view_name}.{raw}"
-        # Ambiguity guard.
-        if len(cross_view_matches) > 1:
-            return f"{base_view_name}.{raw}" if base_view_name else raw
-        # Single unambiguous cross-view match.
-        return cross_view_matches[0]
+        return str(field or "").strip()
 
-    # Collect dimension-like refs (skip duplicates while preserving order).
-    dimension_refs: list[str] = []
-
-    def push_dim(value: Any) -> None:
-        if not isinstance(value, str):
-            return
-        qualified = qualify(value)
-        if qualified and qualified not in dimension_refs:
-            dimension_refs.append(qualified)
-
-    for key in (
-        "dimension", "breakdown", "timeField",
-        "tableRowDimension", "tableColumnDimension",
-    ):
-        push_dim(role_config.get(key))
-    selected_metric_fields = {
-        str(metric.get("field") or "").strip()
-        for metric in (role_config.get("metrics") or [])
-        if isinstance(metric, dict) and str(metric.get("field") or "").strip()
+    # ── Role classification via the SINGLE shared classifier ─────────────────
+    # `semantic_query_compiler.classify_semantic_roles` is the ONE rule the
+    # preview (dataset-execute) and direct-API paths share too, so they cannot
+    # drift — the structural cure for "Explore preview ≠ Dashboard tile".
+    # `qualify` is pass-through (the engine is the sole resolver), so refs are
+    # just the stripped role_config values; the
+    # classifier dedups + splits dim/measure: STRICT dim slots
+    # (dimension/breakdown/timeField/table) never reclassify (a measure there
+    # fails loud); scatter axes + selectedColumns reclassify a declared measure
+    # (qualified OR bare); explicit metrics come first, then reclassified.
+    from app.services.semantic_query_compiler import classify_semantic_roles
+    _selected_metric_fields = {
+        str(m.get("field") or "").strip()
+        for m in (role_config.get("metrics") or [])
+        if isinstance(m, dict) and str(m.get("field") or "").strip()
     }
-    selected_metric_refs = {qualify(field) for field in selected_metric_fields if qualify(field)}
-    for col in role_config.get("selectedColumns") or []:
-        raw_col = str(col or "").strip()
-        qualified_col = qualify(raw_col)
-        if raw_col in selected_metric_fields or qualified_col in selected_metric_refs:
-            continue
-        if qualified_col in semantic_measure_fields:
-            if qualified_col not in legacy_selected_measure_refs:
-                legacy_selected_measure_refs.append(qualified_col)
-            continue
-        push_dim(col)
-    # scatter X/Y are typically continuous columns that the user wants to
-    # plot raw. The engine treats anything in the `dimensions` list as a
-    # GROUP BY participant which is the right behavior for distinct points;
-    # for aggregated scatter the metric is supplied separately.
-    push_dim(role_config.get("scatterX"))
-    push_dim(role_config.get("scatterY"))
-
-    # Collect metric refs + per-field agg overrides (chart role config carries
-    # its own agg, which may diverge from the measure's default).
-    measure_refs: list[str] = []
-    agg_overrides: dict[str, str] = {}
-
-    def push_metric(metric: Any) -> None:
-        if not isinstance(metric, dict):
-            return
-        # Phase-15.98 — use cross-view-aware qualifier for metrics so a
-        # bare declared-measure ref like ``revenue_marketing`` qualifies
-        # to its owner view (``dataset_table_193.revenue_marketing``)
-        # rather than the chart's base view (where the measure doesn't
-        # exist). Dimensions still use plain ``qualify`` because dims
-        # are universally same-view in practice.
-        qualified = qualify_metric(metric.get("field"))
-        if not qualified or qualified in measure_refs:
-            return
-        measure_refs.append(qualified)
-        agg = str(metric.get("agg") or "").strip().lower()
-        if agg:
-            agg_overrides[qualified] = agg
-
-    for metric in role_config.get("metrics") or []:
-        push_metric(metric)
-    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
-        push_metric(role_config.get(key))
-    for ref in legacy_selected_measure_refs:
-        if ref not in measure_refs:
-            measure_refs.append(ref)
+    _strict_dim_refs = [
+        role_config.get(k) for k in (
+            "dimension", "breakdown", "timeField",
+            "tableRowDimension", "tableColumnDimension",
+        )
+    ]
+    # `selectedColumns` is a STANDARD-TABLE "show these columns" list — only in
+    # that mode are its non-measure entries legitimately GROUP BY dimensions
+    # (a table shows one row per displayed-column combination). For EVERY
+    # aggregating viz (bar / line / pie / KPI / gauge / scatter / …) and for
+    # MATRIX (pivot), selectedColumns must NOT enter GROUP BY: otherwise the
+    # chart groups by every column the default Table happened to select and the
+    # grain explodes. DA-Test smoking gun: Bar "Revenue by Product" (bound only
+    # dimension=product_name) emitted GROUP BY product×quantity×total_price×
+    # transaction_date×year_month×employee_name×email → 249 rows + meaningless
+    # SUM; a KPI carried _airbyte_meta (JSON) into GROUP BY → BigQuery 400
+    # "Grouping by JSON not allowed". The gate mirrors chart_contracts (line
+    # ~610): selectedColumns apply only when ctype == "TABLE" and tableMode is
+    # not pivot. Scatter axes still reclassify (they ARE the scatter's roles).
+    _chart_type_str = str(getattr(chart_type, "value", chart_type) or "").upper()
+    _is_standard_table = (
+        _chart_type_str == "TABLE"
+        and str(role_config.get("tableMode") or "").lower() != "pivot"
+    )
+    _selected_dim_refs = (
+        [
+            c for c in (role_config.get("selectedColumns") or [])
+            if str(c or "").strip() and str(c or "").strip() not in _selected_metric_fields
+        ]
+        if _is_standard_table
+        else []
+    )
+    _reclassifiable_refs = _selected_dim_refs + [role_config.get("scatterX"), role_config.get("scatterY")]
+    _metric_dicts = [m for m in (role_config.get("metrics") or []) if isinstance(m, dict)]
+    for _mk in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+        _mv = role_config.get(_mk)
+        if isinstance(_mv, dict):
+            _metric_dicts.append(_mv)
+    dimension_refs, measure_refs, agg_overrides = classify_semantic_roles(
+        strict_dims=[d for d in _strict_dim_refs if isinstance(d, str)],
+        reclassifiable_dims=[r for r in _reclassifiable_refs if isinstance(r, str)],
+        metrics=[(m.get("field"), m.get("agg")) for m in _metric_dicts],
+        measure_fields=semantic_measure_fields,
+        measure_bare_names=semantic_measure_bare_names,
+    )
 
     # Build filters: combine base + dashboard runtime; only forward filters
     # whose target is supported by the binding (base or reachable view) and
@@ -2147,6 +1927,11 @@ def _execute_semantic_chart_runtime(
         diagnostics=filter_diagnostics,
         db=db,
     )
+    # STRICT (#4) — a complete filter the semantic engine could not apply
+    # (unknown field / unreachable view / unsupported operator) must FAIL
+    # LOUD here, not silently produce a result computed without it. Soft
+    # drops (incomplete input, public-link policy) pass through untouched.
+    enforce_no_hard_dropped_filters(filter_diagnostics)
 
     _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
     engine_filters: dict[str, list] = {}
@@ -2250,19 +2035,26 @@ def _execute_semantic_chart_runtime(
     # (Phase-11), not an opaque internal exception. ValueError bubbles up
     # — the chart API layer maps it to 400.
     engine = SemanticQueryEngine(db, database_type=dialect)
+    # Unified engine entry — the chart now builds a SemanticQuerySpec (the SAME
+    # contract the preview + direct-API paths use) and runs it; no path bypasses
+    # the spec/compiler any more. dimension_refs / measure_refs / agg_overrides
+    # came from the shared classify_semantic_roles above.
+    from app.services.semantic_query_compiler import SemanticQuerySpec
+    _spec = SemanticQuerySpec(
+        explore_name=explore_name,
+        dimensions=dimension_refs,
+        measures=measure_refs,
+        measure_agg_overrides=agg_overrides or {},
+        filters=engine_filters,
+        time_grains=time_grains or {},
+        limit=effective_limit,
+        model_id=model_id,
+        explore_id=explore_id,
+        response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
+        diagnostics=filter_diagnostics,
+    )
     try:
-        sql, _engine_columns, _pivot_metadata = engine.generate_sql(
-            explore_name=explore_name,
-            dimensions=dimension_refs,
-            measures=measure_refs,
-            filters=engine_filters,
-            sorts=[],
-            limit=effective_limit,
-            time_grains=time_grains or None,
-            measure_agg_overrides=agg_overrides or None,
-            model_id=model_id,
-            explore_id=explore_id,
-        )
+        sql, _engine_columns, _pivot_metadata = engine.run(_spec)
         # [pbi-filter] full SQL dump correlated to chart_id. DA can grep
         # ``[pbi-filter] sql chart_id=<N>`` to see exactly what hit
         # BigQuery for one specific tile (especially useful for KPI /
@@ -2409,7 +2201,7 @@ def _execute_semantic_chart_runtime(
         ) from exc
     elapsed_ms = (time.time() - start) * 1000
 
-    alias_map = _build_semantic_alias_map(dimension_refs + measure_refs)
+    alias_map = _spec.response_aliases  # computed once on the spec above
     rows = remap_semantic_engine_rows(rows, alias_map)
 
     result: Dict[str, Any] = {
@@ -2638,11 +2430,23 @@ def _execute_chart_runtime_for_table(
     # table is backed by a semantic model. When forced, the engine fails LOUD
     # (missing relationship / ambiguous path / unknown measure) rather than
     # degrading to a heuristic live result.
-    if not custom_sql and base_view_name_for_routing and not needs_semantic_runtime:
+    #
+    # "Model-backed" = a resolved baseViewName OR ANY declared semantic
+    # field/measure on the binding. The second clause matters now that the
+    # cross-view bare-ref PROMOTE heuristic is gone (`_metric_needs_semantic`
+    # tier-2 removed): a chart whose binding carries semantic measures but whose
+    # baseViewName failed to hydrate must STILL go semantic, not silently fall
+    # to the single-table live builder. No more guess-then-fallback.
+    _model_backed = bool(
+        base_view_name_for_routing
+        or _binding_semantic_fields(binding)
+        or _binding_semantic_measure_fields(binding)
+    )
+    if not custom_sql and _model_backed and not needs_semantic_runtime:
         logger.info(
             "[strict-semantic] forcing semantic runtime chart_id=%s base=%s "
             "(generated chart on modeled dataset; live-builder path disabled)",
-            _pbi_current_chart_id(), base_view_name_for_routing,
+            _pbi_current_chart_id(), base_view_name_for_routing or "<unresolved>",
         )
         needs_semantic_runtime = True
 
@@ -2686,6 +2490,12 @@ def _execute_chart_runtime_for_table(
             diagnostics=live_filter_diagnostics,
             db=db,
         )
+        # STRICT (#4) — same fail-loud policy on the live path: a complete
+        # filter dropped as unknown_field / unreachable_view /
+        # binding_unsupported / dataset_mismatch / unsupported_operator
+        # means silently-wrong data, so refuse to run. (Soft drops —
+        # incomplete input, public-link policy — are tolerated.)
+        enforce_no_hard_dropped_filters(live_filter_diagnostics)
     live_role_config = _strip_nonsemantic_base_view_refs_from_role_config(
         role_config,
         binding,
@@ -2956,17 +2766,18 @@ class ChartService:
             raise ValueError(f"You already have a chart named '{chart_name}'")
 
         try:
-            # Phase-15.98 (S2B/S4A) — hydrate semantic binding first, then
-            # auto-qualify bare metric refs against the resulting registry.
-            # Persisting qualified form removes runtime ambiguity for every
-            # subsequent render (preview + dashboard tile).
+            # Hydrate the semantic binding before persisting so response-time
+            # consumers have it. Metric/dimension refs are stored AS SENT
+            # (canonical ``view.field`` from the FE picker); the semantic
+            # engine is the SINGLE resolver at render time — no save-time
+            # bare-ref pre-qualify (that second resolution path was removed so
+            # resolution can't drift from the engine).
             hydrated_config = with_chart_semantic_binding(
                 db,
                 chart.dataset_table_id,
                 chart.config,
                 auto_generate=True,
             )
-            hydrated_config = _auto_qualify_role_config_metrics(hydrated_config)
             db_chart = Chart(
                 name=chart_name,
                 description=chart.description,
@@ -3020,16 +2831,16 @@ class ChartService:
                     setattr(db_chart, field, value)
 
             if "config" in update_data or "dataset_table_id" in update_data:
-                # Phase-15.98 — re-hydrate binding then auto-qualify metric
-                # refs so save-time output is deterministic regardless of
-                # whether the FE qualified them upstream.
+                # Re-hydrate the semantic binding on config/table change.
+                # Refs are stored as sent; the engine resolves at render
+                # (single resolver — no save-time bare-ref pre-qualify).
                 hydrated = with_chart_semantic_binding(
                     db,
                     db_chart.dataset_table_id,
                     db_chart.config,
                     auto_generate=True,
                 )
-                db_chart.config = _auto_qualify_role_config_metrics(hydrated)
+                db_chart.config = hydrated
             
             db.commit()
             db.refresh(db_chart)

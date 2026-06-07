@@ -286,7 +286,11 @@ const MEASURE_TEMPLATES: MeasureTemplate[] = [
       label: 'Cross-table sum',
       type: 'sum',
       sql: '',
-      expression: 'SUM(${other_view.col})',
+      // RAW column reference — `type: 'sum'` wraps it (→ SUM(${other_view.col})).
+      // Must NOT pre-fill `SUM(...)` here: the advanced-SQL validator rejects an
+      // aggregate inside the expression (the aggregation dropdown is what wraps),
+      // so a pre-filled SUM made the template show an error out of the box.
+      expression: '${other_view.col}',
       scope: 'dataset',
       source_columns: [
         { view: '', field: '' },

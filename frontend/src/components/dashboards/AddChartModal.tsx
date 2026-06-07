@@ -130,7 +130,10 @@ export function AddChartModal({
   currentPageName,
 }: AddChartModalProps) {
   const [mode, setMode] = useState<AddChartModalMode>('existing');
-  const [selectedChartId, setSelectedChartId] = useState<number | ''>('');
+  // Multi-select: the dashboard Add-Chart picker can stage several saved charts and
+  // add them all on one confirm (DA6-F3). A single staged chart still drives the
+  // per-chart preview + instance-parameter form below (see focusedChartId).
+  const [selectedChartIds, setSelectedChartIds] = useState<Set<number>>(new Set());
   const [pendingSelectionChartId, setPendingSelectionChartId] = useState<number | null>(null);
   const [width, setWidth] = useState(4);
   const [height, setHeight] = useState(4);
@@ -141,7 +144,7 @@ export function AddChartModal({
 
   const resetState = useCallback(() => {
     setMode('existing');
-    setSelectedChartId('');
+    setSelectedChartIds(new Set());
     setPendingSelectionChartId(null);
     setWidth(4);
     setHeight(4);
@@ -195,36 +198,38 @@ export function AddChartModal({
     [charts, currentPageChartIds],
   );
 
+  // Prune staged charts that disappear from the catalog (e.g. just added to the page).
   useEffect(() => {
-    if (!selectedChartId) return;
-    if (pendingSelectionChartId != null) return;
-    if (!availableCharts.some((chart) => chart.id === selectedChartId)) {
-      setSelectedChartId('');
+    if (selectedChartIds.size === 0 || pendingSelectionChartId != null) return;
+    const stillValid = Array.from(selectedChartIds).filter((id) =>
+      availableCharts.some((chart) => chart.id === id),
+    );
+    if (stillValid.length !== selectedChartIds.size) {
+      setSelectedChartIds(new Set(stillValid));
       setParamValues({});
     }
-  }, [availableCharts, pendingSelectionChartId, selectedChartId]);
+  }, [availableCharts, pendingSelectionChartId, selectedChartIds]);
 
+  // After "create + add", focus the freshly-created chart (single selection).
   useEffect(() => {
     if (pendingSelectionChartId == null) return;
     if (!availableCharts.some((chart) => chart.id === pendingSelectionChartId)) return;
-    setSelectedChartId(pendingSelectionChartId);
+    setSelectedChartIds(new Set([pendingSelectionChartId]));
     setPendingSelectionChartId(null);
   }, [availableCharts, pendingSelectionChartId]);
-
-  useEffect(() => {
-    if (mode !== 'existing') return;
-    if (selectedChartId || availableCharts.length === 0) return;
-    setSelectedChartId(availableCharts[0].id);
-  }, [availableCharts, mode, selectedChartId]);
 
   useEffect(() => {
     if (isOpen) return;
     resetState();
   }, [isOpen, resetState]);
 
+  // Exactly-one staged chart drives the preview + per-chart instance-parameter form.
+  // With 0 or 2+ staged, focus is null → preview shows the empty/summary state and
+  // bulk-add uses each chart's default parameters.
+  const focusedChartId = selectedChartIds.size === 1 ? Array.from(selectedChartIds)[0] : null;
   const selectedChart = useMemo(
-    () => availableCharts.find((chart) => chart.id === selectedChartId) ?? null,
-    [availableCharts, selectedChartId],
+    () => (focusedChartId != null ? availableCharts.find((chart) => chart.id === focusedChartId) ?? null : null),
+    [availableCharts, focusedChartId],
   );
   const chartParams = selectedChart?.parameters ?? [];
   const preferredDatasetId = useMemo(() => {
@@ -233,10 +238,10 @@ export function AddChartModal({
   }, [dashboardDatasetIds]);
 
   const selectedChartDataQuery = useChartData(
-    typeof selectedChartId === 'number' ? selectedChartId : 0,
+    focusedChartId ?? 0,
     undefined,
     'dashboard',
-    { enabled: isOpen && mode === 'existing' && typeof selectedChartId === 'number' },
+    { enabled: isOpen && mode === 'existing' && focusedChartId != null },
   );
 
   const sectionedCharts = useMemo(() => {
@@ -294,37 +299,60 @@ export function AddChartModal({
     ].filter((section) => section.items.length > 0);
   }, [activePageId, availableCharts, dashboardDatasetIds, pageIdsByChartId]);
 
-  const handleChartChange = (id: number | '') => {
+  const handleChartChange = (id: number) => {
     setPendingSelectionChartId(null);
-    setSelectedChartId(id);
+    setSelectedChartIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
     setParamValues({});
   };
 
   const handleAddExisting = async () => {
-    if (!selectedChartId) return;
+    const ids = Array.from(selectedChartIds);
+    if (ids.length === 0) return;
 
-    const layout: DashboardChartLayout = {
-      x: 0,
-      y: 0,
-      w: width,
-      h: height,
-    };
-
-    const parameters: Record<string, unknown> = {};
-    for (const param of chartParams) {
-      const value = paramValues[param.parameter_name];
-      if (value !== undefined && value !== '') {
-        parameters[param.parameter_name] = coerceParameterValue(value, param);
-      } else if (param.default_value) {
-        parameters[param.parameter_name] = coerceParameterValue(param.default_value, param);
+    // Add each staged chart sequentially. Every add lands at {x:0,y:0}; the grid
+    // resolves the collision by cascading (same mechanism as single-add), so N
+    // charts flow into open slots. Per-chart instance parameters from the form are
+    // only applied when exactly one chart is staged; bulk-add uses each chart's
+    // own defaults.
+    for (const id of ids) {
+      const chart = availableCharts.find((candidate) => candidate.id === id);
+      const thisChartParams = chart?.parameters ?? [];
+      const parameters: Record<string, unknown> = {};
+      for (const param of thisChartParams) {
+        const formValue = ids.length === 1 ? paramValues[param.parameter_name] : undefined;
+        if (formValue !== undefined && formValue !== '') {
+          parameters[param.parameter_name] = coerceParameterValue(formValue, param);
+        } else if (param.default_value) {
+          parameters[param.parameter_name] = coerceParameterValue(param.default_value, param);
+        }
       }
+
+      const layout: DashboardChartLayout = {
+        x: 0,
+        y: 0,
+        w: width,
+        h: height,
+      };
+
+      await Promise.resolve(onAdd(
+        id,
+        layout,
+        Object.keys(parameters).length > 0 ? (parameters as Record<string, any>) : undefined,
+      ));
     }
 
-    await Promise.resolve(onAdd(
-      Number(selectedChartId),
-      layout,
-      Object.keys(parameters).length > 0 ? (parameters as Record<string, any>) : undefined,
-    ));
+    // Close ONCE after the whole batch — onAdd no longer closes per-add, so the
+    // modal stays open while all staged charts are added (DA6-F3). Per-chart
+    // failures are toasted by onAdd and do not abort the batch.
+    handleClose();
   };
 
   const handleCreateAndAdd = async (chartId: number) => {
@@ -336,12 +364,13 @@ export function AddChartModal({
     };
     try {
       await Promise.resolve(onAdd(chartId, layout));
+      handleClose();
     } catch (error) {
       setMode('existing');
       setSearchText('');
       setTypeFilter('all');
       setScopeFilter('all');
-      setSelectedChartId('');
+      setSelectedChartIds(new Set());
       setParamValues({});
       setPendingSelectionChartId(chartId);
       throw error;
@@ -371,11 +400,15 @@ export function AddChartModal({
         <button
           type="button"
           onClick={() => void handleAddExisting()}
-          disabled={!selectedChartId || isAdding}
+          disabled={selectedChartIds.size === 0 || isAdding}
           className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isAdding ? 'Adding...' : 'Add Chart'}
+          {isAdding
+            ? 'Adding...'
+            : selectedChartIds.size > 1
+              ? `Add ${selectedChartIds.size} charts`
+              : 'Add Chart'}
         </button>
       </>
     )
@@ -537,7 +570,7 @@ export function AddChartModal({
                             const pageLabels = Array.from(pageIdsByChartId.get(chart.id) ?? [])
                               .filter((pageId) => pageId !== activePageId)
                               .map((pageId) => pageNameById.get(pageId) ?? pageId);
-                            const isSelected = selectedChartId === chart.id;
+                            const isSelected = selectedChartIds.has(chart.id);
 
                             return (
                               <button
@@ -652,9 +685,15 @@ export function AddChartModal({
                         <BarChart3 className="h-6 w-6 text-brand/70" strokeWidth={1.5} />
                       </div>
                       <div>
-                        <p className="text-[13px] font-semibold text-text-primary">Chọn 1 chart để xem trước</p>
+                        <p className="text-[13px] font-semibold text-text-primary">
+                          {selectedChartIds.size > 1
+                            ? `${selectedChartIds.size} charts đã chọn`
+                            : 'Chọn 1 chart để xem trước'}
+                        </p>
                         <p className="mt-0.5 text-xs text-text-tertiary">
-                          Click vào 1 chart ở danh sách bên trái — preview render đầy đủ với data + parameters trước khi add.
+                          {selectedChartIds.size > 1
+                            ? 'Tất cả sẽ được add cùng lúc (parameters mặc định). Để xem trước + chỉnh parameters, chọn đúng 1 chart.'
+                            : 'Click vào 1 chart ở danh sách bên trái — preview render đầy đủ với data + parameters trước khi add.'}
                         </p>
                       </div>
                     </div>

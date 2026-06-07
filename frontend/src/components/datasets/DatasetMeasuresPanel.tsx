@@ -41,7 +41,17 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
 
   const views = useMemo(() => {
     return (model?.views ?? [])
-      .filter((view) => !view.hidden_in_canvas && view.view_role !== 'calendar_role')
+      // Exclude SYSTEM-MANAGED views (the generated "Date" calendar dimension +
+      // per-column date-dim role views) from the measure-target list. They are
+      // not user-editable — the BE rejects `PUT model/views/{id}` on them with
+      // "System-managed model tables cannot be edited here." Offering them here
+      // let a DA/user select the Date table and try to add business measures to
+      // it → 400, and the measure was silently never saved (DA4/DA5 recurring
+      // measure-save miss: measures landed on no fact view). Now only real
+      // fact/dim/calc views are measure targets. (`calendar_role` was already
+      // excluded; `system_managed` also covers the `calendar_dimension` Date
+      // table, whose hidden_in_canvas is false.)
+      .filter((view) => !view.hidden_in_canvas && view.view_role !== 'calendar_role' && !view.system_managed)
       .slice()
       .sort((a, b) => {
         const tableA = a.dataset_table_id ? tableById.get(a.dataset_table_id) : null;

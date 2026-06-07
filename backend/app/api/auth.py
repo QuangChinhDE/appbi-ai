@@ -54,10 +54,16 @@ logger = logging.getLogger(__name__)
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 _limiter = Limiter(key_func=get_remote_address)
 
-# App sessions use a 2-hour inactivity window. The refresh token is rotated
-# on every refresh, so active users stay signed in while idle sessions expire.
+# Access token stays SHORT-lived (2h) — it is sent on every request, so a short
+# TTL limits exposure if leaked. The refresh token defines the INACTIVITY
+# window and is rotated on every refresh (sliding), so an actively-working user
+# keeps getting fresh access tokens and never has to log in again mid-session.
+# DA-Test (OBS-03): with refresh ALSO at 2h, a >2h gap (or a long test session)
+# logged testers out and /auth/refresh 401'd, losing unsaved work. A 7-day
+# sliding refresh window is the standard secure pattern and fixes that without
+# weakening the access token.
 ACCESS_TOKEN_EXPIRE_HOURS = 2
-REFRESH_TOKEN_EXPIRE_HOURS = 2
+REFRESH_TOKEN_EXPIRE_HOURS = 24 * 7
 _DUMMY_BCRYPT_HASH = "$2b$12$KIXBKl9Xv5iyYFiC.gEuQuT3s.d6OM2nqYbJt6n4PjNn2YGFQbZxO"
 _ADMIN_PERMISSIONS = {
     "data_sources": "full",

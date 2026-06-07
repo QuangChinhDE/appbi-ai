@@ -105,6 +105,14 @@ e2e/.cache/
 e2e/shots/
 e2e/_*.mjs
 e2e/_*.png
+# …but the Playwright SPECS are project code → track them. The bare `tests/`
+# ignore (above) would otherwise drop e2e/tests/ wholesale; re-include the dir
+# (a file can't be un-ignored while its parent dir stays excluded) + the specs.
+# Local-only helpers (node_modules, .env, .auth, _*.mjs, shots) stay ignored above.
+!e2e/tests/
+!e2e/tests/**/*.ts
+!e2e/playwright.config.ts
+!e2e/package.json
 
 # ── Local QA / test artifacts (screenshots, debug dumps, harnesses) — never push ──
 # Playwright-MCP working dir (page snapshots + screenshots written during testing)
@@ -112,6 +120,11 @@ e2e/_*.png
 # Loose root-level test screenshots + API response dumps (moved to .artifacts/)
 /*.png
 /req*_resp.json
+# Codegraph MCP — local SQLite knowledge-graph cache + generated overview doc (tool artifacts)
+.codegraph/
+CODEGRAPH.md
+# Root-level test run output (Playwright / harness run artifacts)
+/test-results/
 # Running QA audit doc (working notes, not project code)
 EXPLORE_CHART_AUDIT.md
 # Chart verification harness (local-only)
@@ -126,3 +139,34 @@ backend/scripts/dump_*.py
 backend/scripts/repro_*.py
 backend/scripts/bench_*.py
 backend/scripts/regression_*.py
+
+# ── TRACKED for CI: semantic-contract regression suite ───────────────────────
+# backend/tests/ + the golden harness are otherwise ignored above (the team
+# kept tests local-only). Re-include the dir + the specific suites CI runs
+# (.github/workflows/backend-contract-tests.yml) and the galaxy/snowflake
+# golden matrix, so the PowerBI-parity contract is enforced in CI — not just on
+# a dev's laptop. (Negations must follow the ignores; later match wins.)
+!backend/tests/
+!backend/tests/test_locked_contract.py
+!backend/tests/test_phase2_filter_propagation.py
+!backend/tests/test_phase4_symmetric_aggregates.py
+!backend/tests/test_filter_entry_schemas.py
+!backend/tests/test_phase1_relationship_metadata.py
+!backend/tests/test_distinct_self_target.py
+!backend/tests/test_filter_layered_merge.py
+# Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
+# need a datasource → integration tier; the snowflake fixture seeds a local
+# Postgres and runs in CI.
+!backend/scripts/golden/
+!backend/scripts/golden/*.json
+!backend/scripts/golden/*.yaml
+!backend/scripts/regression_filter_matrix.py
+!backend/scripts/_normalize_sql.py
+!backend/scripts/golden/*.md
+!backend/scripts/test_snowflake_regression.py
+!backend/scripts/test_snowflake_filter_matrix.py
+!backend/scripts/test_explore_dashboard_parity.py
+!backend/scripts/seed_snowflake_manual_fixture.py
+# CI integration seed — REQUIRED by .github/workflows/backend-contract-tests.yml.
+# Tracked exception to the seed_*.py local-only convention (see scripts/README.md).
+!backend/scripts/seed_snowflake_ci_fixture.py

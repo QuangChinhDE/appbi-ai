@@ -93,15 +93,36 @@ class Settings(BaseSettings):
     # callers begin opting-in once golden-harness + production smoke-tests pass.
     # Documented in docs/filter-migration-pbi-parity.md and per-phase files
     # under docs/phases/.
+    #
+    # ── DECISION (2026-06-02): these three flags STAY OFF permanently. ──
+    # The always-on **measure-isolation engine** (base-invariance: each measure
+    # is evaluated at its OWN fact grain — re-anchor / scalar subquery / stitch,
+    # see semantic_query_engine.generate_sql) is the SINGLE propagation engine.
+    # It is verified correct on star (ds64/ds65), galaxy/multi-fact (ds65
+    # RC02_SDR: deal/activity/meeting/revenue + conformed owner/Date), and
+    # snowflake (ds66) topologies, on BigQuery + Postgres.
+    #   • PROPAGATION_ENGINE_V2 OVERLAPS isolation and CONFLICTS with it — an
+    #     A/B test on real BQ (ds65) showed turning it ON regressed a verified
+    #     chart (3,915 → 7,595, breaking base-invariance) because the per-filter
+    #     router and the isolation re-anchor both try to own propagation. There
+    #     is no scenario where v2 is needed AND isolation is present.
+    #   • SYMMETRIC_AGGREGATES is BQ-only-gated anyway (53× slower than EXISTS on
+    #     Postgres — see memory/symmetric_postgres_pessimization.md) and is only
+    #     reachable via v2; with v2 off it never fires.
+    #   • PER_MEASURE_ISOLATION is the OLDER N-queries-merged approach, fully
+    #     superseded by the in-SQL isolation engine.
+    # Do NOT enable any of these without first re-running the cross-fact
+    # base-invariance matrix on a galaxy fixture — they will silently diverge
+    # from isolation.
 
     # Phase 2 — replaces ad-hoc reachability checks with explicit propagation
-    # rules (cardinality + cross_filter aware). Reduces silent-drop and
-    # ambiguous-path bugs; drops are surfaced with explicit `reason`.
+    # rules (cardinality + cross_filter aware). SUPERSEDED by isolation — see
+    # DECISION above. Keep OFF.
     FEATURE_PROPAGATION_ENGINE_V2: bool = False
 
     # Phase 3 — multi-fact charts emit one SQL query per fact (parallel),
-    # results merged in Python. Eliminates fan-out across distinct facts and
-    # leverages BigQuery slot parallelism.
+    # results merged in Python. SUPERSEDED by the in-SQL isolation/stitch
+    # engine (see DECISION above). Keep OFF.
     FEATURE_PER_MEASURE_ISOLATION: bool = False
 
     # Phase 4 — Looker-style MD5/FARM_FINGERPRINT symmetric aggregates when

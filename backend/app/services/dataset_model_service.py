@@ -47,6 +47,17 @@ _TYPE_MAP_DIMENSION = {
 
 _INTEGER_TYPES = {"integer", "int", "bigint", "smallint", "tinyint"}
 _NUMERIC_MEASURE_TYPES = {"float", "number", "numeric", "decimal", "double", "real"}
+# Complex / non-scalar warehouse types are NOT groupable — BigQuery rejects
+# `GROUP BY` on JSON / STRUCT / ARRAY / GEOGRAPHY / … . They must never become a
+# VISIBLE dimension: the default standard Table GROUP BYs every selected column,
+# so a visible JSON column (e.g. Airbyte's `_airbyte_meta`) makes the very first
+# Explore render crash with "Grouping by expressions of type JSON is not
+# allowed". Emitted as HIDDEN dimensions instead (kept in the model so a DA can
+# unhide deliberately, but excluded from auto-select / default Table).
+_COMPLEX_NON_GROUPABLE_TYPES = {
+    "json", "struct", "array", "record", "geography", "geometry",
+    "bytes", "variant", "object", "map", "interval",
+}
 
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
@@ -110,6 +121,20 @@ def _classify_columns(
         col_type = (col.get("type", "") or "string").lower()
 
         if not col_name:
+            continue
+
+        if col_type in _COMPLEX_NON_GROUPABLE_TYPES:
+            # Non-groupable complex type → keep as a HIDDEN string dimension so
+            # it never auto-selects into the default Table / charts (which would
+            # GROUP BY it and crash). DA can unhide it deliberately if needed.
+            dimensions.append({
+                "name": col_name,
+                "type": "string",
+                "sql": col_name,
+                "label": _default_field_label(col_name),
+                "description": None,
+                "hidden": True,
+            })
             continue
 
         if col_type in _INTEGER_TYPES:

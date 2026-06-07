@@ -657,11 +657,16 @@ export default function DatasetDetailPage() {
     return counts;
   }, [dataset?.tables]);
 
-  // Flat list of all measures across all views (for sidebar)
+  // Flat list of all measures across all views (for sidebar).
+  // Exclude SYSTEM-MANAGED views (the generated Date calendar): they only carry
+  // an auto "Count" measure and the BE rejects user measures on them (400). If
+  // included, the grouped sidebar tree renders a "Date" group with a (silently
+  // failing) "Add measure to Date" + button — the residual DA6 affordance.
+  // Mirrors sidebarModelViews / DatasetMeasuresPanel (#15).
   const flatMeasures = useMemo(() => {
     const all: { measure: MeasureDefinition; view: DatasetModelView }[] = [];
     for (const view of sidebarModel?.views ?? []) {
-      if (view.hidden_in_canvas || view.view_role === 'calendar_role') continue;
+      if (view.hidden_in_canvas || view.view_role === 'calendar_role' || view.system_managed) continue;
       for (const m of view.measures) {
         if (!m.hidden) all.push({ measure: m, view });
       }
@@ -682,7 +687,11 @@ export default function DatasetDetailPage() {
   // Views available for the "Add measure" table picker
   const sidebarModelViews = useMemo(() => {
     return (sidebarModel?.views ?? []).filter(
-      (v) => !v.hidden_in_canvas && v.view_role !== 'calendar_role',
+      // Exclude SYSTEM-MANAGED views (the generated Date calendar) from the
+      // "Add measure" target list — the BE rejects measures on them (400) and
+      // the save silently fails. Mirrors DatasetMeasuresPanel (#15); closes the
+      // residual "Add measure to Date" affordance DA6 flagged.
+      (v) => !v.hidden_in_canvas && v.view_role !== 'calendar_role' && !v.system_managed,
     );
   }, [sidebarModel?.views]);
 

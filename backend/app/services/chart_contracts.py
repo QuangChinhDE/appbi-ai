@@ -54,7 +54,12 @@ def _record_dropped_filter(
     diagnostics.append(entry)
 
 
-_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "auto"}
+# Must stay in sync with the engine's accepted aggregations
+# (SemanticQueryEngine._render_measure ``_KNOWN_AGGS``). "percent_of_total" is
+# a first-class aggregation there, so normalize must preserve it (not strip it
+# to the default) — otherwise an explicit % -of-total override is silently
+# lost. "auto" means "defer to the field's declared measure type".
+_VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct", "percent_of_total", "auto"}
 CHART_QUERY_MODE_GENERATED = "generated"
 CHART_QUERY_MODE_CUSTOM = "custom"
 _VALID_CHART_QUERY_MODES = {
@@ -143,6 +148,71 @@ KNOWN_FILTER_DROP_REASONS = frozenset({
     FILTER_DROP_NOT_IN_PUBLIC_WHITELIST,
     FILTER_DROP_LINK_HIDDEN,
 })
+
+# ── STRICT mode (PowerBI parity) — fail-loud filter policy ──────────────
+# A drop reason is HARD when it means a COMPLETE, intentional filter could
+# not be applied: returning a result computed without it is silently-wrong
+# data (the recurring "filter set but chart not filtered / wrong total"
+# class). Strict mode refuses to return such a result.
+HARD_FILTER_DROP_REASONS = frozenset({
+    FILTER_DROP_UNKNOWN_FIELD,
+    FILTER_DROP_DATASET_MISMATCH,
+    FILTER_DROP_BINDING_UNSUPPORTED,
+    FILTER_DROP_UNREACHABLE_VIEW,
+    FILTER_DROP_UNSUPPORTED_OPERATOR,
+})
+# SOFT reasons are intentionally tolerated and NEVER raise:
+#   • NO_FIELD / EMPTY_VALUE      — half-typed filter; the user isn't done.
+#   • NOT_IN_PUBLIC_WHITELIST     — public-link security policy (by design).
+#   • LINK_HIDDEN                 — public-link hidden-filter policy.
+_HARD_DROP_HINTS = {
+    FILTER_DROP_UNKNOWN_FIELD: "field không tồn tại trong dataset",
+    FILTER_DROP_DATASET_MISMATCH: "field thuộc dataset khác",
+    FILTER_DROP_BINDING_UNSUPPORTED:
+        "không JOIN được tới field này (model/binding chưa sẵn sàng)",
+    FILTER_DROP_UNREACHABLE_VIEW:
+        "bảng của field không nối được tới bảng gốc của chart",
+    FILTER_DROP_UNSUPPORTED_OPERATOR: "toán tử filter không được hỗ trợ",
+}
+
+
+def enforce_no_hard_dropped_filters(diagnostics: list[dict] | None) -> None:
+    """STRICT (PowerBI parity) — raise when a complete filter could not be
+    applied, instead of silently returning a result computed WITHOUT it.
+
+    Only HARD reasons raise (see ``HARD_FILTER_DROP_REASONS``); soft drops
+    (incomplete input, public-link policy) are tolerated. Raises
+    ``ValueError`` — the chart-data endpoints map this to HTTP 400 — and
+    lists each offending field with a localized reason so the DA can fix
+    the chart's field reference / operator or the dataset model.
+
+    Call this immediately after the filter-normalization step on EVERY
+    query path (semantic + live) so a dropped filter can never reach the
+    SQL builder unannounced.
+    """
+    if not diagnostics:
+        return
+    hard = [
+        d for d in diagnostics
+        if isinstance(d, dict) and d.get("reason") in HARD_FILTER_DROP_REASONS
+    ]
+    if not hard:
+        return
+    parts: list[str] = []
+    seen: set[tuple] = set()
+    for d in hard:
+        field = d.get("field") or d.get("semantic_field") or "?"
+        reason = d.get("reason")
+        key = (field, reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"'{field}' — {_HARD_DROP_HINTS.get(reason, reason)}")
+    raise ValueError(
+        "Filter không áp được nên engine từ chối trả kết quả (tránh ra số "
+        "sai do bỏ filter âm thầm): " + "; ".join(parts) + ". "
+        "Hãy sửa field/toán tử của filter hoặc model cho đúng."
+    )
 CHART_FILTER_CONTEXT_DEFAULT = "default"
 CHART_FILTER_CONTEXT_DASHBOARD = "dashboard"
 _VALID_CHART_FILTER_CONTEXTS = {
@@ -408,7 +478,14 @@ def merge_chart_query_filters(
     return merged
 
 
-def normalize_metric_config(metric: Any, default_agg: str = "sum") -> dict[str, Any] | None:
+def normalize_metric_config(metric: Any, default_agg: str = "auto") -> dict[str, Any] | None:
+    # default_agg is "auto" (NOT "sum"): a metric with no explicit aggregation
+    # must DEFER to the field's declared type — the semantic engine renders a
+    # declared measure by its stored type (percent_of_total, count_distinct,
+    # avg, filtered, formula, …) and only falls back to SUM for a bare numeric
+    # COLUMN. Defaulting to "sum" here silently overrode every declared
+    # measure's type (a % of total / distinct-count measure rendered as raw
+    # SUM) — the metric-identity leak the locked contract forbids.
     if isinstance(metric, str):
         field = metric.strip()
         if not field:

@@ -522,14 +522,29 @@ def execute_semantic_query(
     start_time = time.time()
     
     try:
-        # Get data source type for engine initialization
-        explore = db.query(SemanticExplore).filter(
+        # Resolve the explore — bound to a SPECIFIC model when model_id is given
+        # (PowerBI binds a query to one model). Name-only is allowed for
+        # convenience, but if the name is AMBIGUOUS across models we FAIL LOUD
+        # rather than silently picking one (wrong model → wrong source/numbers).
+        _explore_q = db.query(SemanticExplore).filter(
             SemanticExplore.name == query_request.explore
-        ).first()
-        
-        if not explore:
+        )
+        if query_request.model_id is not None:
+            _explore_q = _explore_q.filter(SemanticExplore.model_id == query_request.model_id)
+        _explores = _explore_q.all()
+        if not _explores:
             raise HTTPException(status_code=404, detail="Explore not found")
-        
+        if len(_explores) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Explore name '{query_request.explore}' tồn tại ở "
+                    f"{len(_explores)} model — không xác định được model. Truyền "
+                    f"`model_id` để chỉ định (PowerBI gắn query vào 1 model cụ thể)."
+                ),
+            )
+        explore = _explores[0]
+
         base_view = db.query(SemanticView).filter(
             SemanticView.id == explore.base_view_id
         ).first()
@@ -557,37 +572,33 @@ def execute_semantic_query(
                     .first()
                 )
         if resolved_datasource is None:
-            # Fallback: any datasource in the system (legacy behaviour
-            # mirrored from the previous code). Better than a hard fail
-            # for ad-hoc queries that don't anchor on a dataset_table_id.
-            resolved_datasource = db.query(_DataSource).first()
+            # STRICT (PowerBI parity): NO `DataSource.first()` guess. An explore
+            # whose base view doesn't anchor to a dataset_table + datasource has
+            # no DEFINED source — guessing "any datasource" risks running the SQL
+            # against the wrong source (wrong dialect / wrong data) and silently
+            # returning wrong numbers. Fail loud so the modeller anchors the
+            # explore's base table to a datasource in the Data Model.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Explore không gắn datasource (base view chưa liên kết "
+                    "dataset_table có datasource). Gắn bảng nguồn cho explore "
+                    "trong Data Model rồi chạy lại."
+                ),
+            )
 
         ds_type_val = (
-            (resolved_datasource.type if isinstance(resolved_datasource.type, str)
-             else resolved_datasource.type.value)
-            if resolved_datasource is not None
-            else "postgresql"
+            resolved_datasource.type if isinstance(resolved_datasource.type, str)
+            else resolved_datasource.type.value
         )
         db_type = _dialect_for_ds_type(ds_type_val)
 
-        # Initialize query engine v2
+        # Unified engine entry — compile the request to a SemanticQuerySpec (the
+        # SAME contract chart + preview use) and run it. The direct API sends
+        # pre-qualified refs (no role reclassification — that is its contract).
+        from app.services.semantic_query_compiler import compile_from_semantic_request
         engine = SemanticQueryEngine(db, database_type=db_type)
-        
-        # Generate SQL with v2 features
-        sql, columns, pivot_metadata = engine.generate_sql(
-            explore_name=query_request.explore,
-            dimensions=query_request.dimensions,
-            measures=query_request.measures,
-            filters={k: v.model_dump() for k, v in query_request.filters.items()},
-            pivots=query_request.pivots,
-            sorts=[s.model_dump() for s in query_request.sorts],
-            limit=query_request.limit,
-            window_functions=[wf.model_dump() for wf in query_request.window_functions],
-            calculated_fields=[cf.model_dump() for cf in query_request.calculated_fields],
-            time_grains=query_request.time_grains,
-            top_n=query_request.top_n.model_dump() if query_request.top_n else None,
-            measure_agg_overrides=query_request.measure_agg_overrides or None,
-        )
+        sql, columns, pivot_metadata = engine.run(compile_from_semantic_request(query_request))
         
         # Phase-12.6: reuse the datasource already resolved above so SQL
         # generation dialect matches execution datasource. Previously this

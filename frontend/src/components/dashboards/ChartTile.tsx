@@ -100,13 +100,20 @@ function useStickyVisibility(rootMargin = '300px') {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (!error) return fallback;
-  if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string') return error;
+  // Prefer the BACKEND-provided detail. An axios error is an `Error` whose
+  // `.message` is the useless generic "Request failed with status code 400";
+  // the real semantic explanation (missing relationship, grain-validator
+  // rejection, removed column, BigQuery cost guard…) lives in
+  // `response.data.detail`. Checking `error.message` first — as this used to —
+  // masked every BE 400/500 message behind the generic axios string, so a DA
+  // saw "Request failed" instead of "Bảng X chưa có relationship…".
   if (typeof error === 'object' && error !== null) {
     const maybeResponse = error as { response?: { data?: { detail?: unknown; message?: unknown } }; message?: unknown };
-    const detail = maybeResponse.response?.data?.detail ?? maybeResponse.response?.data?.message ?? maybeResponse.message;
+    const detail = maybeResponse.response?.data?.detail ?? maybeResponse.response?.data?.message;
     if (typeof detail === 'string' && detail.trim()) return detail;
   }
+  if (error instanceof Error && error.message) return error.message;
   return fallback;
 }
 

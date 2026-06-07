@@ -1188,11 +1188,35 @@ def _fallback_chart_kind(block: Dict[str, Any], source_profile: Dict[str, Any]) 
     return "BAR" if source_profile.get("numeric_columns") else "TABLE"
 
 
+_IDENTIFIER_NAME_SUFFIXES = ("_id", " id", "_key", " key")
+
+
+def _is_identifier_like_column(name: Any) -> bool:
+    """Mirror of the FE ``isIdentifierLikeField`` — a join-key / identifier
+    column that must never be AUTO-SEEDED as a dimension/breakdown.
+
+    On a modeled multi-table (galaxy) import target a bare key like
+    ``product_id`` is ambiguous across the joined facts, so the semantic
+    engine fails loudly ("Field 'product_id' xuất hiện ở nhiều bảng đã
+    JOIN") — the backend mirror of DA7-B1/B3. Only the BLIND positional
+    fallback is guarded; an explicit AI/label match is still honored.
+    """
+    bare = str(name or "").strip().lower()
+    if not bare:
+        return False
+    return bare == "id" or bare.endswith(_IDENTIFIER_NAME_SUFFIXES) or "uuid" in bare
+
+
 def _fallback_field_mapping(block: Dict[str, Any], source_profile: Dict[str, Any], chart_type: str) -> Dict[str, Any]:
     columns = list(source_profile.get("columns") or [])
     numeric_columns = list(source_profile.get("numeric_columns") or [])
     date_columns = list(source_profile.get("date_columns") or [])
     dimension_columns = list(source_profile.get("dimension_columns") or [])
+    # Positional dimension/breakdown fallbacks must skip identifier/join-key
+    # columns (DA7-B1/B3 backend sibling) — a bare key auto-seeded as a
+    # grouping role fails loudly on a modeled multi-table target. Label/AI
+    # matches above still use the full `columns`/`dimension_columns`.
+    safe_dimension_columns = [name for name in dimension_columns if not _is_identifier_like_column(name)]
     table_summary = block.get("table") if isinstance(block.get("table"), dict) else {}
     headers = [str(item) for item in (table_summary.get("headers") or []) if str(item).strip()]
     label_context = " ".join(headers[:4]) or block.get("heading") or block.get("text") or ""
@@ -1206,12 +1230,12 @@ def _fallback_field_mapping(block: Dict[str, Any], source_profile: Dict[str, Any
         _best_field_match(label_context, columns, date_only=True)
         or _best_field_match(label_context, columns)
         or (date_columns[0] if date_columns else None)
-        or (dimension_columns[0] if dimension_columns else None)
+        or (safe_dimension_columns[0] if safe_dimension_columns else None)
     )
 
     breakdown = None
     if chart_type == "STACKED_BAR":
-        breakdown = next((name for name in dimension_columns if name != primary_dimension), None)
+        breakdown = next((name for name in safe_dimension_columns if name != primary_dimension), None)
 
     mapping: Dict[str, Any] = {
         "dimension": primary_dimension,
@@ -1226,8 +1250,8 @@ def _fallback_field_mapping(block: Dict[str, Any], source_profile: Dict[str, Any
 
     if chart_type == "KPI" and not mapping["metrics"] and numeric_columns:
         mapping["metrics"] = [{"field": numeric_columns[0], "agg": "sum"}]
-    if chart_type == "PIE" and not mapping["dimension"] and dimension_columns:
-        mapping["dimension"] = dimension_columns[0]
+    if chart_type == "PIE" and not mapping["dimension"] and safe_dimension_columns:
+        mapping["dimension"] = safe_dimension_columns[0]
     if chart_type == "TABLE" and headers:
         matched_headers: List[str] = []
         for header in headers:

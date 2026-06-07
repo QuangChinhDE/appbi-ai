@@ -11,6 +11,7 @@ import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-da
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
 import {
@@ -260,6 +261,11 @@ const NO_LIMIT_SENTINEL = 10_000_000;
 const TABLE_LIKE_CHART_TYPES = new Set<ChartType>(['TABLE', 'MATRIX']);
 const SCATTER_LIKE_CHART_TYPES = new Set<ChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
 const NO_DIMENSION_METRIC_CHART_TYPES = new Set<ChartType>(['KPI', 'GAUGE', 'BULLET']);
+// Raw-distribution charts plot the per-ROW spread of a numeric column across a
+// category (the BE reclassifies the value into a raw dimension). They need a
+// RAW physical numeric — a declared aggregate measure isn't a physical column,
+// so the engine fails ("Dimension 'total_revenue' not found in view"). DA7-B3.
+const RAW_DISTRIBUTION_CHART_TYPES = new Set<ChartType>(['BOXPLOT']);
 const PIE_LIKE_CHART_TYPES = new Set<ChartType>(['PIE', 'DONUT', 'POLAR_AREA']);
 const SINGLE_METRIC_CHART_TYPES = new Set<ChartType>([
   'GROUPED_BAR',
@@ -376,6 +382,25 @@ function isIdentifierLikeField(fieldRef: string): boolean {
     bare.includes('uuid') ||
     bare.endsWith('_key') ||
     bare.endsWith(' key')
+  );
+}
+
+/**
+ * Canonical numeric-type test for column metadata.
+ *
+ * Column `type` is NOT always the literal `'number'` — BigQuery INT64/FLOAT64
+ * surface as `'integer'`/`'float'`, Postgres as `'numeric'`/`'bigint'`, etc.
+ * The auto-seed used to test `type === 'number'` only, so on a BigQuery galaxy
+ * EVERY numeric column (quantity, revenue, and the integer join keys) fell into
+ * the `type !== 'number'` "categorical" bucket and got auto-seeded as a
+ * dimension/breakdown — a numeric measure on a chart axis, and (for the keys)
+ * the DA7-B1 ambiguous-id loud failure. Mirror `isNumeric` in
+ * ExploreChartConfig so metric vs dimension classification matches the rest of
+ * the editor.
+ */
+function isNumericColumnType(type: string | undefined): boolean {
+  return ['number', 'integer', 'float', 'double', 'decimal', 'bigint'].includes(
+    (type ?? '').toLowerCase(),
   );
 }
 
@@ -613,28 +638,87 @@ function syncRoleConfigWithColumns(
   chartType: ChartType,
   roleConfig: ChartRoleConfig,
   columns: ColumnMetadata[],
+  /** Bare names that resolve to >1 view (see `ambiguousBareNames` memo).
+   *  Auto-seed never defaults a dimension/breakdown to one — it would emit a
+   *  bare ref the engine can't qualify and fail loudly. Empty for the
+   *  custom-SQL path (single flat result set, no JOIN ambiguity). */
+  ambiguousBareNames: Set<string> = new Set(),
 ): ChartRoleConfig {
   const normalized = normalizeRoleConfig(chartType, roleConfig);
   if (!columns.length) return normalized;
 
   const columnNames = new Set(columns.map((column) => column.name));
-  const numericColumns = columns.filter((column) => column.type === 'number');
-  const metricCandidateColumns = numericColumns.filter((column) => !isIdentifierLikeField(column.name));
-  const categoricalColumns = columns.filter((column) => column.type !== 'number');
+  const numericColumns = columns.filter((column) => isNumericColumnType(column.type));
+  // A date-hierarchy part (Year/Quarter/Month from a `*__date_dim` calendar
+  // view) is typed 'number' but is a DIMENSION, never a business measure. Keep
+  // it out of metric auto-seeding so a fresh KPI/BAR doesn't silently render
+  // "SUM of Year" off the auto-generated calendar (DA reported this on KPI).
+  const isCalendarPartColumn = (column: ColumnMetadata) =>
+    typeof column.viewName === 'string' && column.viewName.endsWith('__date_dim');
+  const metricCandidateColumns = numericColumns.filter(
+    (column) => !isIdentifierLikeField(column.name) && !isCalendarPartColumn(column),
+  );
+  const declaredMeasureColumns = columns.filter(
+    (column) => column.fieldKind === 'measure' && !isCalendarPartColumn(column),
+  );
+  const categoricalColumns = columns.filter((column) => !isNumericColumnType(column.type));
+  // A DIMENSION/BREAKDOWN auto-seed must NEVER default to an identifier /
+  // join-key column (product_id, transaction_id, *_key, uuid). In a galaxy
+  // its BARE name is ambiguous across joined facts, so the engine fails loudly
+  // ("Field 'product_id' xuất hiện ở nhiều bảng đã JOIN" — DA7-B1/B3 on
+  // Matrix/Grouped Bar/Stacked Bar/Heatmap/Boxplot/Sunburst). Even when a key
+  // is unambiguous it is a useless auto-axis (250 unique → 250 rows). This
+  // mirrors the metric side (`metricCandidateColumns`, DA6-F2/#17). If no safe
+  // categorical exists, the fallbacks return undefined so the UI prompts the
+  // DA to pick a field (PowerBI-style) instead of emitting an ambiguous/junk
+  // default. NOTE: calendar date-parts (Year/Month) are type 'number' so they
+  // are already excluded from categoricalColumns — date GROUPING still works
+  // because the DA/semantic layer picks the grain explicitly (#18 intact).
+  const dimensionCandidateColumns = categoricalColumns.filter(
+    (column) =>
+      !isIdentifierLikeField(column.name)
+      // Skip a BARE name that resolves to multiple views — auto-seeding it
+      // emits an unqualifiable ref and the engine fails loudly (e.g.
+      // `year_month` on fct_sales + fct_target + date-dims). Qualified
+      // `view.field` names are unambiguous and stay eligible.
+      && !(!column.name.includes('.') && ambiguousBareNames.has(column.name)),
+  );
   const timeColumns = columns.filter((column) => column.type === 'date' || column.type === 'datetime');
-  const fallbackDimension = categoricalColumns[0]?.name ?? columns[0]?.name;
-  const fallbackMetric = metricCandidateColumns.find((column) => column.name !== fallbackDimension)?.name
-    ?? numericColumns.find((column) => column.name !== fallbackDimension)?.name
-    ?? numericColumns[0]?.name;
+  const fallbackDimension = dimensionCandidateColumns[0]?.name;
+  // Prefer a DECLARED measure, then a real (non-calendar) numeric. NO fallback
+  // to "any numeric" — if the only numerics are calendar date-parts, leave the
+  // metric EMPTY so the DA picks a real value (PowerBI-style) instead of the
+  // app inventing SUM(Year).
+  const fallbackMetric = declaredMeasureColumns.find((column) => column.name !== fallbackDimension)?.name
+    ?? declaredMeasureColumns[0]?.name
+    ?? metricCandidateColumns.find((column) => column.name !== fallbackDimension)?.name
+    ?? metricCandidateColumns[0]?.name;
   const pickDimensionOtherThan = (...excluded: Array<string | undefined>) => (
-    categoricalColumns.find((column) => !excluded.includes(column.name))?.name
-      ?? columns.find((column) => !excluded.includes(column.name))?.name
+    // Identifier/ambiguous columns excluded (see dimensionCandidateColumns).
+    // No `?? columns.find(...)` numeric/id fallback — return undefined so a
+    // required Breakdown stays empty and the UI prompts (DA7-B1).
+    dimensionCandidateColumns.find((column) => !excluded.includes(column.name))?.name
   );
   const pickMetricOtherThan = (...excluded: Array<string | undefined>) => (
+    // NO fallback to raw numericColumns — that re-admits the identifier/calendar
+    // columns metricCandidateColumns deliberately excludes (DA6-F2 sibling).
+    // Drop to fallbackMetric (declared-measure → real-numeric) instead of
+    // auto-seeding SUM(transaction_id) / SUM(Year) as a size/value metric.
     metricCandidateColumns.find((column) => !excluded.includes(column.name))?.name
-      ?? numericColumns.find((column) => !excluded.includes(column.name))?.name
       ?? fallbackMetric
   );
+  // Auto-seed aggregation by COLUMN (not a hardcoded 'sum'). A DECLARED
+  // semantic measure must seed `agg: 'auto'` so the backend applies the
+  // measure's STORED type (percent_of_total / count_distinct / filtered /
+  // formula); hardcoding 'sum' here silently overrode that before the request
+  // reached the engine. Mirrors `defaultMetricAggForCol` (the manual picker).
+  const metricAggFor = (fieldName: string | undefined): MetricConfig['agg'] => {
+    const col = columns.find((column) => column.name === fieldName);
+    if (!col) return 'sum';
+    if (col.fieldKind === 'measure') return 'auto';
+    if (isNumericColumnType(col.type)) return 'sum';
+    return 'count_distinct';
+  };
 
   const next: ChartRoleConfig = {
     ...normalized,
@@ -670,17 +754,42 @@ function syncRoleConfigWithColumns(
     next.selectedColumns = undefined;
   }
 
+  // A non-table chart must never carry pivot/table grouping fields. Leftover
+  // tableRowDimension/tableColumnDimension from a previous Matrix leak into the
+  // query as GROUP BY columns — turning e.g. a KPI scalar into a grouped,
+  // silently-WRONG number on a Matrix→KPI/Bar/etc. switch (observed: KPI showed
+  // 1.1K over 161 rows instead of the 10,748,221.50 total). `normalizeRoleConfig`
+  // forces tableMode='standard' for these types but keeps the dim fields; strip
+  // them so the emitted SQL groups by BOUND roles only (fail-loud-not-wrong).
+  if (!TABLE_LIKE_CHART_TYPES.has(chartType)) {
+    next.tableRowDimension = undefined;
+    next.tableColumnDimension = undefined;
+    next.tablePivotMetric = undefined;
+  }
+
   if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
     if (chartType === 'MATRIX') {
       next.tableMode = 'pivot';
     }
     if (next.tableMode === 'pivot') {
-      const rowDimensionFallback = categoricalColumns[0]?.name ?? fallbackDimension;
-      const columnDimensionFallback = categoricalColumns.find((column) => column.name !== rowDimensionFallback)?.name
-        ?? columns.find((column) => column.name !== rowDimensionFallback)?.name;
-      const pivotMetricFallback = numericColumns.find((column) => (
-        column.name !== rowDimensionFallback && column.name !== columnDimensionFallback
-      ))?.name ?? fallbackMetric;
+      const rowDimensionFallback = dimensionCandidateColumns[0]?.name ?? fallbackDimension;
+      // No `?? columns.find(...)` — never seed an identifier/ambiguous column as
+      // the pivot column dimension (DA7-B1: Matrix auto-seeded bare product_id).
+      // Empty → "Choose a column dimension for the pivot table" prompt.
+      const columnDimensionFallback = dimensionCandidateColumns.find(
+        (column) => column.name !== rowDimensionFallback)?.name;
+      // Prefer a DECLARED measure, then a real (non-identifier, non-calendar)
+      // numeric — mirroring the KPI/Bar `fallbackMetric` precedence. The old
+      // `numericColumns.find(...)` included identifier-like columns, so a fresh
+      // Matrix auto-seeded `SUM(transaction_id)` — a plausible-but-WRONG value
+      // (DA6-F2). `metricCandidateColumns` already excludes identifier-like +
+      // calendar date-part columns.
+      const pivotMetricFallback =
+        declaredMeasureColumns.find((column) =>
+          column.name !== rowDimensionFallback && column.name !== columnDimensionFallback)?.name
+        ?? metricCandidateColumns.find((column) =>
+          column.name !== rowDimensionFallback && column.name !== columnDimensionFallback)?.name
+        ?? fallbackMetric;
 
       if (!next.tableRowDimension) {
         next.tableRowDimension = rowDimensionFallback;
@@ -689,22 +798,26 @@ function syncRoleConfigWithColumns(
         next.tableColumnDimension = columnDimensionFallback;
       }
       if (!next.tablePivotMetric && pivotMetricFallback) {
-        next.tablePivotMetric = { field: pivotMetricFallback, agg: 'sum' };
+        next.tablePivotMetric = { field: pivotMetricFallback, agg: metricAggFor(pivotMetricFallback) };
       }
     }
     return next;
   }
 
   if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
-    if (!next.scatterX) next.scatterX = numericColumns[0]?.name;
-    if (!next.scatterY) next.scatterY = numericColumns[1]?.name ?? numericColumns[0]?.name;
-    if (!next.dimension && categoricalColumns.length > 0) {
-      next.dimension = categoricalColumns[0]?.name;
+    // Seed axes from metric-candidate numerics (excl. identifier-like + calendar
+    // date-parts) so a fresh SCATTER/BUBBLE doesn't plot transaction_id or a
+    // calendar Year on an axis (DA6-F2 sibling — mirrors the size-metric pick
+    // below and the Matrix value fix).
+    if (!next.scatterX) next.scatterX = metricCandidateColumns[0]?.name;
+    if (!next.scatterY) next.scatterY = metricCandidateColumns[1]?.name ?? metricCandidateColumns[0]?.name;
+    if (!next.dimension && dimensionCandidateColumns.length > 0) {
+      next.dimension = dimensionCandidateColumns[0]?.name;
     }
     if ((chartType === 'BUBBLE' || chartType === 'MAP_POINT') && next.metrics.length === 0) {
       const sizeMetric = pickMetricOtherThan(next.scatterX, next.scatterY);
       if (sizeMetric) {
-        next.metrics = [{ field: sizeMetric, agg: 'sum' }];
+        next.metrics = [{ field: sizeMetric, agg: metricAggFor(sizeMetric) }];
       }
     }
     return next;
@@ -715,10 +828,28 @@ function syncRoleConfigWithColumns(
     next.breakdown = undefined;
     next.timeField = undefined;
     if (next.metrics.length === 0 && fallbackMetric) {
-      next.metrics = [{ field: fallbackMetric, agg: 'sum' }];
+      next.metrics = [{ field: fallbackMetric, agg: metricAggFor(fallbackMetric) }];
     }
     if (next.metrics.length > 1) {
       next.metrics = [next.metrics[0]];
+    }
+    return next;
+  }
+
+  if (RAW_DISTRIBUTION_CHART_TYPES.has(chartType)) {
+    // Category × RAW numeric. The value MUST be a physical numeric column (the
+    // BE reclassifies it into a raw dimension to keep the per-row spread). A
+    // declared aggregate measure is NOT a physical column → engine fails
+    // ("Dimension 'total_revenue' not found in view" — DA7-B3 Boxplot). Seed /
+    // replace with a raw numeric (fieldKind !== 'measure'); if none exists,
+    // leave the value EMPTY so the UI prompts ("Choose a numeric value column")
+    // rather than emitting a measure ref that fails loudly.
+    if (!next.dimension) next.dimension = fallbackDimension;
+    const isDeclaredMeasureField = (field: string | undefined) =>
+      Boolean(field) && columns.find((column) => column.name === field)?.fieldKind === 'measure';
+    if (next.metrics.length === 0 || isDeclaredMeasureField(next.metrics[0]?.field)) {
+      const rawNumeric = metricCandidateColumns.find((column) => column.fieldKind !== 'measure')?.name;
+      next.metrics = rawNumeric ? [{ field: rawNumeric, agg: metricAggFor(rawNumeric) }] : [];
     }
     return next;
   }
@@ -737,7 +868,7 @@ function syncRoleConfigWithColumns(
   }
 
   if (next.metrics.length === 0 && fallbackMetric) {
-    next.metrics = [{ field: fallbackMetric, agg: 'sum' }];
+    next.metrics = [{ field: fallbackMetric, agg: metricAggFor(fallbackMetric) }];
   }
 
   if (BREAKDOWN_REQUIRED_CHART_TYPES.has(chartType) && !next.breakdown) {
@@ -755,7 +886,7 @@ function syncRoleConfigWithColumns(
     ].filter((value): value is string => Boolean(value)));
     const lineMetricCandidate = metricCandidateColumns.find((column) => !excluded.has(column.name));
     if (lineMetricCandidate) {
-      next.lineMetric = { field: lineMetricCandidate.name, agg: 'sum' };
+      next.lineMetric = { field: lineMetricCandidate.name, agg: metricAggFor(lineMetricCandidate.name) };
     }
   }
 
@@ -810,12 +941,18 @@ function pruneRoleConfigToColumns(
 }
 
 function isSourceTimeColumn(column: ColumnMetadata): boolean {
+  // TYPE-based ONLY. A date-LIKE NAME on a string/number column does NOT make
+  // it a time field. This function gates time-grain / date-hierarchy
+  // auto-assignment + auto-default; treating a non-date column as time emits
+  // `TIMESTAMP_TRUNC(<that column>, MONTH)`, which BigQuery rejects with
+  // "No matching signature for TIMESTAMP_TRUNC; Argument types: STRING".
+  // DA-Test repro: a `year_month` STRING (a month LABEL produced by
+  // FORMAT_DATE) matched the old name regex /month|year/ → got auto-bucketed →
+  // chart 400. To bucket a string-typed date, type-override the column to a
+  // date type first (that injects SAFE.PARSE_DATE); only then does it qualify
+  // as a time column here.
   const loweredType = String(column.type ?? '').toLowerCase();
-  const loweredName = String(column.name ?? '').toLowerCase();
-  return (
-    ['date', 'datetime', 'timestamp', 'time'].includes(loweredType) ||
-    /(date|time|_at|created|updated|day|month|year|start|end|deadline)/.test(loweredName)
-  );
+  return ['date', 'datetime', 'timestamp', 'time'].includes(loweredType);
 }
 
 /**
@@ -1305,7 +1442,12 @@ export function ExploreEditor({
           tableLabel: viewLabel,
         });
       }
-      for (const measure of view.measures ?? []) {
+      // System-managed calendar views (the generated Date table + per-column
+      // `__date_dim` layers) carry only an auto "Count" measure — not a business
+      // metric, and the BE rejects user measures on them. Keep them OUT of the
+      // Explore metric picker (DA6 residual-B sibling). Their DIMENSIONS
+      // (Year/Quarter/Month) are still emitted above — date grouping needs them.
+      for (const measure of (view.system_managed ? [] : view.measures) ?? []) {
         if (measure.hidden) continue;
         const isCalculatedMeasure = Boolean(
           measure.expression
@@ -1453,6 +1595,28 @@ export function ExploreEditor({
       }
     }
     return map;
+  }, [semanticColumns]);
+
+  /**
+   * Bare names that exist on MORE THAN ONE semantic view (e.g. `year_month`
+   * on fct_sales + fct_target + the per-link date-dim views; `product_id`
+   * across joined facts). A bare reference to one of these can't be uniquely
+   * qualified, so the engine fails loudly ("Field 'X' xuất hiện ở nhiều bảng
+   * đã JOIN"). The auto-seed must never DEFAULT to such a name — DA7-B1 root
+   * is broader than identifier keys (year_month is a non-id ambiguous dim).
+   */
+  const ambiguousBareNames = useMemo<Set<string>>(() => {
+    const occurrences = new Map<string, number>();
+    for (const col of semanticColumns) {
+      if (!col.name.includes('.')) continue;
+      const bare = col.name.split('.', 2)[1];
+      occurrences.set(bare, (occurrences.get(bare) ?? 0) + 1);
+    }
+    const ambiguous = new Set<string>();
+    for (const [bare, count] of occurrences.entries()) {
+      if (count > 1) ambiguous.add(bare);
+    }
+    return ambiguous;
   }, [semanticColumns]);
 
   /**
@@ -1994,13 +2158,32 @@ export function ExploreEditor({
     };
     const firstView = collectFirstView();
     if (!firstView) return;
-    const view = datasetModel.views?.find((v) => v.name === firstView);
-    if (!view?.dataset_table_id) return;
+    const views = datasetModel.views ?? [];
+    // Resolve the first field's view to a base TABLE. A date-hierarchy view
+    // (`{parentView}__{col}__date_dim`, view_role 'calendar_role') carries NO
+    // dataset_table_id of its own — it is a virtual expansion of a date column
+    // on a real table view. Anchor the chart to that PARENT table view. Without
+    // this, any chart whose FIRST picked field is a date-hierarchy field never
+    // derives a base table, so Run/Save stay disabled forever — which is the
+    // DEFAULT state, because a fresh Table auto-selects the date-hierarchy
+    // columns. (Repro: /explore/new → RC02_SDR → Run disabled.)
+    let resolvedTableId: number | null = null;
+    const direct = views.find((v) => v.name === firstView);
+    if (direct?.dataset_table_id != null) {
+      resolvedTableId = direct.dataset_table_id;
+    } else if (direct?.view_role === 'calendar_role' || firstView.endsWith('__date_dim')) {
+      // Longest-prefix match so `a__b__date_dim` anchors to `a__b`, not `a`.
+      const parent = views
+        .filter((v) => v.dataset_table_id != null && firstView.startsWith(`${v.name}__`))
+        .sort((a, b) => b.name.length - a.name.length)[0];
+      if (parent?.dataset_table_id != null) resolvedTableId = parent.dataset_table_id;
+    }
+    if (resolvedTableId == null) return;
     // Suppress the reset-on-table-change effect below — this is the FIRST
     // base set, not a user-initiated table swap, so filters / role-config
     // should NOT be wiped.
     skipNextSourceResetRef.current = true;
-    setSelectedTableId(view.dataset_table_id);
+    setSelectedTableId(resolvedTableId);
   }, [generatedRoleConfig, selectedTableId, datasetModel]);
 
   /**
@@ -2104,10 +2287,10 @@ export function ExploreEditor({
     const availableGeneratedColumns = [...previewColumns, ...semanticColumns];
     if (!availableGeneratedColumns.length) return;
     setGeneratedRoleConfig((prev) => {
-      const synced = syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns);
+      const synced = syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns, ambiguousBareNames);
       return upgradeRoleConfigToQualified(synced, qualifiedByBare);
     });
-  }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare]);
+  }, [chartType, previewColumns, semanticColumns, semanticReady, qualifiedByBare, ambiguousBareNames]);
 
   // UX-2: For NEW TABLE charts, default to the first 10 non-identifier columns
   // instead of showing all available columns. This prevents overwhelming the
@@ -2125,7 +2308,13 @@ export function ExploreEditor({
     }
     didInitNewTableRef.current = true;
     const defaultCols = configColumns
-      .filter((c) => !isIdentifierLikeField(c.name))
+      // Exclude identifier-like cols AND per-column date-hierarchy expansions
+      // (`…__<col>__date_dim` calendar_role views: year/quarter/month/day_name/
+      // …). Auto-selecting the whole date hierarchy made a fresh "grand total"
+      // Table GROUP BY 10+ date columns (DA6 standard-table trap). A DA can
+      // still add a date grain deliberately.
+      .filter((c) => !isIdentifierLikeField(c.name)
+        && !(typeof c.viewName === 'string' && c.viewName.endsWith('__date_dim')))
       .slice(0, 10)
       .map((c) => c.name);
     if (defaultCols.length > 0) {
@@ -2270,7 +2459,7 @@ export function ExploreEditor({
 
         if (inferredConfigs.generatedRoleConfig) {
           const nextGeneratedRoleConfig = previewColumns.length > 0
-            ? syncRoleConfigWithColumns(chartType, inferredConfigs.generatedRoleConfig, previewColumns)
+            ? syncRoleConfigWithColumns(chartType, inferredConfigs.generatedRoleConfig, previewColumns, ambiguousBareNames)
             : normalizeRoleConfig(chartType, inferredConfigs.generatedRoleConfig);
           if (JSON.stringify(nextGeneratedRoleConfig) !== JSON.stringify(normalizedGeneratedRoleConfig)) {
             setGeneratedRoleConfig(nextGeneratedRoleConfig);
@@ -2726,13 +2915,22 @@ export function ExploreEditor({
               </div>
             ) : (
               <div className="flex items-center gap-1.5 group/name">
-                <span className="max-w-[14rem] truncate text-sm font-semibold text-text-primary">
+                {/* Click the NAME TEXT itself to rename — not just the
+                    hover-revealed pencil. DA-Test (OBS-02): testers clicked the
+                    chart title expecting an input and nothing happened because
+                    only the (opacity-0) pencil was clickable. */}
+                <span
+                  className={`max-w-[14rem] truncate text-sm font-semibold text-text-primary ${resPerms.canEdit ? 'cursor-pointer hover:text-brand' : ''}`}
+                  onClick={resPerms.canEdit ? () => setIsEditingName(true) : undefined}
+                  title={resPerms.canEdit ? 'Click to rename' : undefined}
+                >
                   {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
                 </span>
                 {resPerms.canEdit && (
                   <button
                     type="button"
                     onClick={() => setIsEditingName(true)}
+                    aria-label="Rename chart"
                     className="rounded-md p-1 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
                   >
                     <Pencil className="h-3 w-3" />
@@ -3207,16 +3405,26 @@ export function ExploreEditor({
                         Explore preview; ChartTile uses the same pattern
                         for dashboard tiles. */}
                     <div key={chartType} className="flex-1 overflow-hidden bi-fade-in">
-                      <ExploreChart
-                        type={chartType}
-                        data={displayedQueryState.chartRows}
-                        roleConfig={normalizedRoleConfig}
-                        styleConfig={chartStyleConfig}
-                        onStyleConfigChange={setChartStyleConfig}
-                        preAggregated={displayedQueryState.chartPreAggregated}
-                        labelMap={semanticLabelMap}
-                        formatMap={semanticFormatMap}
-                      />
+                      {/* A chart renderer must never crash the whole Explore
+                          page. The dashboard already wraps tiles in this
+                          boundary; the Explore preview was the one unguarded
+                          render path (a chart throwing — e.g. a transient
+                          hooks/recharts error while a ran result is briefly
+                          stale across a chart-type switch — took down the
+                          entire editor). `resetKey={displayedQueryState}`
+                          auto-recovers once the fresh result arrives. */}
+                      <ChartErrorBoundary chartId={chartId ?? 0} resetKey={displayedQueryState}>
+                        <ExploreChart
+                          type={chartType}
+                          data={displayedQueryState.chartRows}
+                          roleConfig={normalizedRoleConfig}
+                          styleConfig={chartStyleConfig}
+                          onStyleConfigChange={setChartStyleConfig}
+                          preAggregated={displayedQueryState.chartPreAggregated}
+                          labelMap={semanticLabelMap}
+                          formatMap={semanticFormatMap}
+                        />
+                      </ChartErrorBoundary>
                     </div>
                   </div>
                 </div>

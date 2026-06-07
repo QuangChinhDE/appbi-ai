@@ -827,9 +827,9 @@ def _collect_reachable_bare_names(
     Returns ``(measure_names, dim_names)``:
       • ``measure_names`` — bare names of every declared measure on the
         base view OR on any view reachable from base via active joins.
-      • ``dim_names`` — bare names of every declared dimension on the
-        BASE view only (used as shadow-guard set; cross-view dims aren't
-        relevant because their qualified ref is what triggers semantic).
+      • ``dim_names`` — bare names of every declared dimension on the base
+        view OR any reachable joined view, so a bare ref naming a cross-view
+        declared dim routes to the semantic engine (which resolves its view).
 
     Returns ``(set(), set())`` when the table has no semantic view yet —
     in that case the routing oracle's dotted-ref check is the only signal,
@@ -871,23 +871,27 @@ def _collect_reachable_bare_names(
             base_measure_names.add(name)
 
     reachable_measure_names: set[str] = set(base_measure_names)
+    reachable_dim_names: set[str] = set(base_dim_names)
     if model is not None:
         # `reachable_fields_for_model` lives in semantic_join_resolver and
-        # returns (nodes, dim_fields, measure_fields) — each *_fields entry
-        # is a qualified `node.name` string and the measure list ALREADY
-        # excludes dims, so we don't need to re-look the view up to filter.
+        # returns (nodes, dim_fields, measure_fields) — each *_fields entry is a
+        # qualified `node.name` string. We collect BOTH reachable dims AND
+        # measures so the routing oracle promotes a bare ref that names a
+        # declared dimension on a JOINED view (not just the base view) to the
+        # semantic path — otherwise such a bare cross-view dim silently routed
+        # to the single-table live builder (no JOIN).
         try:
-            _, _, reachable_measure_fields = reachable_fields_for_model(db, model, view)
+            _, reachable_dim_fields, reachable_measure_fields = reachable_fields_for_model(db, model, view)
         except Exception:  # noqa: BLE001 — graceful fall-back
-            reachable_measure_fields = []
+            reachable_dim_fields, reachable_measure_fields = [], []
         for field in reachable_measure_fields or []:
-            if not isinstance(field, str) or "." not in field:
-                continue
-            _, _, name_part = field.rpartition(".")
-            if name_part:
-                reachable_measure_names.add(name_part)
+            if isinstance(field, str) and "." in field:
+                reachable_measure_names.add(field.rpartition(".")[2])
+        for field in reachable_dim_fields or []:
+            if isinstance(field, str) and "." in field:
+                reachable_dim_names.add(field.rpartition(".")[2])
 
-    return reachable_measure_names, base_dim_names
+    return reachable_measure_names, reachable_dim_names
 
 
 def _contains_semantic_field_refs(
@@ -928,10 +932,11 @@ def _contains_semantic_field_refs(
     silently routed to live_query and dropped its measure-level
     ``where_sql`` / ``filters``.
 
-    ``declared_bare_dim_names`` plays the shadow-guard role: when the
-    base view also exposes the same bare name, prefer live path so DA's
-    plain-column intent isn't hijacked by a same-named declared measure
-    on a joined view.
+    Contract-lock (2026-06-02): a bare ref naming a declared measure OR
+    dimension routes semantic (the engine then resolves the unique view or
+    fails loud on ambiguity). The previous "shadow guard" (stay live when the
+    base view also declares the bare name) was removed — it silently bypassed
+    the model. Only raw physical columns with no declared match stay live.
     """
     def has_ref(value: Any) -> bool:
         return isinstance(value, str) and "." in value and value.split(".", 1)[0].strip()
@@ -947,33 +952,29 @@ def _contains_semantic_field_refs(
     if any(has_ref(item) for item in (execute_request.time_grains or {}).keys()):
         return True
 
-    # Phase-15.98 — bare-measure registry parity.
-    declared_measures = declared_bare_measure_names or set()
-    declared_dims = declared_bare_dim_names or set()
-    if declared_measures:
-        for item in (execute_request.measures or []):
-            field = str(getattr(item, "field", None) or "").strip()
-            if not field or "." in field:
-                continue
-            if field not in declared_measures:
-                continue
-            # Shadow guard — base view declares the same bare name as a dim
-            # → DA likely intended the plain column, keep on live path.
-            if field in declared_dims:
-                continue
+    # STRICT (contract-lock 2026-06-02) — any BARE ref (in measures, dimensions,
+    # or filters) that names a DECLARED semantic measure OR dimension reachable
+    # from this table routes to the semantic engine. The engine's
+    # `_parse_field_ref` is the SINGLE resolver: it qualifies the unique
+    # reachable view or fails LOUD on ambiguity. We DROPPED the old "shadow
+    # guard" (skip when the base view declares the same bare name) and the
+    # "pure dim → stay live" skip: both silently bypassed the model (a declared
+    # cross-view field executed on the single-table live builder → dropped
+    # filters / no JOIN). Raw PHYSICAL columns (no declared match) still route
+    # to the live path, which handles plain projection without requiring a
+    # declaration (and without a 500 from the semantic path).
+    declared = (declared_bare_measure_names or set()) | (declared_bare_dim_names or set())
+    if declared:
+        def _is_bare_declared(field: Any) -> bool:
+            f = str(field or "").strip()
+            return bool(f) and "." not in f and f in declared
+
+        if any(_is_bare_declared(getattr(item, "field", None)) for item in (execute_request.measures or [])):
             return True
-        for item in (execute_request.dimensions or []):
-            field = str(item or "").strip()
-            if not field or "." in field:
-                continue
-            # Dimensions list may carry declared-dim bare refs that need
-            # semantic resolution (formulas, filters, view aliases).
-            if field in declared_dims and field not in (execute_request.measures or []):
-                # Pure dim path — only force semantic when bare ref maps
-                # to a DECLARED semantic dim cross-view. Same-view bare
-                # raw columns stay live. Skipped for now to avoid
-                # over-routing; rely on FE qualification for dims.
-                pass
+        if any(_is_bare_declared(item) for item in (execute_request.dimensions or [])):
+            return True
+        if any(_is_bare_declared(getattr(item, "field", None)) for item in (execute_request.filters or [])):
+            return True
 
     return False
 
@@ -1114,10 +1115,16 @@ def _execute_semantic_dataset_query(
         raise HTTPException(status_code=400, detail="No semantic explore found for this table.")
 
     def qualify(field: str | None) -> str:
-        raw = str(field or "").strip()
-        if not raw:
-            return raw
-        return raw if "." in raw else f"{view.name}.{raw}"
+        """STRICT — return the ref UNCHANGED. The SemanticQueryEngine's
+        ``_parse_field_ref`` is the SINGLE resolver: a qualified ``view.field``
+        passes through; a BARE ref is resolved by the engine to its unique
+        reachable view, or fails LOUD on ambiguity / unknown. This path no
+        longer base-prefixes bare refs (``base.field``) — that bound a bare
+        field that actually lives on a JOINED view to the WRONG view and
+        robbed the engine of its ambiguity check (the dataset-execute resolver
+        drift). Role (dim vs measure) is decided below from the declared
+        registry by NAME — we never guess the view here."""
+        return str(field or "").strip()
 
     # Build a set of declared semantic measure refs (qualified `view.field`)
     # reachable from this explore — base view + every active joined view.
@@ -1178,40 +1185,42 @@ def _execute_semantic_dataset_query(
             if name:
                 declared_measure_refs.add(f"{join_node_name}.{name}")
 
-    explicit_measure_refs: list[str] = []
-    measure_agg_overrides: dict[str, str] = {}
-    for item in (execute_request.measures or []):
-        if not item.field:
-            continue
-        qualified = qualify(item.field)
-        if not qualified:
-            continue
-        if qualified not in explicit_measure_refs:
-            explicit_measure_refs.append(qualified)
-        agg = str(item.function or "").strip().lower()
-        if agg:
-            measure_agg_overrides[qualified] = agg
+    # `explore.joins` only carries FORWARD joins from the base, so a measure on
+    # a fact that joins TO the base (base=owner, revenue→owner is many_to_one)
+    # is REVERSE-reachable and would be MISSED here — the preview then 400'd
+    # ("Dimension 'total_revenue' not found in view 'dataset_table_193'") for a
+    # measure axis that the chart runtime renders fine (it uses the binding's
+    # BIDIRECTIONAL reachableMeasureFields). Augment with the same bidirectional
+    # reachable measures so Explore preview == Dashboard tile. Best-effort: the
+    # base + forward-join measures above still apply if this can't compute.
+    try:
+        from app.services.semantic_join_resolver import reachable_fields_for_model
+        _, _, _reachable_measures = reachable_fields_for_model(db, model, view)
+        declared_measure_refs.update(r for r in _reachable_measures if r)
+    except Exception:  # pragma: no cover — defensive; never fail the query on this
+        logger.warning("reachable-measure augmentation failed for dataset-execute", exc_info=True)
 
-    dimensions: list[str] = []
-    reclassified_refs: list[str] = []
-    for item in (execute_request.dimensions or []):
-        qualified = qualify(item)
-        if not qualified:
-            continue
-        if qualified in declared_measure_refs:
-            if qualified not in explicit_measure_refs and qualified not in reclassified_refs:
-                reclassified_refs.append(qualified)
-            continue
-        if qualified not in dimensions:
-            dimensions.append(qualified)
-
-    if reclassified_refs:
-        logger.info(
-            "execute_dataset auto-reclassified dimensions->measures: dataset=%s table=%s refs=%s",
-            dataset_obj.id, db_table.id, reclassified_refs,
-        )
-
-    measures = explicit_measure_refs + reclassified_refs
+    # ── Role classification via the SINGLE shared classifier ─────────────────
+    # The SAME rule chart_service (dashboard) + routers/semantic (direct API)
+    # use, so the three paths cannot drift (preview == dashboard). The preview
+    # has NO strict-dim slot — every requested dimension is reclassify-eligible:
+    # a declared measure dragged in as a "dimension" (incl. a scatter axis the FE
+    # flattens into `dimensions`, qualified OR bare) moves to the measure tier.
+    # Explicit measures (with their agg / `auto`) come first, then reclassified.
+    from app.services.semantic_query_compiler import classify_semantic_roles
+    declared_measure_bare_names = {
+        ref.rpartition(".")[2] for ref in declared_measure_refs if ref
+    }
+    dimensions, measures, measure_agg_overrides = classify_semantic_roles(
+        strict_dims=[],
+        reclassifiable_dims=[qualify(item) for item in (execute_request.dimensions or [])],
+        metrics=[
+            (qualify(item.field), item.function)
+            for item in (execute_request.measures or []) if item.field
+        ],
+        measure_fields=declared_measure_refs,
+        measure_bare_names=declared_measure_bare_names,
+    )
 
     # Operator normalisation: external callers (chart contracts, AI tools) may
     # use legacy names — canonicalise to the semantic schema's Literal values.
@@ -1291,19 +1300,24 @@ def _execute_semantic_dataset_query(
     # Vietnamese-friendly messages instead of a generic 500. The semantic
     # engine itself raises ValueError with VN messages in Phase 11.
     engine = SemanticQueryEngine(db, database_type=dialect)
+    # Unified engine entry — build the SemanticQuerySpec (the SAME contract the
+    # dashboard + direct-API paths use) and run it. dimensions/measures/
+    # agg_overrides came from the shared classify_semantic_roles above.
+    from app.services.semantic_query_compiler import SemanticQuerySpec
+    _spec = SemanticQuerySpec(
+        explore_name=explore.name,
+        dimensions=dimensions,
+        measures=measures,
+        measure_agg_overrides=measure_agg_overrides or {},
+        filters=filters,
+        sorts=sorts,
+        time_grains=time_grains or {},
+        limit=execute_request.limit or 500,
+        model_id=model.id,
+        explore_id=explore.id,
+    )
     try:
-        sql, _columns, _pivot_metadata = engine.generate_sql(
-            explore_name=explore.name,
-            dimensions=dimensions,
-            measures=measures,
-            filters=filters,
-            sorts=sorts,
-            limit=execute_request.limit or 500,
-            time_grains=time_grains or None,
-            measure_agg_overrides=measure_agg_overrides or None,
-            model_id=model.id,
-            explore_id=explore.id,
-        )
+        sql, _columns, _pivot_metadata = engine.run(_spec)
     except ValueError as exc:
         # ValueError = expected semantic engine domain errors (unreachable
         # view, missing field, circular dependency, ambiguous path). Phase
@@ -1816,6 +1830,15 @@ def _build_table_draft(db_table, table_update) -> Any:
     update_data = table_update.model_dump(exclude_unset=True)
     return SimpleNamespace(
         id=getattr(db_table, "id", None),
+        # Carry the datasource FK on the draft. The update endpoint's
+        # transformations/type-override validation falls back to
+        # `draft.datasource_id` to re-resolve the datasource when the local
+        # `datasource` var was never assigned (a transformations-ONLY update —
+        # e.g. Manage Columns' select_columns, or an add_column — never enters
+        # the source_query / type_overrides branches that set it). Omitting this
+        # made that fallback dead code, so every column hide / computed-column
+        # add on a live table failed with 'Datasource not found' (DA1/DA2/DA3).
+        datasource_id=getattr(db_table, "datasource_id", None),
         source_kind=getattr(db_table, "source_kind", None),
         source_table_name=getattr(db_table, "source_table_name", None),
         source_query=update_data.get("source_query", getattr(db_table, "source_query", None)),

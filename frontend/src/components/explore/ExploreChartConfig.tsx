@@ -649,7 +649,12 @@ export function migrateRoleConfig(
       next.dimension = next.scatterX;
     }
     if (next.metrics.length === 0 && next.scatterY) {
-      next.metrics = [{ field: next.scatterY, agg: 'sum' }];
+      // 'auto' (not 'sum'): scatterY may reference a declared measure whose
+      // aggregation is part of its definition (percent_of_total / count_distinct
+      // / …). Hardcoding 'sum' would override the declared type before the BE
+      // sees it. 'auto' defers to the measure's stored type and still SUMs a
+      // raw numeric column. Mirrors the BE normalize_metric_config(default='auto').
+      next.metrics = [{ field: next.scatterY, agg: 'auto' }];
     }
   }
 
@@ -762,17 +767,24 @@ export function metricKey(m: MetricConfig): string {
 }
 
 export function normalizeMetricConfig(metric: MetricConfig | string | null | undefined): MetricConfig | null {
+  // Default agg is 'auto', NOT 'sum': a metric that references a declared
+  // semantic measure carries its aggregation in the measure definition
+  // (percent_of_total / count_distinct / window / …). Defaulting a missing /
+  // string-form agg to 'sum' would silently override that declared type (the
+  // "metric identity loss" — a % measure rendered as raw SUM). 'auto' tells the
+  // BE to use the stored measure type, and a raw numeric column still SUMs.
+  // Mirrors backend chart_contracts.normalize_metric_config(default_agg="auto").
   if (!metric) return null;
   if (typeof metric === 'string') {
     const field = metric.trim();
-    return field ? { field, agg: 'sum' } : null;
+    return field ? { field, agg: 'auto' } : null;
   }
 
   const field = metric.field?.trim();
   if (!field) return null;
   return {
     field,
-    agg: metric.agg ?? 'sum',
+    agg: metric.agg ?? 'auto',
     outputField: metric.outputField?.trim() || undefined,
   };
 }
