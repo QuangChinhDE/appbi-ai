@@ -127,6 +127,106 @@ const FILTER_KIND_LABEL: Record<TableFilterSpec['kind'], string> = {
   number_range: 'Number range',
 };
 
+/** Model-driven VLOOKUP suggestions. Reads the dataset semantic model's
+ * relationships (same endpoint the form-field lookup editor uses) so the
+ * builder doesn't have to re-pick table + match columns by hand — building
+ * the Model once now pays off for table VLOOKUP columns too. */
+function LookupModelSuggestions({
+  fromTableId,
+  onApply,
+}: {
+  fromTableId?: number | null;
+  onApply: (s: {
+    target_table_id: number;
+    from_column: string;
+    to_column: string;
+    label?: string | null;
+  }) => void;
+}) {
+  const [items, setItems] = useState<Array<Record<string, unknown>>>([]);
+  const [loading, setLoading] = useState(false);
+  const [deep, setDeep] = useState(false);
+  useEffect(() => {
+    if (!fromTableId) {
+      setItems([]);
+      return;
+    }
+    setLoading(true);
+    fetch(
+      `/api/v1/workboard-relationships?from_table_id=${fromTableId}${deep ? '&deep_scan=true' : ''}`,
+      { credentials: 'include' },
+    )
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d) => setItems(Array.isArray(d) ? d : []))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  }, [fromTableId, deep]);
+
+  if (!fromTableId) return null;
+  if (loading) {
+    return <p className="text-caption text-text-tertiary">Đang tải gợi ý quan hệ từ Model…</p>;
+  }
+  return (
+    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2.5">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-caption font-emphasis text-text-secondary">Gợi ý từ Model</span>
+        {!deep && (
+          <button
+            type="button"
+            onClick={() => setDeep(true)}
+            className="text-caption text-brand hover:underline"
+            title="Quét trùng dữ liệu để tìm cả quan hệ khác tên cột (vd status↔status_code)"
+          >
+            Tìm thêm (quét dữ liệu)
+          </button>
+        )}
+      </div>
+      {!items.length ? (
+        <p className="text-caption text-text-tertiary">
+          {deep
+            ? 'Không tìm thấy quan hệ nào (kể cả quét dữ liệu). Hãy cấu hình thủ công bên dưới.'
+            : 'Chưa có quan hệ trong Model. Bấm “Tìm thêm (quét dữ liệu)” hoặc cấu hình thủ công.'}
+        </p>
+      ) : (
+      <div className="space-y-1.5">
+        {items.map((s, i) => {
+          const disp = String(s.target_table_display || 'Bảng liên quan');
+          const fromCol = String(s.from_column || '');
+          const toCol = String(s.to_column || '');
+          const labelCol =
+            (s.suggested_label_columns as string[] | undefined)?.[0] || null;
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() =>
+                onApply({
+                  target_table_id: Number(s.target_table_id),
+                  from_column: fromCol,
+                  to_column: toCol,
+                  label: labelCol,
+                })
+              }
+              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-caption hover:border-brand"
+            >
+              <span className="font-emphasis text-text-primary">Dùng {disp}</span>
+              <span className="block text-text-tertiary">
+                Khớp: <code className="font-mono">{fromCol} = {toCol}</code>
+                {labelCol ? (
+                  <>
+                    {' '}· Lấy: <code className="font-mono">{labelCol}</code>
+                  </>
+                ) : null}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      )}
+    </div>
+  );
+}
+
 export default function TableScreenEditor({ screen, tables, onChange }: Props) {
   const tableSpec = screen.table || EMPTY_TABLE;
   const filters = useMemo(() => tableSpec.filters || [], [tableSpec.filters]);
@@ -1157,6 +1257,17 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
           }
         >
           <div className="space-y-3">
+            <LookupModelSuggestions
+              fromTableId={screen.table_id}
+              onApply={(s) =>
+                updateLookup(activeLookupIndex, {
+                  from_table_id: s.target_table_id,
+                  match_column_local: s.from_column,
+                  match_column_remote: s.to_column,
+                  return_column: s.label || s.to_column,
+                })
+              }
+            />
             <div className={BUILDER_GRID_2}>
               <Lbl label="Column name (identifier)">
                 <input

@@ -53,11 +53,20 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (!token) return;
     let alive = true;
+    let redirecting = false;
     (async () => {
       try {
         // 1. Try menu first — if cookie is valid, we skip login entirely.
         const m = await workspaceApi.getMenu(token);
         if (!alive) return;
+        // Single mini-app workspace → the one-card launcher is pointless;
+        // drop the user straight into the app. Keep the spinner up (don't
+        // setMenu / clear loading) so the launcher never flashes.
+        if (m.menu.length === 1) {
+          redirecting = true;
+          router.replace(`/ws/${token}/workboards/${m.menu[0].workboard_id}`);
+          return;
+        }
         setMenu(m);
         setMeta(m.workspace);
       } catch (err: any) {
@@ -74,13 +83,13 @@ export default function WorkspacePage() {
           );
         }
       } finally {
-        if (alive) setLoadingMeta(false);
+        if (alive && !redirecting) setLoadingMeta(false);
       }
     })();
     return () => {
       alive = false;
     };
-  }, [token]);
+  }, [token, router]);
 
   const branding = meta?.branding ?? null;
   const accent = branding?.primary_color || '#2563eb';
@@ -115,10 +124,15 @@ export default function WorkspacePage() {
     try {
       await workspaceApi.login(token, username.trim(), pin);
       const m = await workspaceApi.getMenu(token);
-      setMenu(m);
-      setMeta(m.workspace);
       setUsername('');
       setPin('');
+      // Single mini-app → go straight in instead of showing a 1-card menu.
+      if (m.menu.length === 1) {
+        router.replace(`/ws/${token}/workboards/${m.menu[0].workboard_id}`);
+        return;
+      }
+      setMenu(m);
+      setMeta(m.workspace);
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
       setLoginError(typeof detail === 'string' ? detail : 'Đăng nhập thất bại.');

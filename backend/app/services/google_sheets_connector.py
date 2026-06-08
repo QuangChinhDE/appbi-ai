@@ -32,6 +32,17 @@ def _get_write_lock(spreadsheet_id: str) -> threading.Lock:
         return _WRITE_LOCK_REGISTRY[spreadsheet_id]
 
 
+def _invalidate_workbook_cache(spreadsheet_id: str) -> None:
+    """Drop the cached whole-workbook read after a mutation so the next read
+    reflects the change. Lazy import keeps the connector importable even if the
+    cache module is unavailable."""
+    try:
+        from app.services import google_sheets_cache
+        google_sheets_cache.invalidate(spreadsheet_id)
+    except Exception:  # pragma: no cover - cache is best-effort
+        pass
+
+
 class GoogleSheetsConnector:
     """Connector for Google Sheets data source"""
     
@@ -229,6 +240,7 @@ class GoogleSheetsConnector:
                 ).execute()
             except HttpError as e:
                 raise ValueError(f"Google Sheets append error: {str(e)}")
+            _invalidate_workbook_cache(spreadsheet_id)
             return {h: row_values[i] for i, h in enumerate(headers)}
 
     def append_rows(
@@ -275,6 +287,7 @@ class GoogleSheetsConnector:
                 ).execute()
             except HttpError as e:
                 raise ValueError(f"Google Sheets batch append error: {str(e)}")
+            _invalidate_workbook_cache(spreadsheet_id)
             return {"appended": len(result_rows), "rows": result_rows}
 
     def import_csv(
@@ -304,6 +317,7 @@ class GoogleSheetsConnector:
             ).execute()
         except HttpError as e:
             raise ValueError(f"Google Sheets CSV import error: {str(e)}")
+        _invalidate_workbook_cache(spreadsheet_id)
         return {
             "sheet_name": sheet_name,
             "header_row": all_rows[0] if all_rows else [],
@@ -323,8 +337,10 @@ class GoogleSheetsConnector:
         excludes the header). Caller adds +2 to get the spreadsheet row
         number (1-based, header occupies row 1).
 
-        Raises ValueError when no row matches or when a PK column is not
-        present in the sheet's headers.
+        Raises ValueError when no row matches, when MORE THAN ONE row matches
+        (the PK is not unique in the sheet — refuse rather than touch an
+        arbitrary first match), or when a PK column is not present in the
+        sheet's headers.
         """
         headers, rows = self._read_headers_and_rows(spreadsheet_id, sheet_name)
         if not headers:
@@ -335,13 +351,25 @@ class GoogleSheetsConnector:
                     f"PK column '{col}' is not present in sheet '{sheet_name}'."
                 )
         idx_by_col = {h: i for i, h in enumerate(headers)}
-        for r_idx, row in enumerate(rows):
+        matches = [
+            (r_idx, row)
+            for r_idx, row in enumerate(rows)
             if all(
                 str(row[idx_by_col[col]]) == str(val)
                 for col, val in pk.items()
-            ):
-                return headers, r_idx, row
-        raise ValueError(f"No row in '{sheet_name}' matches primary key {pk}.")
+            )
+        ]
+        if not matches:
+            raise ValueError(f"No row in '{sheet_name}' matches primary key {pk}.")
+        if len(matches) > 1:
+            # Sheets enforces no uniqueness; updating/deleting the first match
+            # would silently corrupt a different record. Fail loud instead.
+            raise ValueError(
+                f"Primary key {pk} matches {len(matches)} rows in '{sheet_name}'. "
+                "Refusing to update/delete an ambiguous row — make the PK column unique."
+            )
+        r_idx, row = matches[0]
+        return headers, r_idx, row
 
     def update_row_by_pk(
         self,
@@ -409,6 +437,7 @@ class GoogleSheetsConnector:
             ).execute()
         except HttpError as e:
             raise ValueError(f"Google Sheets update error: {str(e)}")
+        _invalidate_workbook_cache(spreadsheet_id)
         return {h: new_row[i] for i, h in enumerate(headers)}
 
     def delete_row_by_pk(
@@ -490,6 +519,7 @@ class GoogleSheetsConnector:
             ).execute()
         except HttpError as e:
             raise ValueError(f"Google Sheets delete error: {str(e)}")
+        _invalidate_workbook_cache(spreadsheet_id)
         return spreadsheet_row
 
     def list_sheets(self, spreadsheet_id: str) -> List[str]:

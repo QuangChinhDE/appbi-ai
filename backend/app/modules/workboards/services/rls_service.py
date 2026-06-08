@@ -163,7 +163,12 @@ def build_rls_filter(
         return [], False
 
     resolved = _resolve_placeholder(rule.filter_value, identity)
-    if resolved is None:
+    # FAIL-CLOSED on an empty scope. If the placeholder resolves to None OR an
+    # empty/whitespace string (e.g. an app_user whose username/team_id column
+    # is blank), an ``= ''`` filter would be dropped downstream by the live
+    # query's empty-value optimization → the caller would see EVERY row
+    # (fail-OPEN). Deny instead, consistent with the per-screen RLS contract.
+    if resolved is None or (isinstance(resolved, str) and not resolved.strip()):
         return [], False
     filter_values = _as_filter_values(resolved)
     if filter_values is not None:
@@ -235,9 +240,16 @@ def enforce_write_access(
 
     # When the rule pins a filter column to the caller (e.g. worker_email
     # = {{app_user.username}}), force-write that column to the caller's
-    # value on insert so a worker cannot impersonate someone else.
-    if op == "insert" and rule.filter_column and not rule.unrestricted:
+    # value on insert AND update so a worker cannot impersonate someone else
+    # or REASSIGN an owned row to another user via PATCH. (Delete carries no
+    # payload and is already constrained by the read-filter existence check.)
+    if op in ("insert", "update") and rule.filter_column and not rule.unrestricted:
         forced = _resolve_placeholder(rule.filter_value, identity)
+        # Fail-closed on empty scope (mirror build_rls_filter): a blank
+        # username/scope must NOT be allowed to write (it would otherwise land
+        # rows with an empty owner that the same user then reads back as "all").
+        if forced is None or (isinstance(forced, str) and not forced.strip()):
+            raise RlsDenied("Your role has no writable data scope.")
         if forced is not None:
             filter_values = _as_filter_values(forced)
             if filter_values is not None:

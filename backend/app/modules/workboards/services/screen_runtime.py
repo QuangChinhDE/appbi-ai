@@ -61,11 +61,29 @@ from app.modules.workboards.services.write_service import (
     WorkboardWriteService,
 )
 from app.services.live_query_service import LiveQueryService
+from app.services.google_sheets_cache import SheetsQuotaError
 
 logger = get_logger(__name__)
 
+
+def _quota_503() -> "HTTPException":
+    """Map a Sheets read-quota hit to an honest, retryable 503 instead of
+    silently returning empty options/rows (the old behaviour that made forms
+    look broken)."""
+    return HTTPException(
+        status_code=503,
+        detail=(
+            "Nguồn Google Sheets đang quá tải (giới hạn đọc 60 lần/phút). "
+            "Vui lòng thử lại sau vài giây."
+        ),
+    )
+
 _MAX_LOOKUP_ROWS = 500
 _AGG_FNS = {"sum", "avg", "min", "max", "count"}
+# Upper bound on rows pulled per table render so footer totals span the whole
+# (filtered) table and pagination is sliced in memory. Beyond this the totals
+# are over the first N rows and ``totals_partial`` is set true.
+_TOTALS_ROW_CAP = 5000
 
 
 # ── Generic helpers (formerly in runtime_service) ─────────────────────────
@@ -98,16 +116,56 @@ def _parse_total_spec(spec: str) -> tuple[str, str]:
     return text, "sum"
 
 
+def _parse_locale_number(text: str) -> Optional[float]:
+    """Parse a numeric string read from a Google Sheet, honouring the vi-VN
+    number format (``.`` = thousands grouping, ``,`` = decimal separator).
+
+    This is a DETERMINISTIC locale rule for the Workboard Sheets path — not a
+    content guess. The sheet is read with the default ``FORMATTED_VALUE`` so a
+    vi-VN-locale workbook returns decimals as comma strings ("1234,5") and
+    grouped values with dots ("1.000.000"); plain ``float()`` drops every one
+    of those, which silently excludes them from SUM/AVG totals. Examples::
+
+        "1234,5"     -> 1234.5       "75.351.234,5" -> 75351234.5
+        "1.000.000"  -> 1000000.0    "1,234"        -> 1.234
+        "500000"     -> 500000.0     "(1.234,5)"    -> -1234.5
+
+    Only the Sheets / manual VARCHAR path reaches here: BigQuery / Postgres
+    numerics arrive as ``int``/``float`` and take the ``isinstance`` fast-path
+    in the callers below, so this rule can never corrupt a native-numeric
+    source. Returns ``None`` for anything that is not a plain number (same as
+    the old ``float()`` behaviour — no new values are "rescued" into garbage).
+    """
+    s = text.strip()
+    if not s:
+        return None
+    neg = s.startswith("(") and s.endswith(")")  # accounting negative
+    if neg:
+        s = s[1:-1].strip()
+    s = s.replace(" ", "").replace(" ", "")  # NBSP + thin spaces
+    if not s:
+        return None
+    # vi-VN: '.' groups thousands, ',' is the decimal mark. When a comma is
+    # present it is the decimal point, so strip grouping dots then swap it for
+    # a dot. A lone dot (no comma) is thousands grouping ("1.000.000", "1.234").
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "." in s:
+        s = s.replace(".", "")
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    return -val if neg else val
+
+
 def _coerce_number(value: Any) -> Optional[float]:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
+        return _parse_locale_number(value)
     return None
 
 
@@ -337,9 +395,17 @@ def _resolve_relationship_labels(
         cursor[primary_val] = primary_val
 
     last_label_col: Optional[str] = base_label_column
+    visited_tables: set[int] = set()
     for hop in safe_hops:
         if not cursor:
             return {}
+        # Cycle guard: a chain that revisits a table (A→B→A) would remap the
+        # cursor against already-seen keys and yield wrong labels. Stop at the
+        # first repeat (MAX_HOPS already bounds length; this bounds semantics).
+        if hop.table_id in visited_tables:
+            break
+        if hop.table_id:
+            visited_tables.add(hop.table_id)
         table = _load_table(db, hop.table_id)
         if table is None:
             return {}
@@ -350,6 +416,8 @@ def _resolve_relationship_labels(
             result = LiveQueryService.execute_preview_query(
                 datasource, table, limit=_MAX_LOOKUP_ROWS, offset=0, filters=[],
             )
+        except SheetsQuotaError:
+            raise _quota_503()
         except Exception:
             logger.exception("Nested lookup hop failed (table_id=%s)", hop.table_id)
             return {}
@@ -406,6 +474,8 @@ def _resolve_lookup_options(
             result = LiveQueryService.execute_preview_query(
                 datasource, table, limit=_MAX_LOOKUP_ROWS, offset=0, filters=[]
             )
+        except SheetsQuotaError:
+            raise _quota_503()
         except Exception:
             logger.exception(
                 "Lookup for field '%s' failed (table_id=%s)",
@@ -531,13 +601,29 @@ def _apply_field_conditions(
     }
     cleaned = dict(values or {})
     violations: List[str] = []
-    # Hard ceiling for inline file uploads (base64 in JSONB). Anything larger
-    # blows up the row payload + the audit log + Postgres TOAST. Builder can
-    # set a stricter per-field cap via FormField.max_file_kb.
-    _HARD_FILE_KB_CAP = 1024
+    # Hard ceiling for inline file uploads (base64 stored in a cell). Workboards
+    # write to Google Sheets, where a single CELL is capped at 50,000 chars.
+    # base64 inflates by 4/3, so the safe content ceiling is ~36 KB
+    # (36*1024*4/3 ≈ 49,150 chars). A larger upload was silently truncated by
+    # the Sheets API → a corrupt/half image with no error. Cap at 35 KB so the
+    # data-URL header + base64 stays under the cell limit. Builder can set a
+    # stricter per-field cap via FormField.max_file_kb.
+    _HARD_FILE_KB_CAP = 35
     _FILE_WIDGETS = {"file", "image"}
+    # Pages whose ``show_if`` is falsy are skipped in the wizard — their fields
+    # must NOT be required or written (mirror field-level show_if). Build the
+    # set of hidden page ids once.
+    hidden_pages: set = set()
+    for _pg in (screen.form.pages or []):
+        _expr = getattr(_pg, "show_if", None)
+        if _expr and not evaluate_truthy(_expr, ctx, default=True):
+            hidden_pages.add(_pg.id)
     for field in screen.form.fields:
         col = field.column
+        if hidden_pages and getattr(field, "page", None) in hidden_pages:
+            # Field lives on a skipped page — drop any stale value, never require.
+            cleaned.pop(col, None)
+            continue
         if getattr(field, "readonly", False):
             # Static readonly fields are display-only. Drop submitted values so
             # callers cannot override system columns such as generated PKs.
@@ -1136,6 +1222,8 @@ def _resolve_table_lookups(
                     }
                 ],
             )
+        except SheetsQuotaError:
+            raise _quota_503()
         except Exception:  # pragma: no cover - defensive, lookup must never crash render
             logger.exception(
                 "Grid lookup '%s' failed for screen lookup_table=%s",
@@ -1160,6 +1248,12 @@ def _coerce_total(value: Any) -> Optional[float]:
         return None
     if isinstance(value, bool):
         return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # vi-VN-aware: a Sheets cell read as "1234,5" / "1.000.000" must still
+        # land in the SUM. Native int/float (BQ/Postgres) handled above.
+        return _parse_locale_number(value)
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -1266,11 +1360,16 @@ def render_table_screen(
         # silently break pagination. Drop to default ordering.
         sort_column = None
 
+    # Fetch the WHOLE filtered+sorted set (capped) once, then slice the page in
+    # memory. This makes footer totals span the entire table (not just the
+    # visible page), keeps page ordering stable across pages, and lets cross-row
+    # computed columns aggregate over the full set. Cheap for Sheets (already
+    # cached + materialised into DuckDB). _TOTALS_ROW_CAP bounds worst case.
     result = LiveQueryService.execute_preview_query(
         datasource,
         table,
-        limit=page_size,
-        offset=offset,
+        limit=_TOTALS_ROW_CAP + 1,
+        offset=0,
         filters=merged,
         sort_column=sort_column,
         sort_direction=sort_direction,
@@ -1348,19 +1447,28 @@ def render_table_screen(
                 except JsEvalError as exc:
                     row[name] = f"#ERR: {exc}"
 
-    # ── Footer totals ────────────────────────────────────────────────
+    # ── Footer totals over the WHOLE filtered set (not just the page) ──
+    totals_partial = len(base_rows) > _TOTALS_ROW_CAP
+    if totals_partial:
+        base_rows = base_rows[:_TOTALS_ROW_CAP]
+    total_count = len(base_rows)
     totals_row = _compute_table_totals(table_spec, base_rows) or None
 
-    # ── Multi-header + row merges ────────────────────────────────────
+    # ── Slice the requested page out of the full set ─────────────────
+    page_rows = base_rows[offset:offset + page_size]
+
+    # ── Multi-header + row merges (over the visible page) ────────────
     column_groups = _normalize_column_groups(selected_columns, table_spec.column_groups)
-    merges = _compute_merges(base_rows, list(table_spec.group_by or []), selected_columns)
+    merges = _compute_merges(page_rows, list(table_spec.group_by or []), selected_columns)
 
     return {
         "columns": selected_columns,
         "primary_key_columns": pk_cols,
-        "rows": base_rows,
+        "rows": page_rows,
         "page": page,
         "page_size": page_size,
+        "total_count": total_count,
+        "totals_partial": totals_partial,
         "table_view": table_spec.model_dump(),
         "totals_row": totals_row,
         "column_groups": column_groups,
@@ -1475,9 +1583,10 @@ def _apply_data_table_transform(
 
             for row in rows:
                 key_raw = row.get(col_dims[0])
-                if key_raw is None:
-                    continue
-                pivot_key = str(key_raw)
+                # Bucket NULL/blank pivot keys under "(blank)" instead of
+                # DROPPING the row — otherwise those rows' values silently
+                # vanish from the matrix (data loss the user can't see).
+                pivot_key = "(blank)" if key_raw is None or key_raw == "" else str(key_raw)
                 if pivot_key not in seen_keys:
                     if len(pivot_keys_order) >= transform.max_columns:
                         raise HTTPException(
@@ -1517,9 +1626,7 @@ def _apply_data_table_transform(
         for row in rows:
             for i, _dim in enumerate(col_dims):
                 v = row.get(_dim)
-                if v is None:
-                    continue
-                k = str(v)
+                k = "(blank)" if v is None or v == "" else str(v)
                 if k not in dim_seen_sets[i]:
                     dim_seen_sets[i].add(k)
                     dim_vals[i].append(k)
@@ -1549,15 +1656,9 @@ def _apply_data_table_transform(
         first_seen_ml: Dict[tuple, Dict[str, Any]] = {}
         for row in rows:
             parts: List[str] = []
-            skip = False
             for _dim in col_dims:
                 v = row.get(_dim)
-                if v is None:
-                    skip = True
-                    break
-                parts.append(str(v))
-            if skip:
-                continue
+                parts.append("(blank)" if v is None or v == "" else str(v))
             ck = _SEP.join(parts)
             idx_tuple = tuple(row.get(c) for c in idx_cols)
             if idx_tuple not in buckets_ml:

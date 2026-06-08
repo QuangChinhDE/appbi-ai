@@ -3,8 +3,9 @@
  *
  * Renders a single workboard as a self-contained mini-app:
  *  - top header with branding + logged-in user
- *  - adaptive nav: bottom-nav on mobile (auto), sidebar on desktop (auto),
- *    user can override via the device toggle in the header
+ *  - adaptive nav: bottom-nav on mobile, top-tabs on tablet, sidebar on
+ *    desktop — auto-detected from the viewport (no manual device toggle in
+ *    the published runtime; the builder's live-preview pane has its own)
  *  - active screen content rendered from the per-screen API
  *  - shared_context propagated through ``after_submit.go_to_screen`` so
  *    successive screens know which shift / row the user is working with
@@ -20,17 +21,15 @@ import {
   ClipboardList,
   Download,
   Factory,
-  Laptop,
   Loader2,
   LogOut,
+  Menu,
   MoreHorizontal,
   Plus,
   RefreshCw,
   Send,
-  Smartphone,
-  Sparkles,
-  Tablet,
   Trash2,
+  X,
   XCircle,
 } from 'lucide-react';
 
@@ -77,6 +76,7 @@ interface RuntimeFormPage {
   id: number;
   title: string;
   description?: string;
+  show_if?: unknown;
 }
 
 interface RuntimeEvalCtx {
@@ -129,8 +129,11 @@ export default function WorkspaceWorkboardPage() {
   const [activeScreenId, setActiveScreenId] = useState<string | null>(null);
   const [shared, setShared] = useState<Record<string, unknown>>({});
   const [device, setDevice] = useState<DeviceMode>('desktop');
-  const [deviceOverride, setDeviceOverride] = useState<DeviceMode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // How many mini-apps this app-user can reach in the workspace. Drives
+  // whether the "back to workspace menu" button is worth showing — for a
+  // single-app workspace the launcher is pointless, so we hide it.
+  const [siblingApps, setSiblingApps] = useState<number | null>(null);
 
   // Detect device + listen for resize. Listening to plain ``resize`` is
   // necessary because we want the layout to flip the moment the user
@@ -143,7 +146,9 @@ export default function WorkspaceWorkboardPage() {
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  const effectiveDevice: DeviceMode = deviceOverride ?? device;
+  // Layout adapts purely from the real viewport — see detectDevice() + the
+  // resize listener above. No manual override in the published runtime.
+  const effectiveDevice: DeviceMode = device;
 
   // Initial shell load. When the URL hash carries a screen id (the
   // builder uses #screen=xxx to jump to whatever the admin is editing),
@@ -156,6 +161,16 @@ export default function WorkspaceWorkboardPage() {
         const s = await workspaceApi.getAppShell(token, workboardId);
         if (!alive) return;
         setShell(s);
+        // Find out if there are sibling mini-apps in this workspace, to
+        // decide whether the "back to menu" button is meaningful.
+        workspaceApi
+          .getMenu(token)
+          .then((m) => {
+            if (alive) setSiblingApps(m.menu.length);
+          })
+          .catch(() => {
+            if (alive) setSiblingApps(1);
+          });
         const hashScreen = (() => {
           if (typeof window === 'undefined') return null;
           const m = window.location.hash.match(/screen=([\w-]+)/);
@@ -234,14 +249,15 @@ export default function WorkspaceWorkboardPage() {
   const appName = shell.branding.app_name || shell.workboard.name;
 
   // ── Layout decision per device size ──────────────────────────────────
-  // Mobile  → bottom_nav (always — drawer kind not implemented yet)
+  // Mobile  → bottom_nav OR drawer (per nav.mobile_kind)
   // Tablet  → top_tabs (better for landscape, no big sidebar wasted)
   // Desktop → whatever the workboard config picked (sidebar | top_tabs)
   const isSidebar = effectiveDevice === 'desktop' && shell.nav.desktop_kind === 'sidebar';
   const isTopTabs =
     (effectiveDevice === 'desktop' && shell.nav.desktop_kind === 'top_tabs') ||
     effectiveDevice === 'tablet';
-  const isBottomNav = effectiveDevice === 'mobile';
+  const isDrawer = effectiveDevice === 'mobile' && shell.nav.mobile_kind === 'drawer';
+  const isBottomNav = effectiveDevice === 'mobile' && !isDrawer;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
@@ -249,9 +265,7 @@ export default function WorkspaceWorkboardPage() {
         appName={appName}
         accent={accent}
         logoUrl={shell.branding.logo_url}
-        device={effectiveDevice}
-        override={deviceOverride}
-        onDeviceChange={setDeviceOverride}
+        showBackToMenu={(siblingApps ?? 1) > 1}
         onLogout={async () => {
           try {
             await workspaceApi.logout(token);
@@ -310,7 +324,82 @@ export default function WorkspaceWorkboardPage() {
           accent={accent}
         />
       )}
+
+      {isDrawer && (
+        <MobileDrawer
+          items={navItems}
+          activeId={activeScreenId}
+          onSelect={(id) => goToScreen(id)}
+          accent={accent}
+        />
+      )}
     </div>
+  );
+}
+
+// ── Mobile drawer nav (hamburger → slide-in panel) ──────────────────────────
+
+function MobileDrawer({
+  items,
+  activeId,
+  onSelect,
+  accent,
+}: {
+  items: Array<{ id: string; title: string; icon?: string | null }>;
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  accent: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const active = items.find((s) => s.id === activeId);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="fixed bottom-4 left-4 z-30 flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold text-white shadow-lg"
+        style={{ backgroundColor: accent }}
+        aria-label="Mở menu"
+      >
+        <Menu className="h-5 w-5" />
+        <span className="max-w-[140px] truncate">{active?.title || 'Menu'}</span>
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setOpen(false)}
+          />
+          <nav className="absolute inset-y-0 left-0 flex w-72 max-w-[80%] flex-col gap-1 overflow-y-auto bg-white p-3 shadow-xl">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="text-sm font-semibold text-slate-700">Màn hình</span>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
+                aria-label="Đóng menu"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            {items.map((s) => (
+              <NavBtn
+                key={s.id}
+                active={s.id === activeId}
+                accent={accent}
+                onClick={() => {
+                  onSelect(s.id);
+                  setOpen(false);
+                }}
+                icon={pickIcon(s.icon)}
+                label={s.title}
+                layout="sidebar"
+              />
+            ))}
+          </nav>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -320,64 +409,32 @@ function Header({
   appName,
   accent,
   logoUrl,
-  device,
-  override,
-  onDeviceChange,
+  showBackToMenu = false,
   onLogout,
   onBackToMenu,
 }: {
   appName: string;
   accent: string;
   logoUrl?: string | null;
-  device: DeviceMode;        // currently effective layout
-  override: DeviceMode | null;  // user override; null = auto
-  onDeviceChange: (d: DeviceMode | null) => void;
+  showBackToMenu?: boolean;
   onLogout: () => void;
   onBackToMenu: () => void;
 }) {
-  // The "active" state on each chip indicates which mode is currently
-  // applied (so the user can see what auto resolved to). The Auto chip
-  // gets a visible highlight when no override is set.
-  const isAuto = override === null;
-
-  const chip = (
-    key: DeviceMode | 'auto',
-    label: string,
-    icon: React.ReactNode,
-    title: string,
-  ) => {
-    const active =
-      key === 'auto' ? isAuto : !isAuto && override === key;
-    return (
-      <button
-        type="button"
-        onClick={() => onDeviceChange(key === 'auto' ? null : (key as DeviceMode))}
-        className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-          active
-            ? 'bg-slate-900 text-white'
-            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'
-        }`}
-        title={title}
-      >
-        {icon}
-        {label}
-      </button>
-    );
-  };
-
   return (
     <header
       className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur"
       style={{ borderTopColor: accent, borderTopWidth: 3 }}
     >
-      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
-        <button
-          onClick={onBackToMenu}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
-          title="Trở lại menu workspace"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-        </button>
+      <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
+        {showBackToMenu && (
+          <button
+            onClick={onBackToMenu}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
+            title="Trở lại menu workspace"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </button>
+        )}
         <div
           className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg"
           style={{ backgroundColor: logoUrl ? 'transparent' : accent }}
@@ -392,19 +449,6 @@ function Header({
         <h1 className="flex-1 truncate text-base font-semibold text-slate-900">
           {appName}
         </h1>
-
-        <div className="hidden items-center gap-1 rounded-md border border-slate-200 p-0.5 sm:flex">
-          {chip(
-            'auto',
-            isAuto ? `Auto (${device})` : 'Auto',
-            <Sparkles className="h-3.5 w-3.5" />,
-            'Tự động theo kích thước cửa sổ',
-          )}
-          <span className="mx-0.5 h-4 w-px bg-slate-200" />
-          {chip('mobile', 'Mobile', <Smartphone className="h-3.5 w-3.5" />, 'Bottom-nav cho điện thoại')}
-          {chip('tablet', 'Tablet', <Tablet className="h-3.5 w-3.5" />, 'Top-tabs cho tablet')}
-          {chip('desktop', 'Desktop', <Laptop className="h-3.5 w-3.5" />, 'Sidebar cho máy tính')}
-        </div>
 
         <button
           onClick={onLogout}
@@ -895,7 +939,14 @@ function FormScreen({
   const validateCurrentPage = (): boolean => {
     for (const f of visibleFields) {
       const col = String(f.column || '');
-      const required = !!f.required;
+      // Hidden fields (show_if false) are never required.
+      const showExpr = typeof f.show_if === 'string' ? f.show_if : null;
+      if (showExpr && !evaluateTruthy(showExpr, evalCtx, true)) continue;
+      // required_if (when present) decides requiredness; else static required.
+      const requiredIfExpr = typeof f.required_if === 'string' ? f.required_if : null;
+      const required = requiredIfExpr
+        ? evaluateTruthy(requiredIfExpr, evalCtx, false)
+        : !!f.required;
       const v = values[col];
       if (required && (v === undefined || v === null || v === '')) {
         setSubmitError(`Vui lòng điền "${String(f.label || col)}"`);
@@ -906,11 +957,29 @@ function FormScreen({
     return true;
   };
 
+  // FormPage.show_if: a page whose expression is falsy is SKIPPED in the
+  // wizard (and the BE drops/!requires its fields). Honour it in navigation.
+  const pageHidden = (pid: number): boolean => {
+    const pg = pages.find((p) => Number(p.id) === pid);
+    const expr = pg && typeof pg.show_if === 'string' ? pg.show_if : null;
+    return !!expr && !evaluateTruthy(expr, evalCtx, true);
+  };
+  const lastVisiblePageId =
+    pages.reduce((mx, p) => (pageHidden(Number(p.id)) ? mx : Math.max(mx, Number(p.id))), 1);
   const goNextPage = () => {
     if (!validateCurrentPage()) return;
-    setCurrentPage((p) => Math.min(p + 1, pages.length));
+    setCurrentPage((p) => {
+      let n = p + 1;
+      while (n <= pages.length && pageHidden(n)) n += 1;
+      return Math.min(n, pages.length);
+    });
   };
-  const goPrevPage = () => setCurrentPage((p) => Math.max(p - 1, 1));
+  const goPrevPage = () =>
+    setCurrentPage((p) => {
+      let n = p - 1;
+      while (n >= 1 && pageHidden(n)) n -= 1;
+      return Math.max(n, 1);
+    });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1096,7 +1165,7 @@ function FormScreen({
             <span />
           )}
 
-          {isMultiPage && currentPage < pages.length ? (
+          {isMultiPage && currentPage < lastVisiblePageId ? (
             <button
               type="button"
               onClick={goNextPage}
@@ -1588,6 +1657,7 @@ function TableScreen({
   const [current, setCurrent] = useState<TableScreenResponse>(spec);
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const [filterLoading, setFilterLoading] = useState(false);
+  const [tablePage, setTablePage] = useState(1);
   const [rowStatus, setRowStatus] = useState<
     Record<string, { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }>
   >({});
@@ -1757,20 +1827,40 @@ function TableScreen({
     return out;
   };
 
-  const reloadRows = async (values: Record<string, string>) => {
+  const pageSize = Number(tv.page_size || current.page_size || 50);
+
+  // Fetch a specific page. Filter changes reset to page 1; the pager moves
+  // within the current filter set. (Before this, the runtime hardcoded
+  // page 1 and there was NO way to reach rows beyond page_size.)
+  const loadRows = async (values: Record<string, string>, page: number) => {
     setFilterLoading(true);
     try {
       const next = await workspaceApi.tableScreenRows(token, workboardId, current.screen_id, {
-        page: 1,
-        page_size: Number(tv.page_size || current.page_size || 50),
+        page,
+        page_size: pageSize,
         filters: buildApiFilters(values),
       });
       setCurrent((prev) => ({ ...prev, ...next }));
       setFilterValues(values);
+      setTablePage(page);
       setRowStatus({});
     } finally {
       setFilterLoading(false);
     }
+  };
+
+  // Filter apply/clear always restarts at page 1.
+  const reloadRows = async (values: Record<string, string>) => {
+    await loadRows(values, 1);
+  };
+
+  // A full page implies there may be more rows — cheap "has next" without a
+  // server-side count (Sheets data is already cached server-side).
+  const hasNextPage = rows.length >= pageSize;
+  const goToPage = (p: number) => {
+    if (p < 1 || filterLoading) return;
+    if (p > tablePage && !hasNextPage) return;
+    void loadRows(filterValues, p);
   };
 
   const pendingRef = useRef<Map<string, TableCellPatch>>(new Map());
@@ -2409,6 +2499,33 @@ function TableScreen({
         </table>
       </div>
 
+      {(tablePage > 1 || hasNextPage) && (
+        <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-xs text-slate-600">
+          <span>
+            Trang {tablePage}
+            {rows.length ? ` · ${rows.length} dòng` : ''}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => goToPage(tablePage - 1)}
+              disabled={tablePage <= 1 || filterLoading}
+              className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 hover:bg-slate-50"
+            >
+              ← Trước
+            </button>
+            <button
+              type="button"
+              onClick={() => goToPage(tablePage + 1)}
+              disabled={!hasNextPage || filterLoading}
+              className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 hover:bg-slate-50"
+            >
+              Sau →
+            </button>
+          </div>
+        </div>
+      )}
+
       {ghostError ? (
         <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
           {ghostError}
@@ -2797,6 +2914,26 @@ function DocBlock({
         screenId={screenId}
         blockIndex={blockIndex}
       />
+    );
+  }
+  if (t === 'signature') {
+    const slots = (block.slots as Array<{ label?: string; role?: string }>) || [];
+    if (!slots.length) return null;
+    return (
+      <div
+        className="mt-8 grid gap-8"
+        style={{ gridTemplateColumns: `repeat(${Math.min(slots.length, 4)}, minmax(0, 1fr))` }}
+      >
+        {slots.map((s, i) => (
+          <div key={i} className="text-center text-sm text-slate-700">
+            <div className="font-medium">{String(s.label || '')}</div>
+            {s.role ? <div className="text-xs text-slate-500">{String(s.role)}</div> : null}
+            <div className="mt-12 border-t border-slate-400 pt-1 text-[11px] text-slate-400">
+              Ký &amp; ghi rõ họ tên
+            </div>
+          </div>
+        ))}
+      </div>
     );
   }
   if (t === 'footer') {

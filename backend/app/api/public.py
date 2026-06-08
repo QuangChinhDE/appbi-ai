@@ -1371,11 +1371,23 @@ if settings.WORKBOARDS_ENABLED:
                 screen_id=screen.id,
                 app_user_role=app_user.get("role") if isinstance(app_user, dict) else None,
             )
-            effective_token = resolved_token or screen.dashboard.share_token
+            # In MANAGED mode (dashboard_id or per-role mapping configured) the
+            # token MUST be the role-resolved one. Never fall back to the manual
+            # share_token — that link is unfiltered and would leak the full
+            # dashboard to a role that has no managed link for it.
+            dash = screen.dashboard
+            is_managed = bool(getattr(dash, "dashboard_id", None)) or bool(
+                getattr(dash, "role_filter_mapping", None)
+            )
+            effective_token = resolved_token if is_managed else (resolved_token or dash.share_token)
             if not effective_token:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Dashboard screen has no share token for this role.",
+                    status_code=403,
+                    detail=(
+                        "Your role has no dashboard access for this screen."
+                        if is_managed
+                        else "Dashboard screen has no share token."
+                    ),
                 )
             return {
                 "screen_id": screen.id,

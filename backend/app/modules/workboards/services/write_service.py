@@ -335,13 +335,26 @@ def _claim_auto_number_value(
     against the value we just reserved; the caller writes that into the
     insert payload.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import delete
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from app.modules.workboards.models import WorkboardAutoNumberSequence
 
     bucket = _auto_number_bucket(config.reset, now)
     column_name = config.column
     seed = max(int(config.start_at or 1), 1)
+
+    # Honour the reset contract: when reset != "never", a new period must start
+    # the sequence over. Drop stale buckets for this column so a workboard that
+    # was paused across a period boundary (and any orphaned old-period rows)
+    # cannot leak a non-reset counter into the new period.
+    if getattr(config, "reset", "never") != "never":
+        db.execute(
+            delete(WorkboardAutoNumberSequence).where(
+                WorkboardAutoNumberSequence.workboard_id == workboard.id,
+                WorkboardAutoNumberSequence.column_name == column_name,
+                WorkboardAutoNumberSequence.bucket != bucket,
+            )
+        )
 
     stmt = (
         pg_insert(WorkboardAutoNumberSequence)

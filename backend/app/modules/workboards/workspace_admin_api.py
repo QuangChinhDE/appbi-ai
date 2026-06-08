@@ -428,6 +428,15 @@ _relationships_router = APIRouter(prefix="/workboard-relationships", tags=["work
 def suggest_relationships(
     from_table_id: int = Query(..., gt=0),
     dataset_id: Optional[int] = Query(default=None),
+    deep_scan: bool = Query(
+        default=False,
+        description=(
+            "When true, also probe data-value overlap to surface joins the "
+            "name heuristic misses (e.g. Google Sheets business keys named "
+            "differently like status↔status_code). Heavier (reads rows), so "
+            "the builder triggers it on demand."
+        ),
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("workboards", "edit")),
 ):
@@ -435,8 +444,10 @@ def suggest_relationships(
     a Builder dropdown can prefill into a lookup ``relationship_path``.
 
     Reads dataset semantic explores (the same join graph charts use) so
-    the mini-app builder doesn't ask IT/DE to retype joins. When the
-    dataset has no semantic model yet, returns an empty list.
+    the mini-app builder doesn't ask IT/DE to retype joins. With
+    ``deep_scan`` it additionally surfaces data-overlap candidates (key for
+    Sheets, which has no FKs and off-convention key names). When the dataset
+    has no semantic model yet, returns an empty list (or scan candidates).
     """
     from app.models.dataset import DatasetTable
     from app.services.dataset_model_service import get_dataset_model
@@ -455,9 +466,26 @@ def suggest_relationships(
 
     model = get_dataset_model(db, dataset_id) or {}
     explores = model.get("explores") or []
-    views = {v.get("name"): v for v in (model.get("views") or []) if isinstance(v, dict)}
+    model_views = [v for v in (model.get("views") or []) if isinstance(v, dict)]
 
-    # Build a (source_view_name → [join]) map from semantic explores.
+    # Semantic views are named e.g. "dataset_table_329" — NOT the sheet/source
+    # table name ("wb_tasks"). Joins reference VIEW names, so we must map
+    # view-name ↔ dataset_table_id (carried on each view) instead of guessing
+    # via source_table_name (the previous bug that returned [] for every
+    # auto-generated model).
+    view_to_table_id: Dict[str, Optional[int]] = {
+        v.get("name"): v.get("dataset_table_id")
+        for v in model_views
+        if v.get("name")
+    }
+    table_id_to_view: Dict[int, str] = {
+        int(v["dataset_table_id"]): v["name"]
+        for v in model_views
+        if v.get("dataset_table_id") and v.get("name")
+    }
+
+    # Build a (source_view_name → [join]) map from semantic explores. The
+    # explore's base view is the source of joins that don't carry from_view.
     joins_by_source: Dict[str, List[dict]] = {}
     for exp in explores:
         base_view = exp.get("base_view_name")
@@ -467,38 +495,60 @@ def suggest_relationships(
                 continue
             joins_by_source.setdefault(src, []).append(j)
 
-    src_view_name = from_table.source_table_name or from_table.display_name
+    src_view_name = (
+        table_id_to_view.get(int(from_table_id))
+        or from_table.source_table_name
+        or from_table.display_name
+    )
     candidates = joins_by_source.get(src_view_name, [])
 
-    # Index dataset tables by source_table_name → id for resolution.
-    table_by_source = {
-        t.source_table_name: t
+    # Index dataset tables by id for target resolution.
+    tables_by_id = {
+        t.id: t
         for t in db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
         .all()
-        if t.source_table_name
     }
+
+    def _first(*vals):
+        for v in vals:
+            if isinstance(v, (list, tuple)) and v:
+                return str(v[0])
+            if isinstance(v, str) and v:
+                return v
+        return ""
 
     out: List[JoinSuggestion] = []
     for j in candidates:
         target_view_name = j.get("view")
         if not target_view_name:
             continue
-        target_t = table_by_source.get(target_view_name)
+        target_t = tables_by_id.get(view_to_table_id.get(target_view_name))
         if target_t is None:
             continue
-        from_col = j.get("from_column") or ""
-        to_col = j.get("to_column") or ""
+        from_col = _first(j.get("from_columns"), j.get("from_column"))
+        to_col = _first(j.get("to_columns"), j.get("to_column"))
         if not from_col or not to_col:
             continue
-        # Heuristic label suggestions: any string column on the target.
-        cols = []
-        for c in target_t.columns_cache or []:
-            if isinstance(c, dict):
-                name = c.get("name")
-                ctype = (c.get("type") or "").lower()
-                if name and ctype in {"string", "text", "varchar"}:
-                    cols.append(name)
+        # Heuristic label suggestions: string-ish columns on the target.
+        # columns_cache may be {"columns": [...]} or a bare list — normalise.
+        raw_cc = target_t.columns_cache
+        target_cols = (
+            raw_cc.get("columns") if isinstance(raw_cc, dict) else raw_cc
+        ) or []
+        string_cols, all_cols = [], []
+        for c in target_cols:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            if not name or name == to_col:
+                continue
+            all_cols.append(name)
+            ctype = (c.get("type") or "").lower()
+            if ctype in {"string", "text", "varchar", "char"}:
+                string_cols.append(name)
+        # Prefer string columns as labels; fall back to any non-key column.
+        cols = string_cols or all_cols
         out.append(
             JoinSuggestion(
                 target_table_id=target_t.id,
@@ -509,4 +559,51 @@ def suggest_relationships(
                 suggested_label_columns=cols[:6],
             )
         )
+
+    # Deep-scan fallback: probe data-value overlap to surface joins the name
+    # heuristic misses (Sheets business keys like status↔status_code). Only on
+    # demand because it reads rows. generate_join_suggestions already excludes
+    # joins already in the model, so these are purely ADDITIVE candidates.
+    if deep_scan:
+        seen = {(s.target_table_id, s.from_column, s.to_column) for s in out}
+        try:
+            from app.services.dataset_model_service import generate_join_suggestions
+            scan = generate_join_suggestions(db, dataset_id, deep_scan=True) or {}
+        except Exception:  # pragma: no cover - scan is best-effort
+            scan = {}
+        for rec in scan.get("recommended") or []:
+            if rec.get("from_view") != src_view_name:
+                continue
+            target_t = tables_by_id.get(view_to_table_id.get(rec.get("to_view")))
+            if target_t is None:
+                continue
+            from_col = _first(rec.get("from_columns"), rec.get("from_column"))
+            to_col = _first(rec.get("to_columns"), rec.get("to_column"))
+            if not from_col or not to_col or (target_t.id, from_col, to_col) in seen:
+                continue
+            seen.add((target_t.id, from_col, to_col))
+            raw_cc = target_t.columns_cache
+            target_cols = (
+                raw_cc.get("columns") if isinstance(raw_cc, dict) else raw_cc
+            ) or []
+            string_cols, all_cols = [], []
+            for c in target_cols:
+                if not isinstance(c, dict):
+                    continue
+                name = c.get("name")
+                if not name or name == to_col:
+                    continue
+                all_cols.append(name)
+                if (c.get("type") or "").lower() in {"string", "text", "varchar", "char"}:
+                    string_cols.append(name)
+            out.append(
+                JoinSuggestion(
+                    target_table_id=target_t.id,
+                    target_table_display=target_t.display_name or str(rec.get("to_view")),
+                    target_table_source=target_t.source_table_name or str(rec.get("to_view")),
+                    from_column=from_col,
+                    to_column=to_col,
+                    suggested_label_columns=(string_cols or all_cols)[:6],
+                )
+            )
     return out

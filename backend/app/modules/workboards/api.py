@@ -33,7 +33,11 @@ from app.modules.workboards.models import (
     WorkboardAppUser,
     WorkboardWorkspace,
 )
-from app.modules.workboards.permissions import require_dataset_binding_access
+from app.modules.workboards.permissions import (
+    require_dataset_binding_access,
+    assert_workboard_dataset_supported,
+    assert_workboard_tables_supported,
+)
 from app.modules.workboards.roles import is_owner_role, normalize_app_user_role
 from app.modules.workboards.schemas import (
     AppUserCreate,
@@ -122,6 +126,7 @@ def create_workboard(
     current_user: User = Depends(require_permission("workboards", "edit")),
 ):
     require_dataset_binding_access(db, current_user, payload.dataset_id)
+    assert_workboard_dataset_supported(db, payload.dataset_id)
     try:
         wb = WorkboardService.create(db, payload, owner_id=current_user.id)
     except ValueError as exc:
@@ -177,6 +182,14 @@ def update_workboard(
             current_user,
             patch.get("dataset_id") or wb.dataset_id,
         )
+        # Sheets-only gate at the binding moment. Changing the dataset must point
+        # at a Sheets-backed dataset; any screen table must be a Sheets table.
+        if "dataset_id" in patch and patch.get("dataset_id"):
+            assert_workboard_dataset_supported(db, patch["dataset_id"])
+        if "layout_json" in patch and payload.layout_json is not None:
+            assert_workboard_tables_supported(
+                db, [s.table_id for s in payload.layout_json.screens]
+            )
     try:
         updated = WorkboardService.update(db, workboard_id, payload)
     except ValueError as exc:
@@ -240,6 +253,30 @@ def delete_workboard(
     )
 
 
+def _assert_owner_pin_rotated(db: Session, workboard_id: int) -> None:
+    """Block publish / public-link creation while any owner still uses the
+    factory-default PIN. Owners bypass all RLS, so a default PIN on a publicly
+    reachable workboard is an open door."""
+    owners = (
+        db.query(WorkboardAppUser)
+        .filter(WorkboardAppUser.workboard_id == workboard_id)
+        .all()
+    )
+    offenders = [
+        u.username
+        for u in owners
+        if is_owner_role(u.role) and u.pin_hash and is_default_pin_hash(u.pin_hash)
+    ]
+    if offenders:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Đổi PIN mặc định cho tài khoản owner ("
+                f"{', '.join(offenders)}) trước khi publish hoặc chia sẻ workboard."
+            ),
+        )
+
+
 @router.post("/{workboard_id}/publish", response_model=WorkboardResponse)
 def publish_workboard(
     workboard_id: int,
@@ -250,6 +287,7 @@ def publish_workboard(
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
+    _assert_owner_pin_rotated(db, wb.id)
     wb = WorkboardService.refresh_schema_defaults(db, wb)
     wb.is_published = True
     db.commit()
@@ -781,6 +819,7 @@ def create_public_link(
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
+    _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
         wb = WorkboardService.refresh_schema_defaults(db, wb)
         wb.is_published = True
@@ -954,6 +993,7 @@ def import_workboard_template(
     """
     target_workspace: WorkboardWorkspace | None = None
     require_dataset_binding_access(db, current_user, payload.target_dataset_id)
+    assert_workboard_dataset_supported(db, payload.target_dataset_id)
     if payload.target_workspace_id is not None:
         _ensure_can_attach_workspace(current_user)
         target_workspace = (
@@ -1276,6 +1316,7 @@ def import_auto_map(
     import re as _re
 
     require_dataset_binding_access(db, current_user, body.target_dataset_id)
+    assert_workboard_dataset_supported(db, body.target_dataset_id)
     bundle = body.bundle or {}
     tables_meta = bundle.get("tables_meta") or {}
     if not isinstance(tables_meta, dict) or not tables_meta:

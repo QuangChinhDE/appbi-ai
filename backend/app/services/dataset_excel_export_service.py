@@ -28,20 +28,33 @@ def sanitize_excel_sheet_title(title: str | None) -> str:
     return cleaned[:31] or "Sheet1"
 
 
+# openpyxl/ECMA-376 hard limit per cell. A longer string makes openpyxl raise
+# (IllegalCharacterError / ValueError) or silently truncate — clip explicitly
+# with an ellipsis so export never crashes on a huge cell (e.g. a base64
+# image, a long note, or a JSON blob).
+_XL_CELL_MAX = 32767
+
+
+def _clip_cell(text: str) -> str:
+    return text if len(text) <= _XL_CELL_MAX else (text[: _XL_CELL_MAX - 1] + "…")
+
+
 def _normalize_cell_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.replace(tzinfo=None) if value.tzinfo is not None else value
     if isinstance(value, time):
         return value.replace(tzinfo=None) if value.tzinfo is not None else value
-    if value is None or isinstance(value, (bool, int, float, str, date)):
+    if isinstance(value, str):
+        return _clip_cell(value)
+    if value is None or isinstance(value, (bool, int, float, date)):
         return value
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, (dict, list, tuple, set)):
-        return json.dumps(value, default=str, separators=(",", ":"))
+        return _clip_cell(json.dumps(value, default=str, separators=(",", ":")))
     if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
+        return _clip_cell(value.decode("utf-8", errors="replace"))
+    return _clip_cell(str(value))
 
 
 def _row_to_excel_values(row: Any, columns: Sequence[str]) -> list[Any]:

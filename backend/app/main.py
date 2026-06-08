@@ -16,6 +16,7 @@ from slowapi.util import get_remote_address
 from app.core import settings, setup_logging
 from app.core.config import validate_security_settings
 from app.api import api_router
+from app.services.google_sheets_cache import SheetsQuotaError
 
 # Setup logging
 setup_logging()
@@ -152,6 +153,18 @@ async def http_exception_handler_safe(request: Request, exc: HTTPException):
         status_code=exc.status_code,
         content={"detail": safe},
         headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(SheetsQuotaError)
+async def sheets_quota_handler(request: Request, exc: SheetsQuotaError):
+    """Google Sheets read-quota hit anywhere in the request → honest, retryable
+    503 (never a silent empty result)."""
+    _logger.warning("[sheets_quota] %s at %s", str(exc), request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc) or "Google Sheets read quota exceeded — retry shortly."},
+        headers={"Retry-After": "5"},
     )
 
 

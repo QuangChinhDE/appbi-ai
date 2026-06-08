@@ -148,6 +148,11 @@ def _coerce_sheet_value(value: Any, declared_type: str) -> Any:
     return text or None
 
 
+def _duckdb_quote_ident(name: str) -> str:
+    """Quote an identifier for DuckDB (double quotes, doubling internal ones)."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
 def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
     col_names = [c["name"] for c in col_defs]
     col_types = {c["name"]: c.get("type", "string") for c in col_defs}
@@ -1859,12 +1864,22 @@ class DataSourceConnectionService:
             # ── Collect all sheet data from the live workbook ─────────────────
             spreadsheet_id, connector = DataSourceConnectionService._get_google_sheets_connector(config)
 
-            sheet_names = connector.list_sheets(spreadsheet_id)
-            all_sheets = {}
-            for sn in sheet_names:
-                data = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
-                all_sheets[sn] = data
-            logger.info(f"Google Sheets data via API: {len(all_sheets)} sheets")
+            # Whole-workbook read is cached per spreadsheet for a short TTL so a
+            # burst of screen/lookup reads collapses into ONE Sheets fetch
+            # instead of (list_sheets + N tabs) PER query — the root cause of
+            # the 60-reads/min/user quota blow-ups. Writes invalidate this cache
+            # (see google_sheets_connector append/update/delete).
+            from app.services import google_sheets_cache
+
+            def _load_workbook():
+                names = connector.list_sheets(spreadsheet_id)
+                loaded = {}
+                for sn in names:
+                    loaded[sn] = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
+                return loaded
+
+            all_sheets = google_sheets_cache.get_or_load(spreadsheet_id, _load_workbook)
+            logger.info(f"Google Sheets data (cached workbook): {len(all_sheets)} sheets")
 
             # ── Try DuckDB first (full SQL support) ───────────────────────────
             try:
@@ -1889,10 +1904,24 @@ class DataSourceConnectionService:
                     else:
                         table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
+                    # Materialise the Arrow table into a NATIVE DuckDB table
+                    # instead of querying the Arrow view directly. DuckDB's
+                    # Arrow scan pushes predicates down to PyArrow compute
+                    # kernels, which have gaps — e.g. BETWEEN + ORDER BY over a
+                    # column containing NULLs raises
+                    # "ArrowNotImplementedError: 'and_kleene' (bool, null)" and
+                    # the whole read fails (date-range filters silently return
+                    # zero rows). Copying into a native table makes DuckDB use
+                    # its own complete execution engine. Null/value semantics
+                    # are preserved; cost is negligible for Sheets-sized data.
                     safe_name = sheet_name.replace(" ", "_")
-                    con.register(safe_name, table)
-                    if safe_name != sheet_name:
-                        con.register(sheet_name, table)
+                    con.register("__arrow_src__", table)
+                    for nm in dict.fromkeys([safe_name, sheet_name]):
+                        con.execute(
+                            f'CREATE TABLE {_duckdb_quote_ident(nm)} AS '
+                            f'SELECT * FROM "__arrow_src__"'
+                        )
+                    con.unregister("__arrow_src__")
 
                 final_sql = sql_query
                 if limit:

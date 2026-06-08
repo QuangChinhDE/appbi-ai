@@ -139,6 +139,22 @@ export default function RlsEditor({
         />
       )}
 
+      {rules.length === 0 &&
+        !(screen as { rls_default?: unknown }).rls_default &&
+        (screen.kind === 'form' || screen.kind === 'table') && (
+          <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-caption">
+            <p className="font-emphasis text-amber-900">
+              ⚠️ Chưa có rule — app user (worker) sẽ KHÔNG thấy dòng nào
+            </p>
+            <p className="mt-0.5 text-amber-800">
+              Owner thấy mọi dòng, nhưng mọi role khác sẽ thấy <strong>0 dòng</strong> và bị
+              chặn ghi cho tới khi bạn thêm ít nhất một rule. Bấm “Add rule” bên dưới (mặc
+              định lọc <code className="font-mono">{MINIAPP_USER_COLUMN}</code> ={' '}
+              <code className="font-mono">{'{{app_user.username}}'}</code>).
+            </p>
+          </div>
+        )}
+
       <div className="space-y-2">
         {rules.map((r, idx) => (
           <RuleCard
