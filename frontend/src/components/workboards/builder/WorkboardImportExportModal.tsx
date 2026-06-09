@@ -106,11 +106,19 @@ function ExportPanel({
     const a = document.createElement('a');
     a.href = url;
     const slug = workboard.slug || `workboard-${workboard.id}`;
-    a.download = `${slug}.workboard.json`;
+    // Single ``.json`` extension only. The old ``${slug}.workboard.json`` had a
+    // double extension that Windows (which hides known extensions) showed as
+    // ``${slug}.workboard`` — looking like a stray ``.workboard`` file, not JSON.
+    a.download = `${slug}-workboard.json`;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    a.remove();
+    // Revoke the blob URL on a delay — NOT synchronously. Revoking right after
+    // click() races the download in Chromium-based browsers: the engine drops
+    // the anchor's `download` filename and saves the file as the blob's bare
+    // UUID with no extension (the reported "tên lạ hoắc, không phải .json" bug).
+    // Matches the working pattern used elsewhere (ws/.../page.tsx, lib/api/public.ts).
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleCopy = async () => {
