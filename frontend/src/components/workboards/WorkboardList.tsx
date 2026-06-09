@@ -16,6 +16,7 @@ import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { IconButton } from '@/components/ui/Button';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
+import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
 import type { Workboard } from '@/lib/api/workboards';
 
 interface WorkboardListProps {
@@ -188,6 +189,11 @@ export function WorkboardList({
                   </td>
                   <td className="app-list-cell-tight text-right">
                     <div className="flex items-center justify-end gap-1">
+                      <WorkboardPublishToggle
+                        workboard={wb}
+                        variant="icon"
+                        canEdit={perms.canEdit}
+                      />
                       {onShare && perms.canShare && (
                         <IconButton
                           aria-label="Share workboard"

@@ -18,6 +18,7 @@ exports keep working as we add fields.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -28,6 +29,18 @@ from app.modules.workboards.models import Workboard, WorkboardAppUser
 from app.modules.workboards.services.crud_service import _normalize_layout
 
 logger = get_logger(__name__)
+
+
+def _slugify_workboard(value: str | None) -> str:
+    """Turn a workboard name into a valid slug (pattern ``^[a-z0-9][a-z0-9-_]*$``).
+
+    Diacritics/punctuation collapse to ``-``; leading/trailing separators are
+    trimmed. Falls back to ``imported-workboard`` when nothing usable remains.
+    A slug is REQUIRED for a workboard to appear in a public Cổng (the menu is
+    keyed by ``workboard_slug``), so an imported workboard must always get one.
+    """
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip()).strip("-").lower()
+    return text or "imported-workboard"
 
 # v1 = referenced-tables-only snapshot (needs an existing target dataset on import).
 # v2 = full dataset snapshot (all tables + datasource identity + semantic model:
@@ -907,20 +920,20 @@ def import_workboard(
 
     wb_meta = bundle.get("workboard") or {}
     raw_name = (target_name or wb_meta.get("name") or "Imported workboard").strip()
-    raw_slug = wb_meta.get("slug")
-
-    # Make slug unique if it collides.
-    final_slug: Optional[str] = None
-    if raw_slug:
-        candidate = raw_slug
-        suffix = 2
-        while db.query(Workboard).filter(Workboard.slug == candidate).first():
-            candidate = f"{raw_slug}-{suffix}"
-            suffix += 1
-            if suffix > 50:
-                candidate = None
-                break
-        final_slug = candidate
+    # Always give the imported workboard a slug — it is REQUIRED to publish the
+    # app to a public Cổng (the workspace menu is keyed by workboard_slug). Use
+    # the bundle's slug when present, else derive one from the name; then make
+    # it unique against existing workboards.
+    base_slug = (wb_meta.get("slug") or "").strip() or _slugify_workboard(raw_name)
+    candidate = base_slug
+    suffix = 2
+    while db.query(Workboard.id).filter(Workboard.slug == candidate).first():
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+        if suffix > 500:
+            candidate = f"{base_slug}-{new_pk_table or 'x'}-{suffix}"
+            break
+    final_slug = candidate
 
     if target_dataset_id is None:
         raise ValueError(

@@ -89,6 +89,15 @@ export const workspaceAdminApi = {
     return r.data;
   },
 
+  /** Activate / deactivate the Cổng. When inactive, the public link rejects
+   *  PIN logins (the app goes offline for end-users without unpublishing it). */
+  async setActive(workspaceId: number, isActive: boolean): Promise<WorkspaceAdmin> {
+    const r = await apiClient.patch<WorkspaceAdmin>(`/workspaces/${workspaceId}`, {
+      is_active: isActive,
+    });
+    return r.data;
+  },
+
   /** Append this workboard to an existing workspace's menu (idempotent).
    *  Re-fetches the FULL menu first (the preview list only carries
    *  {workboard_slug}) so sibling cards' labels/icons are not clobbered, and

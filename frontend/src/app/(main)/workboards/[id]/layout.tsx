@@ -23,8 +23,10 @@ import {
 } from 'lucide-react';
 
 import { useWorkboard } from '@/hooks/use-workboards';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { Button } from '@/components/ui/Button';
 import WorkboardImportExportModal from '@/components/workboards/builder/WorkboardImportExportModal';
+import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
 import {
   consumeWorkboardDefaultOwnerNotice,
   type WorkboardDefaultOwnerNotice,
@@ -113,6 +115,13 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
         </div>
 
         <div className="flex-1" />
+
+        <WorkboardPublishToggle
+          workboard={workboard}
+          variant="pill"
+          canEdit={getResourcePermissions(workboard.user_permission ?? undefined).canEdit}
+        />
+        <div className="mx-0.5 h-5 w-px bg-surface-3" />
 
         <button
           onClick={() => setImportExportMode('export')}

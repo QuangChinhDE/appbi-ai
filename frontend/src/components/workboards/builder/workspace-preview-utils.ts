@@ -19,6 +19,9 @@ export interface WorkspaceLite {
    * (workspaces are public + PIN-protected unless explicitly internal).
    */
   access_mode?: WorkspaceAccessMode;
+  /** When false the public link rejects logins (Cổng deactivated). Older
+   *  snapshots may omit it; treat missing as active. */
+  is_active?: boolean;
   menu_config: Array<{ workboard_slug: string }>;
 }
 

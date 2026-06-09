@@ -25,6 +25,8 @@ import {
   Laptop,
   AlertCircle,
   RotateCw,
+  Power,
+  PowerOff,
 } from 'lucide-react';
 
 import {
@@ -99,6 +101,7 @@ export default function BuilderLivePreview({
   const [loadingWs, setLoadingWs] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [wsBusy, setWsBusy] = useState(false);
+  const [activeBusy, setActiveBusy] = useState(false);
   const [wsActionError, setWsActionError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const workboardSlug = workboard.slug ?? '';
@@ -327,6 +330,31 @@ export default function BuilderLivePreview({
     }
   }, [activeWs, workboardSlug, workboard.name, workboard.icon, workboard.description]);
 
+  // Activate / deactivate the selected Cổng. Deactivating takes the public
+  // link offline (login rejected) without touching the workboard's published
+  // state — a fast "pause" for end-user access. Instantly reversible.
+  const handleToggleActive = useCallback(async () => {
+    if (!activeWs) return;
+    const currentlyActive = activeWs.is_active !== false;
+    setActiveBusy(true);
+    setWsActionError(null);
+    try {
+      const updated = await workspaceAdminApi.setActive(activeWs.id, !currentlyActive);
+      const patch = { is_active: updated.is_active };
+      setWorkspaces((prev) =>
+        prev.map((w) => (w.id === updated.id ? { ...w, ...patch } : w)),
+      );
+      setActiveWs((prev) =>
+        prev && prev.id === updated.id ? { ...prev, ...patch } : prev,
+      );
+      setIframeKey((k) => k + 1);
+    } catch (err) {
+      setWsActionError(getApiErrorMessage(err, 'Không đổi được trạng thái Cổng.'));
+    } finally {
+      setActiveBusy(false);
+    }
+  }, [activeWs]);
+
   // ── Collapsed: hide entirely so the editor fills the whole row.
   // The toggle that re-opens it lives in WorkboardBuilder's center panel.
   // (The outer Panel uses `collapsedSize={0}` so its slot also disappears.)
@@ -408,6 +436,33 @@ export default function BuilderLivePreview({
                 title="Đưa app này vào menu của cổng đang chọn (hiện cho người dùng cuối khi đăng nhập bằng PIN)"
               >
                 Gắn vào cổng này
+              </Button>
+            )}
+          {!loadingWs &&
+            activeWs &&
+            !!workboardSlug &&
+            isWorkboardLinked(activeWs, workboardSlug) && (
+              <Button
+                variant="outline"
+                size="xs"
+                loading={activeBusy}
+                disabled={activeBusy}
+                onClick={() => void handleToggleActive()}
+                leadingIcon={
+                  activeWs.is_active !== false ? (
+                    <Power className="h-3 w-3" />
+                  ) : (
+                    <PowerOff className="h-3 w-3" />
+                  )
+                }
+                className={activeWs.is_active !== false ? '' : 'text-danger'}
+                title={
+                  activeWs.is_active !== false
+                    ? 'Cổng đang bật — bấm để TẮT (khoá đăng nhập qua link công khai)'
+                    : 'Cổng đang tắt — bấm để BẬT lại'
+                }
+              >
+                {activeWs.is_active !== false ? 'Cổng: Bật' : 'Cổng: Tắt'}
               </Button>
             )}
           {!isInternal && (

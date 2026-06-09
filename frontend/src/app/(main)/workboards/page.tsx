@@ -9,7 +9,6 @@
 import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  CheckCircle2,
   ClipboardList,
   Clock,
   Database,
@@ -41,6 +40,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { WorkboardList } from '@/components/workboards/WorkboardList';
+import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
 import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
 import { DefaultOwnerCredentialsDialog } from '@/components/workboards/DefaultOwnerCredentialsDialog';
 import type { Workboard } from '@/lib/api/workboards';
@@ -725,11 +725,11 @@ function WorkboardGridCard({
             <ClipboardList className="h-4 w-4" />
           </div>
           <div className="flex items-center gap-1">
-            {workboard.is_published && (
-              <span title="Published">
-                <CheckCircle2 className="h-4 w-4 text-success" />
-              </span>
-            )}
+            <WorkboardPublishToggle
+              workboard={workboard}
+              variant="icon"
+              canEdit={perms.canEdit}
+            />
             {perms.canDelete && (
               <IconButton
                 aria-label="Delete"

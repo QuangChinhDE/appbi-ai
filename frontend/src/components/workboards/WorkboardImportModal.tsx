@@ -32,6 +32,7 @@ import {
   type WorkboardImportReport,
   type WorkboardSourceInspect,
 } from '@/lib/api/workboards';
+import { workspaceAdminApi } from '@/lib/api/workspaces';
 
 type ImportReport = WorkboardImportReport;
 
@@ -110,6 +111,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
   const [name, setName] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null);
   const [createdId, setCreatedId] = useState<number | null>(null);
+  // Imported workboard identity, kept so we can publish it to a public Cổng
+  // (the workspace menu is keyed by slug) without a round-trip.
+  const [createdSlug, setCreatedSlug] = useState<string | null>(null);
+  const [createdName, setCreatedName] = useState<string>('');
+  const [publicLink, setPublicLink] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [tableMapping, setTableMapping] = useState<Record<string, number | ''>>({});
   const [columnMapping, setColumnMapping] = useState<Record<string, Record<string, string>>>({});
   const [autoMapping, setAutoMapping] = useState(false);
@@ -245,28 +253,67 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     }
   };
 
-  const openCleanOrReport = (data: { id?: number; _import_report?: ImportReport }) => {
+  const openCleanOrReport = (data: {
+    id?: number;
+    slug?: string | null;
+    name?: string;
+    _import_report?: ImportReport;
+  }) => {
     // Import may have just created a brand-new dataset + workboard. Refresh the
     // cached lists so the new builder's "Bound dataset" name resolves (instead
     // of momentarily showing "— no dataset —") and the workboards list updates.
     queryClient.invalidateQueries({ queryKey: ['datasets'] });
     queryClient.invalidateQueries({ queryKey: ['workboards'] });
     setCreatedId(data.id ?? null);
-    const importReport = (data._import_report as ImportReport) || null;
-    setReport(importReport);
-    const cleanImport =
-      !importReport ||
-      (importReport.missing_tables.length === 0 &&
-        importReport.missing_columns.length === 0 &&
-        (importReport.app_users_needing_pin?.length ?? 0) === 0 &&
-        (importReport.dataset_rebuild?.skipped_tables?.length ?? 0) === 0);
-    if (cleanImport && data.id) {
-      toast.success('Đã import — mở Builder');
-      onClose();
-      router.push(`/workboards/${data.id}`);
+    setCreatedSlug(data.slug ?? null);
+    setCreatedName(data.name ?? '');
+    setPublicLink(null);
+    setPublishError(null);
+    setReport((data._import_report as ImportReport) || null);
+    // We DON'T auto-navigate to the Builder anymore: the common goal after
+    // import is to publish the app and grab its public link to share with
+    // end-users (no AppBI account needed). The success screen offers both
+    // "Tạo link công khai" and "Mở workboard mới".
+    toast.success('Đã import workboard');
+  };
+
+  // Publish the imported workboard to a brand-new public Cổng and surface its
+  // shareable link. createWithWorkboard makes a workspace whose menu already
+  // contains this workboard with access_mode='public_app_users', so the
+  // imported app-users can log in via PIN at /ws/{token} with no AppBI account.
+  const handleCreatePublicLink = async () => {
+    if (!createdSlug) {
+      setPublishError(
+        'Workboard chưa có slug — mở workboard trong Builder, đặt slug ở phần cài đặt rồi publish.',
+      );
       return;
     }
-    toast.success('Đã import workboard');
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      const ws = await workspaceAdminApi.createWithWorkboard({
+        name: createdName || createdSlug,
+        workboardSlug: createdSlug,
+        workboardLabel: createdName || createdSlug,
+      });
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      setPublicLink(`${origin}/ws/${ws.token}`);
+      toast.success('Đã tạo Cổng công khai — copy link để chia sẻ');
+    } catch (err: unknown) {
+      setPublishError(getApiErrorMessage(err, 'Không tạo được Cổng công khai.'));
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const copyPublicLink = async () => {
+    if (!publicLink) return;
+    try {
+      await navigator.clipboard.writeText(publicLink);
+      toast.success('Đã copy link');
+    } catch {
+      toast.error('Trình duyệt chặn copy — bôi đen link để copy thủ công');
+    }
   };
 
   const handleSubmitNew = async () => {
@@ -398,8 +445,55 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         )
       }
     >
-      {createdId && report ? (
-        <ImportSuccessReport report={report} />
+      {createdId ? (
+        <div className="space-y-4">
+          {report ? (
+            <ImportSuccessReport report={report} />
+          ) : (
+            <div className="flex items-start gap-2 rounded-md border border-success/20 bg-success/5 p-3 text-caption text-text-secondary">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" />
+              <div>Import thành công — app, dataset và bảng user đã được tạo.</div>
+            </div>
+          )}
+          <div className="space-y-2 rounded-md border border-info/20 bg-info/5 p-3">
+            <div className="text-caption font-medium text-text-primary">
+              Chia sẻ ra ngoài (người dùng không cần tài khoản AppBI)
+            </div>
+            <div className="text-caption text-text-tertiary">
+              Tạo một Cổng công khai cho app này để lấy link chia sẻ — người dùng đăng
+              nhập bằng PIN đã import (vào thẳng mini-app, không cần AppBI).
+            </div>
+            {publicLink ? (
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={publicLink}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="flex-1 truncate rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary"
+                />
+                <Button variant="secondary" size="sm" onClick={copyPublicLink}>
+                  Copy
+                </Button>
+                <a href={publicLink} target="_blank" rel="noreferrer">
+                  <Button variant="ghost" size="sm">Mở</Button>
+                </a>
+              </div>
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleCreatePublicLink}
+                loading={publishing}
+                disabled={publishing}
+              >
+                Tạo link công khai
+              </Button>
+            )}
+            {publishError && (
+              <div className="text-caption text-error">{publishError}</div>
+            )}
+          </div>
+        </div>
       ) : (
         <div className="space-y-4">
           <FieldGroup
