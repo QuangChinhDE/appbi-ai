@@ -1266,75 +1266,107 @@ def rebuild_dataset_from_bundle(
             db.rollback()
             report["skipped_tables"].append({"old_table_id": old_id, "reason": "error", "detail": str(exc)[:200]})
 
-    # Build the semantic structure, then overlay the bundle's exact
-    # dimensions/measures/pk + joins so relationships replay faithfully.
+    # Recreate the dataset's semantic model 1:1 from the bundle (views +
+    # relationships exactly as exported) so the imported dataset matches the
+    # source and the mini-app runs the same. Falls back to the standard
+    # auto-generate ("Generate model") if the bundle has no model snapshot
+    # (older v1 bundle) or if the faithful rebuild errors — so the dataset
+    # ALWAYS ends up with a working model. Only ever creates rows for THIS new
+    # dataset; never touches existing datasets/dashboards.
+    semantic = bundle.get("semantic")
+    built = False
     try:
-        generate_dataset_model(db, dataset.id, force=True)
-        _overlay_semantic(db, dataset.id, id_map, bundle.get("semantic"))
+        if semantic and semantic.get("views"):
+            built = _rebuild_semantic_from_bundle(db, dataset.id, id_map, semantic)
     except Exception as exc:
-        logger.warning("rebuild: semantic model build/overlay failed for ds %s: %s", dataset.id, exc)
+        logger.warning("rebuild: faithful model rebuild failed for ds %s: %s", dataset.id, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        built = False
+    if not built:
+        try:
+            generate_dataset_model(db, dataset.id, force=True)
+        except Exception as exc:
+            logger.warning("rebuild: model generation failed for ds %s: %s", dataset.id, exc)
 
     report["id_map"] = {str(k): v for k, v in id_map.items()}
+    report["model_source"] = "bundle" if built else "generated"
     return dataset, report
 
 
-def _overlay_semantic(
+def _rebuild_semantic_from_bundle(
     db: Session,
     dataset_id: int,
     id_map: Dict[int, int],
-    semantic: Optional[Dict[str, Any]],
-) -> None:
-    """Overwrite the freshly auto-generated views/explores with the bundle's
-    exact dims/measures/pk + joins. Matched by NEW table id (old→new via
-    ``id_map``). Best-effort: anything that doesn't line up keeps the
-    auto-generated default."""
-    if not semantic or not id_map:
-        return
+    semantic: Dict[str, Any],
+) -> bool:
+    """Recreate the semantic model 1:1 from the export bundle for the freshly
+    created dataset: one SemanticView per exported view (with the exact
+    dimensions / measures / primary_key) + the SemanticExplores with their
+    joins/default_filters verbatim. Views keep their original names so the join
+    SQL (which references ``${view.col}``) stays valid. Returns True if a model
+    was built (>= 1 view), False if there was nothing to build (caller then
+    falls back to auto-generate). Scoped entirely to ``dataset_id`` — no other
+    dataset's model is read or mutated."""
     from app.models.semantic import SemanticModel, SemanticView, SemanticExplore
 
-    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
-    if not model:
-        return
-    new_table_ids = list(id_map.values())
-    views = (
-        db.query(SemanticView)
-        .filter(SemanticView.dataset_table_id.in_(new_table_ids or [0]))
-        .all()
+    views_b = semantic.get("views") or []
+    explores_b = semantic.get("explores") or []
+
+    # Map each bundle view to a NEW table id; skip views whose table wasn't
+    # recreated (e.g. a generated-calendar table we don't replay).
+    pending_views = []
+    for bv in views_b:
+        old_tid = bv.get("old_table_id")
+        new_tid = id_map.get(int(old_tid)) if old_tid is not None else None
+        if new_tid:
+            pending_views.append((int(old_tid), new_tid, bv))
+    if not pending_views:
+        return False
+
+    model = SemanticModel(
+        dataset_id=dataset_id,
+        name=semantic.get("model_name") or f"model_{dataset_id}",
+        settings=semantic.get("model_settings"),
     )
-    view_by_new_table = {v.dataset_table_id: v for v in views}
+    db.add(model)
+    db.flush()
 
-    for bv in semantic.get("views") or []:
-        new_tid = id_map.get(int(bv["old_table_id"])) if bv.get("old_table_id") is not None else None
-        view = view_by_new_table.get(new_tid) if new_tid else None
-        if not view:
-            continue
-        if bv.get("dimensions") is not None:
-            view.dimensions = bv["dimensions"]
-        if bv.get("measures") is not None:
-            view.measures = bv["measures"]
-        view.primary_key = bv.get("primary_key")
-
-    # Explores: match by the base view's NEW table id, replay joins/filters.
-    explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
-    explore_by_base_view = {e.base_view_id: e for e in explores}
-    for be in semantic.get("explores") or []:
-        new_tid = (
-            id_map.get(int(be["base_view_old_table_id"]))
-            if be.get("base_view_old_table_id") is not None
-            else None
+    view_by_old_table: Dict[int, Any] = {}
+    for old_tid, new_tid, bv in pending_views:
+        view = SemanticView(
+            name=bv.get("name") or f"view_{new_tid}",
+            sql_table_name=bv.get("sql_table_name"),
+            dataset_table_id=new_tid,
+            dimensions=bv.get("dimensions") or [],
+            measures=bv.get("measures") or [],
+            primary_key=bv.get("primary_key"),
+            description=bv.get("description"),
         )
-        base_view = view_by_new_table.get(new_tid) if new_tid else None
+        db.add(view)
+        db.flush()
+        view_by_old_table[old_tid] = view
+
+    for be in explores_b:
+        old_base = be.get("base_view_old_table_id")
+        base_view = view_by_old_table.get(int(old_base)) if old_base is not None else None
         if not base_view:
             continue
-        explore = explore_by_base_view.get(base_view.id)
-        if not explore:
-            continue
-        if be.get("joins") is not None:
-            explore.joins = be["joins"]
-        if be.get("default_filters") is not None:
-            explore.default_filters = be["default_filters"]
+        db.add(
+            SemanticExplore(
+                model_id=model.id,
+                base_view_id=base_view.id,
+                base_view_name=be.get("base_view_name") or base_view.name,
+                joins=be.get("joins") or [],
+                default_filters=be.get("default_filters") or {},
+                name=be.get("name") or base_view.name,
+            )
+        )
 
     db.commit()
+    return True
 
 
 def import_from_source(
