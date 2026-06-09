@@ -1,37 +1,47 @@
 /**
- * CanvasOverview — Mức 1 của builder.
+ * CanvasOverview — Mức 1 của builder (workspace-first).
  *
- * Khi user vào tab Builder, đây là view đầu tiên: chỉ liệt kê screens
- * có trong mini-app như những hàng card lớn, kèm data-strip (dataset
- * đang bind) ở đầu và palette "+ Form / + List / …" ở section heading.
+ * Bố cục "một phòng một lúc": một dải TAB Workspace ở trên; chọn tab nào thì
+ * danh sách bên dưới CHỈ hiện screen của workspace đó (đổi tab → bộ screen
+ * khác, không lẫn lộn). Tab [Tất cả] xem/sắp xếp toàn cục, tab [Khác] cho
+ * screen chưa phân nhóm. Header của workspace đang mở chứa: đổi tên, biểu
+ * tượng, xoá, và palette "+ Form / + Table / …" (thêm screen VÀO chính
+ * workspace đang mở).
  *
- * Click 1 screen card -> WorkboardBuilder switch sang mức 2 (Screen
- * editor full-page). Pattern này tách 2 nhiệm vụ khác nhau (xem tổng
- * quan vs. config 1 screen) thay vì nhồi chung 1 màn hình.
+ * Thứ tự nav là thứ tự phẳng của ``screens`` (mini_app_nav.items) nên mọi
+ * reorder ở view đã lọc đều quy về CHỈ SỐ TUYỆT ĐỐI trong ``screens`` trước
+ * khi gọi ``onReorderScreens`` — không làm lệch thứ tự nav.
  *
- * Style bám sát design tokens hệ thống (rgb(var(--surface-1)),
- * text-caption, font-emphasis, brand color) — không sinh ra token mới.
+ * Style bám design tokens hệ thống; type-scale theo 1 token / 1 vai trò.
  */
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ClipboardEdit,
   Database,
   FileText,
+  FolderInput,
+  FolderPlus,
   GripVertical,
+  Layers,
   LayoutDashboard,
+  Pencil,
   Plus,
   Settings,
   Table as TableIcon,
   Trash2,
+  X,
 } from 'lucide-react';
 
 import type { Dataset } from '@/hooks/use-datasets';
-import type { ScreenKind, ScreenSpec } from './types';
+import type { ScreenGroupSpec, ScreenKind, ScreenSpec } from './types';
 import { resolveScreenIcon } from './ScreenIconRegistry';
+import IconPicker from './IconPicker';
+import { toast } from '@/lib/toast';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   form: ClipboardEdit,
@@ -59,25 +69,34 @@ interface DatasetTableInfo {
   columns: { name: string; type?: string }[];
 }
 
+/** Sentinel tab keys (everything else is a real workspace/group id). */
+const TAB_ALL = '__all__';
+const TAB_UNGROUPED = '__ungrouped__';
+
 interface Props {
   screens: ScreenSpec[];
   tables: DatasetTableInfo[];
   boundDataset: Dataset | null;
+  /** Named workspaces (screen groups). Empty = flat nav. */
+  groups: ScreenGroupSpec[];
   onPickScreen: (id: string) => void;
-  onAddScreen: (kind: ScreenKind) => void;
+  /** Add a screen; when a real workspace tab is active, groupId targets it. */
+  onAddScreen: (kind: ScreenKind, groupId?: string | null) => void;
   onOpenAppSettings: () => void;
-  onMoveScreen: (idx: number, dir: -1 | 1) => void;
-  /** Drag-and-drop reorder: moves the screen at ``fromIdx`` to
-   * ``toIdx`` (positions are pre-drop indices in the current array). */
+  /** Reorder by ABSOLUTE indices into the flat ``screens`` array. */
   onReorderScreens: (fromIdx: number, toIdx: number) => void;
   onDeleteScreen: (id: string) => void;
+  onCreateGroup: (label: string) => void;
+  onRenameGroup: (id: string, label: string) => void;
+  onDeleteGroup: (id: string) => void;
+  /** Move a screen into a workspace (or unassign when groupId is null). */
+  onAssignScreen: (screenId: string, groupId: string | null) => void;
+  onSetGroupIcon: (id: string, icon: string | null) => void;
 }
 
 /**
  * Compute a one-liner subtitle for a screen card from its spec — e.g.
  * "5 fields · 1 initial value" or "Pick a dashboard or paste a share token".
- * The aim is to surface the *config state* at a glance so the user can
- * tell which screens still need work without clicking in.
  */
 function screenSubtitle(s: ScreenSpec): string {
   if (s.kind === 'form') {
@@ -163,22 +182,204 @@ export default function CanvasOverview({
   screens,
   tables,
   boundDataset,
+  groups,
   onPickScreen,
   onAddScreen,
   onOpenAppSettings,
-  onMoveScreen,
   onReorderScreens,
   onDeleteScreen,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  onAssignScreen,
+  onSetGroupIcon,
 }: Props) {
-  // Native HTML5 drag-and-drop state. We only need to know which index
-  // is being dragged and which index the cursor is currently hovering
-  // over — the actual reorder is delegated to the parent so it can
-  // mutate the layout + navigation in one go.
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  // ── Which "drawer" (workspace tab) is open. Real group id, or a sentinel.
+  const [activeTab, setActiveTab] = useState<string>(TAB_ALL);
+  // Workspace create (inline pill at the end of the tab strip).
+  const [creating, setCreating] = useState(false);
+  const [draftName, setDraftName] = useState('');
+  const [createError, setCreateError] = useState<string | null>(null);
+  // Rename / icon-edit of the ACTIVE workspace (in its header).
+  const [renaming, setRenaming] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [iconOpen, setIconOpen] = useState(false);
+  // Per-card "move to workspace" popover + drag-reorder visual state (by id,
+  // robust under filtering).
+  const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropId, setDropId] = useState<string | null>(null);
+
+  const groupById = useMemo(() => {
+    const m = new Map<string, ScreenGroupSpec>();
+    for (const g of groups) m.set(g.id, g);
+    return m;
+  }, [groups]);
+
+  const groupOfScreen = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups) for (const sid of g.screen_ids || []) m.set(sid, g.id);
+    return m;
+  }, [groups]);
+
+  // screenId -> its absolute index in the flat ``screens`` array (the only
+  // index ``onReorderScreens`` understands; nav order derives from it).
+  const absById = useMemo(() => {
+    const m = new Map<string, number>();
+    screens.forEach((s, i) => m.set(s.id, i));
+    return m;
+  }, [screens]);
+
+  // Guard a stale active tab (e.g. its group was just deleted) → fall back to All.
+  const effectiveTab =
+    activeTab === TAB_ALL || activeTab === TAB_UNGROUPED || groupById.has(activeTab)
+      ? activeTab
+      : TAB_ALL;
+  const activeGroup = groupById.get(effectiveTab) || null;
+
+  const ungroupedCount = useMemo(
+    () => screens.filter((s) => !groupOfScreen.has(s.id)).length,
+    [screens, groupOfScreen],
+  );
+
+  // The cards shown for the active tab — always in flat ``screens`` order so
+  // the displayed order is the real nav order.
+  const visibleScreens = useMemo(() => {
+    if (effectiveTab === TAB_ALL) return screens;
+    if (effectiveTab === TAB_UNGROUPED) return screens.filter((s) => !groupOfScreen.has(s.id));
+    return screens.filter((s) => groupOfScreen.get(s.id) === effectiveTab);
+  }, [screens, groupOfScreen, effectiveTab]);
+
+  const isDuplicateLabel = (label: string, exceptId?: string) => {
+    const norm = label.trim().toLowerCase();
+    return groups.some((g) => g.id !== exceptId && g.label.trim().toLowerCase() === norm);
+  };
+
+  // After a create, ``groups`` grows by one; auto-select the new workspace so
+  // the user lands in the empty new drawer ready to add screens. The parent
+  // generates the id, so we stash the (unique) label and resolve it once the
+  // ``groups`` prop updates.
+  const pendingSelectRef = useRef<string | null>(null);
+
+  const handleCreate = () => {
+    const v = draftName.trim();
+    if (!v) {
+      setCreating(false);
+      setDraftName('');
+      return;
+    }
+    if (isDuplicateLabel(v)) {
+      setCreateError(`Đã có workspace tên “${v}”.`);
+      return;
+    }
+    pendingSelectRef.current = `ws-pending:${v}`;
+    onCreateGroup(v);
+    setDraftName('');
+    setCreateError(null);
+    setCreating(false);
+  };
+
+  // Resolve the pending-by-label selection once groups updates.
+  useEffect(() => {
+    const p = pendingSelectRef.current;
+    if (p && p.startsWith('ws-pending:')) {
+      const label = p.slice('ws-pending:'.length);
+      const created = [...groups].reverse().find((g) => g.label === label);
+      if (created) {
+        setActiveTab(created.id);
+        pendingSelectRef.current = null;
+      }
+    }
+  }, [groups]);
+
+  const commitRename = () => {
+    const next = editName.trim();
+    if (!activeGroup) {
+      setRenaming(false);
+      return;
+    }
+    const id = activeGroup.id;
+    setRenaming(false);
+    setEditName('');
+    if (!next || isDuplicateLabel(next, id)) return;
+    onRenameGroup(id, next);
+  };
+
+  const handleAddScreen = (kind: ScreenKind) => {
+    // Add INTO the active workspace; on All/Khác the screen stays ungrouped.
+    onAddScreen(kind, activeGroup ? activeGroup.id : null);
+  };
+
+  const handleMove = (screenId: string, targetGroupId: string | null, targetLabel: string) => {
+    onAssignScreen(screenId, targetGroupId);
+    setMoveMenuFor(null);
+    toast.success(targetGroupId ? `Đã chuyển sang “${targetLabel}”` : 'Đã bỏ khỏi workspace (về Khác)');
+  };
+
+  // Reorder helpers — always translate the visible position to the ABSOLUTE
+  // index in ``screens`` so nav order can't be scrambled by the filter.
+  const moveByOne = (screenId: string, dir: -1 | 1) => {
+    const vIdx = visibleScreens.findIndex((s) => s.id === screenId);
+    const sibling = visibleScreens[vIdx + dir];
+    if (!sibling) return;
+    const from = absById.get(screenId);
+    const to = absById.get(sibling.id);
+    if (from === undefined || to === undefined) return;
+    onReorderScreens(from, to);
+  };
+
+  // ── Build the tab list. Always show [Tất cả] + (real workspaces) + [Khác
+  // when there are groups] + the create pill.
+  const tabs: Array<{ key: string; label: string; icon?: string | null; count: number; synthetic: boolean }> = [
+    { key: TAB_ALL, label: 'Tất cả', count: screens.length, synthetic: true },
+    ...groups.map((g) => ({
+      key: g.id,
+      label: g.label,
+      icon: g.icon ?? null,
+      count: (g.screen_ids || []).filter((id) => absById.has(id)).length,
+      synthetic: false,
+    })),
+    ...(groups.length > 0
+      ? [{ key: TAB_UNGROUPED, label: 'Khác', count: ungroupedCount, synthetic: true }]
+      : []),
+  ];
+
+  const renderTab = (t: (typeof tabs)[number]) => {
+    const active = t.key === effectiveTab;
+    const TabIcon = !t.synthetic && t.icon ? resolveScreenIcon(t.icon) : null;
+    return (
+      <button
+        key={t.key}
+        type="button"
+        onClick={() => setActiveTab(t.key)}
+        title={t.label}
+        className={`inline-flex h-8 max-w-[180px] items-center gap-1.5 rounded-md border px-2.5 text-caption font-emphasis transition-colors ${
+          active
+            ? 'border-brand bg-brand/10 text-brand'
+            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-brand hover:text-brand'
+        }`}
+      >
+        {TabIcon ? (
+          <TabIcon className="h-3.5 w-3.5 shrink-0" />
+        ) : t.key === TAB_UNGROUPED ? (
+          <Layers className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        ) : null}
+        <span className="truncate">{t.label}</span>
+        <span className={`text-micro ${active ? 'text-brand' : 'text-text-quaternary'}`}>{t.count}</span>
+      </button>
+    );
+  };
+
+  const ActiveIcon = activeGroup ? (resolveScreenIcon(activeGroup.icon) ?? Layers) : null;
+  const addHint = activeGroup
+    ? `Thêm vào ▸ ${activeGroup.label}`
+    : effectiveTab === TAB_UNGROUPED
+      ? 'Thêm vào ▸ Khác (chưa phân)'
+      : 'Thêm screen (chưa phân workspace)';
+
   return (
     <div className="w-full px-6 py-6 lg:px-8">
-      {/* Data-strip — bound dataset (replaces the gear-icon flow). */}
+      {/* Data-strip — bound dataset. */}
       <div className="mb-4 flex items-center gap-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
           <Database className="h-4 w-4" />
@@ -191,8 +392,7 @@ export default function CanvasOverview({
             {boundDataset?.name || '— no dataset —'}
           </div>
           <div className="text-micro text-text-tertiary">
-            Each screen picks one table from this dataset. {tables.length} table
-            {tables.length === 1 ? '' : 's'} available.
+            Mỗi screen chọn 1 bảng từ dataset này. {tables.length} bảng khả dụng.
           </div>
         </div>
         <button
@@ -205,23 +405,161 @@ export default function CanvasOverview({
         </button>
       </div>
 
-      {/* Section heading + palette */}
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-h3 font-strong text-text-primary">
-          Screens
-          <span className="ml-2 text-caption font-normal text-text-tertiary">
-            · {screens.length}
+      {/* ── Workspace tab strip ─────────────────────────────────────────── */}
+      <div className="mb-1 flex items-center gap-1.5">
+        <Layers className="h-3.5 w-3.5 text-text-quaternary" />
+        <span className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+          Workspaces
+        </span>
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        {tabs.map(renderTab)}
+        {/* Create-workspace pill */}
+        {creating ? (
+          <span className="inline-flex items-center gap-1">
+            <input
+              autoFocus
+              value={draftName}
+              onChange={(e) => {
+                setDraftName(e.target.value);
+                if (createError) setCreateError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreate();
+                if (e.key === 'Escape') {
+                  setCreating(false);
+                  setDraftName('');
+                  setCreateError(null);
+                }
+              }}
+              placeholder="Tên workspace…"
+              className="h-8 w-40 rounded-md border border-brand bg-surface-0 px-2.5 text-caption text-text-primary outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleCreate}
+              className="inline-flex h-8 items-center gap-1 rounded-md bg-brand px-2.5 text-tiny font-emphasis text-white hover:opacity-90"
+            >
+              <Check className="h-3.5 w-3.5" />
+              Thêm
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCreating(false);
+                setDraftName('');
+                setCreateError(null);
+              }}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary hover:bg-surface-2"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </span>
-        </h2>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setDraftName('');
+              setCreateError(null);
+            }}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-2.5 text-tiny font-emphasis text-text-tertiary hover:border-brand hover:text-brand"
+            title="Tạo workspace mới"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            Workspace
+          </button>
+        )}
+      </div>
+      {createError && <p className="mb-2 text-micro text-danger">{createError}</p>}
+
+      {/* ── Active-workspace header + add palette ────────────────────────── */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {activeGroup ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setIconOpen((v) => !v)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand hover:ring-2 hover:ring-brand/30"
+                title="Đổi biểu tượng workspace"
+              >
+                {ActiveIcon ? <ActiveIcon className="h-4 w-4" /> : <Layers className="h-4 w-4" />}
+              </button>
+              {renaming ? (
+                <input
+                  autoFocus
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') {
+                      setRenaming(false);
+                      setEditName('');
+                    }
+                  }}
+                  onBlur={commitRename}
+                  className="h-7 w-44 rounded border border-brand bg-surface-0 px-2 text-small font-strong text-text-primary outline-none"
+                />
+              ) : (
+                <span className="truncate text-small font-strong text-text-primary">
+                  {activeGroup.label}
+                </span>
+              )}
+              <span className="shrink-0 text-micro text-text-quaternary">
+                {visibleScreens.length} screen
+              </span>
+              {!renaming && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenaming(true);
+                    setEditName(activeGroup.label);
+                  }}
+                  className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
+                  title="Đổi tên workspace"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Xóa workspace "${activeGroup.label}"? Các screen bên trong KHÔNG bị xóa, chỉ về lại mục “Khác”.`,
+                    )
+                  ) {
+                    onDeleteGroup(activeGroup.id);
+                    setActiveTab(TAB_ALL);
+                  }
+                }}
+                className="rounded p-1 text-text-quaternary opacity-70 hover:bg-danger/10 hover:text-danger hover:opacity-100"
+                title="Xóa workspace"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </>
+          ) : (
+            <span className="text-small font-strong text-text-primary">
+              {effectiveTab === TAB_UNGROUPED ? 'Khác (chưa phân workspace)' : 'Tất cả màn hình'}
+              <span className="ml-2 text-micro font-normal text-text-quaternary">
+                {visibleScreens.length} screen
+              </span>
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 hidden text-micro text-text-tertiary sm:inline">{addHint}</span>
           {PALETTE.map((entry) => {
             const Icon = entry.icon;
             return (
               <button
                 key={entry.kind}
                 type="button"
-                onClick={() => onAddScreen(entry.kind)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand"
+                onClick={() => handleAddScreen(entry.kind)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand"
+                title={`${entry.label} — ${addHint}`}
               >
                 <Icon className="h-3.5 w-3.5" />
                 {entry.label}
@@ -231,33 +569,65 @@ export default function CanvasOverview({
         </div>
       </div>
 
-      {/* Screen cards (or empty state) */}
+      {/* Inline icon picker for the active workspace (toggled by its icon). */}
+      {activeGroup && iconOpen && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+          <span className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Biểu tượng
+          </span>
+          <div className="w-[260px]">
+            <IconPicker
+              value={activeGroup.icon ?? undefined}
+              onChange={(next) => {
+                onSetGroupIcon(activeGroup.id, next || null);
+              }}
+              placeholder="Chọn biểu tượng (không bắt buộc)"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setIconOpen(false)}
+            className="ml-auto rounded p-1 text-text-tertiary hover:bg-surface-2"
+            title="Đóng"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* ── Screen cards for the active workspace (or empty states) ──────── */}
       {screens.length === 0 ? (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-6 py-10 text-center">
           <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-surface-2 text-text-tertiary">
             <Plus className="h-5 w-5" />
           </div>
-          <h3 className="text-small font-strong text-text-primary">No screens yet</h3>
+          <h3 className="text-small font-strong text-text-primary">Chưa có screen nào</h3>
           <p className="mx-auto mt-1 max-w-md text-caption text-text-tertiary">
-            A mini-app is made of one or more screens. Pick a kind above to add the first
-            one — Form for data entry, List/Grid for browsing, Document for printable
-            reports, Dashboard to embed charts.
+            Mini-app gồm một hoặc nhiều screen. Chọn loại ở trên để thêm screen đầu
+            tiên — Form để nhập liệu, Table để duyệt, Document để in báo cáo,
+            Dashboard để nhúng biểu đồ.
+          </p>
+        </div>
+      ) : visibleScreens.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-6 py-8 text-center">
+          <p className="text-caption text-text-tertiary">
+            {effectiveTab === TAB_UNGROUPED
+              ? 'Mọi screen đều đã được phân vào workspace.'
+              : 'Workspace này chưa có screen. Thêm screen mới (nút trên) hoặc chuyển screen từ workspace khác bằng nút “Chuyển” trên mỗi screen.'}
           </p>
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {screens.map((s, idx) => {
-            // Prefer the user-picked icon (matched against the icon
-            // registry); fall back to the screen-kind default so newly
-            // added screens still render before the user opens Settings.
+          {visibleScreens.map((s, vIdx) => {
             const PickedIcon = resolveScreenIcon(s.icon);
             const Icon = PickedIcon ?? KIND_ICON[s.kind];
             const status = screenStatus(s);
             const table = tables.find((t) => t.id === s.table_id);
-            const canUp = idx > 0;
-            const canDown = idx < screens.length - 1;
-            const isDragging = dragIdx === idx;
-            const isDropTarget = dropIdx === idx && dragIdx !== null && dragIdx !== idx;
+            const canUp = vIdx > 0;
+            const canDown = vIdx < visibleScreens.length - 1;
+            const isDragging = dragId === s.id;
+            const isDropTarget = dropId === s.id && dragId !== null && dragId !== s.id;
+            const menuOpen = moveMenuFor === s.id;
             return (
               <div
                 key={s.id}
@@ -265,32 +635,32 @@ export default function CanvasOverview({
                 tabIndex={0}
                 draggable
                 onDragStart={(event) => {
-                  setDragIdx(idx);
+                  setDragId(s.id);
                   event.dataTransfer.effectAllowed = 'move';
-                  // Some browsers require a payload to allow drop; the
-                  // content itself is unused — we track state by index.
-                  event.dataTransfer.setData('text/plain', String(idx));
+                  event.dataTransfer.setData('text/plain', s.id);
                 }}
                 onDragOver={(event) => {
-                  if (dragIdx === null || dragIdx === idx) return;
+                  if (dragId === null || dragId === s.id) return;
                   event.preventDefault();
                   event.dataTransfer.dropEffect = 'move';
-                  if (dropIdx !== idx) setDropIdx(idx);
+                  if (dropId !== s.id) setDropId(s.id);
                 }}
                 onDragLeave={() => {
-                  if (dropIdx === idx) setDropIdx(null);
+                  if (dropId === s.id) setDropId(null);
                 }}
                 onDrop={(event) => {
                   event.preventDefault();
-                  if (dragIdx !== null && dragIdx !== idx) {
-                    onReorderScreens(dragIdx, idx);
+                  if (dragId !== null && dragId !== s.id) {
+                    const from = absById.get(dragId);
+                    const to = absById.get(s.id);
+                    if (from !== undefined && to !== undefined) onReorderScreens(from, to);
                   }
-                  setDragIdx(null);
-                  setDropIdx(null);
+                  setDragId(null);
+                  setDropId(null);
                 }}
                 onDragEnd={() => {
-                  setDragIdx(null);
-                  setDropIdx(null);
+                  setDragId(null);
+                  setDropId(null);
                 }}
                 onClick={() => onPickScreen(s.id)}
                 onKeyDown={(event) => {
@@ -299,7 +669,7 @@ export default function CanvasOverview({
                     onPickScreen(s.id);
                   }
                 }}
-                className={`group grid cursor-pointer grid-cols-[20px_44px_minmax(0,1fr)_auto_auto_auto] items-center gap-3 rounded-xl border bg-surface-1 px-3 py-3 text-left transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear-sm ${
+                className={`group grid cursor-pointer grid-cols-[20px_40px_minmax(0,1fr)_auto_auto_auto] items-center gap-3 rounded-xl border bg-surface-1 px-3 py-2.5 text-left transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear-sm ${
                   isDragging
                     ? 'border-brand/40 opacity-50'
                     : isDropTarget
@@ -307,27 +677,27 @@ export default function CanvasOverview({
                       : 'border-[rgb(var(--border-line))]'
                 }`}
               >
-                {/* Drag handle — cursor-grab signals the card is draggable. */}
+                {/* Drag handle */}
                 <span
                   className="flex h-8 w-5 cursor-grab items-center justify-center text-text-quaternary group-hover:text-text-tertiary active:cursor-grabbing"
-                  title="Drag to reorder"
+                  title="Kéo để sắp xếp"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <GripVertical className="h-4 w-4" />
                 </span>
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-surface-2 text-text-secondary group-hover:text-text-primary">
-                  <Icon className="h-[18px] w-[18px]" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-surface-2 text-text-secondary group-hover:text-text-primary">
+                  <Icon className="h-4 w-4" />
                 </div>
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-body font-strong text-text-primary">
+                    <span className="truncate text-caption font-emphasis text-text-primary">
                       {s.title}
                     </span>
                     <span className="inline-flex items-center rounded-sm bg-surface-2 px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
                       {KIND_LABEL[s.kind]}
                     </span>
                   </div>
-                  <div className="mt-1 truncate text-caption text-text-tertiary">
+                  <div className="mt-0.5 truncate text-micro text-text-tertiary">
                     {screenSubtitle(s)}
                   </div>
                 </div>
@@ -346,19 +716,87 @@ export default function CanvasOverview({
                   <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status.kind]}`} />
                   {status.label}
                 </span>
-                {/* Row actions — kept always-visible (previously hover
-                    only, which made reorder feel hidden). Delete stays
-                    slightly de-emphasised to discourage accidents. */}
+                {/* Row actions: move-to-workspace · up · down · delete */}
                 <div className="flex items-center gap-0.5">
+                  <span className="relative">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setMoveMenuFor(menuOpen ? null : s.id);
+                      }}
+                      className={`rounded p-1 ${
+                        menuOpen ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
+                      }`}
+                      title="Chuyển sang workspace khác"
+                    >
+                      <FolderInput className="h-3.5 w-3.5" />
+                    </button>
+                    {menuOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setMoveMenuFor(null);
+                          }}
+                        />
+                        <div
+                          className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-popover"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="px-3 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                            Chuyển “{s.title}” sang
+                          </div>
+                          {groups.map((g) => {
+                            const here = groupOfScreen.get(s.id) === g.id;
+                            const GIcon = resolveScreenIcon(g.icon) ?? Layers;
+                            return (
+                              <button
+                                key={g.id}
+                                type="button"
+                                disabled={here}
+                                onClick={() => handleMove(s.id, g.id, g.label)}
+                                className={`flex w-full items-center gap-2 px-3 py-1.5 text-caption transition-colors ${
+                                  here
+                                    ? 'cursor-default text-text-quaternary'
+                                    : 'text-text-primary hover:bg-surface-2'
+                                }`}
+                              >
+                                <GIcon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
+                                <span className="min-w-0 flex-1 truncate text-left">{g.label}</span>
+                                {here && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
+                              </button>
+                            );
+                          })}
+                          <div className="my-1 border-t border-[rgb(var(--border-line))]" />
+                          <button
+                            type="button"
+                            disabled={!groupOfScreen.has(s.id)}
+                            onClick={() => handleMove(s.id, null, 'Khác')}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-caption transition-colors ${
+                              !groupOfScreen.has(s.id)
+                                ? 'cursor-default text-text-quaternary'
+                                : 'text-text-primary hover:bg-surface-2'
+                            }`}
+                          >
+                            <Layers className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                            <span className="min-w-0 flex-1 truncate text-left">— Khác (bỏ nhóm) —</span>
+                            {!groupOfScreen.has(s.id) && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </span>
                   <button
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onMoveScreen(idx, -1);
+                      moveByOne(s.id, -1);
                     }}
                     disabled={!canUp}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-30"
-                    title="Move up"
+                    title="Lên trên"
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
                   </button>
@@ -366,11 +804,11 @@ export default function CanvasOverview({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onMoveScreen(idx, 1);
+                      moveByOne(s.id, 1);
                     }}
                     disabled={!canDown}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-30"
-                    title="Move down"
+                    title="Xuống dưới"
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
                   </button>
@@ -381,7 +819,7 @@ export default function CanvasOverview({
                       onDeleteScreen(s.id);
                     }}
                     className="rounded p-1 text-text-quaternary opacity-60 hover:bg-danger/10 hover:text-danger hover:opacity-100"
-                    title="Delete screen"
+                    title="Xoá screen"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

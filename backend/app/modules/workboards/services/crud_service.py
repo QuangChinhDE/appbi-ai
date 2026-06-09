@@ -33,19 +33,56 @@ logger = get_logger(__name__)
 # Layout normalisation
 # ---------------------------------------------------------------------------
 
+def _scrub_screen_groups(layout: dict) -> dict:
+    """Self-heal ``screen_groups`` referential integrity at the single write
+    chokepoint, so stored data never drifts regardless of the mutation path
+    (builder, MCP, scripts, migrations).
+
+    Per group: drop ``screen_ids`` that don't exist in ``screens[]`` (dangling
+    refs left by a screen deletion that didn't scrub groups), de-dupe within a
+    group, and enforce the at-most-one-workspace invariant the builder assigns
+    (a screen id claimed by an earlier group is removed from later ones).
+
+    Render paths are already defensive (they filter by live screen ids), so
+    this is data-hygiene, not a correctness fix — but it keeps the BE the real
+    gatekeeper for group integrity instead of relying on FE discipline. Empty
+    groups are preserved (a builder may be mid-authoring); the runtime drops
+    empty groups from the nav on its own.
+    """
+    groups = layout.get("screen_groups")
+    if not isinstance(groups, list) or not groups:
+        return layout
+    valid_ids = {
+        str(s.get("id"))
+        for s in (layout.get("screens") or [])
+        if isinstance(s, dict) and s.get("id")
+    }
+    seen: set = set()
+    for grp in groups:
+        if not isinstance(grp, dict):
+            continue
+        cleaned: List[str] = []
+        for sid in grp.get("screen_ids") or []:
+            sid = str(sid)
+            if sid in valid_ids and sid not in seen:
+                cleaned.append(sid)
+                seen.add(sid)
+        grp["screen_ids"] = cleaned
+    return layout
+
+
 def _normalize_layout(payload, *, primary_table_id: Optional[int] = None) -> dict:
     """Coerce the layout payload into a canonical dict for storage.
 
     Unknown keys are stripped by ``LayoutJson`` so the mini-app shape is
-    the only thing that survives in ``layout_json``.
+    the only thing that survives in ``layout_json``. ``screen_groups`` is
+    additionally scrubbed for referential integrity (see ``_scrub_screen_groups``).
     """
     if payload is None:
         return LayoutJson().model_dump(mode="json")
     if isinstance(payload, LayoutJson):
-        return payload.model_dump(mode="json")
-    if isinstance(payload, dict):
-        return LayoutJson.model_validate(payload).model_dump(mode="json")
-    return LayoutJson.model_validate(payload).model_dump(mode="json")
+        return _scrub_screen_groups(payload.model_dump(mode="json"))
+    return _scrub_screen_groups(LayoutJson.model_validate(payload).model_dump(mode="json"))
 
 
 def _columns_cache_list(table: DatasetTable) -> List[Dict[str, Any]]:

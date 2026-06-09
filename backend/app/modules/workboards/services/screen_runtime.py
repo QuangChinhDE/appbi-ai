@@ -43,6 +43,7 @@ from app.modules.workboards.schemas import (
     FormField,
     LayoutJson,
     Screen,
+    ScreenGroup,
     ScreenRlsRule,
 )
 from app.modules.workboards.services.rls_service import (
@@ -543,6 +544,26 @@ def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
         return True
     role = (identity.role or "").strip().lower()
     return any(r.strip().lower() == role for r in screen.visible_for_roles)
+
+
+def is_group_visible_for(group: ScreenGroup, identity: CallerIdentity) -> bool:
+    """Whether a screen-group (UI: "Workspace") shows in the nav for this
+    identity. Same role semantics as :func:`is_screen_visible_for` (owner +
+    internal/admin preview bypass; empty list = everyone). NAV-DISPLAY only —
+    NOT an access gate; the screen-content endpoint enforces per-screen RLS.
+
+    NOTE: ``group.visible_for_roles`` is RESERVED / not settable in the builder
+    (Workspaces v1), so this filter is inert today (always returns True). See
+    ScreenGroup in schemas.py for the divergence semantics before exposing it.
+    """
+    if not identity.is_app_user:
+        return True
+    if is_owner_role(identity.role):
+        return True
+    if not group.visible_for_roles:
+        return True
+    role = (identity.role or "").strip().lower()
+    return any(r.strip().lower() == role for r in group.visible_for_roles)
 
 
 # ── Table helpers ─────────────────────────────────────────────────────────
@@ -1925,6 +1946,25 @@ def render_app_shell(
     visible_ids = {s.id for s in visible_screens}
     nav_items = [sid for sid in nav_items if sid in visible_ids]
 
+    # Screen-groups (UI: "Workspaces"). Additive: empty => flat nav above.
+    # Drop groups hidden by role, members that are RLS-hidden or deleted
+    # (not in visible_ids), de-dupe within a group, and skip now-empty groups.
+    visible_groups: List[Dict[str, Any]] = []
+    for grp in (layout.screen_groups or []):
+        if not is_group_visible_for(grp, identity):
+            continue
+        seen: set[str] = set()
+        member_ids: List[str] = []
+        for sid in grp.screen_ids:
+            if sid in visible_ids and sid not in seen:
+                seen.add(sid)
+                member_ids.append(sid)
+        if not member_ids:
+            continue
+        visible_groups.append(
+            {"id": grp.id, "label": grp.label, "icon": grp.icon, "screen_ids": member_ids}
+        )
+
     return {
         "workboard": {
             "id": workboard.id,
@@ -1949,6 +1989,7 @@ def render_app_shell(
             }
             for s in visible_screens
         ],
+        "screen_groups": visible_groups,
         # Surface the caller's role so the FE can hide per-action
         # buttons whose `visible_for_roles` excludes the current user.
         # Internal/admin previews come in as identity.role=None — the FE

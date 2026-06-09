@@ -28,7 +28,13 @@ from app.modules.workboards.models import Workboard, WorkboardAppUser
 
 logger = get_logger(__name__)
 
-BUNDLE_VERSION = 1
+# v1 = referenced-tables-only snapshot (needs an existing target dataset on import).
+# v2 = full dataset snapshot (all tables + datasource identity + semantic model:
+#      views/dimensions/measures/pk + explores/joins) so import can AUTO-CREATE the
+#      dataset on a chosen Source. v2 bundles still carry the v1 fields
+#      (tables_meta / dataset.name) so the legacy "pick existing dataset" import path
+#      keeps working unchanged.
+BUNDLE_VERSION = 2
 
 
 def _columns_from_cache(cache: Any) -> List[Dict[str, Any]]:
@@ -75,6 +81,134 @@ def _collect_table_ids_from_layout(layout: Dict[str, Any]) -> set[int]:
 
     _walk(layout or {})
     return out
+
+
+def _export_full_dataset(db: Session, dataset_id: Optional[int]) -> Dict[str, Any]:
+    """Snapshot the WHOLE dataset (every table + datasource identity + semantic
+    model) so import can rebuild it on a freshly-chosen Source.
+
+    Returns ``{datasources, dataset_tables, semantic}``:
+
+    * ``datasources`` — distinct sources the dataset's tables sit on, identified
+      by ``{ref, name, type}`` ONLY (no ``config``/credentials — those never
+      travel; the importer picks a live Source per ``ref``).
+    * ``dataset_tables`` — every ``DatasetTable`` with enough to recreate it
+      (source_kind/table_name/query/transform/type_overrides/formats/columns).
+      ``old_table_id`` is the stable key the rest of the bundle references.
+    * ``semantic`` — the SemanticModel's views (dimensions/measures/primary_key)
+      + explores (joins/default_filters) so relationships replay faithfully
+      (NOT re-derived by auto-join, which mis-guesses non-``id`` PKs).
+    """
+    from app.models.models import DataSource
+    from app.models.semantic import SemanticModel, SemanticView, SemanticExplore
+
+    empty = {"datasources": [], "dataset_tables": [], "semantic": None}
+    if not dataset_id:
+        return empty
+
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .order_by(DatasetTable.id.asc())
+        .all()
+    )
+
+    # Distinct datasources (by id) → {ref, name, type}. ref = str(datasource_id).
+    ds_ids = sorted({t.datasource_id for t in tables if t.datasource_id})
+    ds_rows = (
+        db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all() if ds_ids else []
+    )
+    ds_by_id = {d.id: d for d in ds_rows}
+    datasources = [
+        {
+            "ref": str(d.id),
+            "name": d.name,
+            "type": d.type.value if hasattr(d.type, "value") else str(d.type),
+        }
+        for d in ds_rows
+    ]
+
+    dataset_tables: List[Dict[str, Any]] = []
+    for t in tables:
+        dataset_tables.append(
+            {
+                "old_table_id": t.id,
+                "datasource_ref": str(t.datasource_id) if t.datasource_id else None,
+                "datasource_name": ds_by_id[t.datasource_id].name
+                if t.datasource_id in ds_by_id
+                else None,
+                "source_kind": t.source_kind,
+                "source_table_name": t.source_table_name,
+                "source_query": t.source_query,
+                "query_mode": getattr(t, "query_mode", None),
+                "display_name": t.display_name,
+                "enabled": bool(t.enabled),
+                "miniapp_share": bool(getattr(t, "miniapp_share", False)),
+                "transformations": t.transformations or [],
+                "type_overrides": t.type_overrides or {},
+                "column_formats": t.column_formats or {},
+                "columns": [
+                    {"name": c.get("name"), "type": c.get("type")}
+                    for c in _columns_from_cache(t.columns_cache)
+                    if isinstance(c, dict) and c.get("name")
+                ],
+            }
+        )
+
+    # Semantic model (views + explores). Map each view to its table via
+    # dataset_table_id so import can relink after table-ids change.
+    semantic: Optional[Dict[str, Any]] = None
+    model = (
+        db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    )
+    if model:
+        views = (
+            db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_([t.id for t in tables] or [0]))
+            .all()
+        )
+        view_name_by_id = {v.id: v.name for v in views}
+        explores = (
+            db.query(SemanticExplore)
+            .filter(SemanticExplore.model_id == model.id)
+            .all()
+        )
+        # Map base_view_id → its dataset_table_id so import can relink the
+        # explore to the rebuilt base view even though ids change.
+        view_table_by_id = {v.id: v.dataset_table_id for v in views}
+        semantic = {
+            "model_name": model.name,
+            "model_settings": model.settings,
+            "views": [
+                {
+                    "old_table_id": v.dataset_table_id,
+                    "name": v.name,
+                    "sql_table_name": v.sql_table_name,
+                    "description": v.description,
+                    "dimensions": v.dimensions or [],
+                    "measures": v.measures or [],
+                    "primary_key": v.primary_key,
+                }
+                for v in views
+            ],
+            "explores": [
+                {
+                    "name": e.name,
+                    "base_view_name": e.base_view_name,
+                    "base_view_old_table_id": view_table_by_id.get(e.base_view_id),
+                    "joins": e.joins or [],
+                    "default_filters": e.default_filters or {},
+                    "description": e.description,
+                }
+                for e in explores
+            ],
+        }
+
+    return {
+        "datasources": datasources,
+        "dataset_tables": dataset_tables,
+        "semantic": semantic,
+    }
 
 
 def export_workboard(
@@ -126,6 +260,10 @@ def export_workboard(
         else None
     )
 
+    # v2 — full dataset snapshot so import can auto-create the dataset on a
+    # freshly-picked Source (vs v1 which needed an existing target dataset).
+    full = _export_full_dataset(db, workboard.dataset_id)
+
     return {
         "bundle_version": BUNDLE_VERSION,
         "kind": "workboard_template",
@@ -143,7 +281,14 @@ def export_workboard(
         "dataset": {
             "name": dataset.name if dataset else None,
             "description": dataset.description if dataset else None,
+            # v2: enough to recreate the dataset shell faithfully.
+            "settings": dataset.settings if dataset else None,
+            "dictionary": dataset.dictionary if dataset else None,
         },
+        # v2 full-dataset payload (datasources/dataset_tables/semantic).
+        "datasources": full["datasources"],
+        "dataset_tables": full["dataset_tables"],
+        "semantic": full["semantic"],
         "primary_table_id": workboard.primary_table_id,
         "tables_meta": tables_meta,
         "layout_json": layout,
@@ -199,6 +344,9 @@ class ImportReport:
         # App-user import bookkeeping (set by ``_import_app_users``):
         self.app_users_imported: int = 0
         self.app_users_needing_pin: List[str] = []
+        # v2: dataset auto-rebuild outcome (set by ``import_from_source``); None
+        # for the legacy "reuse existing dataset" path.
+        self.dataset_rebuild: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -207,6 +355,7 @@ class ImportReport:
             "missing_columns": self.missing_columns,
             "app_users_imported": self.app_users_imported,
             "app_users_needing_pin": self.app_users_needing_pin,
+            "dataset_rebuild": self.dataset_rebuild,
         }
 
 
@@ -631,11 +780,26 @@ def _check_missing_columns(
         tid = screen.get("table_id")
         if not tid:
             continue
-        existing = cols_by_table.get(tid, set())
+        # A column is "known" if it's a physical source column OR a column the
+        # screen itself synthesises — computed (JS/formula) + lookup columns +
+        # dataset-computed form fields. Without this, every computed/lookup
+        # column reads as "missing" (it isn't in the raw source) and falsely
+        # alarms the import report.
+        known = set(cols_by_table.get(tid, set()))
+        table_cfg = screen.get("table") or {}
+        for cc in table_cfg.get("computed_columns") or []:
+            if isinstance(cc, dict) and cc.get("name"):
+                known.add(cc["name"])
+        for lc in table_cfg.get("lookup_columns") or []:
+            if isinstance(lc, dict) and lc.get("name"):
+                known.add(lc["name"])
+        for f in ((screen.get("form") or {}).get("fields") or []):
+            if isinstance(f, dict) and f.get("computed_from_dataset") and f.get("column"):
+                known.add(f["column"])
         # Form fields
         for f in (((screen.get("form") or {}).get("fields")) or []):
             col = f.get("column")
-            if col and col not in existing:
+            if col and col not in known:
                 report.missing_columns.append({
                     "screen": screen.get("id"),
                     "where": "form.fields",
@@ -643,7 +807,7 @@ def _check_missing_columns(
                 })
         # Table columns
         for col in (((screen.get("table") or {}).get("columns")) or []):
-            if col and col not in existing:
+            if col and col not in known:
                 report.missing_columns.append({
                     "screen": screen.get("id"),
                     "where": "table.columns",
@@ -855,6 +1019,374 @@ def _import_app_users(
     # show "Imported 12 users (3 need PIN reset)".
     setattr(report, "app_users_imported", inserted)
     setattr(report, "app_users_needing_pin", needs_pin)
+
+
+# ── v2: auto-create dataset on a chosen Source, then import ────────────────
+
+
+def _normalised_source_name_set(rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    """From ``list_tables`` rows build {normalised_name: actual_name} so a
+    bundle's ``source_table_name`` can be matched even if schema-qualified or
+    cased differently. Also indexes the bare table name (after the last dot)."""
+    out: Dict[str, str] = {}
+    for r in rows or []:
+        name = str(r.get("name") or "").strip()
+        if not name:
+            continue
+        schema = str(r.get("schema") or "").strip()
+        qualified = f"{schema}.{name}" if schema and "." not in name else name
+        for cand in {name, qualified}:
+            out.setdefault(_normalise_name(cand), cand)
+    return out
+
+
+def inspect_source_match(
+    db: Session,
+    bundle: Dict[str, Any],
+    datasource_map: Dict[str, int],
+) -> Dict[str, Any]:
+    """Dry-run: given a chosen target Source per bundle datasource ``ref``,
+    report which of the bundle's physical tables EXIST on that Source (matched
+    by name), without creating anything. Drives the import preview so the user
+    can manually map mismatches before committing.
+
+    Only checks table EXISTENCE (one ``list_tables`` call per source) — column
+    diffs are surfaced later by ``import_workboard``'s missing_columns report,
+    keeping quota-limited sources (Sheets) cheap here.
+    """
+    from app.models.models import DataSource
+    from app.services.datasource_service import DataSourceConnectionService
+
+    dataset_tables = bundle.get("dataset_tables") or []
+    # Cache list_tables per resolved datasource so we hit each source once.
+    name_index_cache: Dict[int, Dict[str, str]] = {}
+
+    def _index_for(ds_id: int) -> Dict[str, str]:
+        if ds_id in name_index_cache:
+            return name_index_cache[ds_id]
+        ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds:
+            name_index_cache[ds_id] = {}
+            return {}
+        ds_type = ds.type.value if hasattr(ds.type, "value") else str(ds.type)
+        try:
+            rows = DataSourceConnectionService.list_tables(ds_type, ds.config)
+        except Exception as exc:  # source unreachable / bad creds
+            logger.warning("inspect: list_tables failed for ds %s: %s", ds_id, exc)
+            rows = []
+        idx = _normalised_source_name_set(rows)
+        name_index_cache[ds_id] = idx
+        return idx
+
+    tables_report: List[Dict[str, Any]] = []
+    physical_total = 0
+    physical_found = 0
+    for dt in dataset_tables:
+        kind = dt.get("source_kind")
+        ref = dt.get("datasource_ref")
+        entry: Dict[str, Any] = {
+            "old_table_id": dt.get("old_table_id"),
+            "display_name": dt.get("display_name"),
+            "source_kind": kind,
+            "source_table_name": dt.get("source_table_name"),
+            "datasource_ref": ref,
+            "datasource_name": dt.get("datasource_name"),
+        }
+        if kind == "physical_table":
+            physical_total += 1
+            target_ds_id = datasource_map.get(str(ref)) if ref is not None else None
+            if not target_ds_id:
+                entry["status"] = "no_source_selected"
+            else:
+                idx = _index_for(int(target_ds_id))
+                matched = idx.get(_normalise_name(dt.get("source_table_name")))
+                if matched:
+                    entry["status"] = "found"
+                    entry["matched_source_table"] = matched
+                    physical_found += 1
+                else:
+                    entry["status"] = "missing"
+                    entry["available_sample"] = list(idx.values())[:50]
+        else:
+            # sql_query / derived_table / generated_calendar — recreated from the
+            # bundle's own definition; nothing to match against the source.
+            entry["status"] = "recreate"
+        tables_report.append(entry)
+
+    return {
+        "tables": tables_report,
+        "physical_total": physical_total,
+        "physical_found": physical_found,
+        "all_found": physical_found == physical_total,
+    }
+
+
+def rebuild_dataset_from_bundle(
+    db: Session,
+    bundle: Dict[str, Any],
+    datasource_map: Dict[str, int],
+    *,
+    owner_id: Any = None,
+    table_source_overrides: Optional[Dict[int, str]] = None,
+) -> Tuple[Dataset, Dict[str, Any]]:
+    """Create a fresh Dataset on the chosen Source(s) and rebuild every table
+    from the bundle (live column introspection), then replay the semantic model
+    (views' dims/measures/pk + explores' joins) so relationships match the
+    export. Returns ``(dataset, rebuild_report)``.
+
+    Resilient: a bundle table whose source table isn't found on the chosen
+    Source is recorded in ``skipped`` and left out — the workboard screens that
+    referenced it land in a "needs config" state (same as a partial v1 import)
+    instead of failing the whole import.
+    """
+    # Lazy imports avoid an app.api ↔ service import cycle at module load.
+    from app.api.datasets import (
+        _build_columns_cache_payload,
+        _infer_dataset_table_columns,
+        _infer_dataset_table_source_columns,
+    )
+    from app.models.models import DataSource
+    from app.schemas.dataset import DatasetCreate, TableCreate
+    from app.services.dataset_crud import DatasetCRUDService
+    from app.services.dataset_model_service import generate_dataset_model
+
+    overrides = table_source_overrides or {}
+    ds_bundle = bundle.get("dataset") or {}
+    base_name = (ds_bundle.get("name") or "Imported dataset").strip()
+
+    # Create the dataset shell (name auto-suffixed on collision by the service),
+    # then stamp settings/dictionary straight onto the row (raw JSONB — already
+    # normalised by the source export, so we skip strict schema coercion).
+    dataset = DatasetCRUDService.create_dataset(
+        db,
+        DatasetCreate(name=f"{base_name} (import)", description=ds_bundle.get("description")),
+        owner_id=owner_id,
+    )
+    if ds_bundle.get("settings") is not None:
+        dataset.settings = ds_bundle["settings"]
+    if ds_bundle.get("dictionary") is not None:
+        dataset.dictionary = ds_bundle["dictionary"]
+    db.commit()
+    db.refresh(dataset)
+
+    report: Dict[str, Any] = {
+        "dataset_id": dataset.id,
+        "dataset_name": dataset.name,
+        "created_tables": [],
+        "skipped_tables": [],
+    }
+    id_map: Dict[int, int] = {}
+    ds_obj_cache: Dict[int, Optional[DataSource]] = {}
+
+    def _ds(ds_id: Optional[int]) -> Optional[DataSource]:
+        if not ds_id:
+            return None
+        if ds_id not in ds_obj_cache:
+            ds_obj_cache[ds_id] = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        return ds_obj_cache[ds_id]
+
+    for dt in bundle.get("dataset_tables") or []:
+        old_id = dt.get("old_table_id")
+        kind = dt.get("source_kind") or "physical_table"
+        ref = dt.get("datasource_ref")
+        target_ds_id = datasource_map.get(str(ref)) if ref is not None else None
+
+        # Generated-calendar tables are recreated implicitly by the dataset's
+        # calendar settings (ensure_calendar_table) — skip explicit creation.
+        if kind == "generated_calendar":
+            report["skipped_tables"].append({"old_table_id": old_id, "reason": "calendar_auto"})
+            continue
+
+        if kind in ("physical_table", "sql_query") and not target_ds_id:
+            report["skipped_tables"].append({"old_table_id": old_id, "reason": "no_source_selected"})
+            continue
+
+        source_table_name = overrides.get(old_id) or dt.get("source_table_name")
+
+        try:
+            create_kwargs: Dict[str, Any] = {
+                "display_name": dt.get("display_name") or None,
+                "datasource_id": target_ds_id if kind != "derived_table" else None,
+                "source_kind": kind,
+                "enabled": bool(dt.get("enabled", True)),
+                "transformations": dt.get("transformations") or None,
+            }
+            if kind == "physical_table":
+                create_kwargs["source_table_name"] = source_table_name
+            elif kind in ("sql_query", "derived_table"):
+                create_kwargs["source_query"] = dt.get("source_query")
+
+            new_table = DatasetCRUDService.add_table_to_dataset(
+                db, dataset.id, TableCreate(**create_kwargs)
+            )
+            if new_table is None:
+                report["skipped_tables"].append({"old_table_id": old_id, "reason": "add_failed"})
+                continue
+
+            # Live column inference + cache (mirrors the /tables POST endpoint).
+            datasource = _ds(target_ds_id)
+            inferred = _infer_dataset_table_columns(db, dataset, datasource, new_table)
+            if inferred:
+                source_cols = _infer_dataset_table_source_columns(
+                    db, dataset, datasource, new_table, fallback_columns=inferred
+                )
+                DatasetCRUDService.update_table_cache(
+                    db,
+                    new_table.id,
+                    columns_cache=_build_columns_cache_payload(
+                        new_table, inferred, source_columns=source_cols
+                    ),
+                )
+
+            # Carry type overrides + column formats verbatim (raw JSONB columns).
+            changed = False
+            if dt.get("type_overrides"):
+                new_table.type_overrides = dt["type_overrides"]
+                changed = True
+            if dt.get("column_formats"):
+                new_table.column_formats = dt["column_formats"]
+                changed = True
+            if dt.get("miniapp_share"):
+                new_table.miniapp_share = True
+                changed = True
+            if changed:
+                db.commit()
+                db.refresh(new_table)
+
+            if old_id is not None:
+                id_map[int(old_id)] = new_table.id
+            report["created_tables"].append({
+                "old_table_id": old_id,
+                "new_table_id": new_table.id,
+                "source_table_name": source_table_name,
+                "columns": len(inferred or []),
+            })
+        except Exception as exc:
+            logger.warning("rebuild: failed to create table %s (%s): %s", old_id, source_table_name, exc)
+            db.rollback()
+            report["skipped_tables"].append({"old_table_id": old_id, "reason": "error", "detail": str(exc)[:200]})
+
+    # Build the semantic structure, then overlay the bundle's exact
+    # dimensions/measures/pk + joins so relationships replay faithfully.
+    try:
+        generate_dataset_model(db, dataset.id, force=True)
+        _overlay_semantic(db, dataset.id, id_map, bundle.get("semantic"))
+    except Exception as exc:
+        logger.warning("rebuild: semantic model build/overlay failed for ds %s: %s", dataset.id, exc)
+
+    report["id_map"] = {str(k): v for k, v in id_map.items()}
+    return dataset, report
+
+
+def _overlay_semantic(
+    db: Session,
+    dataset_id: int,
+    id_map: Dict[int, int],
+    semantic: Optional[Dict[str, Any]],
+) -> None:
+    """Overwrite the freshly auto-generated views/explores with the bundle's
+    exact dims/measures/pk + joins. Matched by NEW table id (old→new via
+    ``id_map``). Best-effort: anything that doesn't line up keeps the
+    auto-generated default."""
+    if not semantic or not id_map:
+        return
+    from app.models.semantic import SemanticModel, SemanticView, SemanticExplore
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if not model:
+        return
+    new_table_ids = list(id_map.values())
+    views = (
+        db.query(SemanticView)
+        .filter(SemanticView.dataset_table_id.in_(new_table_ids or [0]))
+        .all()
+    )
+    view_by_new_table = {v.dataset_table_id: v for v in views}
+
+    for bv in semantic.get("views") or []:
+        new_tid = id_map.get(int(bv["old_table_id"])) if bv.get("old_table_id") is not None else None
+        view = view_by_new_table.get(new_tid) if new_tid else None
+        if not view:
+            continue
+        if bv.get("dimensions") is not None:
+            view.dimensions = bv["dimensions"]
+        if bv.get("measures") is not None:
+            view.measures = bv["measures"]
+        view.primary_key = bv.get("primary_key")
+
+    # Explores: match by the base view's NEW table id, replay joins/filters.
+    explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+    explore_by_base_view = {e.base_view_id: e for e in explores}
+    for be in semantic.get("explores") or []:
+        new_tid = (
+            id_map.get(int(be["base_view_old_table_id"]))
+            if be.get("base_view_old_table_id") is not None
+            else None
+        )
+        base_view = view_by_new_table.get(new_tid) if new_tid else None
+        if not base_view:
+            continue
+        explore = explore_by_base_view.get(base_view.id)
+        if not explore:
+            continue
+        if be.get("joins") is not None:
+            explore.joins = be["joins"]
+        if be.get("default_filters") is not None:
+            explore.default_filters = be["default_filters"]
+
+    db.commit()
+
+
+def import_from_source(
+    db: Session,
+    bundle: Dict[str, Any],
+    *,
+    datasource_map: Dict[str, int],
+    owner_id: Any = None,
+    target_name: Optional[str] = None,
+    reuse_dataset_id: Optional[int] = None,
+    table_mapping: Optional[Dict[Any, Any]] = None,
+    column_mapping: Optional[Dict[Any, Any]] = None,
+    table_source_overrides: Optional[Dict[int, str]] = None,
+) -> Tuple[Workboard, ImportReport]:
+    """Top-level v2 import: (optionally) auto-create a Dataset on the chosen
+    Source(s) from the bundle, then run the existing ``import_workboard`` against
+    it (which remaps layout table-ids by source_table_name + recreates app
+    users). When ``reuse_dataset_id`` is given, skip the rebuild and import
+    straight onto that existing dataset (the legacy path)."""
+    if bundle.get("kind") != "workboard_template":
+        raise ValueError("Not a workboard template bundle.")
+
+    rebuild_report: Optional[Dict[str, Any]] = None
+    if reuse_dataset_id:
+        target_dataset_id = int(reuse_dataset_id)
+    else:
+        if bundle.get("bundle_version", 1) < 2 or not bundle.get("dataset_tables"):
+            raise ValueError(
+                "Bundle này (v1) không kèm cấu trúc dataset nên không thể tự tạo dataset. "
+                "Hãy chọn 'dùng dataset có sẵn' hoặc export lại từ bản mới."
+            )
+        dataset, rebuild_report = rebuild_dataset_from_bundle(
+            db,
+            bundle,
+            datasource_map,
+            owner_id=owner_id,
+            table_source_overrides=table_source_overrides,
+        )
+        target_dataset_id = dataset.id
+
+    workboard, report = import_workboard(
+        db,
+        bundle,
+        target_dataset_id=target_dataset_id,
+        target_name=target_name,
+        table_mapping=table_mapping,
+        column_mapping=column_mapping,
+        owner_id=owner_id,
+    )
+    # Surface the dataset-rebuild outcome on the report for the FE.
+    setattr(report, "dataset_rebuild", rebuild_report)
+    return workboard, report
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

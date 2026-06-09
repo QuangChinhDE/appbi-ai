@@ -970,6 +970,42 @@ class AutoNumberConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ScreenGroup(BaseModel):
+    """A named group of screens inside a workboard — surfaced to builders as
+    a "Workspace".
+
+    Purely a navigation/display construct: screens are NOT moved or
+    duplicated, the group just references ``screen_ids`` (in display order).
+    When a workboard defines no groups, the runtime nav stays flat exactly as
+    before (today's behaviour), so the field is fully backward-compatible.
+
+    ``visible_for_roles`` hides the group HEADER from the nav for non-matching
+    roles (empty = everyone). NOTE: this is a NAV-DISPLAY filter only — it is
+    NOT an access-control gate. Per-screen ``Screen.visible_for_roles`` / RLS
+    remains the authoritative access check (the screen-content endpoint enforces
+    that, not group membership).
+
+    RESERVED / NOT EXPOSED IN THE BUILDER (as of the Workspaces v1): the builder
+    never sets this field, so it is always empty and the runtime filter is inert
+    — a group's visibility is derived purely from its members (the runtime drops
+    a group whose member screens are all role-hidden). The field + the
+    ``is_group_visible_for`` filter are kept for forward-compat. Be aware of the
+    semantics before wiring a UI for it: hiding a group for a role does NOT hide
+    its still-visible member screens — they relocate ungrouped into the runtime
+    "Khác" bucket. If "hide group => also drop its members from that role's nav"
+    is the desired behaviour, ``render_app_shell`` must additionally exclude
+    those member ids from ``nav_items`` — decide + add a test when exposing it.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=120)
+    icon: Optional[str] = None
+    screen_ids: List[str] = Field(default_factory=_builtins.list)
+    visible_for_roles: List[str] = Field(default_factory=_builtins.list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -983,6 +1019,9 @@ class LayoutJson(BaseModel):
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     auto_number_columns: List[AutoNumberConfig] = Field(default_factory=_builtins.list)
+    # Named groups of screens (UI: "Workspace"). Empty = flat nav (today's
+    # behaviour). Additive + backward-compatible; see ScreenGroup.
+    screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)
 
     # ignore unknown future fields rather than erroring out clients
     model_config = ConfigDict(extra="ignore")

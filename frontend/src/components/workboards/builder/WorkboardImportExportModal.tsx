@@ -71,7 +71,10 @@ function ExportPanel({
 }) {
   const [loading, setLoading] = useState(true);
   const [bundle, setBundle] = useState<ExportBundle | null>(null);
-  const [includeCredentials, setIncludeCredentials] = useState(false);
+  // Default ON: the common case is moving an app within the same system, where
+  // carrying PIN hashes means users log in immediately after import. Turn OFF
+  // before sharing a bundle outside the trusted system.
+  const [includeCredentials, setIncludeCredentials] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -161,9 +164,10 @@ function ExportPanel({
       ) : (
         <div className="space-y-4">
           <div className="rounded-md border border-info/20 bg-info/5 p-3 text-caption text-text-secondary">
-            Export includes the full layout plus a snapshot of all{' '}
-            <strong>{tableCount}</strong> referenced tables (table names + columns).
-            When importing into another instance, AppBI lets you remap tables/columns before creating it.
+            Bundle gói trọn <strong>toàn bộ dataset</strong> (mọi bảng + cột + quan
+            hệ/measure) và toàn bộ layout của app. Khi import ở chỗ khác, bạn chỉ
+            cần <strong>chọn đúng Source</strong> — hệ thống tự tạo Dataset khớp
+            Source đó rồi dựng lại app + bảng user.
           </div>
 
           <label className="flex items-start gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-caption">
@@ -175,12 +179,12 @@ function ExportPanel({
             />
             <div>
               <div className="font-medium text-text-primary">
-                Include credentials (PIN hashes) for {bundle.app_users?.length ?? 0} app users
+                Kèm PIN (đã hash) cho {bundle.app_users?.length ?? 0} app user
               </div>
               <div className="mt-0.5 text-caption text-text-tertiary">
-                Default OFF to keep shared files safer. Turn this on only when the
-                bundle must work immediately after import, such as demos or seed data.
-                When off, an admin must reset each user PIN after import.
+                Mặc định BẬT để chuyển nội bộ cùng hệ thống — import xong user đăng
+                nhập được ngay. <strong>Tắt</strong> trước khi chia sẻ file ra ngoài;
+                khi tắt, admin phải đặt lại PIN cho từng user sau import.
               </div>
             </div>
           </label>

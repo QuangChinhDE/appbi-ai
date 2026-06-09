@@ -7,16 +7,31 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, CheckCircle2, Sparkles, Upload } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Database,
+  Loader2,
+  Plug,
+  Sparkles,
+  Upload,
+} from 'lucide-react';
 
 import { useDatasets, useDatasetTables } from '@/hooks/use-datasets';
+import { useDataSources } from '@/hooks/use-datasources';
 import { useImportWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
 import type { DatasetTable } from '@/hooks/use-datasets';
-import { workboardApi, type WorkboardImportReport } from '@/lib/api/workboards';
+import {
+  workboardApi,
+  type WorkboardBundleDatasource,
+  type WorkboardImportReport,
+  type WorkboardSourceInspect,
+} from '@/lib/api/workboards';
 
 type ImportReport = WorkboardImportReport;
 
@@ -43,9 +58,14 @@ interface TargetTable {
 
 interface WorkboardTemplateBundle {
   kind?: string;
+  bundle_version?: number;
   workboard?: { name?: string };
   tables_meta?: Record<string, TemplateTableMeta>;
   layout_json?: { screens?: unknown[] };
+  // v2 full-dataset payload (drives the "pick a Source" auto-create flow).
+  datasources?: WorkboardBundleDatasource[];
+  dataset_tables?: Array<{ old_table_id?: number; source_kind?: string }>;
+  app_users?: unknown[];
 }
 
 interface TemplateTableMeta {
@@ -65,10 +85,25 @@ interface ApiErrorShape {
 
 export default function WorkboardImportModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: datasets = [], isLoading: datasetsLoading, error: datasetsError } = useDatasets();
+  const { data: datasources = [], isLoading: datasourcesLoading } = useDataSources();
   const importMutation = useImportWorkboard();
   const [bundle, setBundle] = useState<WorkboardTemplateBundle | null>(null);
   const [bundleError, setBundleError] = useState<string | null>(null);
+  // Two ways to land the workboard's data: auto-create a fresh Dataset from a
+  // chosen Source (v2, the headline flow), or map onto an existing Dataset.
+  const [mode, setMode] = useState<'new' | 'reuse'>('new');
+
+  // ── NEW mode: pick a Source per bundle datasource → auto-create dataset ──
+  const [datasourceMap, setDatasourceMap] = useState<Record<string, number>>({});
+  const [inspect, setInspect] = useState<WorkboardSourceInspect | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+  // old_table_id -> source table name override (manual fix for a renamed table).
+  const [overrides, setOverrides] = useState<Record<number, string>>({});
+  const [submittingNew, setSubmittingNew] = useState(false);
+
+  // ── REUSE mode: existing dataset + table/column mapping ──
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const { data: datasetTables = [], isLoading: tablesLoading } = useDatasetTables(datasetId);
 
@@ -156,6 +191,108 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     });
   }, [bundle, datasetId, sourceTables, targetTables]);
 
+  // ── NEW-mode derived + handlers ─────────────────────────────────────
+  const bundleDatasources = useMemo(() => bundle?.datasources || [], [bundle]);
+  const canAutoCreate =
+    (bundle?.bundle_version ?? 1) >= 2 &&
+    (bundle?.dataset_tables?.length ?? 0) > 0 &&
+    bundleDatasources.length > 0;
+  const allSourcesSelected =
+    bundleDatasources.length > 0 && bundleDatasources.every((b) => datasourceMap[b.ref]);
+
+  // Pre-fill each bundle datasource with a same-named live Source (or the only
+  // one available), so the common single-source case needs zero clicks.
+  useEffect(() => {
+    if (!bundle || bundleDatasources.length === 0 || datasources.length === 0) return;
+    setDatasourceMap((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const bds of bundleDatasources) {
+        if (next[bds.ref]) continue;
+        const match =
+          datasources.find(
+            (d) => (d.name || '').toLowerCase() === (bds.name || '').toLowerCase(),
+          ) || (datasources.length === 1 ? datasources[0] : null);
+        if (match) {
+          next[bds.ref] = match.id;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [bundle, bundleDatasources, datasources]);
+
+  const handleInspect = async () => {
+    if (!bundle || !allSourcesSelected) return;
+    setInspecting(true);
+    try {
+      const r = await workboardApi.inspectImportSource(
+        bundle as Record<string, unknown>,
+        datasourceMap,
+      );
+      setInspect(r);
+      if (!r.all_found) {
+        toast.error(
+          `${r.physical_total - r.physical_found}/${r.physical_total} bảng chưa thấy trên Source đã chọn — map tay hoặc đổi Source.`,
+        );
+      } else {
+        toast.success(`Tất cả ${r.physical_total} bảng đều có trên Source đã chọn.`);
+      }
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Kiểm tra Source thất bại.'));
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  const openCleanOrReport = (data: { id?: number; _import_report?: ImportReport }) => {
+    // Import may have just created a brand-new dataset + workboard. Refresh the
+    // cached lists so the new builder's "Bound dataset" name resolves (instead
+    // of momentarily showing "— no dataset —") and the workboards list updates.
+    queryClient.invalidateQueries({ queryKey: ['datasets'] });
+    queryClient.invalidateQueries({ queryKey: ['workboards'] });
+    setCreatedId(data.id ?? null);
+    const importReport = (data._import_report as ImportReport) || null;
+    setReport(importReport);
+    const cleanImport =
+      !importReport ||
+      (importReport.missing_tables.length === 0 &&
+        importReport.missing_columns.length === 0 &&
+        (importReport.app_users_needing_pin?.length ?? 0) === 0 &&
+        (importReport.dataset_rebuild?.skipped_tables?.length ?? 0) === 0);
+    if (cleanImport && data.id) {
+      toast.success('Đã import — mở Builder');
+      onClose();
+      router.push(`/workboards/${data.id}`);
+      return;
+    }
+    toast.success('Đã import workboard');
+  };
+
+  const handleSubmitNew = async () => {
+    if (!bundle || !allSourcesSelected) return;
+    setSubmittingNew(true);
+    try {
+      const tableSourceOverrides: Record<string, string> = {};
+      for (const [k, v] of Object.entries(overrides)) {
+        if (v) tableSourceOverrides[String(k)] = v;
+      }
+      const data = await workboardApi.importFromSource({
+        bundle: bundle as Record<string, unknown>,
+        datasource_map: datasourceMap,
+        target_name: name.trim() || undefined,
+        table_source_overrides: Object.keys(tableSourceOverrides).length
+          ? tableSourceOverrides
+          : undefined,
+      });
+      openCleanOrReport(data);
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Import thất bại.'));
+    } finally {
+      setSubmittingNew(false);
+    }
+  };
+
   const handleFile = async (file: File) => {
     setBundleError(null);
     try {
@@ -168,13 +305,23 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       setBundle(parsed);
       setReport(null);
       setCreatedId(null);
+      setInspect(null);
+      setOverrides({});
+      setDatasourceMap({});
+      // v2 bundles default to the "pick a Source → auto-create" flow; older
+      // (v1) bundles can only reuse an existing dataset.
+      const autoCapable =
+        (parsed.bundle_version ?? 1) >= 2 &&
+        (parsed.dataset_tables?.length ?? 0) > 0 &&
+        (parsed.datasources?.length ?? 0) > 0;
+      setMode(autoCapable ? 'new' : 'reuse');
       if (parsed.workboard?.name && !name) setName(`${parsed.workboard.name} (imported)`);
     } catch {
       setBundleError('Không đọc được file JSON.');
     }
   };
 
-  const handleSubmit = async () => {
+  const handleSubmitReuse = async () => {
     if (!bundle || !datasetId) return;
     try {
       const mappingPayload = buildMappingPayload(
@@ -190,28 +337,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         table_mapping: mappingPayload.table_mapping,
         column_mapping: mappingPayload.column_mapping,
       });
-      setCreatedId(data.id);
-      const importReport = (data._import_report as ImportReport) || null;
-      setReport(importReport);
-
-      // Open the workboard straight away when the import landed clean —
-      // no missing tables, no missing columns, no app-users that need a
-      // manual PIN reset. Anything sticky and we keep the success report
-      // so the admin can read what needs follow-up before navigating.
-      const cleanImport =
-        !importReport
-        || (
-          importReport.missing_tables.length === 0
-          && importReport.missing_columns.length === 0
-          && (importReport.app_users_needing_pin?.length ?? 0) === 0
-        );
-      if (cleanImport && data.id) {
-        toast.success('Đã import workboard — mở Builder');
-        onClose();
-        router.push(`/workboards/${data.id}`);
-        return;
-      }
-      toast.success('Đã import workboard');
+      openCleanOrReport(data);
     } catch (err: unknown) {
       toast.error(getApiErrorMessage(err, 'Import thất bại.'));
     }
@@ -245,16 +371,29 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
             <Button variant="ghost" size="sm" onClick={onClose}>
               Huỷ
             </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              leadingIcon={<Upload className="h-3.5 w-3.5" />}
-              onClick={handleSubmit}
-              disabled={!bundle || !datasetId || targetDatasetHasNoTables || importMutation.isPending}
-              loading={importMutation.isPending}
-            >
-              Import
-            </Button>
+            {mode === 'new' ? (
+              <Button
+                variant="primary"
+                size="sm"
+                leadingIcon={<Upload className="h-3.5 w-3.5" />}
+                onClick={handleSubmitNew}
+                disabled={!bundle || !allSourcesSelected || submittingNew}
+                loading={submittingNew}
+              >
+                Tạo dataset + import
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                leadingIcon={<Upload className="h-3.5 w-3.5" />}
+                onClick={handleSubmitReuse}
+                disabled={!bundle || !datasetId || targetDatasetHasNoTables || importMutation.isPending}
+                loading={importMutation.isPending}
+              >
+                Import
+              </Button>
+            )}
           </>
         )
       }
@@ -283,8 +422,15 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
             {bundle && (
               <div className="mt-2 rounded-md border border-success/20 bg-success/5 p-2 text-caption text-text-secondary">
                 <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-success" />
-                Bundle hợp lệ — {Object.keys(bundle.tables_meta || {}).length}{' '}
-                bảng tham chiếu, {Array.isArray(bundle.layout_json?.screens) ? bundle.layout_json.screens.length : 0} screen.
+                Bundle hợp lệ —{' '}
+                {Array.isArray(bundle.layout_json?.screens) ? bundle.layout_json.screens.length : 0} screen
+                {canAutoCreate && (
+                  <>
+                    , {bundle.dataset_tables?.length ?? 0} bảng dataset,{' '}
+                    {bundleDatasources.length} Source ({bundleDatasources.map((d) => d.name).join(', ')})
+                  </>
+                )}
+                {(bundle.app_users?.length ?? 0) > 0 && <>, {bundle.app_users?.length} app user</>}.
               </div>
             )}
           </FieldGroup>
@@ -301,84 +447,190 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
             />
           </FieldGroup>
 
-          <FieldGroup
-            label="Dataset đích"
-            required
-            description="Chọn dataset chứa các bảng dữ liệu cho workboard. Sau khi upload bundle bạn sẽ map từng bảng/cột nếu tên khác template."
-          >
-            <select
-              value={datasetId ?? ''}
-              onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body"
-            >
-              <option value="">
-                {datasetsLoading
-                  ? 'Đang tải danh sách dataset...'
-                  : datasets.length === 0
-                  ? '— Không có dataset nào —'
-                  : '— Chọn dataset —'}
-              </option>
-              {datasets.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-            {!datasetsLoading && datasets.length === 0 && (
-              <p className="mt-1 text-tiny text-warning">
-                {datasetsError
-                  ? 'Không tải được danh sách dataset — kiểm tra quyền truy cập hoặc kết nối.'
-                  : 'Bạn chưa có dataset nào. Vào trang Datasets tạo dataset trước khi import workboard.'}
-              </p>
-            )}
-            {targetDatasetHasNoTables && (
-              <p className="mt-1 text-tiny text-warning">
-                Dataset này chưa có bảng vật lý nào. Hãy thêm bảng vào dataset trước khi import.
-              </p>
-            )}
-          </FieldGroup>
-
-          {bundle && datasetId && (
+          {bundle && (
             <>
-              <div className="flex items-center justify-between rounded-md border border-brand/20 bg-brand/5 px-3 py-2">
-                <div className="text-caption text-text-secondary">
-                  <strong>AI auto-map</strong> đề xuất mapping bảng/cột dựa trên
-                  tên + kiểu dữ liệu. Bấm để xem trước những thay đổi rồi
-                  quyết định áp hay không — không có gì bị ghi đè trước khi
-                  bạn duyệt.
+              {/* Mode toggle: auto-create from Source (v2) vs reuse a dataset. */}
+              {canAutoCreate ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <ModeButton
+                    active={mode === 'new'}
+                    onClick={() => setMode('new')}
+                    icon={Plug}
+                    title="Tạo Dataset mới từ Source"
+                    desc="Chỉ chọn Source — hệ thống tự tạo dataset khớp + dựng app."
+                  />
+                  <ModeButton
+                    active={mode === 'reuse'}
+                    onClick={() => setMode('reuse')}
+                    icon={Database}
+                    title="Dùng Dataset có sẵn"
+                    desc="Map bảng/cột vào một dataset đã có sẵn."
+                  />
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  leadingIcon={<Sparkles className="h-3.5 w-3.5" />}
-                  loading={autoMapping}
-                  disabled={autoMapping || tablesLoading}
-                  onClick={handleAutoMap}
-                  title="Gọi AI để gợi ý mapping. Sau đó bạn sẽ thấy preview diff trước khi áp."
-                >
-                  Gợi ý mapping bằng AI
-                </Button>
-              </div>
+              ) : (
+                <div className="rounded-md border border-warning/30 bg-warning/5 p-2 text-tiny text-warning">
+                  Bundle cũ (v1) không kèm cấu trúc dataset — chỉ có thể import vào một
+                  dataset có sẵn.
+                </div>
+              )}
 
-              <ImportMappingEditor
-                sourceTables={sourceTables}
-                targetTables={targetTables}
-                tableMapping={tableMapping}
-                columnMapping={columnMapping}
-                tablesLoading={tablesLoading}
-                onTableMappingChange={(sourceKey, targetId) => {
-                  setTableMapping((current) => ({ ...current, [sourceKey]: targetId }));
-                }}
-                onColumnMappingChange={(sourceKey, sourceColumn, targetColumn) => {
-                  setColumnMapping((current) => ({
-                    ...current,
-                    [sourceKey]: {
-                      ...(current[sourceKey] || {}),
-                      [sourceColumn]: targetColumn,
-                    },
-                  }));
-                }}
-              />
+              {mode === 'new' && canAutoCreate ? (
+                <div className="space-y-3">
+                  <FieldGroup
+                    label="Chọn Source cho app"
+                    required
+                    description="App sẽ dựng trên Source bạn chọn — hệ thống tự tạo một Dataset mới khớp Source này (đọc cột trực tiếp từ Source)."
+                  >
+                    <div className="space-y-2">
+                      {bundleDatasources.map((bds) => (
+                        <div
+                          key={bds.ref}
+                          className="grid grid-cols-[minmax(0,1fr)_minmax(200px,300px)] items-center gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-caption font-emphasis text-text-primary">
+                              {bds.name}
+                            </div>
+                            <div className="text-tiny text-text-tertiary">
+                              Source gốc · {bds.type}
+                            </div>
+                          </div>
+                          <select
+                            value={datasourceMap[bds.ref] ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value ? Number(e.target.value) : 0;
+                              setDatasourceMap((m) => ({ ...m, [bds.ref]: v }));
+                              setInspect(null);
+                            }}
+                            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2.5 py-1.5 text-caption"
+                          >
+                            <option value="">
+                              {datasourcesLoading ? 'Đang tải Source...' : '— Chọn Source đích —'}
+                            </option>
+                            {datasources.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name} ({d.type})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        leadingIcon={
+                          inspecting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                          )
+                        }
+                        onClick={handleInspect}
+                        disabled={!allSourcesSelected || inspecting}
+                      >
+                        Kiểm tra Source
+                      </Button>
+                      <span className="text-tiny text-text-tertiary">
+                        Tùy chọn — xem bảng nào có / thiếu trước khi tạo.
+                      </span>
+                    </div>
+                  </FieldGroup>
+
+                  {inspect && (
+                    <SourceInspectPreview
+                      inspect={inspect}
+                      overrides={overrides}
+                      onOverride={(oldId, tbl) =>
+                        setOverrides((o) => ({ ...o, [oldId]: tbl }))
+                      }
+                    />
+                  )}
+                </div>
+              ) : (
+                <>
+                  <FieldGroup
+                    label="Dataset đích"
+                    required
+                    description="Chọn dataset có sẵn chứa các bảng dữ liệu. Sau đó map từng bảng/cột nếu tên khác template."
+                  >
+                    <select
+                      value={datasetId ?? ''}
+                      onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}
+                      className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body"
+                    >
+                      <option value="">
+                        {datasetsLoading
+                          ? 'Đang tải danh sách dataset...'
+                          : datasets.length === 0
+                          ? '— Không có dataset nào —'
+                          : '— Chọn dataset —'}
+                      </option>
+                      {datasets.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                    {!datasetsLoading && datasets.length === 0 && (
+                      <p className="mt-1 text-tiny text-warning">
+                        {datasetsError
+                          ? 'Không tải được danh sách dataset — kiểm tra quyền truy cập hoặc kết nối.'
+                          : 'Bạn chưa có dataset nào. Vào trang Datasets tạo dataset trước khi import workboard.'}
+                      </p>
+                    )}
+                    {targetDatasetHasNoTables && (
+                      <p className="mt-1 text-tiny text-warning">
+                        Dataset này chưa có bảng vật lý nào. Hãy thêm bảng vào dataset trước khi import.
+                      </p>
+                    )}
+                  </FieldGroup>
+
+                  {datasetId && (
+                    <>
+                      <div className="flex items-center justify-between rounded-md border border-brand/20 bg-brand/5 px-3 py-2">
+                        <div className="text-caption text-text-secondary">
+                          <strong>AI auto-map</strong> đề xuất mapping bảng/cột dựa trên
+                          tên + kiểu dữ liệu. Bấm để xem trước rồi quyết định áp hay
+                          không — không có gì bị ghi đè trước khi bạn duyệt.
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          leadingIcon={<Sparkles className="h-3.5 w-3.5" />}
+                          loading={autoMapping}
+                          disabled={autoMapping || tablesLoading}
+                          onClick={handleAutoMap}
+                          title="Gọi AI để gợi ý mapping. Sau đó bạn sẽ thấy preview diff trước khi áp."
+                        >
+                          Gợi ý mapping bằng AI
+                        </Button>
+                      </div>
+
+                      <ImportMappingEditor
+                        sourceTables={sourceTables}
+                        targetTables={targetTables}
+                        tableMapping={tableMapping}
+                        columnMapping={columnMapping}
+                        tablesLoading={tablesLoading}
+                        onTableMappingChange={(sourceKey, targetId) => {
+                          setTableMapping((current) => ({ ...current, [sourceKey]: targetId }));
+                        }}
+                        onColumnMappingChange={(sourceKey, sourceColumn, targetColumn) => {
+                          setColumnMapping((current) => ({
+                            ...current,
+                            [sourceKey]: {
+                              ...(current[sourceKey] || {}),
+                              [sourceColumn]: targetColumn,
+                            },
+                          }));
+                        }}
+                      />
+                    </>
+                  )}
+                </>
+              )}
             </>
           )}
         </div>
@@ -398,6 +650,106 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         />
       )}
     </Modal>
+  );
+}
+
+
+function ModeButton({
+  active,
+  onClick,
+  icon: Icon,
+  title,
+  desc,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ElementType;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-start gap-2 rounded-lg border p-3 text-left transition-colors ${
+        active ? 'border-brand bg-brand/5' : 'border-[rgb(var(--border-line))] hover:border-brand/50'
+      }`}
+    >
+      <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${active ? 'text-brand' : 'text-text-tertiary'}`} />
+      <div className="min-w-0">
+        <div className={`text-caption font-emphasis ${active ? 'text-brand' : 'text-text-primary'}`}>
+          {title}
+        </div>
+        <div className="mt-0.5 text-tiny text-text-tertiary">{desc}</div>
+      </div>
+    </button>
+  );
+}
+
+function SourceInspectPreview({
+  inspect,
+  overrides,
+  onOverride,
+}: {
+  inspect: WorkboardSourceInspect;
+  overrides: Record<number, string>;
+  onOverride: (oldId: number, tbl: string) => void;
+}) {
+  const physical = inspect.tables.filter((t) => t.source_kind === 'physical_table');
+  return (
+    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+      <div className="mb-2 flex items-center gap-2 text-caption">
+        {inspect.all_found ? (
+          <CheckCircle2 className="h-4 w-4 text-success" />
+        ) : (
+          <AlertTriangle className="h-4 w-4 text-warning" />
+        )}
+        <span className="font-emphasis text-text-primary">
+          {inspect.physical_found}/{inspect.physical_total} bảng có trên Source
+        </span>
+        {!inspect.all_found && (
+          <span className="text-tiny text-warning">— map tay bảng thiếu, hoặc đổi Source</span>
+        )}
+      </div>
+      <div className="max-h-[34vh] space-y-1 overflow-y-auto pr-1">
+        {physical.map((t) => (
+          <div
+            key={t.old_table_id}
+            className="flex items-center gap-2 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
+          >
+            {t.status === 'found' ? (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+            ) : (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-text-primary">
+                {t.display_name || t.source_table_name}
+              </div>
+              <div className="truncate text-tiny text-text-tertiary">
+                {t.status === 'found'
+                  ? `khớp: ${t.matched_source_table}`
+                  : 'không thấy bảng này trên Source đã chọn'}
+              </div>
+            </div>
+            {t.status === 'missing' && (t.available_sample?.length ?? 0) > 0 && (
+              <select
+                value={overrides[t.old_table_id] ?? ''}
+                onChange={(e) => onOverride(t.old_table_id, e.target.value)}
+                className="max-w-[180px] rounded border border-warning/40 bg-surface-0 px-1.5 py-1 text-tiny"
+              >
+                <option value="">— chọn bảng thay thế —</option>
+                {t.available_sample!.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -560,20 +912,36 @@ function ImportSuccessReport({
   const colIssues = report.missing_columns.length;
   const usersImported = report.app_users_imported ?? 0;
   const usersNeedingPin = report.app_users_needing_pin ?? [];
+  const rebuild = report.dataset_rebuild;
+  const skippedRebuild = rebuild?.skipped_tables ?? [];
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-success/20 bg-success/5 p-3 text-caption">
         <div className="font-emphasis text-success">
           <CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />
-          Workboard đã được tạo
+          Đã import app
         </div>
         <div className="mt-1 text-text-secondary">
-          {matched} bảng map thành công.
+          {rebuild && (
+            <>
+              Tạo dataset mới <strong>“{rebuild.dataset_name}”</strong> với{' '}
+              {rebuild.created_tables.length} bảng.{' '}
+            </>
+          )}
+          {matched} bảng được nối vào app.
           {missing > 0 && ` ${missing} bảng chưa khớp.`}
           {colIssues > 0 && ` ${colIssues} cột không tồn tại — sẽ hiện trong Builder để bạn dọn.`}
           {usersImported > 0 && ` ${usersImported} app user đã import.`}
         </div>
       </div>
+
+      {skippedRebuild.length > 0 && (
+        <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+          <strong>{skippedRebuild.length} bảng không tạo được</strong> trên Source đã
+          chọn (không tìm thấy / lỗi). Screen nào dùng các bảng này sẽ ở trạng thái
+          “cần cấu hình” trong Builder.
+        </div>
+      )}
 
       {usersNeedingPin.length > 0 && (
         <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">

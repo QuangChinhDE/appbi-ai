@@ -12,12 +12,14 @@
  */
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
   CheckCircle2,
   ExternalLink,
+  Link2,
   Loader2,
+  Plus,
   Smartphone,
   Tablet,
   Laptop,
@@ -39,9 +41,13 @@ import {
 } from './appUserRoles';
 import {
   getAccessMode,
+  isWorkboardLinked,
   sortPreviewWorkspaces,
   type WorkspaceLite,
 } from './workspace-preview-utils';
+import { Button } from '@/components/ui/Button';
+import { WorkspaceCreateModal } from './WorkspaceCreateModal';
+import { workspaceAdminApi, type WorkspaceAdmin } from '@/lib/api/workspaces';
 
 function getApiErrorMessage(error: unknown, fallback: string) {
   const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
@@ -91,30 +97,44 @@ export default function BuilderLivePreview({
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [loadingWs, setLoadingWs] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [wsBusy, setWsBusy] = useState(false);
+  const [wsActionError, setWsActionError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const workboardSlug = workboard.slug ?? '';
 
   // ── Resolve which workspace can host this preview ────────────────
-  useEffect(() => {
-    let alive = true;
-    (async () => {
+  // Shared by the initial load and the post-create/attach refresh. When
+  // ``preferId`` is given, select that workspace (used right after creating
+  // one so the preview switches to it); otherwise keep the current selection
+  // if it still exists, else fall back to the first.
+  const loadWorkspaces = useCallback(
+    async (preferId?: number) => {
+      setLoadingWs(true);
       try {
         const r = await apiClient.get<WorkspaceLite[]>('/workspaces');
-        const data = r.data || [];
-        if (!alive) return;
-        const ordered = sortPreviewWorkspaces(data, workboardSlug);
+        const ordered = sortPreviewWorkspaces(r.data || [], workboardSlug);
         setWorkspaces(ordered);
-        setActiveWs(ordered[0] ?? null);
+        setActiveWs((prev) => {
+          if (preferId != null) {
+            return ordered.find((w) => w.id === preferId) ?? prev ?? ordered[0] ?? null;
+          }
+          if (prev) return ordered.find((w) => w.id === prev.id) ?? ordered[0] ?? null;
+          return ordered[0] ?? null;
+        });
         setSessionReady(false);
       } catch {
         // non-fatal
       } finally {
-        if (alive) setLoadingWs(false);
+        setLoadingWs(false);
       }
-    })();
-    return () => {
-      alive = false;
-    };
+    },
+    [workboardSlug],
+  );
+
+  useEffect(() => {
+    void loadWorkspaces();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workboard.id, workboardSlug]);
 
   const isInternal = activeWs ? getAccessMode(activeWs) === 'internal' : false;
@@ -264,6 +284,49 @@ export default function BuilderLivePreview({
     return activeScreenId ? `${base}#screen=${activeScreenId}` : base;
   }, [activeWs, workboard.id, activeScreenId]);
 
+  // After creating a workspace (which already contains this workboard),
+  // refetch + select it; the activeWs.id change auto-mints the preview.
+  const handleWorkspaceCreated = useCallback(
+    async (ws: WorkspaceAdmin) => {
+      setWsActionError(null);
+      await loadWorkspaces(ws.id);
+    },
+    [loadWorkspaces],
+  );
+
+  // Add this workboard to the selected workspace's menu (makes the card
+  // permanent for real end-users). Preview already works via the
+  // preview-session claim, so no re-mint — just refresh the menu + iframe.
+  const handleAttach = useCallback(async () => {
+    if (!activeWs || !workboardSlug) return;
+    setWsBusy(true);
+    setWsActionError(null);
+    try {
+      const updated = await workspaceAdminApi.attachWorkboard(activeWs.id, {
+        workboard_slug: workboardSlug,
+        label: workboard.name?.trim() || workboardSlug,
+        icon: workboard.icon,
+        description: workboard.description,
+      });
+      const leanMenu = (updated.menu_config || []).map((m) => ({
+        workboard_slug: m.workboard_slug,
+      }));
+      // Spread the prior object so access_mode (drives isInternal / role
+      // selectors) survives the lean-menu rewrite.
+      setWorkspaces((prev) =>
+        prev.map((w) => (w.id === updated.id ? { ...w, menu_config: leanMenu } : w)),
+      );
+      setActiveWs((prev) =>
+        prev && prev.id === updated.id ? { ...prev, menu_config: leanMenu } : prev,
+      );
+      setIframeKey((k) => k + 1);
+    } catch (err) {
+      setWsActionError(getApiErrorMessage(err, 'Không thể đính kèm workboard vào workspace.'));
+    } finally {
+      setWsBusy(false);
+    }
+  }, [activeWs, workboardSlug, workboard.name, workboard.icon, workboard.description]);
+
   // ── Collapsed: hide entirely so the editor fills the whole row.
   // The toggle that re-opens it lives in WorkboardBuilder's center panel.
   // (The outer Panel uses `collapsedSize={0}` so its slot also disappears.)
@@ -292,7 +355,61 @@ export default function BuilderLivePreview({
 
       {/* Toolbar — role + device + actions */}
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {workspaces.length > 1 && (
+            <select
+              value={activeWs?.id ?? ''}
+              onChange={(e) => {
+                const ws =
+                  workspaces.find((w) => String(w.id) === e.target.value) || null;
+                setActiveWs(ws);
+                setPreviewRole('');
+                setPreviewUsername('');
+                setSessionReady(false);
+              }}
+              className="max-w-[180px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption"
+              title="Cổng công khai (link) — chọn cổng để xem trước. Đây KHÔNG phải Workspace; Workspace là nhóm màn hình bên trong app."
+            >
+              {workspaces.map((ws) => (
+                <option key={ws.id} value={ws.id}>
+                  {isWorkboardLinked(ws, workboardSlug) ? '★ ' : '○ '}
+                  {ws.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {!loadingWs && (
+            <Button
+              variant="secondary"
+              size="xs"
+              leadingIcon={<Plus className="h-3 w-3" />}
+              disabled={!workboardSlug || wsBusy}
+              onClick={() => setShowCreate(true)}
+              title={
+                workboardSlug
+                  ? 'Tạo cổng công khai (link) mới và thêm app này vào menu của cổng'
+                  : 'Lưu app trước khi tạo cổng'
+              }
+            >
+              Cổng mới
+            </Button>
+          )}
+          {!loadingWs &&
+            activeWs &&
+            !!workboardSlug &&
+            !isWorkboardLinked(activeWs, workboardSlug) && (
+              <Button
+                variant="outline"
+                size="xs"
+                leadingIcon={<Link2 className="h-3 w-3" />}
+                loading={wsBusy}
+                disabled={wsBusy}
+                onClick={() => void handleAttach()}
+                title="Đưa app này vào menu của cổng đang chọn (hiện cho người dùng cuối khi đăng nhập bằng PIN)"
+              >
+                Gắn vào cổng này
+              </Button>
+            )}
           {!isInternal && (
             <>
               <select
@@ -388,6 +505,20 @@ export default function BuilderLivePreview({
         </div>
       </div>
 
+      {wsActionError && (
+        <div className="flex items-start gap-1.5 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-caption text-danger">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span className="min-w-0 flex-1">{wsActionError}</span>
+          <button
+            onClick={() => setWsActionError(null)}
+            className="shrink-0 text-danger/70 hover:text-danger"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Iframe area */}
       <div className="flex flex-1 flex-col overflow-hidden bg-slate-100">
         {loadingWs ? (
@@ -397,9 +528,20 @@ export default function BuilderLivePreview({
         ) : workspaces.length === 0 ? (
           <Centered>
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-caption text-warning">
-              No workspace is available for live preview. Create one in
-              Settings → Workspaces. The default <code>public_app_users</code>{' '}
-              mode uses the mini-app users managed in the Workboard builder.
+              Chưa có cổng công khai (link) nào để xem trước. Tạo một cổng — app
+              này sẽ tự được thêm vào menu của cổng (đăng nhập bằng PIN).
+              <div className="mt-2">
+                <Button
+                  variant="primary"
+                  size="xs"
+                  leadingIcon={<Plus className="h-3 w-3" />}
+                  disabled={!workboardSlug}
+                  onClick={() => setShowCreate(true)}
+                  title={workboardSlug ? '' : 'Lưu app trước khi tạo cổng'}
+                >
+                  Tạo cổng đầu tiên
+                </Button>
+              </div>
             </div>
           </Centered>
         ) : sessionError ? (
@@ -449,6 +591,17 @@ export default function BuilderLivePreview({
           </div>
         ) : null}
       </div>
+
+      {showCreate && (
+        <WorkspaceCreateModal
+          workboardName={workboard.name}
+          workboardSlug={workboardSlug}
+          workboardIcon={workboard.icon}
+          workboardDescription={workboard.description}
+          onClose={() => setShowCreate(false)}
+          onCreated={(ws) => void handleWorkspaceCreated(ws)}
+        />
+      )}
     </aside>
   );
 }

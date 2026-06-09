@@ -75,6 +75,16 @@ export interface AppShellScreenStub {
   show_in_nav: boolean;
 }
 
+/** A named group of screens (UI: "Workspace") for the in-app navigation.
+ *  Server emits these already role-filtered, with screen_ids referencing
+ *  visible screens. Absent/empty => flat nav (legacy behaviour). */
+export interface AppShellScreenGroup {
+  id: string;
+  label: string;
+  icon?: string | null;
+  screen_ids: string[];
+}
+
 export interface AppShellResponse {
   workboard: {
     id: number;
@@ -86,6 +96,7 @@ export interface AppShellResponse {
   branding: WorkspaceBranding;
   nav: AppShellNav;
   screens: AppShellScreenStub[];
+  screen_groups?: AppShellScreenGroup[];
   viewer?: {
     role?: string | null;
     username?: string | null;

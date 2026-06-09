@@ -265,6 +265,30 @@ export interface MiniAppNavSpec {
   items: string[];
 }
 
+/**
+ * A named group of screens inside a workboard — surfaced to the end-user as a
+ * "Workspace" (Workboard → Workspaces → Screens). Additive & back-compat: an
+ * empty ``screen_groups`` means flat navigation (legacy behaviour). Mirrors
+ * ``ScreenGroup`` in ``backend/app/modules/workboards/schemas.py``.
+ */
+export interface ScreenGroupSpec {
+  id: string;
+  label: string;
+  icon?: string | null;
+  /**
+   * Screen ids that belong to this workspace (membership). Runtime nav order
+   * follows the flat Screens-list order, NOT this array's order.
+   */
+  screen_ids: string[];
+  /**
+   * RESERVED / not settable in the builder (Workspaces v1). NAV-DISPLAY ONLY —
+   * per-screen ``visible_for_roles`` remains authoritative for access. Always
+   * empty today; see ScreenGroup in backend schemas.py for the semantics before
+   * wiring a UI.
+   */
+  visible_for_roles?: string[];
+}
+
 export interface BrandingSpec {
   app_name?: string | null;
   logo_url?: string | null;
@@ -286,6 +310,8 @@ export interface MiniAppLayoutSpec {
   branding?: BrandingSpec;
   audit?: unknown;
   auto_number_columns?: AutoNumberConfigSpec[];
+  /** Named workspaces (screen groups). Empty = flat nav (legacy). */
+  screen_groups?: ScreenGroupSpec[];
   [key: string]: unknown;
 }
 
@@ -295,6 +321,7 @@ export const DEFAULT_LAYOUT: MiniAppLayoutSpec = {
   branding: { primary_color: '#2563eb' },
   audit: {},
   auto_number_columns: [],
+  screen_groups: [],
 };
 
 export function ensureLayout(raw: unknown): MiniAppLayoutSpec {
@@ -308,6 +335,9 @@ export function ensureLayout(raw: unknown): MiniAppLayoutSpec {
     branding: (obj.branding as BrandingSpec) || DEFAULT_LAYOUT.branding,
     auto_number_columns: Array.isArray(obj.auto_number_columns)
       ? (obj.auto_number_columns as AutoNumberConfigSpec[])
+      : [],
+    screen_groups: Array.isArray(obj.screen_groups)
+      ? (obj.screen_groups as ScreenGroupSpec[])
       : [],
   };
 }

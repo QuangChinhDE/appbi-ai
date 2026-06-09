@@ -51,7 +51,7 @@ export default function AppSettingsEditor({
         </div>
         <div className="space-y-4 px-5 py-4">
           <section>
-            <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
               Dataset
             </h3>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
@@ -85,7 +85,7 @@ export default function AppSettingsEditor({
           </section>
 
           <section>
-            <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
               Branding
             </h3>
             <div className="grid grid-cols-2 gap-3">
@@ -145,7 +145,7 @@ export default function AppSettingsEditor({
           <AutoNumberSection layout={layout} onChange={onChange} />
 
           <section>
-            <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
               Navigation
             </h3>
             <div className="grid grid-cols-2 gap-3">
@@ -206,7 +206,7 @@ function AutoNumberSection({
     onChange({ ...layout, auto_number_columns: next });
   return (
     <section>
-      <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+      <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
         Auto-number columns
       </h3>
       <p className="mb-3 text-caption text-text-tertiary">

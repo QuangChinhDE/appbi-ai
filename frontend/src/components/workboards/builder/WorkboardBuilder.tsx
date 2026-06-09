@@ -273,17 +273,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
     }));
   };
 
-  const moveScreen = (idx: number, dir: -1 | 1) => {
-    setLayout((curr) => {
-      const arr = [...curr.screens];
-      const target = idx + dir;
-      if (target < 0 || target >= arr.length) return curr;
-      [arr[idx], arr[target]] = [arr[target], arr[idx]];
-      const navItems = arr.filter((s) => s.show_in_nav !== false).map((s) => s.id);
-      return { ...curr, screens: arr, mini_app_nav: { ...curr.mini_app_nav, items: navItems } };
-    });
-  };
-
   /** Drag-and-drop reorder. Splice from `fromIdx`, insert at `toIdx`. */
   const reorderScreens = (fromIdx: number, toIdx: number) => {
     setLayout((curr) => {
@@ -298,8 +287,8 @@ export default function WorkboardBuilder({ workboard }: Props) {
     });
   };
 
-  const addScreen = (kind: ScreenKind) => {
-    const id = `screen-${Date.now().toString(36)}`;
+  const addScreen = (kind: ScreenKind, targetGroupId?: string | null) => {
+    const id = `screen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const titleByKind: Record<ScreenKind, string> = {
       form: 'New form',
       table: 'Table',
@@ -346,11 +335,24 @@ export default function WorkboardBuilder({ workboard }: Props) {
       base.dashboard = {};
       base.table_id = null;
     }
-    setLayout((curr) => ({
-      ...curr,
-      screens: [...curr.screens, base],
-      mini_app_nav: { ...curr.mini_app_nav, items: [...(curr.mini_app_nav.items || []), id] },
-    }));
+    setLayout((curr) => {
+      // When a workspace is active in the builder, the new screen is born
+      // INTO that workspace (append its id to the group's screen_ids) in the
+      // same pass — so "+ Form" on a workspace tab lands where the user looks.
+      const screen_groups = targetGroupId
+        ? (curr.screen_groups || []).map((g) =>
+            g.id === targetGroupId && !(g.screen_ids || []).includes(id)
+              ? { ...g, screen_ids: [...(g.screen_ids || []), id] }
+              : g,
+          )
+        : curr.screen_groups;
+      return {
+        ...curr,
+        screens: [...curr.screens, base],
+        mini_app_nav: { ...curr.mini_app_nav, items: [...(curr.mini_app_nav.items || []), id] },
+        screen_groups,
+      };
+    });
     // Jump straight into the new screen's editor — the user just signaled
     // "I want a new X", and the next thing they want is to configure it.
     setActiveScreenId(id);
@@ -361,13 +363,88 @@ export default function WorkboardBuilder({ workboard }: Props) {
     if (!confirm('Delete this screen?')) return;
     setLayout((curr) => {
       const next = curr.screens.filter((s) => s.id !== id);
+      // G7 — scrub the deleted screen from every workspace so the runtime
+      // never references a screen that no longer exists.
+      const scrubbedGroups = (curr.screen_groups || []).map((g) => ({
+        ...g,
+        screen_ids: (g.screen_ids || []).filter((x) => x !== id),
+      }));
       return {
         ...curr,
         screens: next,
         mini_app_nav: { ...curr.mini_app_nav, items: curr.mini_app_nav.items.filter((x) => x !== id) },
+        screen_groups: scrubbedGroups,
       };
     });
     if (activeScreenId === id) setActiveScreenId(null);
+  };
+
+  // ── Workspaces (screen groups) ───────────────────────────────────────
+  // A workspace is a named, ordered subset of screens surfaced to the
+  // end-user as a nav section. Membership is additive: a screen not in
+  // any group falls into the runtime's "Khác" bucket, so leaving groups
+  // empty preserves the legacy flat navigation.
+  const createGroup = (label: string) => {
+    const clean = label.trim();
+    if (!clean) return;
+    // Random suffix so two creates in the same millisecond (or any future
+    // programmatic/bulk path) can't mint colliding ids that would break
+    // assignment to the second group.
+    const id = `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setLayout((curr) => ({
+      ...curr,
+      screen_groups: [
+        ...(curr.screen_groups || []),
+        { id, label: clean, icon: null, screen_ids: [], visible_for_roles: [] },
+      ],
+    }));
+  };
+
+  const renameGroup = (id: string, label: string) => {
+    const clean = label.trim();
+    if (!clean) return;
+    setLayout((curr) => ({
+      ...curr,
+      screen_groups: (curr.screen_groups || []).map((g) =>
+        g.id === id ? { ...g, label: clean } : g,
+      ),
+    }));
+  };
+
+  const setGroupIcon = (id: string, icon: string | null) => {
+    setLayout((curr) => ({
+      ...curr,
+      screen_groups: (curr.screen_groups || []).map((g) =>
+        g.id === id ? { ...g, icon } : g,
+      ),
+    }));
+  };
+
+  const deleteGroup = (id: string) => {
+    setLayout((curr) => ({
+      ...curr,
+      screen_groups: (curr.screen_groups || []).filter((g) => g.id !== id),
+    }));
+  };
+
+  /** Move ``screenId`` into ``groupId`` (or unassign when null). A screen
+   * belongs to at most one workspace, so we first strip it from every
+   * group, then append to the target — append keeps the screen at the end
+   * of its new group's nav order. */
+  const assignScreenToGroup = (screenId: string, groupId: string | null) => {
+    setLayout((curr) => {
+      const groups = (curr.screen_groups || []).map((g) => ({
+        ...g,
+        screen_ids: (g.screen_ids || []).filter((s) => s !== screenId),
+      }));
+      if (groupId) {
+        const target = groups.find((g) => g.id === groupId);
+        if (target && !target.screen_ids.includes(screenId)) {
+          target.screen_ids = [...target.screen_ids, screenId];
+        }
+      }
+      return { ...curr, screen_groups: groups };
+    });
   };
 
   // ``mode`` reflects whether the user is browsing the screens list
@@ -489,12 +566,17 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 screens={layout.screens}
                 tables={tables}
                 boundDataset={boundDataset}
+                groups={layout.screen_groups || []}
                 onPickScreen={openScreen}
                 onAddScreen={addScreen}
                 onOpenAppSettings={() => setShowAppSettings(true)}
-                onMoveScreen={moveScreen}
                 onReorderScreens={reorderScreens}
                 onDeleteScreen={deleteScreen}
+                onCreateGroup={createGroup}
+                onRenameGroup={renameGroup}
+                onDeleteGroup={deleteGroup}
+                onAssignScreen={assignScreenToGroup}
+                onSetGroupIcon={setGroupIcon}
               />
             )}
           </main>

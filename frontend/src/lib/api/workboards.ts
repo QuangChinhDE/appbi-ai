@@ -132,6 +132,60 @@ export interface WorkboardImportReport {
   }>;
   app_users_imported?: number;
   app_users_needing_pin?: string[];
+  // v2 "pick a Source" import — the dataset auto-rebuild outcome (null for the
+  // legacy "reuse existing dataset" path).
+  dataset_rebuild?: {
+    dataset_id: number;
+    dataset_name: string;
+    created_tables: Array<{
+      old_table_id: number;
+      new_table_id: number;
+      source_table_name: string | null;
+      columns: number;
+    }>;
+    skipped_tables: Array<{ old_table_id: number; reason: string; detail?: string }>;
+    id_map?: Record<string, number>;
+  } | null;
+}
+
+/** A bundle datasource the importer must map to a live Source. */
+export interface WorkboardBundleDatasource {
+  ref: string;
+  name: string;
+  type: string;
+}
+
+export interface WorkboardSourceInspectTable {
+  old_table_id: number;
+  display_name: string | null;
+  source_kind: string;
+  source_table_name: string | null;
+  datasource_ref: string | null;
+  datasource_name?: string | null;
+  status: 'found' | 'missing' | 'recreate' | 'no_source_selected';
+  matched_source_table?: string;
+  available_sample?: string[];
+}
+
+export interface WorkboardSourceInspect {
+  tables: WorkboardSourceInspectTable[];
+  physical_total: number;
+  physical_found: number;
+  all_found: boolean;
+}
+
+export interface WorkboardImportFromSourceInput {
+  bundle: Record<string, unknown>;
+  /** bundle datasource ``ref`` -> target datasource id (auto-create path). */
+  datasource_map?: Record<string, number>;
+  /** Skip auto-create + import onto an existing dataset (legacy path). */
+  reuse_dataset_id?: number | null;
+  target_name?: string;
+  target_workspace_id?: number | null;
+  table_mapping?: Record<string, number | null>;
+  column_mapping?: Record<string, Record<string, string>>;
+  /** old bundle table id (str) -> source table name override for a rename. */
+  table_source_overrides?: Record<string, string>;
 }
 
 export interface WorkboardImportInput {
@@ -321,6 +375,24 @@ export const workboardApi = {
       bundle,
       target_dataset_id,
     });
+    return data;
+  },
+
+  // ── v2 import: pick a Source → auto-create dataset ─────────────────
+  inspectImportSource: async (
+    bundle: Record<string, unknown>,
+    datasource_map: Record<string, number>,
+  ): Promise<WorkboardSourceInspect> => {
+    const { data } = await apiClient.post('/workboards/import/inspect-source', {
+      bundle,
+      datasource_map,
+    });
+    return data;
+  },
+  importFromSource: async (
+    payload: WorkboardImportFromSourceInput,
+  ): Promise<WorkboardImportResponse> => {
+    const { data } = await apiClient.post('/workboards/import/from-source', payload);
     return data;
   },
 };

@@ -1062,6 +1062,154 @@ def import_workboard_template(
     return response
 
 
+# ── v2 import: pick a Source → auto-create Dataset → import ────────────────
+
+
+class _InspectSourcePayload(__import__("pydantic").BaseModel):
+    """Dry-run: a v2 bundle + a chosen target Source per bundle datasource
+    ``ref`` (``{ref: datasource_id}``). Returns the per-table match report so
+    the FE can preview + let the user manually map mismatched tables."""
+
+    bundle: dict
+    datasource_map: Dict[str, int] = {}
+
+
+class _ImportFromSourcePayload(__import__("pydantic").BaseModel):
+    bundle: dict
+    # bundle datasource ``ref`` -> target datasource id (for auto-create).
+    datasource_map: Dict[str, int] = {}
+    # Skip auto-create + import straight onto an existing dataset (legacy path).
+    reuse_dataset_id: Optional[int] = None
+    target_name: Optional[str] = None
+    target_workspace_id: Optional[int] = None
+    table_mapping: Optional[Dict[str, Optional[int]]] = None
+    column_mapping: Optional[Dict[str, Dict[str, str]]] = None
+    # old bundle table id (str) -> source_table_name to use on the target source
+    # (manual override for a renamed table). Optional.
+    table_source_overrides: Optional[Dict[str, str]] = None
+
+
+def _validate_datasources_exist(db: Session, datasource_map: Dict[str, int]) -> None:
+    from app.models.models import DataSource
+
+    for ref, ds_id in (datasource_map or {}).items():
+        if not db.query(DataSource).filter(DataSource.id == ds_id).first():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Source được chọn (id={ds_id}) cho '{ref}' không tồn tại.",
+            )
+
+
+@router.post("/import/inspect-source")
+def import_inspect_source(
+    payload: _InspectSourcePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("workboards", "edit")),
+):
+    """Dry-run table-match preview for the v2 'pick a Source' import. Creates
+    nothing — just reports which bundle tables exist on the chosen Source(s)."""
+    _validate_datasources_exist(db, payload.datasource_map)
+    try:
+        return _template_svc.inspect_source_match(db, payload.bundle, payload.datasource_map or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post("/import/from-source")
+def import_from_source_endpoint(
+    payload: _ImportFromSourcePayload,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("workboards", "edit")),
+):
+    """v2 import: auto-create a Dataset on the chosen Source(s) from the bundle
+    (or reuse an existing dataset), then import the workboard + app users onto
+    it. Response carries ``_import_report`` (incl. ``dataset_rebuild``)."""
+    target_workspace: WorkboardWorkspace | None = None
+
+    if payload.reuse_dataset_id is not None:
+        require_dataset_binding_access(db, current_user, payload.reuse_dataset_id)
+        assert_workboard_dataset_supported(db, payload.reuse_dataset_id)
+    else:
+        if not payload.datasource_map:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cần chọn ít nhất một Source để tự tạo dataset (datasource_map rỗng).",
+            )
+        _validate_datasources_exist(db, payload.datasource_map)
+
+    if payload.target_workspace_id is not None:
+        _ensure_can_attach_workspace(current_user)
+        target_workspace = (
+            db.query(WorkboardWorkspace)
+            .filter(WorkboardWorkspace.id == payload.target_workspace_id)
+            .first()
+        )
+        if target_workspace is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Target workspace not found."
+            )
+
+    overrides = None
+    if payload.table_source_overrides:
+        overrides = {}
+        for k, v in payload.table_source_overrides.items():
+            try:
+                overrides[int(k)] = str(v)
+            except (TypeError, ValueError):
+                continue
+
+    try:
+        wb, report = _template_svc.import_from_source(
+            db,
+            payload.bundle,
+            datasource_map=payload.datasource_map or {},
+            owner_id=current_user.id,
+            target_name=payload.target_name,
+            reuse_dataset_id=payload.reuse_dataset_id,
+            table_mapping=payload.table_mapping,
+            column_mapping=payload.column_mapping,
+            table_source_overrides=overrides,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    workspace_attach_report: Dict[str, Any] | None = None
+    if target_workspace is not None:
+        workspace_attach_report = _attach_workboard_to_workspace_menu(
+            db, workspace=target_workspace, workboard=wb
+        )
+
+    response = WorkboardResponse.model_validate(wb).model_dump(mode="json")
+    response["_import_report"] = report.to_dict()
+    if workspace_attach_report is not None:
+        response["_workspace_attach_report"] = workspace_attach_report
+    try:
+        audit(
+            db,
+            AuditAction.WORKBOARD_CREATED,
+            request=request,
+            user_id=current_user.id,
+            resource_type="workboard",
+            resource_id=str(wb.id),
+            details={
+                "name": wb.name,
+                "imported": True,
+                "import_kind": "from_source",
+                "reused_dataset": payload.reuse_dataset_id,
+                "matched_tables": len(report.matched_tables),
+                "missing_tables": len(report.missing_tables),
+            },
+        )
+    except Exception:
+        logger.exception("audit insert failed during import-from-source (non-fatal)")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return response
+
+
 # ---------------------------------------------------------------------------
 # App-user CRUD (Builder "Users" tab)
 # ---------------------------------------------------------------------------

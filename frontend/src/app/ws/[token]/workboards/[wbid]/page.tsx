@@ -3,9 +3,11 @@
  *
  * Renders a single workboard as a self-contained mini-app:
  *  - top header with branding + logged-in user
- *  - adaptive nav: bottom-nav on mobile, top-tabs on tablet, sidebar on
- *    desktop — auto-detected from the viewport (no manual device toggle in
- *    the published runtime; the builder's live-preview pane has its own)
+ *  - adaptive nav: bottom-nav/drawer only on real phones (<768px); every
+ *    wider viewport — tablets AND desktops, incl. OS-scaled laptops that
+ *    report <1024 CSS px — follows the workboard's desktop_kind
+ *    (sidebar | top_tabs). Auto-detected from the viewport; no manual device
+ *    toggle in the published runtime (the builder's preview pane has its own)
  *  - active screen content rendered from the per-screen API
  *  - shared_context propagated through ``after_submit.go_to_screen`` so
  *    successive screens know which shift / row the user is working with
@@ -111,6 +113,14 @@ interface RuntimeFormSpecExtras {
   sections?: string[];
 }
 
+/** A resolved nav section (one inner "Workspace") = a label + its screens. */
+interface NavSection {
+  id: string;
+  label: string;
+  icon?: string | null;
+  screens: AppShellScreenStub[];
+}
+
 function detectDevice(): DeviceMode {
   if (typeof window === 'undefined') return 'desktop';
   const w = window.innerWidth;
@@ -176,7 +186,11 @@ export default function WorkspaceWorkboardPage() {
           const m = window.location.hash.match(/screen=([\w-]+)/);
           return m ? m[1] : null;
         })();
-        if (hashScreen && s.screens.some((sc) => sc.id === hashScreen)) {
+        // Only accept a hash-deeplink to a screen that is actually in the nav
+        // (in s.nav.items). An off-nav screen (show_in_nav=false) would render
+        // content with no matching nav entry — and would make TopTabs tier-1
+        // mis-highlight the first workspace — so fall through to the nav default.
+        if (hashScreen && s.nav.items.includes(hashScreen)) {
           setActiveScreenId(hashScreen);
         } else if (s.nav.items.length > 0) {
           setActiveScreenId(s.nav.items[0]);
@@ -209,6 +223,40 @@ export default function WorkspaceWorkboardPage() {
       .map((id) => byId.get(id))
       .filter((s): s is AppShellScreenStub => Boolean(s));
   }, [shell]);
+
+  // Inner "Workspaces" = named groups of screens. When the shell carries
+  // screen_groups, the nav becomes 2-level (group → screens). Any visible nav
+  // screen not placed in a group still appears under a "Khác" section so it
+  // never silently vanishes. When there are no groups, this is null and the
+  // nav stays exactly flat (legacy behaviour).
+  //
+  // Order within a group follows the FLAT nav order (``navItems``), not the
+  // raw ``screen_ids`` array — so the builder's Screens-list order is the
+  // single source of nav order and assigning a screen to a workspace never
+  // silently reshuffles it. ``screen_ids`` is treated purely as membership.
+  // Intersecting with ``navItems`` also drops any member that isn't nav-visible
+  // (show_in_nav=false or role-hidden) for free.
+  const navSections: NavSection[] | null = useMemo(() => {
+    const groups = shell?.screen_groups;
+    if (!shell || !groups || groups.length === 0) return null;
+    const sections: NavSection[] = [];
+    const placed = new Set<string>();
+    for (const g of groups) {
+      const idSet = new Set(g.screen_ids);
+      // First-wins membership: skip any screen already claimed by an earlier
+      // group so a (data-only) screen-in-two-groups can't double-render.
+      const screens = navItems.filter((s) => idSet.has(s.id) && !placed.has(s.id));
+      screens.forEach((s) => placed.add(s.id));
+      if (screens.length > 0) {
+        sections.push({ id: g.id, label: g.label, icon: g.icon ?? null, screens });
+      }
+    }
+    const ungrouped = navItems.filter((s) => !placed.has(s.id));
+    if (ungrouped.length > 0) {
+      sections.push({ id: '__other__', label: 'Khác', icon: null, screens: ungrouped });
+    }
+    return sections.length > 0 ? sections : null;
+  }, [shell, navItems]);
 
   const goToScreen = useCallback(
     (screenId: string, carry?: Record<string, unknown>) => {
@@ -248,16 +296,18 @@ export default function WorkspaceWorkboardPage() {
   const accent = shell.branding.primary_color || '#2563eb';
   const appName = shell.branding.app_name || shell.workboard.name;
 
-  // ── Layout decision per device size ──────────────────────────────────
-  // Mobile  → bottom_nav OR drawer (per nav.mobile_kind)
-  // Tablet  → top_tabs (better for landscape, no big sidebar wasted)
-  // Desktop → whatever the workboard config picked (sidebar | top_tabs)
-  const isSidebar = effectiveDevice === 'desktop' && shell.nav.desktop_kind === 'sidebar';
-  const isTopTabs =
-    (effectiveDevice === 'desktop' && shell.nav.desktop_kind === 'top_tabs') ||
-    effectiveDevice === 'tablet';
-  const isDrawer = effectiveDevice === 'mobile' && shell.nav.mobile_kind === 'drawer';
-  const isBottomNav = effectiveDevice === 'mobile' && !isDrawer;
+  // ── Layout decision ───────────────────────────────────────────────────
+  // Only a genuine PHONE (<768px) gets the mobile nav (bottom_nav | drawer).
+  // Everything wider — real tablets AND every desktop window, including
+  // laptops whose OS display-scaling makes them report <1024 CSS px — follows
+  // the workboard's desktop_kind. This stops a normal/scaled/half-width
+  // desktop window from being mistaken for a "tablet" and dumped onto the
+  // top-tabs layout (the reported bug).
+  const isMobile = effectiveDevice === 'mobile';
+  const isSidebar = !isMobile && shell.nav.desktop_kind === 'sidebar';
+  const isTopTabs = !isMobile && shell.nav.desktop_kind === 'top_tabs';
+  const isDrawer = isMobile && shell.nav.mobile_kind === 'drawer';
+  const isBottomNav = isMobile && !isDrawer;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
@@ -279,6 +329,7 @@ export default function WorkspaceWorkboardPage() {
       {isTopTabs && (
         <TopTabs
           items={navItems}
+          sections={navSections}
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
@@ -289,6 +340,7 @@ export default function WorkspaceWorkboardPage() {
         {isSidebar && (
           <Sidebar
             items={navItems}
+            sections={navSections}
             activeId={activeScreenId}
             onSelect={(id) => goToScreen(id)}
             accent={accent}
@@ -319,6 +371,7 @@ export default function WorkspaceWorkboardPage() {
       {isBottomNav && (
         <BottomNav
           items={navItems}
+          sections={navSections}
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
@@ -328,6 +381,7 @@ export default function WorkspaceWorkboardPage() {
       {isDrawer && (
         <MobileDrawer
           items={navItems}
+          sections={navSections}
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
@@ -341,17 +395,34 @@ export default function WorkspaceWorkboardPage() {
 
 function MobileDrawer({
   items,
+  sections,
   activeId,
   onSelect,
   accent,
 }: {
-  items: Array<{ id: string; title: string; icon?: string | null }>;
+  items: AppShellScreenStub[];
+  sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
 }) {
   const [open, setOpen] = useState(false);
-  const active = items.find((s) => s.id === activeId);
+  const allScreens = sections ? sections.flatMap((s) => s.screens) : items;
+  const active = allScreens.find((s) => s.id === activeId);
+  const renderBtn = (s: AppShellScreenStub) => (
+    <NavBtn
+      key={s.id}
+      active={s.id === activeId}
+      accent={accent}
+      onClick={() => {
+        onSelect(s.id);
+        setOpen(false);
+      }}
+      icon={pickIcon(s.icon)}
+      label={s.title}
+      layout="sidebar"
+    />
+  );
   return (
     <>
       <button
@@ -382,20 +453,24 @@ function MobileDrawer({
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {items.map((s) => (
-              <NavBtn
-                key={s.id}
-                active={s.id === activeId}
-                accent={accent}
-                onClick={() => {
-                  onSelect(s.id);
-                  setOpen(false);
-                }}
-                icon={pickIcon(s.icon)}
-                label={s.title}
-                layout="sidebar"
-              />
-            ))}
+            {sections && sections.length > 0 ? (
+              <div className="space-y-3">
+                {sections.map((sec) => {
+                  const SecIcon = sec.icon ? pickIcon(sec.icon) : null;
+                  return (
+                    <div key={sec.id} className="space-y-1">
+                      <div className="flex items-center gap-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        {SecIcon && <SecIcon className="h-3 w-3 shrink-0" />}
+                        <span className="truncate">{sec.label}</span>
+                      </div>
+                      {sec.screens.map(renderBtn)}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              items.map(renderBtn)
+            )}
           </nav>
         </div>
       )}
@@ -511,58 +586,129 @@ function NavBtn({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
+      title={label}
+      className={`flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
         active ? 'font-semibold' : 'text-slate-600 hover:bg-slate-100'
       }`}
       style={active ? { backgroundColor: `${accent}18`, color: accent } : undefined}
     >
-      <Icon className="h-4 w-4" />
-      {label}
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className="min-w-0 truncate">{label}</span>
     </button>
   );
 }
 
 function Sidebar({
   items,
+  sections,
   activeId,
   onSelect,
   accent,
 }: {
   items: AppShellScreenStub[];
+  sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
 }) {
+  const renderBtn = (s: AppShellScreenStub) => (
+    <NavBtn
+      key={s.id}
+      active={s.id === activeId}
+      accent={accent}
+      onClick={() => onSelect(s.id)}
+      icon={pickIcon(s.icon)}
+      label={s.title}
+      layout="sidebar"
+    />
+  );
   return (
     <aside className="hidden w-56 shrink-0 border-r border-slate-200 bg-white p-3 md:block">
-      <div className="space-y-1">
-        {items.map((s) => (
-          <NavBtn
-            key={s.id}
-            active={s.id === activeId}
-            accent={accent}
-            onClick={() => onSelect(s.id)}
-            icon={pickIcon(s.icon)}
-            label={s.title}
-            layout="sidebar"
-          />
-        ))}
-      </div>
+      {sections && sections.length > 0 ? (
+        <div className="space-y-4">
+          {sections.map((sec) => {
+            const SecIcon = sec.icon ? pickIcon(sec.icon) : null;
+            return (
+              <div key={sec.id} className="space-y-1">
+                <div className="flex items-center gap-1.5 px-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  {SecIcon && <SecIcon className="h-3 w-3 shrink-0" />}
+                  <span className="truncate">{sec.label}</span>
+                </div>
+                {sec.screens.map(renderBtn)}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="space-y-1">{items.map(renderBtn)}</div>
+      )}
     </aside>
   );
 }
 
 function TopTabs({
   items,
+  sections,
   activeId,
   onSelect,
   accent,
 }: {
   items: AppShellScreenStub[];
+  sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
 }) {
+  // Grouped (2-tier) when workspaces exist: row 1 = workspace tabs, row 2 =
+  // the active workspace's screens. The active workspace is whichever one
+  // contains the active screen; clicking a workspace jumps to its first
+  // screen. Falls back to a single flat row when there are no groups.
+  if (sections && sections.length > 0) {
+    const activeSection =
+      sections.find((sec) => sec.screens.some((s) => s.id === activeId)) ?? sections[0];
+    return (
+      <div className="border-b border-slate-200 bg-white">
+        {/* Tier 1 — workspaces */}
+        <nav className="mx-auto flex max-w-6xl items-center gap-1 overflow-x-auto px-4">
+          {sections.map((sec) => {
+            const SecIcon = sec.icon ? pickIcon(sec.icon) : null;
+            const isActive = sec.id === activeSection.id;
+            return (
+              <button
+                key={sec.id}
+                type="button"
+                onClick={() => {
+                  if (sec.screens[0]) onSelect(sec.screens[0].id);
+                }}
+                title={sec.label}
+                className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-semibold transition-colors ${
+                  isActive ? '' : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+                style={isActive ? { borderColor: accent, color: accent } : undefined}
+              >
+                {SecIcon && <SecIcon className="h-3.5 w-3.5 shrink-0" />}
+                <span className="max-w-[160px] truncate">{sec.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+        {/* Tier 2 — screens of the active workspace */}
+        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto border-t border-slate-100 bg-slate-50/60 px-4">
+          {activeSection.screens.map((s) => (
+            <NavBtn
+              key={s.id}
+              active={s.id === activeId}
+              accent={accent}
+              onClick={() => onSelect(s.id)}
+              icon={pickIcon(s.icon)}
+              label={s.title}
+              layout="top"
+            />
+          ))}
+        </nav>
+      </div>
+    );
+  }
   return (
     <div className="border-b border-slate-200 bg-white">
       <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4">
@@ -584,11 +730,13 @@ function TopTabs({
 
 function BottomNav({
   items,
+  sections,
   activeId,
   onSelect,
   accent,
 }: {
   items: AppShellScreenStub[];
+  sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
@@ -600,6 +748,30 @@ function BottomNav({
   const overflow = items.slice(MAX_VISIBLE);
   const hasOverflow = overflow.length > 0;
   const overflowActive = overflow.some((s) => s.id === activeId);
+
+  // The bottom bar is space-constrained, so workspace structure lives in the
+  // "More" sheet. Two modes:
+  //  - 2+ workspaces (grouped): always offer "More" and show the FULL grouped
+  //    list there — otherwise a small multi-workspace app (all screens fit the
+  //    primary row) would silently lose its grouping on mobile.
+  //  - otherwise: legacy behaviour — "More" only when there's slice overflow,
+  //    listing just the overflow screens (grouped by section when groups exist).
+  const grouped = !!(sections && sections.length > 1);
+  const overflowIds = new Set(overflow.map((s) => s.id));
+  const sheetSections: NavSection[] | null = grouped
+    ? sections!
+    : sections && sections.length > 0
+      ? sections
+          .map((sec) => ({
+            ...sec,
+            screens: sec.screens.filter((s) => overflowIds.has(s.id)),
+          }))
+          .filter((sec) => sec.screens.length > 0)
+      : null;
+  const showMoreButton = grouped || hasOverflow;
+  // When grouped the sheet holds every screen, so "More" is the active surface
+  // whenever the current screen isn't one of the quick-access primary items.
+  const moreActive = grouped ? !visible.some((s) => s.id === activeId) : overflowActive;
 
   return (
     <>
@@ -618,24 +790,54 @@ function BottomNav({
               <h3 className="text-sm font-semibold text-slate-700">Thêm menu</h3>
             </div>
             <div className="py-1">
-              {overflow.map((s) => {
-                const Icon = pickIcon(s.icon);
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      onSelect(s.id);
-                      setShowMore(false);
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-slate-50"
-                    style={{ color: s.id === activeId ? accent : '#374151' }}
-                  >
-                    <Icon className="h-5 w-5 shrink-0" />
-                    <span className="font-medium">{s.title}</span>
-                  </button>
-                );
-              })}
+              {sheetSections
+                ? sheetSections.map((sec) => {
+                    const SecIcon = sec.icon ? pickIcon(sec.icon) : null;
+                    return (
+                      <div key={sec.id} className="pb-1">
+                        <div className="flex items-center gap-1.5 px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                          {SecIcon && <SecIcon className="h-3 w-3 shrink-0" />}
+                          <span className="truncate">{sec.label}</span>
+                        </div>
+                        {sec.screens.map((s) => {
+                          const Icon = pickIcon(s.icon);
+                          return (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => {
+                                onSelect(s.id);
+                                setShowMore(false);
+                              }}
+                              className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-slate-50"
+                              style={{ color: s.id === activeId ? accent : '#374151' }}
+                            >
+                              <Icon className="h-5 w-5 shrink-0" />
+                              <span className="font-medium">{s.title}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })
+                : overflow.map((s) => {
+                    const Icon = pickIcon(s.icon);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          onSelect(s.id);
+                          setShowMore(false);
+                        }}
+                        className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-slate-50"
+                        style={{ color: s.id === activeId ? accent : '#374151' }}
+                      >
+                        <Icon className="h-5 w-5 shrink-0" />
+                        <span className="font-medium">{s.title}</span>
+                      </button>
+                    );
+                  })}
             </div>
           </div>
         </div>
@@ -643,7 +845,7 @@ function BottomNav({
 
       <nav
         className="fixed inset-x-0 bottom-0 z-30 grid border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]"
-        style={{ gridTemplateColumns: `repeat(${visible.length + (hasOverflow ? 1 : 0)}, 1fr)` }}
+        style={{ gridTemplateColumns: `repeat(${visible.length + (showMoreButton ? 1 : 0)}, 1fr)` }}
       >
         {visible.map((s) => (
           <NavBtn
@@ -656,15 +858,15 @@ function BottomNav({
             layout="bottom"
           />
         ))}
-        {hasOverflow && (
+        {showMoreButton && (
           <button
             type="button"
             onClick={() => setShowMore((v) => !v)}
             className="flex flex-col items-center justify-center gap-0.5 px-2 py-2"
-            style={{ color: overflowActive || showMore ? accent : '#64748b' }}
+            style={{ color: moreActive || showMore ? accent : '#64748b' }}
           >
             <MoreHorizontal className="h-5 w-5" />
-            <span className="text-[11px] font-medium leading-tight">Thêm</span>
+            <span className="text-[11px] font-medium leading-tight">{grouped ? 'Mục' : 'Thêm'}</span>
           </button>
         )}
       </nav>
