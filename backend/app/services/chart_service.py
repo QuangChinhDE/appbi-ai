@@ -2030,6 +2030,44 @@ def _execute_semantic_chart_runtime(
             if qualified in active_dim_set:
                 time_grains[qualified] = grain
 
+    # ── Top-N / Bottom-N (per-tile) ─────────────────────────────────────
+    # FE (ChartTile Phase-15.78) persists styleConfig.dataLimit +
+    # dataLimitDirection, but the render path historically IGNORED it
+    # (Phase-15.83 no-op) so a DA's "Top 10" silently showed every row.
+    # Wire it: ORDER BY the primary measure (DESC for top, ASC for bottom)
+    # and LIMIT N. We rank by the engine-known measure ref (not the FE
+    # chartSortRules field-key, which can diverge) so the ORDER BY alias
+    # always resolves via _safe_alias.
+    chart_sorts: list[dict] = []
+    _style_cfg = chart_config.get("styleConfig") if isinstance(chart_config, dict) else None
+    _style_cfg = _style_cfg if isinstance(_style_cfg, dict) else {}
+    _data_limit_raw = _style_cfg.get("dataLimit")
+    try:
+        _data_limit_n = int(_data_limit_raw) if _data_limit_raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        _data_limit_n = 0
+    if _data_limit_n > 0:
+        _rank_ref = (
+            measure_refs[0] if measure_refs
+            else (dimension_refs[0] if dimension_refs else None)
+        )
+        if _rank_ref:
+            _dir = "asc" if str(_style_cfg.get("dataLimitDirection") or "top").lower() == "bottom" else "desc"
+            chart_sorts = [{"field": _rank_ref, "direction": _dir}]
+        effective_limit = max(1, _data_limit_n)
+
+    # ── Window functions (running total / cumulative / YTD) ─────────────
+    # The engine renders running_sum/running_avg/rank/... but the chart
+    # runtime never forwarded them, so a DA could not build a YTD/running
+    # total. Pass through whatever the config carries (snake_case spec key
+    # or a roleConfig camelCase alias) so the feature works end-to-end.
+    _window_fns = (
+        (chart_config.get("window_functions") if isinstance(chart_config, dict) else None)
+        or role_config.get("windowFunctions")
+        or []
+    )
+    chart_window_functions = list(_window_fns) if isinstance(_window_fns, list) else []
+
     # Phase-12.7: explicit try around generate_sql so the caller and API
     # endpoint see a ValueError with the engine's Vietnamese message
     # (Phase-11), not an opaque internal exception. ValueError bubbles up
@@ -2047,6 +2085,8 @@ def _execute_semantic_chart_runtime(
         measure_agg_overrides=agg_overrides or {},
         filters=engine_filters,
         time_grains=time_grains or {},
+        sorts=chart_sorts,
+        window_functions=chart_window_functions,
         limit=effective_limit,
         model_id=model_id,
         explore_id=explore_id,
@@ -2103,6 +2143,13 @@ def _execute_semantic_chart_runtime(
         # Explore/Dashboard silently returns the prior grain's data.
         # Same collision class the cache_filters comment below documents.
         "_time_grains": {k: time_grains[k] for k in sorted(time_grains)} if time_grains else None,
+        # Top-N direction + window functions change the emitted SQL but not the
+        # dims/measures/filters, so they MUST be in the cache key — otherwise a
+        # "Top 1" and "Bottom 1" (same N, same dims) collide and the first
+        # result is re-served for the second (same class as _time_grains /
+        # cache_filters collisions documented above).
+        "_sorts": chart_sorts or None,
+        "_window_functions": chart_window_functions or None,
     }
     cache_identifier = f"semantic_chart::{model_id or 'model'}::{explore_id or explore_name}"
     # Phase-15.81 v10 — query_cache._canonicalize_filters expects a list

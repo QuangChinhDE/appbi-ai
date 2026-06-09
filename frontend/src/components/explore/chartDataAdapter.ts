@@ -627,6 +627,16 @@ export function buildExploreChartModel(args: {
   const { type, data, roleConfig, havingFilters = [], preAggregated = false, labelMap } = args;
   const normalizedRoleConfig = normalizeRoleConfig(type, roleConfig);
   const { dimension, metrics, breakdown, lineMetric, timeField, scatterX, scatterY, selectedColumns } = normalizedRoleConfig;
+  // Running-total / window outputs: the BE returns an extra column per window
+  // function (key === wf.name, preserved by rewriteRowsForRecharts). The series
+  // list is otherwise derived strictly from roleConfig.metrics, so add a series
+  // for each window output (rendered as an additional line alongside the base
+  // metric — Power BI "running total"). Label = base metric label + suffix.
+  const windowSeries: ChartSeriesDef[] = (normalizedRoleConfig.windowFunctions || []).map(wf => {
+    const src = metrics.find(m => `${metricKey(m)}__rt` === wf.name);
+    const baseLabel = src ? metricLabel(src, labelMap) : wf.name;
+    return { key: wf.name, label: `${baseLabel} (running total)` };
+  });
   const xField = (type === 'TIME_SERIES' || type === 'RIBBON') ? (timeField || dimension) : dimension;
   const pivotTableModel = (type === 'TABLE' || type === 'MATRIX')
     ? buildPivotTableModel({ data, roleConfig: normalizedRoleConfig, preAggregated })
@@ -651,20 +661,23 @@ export function buildExploreChartModel(args: {
     truncated: false,
     totalPoints: data.length,
     categoricalData: data,
-    categoricalSeries: metrics.map(metric => ({
+    categoricalSeries: [...metrics.map(metric => ({
       key: metricKey(metric),
       label: metricLabel(metric, labelMap),
       metric,
-    })),
+    })), ...windowSeries],
     comboData: data,
     comboBarSeries: metrics.map(metric => ({
       key: metricKey(metric),
       label: metricLabel(metric, labelMap),
       metric,
     })),
-    comboLineSeries: lineMetric
-      ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric, labelMap), metric: lineMetric }]
-      : [],
+    comboLineSeries: [
+      ...(lineMetric
+        ? [{ key: metricKey(lineMetric), label: metricLabel(lineMetric, labelMap), metric: lineMetric }]
+        : []),
+      ...windowSeries,
+    ],
     pieData: [],
     scatterPoints: [],
   };
@@ -713,11 +726,11 @@ export function buildExploreChartModel(args: {
     return {
       ...emptyModel,
       categoricalData: rewriteRowsForRecharts(data, metrics, preAggregated),
-      categoricalSeries: metrics.map(metric => ({
+      categoricalSeries: [...metrics.map(metric => ({
         key: metricKey(metric),
         label: metricLabel(metric, labelMap),
         metric,
-      })),
+      })), ...windowSeries],
     };
   }
 
@@ -848,10 +861,10 @@ export function buildExploreChartModel(args: {
     truncated: limitedAgg.truncated,
     totalPoints: limitedAgg.totalPoints,
     categoricalData: limitedAgg.rows,
-    categoricalSeries: metrics.map(metric => ({
+    categoricalSeries: [...metrics.map(metric => ({
       key: metricKey(metric),
       label: metricLabel(metric, labelMap),
       metric,
-    })),
+    })), ...windowSeries],
   };
 }

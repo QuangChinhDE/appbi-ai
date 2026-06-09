@@ -1627,6 +1627,67 @@ def _infer_column_type(col: str, col_index: int, rows: list) -> str:
     return "string"
 
 
+def _resolve_physical_column_types(
+    datasource: Optional[DataSource],
+    db_table: DatasetTable | Any,
+) -> Dict[str, str]:
+    """Map ``column-name → physical warehouse type`` (lowercased) for a table.
+
+    The cached column ``type`` is value-sampled (``_infer_column_type``) and so
+    a physically-STRING numeric-looking column (Airbyte / Sheets / CSV store
+    numbers as text) gets a numeric label, hiding its true storage type. We
+    resolve the real schema type via a dry-run / LIMIT-0 inference so the
+    semantic engine can SAFE_CAST a SUM/AVG over such a column.
+
+    Best-effort: returns ``{}`` on any failure (calendar tables, unreachable
+    source, dry-run error) so cache-building never breaks — callers then leave
+    ``source_type`` unset and the engine falls back to the sampled type.
+    """
+    if datasource is None or is_generated_calendar_table(db_table):
+        return {}
+    try:
+        plan = build_live_base_query_plan(
+            datasource, db_table, apply_type_overrides=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Physical-type resolution skipped (plan) for table %s: %s",
+                    getattr(db_table, "id", "?"), exc)
+        return {}
+    try:
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        raw = DataSourceConnectionService.infer_column_types(
+            ds_type, datasource.config, plan.sql,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Physical-type resolution skipped (infer) for table %s: %s",
+                    getattr(db_table, "id", "?"), exc)
+        return {}
+    out: Dict[str, str] = {}
+    for entry in raw or []:
+        name = str((entry or {}).get("name") or "").strip()
+        ptype = str((entry or {}).get("type") or "").strip().lower()
+        if name and ptype:
+            out[name] = ptype
+    return out
+
+
+def _attach_physical_source_types(
+    datasource: Optional[DataSource],
+    db_table: DatasetTable | Any,
+    column_metadata: List[DatasetColumnMetadata],
+) -> None:
+    """Stamp each ``ColumnMetadata.source_type`` with its physical warehouse
+    type, in place. No-op (leaves ``source_type=None``) when the physical
+    schema can't be resolved — see ``_resolve_physical_column_types``."""
+    phys = _resolve_physical_column_types(datasource, db_table)
+    if not phys:
+        return
+    for col_meta in column_metadata:
+        ptype = phys.get(col_meta.name)
+        if ptype:
+            col_meta.source_type = ptype
+
+
 def _build_columns_cache_payload(
     db_table,
     column_metadata: List[DatasetColumnMetadata],
@@ -2766,6 +2827,9 @@ def add_table_to_dataset(
                     db_table,
                     fallback_columns=inferred_metadata,
                 )
+                # Record physical storage types (see preview path) so SUM/AVG
+                # over a physically-STRING numeric column can be SAFE_CAST.
+                _attach_physical_source_types(datasource, db_table, inferred_metadata)
                 db_table = DatasetCRUDService.update_table_cache(
                     db,
                     db_table.id,
@@ -3096,6 +3160,9 @@ def update_dataset_table(
                     updated_table,
                     fallback_columns=inferred_metadata,
                 )
+                # Record physical storage types (see preview path) so SUM/AVG
+                # over a physically-STRING numeric column can be SAFE_CAST.
+                _attach_physical_source_types(datasource, updated_table, inferred_metadata)
                 updated_table = DatasetCRUDService.update_table_cache(
                     db,
                     updated_table.id,
@@ -3636,6 +3703,10 @@ def preview_dataset_table(
                 resolved = _ovr_type(type_overrides[col_meta.name])
                 if resolved:
                     col_meta.type = resolved
+
+        # Record the true physical storage type alongside the sampled `type` so
+        # SUM/AVG over a physically-STRING numeric column can be SAFE_CAST.
+        _attach_physical_source_types(datasource, db_table, column_metadata)
 
         def serialize_value(val):
             if isinstance(val, (datetime, date)):

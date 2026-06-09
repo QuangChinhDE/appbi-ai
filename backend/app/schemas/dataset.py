@@ -208,8 +208,15 @@ class DatasetWithTables(DatasetResponse):
 class ColumnMetadata(BaseModel):
     """Column metadata for preview"""
     name: str
-    type: str  # 'string', 'number', 'date', 'boolean', etc.
+    type: str  # 'string', 'number', 'date', 'boolean', etc. — value-sampled SEMANTIC type
     nullable: bool = True
+    # PHYSICAL warehouse storage type as reported by the source schema
+    # (e.g. BigQuery "string"/"integer"/"timestamp", Postgres "text"/"int4").
+    # Recorded so a numeric aggregate over a physically-STRING column
+    # (Airbyte / Google-Sheets / CSV store numbers as text) can be SAFE_CAST
+    # even when `type` was value-sampled to a numeric label. None on legacy
+    # caches / sources where the physical schema could not be resolved.
+    source_type: Optional[str] = None
 
 
 class FilterCondition(BaseModel):

@@ -191,6 +191,16 @@ export interface MetricConfig {
    * for you; consider saving it to your model".
    */
   _implicit?: boolean;
+  /**
+   * Quick-calc: render this metric as a cumulative RUNNING TOTAL (Power BI
+   * "Running total" / YTD when the axis is a date). Pure intent flag — the
+   * actual window function is derived in `normalizeRoleConfig` from the
+   * chart's ordering dimension (so it tracks the current axis) into
+   * `roleConfig.windowFunctions`, which the BE renders as
+   * `SUM(<measure>) OVER (ORDER BY <dim> ROWS UNBOUNDED PRECEDING)`. Only
+   * meaningful for additive (sum) metrics on an ordered axis.
+   */
+  runningTotal?: boolean;
 }
 
 export interface ChartStyleConfig {
@@ -518,9 +528,23 @@ export function normalizeChartStyleConfig(
   return normalized;
 }
 
+/**
+ * Window-function definition forwarded to the BE semantic engine (it renders
+ * `SUM(<base_measure>) OVER (ORDER BY <order_by> ...)`). Derived from metrics
+ * flagged `runningTotal` in `normalizeRoleConfig` — not edited directly.
+ */
+export interface WindowFunctionDef {
+  name: string;          // output column name
+  base_measure: string;  // measure/column ref to accumulate
+  order_by: string[];    // ordering dimension ref(s)
+  type: 'running_sum' | 'running_avg' | 'rank' | 'dense_rank' | 'row_number';
+}
+
 export interface ChartRoleConfig {
   dimension?: string;
   metrics: MetricConfig[];
+  /** Derived (not hand-edited): running-total / window outputs for the BE. */
+  windowFunctions?: WindowFunctionDef[];
   /** Legacy breakdown dimension for stacked/pivoted charts. */
   breakdown?: string;
   /** Additive BAR_LINE contract: one aggregated metric rendered as a line. */
@@ -786,6 +810,7 @@ export function normalizeMetricConfig(metric: MetricConfig | string | null | und
     field,
     agg: metric.agg ?? 'auto',
     outputField: metric.outputField?.trim() || undefined,
+    ...(metric.runningTotal ? { runningTotal: true } : {}),
   };
 }
 
@@ -837,6 +862,24 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
     ? undefined
     : rawSelectedColumns;
 
+  // Derive window functions from metrics flagged `runningTotal`. We compute
+  // it here (rather than storing a fixed window) so order_by always tracks
+  // the CURRENT ordering dimension — changing the axis updates the cumulative
+  // without the DA re-toggling. Needs an ordered axis (dimension / timeField /
+  // pivot row) and is only meaningful for additive metrics, so we gate on
+  // sum-like aggregations.
+  const orderRef = roleConfig?.dimension || roleConfig?.timeField || roleConfig?.tableRowDimension;
+  const windowFunctions: WindowFunctionDef[] = orderRef
+    ? normalizedMetrics
+        .filter(m => m.runningTotal && (m.agg === 'sum' || m.agg === 'auto'))
+        .map(m => ({
+          name: `${metricKey(m)}__rt`,
+          base_measure: m.field,
+          order_by: [orderRef],
+          type: 'running_sum' as const,
+        }))
+    : [];
+
   return {
     ...(roleConfig ?? EMPTY_ROLE_CONFIG),
     selectedColumns,
@@ -846,6 +889,7 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
     ...(benchmarkMetric ? { benchmarkMetric } : {}),
     ...(tablePivotMetric ? { tablePivotMetric } : {}),
     ...(lineMetric ? { lineMetric } : {}),
+    windowFunctions: windowFunctions.length ? windowFunctions : undefined,
   };
 }
 
@@ -2784,7 +2828,7 @@ function describeValidAggs(col: Col | undefined): string {
 }
 
 function MetricSlot({
-  label, required, hint, single, value, options, allOptions, declaredMeasureRefs, onChange,
+  label, required, hint, single, value, options, allOptions, declaredMeasureRefs, allowRunningTotal, onChange,
 }: {
   label: string; required?: boolean; hint?: string;
   single?: boolean;
@@ -2799,6 +2843,9 @@ function MetricSlot({
    *  "user picked a raw numeric dim that BE will auto-promote to SUM/...".
    *  Undefined → fall back to bare-vs-qualified heuristic. */
   declaredMeasureRefs?: Set<string>;
+  /** Show the "Running total" (cumulative/YTD) per-metric toggle. Only for
+   *  cartesian charts with an ordered axis (BAR/LINE/AREA/TIME_SERIES). */
+  allowRunningTotal?: boolean;
   onChange: (v: MetricConfig[]) => void;
 }) {
   const missing = required && value.length === 0;
@@ -2837,6 +2884,9 @@ function MetricSlot({
   // explain which aggs are valid for the column.
   const changeAgg = (fieldName: string, agg: AggFn) =>
     onChange(value.map((m) => (m.field === fieldName ? { ...m, agg } : m)));
+
+  const toggleRunningTotal = (fieldName: string) =>
+    onChange(value.map((m) => (m.field === fieldName ? { ...m, runningTotal: !m.runningTotal } : m)));
 
   const available = fullOptions.filter(o => !value.find(m => m.field === o.name));
 
@@ -2908,6 +2958,21 @@ function MetricSlot({
                   >
                     auto
                   </span>
+                )}
+                {allowRunningTotal && (m.agg === 'sum' || m.agg === 'auto') && (
+                  <button
+                    onClick={() => toggleRunningTotal(m.field)}
+                    title={m.runningTotal
+                      ? 'Running total ON — cumulative (YTD) over the axis. Click to turn off.'
+                      : 'Show as running total (cumulative / YTD over the axis)'}
+                    className={`px-1 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${
+                      m.runningTotal
+                        ? 'bg-primary/15 text-primary'
+                        : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-hover'
+                    }`}
+                  >
+                    Σ↑
+                  </button>
                 )}
                 <button
                   onClick={() => removeField(m.field)}
@@ -4558,7 +4623,7 @@ export function ExploreChartConfig({
                 value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
                 onChange={(g) => setGrain(dim || undefined, g)} />
             )}
-            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs} allowRunningTotal={!!dim}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -4585,7 +4650,7 @@ export function ExploreChartConfig({
           {chartType === 'BAR_LINE' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs} allowRunningTotal={!!dim}
               onChange={v => upd({ metrics: v })} />
             <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ lineMetric: v[0], breakdown: undefined })} />
@@ -4605,7 +4670,7 @@ export function ExploreChartConfig({
                 value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
                 onChange={(g) => setGrain(dim || undefined, g)} />
             )}
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs} allowRunningTotal={!!dim}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -4625,7 +4690,7 @@ export function ExploreChartConfig({
                 value={dim ? normalizedRoleConfig.timeGrains?.[dim] : undefined}
                 onChange={(g) => setGrain(dim || undefined, g)} />
             )}
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs} allowRunningTotal={!!dim}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -4640,7 +4705,7 @@ export function ExploreChartConfig({
               fieldName={tf || undefined}
               value={tf ? normalizedRoleConfig.timeGrains?.[tf] : undefined}
               onChange={(g) => setGrain(tf || undefined, g)} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs} allowRunningTotal={!!tf}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"

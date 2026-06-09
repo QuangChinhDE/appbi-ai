@@ -119,6 +119,11 @@ def _classify_columns(
     for col in columns:
         col_name = col.get("name", "")
         col_type = (col.get("type", "") or "string").lower()
+        # Physical warehouse storage type (when recorded at cache-build time).
+        # Carried onto the dimension so the query engine can distinguish a
+        # genuinely-numeric column from one value-sampled to a numeric label
+        # but physically STRING (Airbyte / Sheets / CSV numbers-as-text).
+        source_type = (col.get("source_type") or None)
 
         if not col_name:
             continue
@@ -134,6 +139,7 @@ def _classify_columns(
                 "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": True,
+                "source_type": source_type,
             })
             continue
 
@@ -145,6 +151,7 @@ def _classify_columns(
                 "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
+                "source_type": source_type,
             })
         elif col_type in _NUMERIC_MEASURE_TYPES:
             if auto_generate_measures:
@@ -172,6 +179,7 @@ def _classify_columns(
                 # hidden so the UI shows the measure first. Otherwise expose
                 # it as a regular numeric dimension.
                 "hidden": bool(auto_generate_measures),
+                "source_type": source_type,
             })
         elif col_type in _TYPE_MAP_DIMENSION:
             dim_type = _TYPE_MAP_DIMENSION[col_type]
@@ -182,6 +190,7 @@ def _classify_columns(
                 "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
+                "source_type": source_type,
             })
         else:
             # Default to string dimension
@@ -192,6 +201,7 @@ def _classify_columns(
                 "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
+                "source_type": source_type,
             })
 
     if auto_generate_measures:

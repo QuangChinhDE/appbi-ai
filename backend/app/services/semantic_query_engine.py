@@ -1128,6 +1128,74 @@ class SemanticQueryEngine:
         )
         return f"({sym_sum}) / NULLIF({sym_count}, 0)"
 
+    def _measure_value_is_string_typed(
+        self,
+        sql_template: str,
+        view,
+        measure_type: str,
+        *,
+        has_expression: bool,
+        has_depends_on: bool,
+    ) -> bool:
+        """True when a SUM/AVG measure aggregates a single column that is
+        PHYSICALLY stored as text.
+
+        Airbyte / Google-Sheets / CSV sources land numeric data as physical
+        STRING. A declared SUM measure (or an ad-hoc SUM of a numeric-looking
+        text column) then emits ``SUM(<string col>)`` and BigQuery / most
+        engines reject it with "No matching signature for aggregate function
+        SUM Argument types: STRING". The caller SAFE_CASTs the value so the
+        analyst's modeled numeric intent works — mirroring the filter-path
+        coercion in ``live_query_service._build_where_clause`` (SAFE_CAST is a
+        no-op on genuine numerics and yields NULL on real text, never a type
+        error).
+
+        Keys on the dimension's recorded PHYSICAL type (``source_type``), not
+        its value-sampled semantic ``type``: the cache's ``type`` is inferred
+        from sample VALUES, so a physically-STRING column whose values look
+        numeric (e.g. Airbyte's ``quantity``) is mislabelled ``number`` and
+        would otherwise emit ``SUM(STRING)`` → 400. Genuinely numeric columns
+        (physical INT64/NUMERIC/FLOAT) are never cast, so their SQL stays
+        byte-identical. Falls back to the semantic ``type`` only when no
+        physical type was recorded (legacy caches built before this field),
+        preserving the prior behaviour there.
+
+        Only simple single-column measures are eligible: ``expression`` /
+        ``depends_on`` / ``*`` / cross-view ``${view.field}`` refs are left
+        byte-identical.
+        """
+        if measure_type not in ("sum", "avg"):
+            return False
+        if has_expression or has_depends_on:
+            return False
+        col = (sql_template or "").strip()
+        if not col or col == "*":
+            return False
+        if col.startswith("${TABLE}."):
+            col = col[len("${TABLE}."):].strip()
+        # Only a bare column identifier — anything else is an expression or a
+        # cross-view reference we must not blindly cast.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col):
+            return False
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if not dim:
+            return False
+        # Physical string-family storage types across supported warehouses
+        # (BigQuery STRING, Postgres text/varchar/char, MySQL char/varchar/…).
+        _STRING_PHYSICAL = {
+            "string", "text", "varchar", "char", "nvarchar", "nchar",
+            "character varying", "character", "bpchar", "clob", "str", "utf8",
+        }
+        source_type = str(dim.get("source_type") or "").strip().lower()
+        if source_type:
+            return source_type in _STRING_PHYSICAL
+        # Legacy cache without a recorded physical type: fall back to the
+        # value-sampled semantic type (only catches columns modeled `string`).
+        return str(dim.get("type") or "").lower() == "string"
+
     def _render_measure(
         self,
         field_ref: str,
@@ -1255,8 +1323,19 @@ class SemanticQueryEngine:
             if not requested_agg:
                 requested_agg = "sum" if is_numeric_dim else "count_distinct"
 
+            # SUM/AVG need numeric input. A `string` column is allowed through
+            # here: Airbyte/Sheets/CSV store numbers as text, and the aggregate
+            # emitter SAFE_CASTs string values to numbers (see
+            # `_measure_value_is_string_typed`). Genuinely non-numeric types
+            # (date / boolean / etc.) still fail loud — casting them to a number
+            # would silently produce NULLs, which is more confusing than a clear
+            # "pick a different aggregation" message.
             NUMERIC_ONLY_AGGS = {"sum", "avg"}
-            if requested_agg in NUMERIC_ONLY_AGGS and not is_numeric_dim:
+            if (
+                requested_agg in NUMERIC_ONLY_AGGS
+                and not is_numeric_dim
+                and dim_type != "string"
+            ):
                 raise ValueError(
                     f"Aggregation '{requested_agg.upper()}' không dùng được trên "
                     f"cột '{field_name}' (type={dim_type or 'unknown'}). "
@@ -1368,6 +1447,24 @@ class SemanticQueryEngine:
                 )
 
         base_sql = self._render_sql_template(sql_template, view_name)
+
+        # Numeric aggregate over a STRING-typed column. Airbyte / Google-Sheets
+        # / CSV sources store numbers as text; SUM/AVG of that column otherwise
+        # emits SUM(STRING) → BigQuery 400 ("No matching signature for SUM
+        # Argument types: STRING"). SAFE_CAST the value to a number — no-op on
+        # genuine numerics (SQL byte-identical), NULL on real text, never a
+        # type error. Same coercion the filter path uses (live_query_service).
+        if self._measure_value_is_string_typed(
+            sql_template,
+            view,
+            measure_type,
+            has_expression=bool(expression_template),
+            has_depends_on=bool(depends_on),
+        ):
+            from app.services.type_override_service import build_safe_cast_sql
+            base_sql = build_safe_cast_sql(
+                base_sql, "float", (self.database_type or "").lower(),
+            )
 
         # Filtered measure: wrap `base_sql` in CASE WHEN so the aggregate only
         # sees qualifying rows. COUNT(*) needs special-casing because there is
@@ -2104,10 +2201,14 @@ class SemanticQueryEngine:
         if not field:
             return None
 
-        # `field` may be a bare column ("status") or qualified ("orders.status")
+        # `field` may be a bare column ("status") or qualified ("orders.status").
+        # Track the target view so a filter on a RELATED view (joined dim) can be
+        # rewritten as a correlated EXISTS instead of an invalid inline predicate.
         if "." in field:
-            field_sql = self._render_dimension(field, self._parse_field_ref(field)[0])
+            target_view = self._parse_field_ref(field)[0]
+            field_sql = self._render_dimension(field, target_view)
         else:
+            target_view = view_name
             field_sql = f"{view_name}.{field}"
 
         def _q(v: Any) -> str:
@@ -2117,52 +2218,80 @@ class SemanticQueryEngine:
                 return str(v)
             return "'" + str(v).replace("'", "''") + "'"
 
-        if operator == "eq":
-            return f"{field_sql} = {_q(value)}"
-        if operator == "ne":
-            return f"{field_sql} <> {_q(value)}"
-        if operator == "gt":
-            return f"{field_sql} > {_q(value)}"
-        if operator == "gte":
-            return f"{field_sql} >= {_q(value)}"
-        if operator == "lt":
-            return f"{field_sql} < {_q(value)}"
-        if operator == "lte":
-            return f"{field_sql} <= {_q(value)}"
-        if operator == "in":
-            vals = value if isinstance(value, list) else [value]
-            return f"{field_sql} IN ({', '.join(_q(v) for v in vals)})"
-        if operator == "not_in":
-            vals = value if isinstance(value, list) else [value]
-            return f"{field_sql} NOT IN ({', '.join(_q(v) for v in vals)})"
-        if operator == "between":
-            # Phase-15.79 — degrade to >= / <= when only one bound is
-            # supplied, mirroring _build_where_clause Phase-15.19 behaviour.
-            # Old code emitted `BETWEEN NULL AND NULL` for single-side
-            # bounds which never matches anything; with the new range-
-            # slider UI users routinely leave one thumb un-set so we now
-            # render the user's intent properly here too.
-            lo, hi = (value or [None, None])[:2]
-            lo_present = lo is not None and (not isinstance(lo, str) or lo.strip() != "")
-            hi_present = hi is not None and (not isinstance(hi, str) or hi.strip() != "")
-            if lo_present and hi_present:
-                return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
-            if lo_present:
-                return f"{field_sql} >= {_q(lo)}"
-            if hi_present:
-                return f"{field_sql} <= {_q(hi)}"
+        def _pred() -> Optional[str]:
+            if operator == "eq":
+                return f"{field_sql} = {_q(value)}"
+            if operator == "ne":
+                return f"{field_sql} <> {_q(value)}"
+            if operator == "gt":
+                return f"{field_sql} > {_q(value)}"
+            if operator == "gte":
+                return f"{field_sql} >= {_q(value)}"
+            if operator == "lt":
+                return f"{field_sql} < {_q(value)}"
+            if operator == "lte":
+                return f"{field_sql} <= {_q(value)}"
+            if operator == "in":
+                vals = value if isinstance(value, list) else [value]
+                return f"{field_sql} IN ({', '.join(_q(v) for v in vals)})"
+            if operator == "not_in":
+                vals = value if isinstance(value, list) else [value]
+                return f"{field_sql} NOT IN ({', '.join(_q(v) for v in vals)})"
+            if operator == "between":
+                # Phase-15.79 — degrade to >= / <= when only one bound is
+                # supplied, mirroring _build_where_clause Phase-15.19 behaviour.
+                # Old code emitted `BETWEEN NULL AND NULL` for single-side
+                # bounds which never matches anything; with the new range-
+                # slider UI users routinely leave one thumb un-set so we now
+                # render the user's intent properly here too.
+                lo, hi = (value or [None, None])[:2]
+                lo_present = lo is not None and (not isinstance(lo, str) or lo.strip() != "")
+                hi_present = hi is not None and (not isinstance(hi, str) or hi.strip() != "")
+                if lo_present and hi_present:
+                    return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
+                if lo_present:
+                    return f"{field_sql} >= {_q(lo)}"
+                if hi_present:
+                    return f"{field_sql} <= {_q(hi)}"
+                return None
+            if operator == "contains":
+                return f"{field_sql} LIKE '%' || {_q(value)} || '%'"
+            if operator == "starts_with":
+                return f"{field_sql} LIKE {_q(value)} || '%'"
+            if operator == "ends_with":
+                return f"{field_sql} LIKE '%' || {_q(value)}"
+            if operator == "is_null":
+                return f"{field_sql} IS NULL"
+            if operator == "is_not_null":
+                return f"{field_sql} IS NOT NULL"
             return None
-        if operator == "contains":
-            return f"{field_sql} LIKE '%' || {_q(value)} || '%'"
-        if operator == "starts_with":
-            return f"{field_sql} LIKE {_q(value)} || '%'"
-        if operator == "ends_with":
-            return f"{field_sql} LIKE '%' || {_q(value)}"
-        if operator == "is_null":
-            return f"{field_sql} IS NULL"
-        if operator == "is_not_null":
-            return f"{field_sql} IS NOT NULL"
-        return None
+
+        pred = _pred()
+        if pred is None:
+            return None
+
+        # PowerBI CALCULATE parity: a measure filter targeting a RELATED view
+        # (a joined dimension — e.g. CALCULATE(SUM(Sales[amount]),
+        # Product[category]="Electronics")) must NOT be a bare inline predicate.
+        # The aggregate runs over the measure's own table, where the related
+        # dim is not in scope — emitting ``dim.col = ...`` inside the CASE WHEN
+        # yields "missing FROM-clause entry" / "column does not exist". Rewrite
+        # it as a correlated EXISTS tied to the measure's own grain
+        # (``base.fk = dim.key AND <pred>``), so the CASE WHEN tests set
+        # membership through the relationship. Own-view filters stay a plain
+        # predicate (byte-identical to before).
+        if target_view and target_view != view_name:
+            try:
+                exists_sql = self._build_filter_exists_clause(
+                    None, target_view, [pred], joined_nodes={view_name},
+                )
+            except Exception:  # noqa: BLE001 — fall back to inline on any resolver error
+                exists_sql = None
+            if exists_sql:
+                return exists_sql
+            # EXISTS unavailable (unreachable view / nested CTE) → keep the
+            # legacy inline predicate so existing same-table cases are unchanged.
+        return pred
     
     def _render_pivoted_measure(
         self, 
@@ -2613,6 +2742,30 @@ class SemanticQueryEngine:
                 self.db, self._model, explore.base_view_name, bidirectional=False,
             )
 
+        # PBI-parity drop gate (always on, independent of the V2 flag). The
+        # legacy `exists_views` set-diff routes ANY filter-only view to an
+        # EXISTS subquery, and the bidirectional `self._resolver` happily finds
+        # a correlation path even when it has to BORROW a second fact as a
+        # bridge through a shared/conformed dimension (e.g. filter Product →
+        # Targets via fact_sales + dim_region/date). PowerBI's default
+        # single-direction relationships do NOT propagate that way: a filter on
+        # a dim related to only ONE fact must NOT reach a sibling fact, so the
+        # filter is simply ignored (visual stays unfiltered) — NOT forced to 0
+        # by a bridge EXISTS. We build a STRICT resolver (cross_filter-honoring,
+        # no synthetic reverse for 'single' joins) purely to decide *reachability*:
+        # a filter-only view with no strict path to the base is dropped with a
+        # diagnostic. cross_filter='both' joins still synthesise reverse edges,
+        # so legitimate bidirectional cross-fact filtering is preserved.
+        _drop_gate_resolver = None
+        if self._model is not None and explore is not None:
+            try:
+                from app.services.semantic_join_resolver import SemanticJoinResolver as _R2
+                _drop_gate_resolver = _R2(
+                    self.db, self._model, explore.base_view_name, bidirectional=False,
+                )
+            except Exception:  # noqa: BLE001 — never block query build on resolver setup
+                _drop_gate_resolver = None
+
         for field_ref, filter_def in (
             (fr, d)
             for fr, fd in filters.items()
@@ -2728,6 +2881,39 @@ class SemanticQueryEngine:
                 # `conditions.append(...)` below write to whichever bucket
                 # `conditions` points at for this iteration.
                 if exists_views and view_name in exists_views:
+                    # PBI-parity drop gate: a filter-only view that the STRICT
+                    # (single-direction) resolver cannot reach from the base is
+                    # NOT related to this fact under PowerBI rules. The legacy
+                    # bidirectional resolver would still build a bridge EXISTS
+                    # (borrowing another fact through a shared dim) → wrong/zero
+                    # result. PowerBI ignores such a filter. Drop it with a
+                    # diagnostic instead of emitting the bridge EXISTS.
+                    _strict_unreachable = False
+                    if (
+                        _drop_gate_resolver is not None
+                        and explore is not None
+                        and view_name != explore.base_view_name
+                    ):
+                        try:
+                            _strict_unreachable = not _drop_gate_resolver.resolve_paths(view_name)
+                        except Exception:  # noqa: BLE001 — fall back to legacy on resolver error
+                            _strict_unreachable = False
+                    if _strict_unreachable:
+                        propagation_drops.append({
+                            "field": field_ref,
+                            "reason": "unreachable_view",
+                            "detail": (
+                                f"Filter view {view_name!r} has no single-direction "
+                                f"relationship path to base {explore.base_view_name!r}; "
+                                f"ignored (PowerBI parity). Set cross_filter='both' on "
+                                f"the relationship to enable cross-fact propagation."
+                            ),
+                        })
+                        self.warnings.append(
+                            f"Filter ignored — {field_ref}: no relationship path to this "
+                            f"chart's table (PowerBI parity)."
+                        )
+                        continue
                     conditions = exists_groups.setdefault(view_name, [])
                 else:
                     conditions = where_conditions
