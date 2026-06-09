@@ -17,6 +17,7 @@ import {
   Download,
   Eye,
   Loader2,
+  Share2,
   UserCircle2,
   Webhook,
   Wrench,
@@ -27,6 +28,9 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { Button } from '@/components/ui/Button';
 import WorkboardImportExportModal from '@/components/workboards/builder/WorkboardImportExportModal';
 import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
+import WorkboardShareModal, {
+  WORKBOARD_SHARE_OPEN,
+} from '@/components/workboards/WorkboardShareModal';
 import {
   consumeWorkboardDefaultOwnerNotice,
   type WorkboardDefaultOwnerNotice,
@@ -38,9 +42,18 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname() || '';
   const id = Number(params.id);
   const [importExportMode, setImportExportMode] = useState<'export' | null>(null);
+  const [showShare, setShowShare] = useState(false);
   const [defaultOwnerNotice, setDefaultOwnerNotice] = useState<WorkboardDefaultOwnerNotice | null>(null);
 
   const { data: workboard, isLoading, error } = useWorkboard(id);
+
+  // The Live Preview's "chưa gắn Cổng" hint opens this same Share modal via an
+  // event (it lives in the page, this modal in the layout).
+  useEffect(() => {
+    const open = () => setShowShare(true);
+    window.addEventListener(WORKBOARD_SHARE_OPEN, open);
+    return () => window.removeEventListener(WORKBOARD_SHARE_OPEN, open);
+  }, []);
 
   useEffect(() => {
     if (!Number.isFinite(id) || id <= 0) return;
@@ -124,6 +137,14 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
         <div className="mx-0.5 h-5 w-px bg-surface-3" />
 
         <button
+          onClick={() => setShowShare(true)}
+          className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+          title="Chia sẻ app ra link công khai (Cổng) cho người dùng"
+        >
+          <Share2 className="h-3.5 w-3.5" />
+          Chia sẻ
+        </button>
+        <button
           onClick={() => setImportExportMode('export')}
           className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
           title="Export workboard cho thư viện template"
@@ -161,6 +182,10 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           mode={importExportMode}
           onClose={() => setImportExportMode(null)}
         />
+      )}
+
+      {showShare && (
+        <WorkboardShareModal workboard={workboard} onClose={() => setShowShare(false)} />
       )}
     </div>
   );

@@ -15,6 +15,7 @@ import React, { useState } from 'react';
 import { Globe2, Loader2, PencilLine } from 'lucide-react';
 
 import { Button, IconButton } from '@/components/ui/Button';
+import { FilterTag } from '@/components/ui/FilterTag';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
 import { usePublishWorkboard, useUpdateWorkboard } from '@/hooks/use-workboards';
@@ -122,43 +123,35 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     );
   }
 
-  // pill variant (topbar)
+  // pill variant (topbar) — uses the project's FilterTag status-chip primitive
+  // (tinted, rounded, tone-based) so it reads identically to the Draft/Published
+  // chips in the list.
   return (
     <>
-      <button
-        type="button"
+      <FilterTag
+        tone={published ? 'success' : 'warning'}
         onClick={onClick}
         disabled={busy}
+        className="gap-1"
         title={published ? 'Đã xuất bản — bấm để chuyển về nháp' : 'Bản nháp — bấm để xuất bản'}
-        className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors hover:bg-surface-2 disabled:opacity-60"
       >
         {busy ? (
-          <Loader2 className="h-3 w-3 animate-spin text-text-tertiary" />
+          <Loader2 className="h-3 w-3 animate-spin" />
         ) : (
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${published ? 'bg-success' : 'bg-warning'}`}
-          />
+          <span className={`h-1.5 w-1.5 rounded-full ${published ? 'bg-success' : 'bg-warning'}`} />
         )}
-        <span className={published ? 'text-success' : 'text-warning'}>
-          {published ? 'Đã xuất bản' : 'Bản nháp'}
-        </span>
-      </button>
+        {published ? 'Đã xuất bản' : 'Bản nháp'}
+      </FilterTag>
       {confirmModal}
     </>
   );
 }
 
-function StatePill({ published, muted }: { published: boolean; muted?: boolean }) {
+function StatePill({ published }: { published: boolean; muted?: boolean }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium ${
-        muted ? 'opacity-80' : ''
-      }`}
-    >
+    <FilterTag tone={published ? 'success' : 'warning'} disabled className="gap-1">
       <span className={`h-1.5 w-1.5 rounded-full ${published ? 'bg-success' : 'bg-warning'}`} />
-      <span className={published ? 'text-success' : 'text-warning'}>
-        {published ? 'Đã xuất bản' : 'Bản nháp'}
-      </span>
-    </span>
+      {published ? 'Đã xuất bản' : 'Bản nháp'}
+    </FilterTag>
   );
 }

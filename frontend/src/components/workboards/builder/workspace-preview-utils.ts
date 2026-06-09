@@ -51,7 +51,10 @@ export function sortPreviewWorkspaces(
     const score = (ws: WorkspaceLite) =>
       (isWorkboardLinked(ws, slug) ? 8 : 0)
       + (getAccessMode(ws) === 'public_app_users' ? 4 : 0)
-      + (getAccessMode(ws) === 'internal' ? 2 : 0);
+      + (getAccessMode(ws) === 'internal' ? 2 : 0)
+      // Prefer an ACTIVE Cổng for preview — a disabled one renders the public
+      // runtime's "workspace disabled" error, which is useless for testing.
+      + (ws.is_active !== false ? 1 : 0);
     return score(b) - score(a);
   });
 }
