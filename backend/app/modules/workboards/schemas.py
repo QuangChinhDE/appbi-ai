@@ -919,6 +919,51 @@ class Screen(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _heal_pre_phase13_kinds(cls, data: Any) -> Any:
+        """Backward-compat shim for pre-Phase-13 (2026-05-16) screens.
+
+        Before Phase-13 the screen kinds ``grid`` (editable) and ``list``
+        (read-only) were distinct, each with a same-named config block. They
+        were collapsed into a single ``table`` kind (editability now driven by
+        ``editable_columns``) and — per this module's docstring — shipped
+        *without* a compat shim. Workboards authored before that date still
+        carry ``kind='grid'/'list'`` plus a ``grid``/``list`` block in their
+        stored ``layout_json``; the strict response model (``extra='forbid'``
+        + the ``kind`` literal) then raises ``ResponseValidationError`` and
+        500s the whole list/detail/runtime. This normalizes the legacy shape
+        on read.
+
+        ``grid`` (editable) and ``list`` (read-only) both map to ``table`` —
+        the legacy block's fields are a subset of :class:`TableScreenSpec`
+        (we keep only the recognised ones so a stray legacy sub-field can't
+        re-trip ``forbid``). Post-Phase-13 payloads have no ``grid``/``list``
+        keys, so this returns untouched for them (a no-op on the hot path).
+
+        Legacy data self-heals: opening such a workboard now deserializes as
+        ``kind='table'``, so the next save writes the clean shape back.
+        """
+        if not isinstance(data, dict):
+            return data
+        if (
+            data.get("kind") not in ("grid", "list")
+            and "grid" not in data
+            and "list" not in data
+        ):
+            return data
+        out = dict(data)
+        if out.get("kind") in ("grid", "list"):
+            out["kind"] = "table"
+        table_fields = set(TableScreenSpec.model_fields)
+        for legacy_key in ("grid", "list"):
+            legacy_cfg = out.pop(legacy_key, None)
+            if isinstance(legacy_cfg, dict) and not out.get("table"):
+                out["table"] = {
+                    k: v for k, v in legacy_cfg.items() if k in table_fields
+                }
+        return out
+
 
 class MiniAppNav(BaseModel):
     """Adaptive navigation config for the public runtime.

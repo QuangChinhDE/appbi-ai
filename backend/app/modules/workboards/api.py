@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core import get_db
@@ -43,6 +44,7 @@ from app.modules.workboards.schemas import (
     AppUserCreate,
     AppUserResponse,
     AppUserUpdate,
+    LayoutJson,
     WorkboardCreate,
     WorkboardPublicLinkCreate,
     WorkboardPublicLinkResponse,
@@ -114,7 +116,52 @@ def list_workboards(
     for item in items:
         item.user_permission = get_effective_permission(db, current_user, item, "workboards")
     stamp_owner_emails(db, items)
-    return items
+    # Serialize per-row so one workboard with an unexpected stored layout_json
+    # can never 500 the whole list. The Screen schema already heals known
+    # pre-Phase-13 legacy shapes; this is the last-resort net for anything else
+    # — the row still shows up (name/status/permission/buttons) with its layout
+    # cleared, so the user can open + re-save (or delete) it to recover.
+    out: List[WorkboardResponse] = []
+    for item in items:
+        try:
+            out.append(WorkboardResponse.model_validate(item))
+        except ValidationError as exc:
+            logger.warning(
+                "list_workboards: workboard %s has an un-serializable "
+                "layout_json; returning a degraded row. %s",
+                item.id,
+                exc,
+            )
+            out.append(_degraded_workboard_response(item))
+    return out
+
+
+def _degraded_workboard_response(item: Workboard) -> WorkboardResponse:
+    """Best-effort response for a workboard whose stored ``layout_json`` no
+    longer validates against the current schema. Clears the layout so the row
+    still serializes and appears in the list; everything else is preserved."""
+    return WorkboardResponse(
+        id=item.id,
+        name=item.name,
+        slug=item.slug,
+        description=item.description,
+        icon=item.icon,
+        dataset_id=item.dataset_id,
+        primary_table_id=item.primary_table_id,
+        primary_key_columns=list(item.primary_key_columns or []),
+        lookup_tables=list(item.lookup_tables or []),
+        layout_json=LayoutJson(),
+        write_mode=item.write_mode,
+        optimistic_lock_column=item.optimistic_lock_column,
+        is_published=item.is_published,
+        version=item.version,
+        settings=item.settings,
+        owner_id=item.owner_id,
+        owner_email=getattr(item, "owner_email", None),
+        user_permission=getattr(item, "user_permission", None),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
 
 
 @router.post("/", response_model=WorkboardResponse, status_code=status.HTTP_201_CREATED)

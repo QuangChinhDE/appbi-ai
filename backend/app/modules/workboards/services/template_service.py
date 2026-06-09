@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.models.dataset import Dataset, DatasetTable
 from app.modules.workboards.models import Workboard, WorkboardAppUser
+from app.modules.workboards.services.crud_service import _normalize_layout
 
 logger = get_logger(__name__)
 
@@ -879,6 +880,12 @@ def import_workboard(
         column_map=explicit_column_map,
     )
     layout = _rewrite_table_ids(layout_with_columns, id_map)
+    # Heal the layout through the SAME normalizer the create/update path uses,
+    # so an imported workboard is canonical at rest — in particular a bundle
+    # exported from a pre-Phase-13 workboard (legacy ``kind='grid'/'list'`` +
+    # ``grid``/``list`` blocks) is rewritten to ``kind='table'`` before insert,
+    # rather than relying on the read-side shim + a later save to clean it up.
+    layout = _normalize_layout(layout)
     _check_missing_columns(db, layout, bundle_tables_meta, id_map, report)
 
     # Resolve primary_table_id — bundle's old id -> new id, or first
