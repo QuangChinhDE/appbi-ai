@@ -898,6 +898,16 @@ def export_workboard_template(
             "Default false — admins set fresh PINs after import."
         ),
     ),
+    download: bool = Query(
+        default=False,
+        description=(
+            "When true, return the bundle as a file download "
+            "(Content-Disposition: attachment) instead of a JSON API body. "
+            "Lets the browser save it reliably as <slug>-workboard.json without "
+            "relying on a client-side Blob + a.download (which some browsers "
+            "saved as a bare UUID with no extension)."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -907,6 +917,27 @@ def export_workboard_template(
     bundle = _template_svc.export_workboard(
         db, wb, include_credentials=include_credentials
     )
+    if download:
+        import json as _json
+        from urllib.parse import quote as _quote
+        from fastapi import Response
+
+        slug = (wb.slug or f"workboard-{wb.id}").strip()
+        filename = f"{slug}-workboard.json"
+        # ASCII fallback for the legacy ``filename=`` param + RFC 5987
+        # ``filename*`` for the real (possibly non-ASCII) name.
+        ascii_name = filename.encode("ascii", "ignore").decode() or "workboard.json"
+        body = _json.dumps(bundle, ensure_ascii=False, indent=2)
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}"; '
+                    f"filename*=UTF-8''{_quote(filename)}"
+                ),
+            },
+        )
     return bundle
 
 

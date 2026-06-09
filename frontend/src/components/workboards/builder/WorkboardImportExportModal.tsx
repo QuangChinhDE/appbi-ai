@@ -99,26 +99,21 @@ function ExportPanel({
 
   const handleDownload = () => {
     if (!bundle) return;
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
-      type: 'application/json',
-    });
-    const url = URL.createObjectURL(blob);
+    // SERVER-driven download (not a client-side Blob + a.download). The backend
+    // returns the bundle with `Content-Disposition: attachment`, so the browser
+    // saves it reliably as `<slug>-workboard.json`. The previous Blob approach
+    // depended on `a.download`, which some browsers ignored — saving the file as
+    // a bare UUID with no extension. Same-origin (`/api/v1` proxy) so the
+    // httpOnly auth cookie is sent with the request.
+    const base = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+    const url =
+      `${base}/workboards/${workboard.id}/export` +
+      `?download=1&include_credentials=${includeCredentials}`;
     const a = document.createElement('a');
     a.href = url;
-    const slug = workboard.slug || `workboard-${workboard.id}`;
-    // Single ``.json`` extension only. The old ``${slug}.workboard.json`` had a
-    // double extension that Windows (which hides known extensions) showed as
-    // ``${slug}.workboard`` — looking like a stray ``.workboard`` file, not JSON.
-    a.download = `${slug}-workboard.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    // Revoke the blob URL on a delay — NOT synchronously. Revoking right after
-    // click() races the download in Chromium-based browsers: the engine drops
-    // the anchor's `download` filename and saves the file as the blob's bare
-    // UUID with no extension (the reported "tên lạ hoắc, không phải .json" bug).
-    // Matches the working pattern used elsewhere (ws/.../page.tsx, lib/api/public.ts).
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleCopy = async () => {
