@@ -547,6 +547,12 @@ export default function DatasetDetailPage() {
   const [measuresFocusMeasureName, setMeasuresFocusMeasureName] = useState<string | null>(null);
   const [measuresTriggerAdd, setMeasuresTriggerAdd] = useState(0);
   const [showMeasuresAddPicker, setShowMeasuresAddPicker] = useState(false);
+  // Viewport-relative anchor for the "Add measure to…" picker. The picker is
+  // rendered `fixed` (not `absolute`) so it ESCAPES the scrollable sidebar's
+  // overflow clipping — otherwise, on a dataset with many tables, the table
+  // list got cut off at the sidebar boundary and the lower tables were
+  // unreachable. Computed from the Add button's rect when opened.
+  const [measuresAddPickerPos, setMeasuresAddPickerPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
   const [collapsedMeasureViews, setCollapsedMeasureViews] = useState<Set<number>>(new Set());
 
   // Tab routing via searchParam — ?tab=tables|quality|model
@@ -1466,7 +1472,7 @@ export default function DatasetDetailPage() {
                               <div className="relative">
                                 <button
                                   type="button"
-                                  onClick={() => {
+                                  onClick={(e) => {
                                     if (sidebarModelViews.length <= 1) {
                                       setMeasuresFocusViewId(sidebarModelViews[0]?.id ?? null);
                                       setMeasuresFocusMeasureName(null);
@@ -1474,6 +1480,8 @@ export default function DatasetDetailPage() {
                                       setTablesWorkspace('measures');
                                       clearTableInUrl();
                                     } else {
+                                      const r = e.currentTarget.getBoundingClientRect();
+                                      setMeasuresAddPickerPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
                                       setShowMeasuresAddPicker((v) => !v);
                                     }
                                   }}
@@ -1484,8 +1492,11 @@ export default function DatasetDetailPage() {
                                 </button>
                                 {showMeasuresAddPicker && sidebarModelViews.length > 1 && (
                                   <>
-                                    <div className="fixed inset-0 z-10" onClick={() => setShowMeasuresAddPicker(false)} />
-                                    <div className="absolute right-0 top-full z-20 mt-1 w-52 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg">
+                                    <div className="fixed inset-0 z-[59]" onClick={() => setShowMeasuresAddPicker(false)} />
+                                    <div
+                                      className="fixed z-[60] w-52 max-h-[60vh] overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg"
+                                      style={{ top: measuresAddPickerPos.top, right: measuresAddPickerPos.right }}
+                                    >
                                       <p className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">Add measure to…</p>
                                       {sidebarModelViews.map((v) => (
                                         <button
