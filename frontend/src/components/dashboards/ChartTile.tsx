@@ -3,6 +3,8 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, TrendingUp } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
+import { useDatasetModel } from '@/hooks/use-dataset-model';
+import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { applyFilters } from '@/lib/explore-utils';
@@ -199,6 +201,25 @@ function ChartTileBase({
       ? config.semanticBinding as ChartSemanticBinding
       : null;
   }, [chart?.config]);
+
+  // Pull the dataset's semantic model so the tile labels + number-formats the
+  // chart IDENTICALLY to the Explore editor. Without these maps the KPI/percent
+  // format (and friendly labels) were dropped on the dashboard — the same chart
+  // showed e.g. "36.2%" in Explore but "0.4" here. react-query dedupes the
+  // fetch across tiles on the same dataset.
+  const tileDatasetId = chartSemanticBinding?.datasetId
+    ?? ((chart?.config as any)?.dataset_id ?? null);
+  const { data: tileDatasetModel } = useDatasetModel(
+    typeof tileDatasetId === 'number' ? tileDatasetId : null,
+  );
+  const tileLabelMap = useMemo(
+    () => buildSemanticLabelMap(tileDatasetModel?.views),
+    [tileDatasetModel],
+  );
+  const tileFormatMap = useMemo(
+    () => buildSemanticFormatMap(tileDatasetModel?.views),
+    [tileDatasetModel],
+  );
 
   const parameterFilters = useMemo(() => {
     if (!chart?.parameters?.length || !instanceParameters) return [];
@@ -1221,6 +1242,8 @@ function ChartTileBase({
               data={filteredData}
               roleConfig={exploreConfig.roleConfig}
               styleConfig={exploreConfig.styleConfig}
+              labelMap={tileLabelMap}
+              formatMap={tileFormatMap}
               havingFilters={havingFilters}
               preAggregated={preAggregated}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null

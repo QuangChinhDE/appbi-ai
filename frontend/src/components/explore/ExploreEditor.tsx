@@ -29,7 +29,6 @@ import {
   type ChartRoleConfig,
   type ChartStyleConfig,
   type MetricConfig,
-  type NumberFormat,
   DEFAULT_STYLE_CONFIG,
   getChartRoleConfigRequirementMessage,
   getChartRoleConfigValidationMessage,
@@ -51,6 +50,7 @@ import {
 } from '@/lib/explore-query';
 import type { ChartDebugInfo, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
+import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { getReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
@@ -1171,26 +1171,13 @@ export function ExploreEditor({
    * when the model hasn't loaded, in which case metricLabel uses the bare
    * field name (already a big improvement over "AUTO of view.field").
    */
-  const semanticLabelMap = useMemo(() => {
-    if (!datasetModel?.views) return undefined;
-    const map = new Map<string, string>();
-    for (const view of datasetModel.views) {
-      for (const dim of view.dimensions ?? []) {
-        const label = (dim.label || '').trim();
-        if (!label) continue;
-        map.set(`${view.name}.${dim.name}`, label);
-        // Bare key as fallback for queries that strip the view qualifier
-        if (!map.has(dim.name)) map.set(dim.name, label);
-      }
-      for (const measure of view.measures ?? []) {
-        const label = (measure.label || '').trim();
-        if (!label) continue;
-        map.set(`${view.name}.${measure.name}`, label);
-        if (!map.has(measure.name)) map.set(measure.name, label);
-      }
-    }
-    return map;
-  }, [datasetModel]);
+  // Shared builder (lib/chart-semantic-maps) so Dashboard surfaces format +
+  // label charts IDENTICALLY to this editor — see the file's header for the
+  // chart-vs-dashboard divergence this single-sources away.
+  const semanticLabelMap = useMemo(
+    () => buildSemanticLabelMap(datasetModel?.views),
+    [datasetModel],
+  );
 
   /**
    * Phase-15.93 — build {qualified-or-bare field → NumberFormat} map from
@@ -1209,23 +1196,10 @@ export function ExploreEditor({
    * Style-level overrides (seriesFormats, numberFormat) still win — this
    * is only the default when nothing else is set.
    */
-  const semanticFormatMap = useMemo(() => {
-    if (!datasetModel?.views) return undefined;
-    const map = new Map<string, NumberFormat>();
-    const mapKind = (kind: string | undefined): NumberFormat | undefined => {
-      if (kind === 'percent' || kind === 'currency' || kind === 'number') return kind;
-      return undefined;
-    };
-    for (const view of datasetModel.views) {
-      for (const measure of view.measures ?? []) {
-        const fmt = mapKind(measure.format?.kind);
-        if (!fmt) continue;
-        map.set(`${view.name}.${measure.name}`, fmt);
-        if (!map.has(measure.name)) map.set(measure.name, fmt);
-      }
-    }
-    return map.size > 0 ? map : undefined;
-  }, [datasetModel]);
+  const semanticFormatMap = useMemo(
+    () => buildSemanticFormatMap(datasetModel?.views),
+    [datasetModel],
+  );
 
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { useDatasetModel } from '@/hooks/use-dataset-model';
+import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
@@ -89,6 +91,15 @@ export function ReadonlyChartTile({
   )
     ? ((chart.config as Record<string, unknown>).semanticBinding as ChartSemanticBinding)
     : null;
+  // Semantic label/format maps so the published (readonly) tile renders the
+  // chart identically to Explore — preserves measure percent/currency format.
+  const roDatasetId = chartSemanticBinding?.datasetId
+    ?? ((chart?.config as any)?.dataset_id ?? null);
+  const { data: roDatasetModel } = useDatasetModel(
+    typeof roDatasetId === 'number' ? roDatasetId : null,
+  );
+  const roLabelMap = useMemo(() => buildSemanticLabelMap(roDatasetModel?.views), [roDatasetModel]);
+  const roFormatMap = useMemo(() => buildSemanticFormatMap(roDatasetModel?.views), [roDatasetModel]);
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, layout),
     [chart, layout],
@@ -338,6 +349,8 @@ export function ReadonlyChartTile({
               data={chartData.data}
               roleConfig={roleConfig}
               styleConfig={chartRenderStyleConfig}
+              labelMap={roLabelMap}
+              formatMap={roFormatMap}
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
