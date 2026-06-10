@@ -211,6 +211,10 @@ export default function EmbedDashboardPage() {
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
+  // Perf (Fix #10, 2026-06-10) — gate the first chart fetch until default
+  // filters are seeded; see the public dashboard page for the full rationale
+  // (avoids a throwaway filters=[] BigQuery query per tile on filtered dashboards).
+  const [filtersSeeded, setFiltersSeeded] = useState(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
     sourceChartId: number;
@@ -261,6 +265,7 @@ export default function EmbedDashboardPage() {
     setPageState('loading');
     setLoading(true);
     setError(null);
+    setFiltersSeeded(false);  // Fix #10: re-gate fetch for the (re)loaded dashboard.
 
     try {
       const nextDashboard = await publicDashboardApi.get(token, sessionToken);
@@ -351,6 +356,7 @@ export default function EmbedDashboardPage() {
     setDraftViewerFilters(merged);
     setAppliedViewerFilters(merged);
     appliedFilterSignatureRef.current = JSON.stringify(merged);
+    setFiltersSeeded(true);  // Fix #10: release the fetch gate.
   }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
@@ -498,6 +504,7 @@ export default function EmbedDashboardPage() {
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
+    if (!filtersSeeded) return;  // Fix #10: wait for default filters before first fetch.
     if (skipNextPageLoadRef.current === activePageId) {
       skipNextPageLoadRef.current = null;
       return;
@@ -515,7 +522,7 @@ export default function EmbedDashboardPage() {
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, pageState, token, visibleChartIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);

@@ -217,6 +217,17 @@ export default function PublicDashboardPage() {
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
+  // Perf (Fix #10, 2026-06-10) — gate the FIRST chart fetch until the default
+  // slicer/filter seed has run. Without this, a tile that became visible before
+  // the seed effect fired a chart-data query with filters=[] (no default
+  // filter), then the seed landed, cleared chartData, and re-fetched with the
+  // real filters — i.e. EVERY tile ran a throwaway 8-17s BigQuery query on a
+  // dashboard that has a default filter (prod log: chart 824 filters=0 then
+  // filters=1 then filters=2). Starts false; the seed effect flips it true in
+  // the same render that sets appliedViewerFilters, so the fetch effect then
+  // runs ONCE with the correct filters. An unfiltered dashboard seeds to [] and
+  // still flips the flag, so it fetches normally — just never with stale [].
+  const [filtersSeeded, setFiltersSeeded] = useState(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
     sourceChartId: number;
@@ -271,6 +282,9 @@ export default function PublicDashboardPage() {
     setPageState('loading');
     setLoading(true);
     setError(null);
+    // Fix #10: re-gate the fetch for the (re)loaded dashboard — the seed effect
+    // flips this back to true once it computes this dashboard's default filters.
+    setFiltersSeeded(false);
 
     try {
       const nextDashboard = await publicDashboardApi.get(token, sessionToken);
@@ -477,6 +491,9 @@ export default function PublicDashboardPage() {
     setDraftViewerFilters(merged);
     setAppliedViewerFilters(merged);
     appliedFilterSignatureRef.current = JSON.stringify(merged);
+    // Fix #10: default filters are now resolved → release the fetch gate. The
+    // fetch effect re-runs after this render with the seeded appliedViewerFilters.
+    setFiltersSeeded(true);
   }, [dashboard, token, activePageId, dashboardPages]);
 
   useEffect(() => {
@@ -626,6 +643,11 @@ export default function PublicDashboardPage() {
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
+    // Fix #10: hold the first fetch until default filters are seeded, so a tile
+    // doesn't fire a throwaway query with empty filters that the seed then
+    // invalidates. Once seeded, this effect re-runs (filtersSeeded is a dep) and
+    // fetches once with the correct filters.
+    if (!filtersSeeded) return;
     if (skipNextPageLoadRef.current === activePageId) {
       skipNextPageLoadRef.current = null;
       return;
@@ -650,7 +672,7 @@ export default function PublicDashboardPage() {
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, pageState, token, visibleChartIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
