@@ -36,6 +36,43 @@ _caches: Dict[int, TTLCache] = {}
 
 _SHARED_CLEANUP_INTERVAL_SECONDS = 60
 
+# ── Single-flight (Fix #9, 2026-06-10) ───────────────────────────────────────
+# A dashboard load can fire the SAME chart's data request several times before
+# the first response lands in the cache (rapid re-render, a filter toggled
+# twice, React StrictMode double-invoke). Prod logs showed chart 833 going
+# cache=MISS 3x within 5s — i.e. THREE separate 8-17s BigQuery queries for one
+# tile. Single-flight collapses concurrent identical computes: the first caller
+# runs the query, every other caller for the same key BLOCKS on the same lock
+# and — by the time it acquires — finds the result already cached, so it returns
+# the cached value instead of issuing its own source query. Keyed by an opaque
+# string the caller derives from its cache identity.
+_inflight_locks: Dict[str, threading.Lock] = {}
+_inflight_meta_lock = threading.Lock()
+
+
+def _single_flight_lock(flight_key: str) -> threading.Lock:
+    with _inflight_meta_lock:
+        lk = _inflight_locks.get(flight_key)
+        if lk is None:
+            lk = threading.Lock()
+            _inflight_locks[flight_key] = lk
+        return lk
+
+
+def single_flight(flight_key: str, compute):
+    """Run ``compute()`` under a per-key lock so concurrent callers with the
+    same ``flight_key`` don't each execute it. ``compute`` MUST itself re-check
+    the result cache first and return the cached value on a hit — that's how the
+    waiters (which acquire the lock after the leader has populated the cache)
+    avoid recomputing. Returns whatever ``compute`` returns. Best-effort: if the
+    key/lock machinery fails for any reason, ``compute`` still runs (correctness
+    over dedup)."""
+    if not flight_key:
+        return compute()
+    lk = _single_flight_lock(flight_key)
+    with lk:
+        return compute()
+
 
 def _stable_json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)

@@ -2966,8 +2966,37 @@ class ChartService:
             chart_id, len(extra_filters or []), filter_context,
         )
         try:
-            return ChartService._get_chart_data_inner(
-                db, chart_id, extra_filters=extra_filters, filter_context=filter_context,
+            # ── Single-flight (Fix #9, 2026-06-10) ───────────────────────────
+            # Prod logs showed the SAME tile going cache=MISS 2-3x within a few
+            # seconds (rapid re-render / a filter toggled twice / StrictMode
+            # double-invoke) — each MISS = a separate 8-17s BigQuery query for
+            # ONE chart. Serialise identical concurrent requests on a per-(chart,
+            # filters, context) lock: the leader runs the full pipeline (which
+            # writes the result cache via Fix #2), and every waiter — once it
+            # acquires the lock — re-enters _get_chart_data_inner and hits that
+            # warm cache instead of issuing its own source query. The wrapper is
+            # the safe place to do this: _get_chart_data_inner is the single
+            # entry for the whole pipeline, so no correctness-sensitive internal
+            # code is restructured. Keyed by the request inputs (NOT the internal
+            # semantic cache key, which isn't known until mid-pipeline) — same
+            # inputs ⇒ same result, so collapsing them is sound.
+            import hashlib as _hashlib
+            import json as _json
+            from app.services import query_cache as _qc
+            try:
+                _sf_key = "gcd::" + _hashlib.sha256(
+                    _json.dumps(
+                        [int(chart_id), str(filter_context or ""), extra_filters or []],
+                        sort_keys=True, separators=(",", ":"), default=str,
+                    ).encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                _sf_key = ""  # un-keyable input → no dedup, just run normally
+            return _qc.single_flight(
+                _sf_key,
+                lambda: ChartService._get_chart_data_inner(
+                    db, chart_id, extra_filters=extra_filters, filter_context=filter_context,
+                ),
             )
         finally:
             _pbi_chart_id_var.reset(_pbi_token)

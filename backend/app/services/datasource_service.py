@@ -275,8 +275,26 @@ def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
     """Stable cache key over credential identity + project. None = uncacheable."""
     auth_mode = str(config.get("auth_mode") or "service_account").strip().lower()
     if auth_mode == "google_oauth":
-        # OAuth credentials carry refresh state — don't cache the client.
-        return None
+        # Fix #8 (2026-06-10): OAuth datasources ARE now cacheable. Prod logs
+        # showed a BQ-OAuth dashboard rebuilding the client ~20x per load
+        # (every dry-run + every query) — each rebuild = a DB roundtrip in
+        # get_google_credentials_for_user_id + a possible token refresh + a TLS
+        # handshake, piled on top of BQ's own 8-17s query latency.
+        #
+        # Why this is safe: google.oauth2.credentials.Credentials carries the
+        # REFRESH token, and the BigQuery client's transport auto-refreshes the
+        # short-lived access token on demand. So a cached client stays valid for
+        # as long as the refresh token is — far beyond our 5-min TTL. We key on
+        # the connected AppBI user id (the credential owner) + project, so two
+        # datasources sharing one Google identity reuse one warm client. The
+        # id may be encrypted in the raw config; decrypt to get a stable key.
+        from app.core.crypto import decrypt_config
+        dc = decrypt_config(config)
+        owner = str(dc.get("google_oauth_user_id") or "").strip()
+        if not owner:
+            return None  # can't key it safely → rebuild every time (old behaviour)
+        project_id = str(dc.get("project_id") or config.get("project_id") or "").strip()
+        return f"google_oauth:{project_id}:{owner}"
     try:
         creds_json = _resolve_gcp_credentials_json(config)
     except ValueError:
@@ -301,9 +319,9 @@ def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
             return cached[1]
     # [perf] cold build: credential load + TLS handshake. Expensive; should be
     # RARE per datasource (~once per 5-min TTL). A burst of these on one
-    # dashboard load means the client cache isn't sticking (e.g. OAuth ds which
-    # is intentionally uncacheable, or a cached client got closed prematurely).
-    _build_reason = "uncacheable(oauth/no-creds)" if cache_key is None else "cold/expired"
+    # dashboard load means the cache isn't sticking — only expected when the
+    # key can't be derived (no project / no OAuth owner id).
+    _build_reason = "uncacheable(no project/owner)" if cache_key is None else "cold/expired"
     logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
     client = bigquery.Client(
         credentials=_build_gcp_credentials(config),
