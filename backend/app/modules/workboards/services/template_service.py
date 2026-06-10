@@ -1316,6 +1316,32 @@ def rebuild_dataset_from_bundle(
     return dataset, report
 
 
+_DT_TOKEN_RE = re.compile(r"dataset_table_(\d+)")
+
+
+def _remap_dt_tokens(value: Any, id_map: Dict[int, int]) -> Any:
+    """Rewrite every ``dataset_table_<OLD_id>`` token to ``dataset_table_<NEW_id>``
+    (via id_map) anywhere inside a string / list / dict.
+
+    Auto-generated semantic models NAME their views ``dataset_table_<id>`` and
+    reference them that way in joins (``view``, ``from_view``, ``${dataset_table_x}``
+    in ``sql_on``) and in dimension/measure SQL. The id is the OLD source table
+    id; on import it must point at the NEWLY created table, else the engine/model
+    canvas resolves it to whatever table currently owns that id — a DIFFERENT
+    dataset's table (the cross-dataset contamination bug). Unmapped ids are left
+    as-is."""
+    if isinstance(value, str):
+        return _DT_TOKEN_RE.sub(
+            lambda m: f"dataset_table_{id_map.get(int(m.group(1)), m.group(1))}",
+            value,
+        )
+    if isinstance(value, list):
+        return [_remap_dt_tokens(v, id_map) for v in value]
+    if isinstance(value, dict):
+        return {k: _remap_dt_tokens(v, id_map) for k, v in value.items()}
+    return value
+
+
 def _rebuild_semantic_from_bundle(
     db: Session,
     dataset_id: int,
@@ -1325,11 +1351,13 @@ def _rebuild_semantic_from_bundle(
     """Recreate the semantic model 1:1 from the export bundle for the freshly
     created dataset: one SemanticView per exported view (with the exact
     dimensions / measures / primary_key) + the SemanticExplores with their
-    joins/default_filters verbatim. Views keep their original names so the join
-    SQL (which references ``${view.col}``) stays valid. Returns True if a model
-    was built (>= 1 view), False if there was nothing to build (caller then
-    falls back to auto-generate). Scoped entirely to ``dataset_id`` — no other
-    dataset's model is read or mutated."""
+    joins/default_filters. Every ``dataset_table_<id>`` token (view names, join
+    refs, sql_on placeholders, dim/measure SQL) is remapped OLD→NEW via id_map so
+    the model points only at THIS dataset's new tables — never a foreign dataset's
+    table that happens to share the old id. Returns True if a model was built
+    (>= 1 view), False if there was nothing to build (caller then falls back to
+    auto-generate). Scoped entirely to ``dataset_id`` — no other dataset's model
+    is read or mutated."""
     from app.models.semantic import SemanticModel, SemanticView, SemanticExplore
 
     views_b = semantic.get("views") or []
@@ -1357,12 +1385,12 @@ def _rebuild_semantic_from_bundle(
     view_by_old_table: Dict[int, Any] = {}
     for old_tid, new_tid, bv in pending_views:
         view = SemanticView(
-            name=bv.get("name") or f"view_{new_tid}",
-            sql_table_name=bv.get("sql_table_name"),
+            name=_remap_dt_tokens(bv.get("name") or f"view_{new_tid}", id_map),
+            sql_table_name=_remap_dt_tokens(bv.get("sql_table_name"), id_map),
             dataset_table_id=new_tid,
-            dimensions=bv.get("dimensions") or [],
-            measures=bv.get("measures") or [],
-            primary_key=bv.get("primary_key"),
+            dimensions=_remap_dt_tokens(bv.get("dimensions") or [], id_map),
+            measures=_remap_dt_tokens(bv.get("measures") or [], id_map),
+            primary_key=_remap_dt_tokens(bv.get("primary_key"), id_map),
             description=bv.get("description"),
         )
         db.add(view)
@@ -1378,10 +1406,10 @@ def _rebuild_semantic_from_bundle(
             SemanticExplore(
                 model_id=model.id,
                 base_view_id=base_view.id,
-                base_view_name=be.get("base_view_name") or base_view.name,
-                joins=be.get("joins") or [],
-                default_filters=be.get("default_filters") or {},
-                name=be.get("name") or base_view.name,
+                base_view_name=_remap_dt_tokens(be.get("base_view_name"), id_map) or base_view.name,
+                joins=_remap_dt_tokens(be.get("joins") or [], id_map),
+                default_filters=_remap_dt_tokens(be.get("default_filters") or {}, id_map),
+                name=_remap_dt_tokens(be.get("name"), id_map) or base_view.name,
             )
         )
 
