@@ -28,6 +28,66 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+# ── Perf (#6): join-graph cache ──────────────────────────────────────────────
+# The resolver graph (_adj + _node_to_view) is built PURELY from
+# ``model.explores[].joins`` (JSON) — it holds no ORM rows, only frozen
+# ``JoinEdge`` dataclasses + strings, so it is safe to share read-only across
+# requests. Rebuilding it per chart was part of the per-tile semantic cost
+# (every dashboard tile constructs a resolver inside ``generate_sql``). Cache
+# it keyed by (model_id, model.updated_at, bidirectional): the ``updated_at``
+# component means ANY model edit (joins changed, view renamed, relationship
+# flipped) produces a new key, so a stale graph can never be served. The graph
+# is NEVER mutated after construction (only read by reachable_nodes /
+# resolve_path), so sharing the dict objects is safe.
+#
+# Scope is deliberately narrow (user decision 2026-06-10): ONLY the pure graph
+# is cached. ORM SemanticView loading + the isolation/EXISTS correctness
+# machinery still run fresh per request, untouched.
+_GRAPH_CACHE: dict[tuple, tuple[dict, dict]] = {}
+_GRAPH_CACHE_LOCK = __import__("threading").Lock()
+_GRAPH_CACHE_MAX = 256
+
+
+def _graph_cache_key(model: "SemanticModel | None", bidirectional: bool):
+    """Stable key, or None when the model can't be safely keyed (always rebuild).
+
+    CORRECTNESS NOTE: ``SemanticModel.updated_at`` is NOT enough on its own.
+    ``add_join`` / ``remove_join`` mutate ``SemanticExplore.joins`` and commit
+    the EXPLORE row — they do NOT touch the parent model's timestamp. Keying on
+    ``model.updated_at`` alone would therefore serve a STALE join graph after a
+    relationship edit → silently wrong query results. So the key folds in a
+    signature over every explore's (id, base_view_name, joins JSON), which is
+    exactly the data ``_build_graph`` consumes. Any join add/remove/flip changes
+    that signature and forces a rebuild. The signature is built from in-memory
+    JSON the resolver already holds (no extra DB round-trip)."""
+    if model is None:
+        return None
+    model_id = getattr(model, "id", None)
+    if model_id is None:
+        return None
+    try:
+        import json
+        explores_sig = json.dumps(
+            [
+                [
+                    getattr(ex, "id", None),
+                    str(getattr(ex, "base_view_name", "") or ""),
+                    getattr(ex, "joins", None) or [],
+                ]
+                for ex in (model.explores or [])
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    except Exception:
+        # If the explore graph can't be serialised (unexpected shape), don't
+        # cache — rebuild every time rather than risk a stale/incorrect graph.
+        return None
+    sig = __import__("hashlib").sha256(explores_sig.encode("utf-8")).hexdigest()
+    return (int(model_id), sig, bool(bidirectional))
+
+
 @dataclass(frozen=True)
 class JoinEdge:
     """A directed join edge from one node to another in the graph."""
@@ -152,7 +212,55 @@ class SemanticJoinResolver:
         # node_id -> view_name (so we can find dimensions/measures)
         self._node_to_view: dict[str, str] = {base_node: base_node}
         if model is not None:
-            self._build_graph(model)
+            # Perf (#6): the graph (_adj + _node_to_view) is base-node-independent
+            # — it's the whole model's join topology. Only the base_node SEED of
+            # _node_to_view differs per resolver, so cache the built graph and
+            # re-seed locally. Cache key folds in model.updated_at so an edited
+            # model rebuilds.
+            cache_key = _graph_cache_key(model, bidirectional)
+            cached = None
+            if cache_key is not None:
+                with _GRAPH_CACHE_LOCK:
+                    cached = _GRAPH_CACHE.get(cache_key)
+            if cached is not None:
+                cached_adj, cached_n2v = cached
+                # Copy the outer structures so per-resolver mutation (none today,
+                # but defensive) can't corrupt the shared cache entry. JoinEdge
+                # is frozen and node_to_view values are strings, so a shallow
+                # copy is sufficient and cheap.
+                self._adj = {k: list(v) for k, v in cached_adj.items()}
+                self._node_to_view = dict(cached_n2v)
+                # Ensure THIS resolver's base node is seeded (it always is in a
+                # full-model graph, but a base view with zero joins may be absent).
+                self._node_to_view.setdefault(base_node, base_node)
+                # [perf] graph reused (Fix #6) — skipped rebuilding the join
+                # topology from the model's explores. DEBUG: a resolver is built
+                # per chart, so HIT is the common case and would spam INFO.
+                logger.debug(
+                    "[perf] join-graph cache=HIT model_id=%s base=%s nodes=%d",
+                    getattr(model, "id", None), base_node, len(self._node_to_view),
+                )
+            else:
+                self._build_graph(model)
+                if cache_key is not None:
+                    with _GRAPH_CACHE_LOCK:
+                        if len(_GRAPH_CACHE) >= _GRAPH_CACHE_MAX:
+                            _GRAPH_CACHE.clear()
+                        _GRAPH_CACHE[cache_key] = (
+                            {k: list(v) for k, v in self._adj.items()},
+                            dict(self._node_to_view),
+                        )
+                # [perf] graph (re)built from the model's explores. INFO because
+                # a burst of MISS on one dashboard load means the cache isn't
+                # sticking — e.g. a model edited between tiles (key includes the
+                # join signature), or uncacheable (cache_key is None). After a
+                # join edit, exactly ONE MISS then HITs is the expected pattern.
+                logger.info(
+                    "[perf] join-graph cache=%s model_id=%s base=%s nodes=%d edges=%d",
+                    "MISS(built)" if cache_key is not None else "BUILT(uncacheable)",
+                    getattr(model, "id", None), base_node,
+                    len(self._node_to_view), sum(len(v) for v in self._adj.values()),
+                )
 
     # ── graph construction ─────────────────────────────────────────────
 

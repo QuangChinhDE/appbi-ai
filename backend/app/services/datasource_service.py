@@ -3,6 +3,7 @@ Data source connection service.
 Handles connecting to and querying external data sources.
 """
 import base64
+import hashlib
 import os
 import re
 import time
@@ -153,6 +154,57 @@ def _duckdb_quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def _sheets_referenced_by_sql(sql_query: str, sheet_names: List[str]) -> List[str]:
+    """Return the subset of ``sheet_names`` that the SQL appears to reference.
+
+    A Sheets query is executed by registering each tab as a DuckDB table, then
+    running the SQL. Registering EVERY tab for EVERY tile is the dominant
+    per-tile cost on multi-tab workbooks (Arrow build + CREATE TABLE per tab).
+    Most chart/lookup SQL touches ONE tab, so we scan for tab names that appear
+    as identifier tokens in the SQL and load only those.
+
+    Detection matches a tab name when it occurs in the SQL either bare
+    (``Sheet1``) or double-quoted (``"My Sheet"``) — covering the two forms the
+    Sheets DuckDB registration creates (raw name + space-stripped ``safe_name``).
+    To stay CORRECT, this is conservative: if NOTHING matches (a tab named in a
+    way we can't parse, dynamic SQL, etc.) it returns ALL tabs so a JOIN/CTE
+    never silently loses a table. The optimisation only kicks in when we are
+    confident which tabs are used.
+    """
+    if not sql_query or not sheet_names:
+        return list(sheet_names)
+
+    # Pull bare + quoted identifier tokens out of the SQL once.
+    quoted = set(re.findall(r'"([^"]+)"', sql_query))
+    bare_tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", sql_query))
+    bare_tokens_lower = {t.lower() for t in bare_tokens}
+
+    referenced: List[str] = []
+    for name in sheet_names:
+        safe_name = name.replace(" ", "_")
+        # Quoted form: exact match against the literal tab name or safe_name.
+        if name in quoted or safe_name in quoted:
+            referenced.append(name)
+            continue
+        # Bare form: the safe_name (no spaces) can appear as a bare identifier.
+        # Matching against the TOKEN SET (not substring containment) is what
+        # prevents a tab "Orders" from falsely matching a column "OrdersTotal"
+        # — the tokenizer extracts "OrdersTotal" as one token, so "orders" is
+        # absent from the set. A loose `name in sql` substring test would
+        # over-match here, needlessly loading the extra tab (correct results,
+        # but it defeats the optimisation), so we deliberately do NOT do that.
+        if safe_name.lower() in bare_tokens_lower or name.lower() in bare_tokens_lower:
+            referenced.append(name)
+            continue
+
+    # Conservative fallback: detected nothing → load everything (correctness
+    # beats the optimisation). Also covers SELECT-* dynamic SQL with no FROM
+    # we can parse.
+    if not referenced:
+        return list(sheet_names)
+    return referenced
+
+
 def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
     col_names = [c["name"] for c in col_defs]
     col_types = {c["name"]: c.get("type", "string") for c in col_defs}
@@ -242,7 +294,17 @@ def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
         cached = _BQ_CLIENT_CACHE.get(cache_key)
         now = time.time()
         if cached and (now - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
+            # Warm reuse — the fast path Fix #5 protects (we no longer close()
+            # cached clients). Kept at DEBUG to avoid spamming INFO on every
+            # dry-run + query; the cold-build line below is the notable event.
+            logger.debug("[perf] bq client cache=HIT project=%s", project_id)
             return cached[1]
+    # [perf] cold build: credential load + TLS handshake. Expensive; should be
+    # RARE per datasource (~once per 5-min TTL). A burst of these on one
+    # dashboard load means the client cache isn't sticking (e.g. OAuth ds which
+    # is intentionally uncacheable, or a cached client got closed prematurely).
+    _build_reason = "uncacheable(oauth/no-creds)" if cache_key is None else "cold/expired"
+    logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
     client = bigquery.Client(
         credentials=_build_gcp_credentials(config),
         project=project_id,
@@ -250,6 +312,23 @@ def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
     if cache_key is not None:
         _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
     return client
+
+
+def _bq_client_is_cached(config: Dict[str, Any], client: "bigquery.Client") -> bool:
+    """True when ``client`` is the live entry in ``_BQ_CLIENT_CACHE``.
+
+    Callers MUST NOT ``close()`` a cached client: the cache keeps it warm for
+    ~5 min so a burst of dashboard tiles reuses one HTTP transport instead of
+    rebuilding (credential load + TLS handshake) per query. Closing it tore
+    down the shared transport, so the very next tile either rebuilt the client
+    or hit a closed socket — defeating the cache entirely. OAuth clients are
+    never cached (refresh state) so they still get closed by the caller.
+    """
+    cache_key = _bigquery_client_cache_key(config)
+    if cache_key is None:
+        return False
+    cached = _BQ_CLIENT_CACHE.get(cache_key)
+    return bool(cached and cached[1] is client)
 
 
 _TRAILING_ROW_LIMIT_RE = re.compile(
@@ -1013,8 +1092,10 @@ class DataSourceConnectionService:
             logger.error(f"BigQuery execution failed on project {config.get('project_id')}: {str(e)}")
             raise
         finally:
-            # Cleanup client if needed
-            if client:
+            # Perf (#5): only close a client we OWN. A cached client is shared
+            # across dashboard tiles for ~5 min; closing it here tore down the
+            # warm transport and forced a rebuild on the next tile.
+            if client and not _bq_client_is_cached(config, client):
                 client.close()
 
     @staticmethod
@@ -1028,7 +1109,8 @@ class DataSourceConnectionService:
             job = client.query(sql_query, job_config=job_config)
             return int(job.total_bytes_processed or 0)
         finally:
-            if client:
+            # Perf (#5): never close a cached (warm) client — see _execute_bigquery.
+            if client and not _bq_client_is_cached(config, client):
                 client.close()
 
     # ── Streaming methods (for sync / large-table ingestion) ──────────────────
@@ -1881,14 +1963,62 @@ class DataSourceConnectionService:
             all_sheets = google_sheets_cache.get_or_load(spreadsheet_id, _load_workbook)
             logger.info(f"Google Sheets data (cached workbook): {len(all_sheets)} sheets")
 
+            # ── Perf (#3): serve a cached COMPUTED result if we already ran
+            # this exact SQL over the current workbook. The generic query_cache
+            # skips Sheets (externally mutable), so without this every dashboard
+            # tile rebuilt a fresh DuckDB and re-ran its SQL. This cache shares
+            # the workbook cache's TTL + invalidation, so it never serves data
+            # older than the workbook the tile would have read anyway.
+            _result_key = hashlib.sha256(
+                f"{(sql_query or '').strip()}::limit={limit or 0}".encode("utf-8")
+            ).hexdigest()
+            _cached_result = google_sheets_cache.get_cached_result(spreadsheet_id, _result_key)
+            if _cached_result is not None:
+                _cols, _rows = _cached_result
+                # [perf] Sheets result cache HIT — skipped the WHOLE DuckDB
+                # rebuild (Arrow build + CREATE TABLE per tab + query). This is
+                # the per-tile cost Fix #3 removes on a multi-tile Sheets dash.
+                logger.info(
+                    "[perf] sheets result cache=HIT ss=%s rows=%d sql_key=%s "
+                    "(skipped: duckdb-rebuild)",
+                    spreadsheet_id, len(_rows), _result_key[:12],
+                )
+                # Return copies so a caller mutating the list can't corrupt the
+                # cached payload shared by the next tile.
+                return list(_cols), [dict(r) for r in _rows]
+
             # ── Try DuckDB first (full SQL support) ───────────────────────────
             try:
                 import duckdb
                 import pyarrow as pa
 
+                _duck_start = time.time()
                 con = duckdb.connect(database=":memory:")
 
-                for sheet_name, sheet_data in all_sheets.items():
+                # Perf (#4): only register the tabs the SQL actually references.
+                # Loading the WHOLE workbook into DuckDB for every tile is the
+                # dominant per-tile cost on multi-tab spreadsheets (Arrow build
+                # + CREATE TABLE per tab). `_sheets_referenced_by_sql` matches
+                # tab names against identifier tokens in the SQL; it falls back
+                # to ALL tabs when detection is uncertain so a JOIN/CTE that
+                # names a tab in a way we can't parse never silently loses data.
+                _all_tab_count = len(all_sheets)
+                tabs_to_load = _sheets_referenced_by_sql(sql_query, list(all_sheets.keys()))
+                # [perf] result cache MISS → we rebuild DuckDB. The tab ratio
+                # shows Fix #4 working: "loaded 1/8 tabs" means we skipped 7
+                # tabs' Arrow build + CREATE TABLE. "loaded 8/8" = conservative
+                # fallback (couldn't detect refs) — still correct, just no win.
+                logger.info(
+                    "[perf] sheets result cache=MISS ss=%s tabs_loaded=%d/%d "
+                    "(rebuilding duckdb; loaded tabs=%s)",
+                    spreadsheet_id, len(tabs_to_load), _all_tab_count,
+                    ",".join(tabs_to_load[:8]) + ("…" if len(tabs_to_load) > 8 else ""),
+                )
+
+                for sheet_name in tabs_to_load:
+                    sheet_data = all_sheets.get(sheet_name)
+                    if sheet_data is None:
+                        continue
                     rows = sheet_data.get('rows', [])
                     col_defs = sheet_data.get('columns', [])
                     col_names = [c['name'] for c in col_defs]
@@ -1933,7 +2063,19 @@ class DataSourceConnectionService:
                 con.close()
 
                 rows = [dict(zip(columns, row)) for row in raw_rows]
-                logger.info(f"DuckDB executed Google Sheets query: {len(rows)} rows")
+                _duck_ms = (time.time() - _duck_start) * 1000
+                # [perf] full cold cost of a Sheets tile: build N tabs into
+                # DuckDB + run the SQL. Compare against the cache=HIT line to
+                # see what Fix #3 saves on the next identical request.
+                logger.info(
+                    "[perf] sheets duckdb EXECUTED ss=%s tabs_loaded=%d/%d rows=%d "
+                    "duckdb_build_exec_ms=%.0f",
+                    spreadsheet_id, len(tabs_to_load), _all_tab_count, len(rows), _duck_ms,
+                )
+                # Perf (#3): cache the computed result under the workbook's TTL.
+                google_sheets_cache.set_cached_result(
+                    spreadsheet_id, _result_key, (list(columns), [dict(r) for r in rows])
+                )
                 return columns, rows
 
             except ImportError:

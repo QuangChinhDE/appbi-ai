@@ -2068,66 +2068,17 @@ def _execute_semantic_chart_runtime(
     )
     chart_window_functions = list(_window_fns) if isinstance(_window_fns, list) else []
 
-    # Phase-12.7: explicit try around generate_sql so the caller and API
-    # endpoint see a ValueError with the engine's Vietnamese message
-    # (Phase-11), not an opaque internal exception. ValueError bubbles up
-    # — the chart API layer maps it to 400.
-    engine = SemanticQueryEngine(db, database_type=dialect)
-    # Unified engine entry — the chart now builds a SemanticQuerySpec (the SAME
-    # contract the preview + direct-API paths use) and runs it; no path bypasses
-    # the spec/compiler any more. dimension_refs / measure_refs / agg_overrides
-    # came from the shared classify_semantic_roles above.
-    from app.services.semantic_query_compiler import SemanticQuerySpec
-    _spec = SemanticQuerySpec(
-        explore_name=explore_name,
-        dimensions=dimension_refs,
-        measures=measure_refs,
-        measure_agg_overrides=agg_overrides or {},
-        filters=engine_filters,
-        time_grains=time_grains or {},
-        sorts=chart_sorts,
-        window_functions=chart_window_functions,
-        limit=effective_limit,
-        model_id=model_id,
-        explore_id=explore_id,
-        response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
-        diagnostics=filter_diagnostics,
-    )
-    try:
-        sql, _engine_columns, _pivot_metadata = engine.run(_spec)
-        # [pbi-filter] full SQL dump correlated to chart_id. DA can grep
-        # ``[pbi-filter] sql chart_id=<N>`` to see exactly what hit
-        # BigQuery for one specific tile (especially useful for KPI /
-        # Table charts where measure-filter behaviour was reported as
-        # inconsistent).  Truncated at 4000 chars to keep log lines
-        # readable; semantic_emit log still carries the truncated 1500-
-        # char preview as a fallback. Temporary instrumentation.
-        logger.info(
-            "[pbi-filter] sql chart_id=%s dialect=%s chart_type=%s n_dims=%d n_measures=%d sql=%s",
-            _pbi_current_chart_id(),
-            dialect,
-            str(getattr(chart_type, "value", chart_type) or "?"),
-            len(dimension_refs),
-            len(measure_refs),
-            sql.replace("\n", " ")[:4000],
-        )
-    except ValueError:
-        # Already carries a friendly VN message; let it propagate so the
-        # API layer can turn it into a 400 with that text intact.
-        raise
-    except Exception as exc:
-        logger.exception(
-            "Semantic chart SQL generation failed: explore=%s dialect=%s",
-            explore_name, dialect,
-        )
-        raise ValueError(
-            f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
-            "Báo dev kiểm tra explore + measure config."
-        ) from exc
-
-    # Cache: namespace under a stable identifier derived from the explore +
-    # canonical refs so cross-table results don't collide with single-table
-    # cache rows. Reuse existing `query_cache` so eviction is consistent.
+    # ── Perf (BQ/Sheets dashboard latency) — CACHE LOOKUP BEFORE SQL-GEN ──
+    # The cache key is fully determined by the classified refs computed above
+    # (dims/measures/agg/limit/grains/sorts/windows/filters + explore identity),
+    # NONE of which depend on the emitted SQL. Building the SQL first meant a
+    # dashboard tile paid the full semantic model rebuild (load explore/model/
+    # views, resolver, isolation analysis) AND — on BigQuery — a dry-run
+    # round-trip on EVERY request, even a cache HIT. A dashboard with N tiles
+    # re-running the same bounded query therefore burned N model rebuilds +
+    # N dry-runs for results already in cache. Compute the key + probe the
+    # cache up front so a HIT returns before any of that work runs. (User
+    # decision 2026-06-10: "skip dry-run on cache-hit + dashboard".)
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
         "_semantic_chart_runtime": True,
@@ -2201,7 +2152,91 @@ def _execute_semantic_chart_runtime(
                 cached = {**cached, "_debug": cached_debug}
             except Exception:
                 logger.debug("Failed to overlay dropped_filters onto cached chart response", exc_info=True)
+            # [perf] cache HIT on the semantic chart path. This request skipped
+            # BOTH the semantic model rebuild AND (on BigQuery) the dry-run +
+            # real query — the whole point of Fix #2 (cache-before-SQL-gen).
+            logger.info(
+                "[perf] semantic chart cache=HIT chart_id=%s ds=%s ds_type=%s explore=%s "
+                "dims=%d measures=%d rows=%d (skipped: model-rebuild, sql-gen%s)",
+                _pbi_current_chart_id(), datasource.id, ds_type, explore_name,
+                len(dimension_refs), len(measure_refs),
+                len((cached.get("data") if isinstance(cached, dict) else None) or []),
+                ", bq-dry-run+query" if ds_type == "bigquery" else "",
+            )
             return cached
+
+    # [perf] cache MISS — this request WILL rebuild the model + generate SQL +
+    # (BigQuery) dry-run + query the source. These are the slow tiles a DA
+    # feels on a cold dashboard; grep ``[perf] semantic chart cache=MISS`` to
+    # see how many tiles actually hit the source per page load.
+    logger.info(
+        "[perf] semantic chart cache=MISS chart_id=%s ds=%s ds_type=%s explore=%s "
+        "dims=%d measures=%d filters=%d (will: rebuild-model, sql-gen%s)",
+        _pbi_current_chart_id(), datasource.id, ds_type, explore_name,
+        len(dimension_refs), len(measure_refs), len(cache_filters),
+        ", bq-dry-run+query" if ds_type == "bigquery" else "",
+    )
+
+    # Phase-12.7: explicit try around generate_sql so the caller and API
+    # endpoint see a ValueError with the engine's Vietnamese message
+    # (Phase-11), not an opaque internal exception. ValueError bubbles up
+    # — the chart API layer maps it to 400.
+    engine = SemanticQueryEngine(db, database_type=dialect)
+    # Unified engine entry — the chart now builds a SemanticQuerySpec (the SAME
+    # contract the preview + direct-API paths use) and runs it; no path bypasses
+    # the spec/compiler any more. dimension_refs / measure_refs / agg_overrides
+    # came from the shared classify_semantic_roles above.
+    from app.services.semantic_query_compiler import SemanticQuerySpec
+    _spec = SemanticQuerySpec(
+        explore_name=explore_name,
+        dimensions=dimension_refs,
+        measures=measure_refs,
+        measure_agg_overrides=agg_overrides or {},
+        filters=engine_filters,
+        time_grains=time_grains or {},
+        sorts=chart_sorts,
+        window_functions=chart_window_functions,
+        limit=effective_limit,
+        model_id=model_id,
+        explore_id=explore_id,
+        response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
+        diagnostics=filter_diagnostics,
+    )
+    try:
+        sql, _engine_columns, _pivot_metadata = engine.run(_spec)
+        # [pbi-filter] full SQL dump correlated to chart_id. DA can grep
+        # ``[pbi-filter] sql chart_id=<N>`` to see exactly what hit
+        # BigQuery for one specific tile (especially useful for KPI /
+        # Table charts where measure-filter behaviour was reported as
+        # inconsistent).  Truncated at 4000 chars to keep log lines
+        # readable; semantic_emit log still carries the truncated 1500-
+        # char preview as a fallback. Temporary instrumentation.
+        logger.info(
+            "[pbi-filter] sql chart_id=%s dialect=%s chart_type=%s n_dims=%d n_measures=%d sql=%s",
+            _pbi_current_chart_id(),
+            dialect,
+            str(getattr(chart_type, "value", chart_type) or "?"),
+            len(dimension_refs),
+            len(measure_refs),
+            sql.replace("\n", " ")[:4000],
+        )
+    except ValueError:
+        # Already carries a friendly VN message; let it propagate so the
+        # API layer can turn it into a 400 with that text intact.
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Semantic chart SQL generation failed: explore=%s dialect=%s",
+            explore_name, dialect,
+        )
+        raise ValueError(
+            f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
+            "Báo dev kiểm tra explore + measure config."
+        ) from exc
+
+    # Cache key + lookup already ran BEFORE engine.run() above (perf: a
+    # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
+    # Reaching here means a cache MISS, so we generated SQL and now execute.
 
     # BigQuery cost guard (mirrors LiveQueryService behavior).
     if ds_type == "bigquery":
@@ -2286,8 +2321,11 @@ def _execute_semantic_chart_runtime(
         )
 
     logger.info(
-        "Semantic chart query executed: ds=%d, explore=%s, dims=%d, measures=%d, rows=%d, time=%.0fms",
+        "[perf] semantic chart EXECUTED (cache=MISS) chart_id=%s ds=%d ds_type=%s explore=%s "
+        "dims=%d measures=%d rows=%d source_query_ms=%.0f",
+        _pbi_current_chart_id(),
         datasource.id,
+        ds_type,
         explore_name,
         len(dimension_refs),
         len(measure_refs),

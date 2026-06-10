@@ -172,10 +172,16 @@ function getErrorMessage(error: any): string {
 
 /**
  * Cap parallel chart requests so that 20+ tiles don't all queue against the
- * browser's HTTP/1.1 6-socket-per-host ceiling at once. 4 in flight keeps the
- * critical-path tiles snappy without starving later ones.
+ * browser's HTTP/1.1 6-socket-per-host ceiling at once.
+ *
+ * Perf (2026-06-10): raised 4 → 8 after the BE per-tile cost dropped sharply
+ * (cache-before-SQL-gen, no duplicate BQ dry-run, Sheets result cache). With
+ * cheaper tiles, 4-in-flight under-utilised the server; 8 fills the pipeline
+ * without starving later tiles. Modern browsers multiplex over HTTP/2, and the
+ * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
+ * within budget even on a 20-tile dashboard with filter re-fetches.
  */
-const CHART_FETCH_CONCURRENCY = 4;
+const CHART_FETCH_CONCURRENCY = 8;
 
 async function runWithConcurrency<T, R>(
   items: T[],

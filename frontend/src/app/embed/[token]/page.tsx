@@ -170,7 +170,10 @@ function getErrorMessage(error: any): string {
   return error?.response?.data?.detail ?? error?.message ?? 'Failed to load chart data.';
 }
 
-const CHART_FETCH_CONCURRENCY = 4;
+// Perf (2026-06-10): raised 4 → 8 — matches the public dashboard page after the
+// BE per-tile cost dropped (cache-before-SQL-gen, no duplicate BQ dry-run,
+// Sheets result cache). 300 req/min endpoint budget keeps 8 concurrent safe.
+const CHART_FETCH_CONCURRENCY = 8;
 
 async function runWithConcurrency<T, R>(
   items: T[],

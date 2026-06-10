@@ -55,6 +55,17 @@ def is_quota_error(exc: BaseException) -> bool:
 
 # spreadsheet_id -> (expires_at_epoch, payload)
 _STORE: Dict[str, tuple[float, Any]] = {}
+# (spreadsheet_id, query_key) -> (expires_at_epoch, result_payload).
+# Caches the COMPUTED result of a chart/lookup SQL over a Sheets workbook.
+# `query_cache` (the generic live-query cache) intentionally skips Google
+# Sheets because the workbook is externally mutable, so each dashboard tile
+# used to rebuild a fresh in-memory DuckDB and re-run its SQL even when the
+# underlying data hadn't changed. This store sits ON TOP of the workbook
+# cache's freshness contract: it shares the same TTL window and is dropped by
+# the SAME `invalidate(spreadsheet_id)` call that app writes already trigger,
+# so it introduces NO staleness beyond what the workbook cache already
+# accepts. Key includes the SQL + row limit so different charts don't collide.
+_RESULT_STORE: Dict[tuple[str, str], tuple[float, Any]] = {}
 _LOCK = threading.Lock()
 # Per-spreadsheet load locks so concurrent requests for the same workbook do
 # not each issue a cold load (thundering herd).
@@ -71,11 +82,49 @@ def _load_lock_for(spreadsheet_id: str) -> threading.Lock:
 
 
 def invalidate(spreadsheet_id: str) -> None:
-    """Drop the cached workbook so the next read reflects a just-written row."""
+    """Drop the cached workbook AND every cached query result for it so the
+    next read reflects a just-written row. Called by the connector on every
+    append/update/delete, so the result cache can never serve stale data past
+    an app-side write."""
     if not spreadsheet_id:
         return
     with _LOCK:
         _STORE.pop(spreadsheet_id, None)
+        # Drop all result-cache entries for this spreadsheet.
+        stale_keys = [k for k in _RESULT_STORE if k[0] == spreadsheet_id]
+        for k in stale_keys:
+            _RESULT_STORE.pop(k, None)
+
+
+def get_cached_result(spreadsheet_id: str, query_key: str) -> Optional[Any]:
+    """Return a cached SQL result for this workbook, or None if absent/expired."""
+    if not spreadsheet_id or not query_key:
+        return None
+    with _LOCK:
+        entry = _RESULT_STORE.get((spreadsheet_id, query_key))
+    if not entry:
+        return None
+    expires_at, payload = entry
+    if expires_at < time.monotonic():
+        with _LOCK:
+            _RESULT_STORE.pop((spreadsheet_id, query_key), None)
+        return None
+    return payload
+
+
+def set_cached_result(
+    spreadsheet_id: str,
+    query_key: str,
+    payload: Any,
+    *,
+    ttl: Optional[float] = None,
+) -> None:
+    """Cache a computed SQL result for this workbook under the shared TTL."""
+    if not spreadsheet_id or not query_key:
+        return
+    ttl = _default_ttl() if ttl is None else ttl
+    with _LOCK:
+        _RESULT_STORE[(spreadsheet_id, query_key)] = (time.monotonic() + ttl, payload)
 
 
 def _get_fresh(spreadsheet_id: str) -> Optional[Any]:
