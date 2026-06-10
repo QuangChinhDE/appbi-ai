@@ -16,6 +16,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Database,
   Eye,
   EyeOff,
   Hash,
@@ -55,6 +56,7 @@ import {
 import { usePreviewTableDescription, type TableDescriptionPreview } from '@/hooks/useDescription';
 import { AiDescriptionDiffModal } from './AiDescriptionDiffModal';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { MeasureExpressionEditor, type ExprSuggestion } from './MeasureExpressionEditor';
 import { toast } from '@/lib/toast';
 import { extractApiError } from '@/lib/api-errors';
 import {
@@ -470,11 +472,15 @@ function ColumnCombobox({
                 type="button"
                 onMouseEnter={() => setFocusIdx(idx)}
                 onClick={() => selectValue(opt)}
-                className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs ${
-                  idx === focusIdx ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:bg-surface-2'
+                className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left ${
+                  idx === focusIdx ? 'bg-surface-2' : 'hover:bg-surface-2'
                 }`}
               >
-                <span className="truncate font-mono">{opt}</span>
+                {/* chip style — column reads clearly as a tag, not plain text */}
+                <span className="inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-mono text-brand min-w-0">
+                  <Hash className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{opt}</span>
+                </span>
                 {opt === value && <Check className="h-3.5 w-3.5 text-brand shrink-0" />}
               </button>
             ))
@@ -1830,10 +1836,6 @@ function MeasureRow({
 }) {
   const [isExpanded, setIsExpanded] = useState(() => rowKey.startsWith('new-measure') || Boolean(defaultOpen));
   const [editingLabel, setEditingLabel] = useState(false);
-  // C1: ref to the expression <input> so the field-insert picker can splice a
-  // token at the cursor position. State for the insert dropdown.
-  const exprInputRef = useRef<HTMLInputElement>(null);
-  const [showFieldInsert, setShowFieldInsert] = useState(false);
   // D3: "Chạy thử" (test run) state — run the candidate against the real
   // engine + datasource and show the output before Save.
   const [testRunning, setTestRunning] = useState(false);
@@ -1943,30 +1945,125 @@ function MeasureRow({
   // list instead of remembering which of the two syntaxes to type — the
   // "one namespace, autocomplete decides the syntax" idea.
   const otherMeasureNames = measureNames.filter((n) => !selfMeasureRefs.has(n));
-  const insertFieldToken = (token: string, kind: 'column' | 'measure') => {
-    const text = kind === 'measure' ? `\${${token}}` : token;
-    const el = exprInputRef.current;
-    const current = measure.expression || '';
-    let next: string;
-    if (el && typeof el.selectionStart === 'number') {
-      const start = el.selectionStart;
-      const end = el.selectionEnd ?? start;
-      next = current.slice(0, start) + text + current.slice(end);
-    } else {
-      next = current ? `${current} ${text}` : text;
+
+  // Other reachable views' columns, grouped by table, for the cross-table
+  // field picker. Each is inserted as `${view.field}` (the engine's cross-table
+  // ref) and labelled "view.col" so DA sees WHICH table the column is from.
+  // Toggling these on also flips the measure to scope='dataset' + registers the
+  // source column (applyExpressionInput handles the ${...} parse on blur; here
+  // we also seed source_columns so the engine knows to JOIN).
+  const otherViewColumnGroups = useMemo(() => {
+    const groups: { view: DatasetModelView; label: string; columns: string[] }[] = [];
+    for (const v of modelViews ?? []) {
+      if (v.id === viewId) continue;            // current table is the "Cột" group
+      if (v.hidden_in_canvas || v.view_role === 'calendar_role' || v.system_managed) continue;
+      const cols = (v.dimensions ?? [])
+        .filter((d) => !d.hidden && d.name)
+        .map((d) => d.name);
+      if (cols.length === 0) continue;
+      groups.push({ view: v, label: v.table_display_name || v.name, columns: cols });
     }
-    onChange(applyExpressionInput(measure, next, setMode));
-    setShowFieldInsert(false);
-    // restore focus + place cursor after the inserted token
-    requestAnimationFrame(() => {
-      const node = exprInputRef.current;
-      if (node) {
-        node.focus();
-        const pos = (el && typeof el.selectionStart === 'number' ? el.selectionStart : current.length) + text.length;
-        try { node.setSelectionRange(pos, pos); } catch { /* ignore */ }
-      }
+    return groups;
+  }, [modelViews, viewId]);
+
+  // E8: friendly cross-table refs. The engine needs `${dataset_table_240.col}`
+  // (technical view name), but that's unreadable to DA. We DISPLAY the friendly
+  // `${dw_buoi_7.employees.col}` (display name is unique within a dataset) and
+  // map back to the technical token only when storing. These two maps drive the
+  // tech<->display rewrite around the expression input.
+  const techToDisplay = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of modelViews ?? []) {
+      const disp = (v.table_display_name || v.name || '').trim();
+      if (v.name && disp) m.set(v.name, disp);
+    }
+    return m;
+  }, [modelViews]);
+  const displayToTech = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of modelViews ?? []) {
+      const disp = (v.table_display_name || v.name || '').trim();
+      if (v.name && disp) m.set(disp, v.name);
+    }
+    return m;
+  }, [modelViews]);
+
+  // Rewrite every `${<viewToken>.<field>}` inside an expression, swapping the
+  // view token via `lookup`. The view token may itself contain dots (display
+  // names like `dw_buoi_7.employees`), so we match `${ ... }` then split on the
+  // LAST dot to separate field from view token. Unknown tokens pass through
+  // unchanged (so plain `${measure}` formula refs and same-table cols are safe).
+  const rewriteExprViewTokens = (expr: string, lookup: Map<string, string>): string => {
+    if (!expr) return expr;
+    return expr.replace(/\$\{([^}]+)\}/g, (whole, inner: string) => {
+      const lastDot = inner.lastIndexOf('.');
+      if (lastDot <= 0) return whole;               // no view qualifier → leave (measure ref / bare)
+      const viewToken = inner.slice(0, lastDot);
+      const field = inner.slice(lastDot + 1);
+      const mapped = lookup.get(viewToken);
+      return mapped ? `\${${mapped}.${field}}` : whole;
     });
   };
+  // What the user SEES in the expression box (technical view names → friendly).
+  const expressionForDisplay = rewriteExprViewTokens(measure.expression || '', techToDisplay);
+
+  // E9: autocomplete suggestions for the chip editor (display name-space).
+  //   - current-table columns  → insert raw (wrap:false), kind 'column'
+  //   - other-table columns    → insert ${display.field} (wrap:true), 'crosscol'
+  //   - other measures         → insert ${name} (wrap:true), 'measure'
+  const exprSuggestions = useMemo(() => {
+    const out: ExprSuggestion[] = [];
+    for (const c of columnOptions) {
+      out.push({ insertText: c, wrap: false, label: c, kind: 'column', group: 'Cột (bảng này)' });
+    }
+    for (const g of otherViewColumnGroups) {
+      for (const c of g.columns) {
+        out.push({ insertText: `${g.label}.${c}`, wrap: true, label: `${g.label}.${c}`, kind: 'crosscol', group: `Bảng: ${g.label}` });
+      }
+    }
+    for (const m of otherMeasureNames) {
+      out.push({ insertText: m, wrap: true, label: m, kind: 'measure', group: 'Measure' });
+    }
+    return out;
+  }, [columnOptions, otherViewColumnGroups, otherMeasureNames]);
+
+  // E9: single handler the chip editor calls with the DISPLAY-space expression.
+  // Converts display→technical, reconciles scope/source_columns from any
+  // ${view.field} cross-table refs present, then runs B1 auto-detect. This
+  // replaces the old per-insert branching (the editor doesn't know semantics).
+  const commitExpressionDisplay = (displayText: string) => {
+    const tech = rewriteExprViewTokens(displayText, displayToTech);
+    // Find cross-table refs: ${techView.field} where techView is a known OTHER view.
+    const crossRefs: { view: string; field: string }[] = [];
+    const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(tech)) !== null) {
+      if (techToDisplay.has(m[1])) crossRefs.push({ view: m[1], field: m[2] });
+    }
+    if (crossRefs.length > 0) {
+      // dataset-scope cross-table measure: register source_columns, don't treat
+      // as a formula. expression type still wraps the value.
+      setMode('sql');
+      const seen = new Set<string>();
+      const sources = crossRefs.filter((r) => {
+        const k = `${r.view}.${r.field}`;
+        if (seen.has(k)) return false; seen.add(k); return true;
+      });
+      onChange({
+        ...measure,
+        expression: tech || undefined,
+        scope: 'dataset',
+        source_columns: sources,
+        depends_on: [],
+      });
+    } else {
+      onChange(applyExpressionInput(measure, tech, setMode));
+    }
+  };
+
+
+  // (E9: field insertion is now handled inside MeasureExpressionEditor via
+  // inline autocomplete + chips; the old insertFieldToken/dropdown was removed.)
 
   // D3: run the candidate measure (unsaved) and show the real output so DA can
   // confirm "ra số đúng không" before Save. Grand-total by default; group by a
@@ -2070,11 +2167,16 @@ function MeasureRow({
   );
 
   return (
-    <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+    <div className={splitLayout ? '' : 'rounded-lg border border-[rgb(var(--border-line))] bg-surface-1'}>
       <div className="flex items-center gap-2 px-3 py-2">
-        <button onClick={() => setIsExpanded(!isExpanded)} className="text-text-quaternary hover:text-text-secondary shrink-0">
-          {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-        </button>
+        {/* E6: in split (single-measure) layout the row is always expanded —
+            the collapse chevron is pointless, so it's hidden. Navigation
+            between measures is via the left toolbar. */}
+        {!splitLayout && (
+          <button onClick={() => setIsExpanded(!isExpanded)} className="text-text-quaternary hover:text-text-secondary shrink-0">
+            {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          </button>
+        )}
         <Sigma className="w-3.5 h-3.5 text-warning shrink-0" />
         {canEdit && editingLabel ? (
           <input
@@ -2426,70 +2528,20 @@ function MeasureRow({
                   <label className="text-[10px] text-text-tertiary uppercase font-medium">
                     Biểu thức SQL
                   </label>
-                  {/* C1: insert a column / measure token at the cursor instead
-                      of hand-typing the name (and remembering raw vs ${}). */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowFieldInsert((v) => !v)}
-                      className="flex items-center gap-0.5 text-[10px] text-brand hover:underline font-medium"
-                      title="Chèn cột hoặc measure vào biểu thức tại vị trí con trỏ"
-                    >
-                      <Plus className="w-3 h-3" /> Chèn cột / measure
-                    </button>
-                    {showFieldInsert && (
-                      <div className="absolute right-0 top-5 z-30 w-56 max-h-64 overflow-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1">
-                        {columnOptions.length > 0 && (
-                          <>
-                            <div className="px-3 py-1 text-[9px] font-semibold uppercase tracking-wide text-text-quaternary">Cột</div>
-                            {columnOptions.map((c) => (
-                              <button
-                                key={`col-${c}`}
-                                type="button"
-                                onClick={() => insertFieldToken(c, 'column')}
-                                className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs hover:bg-surface-2"
-                              >
-                                <Hash className="w-3 h-3 text-brand shrink-0" />
-                                <span className="truncate font-mono">{c}</span>
-                              </button>
-                            ))}
-                          </>
-                        )}
-                        {otherMeasureNames.length > 0 && (
-                          <>
-                            <div className="mt-1 border-t border-[rgb(var(--border-line))] px-3 py-1 text-[9px] font-semibold uppercase tracking-wide text-text-quaternary">Measure (chèn dạng ${'{...}'})</div>
-                            {otherMeasureNames.map((m) => (
-                              <button
-                                key={`mea-${m}`}
-                                type="button"
-                                onClick={() => insertFieldToken(m, 'measure')}
-                                className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs hover:bg-surface-2"
-                              >
-                                <Sigma className="w-3 h-3 text-warning shrink-0" />
-                                <span className="truncate font-mono">{m}</span>
-                              </button>
-                            ))}
-                          </>
-                        )}
-                        {columnOptions.length === 0 && otherMeasureNames.length === 0 && (
-                          <p className="px-3 py-2 text-[10px] text-text-quaternary">Chưa có cột / measure để chèn.</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <span className="text-[10px] text-text-quaternary">Gõ tên cột/measure để gợi ý</span>
                 </div>
-                <input
-                  ref={exprInputRef}
-                  value={measure.expression || ''}
-                  // While typing: store raw text only (smooth, no reshape mid-
-                  // keystroke). On blur: B1 auto-fix — `SUM(revenue)` unwraps to
-                  // agg=SUM + expression=revenue; `SUM(${m})` / `${a}/${b}`
-                  // flips to formula mode with depends_on parsed. Defuses the
-                  // double-aggregation trap so DA never sees the old red error.
-                  onChange={(e) => onChange({ ...measure, expression: e.target.value || undefined })}
-                  onBlur={(e) => onChange(applyExpressionInput(measure, e.target.value, setMode))}
-                  className={`w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('expression')}`}
-                  placeholder={mode === 'sql' ? 'vd: revenue - cost  ·  SUM(revenue) cũng được' : 'vd: ${revenue} / NULLIF(${orders}, 0)'}
+                {/* E9: chip-aware editor. Field refs render as compact chips
+                    (just the name, no ${...} clutter); formula glue stays text.
+                    Typing a few chars pops inline autocomplete. Works in DISPLAY
+                    name-space; commitExpressionDisplay maps back to technical +
+                    reconciles cross-table scope/source_columns on store. */}
+                <MeasureExpressionEditor
+                  value={expressionForDisplay}
+                  suggestions={exprSuggestions}
+                  invalid={Boolean(errors.expression)}
+                  onChange={commitExpressionDisplay}
+                  onCommit={commitExpressionDisplay}
+                  placeholder={mode === 'sql' ? 'vd: revenue - cost  ·  SUM(revenue) cũng được' : 'vd: revenue / NULLIF(orders, 0) — gõ tên cột để gợi ý'}
                 />
                 {errors.expression && (
                   <p className="mt-0.5 text-[10px] text-danger">{errors.expression}</p>
@@ -2757,7 +2809,8 @@ function MeasureRow({
             } as Record<MeasureDefinition['type'], string>)[measure.type];
             const valueExpr = mode === 'lowcode'
               ? (measure.type === 'count' ? '*' : (measure.sql || '<chọn cột>'))
-              : (measure.expression || '<biểu thức>');
+              // friendly view names in the preview too (match the box)
+              : (rewriteExprViewTokens(measure.expression || '', techToDisplay) || '<biểu thức>');
             const whereParts: string[] = [];
             if (filters.length > 0) whereParts.push(`${filters.length} filter`);
             if (measure.where_sql) whereParts.push('WHERE bổ sung');
@@ -3530,25 +3583,27 @@ export function ModelViewEditPanel({
 
               {/* Measures */}
               <div>
-                <div className="flex items-center justify-between mb-2 relative">
-                  <span className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
-                    <Sigma className="w-3.5 h-3.5 text-warning" />
-                    {singleMeasureMode ? 'Edit measure' : 'Measures'}
-                    {!singleMeasureMode && <span className="text-text-quaternary font-normal">({measures.length})</span>}
-                  </span>
-                  {/* E1: Add goes STRAIGHT into a blank config form — no
-                      template picker. The aggregation is chosen via the form's
-                      "Cách tính" dropdown; time-intelligence / cross-table live
-                      inside "Công thức nâng cao". */}
-                  {canEdit && !singleMeasureMode && (
-                    <button
-                      onClick={() => handleAddBlankMeasure()}
-                      className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
-                    >
-                      <Plus className="w-3 h-3" /> {contentMode === 'measures' ? 'Add measure' : 'Add'}
-                    </button>
-                  )}
-                </div>
+                {/* E6: in single-measure (split) mode the section header is
+                    redundant — the row's own header carries the measure name +
+                    actions, and Add lives in the toolbar. Show this header only
+                    in the all-fields list mode. */}
+                {!singleMeasureMode && (
+                  <div className="flex items-center justify-between mb-2 relative">
+                    <span className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
+                      <Sigma className="w-3.5 h-3.5 text-warning" />
+                      Measures
+                      <span className="text-text-quaternary font-normal">({measures.length})</span>
+                    </span>
+                    {canEdit && (
+                      <button
+                        onClick={() => handleAddBlankMeasure()}
+                        className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
+                      >
+                        <Plus className="w-3 h-3" /> {contentMode === 'measures' ? 'Add measure' : 'Add'}
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="space-y-1.5">
                   {(() => {
                     // E2: in the Measures workspace, edit ONE measure at a time —

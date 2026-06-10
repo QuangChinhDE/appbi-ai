@@ -326,6 +326,14 @@
     cursor: grabbing;
   }
 
+  /* E9: placeholder for the contentEditable measure-expression editor (shows
+     only when the editor has no text / chips). */
+  .measure-expr-editor:empty::before {
+    content: attr(data-placeholder);
+    color: rgb(var(--text-quaternary));
+    pointer-events: none;
+  }
+
   /* Resize handles — react-grid-layout / react-resizable add a class per
    * direction. 4 corners only (NW/NE/SW/SE); each stretches both width
    * and height. NOTHING visible at rest — not even on tile hover. The
