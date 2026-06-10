@@ -11,7 +11,7 @@
  * Single "Save" button; context-aware — saves whichever tab has unsaved changes.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -733,11 +733,30 @@ function MeasureFilterRow({
   onRemove: () => void;
 }) {
   const opSpec = FILTER_OPERATORS.find((o) => o.value === filter.operator) ?? FILTER_OPERATORS[0];
+  const isMulti = opSpec.isList || opSpec.isRange;
   const valueAsString = (() => {
     if (filter.value == null) return '';
     if (Array.isArray(filter.value)) return filter.value.join(', ');
     return String(filter.value);
   })();
+
+  // For list/range operators the value is stored as a parsed array, but the
+  // INPUT must keep the raw text the user is typing. Deriving the displayed
+  // value from `array.join(', ')` on every keystroke stripped a trailing comma
+  // (`split(',').filter(Boolean)` drops the empty tail), so a comma typed right
+  // after a value was eaten — you couldn't add the separator before the next
+  // item without first inserting+deleting another char. We hold the raw text
+  // locally, parse to the array only for storage, and re-seed the local text
+  // only when the value changes from OUTSIDE this input (operator switch / row
+  // re-init), tracked via `lastEmittedRef`.
+  const [rawValue, setRawValue] = useState(valueAsString);
+  const lastEmittedRef = useRef(valueAsString);
+  useEffect(() => {
+    if (valueAsString !== lastEmittedRef.current) {
+      setRawValue(valueAsString);
+      lastEmittedRef.current = valueAsString;
+    }
+  }, [valueAsString]);
 
   return (
     <div className="flex items-center gap-1.5">
@@ -759,14 +778,20 @@ function MeasureFilterRow({
       </select>
       {opSpec.needsValue && (
         <input
-          value={valueAsString}
+          value={isMulti ? rawValue : valueAsString}
           onChange={(e) => {
             const raw = e.target.value;
-            let parsed: unknown = raw;
-            if (opSpec.isList || opSpec.isRange) {
-              parsed = raw.split(',').map((s) => s.trim()).filter(Boolean);
+            if (isMulti) {
+              setRawValue(raw);
+              const parsed = raw.split(',').map((s) => s.trim()).filter(Boolean);
+              // Remember what we emit so the resync effect doesn't clobber the
+              // raw text (incl. a trailing comma) the user is still typing.
+              lastEmittedRef.current = parsed.join(', ');
+              onChange({ ...filter, value: parsed });
+            } else {
+              lastEmittedRef.current = raw;
+              onChange({ ...filter, value: raw });
             }
-            onChange({ ...filter, value: parsed });
           }}
           placeholder={opSpec.isList ? 'a, b, c' : opSpec.isRange ? 'low, high' : 'value'}
           className="flex-1 min-w-0 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
