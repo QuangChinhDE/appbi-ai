@@ -374,7 +374,8 @@ class SemanticQueryEngine:
                     # Every group dim is M:1-reachable from the measure's fact
                     # (incl. snowflake multi-hop).
                     if (
-                        not _is_cross_table
+                        (dimensions or pivots)
+                        and not _is_cross_table
                         and explore.base_view_name in _m1_safe
                         and _grp_views.issubset(_m1_safe | {explore.base_view_name})
                     ):
@@ -389,6 +390,17 @@ class SemanticQueryEngine:
                         # Re-anchoring onto the measure fact would DROP those
                         # members, so fall through to the normal build (no re-
                         # anchor, no isolation; single fact joined → no fan-out).
+                        #
+                        # GUARD: this "preserve base members" rationale only holds
+                        # when a GROUP-BY dimension actually defines the row grain.
+                        # A scalar/KPI (no dimensions/pivots) has no members to
+                        # preserve — leaving it on the base path makes the measure
+                        # base-DEPENDENT (the base→fact join silently constrains it:
+                        # e.g. a deal-grain CR shows 0.89 on a deal-based KPI but
+                        # 0.86 on an owner-based KPI because the owner join drops
+                        # ownerless deals). PowerBI measures are model-wide and
+                        # base-invariant, so a no-dim cross-fact measure must
+                        # RE-ANCHOR at its own fact grain (the else branch).
                         pass
                     else:
                         # RE-ANCHOR onto the measure fact and correlate per group
