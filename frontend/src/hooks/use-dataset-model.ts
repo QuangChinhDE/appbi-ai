@@ -419,6 +419,71 @@ export function useDeleteModelMeasure() {
   });
 }
 
+/** Response of the measure dry-run compile-check endpoint. */
+export interface MeasureDryRunResult {
+  ok: boolean;
+  error: string | null;
+  compiled_sql: string | null;
+}
+
+/**
+ * Compile-check a single measure WITHOUT saving it.
+ *
+ * Plain async helper (not a React-Query hook) because the save handler calls
+ * it imperatively, once per candidate measure, before committing the PUT. The
+ * BE runs the measure through the REAL semantic engine (same path Explore
+ * uses) and returns `{ok, error}` — so the FE catches broken SQL syntax /
+ * bad references BEFORE the save, instead of the measure saving fine and
+ * crashing later at Explore "Run". This is the single gatekeeper: we never
+ * re-implement SQL parsing on the FE.
+ *
+ * A 4xx (access / not-found / system-managed table) throws — callers should
+ * let that surface as a normal save error. A 200 with `ok=false` is the
+ * expected "invalid syntax" outcome and is returned, not thrown.
+ */
+export async function dryRunMeasure(args: {
+  datasetId: number;
+  viewId: number;
+  measure: MeasureDefinition;
+}): Promise<MeasureDryRunResult> {
+  const { datasetId, viewId, measure } = args;
+  const response = await api.post<MeasureDryRunResult>(
+    `/datasets/${datasetId}/model/views/${viewId}/measures/dry-run`,
+    measure,
+  );
+  return response.data;
+}
+
+/** Result of the measure preview ("Chạy thử") — actual computed rows. */
+export interface MeasurePreviewResult {
+  ok: boolean;
+  error: string | null;
+  rows: Record<string, unknown>[];
+  measure_key?: string | null;
+  group_key?: string | null;
+}
+
+/**
+ * Run a candidate measure WITHOUT saving and return its real value(s) — for
+ * the "Chạy thử" button (D3). Grand-total when `groupBy` omitted; one row per
+ * group value when a dimension is passed. Same single-gatekeeper path as the
+ * dry-run (real engine + datasource, always rolled back). Never re-implements
+ * aggregation on the FE.
+ */
+export async function previewMeasure(args: {
+  datasetId: number;
+  viewId: number;
+  measure: MeasureDefinition;
+  groupBy?: string;
+}): Promise<MeasurePreviewResult> {
+  const { datasetId, viewId, measure, groupBy } = args;
+  const response = await api.post<MeasurePreviewResult>(
+    `/datasets/${datasetId}/model/views/${viewId}/measures/preview`,
+    { measure, group_by: groupBy || undefined },
+  );
+  return response.data;
+}
+
 /**
  * Update model relationships
  */

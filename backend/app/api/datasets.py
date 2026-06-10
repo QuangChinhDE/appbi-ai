@@ -4737,6 +4737,349 @@ def delete_dataset_view_measure(
     }
 
 
+@router.post(
+    "/{dataset_id}/model/views/{view_id}/measures/dry-run",
+    summary="Compile-check a single measure WITHOUT saving (catch SQL errors before they crash Explore)",
+)
+def dry_run_dataset_view_measure(
+    dataset_id: int,
+    view_id: int,
+    measure: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Validate a candidate measure by compiling it through the REAL engine.
+
+    Why this exists (DA bug 2026-06-10): the save path only validates measure
+    *shape* (name format, depends_on cycles, source_columns identifiers) — it
+    never compiles the SQL ``expression``. So a measure with broken syntax
+    (unbalanced parens, bad function name, a column that doesn't exist in raw
+    SQL) saves fine and only crashes later at Explore "Run" with a generic
+    Query error. The FE could not tell good SQL from bad before the round-trip.
+
+    This endpoint closes that gap by running the candidate through the EXACT
+    same path Explore uses (``_execute_semantic_dataset_query`` →
+    ``SemanticQueryEngine.run``) AND THEN executing the generated SQL against
+    the datasource as a bounded dry-run (``LIMIT 0`` + short timeout). It is
+    the single gatekeeper — no SQL parsing is re-implemented on the FE (which
+    would drift from the engine and produce both false-pass and false-fail).
+
+    IMPORTANT (verified 2026-06-10): engine SQL-generation alone is NOT enough.
+    The engine only does string substitution — it happily emits ``SUM((x``
+    (unbalanced paren) or ``SUM(no_such_column)`` without noticing. Those only
+    fail when the DATABASE parses the SQL. So we must round-trip to the
+    datasource with a zero-row query (the same trick ``/datasources/validate-sql``
+    uses) to surface the real dialect error message. ``LIMIT 0`` means no data
+    is returned; on BigQuery this is a cheap parse/validate (no/low bytes
+    scanned), and execution is wrapped in a 10s timeout.
+
+    Read-only contract: the candidate is injected into the loaded view's
+    ``measures`` JSON and flushed (so the engine sees it as if persisted), the
+    SQL is generated + dry-run-executed, then the transaction is ALWAYS rolled
+    back in a ``finally``. Nothing is ever committed.
+
+    Returns ``{ok: bool, error: str | None, compiled_sql: str | None}``.
+    A 200 with ``ok=false`` is the normal "invalid syntax" outcome; non-200 is
+    reserved for access / not-found / system-managed-table problems.
+    """
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+    from app.schemas.semantic import MeasureDefinition
+    from app.services.semantic_query_compiler import SemanticQuerySpec
+    from app.services.semantic_query_engine import SemanticQueryEngine
+    from app.services.live_query_service import _dialect_for_ds_type
+    from pydantic import ValidationError
+    from sqlalchemy.orm.attributes import flag_modified
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    if not view:
+        raise HTTPException(status_code=404, detail="View not found")
+
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table and view.dataset_table_id is not None:
+        raise HTTPException(status_code=403, detail="View does not belong to this dataset")
+    if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
+        raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
+
+    # Step 1 — shape validation via the SAME Pydantic model the save path uses.
+    # Catches forbidden tokens / scope-source_columns mismatch / missing
+    # sql-or-expression with the engine's own messages, BEFORE we touch the DB.
+    try:
+        candidate = MeasureDefinition.model_validate(measure)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        msg = str(first.get("msg") or "Measure không hợp lệ")
+        return {"ok": False, "error": msg, "compiled_sql": None}
+
+    candidate_name = candidate.name.strip()
+    candidate_dict = candidate.model_dump()
+
+    # Step 2 — resolve the explore/model so we can compile through the engine.
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_obj.id).first()
+    if not model:
+        raise HTTPException(status_code=400, detail="No semantic model found for this dataset.")
+    explore = db.query(SemanticExplore).filter(
+        SemanticExplore.model_id == model.id,
+        SemanticExplore.base_view_id == view.id,
+    ).first()
+    if not explore:
+        raise HTTPException(status_code=400, detail="No semantic explore found for this table.")
+
+    # Resolve datasource → dialect (mirror _execute_semantic_dataset_query so
+    # the dry-run compiles for the SAME dialect Explore will run against).
+    datasource: Optional[DataSource] = None
+    if table is not None and (is_generated_calendar_table(table) or is_derived_table(table)):
+        try:
+            datasource, _ = build_live_proxy_table_for_dataset_table(db, dataset_obj, table)
+        except DatasetTableSqlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif table is not None and table.datasource_id is not None:
+        datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    if datasource is None:
+        table_with_ds = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_obj.id, DatasetTable.datasource_id.isnot(None))
+            .first()
+        )
+        if table_with_ds is not None:
+            datasource = db.query(DataSource).filter(DataSource.id == table_with_ds.datasource_id).first()
+    if datasource is None:
+        raise HTTPException(status_code=404, detail="Datasource not found for semantic query.")
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
+
+    # Step 3 — inject the candidate into the view's measures (replace same-name
+    # or append), FLUSH so the engine's own SemanticView re-query sees it, then
+    # compile. ALWAYS rollback in finally — never commit.
+    original_measures = list(view.measures or [])
+    try:
+        merged = [
+            m for m in original_measures
+            if not (isinstance(m, dict) and str((m or {}).get("name") or "").strip() == candidate_name)
+        ]
+        merged.append(candidate_dict)
+        view.measures = merged
+        flag_modified(view, "measures")
+        db.flush()
+
+        engine = SemanticQueryEngine(db, database_type=dialect)
+        spec = SemanticQuerySpec(
+            explore_name=explore.name,
+            dimensions=[],
+            measures=[f"{view.name}.{candidate_name}"],
+            measure_agg_overrides={},
+            filters={},
+            sorts=[],
+            time_grains={},
+            limit=0,
+            model_id=model.id,
+            explore_id=explore.id,
+        )
+        try:
+            sql, _columns, _pivot = engine.run(spec)
+        except ValueError as exc:
+            # Expected engine domain error — carries a VN-friendly message
+            # (missing field, dialect-incompatible expression, ambiguous path,
+            # double-aggregation, …). Caught at SQL-GEN time (before the DB).
+            return {"ok": False, "error": str(exc), "compiled_sql": None}
+        except Exception as exc:  # pragma: no cover — unexpected compile crash
+            logger.exception(
+                "Measure dry-run compile crashed: dataset=%s view=%s measure=%s",
+                dataset_id, view.name, candidate_name,
+            )
+            return {
+                "ok": False,
+                "error": f"Lỗi biên dịch measure ({dialect}): {exc}",
+                "compiled_sql": None,
+            }
+
+        # The engine emits valid-LOOKING SQL even for broken expressions
+        # (it only substitutes strings). The DA-facing syntax/reference errors
+        # ONLY surface when the database parses the SQL — so dry-run it with a
+        # zero-row bound (no data returned; on BigQuery a cheap parse/validate)
+        # and a short timeout, exactly like /datasources/validate-sql. The real
+        # dialect error message is what we return to the DA.
+        try:
+            # limit=1 (not 0): some dialect executors treat 0 as falsy → "no
+            # limit" (full scan). limit=1 is what /datasources/validate-sql
+            # uses — guarantees the DB parses + validates columns while
+            # returning at most one row (negligible cost).
+            DataSourceConnectionService.execute_query(
+                ds_type,
+                datasource.config,
+                sql,
+                limit=1,
+                timeout_seconds=10,
+            )
+        except Exception as exc:
+            error_msg = " ".join(str(exc).split()).strip()
+            return {
+                "ok": False,
+                "error": (
+                    f"Cú pháp/cột không hợp lệ trên datasource ({ds_type}): {error_msg}"
+                ),
+                "compiled_sql": sql,
+            }
+        return {"ok": True, "error": None, "compiled_sql": sql}
+    finally:
+        # Discard the injected measure. rollback() reverts the flushed change;
+        # restore the in-memory attribute too so the ORM object is clean if the
+        # session is reused after this request.
+        db.rollback()
+        view.measures = original_measures
+
+
+@router.post(
+    "/{dataset_id}/model/views/{view_id}/measures/preview",
+    summary="Run a candidate measure WITHOUT saving and return its actual value(s)",
+)
+def preview_dataset_view_measure(
+    dataset_id: int,
+    view_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Execute a candidate measure (optionally grouped by one dimension) and
+    return the real result rows — so DA can SEE the output number(s) before
+    saving (D3 "Chạy thử").
+
+    Same read-only contract as the dry-run sibling: inject the candidate into
+    the view's measures, flush, run via the REAL engine + datasource, then
+    ALWAYS rollback. ``payload`` = ``{measure: {...}, group_by?: "field"}``.
+    ``group_by`` is a bare dimension name on this view (optional); omitted =
+    grand total (one row). Returns ``{ok, error, rows, measure_key,
+    group_key}``. Bounded to 100 rows.
+    """
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+    from app.schemas.semantic import MeasureDefinition
+    from app.services.semantic_query_compiler import SemanticQuerySpec
+    from app.services.semantic_query_engine import SemanticQueryEngine
+    from app.services.live_query_service import _dialect_for_ds_type
+    from pydantic import ValidationError
+    from sqlalchemy.orm.attributes import flag_modified
+
+    measure = payload.get("measure") if isinstance(payload, dict) else None
+    group_by = str((payload or {}).get("group_by") or "").strip() if isinstance(payload, dict) else ""
+    if not isinstance(measure, dict):
+        raise HTTPException(status_code=400, detail="payload.measure is required")
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    if not view:
+        raise HTTPException(status_code=404, detail="View not found")
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table and view.dataset_table_id is not None:
+        raise HTTPException(status_code=403, detail="View does not belong to this dataset")
+    if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
+        raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
+
+    try:
+        candidate = MeasureDefinition.model_validate(measure)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        return {"ok": False, "error": str(first.get("msg") or "Measure không hợp lệ"), "rows": []}
+
+    candidate_name = candidate.name.strip()
+    candidate_dict = candidate.model_dump()
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_obj.id).first()
+    if not model:
+        raise HTTPException(status_code=400, detail="No semantic model found for this dataset.")
+    explore = db.query(SemanticExplore).filter(
+        SemanticExplore.model_id == model.id,
+        SemanticExplore.base_view_id == view.id,
+    ).first()
+    if not explore:
+        raise HTTPException(status_code=400, detail="No semantic explore found for this table.")
+
+    datasource: Optional[DataSource] = None
+    if table is not None and (is_generated_calendar_table(table) or is_derived_table(table)):
+        try:
+            datasource, _ = build_live_proxy_table_for_dataset_table(db, dataset_obj, table)
+        except DatasetTableSqlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif table is not None and table.datasource_id is not None:
+        datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    if datasource is None:
+        table_with_ds = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_obj.id, DatasetTable.datasource_id.isnot(None))
+            .first()
+        )
+        if table_with_ds is not None:
+            datasource = db.query(DataSource).filter(DataSource.id == table_with_ds.datasource_id).first()
+    if datasource is None:
+        raise HTTPException(status_code=404, detail="Datasource not found for semantic query.")
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
+
+    measure_ref = f"{view.name}.{candidate_name}"
+    dimensions = [f"{view.name}.{group_by}"] if group_by else []
+
+    original_measures = list(view.measures or [])
+    try:
+        merged = [
+            m for m in original_measures
+            if not (isinstance(m, dict) and str((m or {}).get("name") or "").strip() == candidate_name)
+        ]
+        merged.append(candidate_dict)
+        view.measures = merged
+        flag_modified(view, "measures")
+        db.flush()
+
+        engine = SemanticQueryEngine(db, database_type=dialect)
+        spec = SemanticQuerySpec(
+            explore_name=explore.name,
+            dimensions=dimensions,
+            measures=[measure_ref],
+            measure_agg_overrides={},
+            filters={},
+            sorts=[],
+            time_grains={},
+            limit=100,
+            model_id=model.id,
+            explore_id=explore.id,
+        )
+        try:
+            sql, _columns, _pivot = engine.run(spec)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "rows": []}
+
+        try:
+            _cols, rows, _ms = DataSourceConnectionService.execute_query(
+                ds_type, datasource.config, sql, limit=100, timeout_seconds=15,
+            )
+        except Exception as exc:
+            error_msg = " ".join(str(exc).split()).strip()
+            return {"ok": False, "error": f"Lỗi chạy thử trên datasource ({ds_type}): {error_msg}", "rows": []}
+
+        return {
+            "ok": True,
+            "error": None,
+            "rows": rows[:100],
+            "measure_key": measure_ref,
+            "group_key": dimensions[0] if dimensions else None,
+        }
+    finally:
+        db.rollback()
+        view.measures = original_measures
+
+
 @router.get(
     "/{dataset_id}/lineage/column/{table_id}/{column_name}",
     summary="List every semantic object that depends on a column (Phase-4)",

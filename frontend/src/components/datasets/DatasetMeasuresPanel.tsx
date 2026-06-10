@@ -17,6 +17,9 @@ interface DatasetMeasuresPanelProps {
   focusMeasureName?: string | null;
   triggerAddMeasure?: number;
   onClearMeasureFocus?: () => void;
+  /** D2: a NEW measure's "Bảng" selector asks the page to switch which view
+   *  the panel edits (and re-trigger add) so the row re-opens on that table. */
+  onRetargetView?: (viewId: number) => void;
   /** Open the page-level AddColumnModal targeting a specific table. */
   onRequestAddColumn?: (tableId: number) => void;
 }
@@ -29,7 +32,7 @@ function tableKindRank(table: DatasetTable | null | undefined): number {
   return 3;
 }
 
-export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRequestAddColumn }: DatasetMeasuresPanelProps) {
+export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRetargetView, onRequestAddColumn }: DatasetMeasuresPanelProps) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
 
@@ -83,14 +86,16 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
     [selectedViewId, views],
   );
 
+  const isAddingNew = focusMeasureName === '__new__';
   const singleMeasureMode = Boolean(focusMeasureName);
 
-  // Find the focused measure's label for the breadcrumb.
+  // Find the focused measure's label for the breadcrumb. '__new__' = add mode.
   const focusedMeasureLabel = useMemo(() => {
+    if (isAddingNew) return 'Measure mới';
     if (!focusMeasureName || !selectedView) return focusMeasureName ?? '';
     const m = selectedView.measures.find((m) => m.name === focusMeasureName);
     return m?.label || m?.name || focusMeasureName;
-  }, [focusMeasureName, selectedView]);
+  }, [focusMeasureName, selectedView, isAddingNew]);
 
   if (isLoading) {
     return (
@@ -188,6 +193,7 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
             focusMeasureName={focusMeasureName}
             triggerAddMeasure={triggerAddMeasure}
             singleMeasureMode={singleMeasureMode}
+            onRetargetView={onRetargetView}
             onRequestAddColumn={onRequestAddColumn}
           />
         ) : (

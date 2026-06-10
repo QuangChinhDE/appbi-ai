@@ -13,6 +13,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -32,6 +33,9 @@ import {
 import {
   useUpdateModelView,
   useDeleteModelMeasure,
+  dryRunMeasure,
+  previewMeasure,
+  type MeasurePreviewResult,
   type DatasetModelView,
   type DimensionDefinition,
   type MeasureDefinition,
@@ -52,6 +56,7 @@ import { usePreviewTableDescription, type TableDescriptionPreview } from '@/hook
 import { AiDescriptionDiffModal } from './AiDescriptionDiffModal';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
+import { extractApiError } from '@/lib/api-errors';
 import {
   buildPayload,
   DataTypeBadge,
@@ -138,14 +143,20 @@ type MeasureTemplate = {
  */
 const MEASURE_TEMPLATES: MeasureTemplate[] = [
   // ── Basic aggregations ────────────────────────────────────────────────
-  { key: 'count', label: 'Count rows', group: 'basic', build: (n) => ({ name: `count_${n}`, label: 'Count', type: 'count', sql: '*', hidden: false }) },
-  { key: 'sum', label: 'Sum of column', group: 'basic', build: (n) => ({ name: `sum_${n}`, label: 'Sum', type: 'sum', sql: '', hidden: false }) },
-  { key: 'avg', label: 'Average of column', group: 'basic', build: (n) => ({ name: `avg_${n}`, label: 'Average', type: 'avg', sql: '', hidden: false }) },
-  { key: 'distinct', label: 'Count distinct', group: 'basic', build: (n) => ({ name: `distinct_${n}`, label: 'Unique count', type: 'count_distinct', sql: '', hidden: false }) },
+  // B2 (2026-06-10): labels phrased as INTENTS ("Đếm số dòng") + a one-line
+  // hint, so the picker reads as "what do you want to do" — not as a second
+  // copy of the Aggregation dropdown. This kills the DA confusion of
+  // "Sum of column" (picker) vs "Sum" (agg dropdown) looking like the same
+  // thing. The agg TYPE lives only inside the form's Aggregation select.
+  { key: 'count', label: 'Đếm số dòng', group: 'basic', hint: 'Số bản ghi (COUNT *)', build: (n) => ({ name: `count_${n}`, label: 'Count', type: 'count', sql: '*', hidden: false }) },
+  { key: 'sum', label: 'Tính tổng một cột', group: 'basic', hint: 'Cộng dồn giá trị một cột số (SUM)', build: (n) => ({ name: `sum_${n}`, label: 'Sum', type: 'sum', sql: '', hidden: false }) },
+  { key: 'avg', label: 'Tính trung bình một cột', group: 'basic', hint: 'Giá trị trung bình một cột số (AVG)', build: (n) => ({ name: `avg_${n}`, label: 'Average', type: 'avg', sql: '', hidden: false }) },
+  { key: 'distinct', label: 'Đếm giá trị khác nhau', group: 'basic', hint: 'Số giá trị duy nhất (COUNT DISTINCT)', build: (n) => ({ name: `distinct_${n}`, label: 'Unique count', type: 'count_distinct', sql: '', hidden: false }) },
   {
     key: 'filtered',
-    label: 'Filtered count (e.g. paid orders)',
+    label: 'Đếm có điều kiện',
     group: 'basic',
+    hint: 'Vd. số đơn đã thanh toán — đếm các dòng thỏa filter',
     build: (n) => ({
       name: `filtered_count_${n}`,
       label: 'Filtered count',
@@ -155,7 +166,7 @@ const MEASURE_TEMPLATES: MeasureTemplate[] = [
       hidden: false,
     }),
   },
-  { key: 'pct', label: '% of total', group: 'basic', build: (n) => ({ name: `pct_${n}`, label: '% of total', type: 'percent_of_total', sql: '', hidden: false }) },
+  { key: 'pct', label: 'Tỷ lệ phần trăm trên tổng', group: 'basic', hint: 'Mỗi nhóm chiếm bao nhiêu % của tổng (% of total)', build: (n) => ({ name: `pct_${n}`, label: '% of total', type: 'percent_of_total', sql: '', hidden: false }) },
 
   // ── Time intelligence ─────────────────────────────────────────────────
   // Phase-5: templates dùng dialect-agnostic macros (resolved bởi engine).
@@ -324,6 +335,155 @@ function isAutoName(name: string, label?: string): boolean {
 
 export type PanelTab = 'dictionary' | 'fields';
 type PanelContentMode = 'all-fields' | 'measures';
+
+/** E2: sentinel value of focusMeasureName meaning "add a new blank measure".
+ *  Deterministic add-mode signal from the page — avoids effect-timing races. */
+const NEW_MEASURE_SENTINEL = '__new__';
+
+// ─── ColumnCombobox (C1) ────────────────────────────────────────────────────
+//
+// DA feedback (2026-06-10): "cho chọn cột thay vì bắt điền free-text thì đỡ
+// sai, nhưng vẫn cho điền rồi gợi ý để tích cho nhanh và tránh sai tên".
+//
+// A type-to-filter combobox that PICKS from a known list but still ACCEPTS
+// free text (a column the cache hasn't surfaced yet, or a SQL snippet). Modeled
+// on the proven SearchableSelect in DatasetQualityPanel so the datasets domain
+// stays consistent. Differences:
+//   • free text allowed — typing commits on blur/Enter even with no match, so
+//     we never block a power user (matches the old <input>/<datalist> freedom).
+//   • optional per-option `category` icon (column vs measure) for the future
+//     expression picker; here it just renders a mono label.
+//
+// Behaviour: focus opens the list; typing filters; click / Enter picks the
+// highlighted option; Escape closes keeping the current value; clicking away
+// commits whatever text is in the box (so a half-typed valid column name is
+// kept, not discarded).
+function ColumnCombobox({
+  value,
+  options,
+  onChange,
+  placeholder,
+  invalid,
+}: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+  invalid?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [focusIdx, setFocusIdx] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        // Commit the typed query as free text if the user was typing something
+        // not yet committed; otherwise keep value. Then close.
+        if (query.trim() && query.trim() !== value) onChange(query.trim());
+        setOpen(false);
+        setQuery('');
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open, query, value, onChange]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? options.filter((o) => o.toLowerCase().includes(normalizedQuery))
+    : options;
+
+  function selectValue(v: string) {
+    onChange(v);
+    setOpen(false);
+    setQuery('');
+  }
+
+  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setOpen(true);
+      setFocusIdx((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      // Enter picks the highlighted option, or commits free text if the user
+      // typed something with no exact match (power-user escape hatch).
+      if (filtered[focusIdx] && (normalizedQuery === '' || filtered.length > 0)) {
+        selectValue(filtered[focusIdx]);
+      } else if (query.trim()) {
+        selectValue(query.trim());
+      }
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+      setQuery('');
+    }
+  }
+
+  const displayValue = open ? query : value;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className={`flex items-center gap-1.5 rounded-md border bg-surface-1 px-2 py-1.5 focus-within:ring-1 ${
+        invalid ? 'border-danger/60 focus-within:ring-danger/40' : 'border-[rgb(var(--border-line))] focus-within:ring-brand'
+      }`}>
+        <Search className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={displayValue}
+          onFocus={() => { setOpen(true); setFocusIdx(0); }}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); setFocusIdx(0); }}
+          onKeyDown={handleKey}
+          // Commit typed free text when leaving the field (e.g. tab away).
+          onBlur={() => { if (query.trim() && query.trim() !== value) onChange(query.trim()); }}
+          placeholder={placeholder ?? `Chọn / gõ cột (${options.length} cột)…`}
+          className="w-full bg-transparent text-xs font-mono focus:outline-none"
+        />
+        {value && !open && (
+          <button
+            type="button"
+            onClick={() => { onChange(''); inputRef.current?.focus(); }}
+            className="text-text-quaternary hover:text-text-secondary shrink-0"
+            aria-label="Xoá"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-md">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-[11px] text-text-quaternary">
+              Không có cột khớp. Nhấn Enter để dùng "<span className="font-mono">{query.trim()}</span>" như SQL tự do.
+            </p>
+          ) : (
+            filtered.map((opt, idx) => (
+              <button
+                key={opt}
+                type="button"
+                onMouseEnter={() => setFocusIdx(idx)}
+                onClick={() => selectValue(opt)}
+                className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs ${
+                  idx === focusIdx ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                <span className="truncate font-mono">{opt}</span>
+                {opt === value && <Check className="h-3.5 w-3.5 text-brand shrink-0" />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── DimIcon ──────────────────────────────────────────────────────────────────
 
@@ -724,11 +884,13 @@ function DimensionRow({
 function MeasureFilterRow({
   filter,
   listId,
+  columnOptions,
   onChange,
   onRemove,
 }: {
   filter: MeasureFilter;
   listId: string;
+  columnOptions: string[];
   onChange: (updated: MeasureFilter) => void;
   onRemove: () => void;
 }) {
@@ -760,13 +922,15 @@ function MeasureFilterRow({
 
   return (
     <div className="flex items-center gap-1.5">
-      <input
-        list={listId}
-        value={filter.field}
-        onChange={(e) => onChange({ ...filter, field: e.target.value })}
-        placeholder="column"
-        className="flex-1 min-w-0 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-      />
+      {/* C1: filter field is a combobox (chọn cột, tránh sai tên; vẫn cho gõ). */}
+      <div className="flex-1 min-w-0">
+        <ColumnCombobox
+          value={filter.field}
+          options={columnOptions}
+          onChange={(v) => onChange({ ...filter, field: v })}
+          placeholder="Chọn / gõ cột"
+        />
+      </div>
       <select
         value={filter.operator}
         onChange={(e) => onChange({ ...filter, operator: e.target.value as MeasureFilterOperator })}
@@ -976,94 +1140,42 @@ function FilterContextModifiers({
   return (
     <div className="space-y-2 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
-          Filter context
+        <div
+          className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary"
+          title="PowerBI: filter context (CALCULATE / ALL / ALLEXCEPT). Cách measure phản ứng khi chart slice theo dim."
+        >
+          Ngữ cảnh lọc
         </div>
         {preset !== 'none' && (
           <span
             className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-emphasis uppercase text-purple-600 dark:text-purple-400"
-            title="Measure đang dùng filter-context — engine emit SQL window aggregate (OVER PARTITION BY)"
+            title="Measure đang dùng ngữ cảnh lọc — engine emit SQL window aggregate (OVER PARTITION BY)"
           >
-            {preset === 'custom' ? 'Custom' : 'Active'}
+            {preset === 'custom' ? 'Tuỳ chỉnh' : 'Đang bật'}
           </span>
         )}
       </div>
-      <p className="text-[10px] leading-snug text-text-quaternary">
-        Cách measure phản ứng khi chart slice theo dim. Mặc định: aggregate
-        bình thường theo từng nhóm chart.
-      </p>
-
-      {/* Preset picker — 4 button row. Business-language labels;
-          PowerBI/DAX equivalents are surfaced only in tooltips for users
-          who already know that vocabulary. */}
-      <div className="grid grid-cols-2 gap-1.5">
-        <button
-          disabled={!canEdit}
-          onClick={() => applyPreset('none')}
-          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
-            preset === 'none'
-              ? 'border-brand bg-brand/10 text-brand'
-              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
-          }`}
-          title="Measure aggregate bình thường, group theo dim của chart."
-        >
-          <div className="font-emphasis">Mặc định</div>
-          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Theo từng nhóm chart, không bỏ filter nào
-          </div>
-        </button>
-
-        <button
-          disabled={!canEdit}
-          onClick={() => applyPreset('grand_total')}
-          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
-            preset === 'grand_total'
-              ? 'border-brand bg-brand/10 text-brand'
-              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
-          }`}
-          title="SUM(...) OVER () — luôn dùng tổng cả bảng bất kể chart slice gì. PowerBI: CALCULATE + ALL()."
-        >
-          <div className="font-emphasis">So với tổng toàn bộ</div>
-          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Bỏ qua mọi slice của chart, lấy tổng cả bảng
-          </div>
-        </button>
-
-        <button
-          disabled={!canEdit}
-          onClick={() => {
-            // Default to first kept field, or prompt user to fill below.
-            applyPreset('within_kept', { keepField: keptField || '' });
-          }}
-          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
-            preset === 'within_kept'
-              ? 'border-brand bg-brand/10 text-brand'
-              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
-          }`}
-          title="SUM(...) OVER (PARTITION BY field) — giữ 1 dim, bỏ các slice khác. PowerBI: ALLEXCEPT(table, field)."
-        >
-          <div className="font-emphasis">So với tổng nhóm</div>
-          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Giữ 1 dim (vd region), bỏ các slice còn lại
-          </div>
-        </button>
-
-        <button
-          disabled={!canEdit}
-          onClick={() => applyPreset('use_relationship', { joinAlias: useRelAlias })}
-          className={`rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors ${
-            preset === 'use_relationship'
-              ? 'border-brand bg-brand/10 text-brand'
-              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
-          }`}
-          title="Dùng inactive relationship (alias join) thay default. PowerBI: USERELATIONSHIP. Schema-only — engine chưa wire."
-        >
-          <div className="font-emphasis">Dùng quan hệ khác</div>
-          <div className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
-            Chọn alias join thay default (advanced)
-          </div>
-        </button>
-      </div>
+      {/* C2: the 3 big preset cards took a lot of vertical space for something
+          90% of measures leave at "Mặc định". Collapsed to a single dropdown.
+          B4's PowerBI/DAX names (ALL / ALLEXCEPT) ride inline in the option
+          labels so a PBI-literate DA still recognises them. The
+          USERELATIONSHIP preset stays out (schema-only) — reachable only via
+          "Tuỳ chỉnh chi tiết" below. */}
+      <select
+        disabled={!canEdit}
+        value={preset === 'custom' || preset === 'use_relationship' ? 'none' : preset}
+        onChange={(e) => {
+          const next = e.target.value as FilterContextPreset;
+          if (next === 'within_kept') applyPreset('within_kept', { keepField: keptField || '' });
+          else applyPreset(next);
+        }}
+        className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
+        title="Cách measure phản ứng khi chart slice theo dim."
+      >
+        <option value="none">Mặc định — aggregate theo từng nhóm chart</option>
+        <option value="grand_total">So với tổng toàn bộ (ALL) — bỏ mọi slice</option>
+        <option value="within_kept">So với tổng nhóm (ALLEXCEPT) — giữ 1 dim</option>
+      </select>
 
       {/* Inline param for "within ..." preset — single-field common case. */}
       {preset === 'within_kept' && (
@@ -1551,10 +1663,14 @@ function validateMeasure(measure: MeasureDefinition): Record<string, string> {
     out.expression = 'Cần SQL expression hoặc cột nguồn';
   }
   if (mode === 'sql' && hasExpr && AGG_FN_RE.test(measure.expression || '')) {
-    // Engine guard: expression with SUM(...) AND aggregation wrapper
-    // would compile to SUM(SUM(...)) which BE rejects. User wants
-    // formula mode instead.
-    out.expression = 'Biểu thức có sẵn SUM/AVG/... — chuyển sang "Công thức" và khai báo measure phụ thuộc qua ${tên}';
+    // Engine guard: a SQL-mode expression with a top-level aggregate would
+    // compile to SUM(SUM(...)) which the BE rejects. B1 (applyExpressionInput,
+    // on blur) normally defuses this automatically — `SUM(revenue)` unwraps to
+    // agg+column, `SUM(${m})` flips to formula. This message is now only a
+    // safety net for a transient mid-edit state; it no longer tells DA to
+    // switch mode by hand (that happens for them). Clicking away from the
+    // field (incl. clicking Save) triggers the auto-fix.
+    out.expression = 'Bỏ con trỏ khỏi ô để hệ thống tự chuẩn hoá biểu thức có SUM/AVG (đang chứa hàm tổng hợp lồng).';
   }
   if (mode === 'formula' && !hasExpr) {
     out.expression = 'Công thức cần biểu thức (vd ${revenue} / NULLIF(${orders}, 0))';
@@ -1568,15 +1684,126 @@ function validateMeasure(measure: MeasureDefinition): Record<string, string> {
   return out;
 }
 
+// ─── B1: auto-fix double-aggregation on expression input ─────────────────────
+//
+// DA mental model from PowerBI: `SUM(revenue)` is the most basic measure you
+// can write. In this editor's SQL mode that produced a red error ("biểu thức
+// có sẵn SUM — chuyển sang Công thức…") because the engine would wrap it again
+// → SUM(SUM(revenue)). That error made DA feel the tool "doesn't understand the
+// logic". Instead of erroring, we now READ THE INTENT and reshape the measure
+// to the form the engine wants — the same way PowerBI's one DAX box accepts
+// `SUM(revenue)` directly.
+//
+// Two intents, detected from what's INSIDE the outer aggregate:
+//   1. SUM(revenue)        — inner is raw column(s), no ${measure} refs
+//                          → UNWRAP: agg=SUM, expression=revenue (engine wraps).
+//   2. SUM(${revenue})     — inner references other measures via ${name}
+//      or ${a}/NULLIF(...) → it's a FORMULA over already-aggregated measures
+//                          → switch to formula mode, depends_on = parsed refs.
+//
+// When the expression has NO top-level aggregate (e.g. `revenue - cost`) we
+// leave it exactly as typed — that's the normal SQL-expression case the agg
+// dropdown wraps. This helper only fires to DEFUSE the double-agg trap.
+
+/** Parse `${name}` / `${view.name}` measure references out of an expression. */
+function parseMeasureRefs(expr: string): string[] {
+  const refs = new Set<string>();
+  const re = /\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(expr)) !== null) refs.add(m[1]);
+  return Array.from(refs);
+}
+
+/**
+ * If `raw` is a single outer aggregate call wrapping its whole body
+ * (e.g. `SUM(...)`, `AVG( ... )`), return `{agg, inner}`. Returns null when the
+ * expression is not a single top-level aggregate (so we don't touch
+ * `a + SUM(b)` or `SUM(a) - SUM(b)` — those are genuine formulas the user
+ * should express via depends_on).
+ */
+function matchSingleOuterAggregate(raw: string): { agg: MeasureDefinition['type']; inner: string } | null {
+  const text = raw.trim();
+  const m = /^(SUM|AVG|COUNT|MIN|MAX)\s*\(([\s\S]*)\)$/i.exec(text);
+  if (!m) return null;
+  const inner = m[2];
+  // Confirm the matched closing paren is the one that balances the OPENING
+  // paren of this aggregate (i.e. the whole string is one call), not an early
+  // close like `SUM(a) + b`. Walk depth over `inner`; it must never dip below 0
+  // and must end at exactly 0.
+  let depth = 0;
+  for (const ch of inner) {
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth < 0) return null; // closed too early → not a single wrapper
+    }
+  }
+  if (depth !== 0) return null;
+  const aggMap: Record<string, MeasureDefinition['type']> = {
+    sum: 'sum', avg: 'avg', count: 'count', min: 'min', max: 'max',
+  };
+  return { agg: aggMap[m[1].toLowerCase()], inner: inner.trim() };
+}
+
+/**
+ * Reshape a measure after the user edits the SQL-expression field, defusing
+ * the double-aggregation trap. Returns the FULL next measure (caller passes it
+ * straight to onChange). `setMode` lets the row flip its visible mode when the
+ * intent turns out to be a formula.
+ */
+function applyExpressionInput(
+  measure: MeasureDefinition,
+  rawValue: string,
+  setMode: (m: 'lowcode' | 'sql' | 'formula') => void,
+): MeasureDefinition {
+  const raw = rawValue;
+  const expression = raw || undefined;
+  const refs = parseMeasureRefs(raw);
+
+  // Intent 2 — references other measures → FORMULA (engine inlines them; no
+  // outer aggregate). This covers both `SUM(${a})` and `${a}/NULLIF(${b},0)`.
+  if (refs.length > 0) {
+    setMode('formula');
+    return {
+      ...measure,
+      expression,
+      depends_on: refs,
+      // formula path ignores scope/source_columns; keep them clean.
+      scope: 'view',
+      source_columns: [],
+    };
+  }
+
+  // Intent 1 — single outer aggregate over raw columns → UNWRAP so the engine
+  // wraps once. `SUM(revenue)` becomes agg=SUM + expression=revenue.
+  const wrapped = matchSingleOuterAggregate(raw);
+  if (wrapped && wrapped.inner) {
+    return {
+      ...measure,
+      type: wrapped.agg,
+      expression: wrapped.inner,
+      depends_on: [],
+    };
+  }
+
+  // Plain expression (e.g. `revenue - cost`) — leave as typed; the Aggregation
+  // dropdown wraps it. Strip any stale formula deps so it stays SQL-mode.
+  return { ...measure, expression, depends_on: [] };
+}
+
 function MeasureRow({
   measure,
   canEdit,
   columnOptions,
   measureNames,
   viewName,
+  viewId,
+  datasetId,
   rowKey,
   defaultOpen,
+  splitLayout,
   modelViews,
+  onRetargetView,
   onChange,
   onRemove,
 }: {
@@ -1585,16 +1812,53 @@ function MeasureRow({
   columnOptions: string[];
   measureNames: string[];
   viewName?: string;
+  /** D2/D3: the view this row currently lives on (for the table selector + test run). */
+  viewId?: number;
+  datasetId?: number;
   rowKey: string;
   defaultOpen?: boolean;
+  /** E3: render as a single active measure — form left, preview right, with a
+   * draggable divider. When false, legacy inline row (no split). */
+  splitLayout?: boolean;
   /** Phase-12: every view in the dataset model — used to populate the
    * cross-table source-columns picker when measure scope='dataset'. */
   modelViews?: DatasetModelView[];
+  /** D2: a NEW row's "Bảng" selector switches which view the panel edits. */
+  onRetargetView?: (viewId: number) => void;
   onChange: (updated: MeasureDefinition) => void;
   onRemove: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(() => rowKey.startsWith('new-measure') || Boolean(defaultOpen));
   const [editingLabel, setEditingLabel] = useState(false);
+  // C1: ref to the expression <input> so the field-insert picker can splice a
+  // token at the cursor position. State for the insert dropdown.
+  const exprInputRef = useRef<HTMLInputElement>(null);
+  const [showFieldInsert, setShowFieldInsert] = useState(false);
+  // D3: "Chạy thử" (test run) state — run the candidate against the real
+  // engine + datasource and show the output before Save.
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResult, setTestResult] = useState<MeasurePreviewResult | null>(null);
+  const [testGroupBy, setTestGroupBy] = useState<string>('');
+  // E3: when rendered as the single active measure (splitLayout), the form
+  // sits left + preview right with a draggable divider. `splitLeftPct` is the
+  // left pane width %, dragged by the user (default 50, clamped 30–75).
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [splitLeftPct, setSplitLeftPct] = useState(50);
+  const startSplitDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const box = splitContainerRef.current?.getBoundingClientRect();
+      if (!box || box.width === 0) return;
+      const pct = ((ev.clientX - box.left) / box.width) * 100;
+      setSplitLeftPct(Math.min(75, Math.max(30, pct)));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   // Auto-detect mode from the measure shape. The 3 modes map 1-to-1 onto
   // the BE compile paths in `services/semantic_query_engine.py` (lines
@@ -1616,34 +1880,46 @@ function MeasureRow({
   };
   const [mode, setMode] = useState<'lowcode' | 'sql' | 'formula'>(detectMode(measure));
 
-  // Mode switch — wipes fields the new mode doesn't use. Without this,
-  // a user who types `revenue - cost` in SQL mode then switches back
-  // to Low-code would leave `expression` set; the BE engine would then
-  // silently ignore the new "Cột để tính" because expression wins over
-  // sql in semantic_query_engine.py:655. Cleanup forces the visible
-  // form to be the actual saved truth.
-  const switchMode = (next: 'lowcode' | 'sql' | 'formula') => {
-    if (next === mode) return;
-    const patch: Partial<MeasureDefinition> = {};
-    if (next === 'lowcode') {
-      // Strip everything SQL-only — keep `sql` (column picker) + `type`.
-      patch.expression = undefined;
-      patch.where_sql = undefined;
-      patch.depends_on = [];
-      patch.scope = 'view';
-      patch.source_columns = [];
-    } else if (next === 'sql') {
-      // Strip formula-only fields. depends_on triggers the Mode-2 path,
-      // so leaving it set would silently flip the compile behaviour.
-      patch.depends_on = [];
+  // B3 (2026-06-10): the 3-way mode toggle (Low-code / SQL / Công thức) leaked
+  // the engine's compile-path taxonomy onto DA — they had to classify a measure
+  // BEFORE writing it (PowerBI has none of this: one DAX box). We replace the
+  // toggle with progressive disclosure: by default DA sees only "Aggregation +
+  // Cột" (lowcode, ~90% of measures). A single "Công thức nâng cao" disclosure
+  // reveals the SQL-expression box; the engine path (sql vs formula) is then
+  // INFERRED from what they type (B1's applyExpressionInput sets `mode`), not
+  // chosen by hand. `mode` state still drives which sub-fields render — we just
+  // removed the manual buttons. Open the disclosure automatically when a
+  // measure already carries advanced shape, so editing an existing
+  // expression/formula measure shows its fields.
+  const [showAdvanced, setShowAdvanced] = useState(() => detectMode(measure) !== 'lowcode');
+
+  // Opening the advanced disclosure: if the measure is still bare lowcode,
+  // seed an empty sql-expression shape so the box appears. Closing it: strip
+  // advanced fields back to a clean lowcode measure (mirror switchMode's
+  // lowcode cleanup) so the saved truth matches the visible form.
+  const toggleAdvanced = () => {
+    if (showAdvanced) {
+      // collapse → revert to lowcode
+      onChange({
+        ...measure,
+        expression: undefined,
+        where_sql: undefined,
+        depends_on: [],
+        scope: 'view',
+        source_columns: [],
+      });
+      setMode('lowcode');
+      setShowAdvanced(false);
     } else {
-      // formula — strip cross-table (formula refs measures, not view.field).
-      patch.scope = 'view';
-      patch.source_columns = [];
+      setMode(detectMode(measure) === 'lowcode' ? 'sql' : detectMode(measure));
+      setShowAdvanced(true);
     }
-    onChange({ ...measure, ...patch });
-    setMode(next);
   };
+
+  // (B3) The manual `switchMode` 3-way toggle was removed — mode is now driven
+  // by `toggleAdvanced` (disclosure open/close) + B1's `applyExpressionInput`
+  // (infers sql vs formula from typed content). The field-cleanup that
+  // switchMode used to do on collapse lives in `toggleAdvanced`.
 
   const filters = measure.filters ?? [];
   const updateFilters = (next: MeasureFilter[]) => onChange({ ...measure, filters: next });
@@ -1661,6 +1937,59 @@ function MeasureRow({
     viewName ? `${viewName}.${measure.name}` : '',
   ].filter(Boolean));
 
+  // C1: insert a field token into the expression at the cursor. Columns go in
+  // RAW (e.g. `revenue`); other measures go as `${name}` (the ref syntax the
+  // engine inlines + B1 picks up as a formula dependency). DA picks from a
+  // list instead of remembering which of the two syntaxes to type — the
+  // "one namespace, autocomplete decides the syntax" idea.
+  const otherMeasureNames = measureNames.filter((n) => !selfMeasureRefs.has(n));
+  const insertFieldToken = (token: string, kind: 'column' | 'measure') => {
+    const text = kind === 'measure' ? `\${${token}}` : token;
+    const el = exprInputRef.current;
+    const current = measure.expression || '';
+    let next: string;
+    if (el && typeof el.selectionStart === 'number') {
+      const start = el.selectionStart;
+      const end = el.selectionEnd ?? start;
+      next = current.slice(0, start) + text + current.slice(end);
+    } else {
+      next = current ? `${current} ${text}` : text;
+    }
+    onChange(applyExpressionInput(measure, next, setMode));
+    setShowFieldInsert(false);
+    // restore focus + place cursor after the inserted token
+    requestAnimationFrame(() => {
+      const node = exprInputRef.current;
+      if (node) {
+        node.focus();
+        const pos = (el && typeof el.selectionStart === 'number' ? el.selectionStart : current.length) + text.length;
+        try { node.setSelectionRange(pos, pos); } catch { /* ignore */ }
+      }
+    });
+  };
+
+  // D3: run the candidate measure (unsaved) and show the real output so DA can
+  // confirm "ra số đúng không" before Save. Grand-total by default; group by a
+  // dimension if one is picked.
+  const runTest = async () => {
+    if (datasetId == null || viewId == null) return;
+    setTestRunning(true);
+    setTestResult(null);
+    try {
+      const res = await previewMeasure({ datasetId, viewId, measure, groupBy: testGroupBy || undefined });
+      setTestResult(res);
+    } catch (err: unknown) {
+      setTestResult({ ok: false, error: extractApiError(err, 'Chạy thử thất bại'), rows: [] });
+    } finally {
+      setTestRunning(false);
+    }
+  };
+  // Dimensions on this view available as "Group theo" options for the test.
+  const testGroupOptions = useMemo(() => {
+    const v = (modelViews ?? []).find((mv) => mv.id === viewId);
+    return (v?.dimensions ?? []).filter((d) => !d.hidden).map((d) => d.name);
+  }, [modelViews, viewId]);
+
   // Inline validation — paint each input red + surface a summary at the
   // bottom of the form. validateMeasure() is shared with the panel
   // footer so the Save button uses the SAME ruleset (no drift between
@@ -1671,6 +2000,74 @@ function MeasureRow({
     errors[key]
       ? 'border-danger/60 bg-danger/5 focus:ring-danger/40'
       : 'border-[rgb(var(--border-line))] focus:ring-brand';
+
+  // D3/E3: the "Chạy thử" preview pane. Rendered inline (legacy) or as the
+  // right column in the resizable split layout.
+  const canPreview = datasetId != null && viewId != null;
+  const previewPane = (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={runTest}
+          disabled={testRunning}
+          className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-3 disabled:opacity-50"
+          title="Chạy measure này trên dữ liệu thật (không lưu) để xem kết quả."
+        >
+          {testRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>▶</span>}
+          Chạy thử
+        </button>
+        <span className="text-[10px] text-text-quaternary">Group theo</span>
+        <select
+          value={testGroupBy}
+          onChange={(e) => setTestGroupBy(e.target.value)}
+          className="text-[11px] px-1.5 py-1 border border-[rgb(var(--border-line))] rounded bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+        >
+          <option value="">(tổng — 1 dòng)</option>
+          {testGroupOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </div>
+      {hasErrors ? (
+        <p className="text-[10px] text-text-quaternary italic">Sửa lỗi cấu hình bên trái trước khi chạy thử.</p>
+      ) : !testResult ? (
+        <p className="text-[10px] text-text-quaternary italic">Bấm "Chạy thử" để xem kết quả thật của measure này.</p>
+      ) : testResult.ok ? (
+        <div className="rounded bg-surface-2 p-1.5 max-h-72 overflow-auto">
+          {testResult.rows.length === 0 ? (
+            <p className="text-[10px] text-text-quaternary">Không có dữ liệu trả về.</p>
+          ) : (
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="text-text-quaternary">
+                  {Object.keys(testResult.rows[0]).map((k) => (
+                    <th key={k} className="px-1 py-0.5 text-left font-medium truncate" title={k}>
+                      {k.includes('.') ? k.split('.').slice(1).join('.') : k}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {testResult.rows.slice(0, 50).map((row, ri) => (
+                  <tr key={ri} className="border-t border-[rgb(var(--border-line))]">
+                    {Object.keys(testResult.rows[0]).map((k) => (
+                      <td key={k} className="px-1 py-0.5 font-mono truncate" title={String(row[k] ?? '')}>
+                        {row[k] == null ? '—' : String(row[k])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {testResult.rows.length > 50 && (
+            <p className="mt-1 text-[10px] text-text-quaternary">… {testResult.rows.length - 50} dòng nữa</p>
+          )}
+        </div>
+      ) : (
+        <p className="rounded bg-danger/5 px-1.5 py-1 text-[10px] text-danger">{testResult.error}</p>
+      )}
+    </div>
+  );
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -1766,7 +2163,21 @@ function MeasureRow({
         )}
       </div>
       {isExpanded && canEdit && (
-        <div className="px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5" data-measure-invalid={hasErrors ? 'true' : 'false'}>
+        // E3: split layout = flex container (left form pane + divider + right
+        // preview pane). Legacy = single column with inline preview.
+        <div
+          ref={splitLayout ? splitContainerRef : undefined}
+          className={splitLayout
+            ? 'flex border-t border-[rgb(var(--border-line))]'
+            : ''}
+        >
+        <div
+          className={splitLayout
+            ? 'px-3 pb-3 pt-1 space-y-2.5 overflow-auto min-w-0'
+            : 'px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5'}
+          style={splitLayout ? { width: `${splitLeftPct}%` } : undefined}
+          data-measure-invalid={hasErrors ? 'true' : 'false'}
+        >
           {/* Datalists shared across this row's inputs */}
           <datalist id={colsListId}>
             {columnOptions.map((c) => <option key={c} value={c} />)}
@@ -1775,55 +2186,34 @@ function MeasureRow({
             {measureNames.filter((n) => !selfMeasureRefs.has(n)).map((n) => <option key={n} value={n} />)}
           </datalist>
 
-          {/* Mode toggle — 3-way. Each mode hides the fields its compile
-              path doesn't use, so a SQL-mode user never sees "Cột để tính"
-              (overridden by expression), a Formula user never sees
-              Aggregation (cosmetic — formula path bypasses it). */}
-          <div className="flex items-center justify-between gap-2 -mx-1 -mt-1 border-b border-[rgb(var(--border-line))] pb-2">
-            <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-0.5 text-[11px]">
-              <button
-                type="button"
-                onClick={() => switchMode('lowcode')}
-                className={`px-2.5 py-1 rounded font-medium transition-colors ${
-                  mode === 'lowcode'
-                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
-                    : 'text-text-tertiary hover:text-text-secondary'
-                }`}
-                title="Chọn 1 cột + 1 hàm aggregation. Compile: SUM(num_calls)"
+          {/* D2: table selector — only on a NEW measure row, so DA picks the
+              target table INSIDE the config form (instead of a pre-Add
+              dropdown). Changing it retargets the whole panel to that view and
+              re-opens a fresh row there. Hidden for existing measures (a saved
+              measure can't move tables here) and when there's only one
+              candidate table. */}
+          {rowKey.startsWith('new-measure') && onRetargetView && modelViews && modelViews.length > 1 && (
+            <div>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Bảng</label>
+              <select
+                value={viewId ?? ''}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  if (next && next !== viewId) onRetargetView(next);
+                }}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+                title="Measure sẽ được tạo trên bảng này. Đổi bảng sẽ mở lại form trên bảng mới."
               >
-                Low-code
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode('sql')}
-                className={`px-2.5 py-1 rounded font-medium transition-colors ${
-                  mode === 'sql'
-                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
-                    : 'text-text-tertiary hover:text-text-secondary'
-                }`}
-                title="Viết biểu thức trên cột thô. Compile: SUM(revenue - cost). Hỗ trợ raw WHERE và cross-table."
-              >
-                SQL nâng cao
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode('formula')}
-                className={`px-2.5 py-1 rounded font-medium transition-colors ${
-                  mode === 'formula'
-                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
-                    : 'text-text-tertiary hover:text-text-secondary'
-                }`}
-                title="Công thức trên các measure đã tính sẵn (vd tỷ lệ, %). Compile: ${revenue}/NULLIF(${orders},0) — không cần aggregation."
-              >
-                Công thức
-              </button>
+                {modelViews.map((v) => (
+                  <option key={v.id} value={v.id}>{v.table_display_name || v.name}</option>
+                ))}
+              </select>
             </div>
-            <span className="text-[10px] text-text-quaternary text-right max-w-[55%] leading-tight">
-              {mode === 'lowcode' && 'Đủ cho 90% measure thông thường'}
-              {mode === 'sql' && 'Cho measure cần biểu thức tuỳ chỉnh trên cột'}
-              {mode === 'formula' && 'Cho công thức trên measure khác (vd tỷ lệ, %)'}
-            </span>
-          </div>
+          )}
+
+          {/* B3: no more 3-way mode toggle. Default = lowcode (Aggregation +
+              Cột below). The "Công thức nâng cao" disclosure reveals the SQL
+              box; the engine path is inferred from content, not picked by DA. */}
 
           {/* Identity — Label always, Aggregation only when relevant.
               Formula mode bypasses the wrapping agg entirely (engine
@@ -1904,13 +2294,17 @@ function MeasureRow({
           {mode === 'lowcode' && measure.type !== 'count' && (
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Cột để tính</label>
-              <input
-                list={colsListId}
-                value={measure.sql || ''}
-                onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
-                className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('column')}`}
-                placeholder="Chọn cột (vd. num_calls)"
-              />
+              {/* C1: combobox — chọn cột từ danh sách (tránh sai tên) nhưng
+                  vẫn cho gõ tự do nếu cần. */}
+              <div className="mt-0.5">
+                <ColumnCombobox
+                  value={measure.sql || ''}
+                  options={columnOptions}
+                  onChange={(v) => onChange({ ...measure, sql: v || undefined })}
+                  placeholder="Chọn / gõ cột (vd. num_calls)"
+                  invalid={Boolean(errors.column)}
+                />
+              </div>
               {errors.column && (
                 <p className="mt-0.5 text-[10px] text-danger">{errors.column}</p>
               )}
@@ -1941,6 +2335,7 @@ function MeasureRow({
                     key={i}
                     filter={f}
                     listId={colsListId}
+                    columnOptions={columnOptions}
                     onChange={(u) => updateFilters(filters.map((x, j) => (j === i ? u : x)))}
                     onRemove={() => updateFilters(filters.filter((_, j) => j !== i))}
                   />
@@ -1994,13 +2389,29 @@ function MeasureRow({
           </div>
           )}
 
+          {/* B3: single disclosure replaces the 3-mode toggle. Closed = the
+              simple Aggregation + Cột form above (90% case). Open = the
+              SQL-expression box below; whether that compiles as a raw-column
+              SQL expression or a formula-over-measures is INFERRED from what
+              DA types (B1), never picked by hand. */}
+          <button
+            type="button"
+            onClick={toggleAdvanced}
+            className="flex items-center gap-1 text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
+            title="Viết biểu thức SQL trên cột, hoặc công thức trên các measure khác (vd tỷ lệ, %). Engine tự nhận loại."
+          >
+            {showAdvanced ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            Công thức nâng cao
+            <span className="font-normal text-text-quaternary">— SQL trên cột / công thức trên measure khác</span>
+          </button>
+
           {/* Expression-required modes (sql + formula). Each mode shows
               only the sub-fields its compile path uses:
               • sql:     expression + where_sql + cross-table       (no depends_on)
               • formula: expression + depends_on + where_sql        (no cross-table, no column picker upstairs)
               The block is brand-tinted so user sees "I'm in advanced
               territory now". */}
-          {(mode === 'sql' || mode === 'formula') && (
+          {showAdvanced && (mode === 'sql' || mode === 'formula') && (
             <div className="space-y-2 rounded-md border border-brand/20 bg-brand/5 p-2.5">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-brand">
                 <span>{mode === 'sql' ? 'SQL nâng cao' : 'Công thức'}</span>
@@ -2011,14 +2422,74 @@ function MeasureRow({
                 </span>
               </div>
               <div>
-                <label className="text-[10px] text-text-tertiary uppercase font-medium">
-                  Biểu thức SQL
-                </label>
+                <div className="flex items-center justify-between mb-0.5">
+                  <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                    Biểu thức SQL
+                  </label>
+                  {/* C1: insert a column / measure token at the cursor instead
+                      of hand-typing the name (and remembering raw vs ${}). */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowFieldInsert((v) => !v)}
+                      className="flex items-center gap-0.5 text-[10px] text-brand hover:underline font-medium"
+                      title="Chèn cột hoặc measure vào biểu thức tại vị trí con trỏ"
+                    >
+                      <Plus className="w-3 h-3" /> Chèn cột / measure
+                    </button>
+                    {showFieldInsert && (
+                      <div className="absolute right-0 top-5 z-30 w-56 max-h-64 overflow-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1">
+                        {columnOptions.length > 0 && (
+                          <>
+                            <div className="px-3 py-1 text-[9px] font-semibold uppercase tracking-wide text-text-quaternary">Cột</div>
+                            {columnOptions.map((c) => (
+                              <button
+                                key={`col-${c}`}
+                                type="button"
+                                onClick={() => insertFieldToken(c, 'column')}
+                                className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs hover:bg-surface-2"
+                              >
+                                <Hash className="w-3 h-3 text-brand shrink-0" />
+                                <span className="truncate font-mono">{c}</span>
+                              </button>
+                            ))}
+                          </>
+                        )}
+                        {otherMeasureNames.length > 0 && (
+                          <>
+                            <div className="mt-1 border-t border-[rgb(var(--border-line))] px-3 py-1 text-[9px] font-semibold uppercase tracking-wide text-text-quaternary">Measure (chèn dạng ${'{...}'})</div>
+                            {otherMeasureNames.map((m) => (
+                              <button
+                                key={`mea-${m}`}
+                                type="button"
+                                onClick={() => insertFieldToken(m, 'measure')}
+                                className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs hover:bg-surface-2"
+                              >
+                                <Sigma className="w-3 h-3 text-warning shrink-0" />
+                                <span className="truncate font-mono">{m}</span>
+                              </button>
+                            ))}
+                          </>
+                        )}
+                        {columnOptions.length === 0 && otherMeasureNames.length === 0 && (
+                          <p className="px-3 py-2 text-[10px] text-text-quaternary">Chưa có cột / measure để chèn.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <input
+                  ref={exprInputRef}
                   value={measure.expression || ''}
+                  // While typing: store raw text only (smooth, no reshape mid-
+                  // keystroke). On blur: B1 auto-fix — `SUM(revenue)` unwraps to
+                  // agg=SUM + expression=revenue; `SUM(${m})` / `${a}/${b}`
+                  // flips to formula mode with depends_on parsed. Defuses the
+                  // double-aggregation trap so DA never sees the old red error.
                   onChange={(e) => onChange({ ...measure, expression: e.target.value || undefined })}
-                  className={`mt-0.5 w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('expression')}`}
-                  placeholder={mode === 'sql' ? 'vd: revenue - cost' : 'vd: ${revenue} / NULLIF(${orders}, 0)'}
+                  onBlur={(e) => onChange(applyExpressionInput(measure, e.target.value, setMode))}
+                  className={`w-full text-xs px-2 py-1.5 border rounded-md font-mono focus:outline-none focus:ring-1 ${errClass('expression')}`}
+                  placeholder={mode === 'sql' ? 'vd: revenue - cost  ·  SUM(revenue) cũng được' : 'vd: ${revenue} / NULLIF(${orders}, 0)'}
                 />
                 {errors.expression && (
                   <p className="mt-0.5 text-[10px] text-danger">{errors.expression}</p>
@@ -2266,6 +2737,14 @@ function MeasureRow({
             />
           )}
 
+          {/* Inline "Chạy thử" — only in legacy (non-split) layout. In split
+              layout the previewPane lives in the RIGHT column instead. */}
+          {!splitLayout && canPreview && (
+            <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+              {previewPane}
+            </div>
+          )}
+
           {/* SQL compile preview — shows the user what the engine will
               actually produce. Faithful to semantic_query_engine.py
               compile path: expression OR sql, wrapped in type (skipped
@@ -2318,6 +2797,28 @@ function MeasureRow({
             </div>
           )}
         </div>
+        {/* E3: split-layout right pane = resizable divider + preview ("Chạy
+            thử"). Only in splitLayout; legacy renders preview inline above. */}
+        {splitLayout && (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              onPointerDown={startSplitDrag}
+              className="w-1.5 shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] hover:bg-brand/40 transition-colors"
+              title="Kéo để chỉnh độ rộng"
+            />
+            <div className="flex-1 min-w-0 overflow-auto px-3 pb-3 pt-1">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary mb-1.5">
+                Chạy thử — xem kết quả thật
+              </div>
+              {canPreview ? previewPane : (
+                <p className="text-[10px] text-text-quaternary italic">Không chạy thử được trên bảng này.</p>
+              )}
+            </div>
+          </>
+        )}
+        </div>
       )}
     </div>
   );
@@ -2340,6 +2841,8 @@ export interface ModelViewEditPanelProps {
   triggerAddMeasure?: number;
   /** When true, only the measure matching focusMeasureName is rendered (single-measure editing mode) */
   singleMeasureMode?: boolean;
+  /** D2: a new measure's "Bảng" selector switches which view is edited. */
+  onRetargetView?: (viewId: number) => void;
   /** Ask the parent page to open the AddColumnModal targeting the underlying table. */
   onRequestAddColumn?: (tableId: number) => void;
 }
@@ -2358,6 +2861,7 @@ export function ModelViewEditPanel({
   focusMeasureName,
   triggerAddMeasure,
   singleMeasureMode = false,
+  onRetargetView,
   onRequestAddColumn,
 }: ModelViewEditPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
@@ -2468,18 +2972,28 @@ export function ModelViewEditPanel({
   const [measureRowKeys, setMeasureRowKeys] = useState<string[]>([]);
   const [viewDescription, setViewDescription] = useState('');
   const [showMeasureTemplates, setShowMeasureTemplates] = useState(false);
+  // E2: rowKey of a freshly-added blank measure being configured (single-
+  // measure config model). Null when editing an existing measure (driven by
+  // focusMeasureName) or showing the empty-state.
+  const [activeNewRowKey, setActiveNewRowKey] = useState<string | null>(null);
   // Phase-15.5: time-intelligence dialog state. Open when user picks the
   // dedicated "+ Time intelligence (smart)" entry in the Add Measure menu.
   const [showTimeIntelDialog, setShowTimeIntelDialog] = useState(false);
+  // A2 (2026-06-10): "đang kiểm tra cú pháp measure" — true while the save
+  // handler is compile-checking measures against the engine (dry-run). Keeps
+  // the Save button in a loading state so DA sees the check is running.
+  const [isCheckingSyntax, setIsCheckingSyntax] = useState(false);
   const updateView = useUpdateModelView();
   // Phase-15.64 — surgical DELETE for existing measures (bypasses the
   // full-batch PUT validation that blocks deletes when ANY measure has
   // legacy invalid shape).
   const deleteMeasureMutation = useDeleteModelMeasure();
 
-  useEffect(() => {
-    if (triggerAddMeasure && triggerAddMeasure > 0) setShowMeasureTemplates(true);
-  }, [triggerAddMeasure]);
+  // E2: the page signals "add a new measure" via the sentinel
+  // focusMeasureName === '__new__' (deterministic; no add-counter/effect-timing
+  // races). The unified view-load effect below appends the blank when it sees
+  // the sentinel.
+  const isAddingNew = focusMeasureName === NEW_MEASURE_SENTINEL;
 
   // Pick-list for the form-first measure editor. Source = the table's
   // `columns_cache` (which reflects any Calculated Column added via
@@ -2545,14 +3059,53 @@ export function ModelViewEditPanel({
     setShowMeasureTemplates(false);
   };
 
+  // E1/E2: Add a BLANK measure (default SUM, no column) and make it the single
+  // active config. No template picker — DA picks "Cách tính" in the form. The
+  // new row's key is tracked in `activeNewRowKey` so the panel renders just
+  // this measure's config (toolbar-driven single-measure model).
+  const handleAddBlankMeasure = () => {
+    const rowKey = makeClientRowKey('measure');
+    setMeasures((prev) => {
+      let n = prev.length + 1;
+      const existing = new Set(prev.map((m) => m.name));
+      let name = `measure_${n}`;
+      while (existing.has(name)) { n += 1; name = `measure_${n}`; }
+      const blank: MeasureDefinition = { name, label: '', type: 'sum', sql: '', hidden: false };
+      return [...prev, blank];
+    });
+    setMeasureRowKeys((prev) => [...prev, rowKey]);
+    setActiveNewRowKey(rowKey);
+  };
+
+  // Unified view-load + new-measure effect. Runs on view change OR when the
+  // add sentinel toggles. ALWAYS rebuilds dimensions/measures from the view
+  // first; THEN, if the page is in add-mode (focusMeasureName === '__new__'),
+  // appends a blank measure and marks it active. One effect = no ordering bug.
   useEffect(() => {
     if (!view) return;
+    const baseMeasures = view.measures.map((m) => ({ ...m }));
+    const baseMeasureKeys = view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`);
+
     setDimensions(view.dimensions.map((d) => ({ ...d })));
-    setMeasures(view.measures.map((m) => ({ ...m })));
     setDimensionRowKeys(view.dimensions.map((d, index) => `${view.id}:dimension:${index}:${d.name || 'field'}`));
-    setMeasureRowKeys(view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`));
     setViewDescription(view.description || '');
-  }, [view]);
+
+    if (isAddingNew) {
+      const existing = new Set(baseMeasures.map((m) => m.name));
+      let n = baseMeasures.length + 1;
+      let name = `measure_${n}`;
+      while (existing.has(name)) { n += 1; name = `measure_${n}`; }
+      const rowKey = makeClientRowKey('measure');
+      setMeasures([...baseMeasures, { name, label: '', type: 'sum', sql: '', hidden: false } as MeasureDefinition]);
+      setMeasureRowKeys([...baseMeasureKeys, rowKey]);
+      setActiveNewRowKey(rowKey);
+    } else {
+      setMeasures(baseMeasures);
+      setMeasureRowKeys(baseMeasureKeys);
+      setActiveNewRowKey(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, isAddingNew]);
 
   const modelIsDirty =
     !!view && (
@@ -2657,6 +3210,43 @@ export function ModelViewEditPanel({
       toast.error(errors[0]);
       return;
     }
+
+    // A2 (2026-06-10): compile-check measures through the REAL engine before
+    // save. The static checks above only catch SHAPE problems (name format,
+    // missing column, depends_on existence). They CANNOT tell valid SQL from
+    // broken SQL — that needs the engine (dialect + views + join graph). DA
+    // hit this: a measure with bad syntax saved fine, then crashed at Explore
+    // "Run". We dry-run each measure that carries advanced SQL (expression /
+    // raw WHERE / cross-table); pure low-code measures (just agg + a column)
+    // can't have a syntax error, so we skip them to keep Save fast.
+    const needsDryRun = (m: MeasureDefinition): boolean =>
+      Boolean((m.expression || '').trim() || (m.where_sql || '').trim() || m.scope === 'dataset');
+    const dryRunTargets = measures.filter(needsDryRun);
+    if (dryRunTargets.length > 0) {
+      setIsCheckingSyntax(true);
+      try {
+        for (const m of dryRunTargets) {
+          let result;
+          try {
+            result = await dryRunMeasure({ datasetId, viewId: view.id, measure: m });
+          } catch {
+            // A 4xx/5xx from the dry-run endpoint itself (access / not-found /
+            // system table) — don't block the save on an infra hiccup; let the
+            // normal save path run and surface any real error there.
+            continue;
+          }
+          if (!result.ok) {
+            toast.error(
+              `Measure "${m.label || m.name}" có lỗi cú pháp — sửa trước khi lưu:\n${result.error ?? 'SQL không hợp lệ'}`,
+            );
+            return;
+          }
+        }
+      } finally {
+        setIsCheckingSyntax(false);
+      }
+    }
+
     // Phase-6: detect renames so the BE can auto-rewrite chart configs
     // and depends_on references instead of dropping into the cascade
     // dialog. Each row carries `measureRowKeys[idx]` like
@@ -2946,101 +3536,55 @@ export function ModelViewEditPanel({
                     {singleMeasureMode ? 'Edit measure' : 'Measures'}
                     {!singleMeasureMode && <span className="text-text-quaternary font-normal">({measures.length})</span>}
                   </span>
+                  {/* E1: Add goes STRAIGHT into a blank config form — no
+                      template picker. The aggregation is chosen via the form's
+                      "Cách tính" dropdown; time-intelligence / cross-table live
+                      inside "Công thức nâng cao". */}
                   {canEdit && !singleMeasureMode && (
-                    <>
-                      <button
-                        onClick={() => setShowMeasureTemplates((v) => !v)}
-                        className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
-                      >
-                        <Plus className="w-3 h-3" /> {contentMode === 'measures' ? 'Add measure' : 'Add'}
-                        <ChevronDown className="w-3 h-3" />
-                      </button>
-                      {showMeasureTemplates && (
-                        <div className="absolute right-0 top-6 z-20 w-72 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1 max-h-96 overflow-y-auto">
-                          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">
-                            Basic
-                          </div>
-                          {MEASURE_TEMPLATES.filter((t) => t.group === 'basic').map((tpl) => (
-                            <button
-                              key={tpl.key}
-                              onClick={() => handleAddMeasureFromTemplate(tpl)}
-                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
-                            >
-                              {tpl.label}
-                            </button>
-                          ))}
-                          <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary border-t border-[rgb(var(--border-line))]">
-                            Time intelligence
-                          </div>
-                          {/* Phase-15.5: smart wizard — pick base measure +
-                              date dim, auto-fill expression. Sits above the
-                              raw-template entries (legacy) which still work
-                              for users who want to write expressions by hand. */}
-                          <button
-                            onClick={() => {
-                              setShowMeasureTemplates(false);
-                              setShowTimeIntelDialog(true);
-                            }}
-                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 border-b border-[rgb(var(--border-line))]"
-                            title="Mở dialog chọn base measure + date dim → tự sinh expression đầy đủ. Đơn giản hơn template raw."
-                          >
-                            <div className="flex items-center gap-1">
-                              <span className="font-emphasis">+ Time intelligence (smart)</span>
-                              <span className="rounded bg-brand/10 px-1 text-[9px] font-emphasis uppercase text-brand">PBI</span>
-                            </div>
-                            <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">
-                              YoY, MTD, YTD, prev month, rolling N days — pick measure + date dim
-                            </div>
-                          </button>
-                          {MEASURE_TEMPLATES.filter((t) => t.group === 'time').map((tpl) => (
-                            <button
-                              key={tpl.key}
-                              onClick={() => handleAddMeasureFromTemplate(tpl)}
-                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
-                              title={tpl.hint}
-                            >
-                              <div>{tpl.label}</div>
-                              {tpl.hint && (
-                                <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">{tpl.hint}</div>
-                              )}
-                            </button>
-                          ))}
-                          {/* Phase-15.2: cross-table presets first-class. */}
-                          <div className="mt-1 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary border-t border-[rgb(var(--border-line))]">
-                            Cross-table (đa bảng)
-                          </div>
-                          {MEASURE_TEMPLATES.filter((t) => t.group === 'cross').map((tpl) => (
-                            <button
-                              key={tpl.key}
-                              onClick={() => handleAddMeasureFromTemplate(tpl)}
-                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
-                              title={tpl.hint}
-                            >
-                              <div className="flex items-center gap-1">
-                                <span>{tpl.label}</span>
-                                <span className="rounded bg-brand/10 px-1 text-[9px] font-emphasis uppercase text-brand">PBI</span>
-                              </div>
-                              {tpl.hint && (
-                                <div className="text-[10px] text-text-quaternary mt-0.5 leading-tight">{tpl.hint}</div>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
+                    <button
+                      onClick={() => handleAddBlankMeasure()}
+                      className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
+                    >
+                      <Plus className="w-3 h-3" /> {contentMode === 'measures' ? 'Add measure' : 'Add'}
+                    </button>
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  {measures.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-3 py-5 text-center text-xs text-text-quaternary">
-                      No measures yet
-                    </div>
-                  ) : (
-                    measures
-                      .filter((m, _idx) => !singleMeasureMode || m.name === focusMeasureName)
-                      .map((m) => {
-                        const idx = measures.indexOf(m);
+                  {(() => {
+                    // E2: in the Measures workspace, edit ONE measure at a time —
+                    // the active measure is the newly-added row (activeNewRowKey)
+                    // or the one the toolbar selected (focusMeasureName). No
+                    // active measure → empty-state. The all-fields model editor
+                    // keeps the legacy full list (singleMeasure = false).
+                    const singleMeasure = contentMode === 'measures';
+                    const activeIndex = singleMeasure
+                      ? measures.findIndex((m, i) =>
+                          (activeNewRowKey && measureRowKeys[i] === activeNewRowKey)
+                          || (focusMeasureName && m.name === focusMeasureName),
+                        )
+                      : -1;
+                    const visibleIndexes = singleMeasure
+                      ? (activeIndex >= 0 ? [activeIndex] : [])
+                      : measures.map((_, i) => i);
+
+                    if (singleMeasure && visibleIndexes.length === 0) {
+                      return (
+                        <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-3 py-10 text-center text-xs text-text-quaternary">
+                          Chọn một measure ở thanh bên trái để chỉnh sửa, hoặc bấm <span className="font-medium text-text-tertiary">+ Add measure</span> để tạo mới.
+                        </div>
+                      );
+                    }
+                    if (!singleMeasure && measures.length === 0) {
+                      return (
+                        <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-3 py-5 text-center text-xs text-text-quaternary">
+                          No measures yet
+                        </div>
+                      );
+                    }
+                    return visibleIndexes.map((idx) => {
+                        const m = measures[idx];
                         const rowKey = measureRowKeys[idx] ?? `measure-${idx}`;
+                        const isNewRow = rowKey === activeNewRowKey;
                         return (
                           <MeasureRow
                             key={rowKey}
@@ -3050,8 +3594,12 @@ export function ModelViewEditPanel({
                             columnOptions={columnOptions}
                             measureNames={measureDependencyRefs}
                             viewName={view.name}
+                            viewId={view.id}
+                            datasetId={datasetId}
                             modelViews={modelViews}
-                            defaultOpen={singleMeasureMode || Boolean(focusMeasureName && m.name === focusMeasureName)}
+                            onRetargetView={isNewRow ? onRetargetView : undefined}
+                            splitLayout={singleMeasure}
+                            defaultOpen={singleMeasure || Boolean(focusMeasureName && m.name === focusMeasureName)}
                             onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
                             onRemove={async () => {
                               // Phase-15.64 — if the measure exists on the
@@ -3115,11 +3663,12 @@ export function ModelViewEditPanel({
                               }
                               setMeasures((prev) => prev.filter((_, i) => i !== idx));
                               setMeasureRowKeys((prev) => prev.filter((_, i) => i !== idx));
+                              if (rowKey === activeNewRowKey) setActiveNewRowKey(null);
                             }}
                           />
                         );
-                      })
-                  )}
+                      });
+                  })()}
                 </div>
                 {/* Bridge to the data layer: per-row calculations belong in
                     a Calculated Column on the source table, not inside a
@@ -3160,11 +3709,11 @@ export function ModelViewEditPanel({
           </span>
           <button
             onClick={handleSave}
-            disabled={!canSave || isSavingAny}
+            disabled={!canSave || isSavingAny || isCheckingSyntax}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-40 transition-colors"
           >
-            {isSavingAny ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-            Save
+            {(isSavingAny || isCheckingSyntax) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            {isCheckingSyntax ? 'Đang kiểm tra cú pháp…' : 'Save'}
           </button>
         </div>
       )}

@@ -546,13 +546,9 @@ export default function DatasetDetailPage() {
   const [measuresFocusViewId, setMeasuresFocusViewId] = useState<number | null>(null);
   const [measuresFocusMeasureName, setMeasuresFocusMeasureName] = useState<string | null>(null);
   const [measuresTriggerAdd, setMeasuresTriggerAdd] = useState(0);
-  const [showMeasuresAddPicker, setShowMeasuresAddPicker] = useState(false);
-  // Viewport-relative anchor for the "Add measure to…" picker. The picker is
-  // rendered `fixed` (not `absolute`) so it ESCAPES the scrollable sidebar's
-  // overflow clipping — otherwise, on a dataset with many tables, the table
-  // list got cut off at the sidebar boundary and the lower tables were
-  // unreachable. Computed from the Add button's rect when opened.
-  const [measuresAddPickerPos, setMeasuresAddPickerPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  // D2 (2026-06-10): the old "Add measure to…" dropdown picker was removed —
+  // Add now opens the config form directly and the target table is chosen
+  // inside the form. (Removed: showMeasuresAddPicker / measuresAddPickerPos.)
   const [collapsedMeasureViews, setCollapsedMeasureViews] = useState<Set<number>>(new Set());
 
   // Tab routing via searchParam — ?tab=tables|quality|model
@@ -1469,56 +1465,33 @@ export default function DatasetDetailPage() {
 
                           {resPerms.canEdit && (
                             isMeasuresGroup ? (
-                              <div className="relative">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    if (sidebarModelViews.length <= 1) {
-                                      setMeasuresFocusViewId(sidebarModelViews[0]?.id ?? null);
-                                      setMeasuresFocusMeasureName(null);
-                                      setMeasuresTriggerAdd((v) => v + 1);
-                                      setTablesWorkspace('measures');
-                                      clearTableInUrl();
-                                    } else {
-                                      const r = e.currentTarget.getBoundingClientRect();
-                                      setMeasuresAddPickerPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-                                      setShowMeasuresAddPicker((v) => !v);
-                                    }
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
-                                >
-                                  <Plus className="h-3 w-3" />
-                                  Add
-                                </button>
-                                {showMeasuresAddPicker && sidebarModelViews.length > 1 && (
-                                  <>
-                                    <div className="fixed inset-0 z-[59]" onClick={() => setShowMeasuresAddPicker(false)} />
-                                    <div
-                                      className="fixed z-[60] w-52 max-h-[60vh] overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg"
-                                      style={{ top: measuresAddPickerPos.top, right: measuresAddPickerPos.right }}
-                                    >
-                                      <p className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">Add measure to…</p>
-                                      {sidebarModelViews.map((v) => (
-                                        <button
-                                          key={v.id}
-                                          type="button"
-                                          onClick={() => {
-                                            setMeasuresFocusViewId(v.id);
-                                            setMeasuresFocusMeasureName(null);
-                                            setMeasuresTriggerAdd((prev) => prev + 1);
-                                            setTablesWorkspace('measures');
-                                            clearTableInUrl();
-                                            setShowMeasuresAddPicker(false);
-                                          }}
-                                          className="w-full px-3 py-1.5 text-left text-xs text-text-primary transition-colors hover:bg-surface-2"
-                                        >
-                                          <span className="block truncate">{v.table_display_name || v.name}</span>
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </>
-                                )}
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // D2/E2: Add opens the measure CONFIG form
+                                  // directly. The "__new__" sentinel focus tells
+                                  // the panel to show a fresh blank measure
+                                  // (deterministic — no add-counter/effect-timing
+                                  // races). Target table is chosen via the form's
+                                  // "Bảng" selector; default to the
+                                  // currently-focused or first measure-capable
+                                  // view (prefer one that already has measures so
+                                  // the form lands somewhere sensible).
+                                  const withMeasures = sidebarModelViews.find((v) => (v.measures?.length ?? 0) > 0);
+                                  const defaultViewId =
+                                    (measuresFocusViewId && sidebarModelViews.some((v) => v.id === measuresFocusViewId))
+                                      ? measuresFocusViewId
+                                      : (withMeasures?.id ?? sidebarModelViews[0]?.id ?? null);
+                                  setMeasuresFocusViewId(defaultViewId);
+                                  setMeasuresFocusMeasureName('__new__');
+                                  setTablesWorkspace('measures');
+                                  clearTableInUrl();
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
+                              >
+                                <Plus className="h-3 w-3" />
+                                Add
+                              </button>
                             ) : group === 'calendar' ? (
                               <button
                                 type="button"
@@ -1595,9 +1568,9 @@ export default function DatasetDetailPage() {
                                               type="button"
                                               onClick={(e) => {
                                                 e.stopPropagation();
+                                                // E2: add a measure to THIS table — sentinel focus opens a blank form on it.
                                                 setMeasuresFocusViewId(mv.id);
-                                                setMeasuresFocusMeasureName(null);
-                                                setMeasuresTriggerAdd((v) => v + 1);
+                                                setMeasuresFocusMeasureName('__new__');
                                                 setTablesWorkspace('measures');
                                                 clearTableInUrl();
                                               }}
@@ -1760,6 +1733,13 @@ export default function DatasetDetailPage() {
               focusMeasureName={measuresFocusMeasureName}
               triggerAddMeasure={measuresTriggerAdd}
               onClearMeasureFocus={() => setMeasuresFocusMeasureName(null)}
+              onRetargetView={(viewId) => {
+                // D2: the "Bảng" selector inside a NEW measure's form switches
+                // which view the panel edits; keep the "__new__" sentinel so a
+                // fresh blank form opens on the chosen table.
+                setMeasuresFocusViewId(viewId);
+                setMeasuresFocusMeasureName('__new__');
+              }}
               onRequestAddColumn={(tableId) => {
                 // Switch the page-level "selected table" to the measure's
                 // underlying table so AddColumnModal opens against the
