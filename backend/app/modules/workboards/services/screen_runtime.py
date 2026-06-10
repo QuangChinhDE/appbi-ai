@@ -26,7 +26,7 @@ from __future__ import annotations
 import itertools
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -1930,15 +1930,25 @@ def export_doc_data_block_to_excel(
 def render_app_shell(
     workboard: Workboard,
     identity: CallerIdentity,
+    hidden_screen_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """Initial payload the public runtime fetches on entry to a workboard.
 
     Returns a slim dict with everything the FE needs to render the app
     shell (header + nav) without bouncing back to the API to discover
     screens. Per-screen content stays lazy-loaded.
+
+    ``hidden_screen_ids`` are screens hidden ON THE PUBLIC LINK (the Cổng menu
+    item's ``hidden_screen_ids``) — dropped from the nav/groups/screen list here
+    while the builder layout stays intact. ``None`` = hide nothing.
     """
+    hidden = hidden_screen_ids or set()
     layout = parse_layout(workboard)
-    visible_screens = [s for s in layout.screens if is_screen_visible_for(s, identity)]
+    visible_screens = [
+        s
+        for s in layout.screens
+        if is_screen_visible_for(s, identity) and s.id not in hidden
+    ]
     nav_items = list(layout.mini_app_nav.items)
     if not nav_items:
         nav_items = [s.id for s in visible_screens if s.show_in_nav]

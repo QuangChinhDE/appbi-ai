@@ -16,6 +16,8 @@ export interface WorkspaceMenuItemFull {
   icon?: string | null;
   roles?: string[];
   view_id?: string | null;
+  /** Screen ids hidden ON THIS PUBLIC LINK only (builder layout untouched). */
+  hidden_screen_ids?: string[];
 }
 
 export interface WorkspaceAdmin {
@@ -120,6 +122,26 @@ export const workspaceAdminApi = {
       return ws; // already linked
     }
     const menu_config = [...existing, menuItem(item)];
+    const r = await apiClient.patch<WorkspaceAdmin>(`/workspaces/${workspaceId}`, {
+      menu_config,
+    });
+    return r.data;
+  },
+
+  /** Set the screens hidden on THIS Cổng's public link for one workboard. Only
+   *  touches that workboard's menu item (other cards' fields preserved); the
+   *  workboard layout is untouched, so the Builder still shows every screen. */
+  async setHiddenScreens(
+    workspaceId: number,
+    workboardSlug: string,
+    hiddenScreenIds: string[],
+  ): Promise<WorkspaceAdmin> {
+    const ws = await this.get(workspaceId);
+    const menu_config = (ws.menu_config || []).map((m) =>
+      m.workboard_slug === workboardSlug
+        ? { ...m, hidden_screen_ids: hiddenScreenIds }
+        : m,
+    );
     const r = await apiClient.patch<WorkspaceAdmin>(`/workspaces/${workspaceId}`, {
       menu_config,
     });

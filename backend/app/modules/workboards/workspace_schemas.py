@@ -61,6 +61,11 @@ class WorkspaceMenuItem(BaseModel):
     # Optional: route directly to a particular view inside the workboard
     # instead of the workboard default.
     view_id: Optional[str] = None
+    # Screen ids hidden ON THIS PUBLIC LINK ONLY — the builder/layout is
+    # untouched (still shows every screen), but the public runtime drops these
+    # from the nav and blocks their content endpoints. Lets an owner expose
+    # only some workspaces/screens of an app through a given Cổng.
+    hidden_screen_ids: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 

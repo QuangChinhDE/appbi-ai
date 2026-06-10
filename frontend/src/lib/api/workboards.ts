@@ -38,8 +38,16 @@ export interface WorkboardBranding {
   theme?: 'light' | 'dark' | 'auto';
 }
 
+export interface WorkboardScreenGroup {
+  id: string;
+  label: string;
+  icon?: string | null;
+  screen_ids: string[];
+}
+
 export interface WorkboardLayoutJson {
   screens: Array<Record<string, unknown>>;
+  screen_groups?: WorkboardScreenGroup[];
   mini_app_nav?: WorkboardMiniAppNav;
   branding?: WorkboardBranding;
   audit?: {
