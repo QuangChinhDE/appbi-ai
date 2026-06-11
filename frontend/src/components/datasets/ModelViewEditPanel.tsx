@@ -2027,22 +2027,59 @@ function MeasureRow({
     return out;
   }, [columnOptions, otherViewColumnGroups, otherMeasureNames]);
 
-  // E9: single handler the chip editor calls with the DISPLAY-space expression.
-  // Converts display→technical, reconciles scope/source_columns from any
-  // ${view.field} cross-table refs present, then runs B1 auto-detect. This
-  // replaces the old per-insert branching (the editor doesn't know semantics).
+  // E9 / BUG-007 (2026-06-11): single handler the chip editor calls with the
+  // DISPLAY-space expression. Converts display→technical, then classifies EVERY
+  // `${ref}` — bare AND dotted — and routes:
+  //   • any ref is a MEASURE        → formula mode (depends_on), scope='view'
+  //   • else, any ref is a CROSS-TABLE column → dataset-scope + source_columns
+  //   • else (only same-table cols) → plain expression (auto-detect)
+  // The previous version matched ONLY dotted `${view.field}` and dropped bare
+  // `${lead_nhan}` entirely — leaving it un-resolved so the literal `${...}`
+  // reached BigQuery and broke. Now bare refs are recognised: same-table cols
+  // are resolved by the BE (`view_alias.field`), measures become deps.
+  const knownMeasureNames = useMemo(() => new Set(otherMeasureNames), [otherMeasureNames]);
+  const knownColumnNames = useMemo(() => new Set(columnOptions), [columnOptions]);
   const commitExpressionDisplay = (displayText: string) => {
     const tech = rewriteExprViewTokens(displayText, displayToTech);
-    // Find cross-table refs: ${techView.field} where techView is a known OTHER view.
+    // Collect every ${...} ref (bare `name` or dotted `view.field`).
+    const refRe = /\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g;
+    const measureRefs: string[] = [];
     const crossRefs: { view: string; field: string }[] = [];
-    const re = /\$\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}/g;
+    let hasAnyRef = false;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(tech)) !== null) {
-      if (techToDisplay.has(m[1])) crossRefs.push({ view: m[1], field: m[2] });
+    while ((m = refRe.exec(tech)) !== null) {
+      hasAnyRef = true;
+      const inner = m[1];
+      const dot = inner.lastIndexOf('.');
+      if (dot > 0) {
+        const view = inner.slice(0, dot);
+        const field = inner.slice(dot + 1);
+        if (techToDisplay.has(view)) {
+          crossRefs.push({ view, field });      // cross-table column
+        } else {
+          measureRefs.push(inner);              // qualified measure ref (view.measure)
+        }
+      } else if (knownMeasureNames.has(inner)) {
+        measureRefs.push(inner);                // bare measure
+      }
+      // else: bare same-table column → leave in expression; BE resolves to
+      // view_alias.field. Not a dep, not a source_column.
     }
-    if (crossRefs.length > 0) {
-      // dataset-scope cross-table measure: register source_columns, don't treat
-      // as a formula. expression type still wraps the value.
+
+    if (measureRefs.length > 0) {
+      // Formula over other measures (ratio etc). The engine inlines them.
+      setMode('formula');
+      onChange({
+        ...measure,
+        expression: tech || undefined,
+        depends_on: Array.from(new Set(measureRefs)),
+        scope: 'view',
+        source_columns: [],
+      });
+    } else if (crossRefs.length > 0) {
+      // Dataset-scope cross-table measure: register source_columns so the
+      // engine JOINs the other view(s). Bare same-table cols in the same
+      // expression are resolved by the BE; they don't need source_columns.
       setMode('sql');
       const seen = new Set<string>();
       const sources = crossRefs.filter((r) => {
@@ -2056,7 +2093,23 @@ function MeasureRow({
         source_columns: sources,
         depends_on: [],
       });
+    } else if (hasAnyRef) {
+      // Only bare ${col} refs to SAME-TABLE columns (no measures, no cross
+      // refs). It's a plain per-row SQL expression the Aggregation wraps; the
+      // BE resolves each ${col} to view_alias.col. Do NOT route through
+      // applyExpressionInput — its parseMeasureRefs would mis-read ${col} as a
+      // measure dependency and wrongly flip to formula mode.
+      setMode('sql');
+      onChange({
+        ...measure,
+        expression: tech || undefined,
+        depends_on: [],
+        scope: 'view',
+        source_columns: [],
+      });
     } else {
+      // No ${...} refs at all (raw text like `revenue - cost` or `SUM(x)`) →
+      // auto-detect (unwrap single outer aggregate, etc.).
       onChange(applyExpressionInput(measure, tech, setMode));
     }
   };

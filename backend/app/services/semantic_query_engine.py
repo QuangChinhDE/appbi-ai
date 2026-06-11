@@ -573,10 +573,38 @@ class SemanticQueryEngine:
         # cross-table ``SUM(${B.col})`` references B against a table not in
         # FROM → "Unrecognized name: B". (Re-anchor handles the clean cases
         # above; this covers the legacy fall-through where re-anchor declined.)
+        # BUG-007 (2026-06-11): also pull in each dataset-scope measure's
+        # declared source_columns views. _measure_fact_view re-anchors a
+        # SINGLE-foreign-view measure to that view, but a MIXED-grain measure
+        # (references base col + foreign col, e.g. `${quantity}/${B.price}`)
+        # stays on the declared view — and then the foreign view B was never
+        # added to the FROM/JOIN chain → "Unrecognized name: B". Adding the
+        # source_columns views here guarantees the JOIN reaches them in BOTH
+        # cases. (Isolated views are subtracted right after, as before.)
+        measure_source_views: set[str] = set()
+        for m in measures:
+            try:
+                decl_view, fld = self._parse_field_ref(m)
+            except ValueError:
+                continue
+            mv = self.views_cache.get(decl_view) or self._get_view_for_node(decl_view)
+            mdef = next(
+                (md for md in (mv.measures or [])
+                 if md.get("name") == fld or md.get("sql_name") == fld),
+                None,
+            )
+            if not mdef or str(mdef.get("scope") or "view") != "dataset":
+                continue
+            for entry in mdef.get("source_columns") or []:
+                sv = str(entry.get("view") or "").strip() if isinstance(entry, dict) else ""
+                if sv:
+                    measure_source_views.add(sv)
+
         select_side_views = (
             _views_of(select_side_refs)
             | {explore.base_view_name}
             | {self._measure_fact_view(m) for m in measures}
+            | measure_source_views
         ) - self._isolated_measure_views
         filter_views = _views_of(list((filters or {}).keys()))
 
@@ -3645,6 +3673,26 @@ class SemanticQueryEngine:
             if isinstance(s, dict) and str(s.get("view") or "").strip()
         }
         src_views.discard(declared_view)
+
+        # BUG-007 (2026-06-11): only re-anchor to the foreign view when the
+        # expression aggregates ONLY that foreign view's column(s). If the
+        # expression ALSO references the declared (base) view's OWN columns —
+        # e.g. `${quantity}/${products.price}` where `quantity` is a bare ref to
+        # the base — the measure spans BOTH grains and MUST keep the base in the
+        # FROM/JOIN chain (return declared_view). Re-anchoring to the foreign
+        # view would isolate the base out → `base.col` references a table not in
+        # FROM → "Unrecognized name". Detect base refs: a bare `${field}` (no
+        # dot) or an explicit `${<declared_view>.field}` in the expression.
+        expr = str(mdef.get("expression") or "")
+        if expr:
+            bare_refs = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", expr)
+            qualified_refs = re.findall(
+                r"\$\{([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\}", expr
+            )
+            references_base = bool(bare_refs) or (declared_view in qualified_refs)
+            if references_base:
+                return declared_view
+
         # A SINGLE foreign source view → that view IS the measure's grain.
         # (Multiple foreign views = a true multi-table formula; keep it on the
         # declared view so the formula renderer + join collector handle it.)
@@ -3788,7 +3836,25 @@ class SemanticQueryEngine:
             ref_view_name, ref_field_name = self._parse_field_ref(field_ref)
             return f"{ref_view_name}.{ref_field_name}"
 
-        return re.sub(dotted_pattern, replace_field, rendered)
+        rendered = re.sub(dotted_pattern, replace_field, rendered)
+
+        # BUG-007 (2026-06-11): resolve BARE ${field} refs (no dot) too. They
+        # denote a column on the CURRENT view and must qualify to
+        # `view_alias.field`, exactly like ${TABLE}.field. Previously only the
+        # dotted form was substituted, so a cross-table ratio such as
+        # `${lead_nhan}/${dataset_table_381.so_nhan_su_sdr}` left the bare
+        # `${lead_nhan}` intact → the `$`/`{`/`}` chars reached BigQuery which
+        # raised a syntax error. The auto-qualify step in `_render_measure`
+        # also skips any template containing `${`, so this is the only place
+        # that can resolve a bare ref inside a compound expression. Runs AFTER
+        # the dotted pass so `${view.field}` is already consumed and the bare
+        # pattern can't accidentally match the leftover field portion.
+        bare_pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}"
+
+        def replace_bare(match):
+            return f"{view_alias}.{match.group(1)}"
+
+        return re.sub(bare_pattern, replace_bare, rendered)
 
     def _render_time_macros(self, template: str) -> str:
         """Substitute dialect-aware time macros in a SQL template."""
