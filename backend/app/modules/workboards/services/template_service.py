@@ -80,7 +80,7 @@ def _collect_table_ids_from_layout(layout: Dict[str, Any]) -> set[int]:
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for k, v in node.items():
-                if k == "table_id" and isinstance(v, int):
+                if k.endswith("table_id") and isinstance(v, int):
                     out.add(v)
                 elif k == "source" and isinstance(v, str) and v.startswith("lookup:"):
                     try:
@@ -530,7 +530,12 @@ def _rewrite_table_ids(
         if isinstance(node, dict):
             for k in list(node.keys()):
                 v = node[k]
-                if k == "table_id" and isinstance(v, int) and v in id_map:
+                if k.endswith("table_id") and isinstance(v, int) and v in id_map:
+                    # Covers table_id AND from_table_id (table.lookup_columns),
+                    # primary_table_id, dataset_table_id — every int key that
+                    # names a source table must be remapped OLD→NEW, else the
+                    # imported layout points a lookup/column at the SOURCE
+                    # dataset's table (cross-dataset leak).
                     node[k] = id_map[v]
                 elif k == "source" and isinstance(v, str) and v.startswith("lookup:"):
                     try:

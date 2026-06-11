@@ -1183,8 +1183,14 @@ function FormScreen({
       return Math.max(n, 1);
     });
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault();
+    // Never persist while the wizard is on a non-final page (e.g. Enter pressed
+    // in a page-1 field): advance instead of saving a partial row.
+    if (isMultiPage && currentPage < lastVisiblePageId) {
+      goNextPage();
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     setSuccess(null);
@@ -1368,7 +1374,12 @@ function FormScreen({
           )}
 
           {isMultiPage && currentPage < lastVisiblePageId ? (
+            // Distinct key + type="button" so advancing to the LAST page does
+            // not re-type this same DOM node into a submit button mid-click
+            // (which made the browser's native click default submit the form,
+            // saving a partial row and skipping the final page).
             <button
+              key="wb-form-next"
               type="button"
               onClick={goNextPage}
               className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white"
@@ -1378,7 +1389,9 @@ function FormScreen({
             </button>
           ) : (
             <button
-              type="submit"
+              key="wb-form-submit"
+              type="button"
+              onClick={handleSubmit}
               disabled={submitting}
               className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
               style={{ backgroundColor: accent }}
