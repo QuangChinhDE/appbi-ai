@@ -158,13 +158,20 @@ HARD_FILTER_DROP_REASONS = frozenset({
     FILTER_DROP_UNKNOWN_FIELD,
     FILTER_DROP_DATASET_MISMATCH,
     FILTER_DROP_BINDING_UNSUPPORTED,
-    FILTER_DROP_UNREACHABLE_VIEW,
     FILTER_DROP_UNSUPPORTED_OPERATOR,
 })
 # SOFT reasons are intentionally tolerated and NEVER raise:
 #   • NO_FIELD / EMPTY_VALUE      — half-typed filter; the user isn't done.
 #   • NOT_IN_PUBLIC_WHITELIST     — public-link security policy (by design).
 #   • LINK_HIDDEN                 — public-link hidden-filter policy.
+#   • UNREACHABLE_VIEW            — PowerBI parity (2026-06): a filter on a
+#     table with no relationship path to the visual's base is IGNORED, not an
+#     error. Crashing here made the same "filter unrelated table" gesture
+#     behave inconsistently — loud 400 when the table was disconnected, but a
+#     silent ignore when a bridge path existed (the engine's single-direction
+#     gate handled that case). We unify on PowerBI's rule: never crash; ignore
+#     the filter and surface it as a structured drop (visible skip-badge). The
+#     filter is still reported in `_debug.dropped_filters` so it is NOT silent.
 _HARD_DROP_HINTS = {
     FILTER_DROP_UNKNOWN_FIELD: "field không tồn tại trong dataset",
     FILTER_DROP_DATASET_MISMATCH: "field thuộc dataset khác",

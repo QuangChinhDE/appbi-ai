@@ -51,7 +51,7 @@ import {
 import type { ChartDebugInfo, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
-import { getReachableViews } from '@/lib/dataset-model-graph';
+import { getReachableViews, computeStrictReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
 
@@ -1396,6 +1396,19 @@ export function ExploreEditor({
     () => new Set(reachableSemanticViews.map((view) => view.name)),
     [reachableSemanticViews],
   );
+  // PBI parity (2026-06) — views the picker offers (bidirectionally reachable)
+  // but which the backend's single-direction resolver will NOT let a filter
+  // propagate to. A filter on such a field looks valid but is silently ignored
+  // at query time, so the filter UI flags it up-front (model-time warning).
+  const bridgeOnlyViewNames = useMemo<Set<string>>(() => {
+    if (!datasetModel || !selectedSemanticView) return new Set();
+    const strict = computeStrictReachableViews(datasetModel, selectedSemanticView.name);
+    const out = new Set<string>();
+    for (const name of reachableViewNames) {
+      if (!strict.has(name)) out.add(name);
+    }
+    return out;
+  }, [datasetModel, selectedSemanticView, reachableViewNames]);
   const semanticColumns = useMemo<ColumnMetadata[]>(() => {
     if (reachableSemanticViews.length === 0) return [];
     const out: ColumnMetadata[] = [];
@@ -3250,6 +3263,7 @@ export function ExploreEditor({
                             columns={filterColumns}
                             dataRows={filterRows}
                             datasetId={selectedDatasetId}
+                            bridgeOnlyViewNames={bridgeOnlyViewNames}
                             readOnly={!resPerms.canEdit}
                           />
                         )}

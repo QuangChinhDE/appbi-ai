@@ -855,7 +855,10 @@ function ChartTileBase({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
-            {canEdit && (skippedGlobalFilters.length > 0 || droppedByBackend.length > 0) && (
+            {/* PBI parity (2026-06): NOT gated on canEdit. A viewer who applied a
+                dashboard filter must see when it didn't reach this chart — otherwise
+                the tile shows a number computed without their filter, silently. */}
+            {(skippedGlobalFilters.length > 0 || droppedByBackend.length > 0) && (
               <span
                 className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
                 title={(() => {

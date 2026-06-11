@@ -160,11 +160,25 @@ interface FilterBuilderProps {
   availableFields?: string[];
   /** When true, all controls are disabled (view-only mode). */
   readOnly?: boolean;
+  /** PBI parity (2026-06) — view names that ARE pickable (bidirectionally
+   *  reachable) but which the backend's single-direction resolver will NOT
+   *  propagate a filter to. A filter on a field from one of these views is
+   *  silently ignored at query time, so we flag it inline at author time. */
+  bridgeOnlyViewNames?: Set<string>;
+}
+
+/** Resolve the semantic view that owns a filter column, from explicit metadata
+ *  or the `view.field` qualifier. Returns '' when the column is base/unqualified. */
+function viewNameForColumn(col: ColInfo | undefined, field: string): string {
+  if (col?.viewName?.trim()) return col.viewName.trim();
+  if (field.includes('.')) return field.split('.', 1)[0];
+  return '';
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function FilterBuilder({
   filters, onChange, columns, dataRows = [], datasetId, availableFields, readOnly,
+  bridgeOnlyViewNames,
 }: FilterBuilderProps) {
   // Build column list — prefer columns with type info, fall back to string[]
   const cols: ColInfo[] = useMemo(() => {
@@ -221,20 +235,36 @@ export function FilterBuilder({
         const distinctVals = (colType === 'dropdown')
           ? getDistinctValues(filter.field, dataRows)
           : [];
+        const bridgeOnly = Boolean(
+          bridgeOnlyViewNames?.size
+          && bridgeOnlyViewNames.has(viewNameForColumn(col, filter.field)),
+        );
         return (
-          <FilterRow
-            key={idx}
-            filter={filter}
-            colType={colType}
-            operators={ops}
-            fieldOptions={cols}
-            distinctValues={distinctVals}
-            datasetId={datasetId ?? null}
-            onChangeField={v => changeField(idx, v)}
-            onChangeOperator={v => changeOperator(idx, v)}
-            onChangeValue={v => changeValue(idx, v)}
-            onRemove={() => removeFilter(idx)}
-          />
+          <div key={idx} className="space-y-1">
+            <FilterRow
+              filter={filter}
+              colType={colType}
+              operators={ops}
+              fieldOptions={cols}
+              distinctValues={distinctVals}
+              datasetId={datasetId ?? null}
+              onChangeField={v => changeField(idx, v)}
+              onChangeOperator={v => changeOperator(idx, v)}
+              onChangeValue={v => changeValue(idx, v)}
+              onRemove={() => removeFilter(idx)}
+            />
+            {bridgeOnly && (
+              <div className="flex items-start gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                <Info className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                <span>
+                  Bảng này chỉ nối <strong>gián tiếp</strong> tới bảng gốc của chart
+                  (qua một bảng trung gian). Theo chuẩn PowerBI, filter này sẽ bị{' '}
+                  <strong>bỏ qua</strong> khi chạy. Đặt quan hệ thành{' '}
+                  <strong>cross-filter 2 chiều</strong> trong Data Model nếu muốn áp dụng.
+                </span>
+              </div>
+            )}
+          </div>
         );
       })}
 

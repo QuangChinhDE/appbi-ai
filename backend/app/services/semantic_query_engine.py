@@ -1236,6 +1236,56 @@ class SemanticQueryEngine:
         # value-sampled semantic type (only catches columns modeled `string`).
         return str(dim.get("type") or "").lower() == "string"
 
+    def _field_rejects_pattern_operator(self, field_ref: str) -> bool:
+        """True when a LIKE/pattern operator can't apply to ``field_ref``'s column.
+
+        PowerBI parity (2026-06): a ``contains`` / ``starts_with`` / ``ends_with``
+        filter on a DATE or numeric column is meaningless — Postgres rejects
+        ``date LIKE '%x%'`` outright (``operator does not exist: date ~~ text``),
+        so emitting it 500s the whole chart with a misleading "cardinality
+        relationship sai" hint (the DA's date-``contains`` crash). The FE filter
+        UIs already gate operators by type, so this only fires on a legacy saved
+        filter or a programmatic/API caller. We detect it on the column's recorded
+        PHYSICAL type (``source_type``) and let the caller soft-drop the filter
+        (reason ``unsupported_operator``) instead of building invalid SQL.
+
+        Returns False (allow) whenever the type is unknown / text-like, so the
+        common case stays byte-identical and we never reject a legitimate LIKE.
+        """
+        try:
+            view_name, col = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        if view is None:
+            return False
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if not dim:
+            return False
+        # Type families where LIKE is invalid SQL. Text-like and unknown types
+        # are intentionally NOT listed (allow the operator).
+        _NON_TEXT_TYPES = {
+            "date", "datetime", "timestamp", "timestamptz", "time",
+            "int", "integer", "int64", "bigint", "smallint", "tinyint",
+            "float", "float64", "double", "double precision", "real",
+            "numeric", "decimal", "number", "bool", "boolean",
+        }
+        source_type = str(dim.get("source_type") or "").strip().lower()
+        if source_type:
+            return source_type in _NON_TEXT_TYPES
+        # Legacy cache without a physical type — fall back to the value-sampled
+        # semantic `type`, but ONLY for DATE/TIME families. A sampled `number`
+        # is unreliable: Airbyte/Sheets store numeric-looking text as physical
+        # STRING but the sampler labels it `number`; blocking `contains` there
+        # would wrongly reject a legitimate text LIKE (see the Airbyte STRING
+        # numeric-filter case). Date detection (ISO match) is reliable, and LIKE
+        # on a date is ALWAYS invalid SQL, so only dates are safe to block here.
+        _DATE_TYPES = {"date", "datetime", "timestamp", "timestamptz", "time"}
+        return str(dim.get("type") or "").strip().lower() in _DATE_TYPES
+
     def _render_measure(
         self,
         field_ref: str,
@@ -3091,6 +3141,26 @@ class SemanticQueryEngine:
             if operator in {"contains", "not_contains", "starts_with", "ends_with"}:
                 if value is None:
                     continue
+                # PBI parity (2026-06) — a LIKE operator on a DATE/numeric column
+                # is invalid SQL (Postgres: `operator does not exist: date ~~
+                # text`) and previously 500'd the chart. The FE gates operators
+                # by type; this only trips on a legacy saved filter or an API
+                # caller. Soft-drop it (visible in dropped_filters) rather than
+                # emit SQL the warehouse rejects.
+                if self._field_rejects_pattern_operator(field_ref):
+                    propagation_drops.append({
+                        "field": field_ref,
+                        "reason": "unsupported_operator",
+                        "detail": (
+                            f"Toán tử {operator!r} (dạng văn bản) không dùng được "
+                            f"trên cột {field_ref!r} kiểu ngày/số — filter bị bỏ qua."
+                        ),
+                    })
+                    self.warnings.append(
+                        f"Filter ignored — {field_ref}: operator {operator!r} is not "
+                        f"valid on a date/numeric column."
+                    )
+                    continue
                 esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
                 if operator == "contains":
                     conditions.append(f"{field_sql} LIKE '%{esc}%' ESCAPE '\\'")
@@ -3207,15 +3277,34 @@ class SemanticQueryEngine:
             if clause:
                 where_conditions.append(clause)
             else:
-                # STRICT (#4) — the filter targets a view with no resolvable
-                # join path from the chart's base, so it cannot be applied as
-                # an EXISTS predicate. Dropping it silently returns base rows
-                # unconstrained by the filter (wrong total). Fail LOUD.
-                raise ValueError(
-                    f"Filter trên {view_node!r} không áp được: không có đường "
-                    f"JOIN từ bảng gốc của chart để dựng EXISTS. Kiểm tra quan "
-                    f"hệ trong Data Model."
+                # PBI parity (2026-06) — the filter's view passed the
+                # single-direction reachability gate but the EXISTS body could
+                # not be rendered: the only join path runs through a malformed
+                # edge (no sql_on and no from/to_column — the DA's TC-F66/F72)
+                # or a nested-CTE source the dialect can't embed in a subquery.
+                # PREVIOUSLY this raised → the whole chart 500'd and the DA saw
+                # a cryptic "không có đường JOIN" error with no way to tell which
+                # filter caused it. PowerBI never errors a visual over an
+                # un-appliable filter; it ignores the filter. We do the same, but
+                # record a STRUCTURED drop (reason `no_join_path`) so it surfaces
+                # in `_debug.dropped_filters` + the skip-badge — ignored, never
+                # silent. The root cause (broken relationship) is still
+                # actionable from the badge tooltip + Data Model tab.
+                propagation_drops.append({
+                    "field": view_node,
+                    "reason": "no_join_path",
+                    "detail": (
+                        f"Filter trên bảng {view_node!r} bị bỏ qua: không dựng "
+                        f"được đường JOIN tới bảng gốc của chart (quan hệ thiếu "
+                        f"cột khóa hoặc nguồn dùng CTE lồng nhau). Kiểm tra quan "
+                        f"hệ trong Data Model."
+                    ),
+                })
+                self.warnings.append(
+                    f"Filter ignored — {view_node}: no renderable JOIN path to "
+                    f"this chart's table (check the relationship in Data Model)."
                 )
+                continue
 
         # Phase 2 — stash propagation drops on self so the chart-runtime layer
         # can surface them in `debug.dropped_filters` (structured) alongside

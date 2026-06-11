@@ -66,6 +66,62 @@ export function computeReachableViews(
 }
 
 /**
+ * PowerBI-parity (2026-06) STRICT reachability — mirrors the backend's
+ * single-direction resolver (`SemanticJoinResolver`, bidirectional=false).
+ *
+ * `computeReachableViews` walks joins BOTH ways, so it reports a sibling fact's
+ * dimension (e.g. `dim_customer` reachable from `fact_targets` via the bridge
+ * `targets→region→sales→customer`) as reachable. The backend's default
+ * single-direction relationships do NOT propagate a filter that way, so such a
+ * filter is silently ignored at query time. This helper reproduces that rule on
+ * the FE — traverse a join `from→to` always, but `to→from` ONLY when the join
+ * declares `cross_filter: 'both'` — so the Explore filter UI can WARN that a
+ * field which is pickable (bidirectionally reachable) won't actually apply.
+ *
+ * Used for warnings only; the column picker stays on the permissive set so a
+ * legitimately bidirectional (`cross_filter:'both'`) model still works.
+ */
+export function computeStrictReachableViews(
+  model: DatasetModelResponse | null | undefined,
+  baseViewName: string | null | undefined,
+): Set<string> {
+  const reachable = new Set<string>();
+  if (!model || !baseViewName) return reachable;
+  reachable.add(baseViewName);
+
+  const adjacency = new Map<string, Set<string>>();
+  const addEdge = (a: string, b: string) => {
+    if (!a || !b) return;
+    if (!adjacency.has(a)) adjacency.set(a, new Set());
+    adjacency.get(a)!.add(b);
+  };
+  for (const explore of model.explores ?? []) {
+    for (const join of explore.joins ?? []) {
+      const from = join.from_view ?? explore.base_view_name;
+      const to = join.alias || join.view;
+      addEdge(from, to);
+      // Reverse edge only when the relationship is explicitly bidirectional —
+      // matches the backend's `cross_filter === 'both'` synthetic-reverse rule.
+      const crossFilter = String((join as any).cross_filter ?? 'single').toLowerCase();
+      if (crossFilter === 'both') addEdge(to, from);
+    }
+  }
+
+  const queue: string[] = [baseViewName];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const neighbours = adjacency.get(current);
+    if (!neighbours) continue;
+    for (const next of neighbours) {
+      if (reachable.has(next)) continue;
+      reachable.add(next);
+      queue.push(next);
+    }
+  }
+  return reachable;
+}
+
+/**
  * Filter the model's views to those reachable from the base view, preserving
  * the order from `model.views`. Always includes the base view if present.
  */

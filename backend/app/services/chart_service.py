@@ -2286,6 +2286,34 @@ def _execute_semantic_chart_runtime(
     alias_map = _spec.response_aliases  # computed once on the spec above
     rows = remap_semantic_engine_rows(rows, alias_map)
 
+    # PBI parity (2026-06) — harvest the engine's OWN structured filter drops.
+    # `_build_where_clause` records two kinds of drop on the engine instance via
+    # `self._propagation_drops`: the single-direction reachability gate
+    # (`unreachable_view` — a filter on a dim related to a SIBLING fact, which
+    # PowerBI ignores) and the EXISTS-build bail (`no_join_path` — a malformed /
+    # nested-CTE join). These never went through `_normalize_runtime_filters_for_chart`
+    # so they're absent from `filter_diagnostics`; previously they survived ONLY as
+    # `engine.warnings` strings, which the dashboard tile does not render — so the
+    # ignored filter was invisible to the viewer (the DA's "mông lung" report).
+    # Merge them into `filter_diagnostics` so they reach `_debug.dropped_filters`
+    # and the FE skip-badge, exactly like the pre-engine drops. Dedupe on
+    # (field, reason) so a filter dropped at both layers shows once.
+    _engine_drops = list(getattr(engine, "_propagation_drops", []) or [])
+    if _engine_drops:
+        _seen_drop_keys = {
+            (str(d.get("field") or d.get("semantic_field") or ""), str(d.get("reason") or ""))
+            for d in filter_diagnostics
+            if isinstance(d, dict)
+        }
+        for _d in _engine_drops:
+            if not isinstance(_d, dict):
+                continue
+            _key = (str(_d.get("field") or _d.get("semantic_field") or ""), str(_d.get("reason") or ""))
+            if _key in _seen_drop_keys:
+                continue
+            _seen_drop_keys.add(_key)
+            filter_diagnostics.append(_d)
+
     result: Dict[str, Any] = {
         "data": rows,
         # The engine always emits SELECT … GROUP BY for measure'd queries, and

@@ -111,6 +111,14 @@ export function ReadonlyChartTile({
     ? title.trim()
     : (typeof chart?.name === 'string' ? chart.name.trim() : '');
   const displayTitle = configuredChartTitle || fallbackTitle;
+  // PBI parity (2026-06) — surface filters the BE could not apply to THIS
+  // chart (field unrelated to the visual's table, or a malformed join). The
+  // engine reports these in `debug.dropped_filters`; previously only the
+  // editor-facing ChartTile rendered a badge AND it was gated behind canEdit,
+  // so a viewer/public reader saw a number silently computed WITHOUT the
+  // filter they applied (the DA's "mông lung"). PowerBI shows every consumer
+  // when a slicer doesn't reach a visual; we do the same here.
+  const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -232,6 +240,24 @@ export function ReadonlyChartTile({
               </p>
             )}
           </div>
+          {droppedByBackend.length > 0 && (
+            <span
+              className="flex-shrink-0 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+              title={(() => {
+                const lines: string[] = [
+                  `Biểu đồ này không áp được ${droppedByBackend.length} filter:`,
+                ];
+                for (const d of droppedByBackend) {
+                  const ref = d.semantic_field || d.field || '(không rõ field)';
+                  lines.push(`• ${ref} — ${d.detail || d.reason}`);
+                }
+                return lines.join('\n');
+              })()}
+            >
+              <AlertTriangle className="h-3 w-3" />
+              {droppedByBackend.length} bỏ qua
+            </span>
+          )}
           {havingOptions.length > 0 && (
             <button
               onClick={() => setIsHavingOpen((current) => !current)}
