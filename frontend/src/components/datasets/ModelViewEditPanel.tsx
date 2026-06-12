@@ -2341,30 +2341,42 @@ function MeasureRow({
             {measureNames.filter((n) => !selfMeasureRefs.has(n)).map((n) => <option key={n} value={n} />)}
           </datalist>
 
-          {/* D2: table selector — only on a NEW measure row, so DA picks the
-              target table INSIDE the config form (instead of a pre-Add
-              dropdown). Changing it retargets the whole panel to that view and
-              re-opens a fresh row there. Hidden for existing measures (a saved
-              measure can't move tables here) and when there's only one
-              candidate table. */}
-          {rowKey.startsWith('new-measure') && onRetargetView && modelViews && modelViews.length > 1 && (
-            <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Bảng</label>
-              <select
-                value={viewId ?? ''}
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  if (next && next !== viewId) onRetargetView(next);
-                }}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
-                title="Measure sẽ được tạo trên bảng này. Đổi bảng sẽ mở lại form trên bảng mới."
-              >
-                {modelViews.map((v) => (
-                  <option key={v.id} value={v.id}>{v.table_display_name || v.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* D2 + unified form (2026-06-11): the "Bảng" (target table) selector
+              shows in BOTH Add and Edit so the two forms look identical (DA
+              found the layout shift confusing). On a NEW row it's editable —
+              changing it retargets the panel to that view and re-opens a fresh
+              row. On an EXISTING measure it's READ-ONLY (disabled, greyed): a
+              saved measure can't move tables here, but DA still sees which
+              table the measure lives on. Only hidden when there's a single
+              candidate table (nothing to pick). */}
+          {modelViews && modelViews.length > 1 && (() => {
+            const isNewRow = rowKey.startsWith('new-measure');
+            const canRetarget = isNewRow && Boolean(onRetargetView);
+            return (
+              <div>
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">Bảng</label>
+                <select
+                  value={viewId ?? ''}
+                  disabled={!canRetarget}
+                  onChange={(e) => {
+                    if (!canRetarget) return;
+                    const next = Number(e.target.value);
+                    if (next && next !== viewId) onRetargetView!(next);
+                  }}
+                  className={`mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand ${
+                    canRetarget ? 'bg-surface-1' : 'bg-surface-2 text-text-tertiary cursor-not-allowed'
+                  }`}
+                  title={canRetarget
+                    ? 'Measure sẽ được tạo trên bảng này. Đổi bảng sẽ mở lại form trên bảng mới.'
+                    : 'Measure đã lưu thuộc bảng này — không đổi bảng được. Tạo measure mới nếu cần bảng khác.'}
+                >
+                  {modelViews.map((v) => (
+                    <option key={v.id} value={v.id}>{v.table_display_name || v.name}</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })()}
 
           {/* B3: no more 3-way mode toggle. Default = lowcode (Aggregation +
               Cột below). The "Công thức nâng cao" disclosure reveals the SQL
