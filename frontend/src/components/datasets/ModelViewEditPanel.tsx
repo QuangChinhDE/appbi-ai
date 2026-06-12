@@ -2022,10 +2022,28 @@ function MeasureRow({
       }
     }
     for (const m of otherMeasureNames) {
-      out.push({ insertText: m, wrap: true, label: m, kind: 'measure', group: 'Measure' });
+      out.push({ insertText: m, wrap: true, label: m, kind: 'measure', group: 'Measure (bảng này)' });
+    }
+    // Cross-view MEASURES — ratio across tables (e.g. ${products.value} /
+    // ${employees.value}). Inserted as ${displayView.measure}; the BE inlines
+    // each as its own aggregate (no outer wrap). Grouped per source table.
+    for (const v of modelViews ?? []) {
+      if (v.id === viewId) continue;
+      if (v.hidden_in_canvas || v.view_role === 'calendar_role' || v.system_managed) continue;
+      const label = v.table_display_name || v.name;
+      for (const me of v.measures ?? []) {
+        if (!me?.name || me.hidden) continue;
+        out.push({
+          insertText: `${label}.${me.name}`,
+          wrap: true,
+          label: `${label}.${me.label || me.name}`,
+          kind: 'measure',
+          group: `Measure từ bảng: ${label}`,
+        });
+      }
     }
     return out;
-  }, [columnOptions, otherViewColumnGroups, otherMeasureNames]);
+  }, [columnOptions, otherViewColumnGroups, otherMeasureNames, modelViews, viewId]);
 
   // E9 / BUG-007 (2026-06-11): single handler the chip editor calls with the
   // DISPLAY-space expression. Converts display→technical, then classifies EVERY
@@ -2039,6 +2057,22 @@ function MeasureRow({
   // are resolved by the BE (`view_alias.field`), measures become deps.
   const knownMeasureNames = useMemo(() => new Set(otherMeasureNames), [otherMeasureNames]);
   const knownColumnNames = useMemo(() => new Set(columnOptions), [columnOptions]);
+  // BUG (2026-06-12): a qualified ref `${view.field}` can be a cross-view
+  // MEASURE (→ ratio formula, depends_on, NO outer aggregate) or a cross-table
+  // COLUMN (→ source_columns + scope=dataset, wrapped by the Aggregation). The
+  // old classifier looked only at whether `view` was known and forced EVERY
+  // dotted ref to a column — which (a) SUM-wrapped a measure ratio and (b) made
+  // the cross-view measure-ratio feature unreachable. These sets let us tell
+  // them apart by looking up `field` on its view in the model.
+  const crossViewMeasureRefs = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of modelViews ?? []) {
+      for (const m of v.measures ?? []) {
+        if (m?.name) s.add(`${v.name}.${m.name}`);
+      }
+    }
+    return s;
+  }, [modelViews]);
   const commitExpressionDisplay = (displayText: string) => {
     const tech = rewriteExprViewTokens(displayText, displayToTech);
     // Collect every ${...} ref (bare `name` or dotted `view.field`).
@@ -2054,13 +2088,18 @@ function MeasureRow({
       if (dot > 0) {
         const view = inner.slice(0, dot);
         const field = inner.slice(dot + 1);
-        if (techToDisplay.has(view)) {
-          crossRefs.push({ view, field });      // cross-table column
+        if (crossViewMeasureRefs.has(inner)) {
+          // ${view.measure} → ratio over another view's MEASURE: formula
+          // dependency, NOT a column. Engine inlines the dep measure's own
+          // aggregate; the outer Aggregation must NOT wrap it.
+          measureRefs.push(inner);
+        } else if (techToDisplay.has(view)) {
+          crossRefs.push({ view, field });      // cross-table COLUMN
         } else {
-          measureRefs.push(inner);              // qualified measure ref (view.measure)
+          measureRefs.push(inner);              // unknown-view qualified ref → treat as dep
         }
       } else if (knownMeasureNames.has(inner)) {
-        measureRefs.push(inner);                // bare measure
+        measureRefs.push(inner);                // bare measure (same view)
       }
       // else: bare same-table column → leave in expression; BE resolves to
       // view_alias.field. Not a dep, not a source_column.

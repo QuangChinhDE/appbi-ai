@@ -581,6 +581,14 @@ class SemanticQueryEngine:
         # added to the FROM/JOIN chain → "Unrecognized name: B". Adding the
         # source_columns views here guarantees the JOIN reaches them in BOTH
         # cases. (Isolated views are subtracted right after, as before.)
+        # BUG (2026-06-12): also pull in the views of a formula measure's
+        # cross-view `depends_on` measures. A ratio like
+        # `${products.prod_value}/${employees.emp_value}` declared on base
+        # `sales` lists those qualified measures in depends_on; the formula
+        # renderer inlines each as its OWN aggregate (SUM(products.price) etc.),
+        # so products/employees must be in the FROM/JOIN chain or BigQuery
+        # raises "Unrecognized name". (source_columns covers the column-ratio
+        # case; this covers the measure-ratio case.)
         measure_source_views: set[str] = set()
         for m in measures:
             try:
@@ -593,12 +601,20 @@ class SemanticQueryEngine:
                  if md.get("name") == fld or md.get("sql_name") == fld),
                 None,
             )
-            if not mdef or str(mdef.get("scope") or "view") != "dataset":
+            if not mdef:
                 continue
-            for entry in mdef.get("source_columns") or []:
-                sv = str(entry.get("view") or "").strip() if isinstance(entry, dict) else ""
-                if sv:
-                    measure_source_views.add(sv)
+            if str(mdef.get("scope") or "view") == "dataset":
+                for entry in mdef.get("source_columns") or []:
+                    sv = str(entry.get("view") or "").strip() if isinstance(entry, dict) else ""
+                    if sv:
+                        measure_source_views.add(sv)
+            # cross-view depends_on measures → JOIN their views
+            for dep in mdef.get("depends_on") or []:
+                dep_s = str(dep or "").strip()
+                if "." in dep_s:
+                    dep_view = dep_s.split(".", 1)[0].strip()
+                    if dep_view and dep_view != decl_view:
+                        measure_source_views.add(dep_view)
 
         select_side_views = (
             _views_of(select_side_refs)
