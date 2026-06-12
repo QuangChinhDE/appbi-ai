@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -41,7 +41,14 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
-const ResponsiveGridLayout = WidthProvider(Responsive);
+// Fixed (non-responsive) 12-column grid that scales cell width with the
+// container. Mirrors components/dashboards/DashboardGrid.tsx: using a plain
+// WidthProvider(GridLayout) instead of Responsive means a viewport shrink
+// (rotating a phone, opening DevTools, dragging the window) never swaps
+// breakpoints or vertically compacts tiles — the published layout renders
+// exactly as the author arranged it, only smaller. Previously this used
+// Responsive + compactType="vertical", which made charts jump on resize.
+const FixedGridLayout = WidthProvider(GridLayout);
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
 
@@ -1239,16 +1246,16 @@ export default function PublicDashboardPage() {
               className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
               style={publicTheme.canvasInnerStyle}
             >
-              <ResponsiveGridLayout
+              <FixedGridLayout
                 className="layout"
-                layouts={{ lg: layouts }}
-                breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-                cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                layout={layouts}
+                cols={12}
                 rowHeight={80}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
                 isResizable={false}
-                compactType="vertical"
+                compactType={null}
+                preventCollision={true}
               >
                 {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
                   // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
@@ -1296,7 +1303,7 @@ export default function PublicDashboardPage() {
                     </div>
                   );
                 })}
-              </ResponsiveGridLayout>
+              </FixedGridLayout>
             </div>
           )}
         </section>

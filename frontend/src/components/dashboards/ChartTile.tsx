@@ -1249,6 +1249,7 @@ function ChartTileBase({
               formatMap={tileFormatMap}
               havingFilters={havingFilters}
               preAggregated={preAggregated}
+              embedded
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

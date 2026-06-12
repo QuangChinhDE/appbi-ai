@@ -9,7 +9,7 @@ import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { useChartData, useCharts } from '@/hooks/use-charts';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
-import { getDashboardChartPageId } from '@/lib/dashboard-pages';
+import { getDashboardChartPageId, packNewGridTiles } from '@/lib/dashboard-pages';
 import { ChartType } from '@/types/api';
 import type {
   Chart,
@@ -317,12 +317,20 @@ export function AddChartModal({
     const ids = Array.from(selectedChartIds);
     if (ids.length === 0) return;
 
-    // Add each staged chart sequentially. Every add lands at {x:0,y:0}; the grid
-    // resolves the collision by cascading (same mechanism as single-add), so N
-    // charts flow into open slots. Per-chart instance parameters from the form are
-    // only applied when exactly one chart is staged; bulk-add uses each chart's
-    // own defaults.
-    for (const id of ids) {
+    // Tile the batch into open slots, flowing left→right then wrapping down,
+    // starting from cells already occupied on the active page. The grid uses
+    // compactType=null + preventCollision, so it will NOT auto-arrange charts
+    // dropped on the same {0,0} cell (they'd stack in one column). We compute
+    // each chart's slot up front. Per-chart instance parameters from the form
+    // are only applied when exactly one chart is staged; bulk-add uses each
+    // chart's own defaults.
+    const occupied = dashboardCharts
+      .filter((dc) => getDashboardChartPageId(dc.layout) === activePageId)
+      .map((dc) => ({ x: dc.layout?.x, y: dc.layout?.y, w: dc.layout?.w, h: dc.layout?.h }));
+    const slots = packNewGridTiles(occupied, ids.map(() => ({ w: width, h: height })));
+
+    for (let index = 0; index < ids.length; index++) {
+      const id = ids[index];
       const chart = availableCharts.find((candidate) => candidate.id === id);
       const thisChartParams = chart?.parameters ?? [];
       const parameters: Record<string, unknown> = {};
@@ -336,8 +344,8 @@ export function AddChartModal({
       }
 
       const layout: DashboardChartLayout = {
-        x: 0,
-        y: 0,
+        x: slots[index]?.x ?? 0,
+        y: slots[index]?.y ?? 0,
         w: width,
         h: height,
       };
@@ -356,9 +364,13 @@ export function AddChartModal({
   };
 
   const handleCreateAndAdd = async (chartId: number) => {
+    const occupied = dashboardCharts
+      .filter((dc) => getDashboardChartPageId(dc.layout) === activePageId)
+      .map((dc) => ({ x: dc.layout?.x, y: dc.layout?.y, w: dc.layout?.w, h: dc.layout?.h }));
+    const [slot] = packNewGridTiles(occupied, [{ w: width, h: height }]);
     const layout: DashboardChartLayout = {
-      x: 0,
-      y: 0,
+      x: slot?.x ?? 0,
+      y: slot?.y ?? 0,
       w: width,
       h: height,
     };

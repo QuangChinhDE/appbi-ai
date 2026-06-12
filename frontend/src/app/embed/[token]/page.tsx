@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -38,7 +38,10 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
-const ResponsiveGridLayout = WidthProvider(Responsive);
+// Fixed (non-responsive) 12-column grid — see d/[token]/page.tsx for the
+// rationale. Responsive + compactType="vertical" made embedded charts jump
+// on resize; a plain WidthProvider(GridLayout) keeps the author's layout.
+const FixedGridLayout = WidthProvider(GridLayout);
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
 
@@ -899,16 +902,16 @@ export default function EmbedDashboardPage() {
                 className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
                 style={publicTheme.canvasInnerStyle}
               >
-                <ResponsiveGridLayout
+                <FixedGridLayout
                   className="layout"
-                  layouts={{ lg: layouts }}
-                  breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-                  cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                  layout={layouts}
+                  cols={12}
                   rowHeight={80}
                   margin={getDashboardGridMargin(dashboard?.theme_config)}
                   isDraggable={false}
                   isResizable={false}
-                  compactType="vertical"
+                  compactType={null}
+                  preventCollision={true}
                 >
                   {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
                     const chart = dashboardChart.chart;
@@ -943,7 +946,7 @@ export default function EmbedDashboardPage() {
                       </div>
                     );
                   })}
-                </ResponsiveGridLayout>
+                </FixedGridLayout>
               </div>
             )}
           </section>

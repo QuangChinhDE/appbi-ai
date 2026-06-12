@@ -1083,6 +1083,11 @@ export interface ExploreChartProps {
    *  per-series override). Lets a CR1 measure with format.kind='percent'
    *  render as "30%" instead of "0.3" out of the box. */
   formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
+  /** Rendered inside a dashboard tile (which supplies its own card frame).
+   *  Currently only affects KPI: drops KpiCard's nested card chrome and lets
+   *  it fill the tile width instead of capping at max-w-xl. Default false
+   *  keeps standalone Explore rendering unchanged. */
+  embedded?: boolean;
 }
 
 function ExploreChartInner({
@@ -1096,6 +1101,7 @@ function ExploreChartInner({
   onSelectDataPoint,
   labelMap,
   formatMap,
+  embedded = false,
 }: ExploreChartProps) {
   const style = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   const PALETTE = useMemo(
@@ -1679,7 +1685,7 @@ function ExploreChartInner({
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-xl">
+          <div className={embedded ? 'w-full' : 'w-full max-w-xl'}>
             <KpiCard
               value={kpiValue}
               label={cardLabel}
@@ -1701,6 +1707,7 @@ function ExploreChartInner({
               accentBorder={style.kpiAccentBorder}
               gradientBg={style.kpiGradientBg}
               valueFontSize={kpiValueFontSize}
+              embedded={embedded}
             />
           </div>
         </div>

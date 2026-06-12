@@ -28,6 +28,12 @@ type KpiCardProps = {
   accentBorder?: boolean;
   gradientBg?: boolean;
   valueFontSize?: number;
+  /** When rendered inside a dashboard tile, the tile already provides the card
+   *  frame (border + shadow + padding). `embedded` drops KpiCard's own outer
+   *  chrome (border, shadow, gradient top-bar) and tightens padding so the KPI
+   *  doesn't read as a second nested card floating in empty space. Standalone
+   *  Explore usage leaves this false and keeps the full standalone card. */
+  embedded?: boolean;
 };
 
 const DEFAULT_ACCENT_COLOR = '#2563eb';
@@ -194,6 +200,7 @@ export function KpiCard({
   accentBorder = false,
   gradientBg = false,
   valueFontSize,
+  embedded = false,
 }: KpiCardProps) {
   const IconComponent: React.ComponentType<{ className?: string; style?: React.CSSProperties }> | null =
     iconName && (LucideIcons as any)[iconName] ? (LucideIcons as any)[iconName] : null;
@@ -234,25 +241,36 @@ export function KpiCard({
     ? Math.min(Math.max(Math.round(valueFontSize), 16), 80)
     : undefined;
 
+  // Inside a dashboard tile the surrounding tile already draws the card frame.
+  // Drop our own border/shadow/gradient-bar (unless the author opted into an
+  // accent border) and tighten padding so the KPI fills the tile instead of
+  // floating as a smaller nested card. See `embedded` prop doc.
+  const showOwnFrame = !embedded || accentBorder;
+  const showGradientBar = !embedded;
+
   return (
     <div
-      className="overflow-hidden rounded-2xl border bg-surface-1 shadow-linear-sm"
+      className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? '' : 'bg-surface-1'}`}
       style={{
-        borderColor: accentBorder ? (accentColor || DEFAULT_ACCENT_COLOR) : 'rgb(var(--border-line))',
-        borderWidth: accentBorder ? 2 : 1,
+        borderColor: showOwnFrame
+          ? (accentBorder ? (accentColor || DEFAULT_ACCENT_COLOR) : 'rgb(var(--border-line))')
+          : undefined,
+        borderWidth: showOwnFrame ? (accentBorder ? 2 : 1) : undefined,
         background: gradientBg
           ? `linear-gradient(135deg, ${accentColor || DEFAULT_ACCENT_COLOR}10, transparent 60%)`
           : undefined,
       }}
     >
-      <div
-        className="h-1.5 w-full"
-        style={{
-          background: `linear-gradient(90deg, ${accentColor || DEFAULT_ACCENT_COLOR}, ${valueColor})`,
-        }}
-      />
+      {showGradientBar && (
+        <div
+          className="h-1.5 w-full"
+          style={{
+            background: `linear-gradient(90deg, ${accentColor || DEFAULT_ACCENT_COLOR}, ${valueColor})`,
+          }}
+        />
+      )}
 
-      <div className="p-6 sm:p-7">
+      <div className={embedded ? 'px-1 py-1' : 'p-6 sm:p-7'}>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             {(label || IconComponent) && (
