@@ -23,6 +23,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RotateCcw,
   Save,
   Search,
   Sigma,
@@ -54,6 +55,7 @@ import {
   type DatasetTable,
 } from '@/hooks/use-datasets';
 import { usePreviewTableDescription, type TableDescriptionPreview } from '@/hooks/useDescription';
+import { useLocalDraft } from '@/hooks/use-local-draft';
 import { AiDescriptionDiffModal } from './AiDescriptionDiffModal';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { MeasureExpressionEditor, type ExprSuggestion } from './MeasureExpressionEditor';
@@ -3273,6 +3275,79 @@ export function ModelViewEditPanel({
       ))
     );
 
+  // ── Draft autosave (UX: never lose measure config on reload / view switch) ──
+  // Snapshots the full editable model state (incl. row keys so rename detection
+  // survives a restore) to localStorage, debounced. Restore is via a banner
+  // (never auto-applied) — see useLocalDraft for the rationale.
+  const draftValue = useMemo(
+    () => ({ measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys }),
+    [measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys],
+  );
+  const draftKey = view ? `appbi:measure-draft:v1:${datasetId}:${view.id}` : null;
+  const { pendingDraft, restore: restoreDraft, discard: discardDraft } = useLocalDraft({
+    key: draftKey,
+    value: draftValue,
+    isDirty: modelIsDirty,
+    enabled: canEdit && !!view,
+  });
+
+  // A stored draft equal to the saved baseline (e.g. written by flush-on-leave
+  // when nothing was actually edited) must not surface a banner. The baseline
+  // lives on `view.*` here, so we compare the SEMANTIC fields only (row keys
+  // are editing-identity, not part of the saved record) and drop equal drafts.
+  const draftDiffersFromSaved = useMemo(() => {
+    if (!pendingDraft || !view) return false;
+    const baseline = JSON.stringify({
+      measures: view.measures ?? [],
+      dimensions: view.dimensions ?? [],
+      viewDescription: view.description || '',
+    });
+    const draft = JSON.stringify({
+      measures: pendingDraft.data.measures ?? [],
+      dimensions: pendingDraft.data.dimensions ?? [],
+      viewDescription: pendingDraft.data.viewDescription || '',
+    });
+    return baseline !== draft;
+  }, [pendingDraft, view]);
+
+  useEffect(() => {
+    if (pendingDraft && view && !draftDiffersFromSaved) discardDraft();
+  }, [pendingDraft, view, draftDiffersFromSaved, discardDraft]);
+
+  const applyDraft = () => {
+    const data = restoreDraft();
+    if (!data || !view) return;
+    const restoredMeasures = Array.isArray(data.measures) ? data.measures : [];
+    const restoredDimensions = Array.isArray(data.dimensions) ? data.dimensions : [];
+    setMeasures(restoredMeasures);
+    setDimensions(restoredDimensions);
+    setViewDescription(data.viewDescription || '');
+    setMeasureRowKeys(
+      Array.isArray(data.measureRowKeys) && data.measureRowKeys.length === restoredMeasures.length
+        ? data.measureRowKeys
+        : restoredMeasures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`),
+    );
+    setDimensionRowKeys(
+      Array.isArray(data.dimensionRowKeys) && data.dimensionRowKeys.length === restoredDimensions.length
+        ? data.dimensionRowKeys
+        : restoredDimensions.map((d, index) => `${view.id}:dimension:${index}:${d.name || 'field'}`),
+    );
+    setActiveNewRowKey(null);
+  };
+
+  // Warn before leaving the page/closing the tab with unsaved measure changes.
+  // The autosaved draft already protects the data; this prompt just surfaces it
+  // (pattern reused from DashboardHtmlImportModal).
+  useEffect(() => {
+    if (!modelIsDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [modelIsDirty]);
+
   const handleSaveModel = async () => {
     if (!view) return;
     // ── Client-side validation: catch misconfigurations before the round-trip ──
@@ -3459,6 +3534,9 @@ export function ModelViewEditPanel({
       } else {
         toast.success(contentMode === 'measures' ? 'Measures saved' : 'Fields saved');
       }
+      // Persisted to the BE — drop the local draft so a later reload doesn't
+      // offer to "restore" what's already saved.
+      discardDraft();
     } catch (error: unknown) {
       const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
       const detail = response?.data?.detail;
@@ -3480,6 +3558,7 @@ export function ModelViewEditPanel({
         if (proceed) {
           try {
             await trySave(true);
+            discardDraft();
             toast.success('Đã lưu (cần sửa lại chart đang dùng).');
           } catch (force_error: unknown) {
             const fd = (force_error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -3616,6 +3695,32 @@ export function ModelViewEditPanel({
         {/* ── Fields tab ── */}
         {activeTab === 'fields' && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            {/* Draft restore banner — appears when an autosaved draft for this
+                table differs from what's saved (e.g. after a reload or after
+                switching away mid-edit and coming back). Restore is explicit. */}
+            {draftDiffersFromSaved && pendingDraft && (
+              <div className="shrink-0 flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2">
+                <RotateCcw className="h-3.5 w-3.5 text-warning shrink-0" />
+                <span className="flex-1 text-[11px] leading-4 text-text-secondary">
+                  Có bản nháp measure chưa lưu
+                  {pendingDraft.savedAt ? ` (lúc ${new Date(pendingDraft.savedAt).toLocaleString('vi-VN')})` : ''} — khôi phục để tiếp tục chỉnh sửa?
+                </span>
+                <button
+                  type="button"
+                  onClick={applyDraft}
+                  className="inline-flex items-center gap-1 rounded-md bg-warning px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90 shrink-0"
+                >
+                  <RotateCcw className="h-3 w-3" /> Khôi phục
+                </button>
+                <button
+                  type="button"
+                  onClick={discardDraft}
+                  className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-2 shrink-0"
+                >
+                  Bỏ
+                </button>
+              </div>
+            )}
             {/* View description */}
             {contentMode !== 'measures' && (
               <div className="shrink-0 px-4 pt-3 pb-2 border-b border-[rgb(var(--border-line))]">
