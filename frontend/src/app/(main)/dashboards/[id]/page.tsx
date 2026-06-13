@@ -56,6 +56,7 @@ import {
   getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
+  tidyPageLayout,
 } from '@/lib/dashboard-pages';
 import { toast } from '@/lib/toast';
 
@@ -615,6 +616,31 @@ export default function DashboardDetailPage() {
     }
     setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
   };
+
+  // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
+  // aligned, equal-height-row grid (kills the ragged "thò thụt" look). Writes
+  // to the same local-override → Save-draft path as a manual drag, so it's
+  // staged (not auto-saved) and reversible via Discard.
+  const handleTidyLayout = useCallback(() => {
+    if (!dashboard) return;
+    const pageCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    if (pageCharts.length === 0) return;
+    const tiles = pageCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || 4,
+      h: Number(dc.layout?.h) || 4,
+    }));
+    const tidied = tidyPageLayout(tiles);
+    const next: Record<number, Record<string, any>> = {};
+    for (const t of tidied) {
+      const existing = pageCharts.find((dc) => dc.id === t.id);
+      next[t.id] = { ...(existing?.layout ?? {}), x: t.x, y: t.y, w: t.w, h: t.h };
+    }
+    setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
+    toast.success('Đã sắp xếp gọn — bấm Lưu để giữ.');
+  }, [dashboard, activePageId]);
 
   // Canvas-mode layout updates: same pattern — local state only.
   const handleCanvasLayoutChange = useCallback(
@@ -2153,6 +2179,17 @@ export default function DashboardDetailPage() {
                             )}
                             {(dashboard?.layout_mode ?? 'grid') === 'grid' ? 'Switch to Canvas' : 'Switch to Grid'}
                           </button>
+
+                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                            <button
+                              onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title="Cào các chart về lưới ngay ngắn, cân chiều cao mỗi hàng"
+                            >
+                              <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              Sắp xếp gọn
+                            </button>
+                          )}
 
                           <button
                             onClick={() => { setIsThemeOpen(true); setIsMoreMenuOpen(false); }}

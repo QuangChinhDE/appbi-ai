@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -31,6 +31,8 @@ import {
   ensureDashboardPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
+  liftLayoutToTop,
+  deriveStackedLayout,
 } from '@/lib/dashboard-pages';
 import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
@@ -38,10 +40,12 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
-// Fixed (non-responsive) 12-column grid — see d/[token]/page.tsx for the
-// rationale. Responsive + compactType="vertical" made embedded charts jump
-// on resize; a plain WidthProvider(GridLayout) keeps the author's layout.
-const FixedGridLayout = WidthProvider(GridLayout);
+// Phase-B5 — coarse-breakpoint responsive grid (see d/[token]/page.tsx).
+// lg ≥768 = 12-col authored layout (desktop resize never reflows); xs <768 =
+// 1-col stack for mobile/tablet embeds.
+const ResponsiveReportGrid = WidthProvider(Responsive);
+const REPORT_BREAKPOINTS = { lg: 768, xs: 0 };
+const REPORT_COLS = { lg: 12, xs: 1 };
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
 
@@ -747,16 +751,18 @@ export default function EmbedDashboardPage() {
     );
   }
 
-  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
-    const layout = dashboardChart.layout;
-    return {
-      i: dashboardChart.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-    };
-  });
+  const layouts: Layout[] = liftLayoutToTop(
+    visibleDashboardCharts.map((dashboardChart) => {
+      const layout = dashboardChart.layout;
+      return {
+        i: dashboardChart.id.toString(),
+        x: layout.x || 0,
+        y: layout.y || 0,
+        w: layout.w || 4,
+        h: layout.h || 4,
+      };
+    }),
+  );
 
   return (
     <DashboardThemeProvider
@@ -768,47 +774,55 @@ export default function EmbedDashboardPage() {
 
       <div
         ref={embedContentRef}
-        className="w-full overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
-        style={publicTheme.shellStyle}
+        className={`w-full overflow-visible rounded-xl ${
+          dashboard?.theme_config?.backgroundImage
+            ? '' /* Phase-B16 — transparent shell so the report background image shows through */
+            : 'border border-[rgb(var(--border-line))] bg-surface-1'
+        }`}
+        style={dashboard?.theme_config?.backgroundImage ? undefined : publicTheme.shellStyle}
       >
         {showControlSurface && (
           <section
-            className="border-b border-[rgb(var(--border-line))] px-3 py-3 sm:px-4 sm:py-4"
+            className="border-b border-[rgb(var(--border-line))] px-3 py-2 sm:px-4 sm:py-2.5"
             style={publicTheme.panelStyle}
           >
             {(showEmbedHeader || showPageTabs || showFilterControls) && (
-              <div className="flex flex-col gap-3">
-                {showEmbedHeader && (
-                  <h1 className="truncate text-small font-strong text-text-primary">{presentationTitle}</h1>
-                )}
-
-                {showPageTabs && (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {dashboardPages.map((page) => {
-                      const isActive = page.id === activePageId;
-                      const isPending = page.id === pendingPageId;
-                      return (
-                        <button
-                          key={page.id}
-                          type="button"
-                          onClick={() => {
-                            void handlePageSelect(page.id);
-                          }}
-                          className={`inline-flex items-center whitespace-nowrap rounded-full border px-3 py-1.5 text-tiny font-emphasis transition-colors ${
-                            isActive
-                              ? 'border-transparent bg-text-primary text-text-inverse'
-                              : isPending
-                                ? 'border-brand/20 bg-brand/10 text-brand'
-                                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-                          }`}
-                          style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
-                          disabled={isPending}
-                        >
-                          {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                          {page.name}
-                        </button>
-                      );
-                    })}
+              <div className="flex flex-col gap-2">
+                {/* Phase-B1 — title + page tabs on ONE compact row. */}
+                {(showEmbedHeader || showPageTabs) && (
+                  <div className="flex items-center gap-3">
+                    {showEmbedHeader && (
+                      <h1 className="shrink-0 max-w-[40%] truncate text-small font-strong text-text-primary">{presentationTitle}</h1>
+                    )}
+                    {showPageTabs && (
+                      <nav className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
+                        {dashboardPages.map((page) => {
+                          const isActive = page.id === activePageId;
+                          const isPending = page.id === pendingPageId;
+                          return (
+                            <button
+                              key={page.id}
+                              type="button"
+                              onClick={() => {
+                                void handlePageSelect(page.id);
+                              }}
+                              className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-tiny font-emphasis transition-colors ${
+                                isActive
+                                  ? 'border-transparent bg-text-primary text-text-inverse'
+                                  : isPending
+                                    ? 'border-brand/20 bg-brand/10 text-brand'
+                                    : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                              }`}
+                              style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                              disabled={isPending}
+                            >
+                              {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                              {page.name}
+                            </button>
+                          );
+                        })}
+                      </nav>
+                    )}
                   </div>
                 )}
 
@@ -890,22 +904,19 @@ export default function EmbedDashboardPage() {
         <div className="px-2 py-3 sm:px-3 sm:py-4">
           <section
             ref={gridSectionRef}
-            className={`rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
-            style={publicTheme.canvasFrameStyle}
+            className={`p-1 transition-opacity duration-200 sm:p-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
           >
             {visibleDashboardCharts.length === 0 ? (
               <div className="flex h-48 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
                 <p className="text-tiny text-text-quaternary">No charts on this page yet.</p>
               </div>
             ) : (
-              <div
-                className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
-                style={publicTheme.canvasInnerStyle}
-              >
-                <FixedGridLayout
+              <div className={publicTheme.density.canvasPaddingClass}>
+                <ResponsiveReportGrid
                   className="layout"
-                  layout={layouts}
-                  cols={12}
+                  layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+                  breakpoints={REPORT_BREAKPOINTS}
+                  cols={REPORT_COLS}
                   rowHeight={80}
                   margin={getDashboardGridMargin(dashboard?.theme_config)}
                   isDraggable={false}
@@ -917,7 +928,8 @@ export default function EmbedDashboardPage() {
                     const chart = dashboardChart.chart;
                     const payload = chartData[dashboardChart.chart_id];
                     const chartError = chartErrors[dashboardChart.chart_id];
-                    const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
+                    // Phase-B11 — no auto chart-name title; only an explicit one.
+                    const title = dashboardChart.layout.custom_title ?? '';
 
                     return (
                       <div key={dashboardChart.id.toString()} className="h-full">
@@ -946,7 +958,7 @@ export default function EmbedDashboardPage() {
                       </div>
                     );
                   })}
-                </FixedGridLayout>
+                </ResponsiveReportGrid>
               </div>
             )}
           </section>

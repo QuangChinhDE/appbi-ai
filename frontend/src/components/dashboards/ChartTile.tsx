@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, TrendingUp } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { applyFilters } from '@/lib/explore-utils';
 import {
   getRoleConfigDimensionFields,
@@ -412,10 +413,11 @@ function ChartTileBase({
   const [isHavingOpen, setIsHavingOpen] = useState(false);
   const [isTileMenuOpen, setIsTileMenuOpen] = useState(false);
   const [isMovePageOpen, setIsMovePageOpen] = useState(false);
-  // Phase-15.78 — per-tile Top N / Bottom N quick control. Persists into
-  // styleConfigOverride.dataLimit + .dataLimitDirection so the saved
-  // chart isn't mutated (other dashboards keep their own choice).
-  const [isTopNOpen, setIsTopNOpen] = useState(false);
+  // Phase-B13 — the per-tile Top/Bottom-N quick control was REMOVED from the
+  // dashboard tile: letting a viewer change row count on the dashboard added
+  // little analytical value, conflicted with the chart's saved config, and was
+  // unstable. Top/Bottom-N is now configured ONLY in Explore (the chart still
+  // respects its saved dataLimit when rendering here).
   const [draftHavingField, setDraftHavingField] = useState('');
   const [draftHavingOp, setDraftHavingOp] = useState<FilterOperator>('gt');
   const [draftHavingValue, setDraftHavingValue] = useState('');
@@ -439,14 +441,27 @@ function ChartTileBase({
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
     [chart, currentLayout],
   );
-  const configuredChartTitle =
-    effectiveStyleConfig.chartTitle?.trim()
-    || (typeof (chart?.config as any)?.title === 'string' ? (chart?.config as any).title.trim() : '');
   const customTitle = typeof currentLayout?.custom_title === 'string'
     ? currentLayout.custom_title.trim()
     : '';
+  const configuredChartTitle =
+    effectiveStyleConfig.chartTitle?.trim()
+    || (typeof (chart?.config as any)?.title === 'string' ? (chart?.config as any).title.trim() : '');
   const chartName = typeof chart?.name === 'string' ? chart.name.trim() : '';
-  const displayTitle = configuredChartTitle || customTitle || chartName;
+  // Phase-B11 (revised) — PRIORITY: a per-tile custom title the DA set on the
+  // dashboard wins; otherwise fall back to the chart's Explore title/name. (The
+  // earlier draft dropped the Explore-name fallback entirely — wrong; the DA
+  // wants the chart name shown when they haven't set a custom one.)
+  const displayTitle = customTitle || configuredChartTitle || chartName;
+  // Phase-B15 — dashboard theme title font/color (empty {} standalone).
+  const dashTheme = useDashboardChartTheme();
+  const themeTitleStyle: React.CSSProperties | undefined =
+    dashTheme.titleFontSize || dashTheme.titleColor
+      ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
+      : undefined;
+  // Phase-B10 — KPI renders its own metric label inside the card; hide the
+  // redundant tile title (keep the toolbar/drag-handle row).
+  const isKpiCard = String(chart?.chart_type || '').toUpperCase() === 'KPI';
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -496,68 +511,6 @@ function ChartTileBase({
   const openDetailModal = (tab: 'appearance' | 'data') => {
     setDetailModalInitialTab(tab);
     setIsDetailModalOpen(true);
-  };
-
-  // Phase-15.78 — persist Top N / Bottom N override at the tile level
-  // through styleConfigOverride. Setting limit to '' clears the override
-  // so the base chart's saved dataLimit (if any) takes over.
-  //
-  // Phase-15.79 — applyDataLimit just slice(0,N) or slice(-N) the array
-  // in BE row order. For the tooltip wording "by metric value" to be
-  // accurate, the data has to be sorted by that metric first. When the
-  // user sets a Top/Bottom N on a tile whose chartSortRules don't
-  // already mention the primary metric, we auto-insert one (desc for
-  // 'top', asc for 'bottom'). Clearing the limit does NOT remove the
-  // sort rule — sort and limit are independent and the user might want
-  // the sort alone.
-  const saveTopN = async (limit: number | '', direction: 'top' | 'bottom') => {
-    if (!canEdit) return;
-    const currentStyleOverride = currentLayout?.styleConfigOverride;
-    const baseOverride: Record<string, any> = (
-      currentStyleOverride
-      && typeof currentStyleOverride === 'object'
-      && !Array.isArray(currentStyleOverride)
-    )
-      ? { ...currentStyleOverride }
-      : {};
-    if (limit === '' || limit == null) {
-      delete baseOverride.dataLimit;
-      delete baseOverride.dataLimitDirection;
-    } else {
-      baseOverride.dataLimit = limit;
-      baseOverride.dataLimitDirection = direction;
-      // Auto-insert a sort rule on the primary metric if the effective
-      // style doesn't already have one. Auto-injection is per-tile via
-      // styleConfigOverride.chartSortRules — base chart config isn't
-      // mutated. We look at the *effective* rules (base + override) to
-      // avoid duplicating a rule the user already set in Explore.
-      const primaryMetric = exploreConfig?.roleConfig.metrics?.[0];
-      const primaryKey = primaryMetric ? metricKey(primaryMetric) : null;
-      if (primaryKey) {
-        const existingRules: any[] = Array.isArray(effectiveStyleConfig.chartSortRules)
-          ? effectiveStyleConfig.chartSortRules
-          : [];
-        const hasRuleOnPrimary = existingRules.some(
-          (r) => r && typeof r === 'object' && r.field === primaryKey,
-        );
-        if (!hasRuleOnPrimary) {
-          baseOverride.chartSortRules = [
-            { field: primaryKey, direction: direction === 'bottom' ? 'asc' : 'desc' },
-            ...existingRules,
-          ];
-        }
-      }
-    }
-    const styleConfigOverride = Object.keys(baseOverride).length > 0 ? baseOverride : undefined;
-    try {
-      await dashboardApi.updateLayout(dashboardId, [{
-        id: dashboardChartId,
-        layout: { ...currentLayout, styleConfigOverride },
-      }]);
-      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    } catch {
-      /* layout save is best-effort */
-    }
   };
 
   const handleTitleKeyDown = (e: React.KeyboardEvent) => {
@@ -798,13 +751,36 @@ function ChartTileBase({
 
   return (
     <div
-      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
+      /* Phase-B12 — no `overflow-hidden` on the tile: the ⋯ menu popup was
+         clipped when the tile was small. The chart body has its own
+         overflow-hidden (so the chart never spills), and tile content is inset
+         by p-3 so it won't poke the rounded corners — only the menu escapes. */
+      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg border bg-surface-1 p-3 ${
         isCrossFilterSource
           ? 'border-warning/40 ring-1 ring-warning'
           : isFocused
             ? 'border-brand/50 ring-2 ring-brand/40'
             : 'border-[rgb(var(--border-line))]'
       }`}
+      /* Phase-B14 — honor the dashboard theme's card radius/border (fallbacks
+         keep the default flat look). Border COLOR only in the default state so
+         the cross-filter/focus rings still read. */
+      style={{
+        borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
+        borderWidth: 'var(--dashboard-card-border-width, 1px)',
+        ...(isCrossFilterSource || isFocused
+          ? {}
+          : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
+        // Phase-B16 — translucent "glass" tile that floats over a bg image.
+        ...(dashTheme.cardBg
+          ? {
+              background: dashTheme.cardBg,
+              backdropFilter: dashTheme.cardBackdrop,
+              WebkitBackdropFilter: dashTheme.cardBackdrop,
+              boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
+            }
+          : {}),
+      }}
       // Phase-15.81 v6 — click body marks this tile as focused for
       // Canvas/Grid highlight only (the FilterPane "this visual"
       // scope was removed). onMouseDown stop-prop on inner buttons
@@ -854,7 +830,23 @@ function ChartTileBase({
           </>
         ) : (
           <>
-            <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            {isKpiCard ? (
+              <span className="flex-1" aria-hidden />
+            ) : displayTitle ? (
+              <h3 className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
+            ) : canEdit ? (
+              /* Phase-B11 — no auto chart-name title; nudge the DA to add one. */
+              <button
+                onMouseDown={e => e.stopPropagation()}
+                onClick={startEditingTitle}
+                className="flex-1 truncate text-left text-sm italic text-text-quaternary opacity-0 transition hover:text-brand group-hover:opacity-100"
+                title="Thêm tiêu đề cho biểu đồ"
+              >
+                + Tiêu đề
+              </button>
+            ) : (
+              <span className="flex-1" aria-hidden />
+            )}
             {/* PBI parity (2026-06): NOT gated on canEdit. A viewer who applied a
                 dashboard filter must see when it didn't reach this chart — otherwise
                 the tile shows a number computed without their filter, silently. */}
@@ -898,10 +890,12 @@ function ChartTileBase({
               <button
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => setIsHavingOpen(v => !v)}
-                className={`relative flex-shrink-0 transition-opacity ${
+                /* Phase-B9 — match the toolbar icons: muted gray even when
+                   active; the blue dot signals the active filter. */
+                className={`relative flex-shrink-0 transition-opacity text-text-quaternary hover:text-brand ${
                   isHavingOpen || havingFilters.length > 0
-                    ? 'opacity-100 text-brand'
-                    : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand'
+                    ? 'opacity-100'
+                    : 'opacity-0 group-hover:opacity-100'
                 }`}
                 title="Per-chart filters (HAVING)"
               >
@@ -912,25 +906,8 @@ function ChartTileBase({
               </button>
             )}
 
-            {/* Phase-15.78 — Top N / Bottom N quick-control. Active state
-                when an override is set; click toggles the inline editor. */}
-            {canEdit && exploreConfig && (
-              <button
-                onMouseDown={e => e.stopPropagation()}
-                onClick={() => setIsTopNOpen(v => !v)}
-                className={`relative flex-shrink-0 transition-opacity ${
-                  isTopNOpen || (Number(effectiveStyleConfig.dataLimit) > 0)
-                    ? 'opacity-100 text-brand'
-                    : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand'
-                }`}
-                title="Top N / Bottom N row limit"
-              >
-                <TrendingUp className="h-3.5 w-3.5" />
-                {Number(effectiveStyleConfig.dataLimit) > 0 && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-brand rounded-full" />
-                )}
-              </button>
-            )}
+            {/* Phase-B13 — Top/Bottom-N quick-control removed from the tile
+                (configured in Explore only; see note near state). */}
 
             {/* Single overflow menu for View, Appearance, Rename, and Move to page. */}
             <div className="relative flex-shrink-0">
@@ -1118,48 +1095,7 @@ function ChartTileBase({
             )}
           </div>
         )}
-        {/* Phase-15.78 — Top N / Bottom N editor panel. Sits per-tile in
-            styleConfigOverride so other dashboards using the same chart
-            keep their own choice. Clear restores the chart's saved default. */}
-        {isTopNOpen && exploreConfig && (
-          <div
-            className="border border-brand/20 bg-brand/10/50 rounded p-2 flex flex-wrap items-center gap-1.5"
-            onMouseDown={e => e.stopPropagation()}
-          >
-            <span className="text-[10px] font-mono uppercase text-text-tertiary">show</span>
-            <select
-              value={effectiveStyleConfig.dataLimitDirection ?? 'top'}
-              onChange={e => saveTopN(effectiveStyleConfig.dataLimit ?? '', e.target.value as 'top' | 'bottom')}
-              className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
-            >
-              <option value="top">Top</option>
-              <option value="bottom">Bottom</option>
-            </select>
-            <input
-              type="number"
-              min={1}
-              value={effectiveStyleConfig.dataLimit ?? ''}
-              placeholder="N"
-              onChange={e => {
-                const v = e.target.value;
-                saveTopN(v === '' ? '' : Number(v), effectiveStyleConfig.dataLimitDirection ?? 'top');
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Escape') setIsTopNOpen(false);
-              }}
-              className="text-xs border border-[rgb(var(--border-strong))] rounded px-1.5 py-0.5 w-16 focus:outline-none focus:ring-1 focus:ring-brand"
-            />
-            <span className="text-[10px] text-text-quaternary">rows by metric value</span>
-            {Number(effectiveStyleConfig.dataLimit) > 0 && (
-              <button
-                onClick={() => saveTopN('', 'top')}
-                className="text-xs text-text-quaternary hover:text-text-secondary"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
+        {/* Phase-B13 — Top/Bottom-N editor panel removed (configured in Explore only). */}
       </div>
 
       {/* Chart visualization. Phase-15.6: hint cursor + title attr when the

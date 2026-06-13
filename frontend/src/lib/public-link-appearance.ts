@@ -173,6 +173,10 @@ const FALLBACK_ACCENT_HEX: Record<PublicLinkAccentPreset, string> = Object.fromE
   PUBLIC_LINK_ACCENT_OPTIONS.map((option) => [option.value, option.color]),
 ) as Record<PublicLinkAccentPreset, string>;
 
+// Phase-18 — single neutral hairline border shared by every flat surface on
+// the public/embed link (Metabase-style "flat & clean" theme). slate-200.
+const NEUTRAL_BORDER = 'rgb(226, 232, 240)';
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -288,21 +292,10 @@ export function buildPublicLinkTheme(input?: PublicLinkAppearanceConfig | null):
   const accentSoftAlt = mixRgb(accentRgb, [248, 250, 252], 0.78);
   const accentBorder = mixRgb(accentRgb, [255, 255, 255], 0.58);
 
-  const pageGlowAlpha = appearance.preset === 'minimal'
-    ? 0.1
-    : appearance.preset === 'editorial'
-      ? 0.14
-      : 0.18;
-  const heroGlowAlpha = appearance.preset === 'minimal' ? 0.08 : 0.14;
-  const panelBackground = appearance.preset === 'minimal'
-    ? 'rgba(255, 255, 255, 0.92)'
-    : rgba(accentSoft, 0.92);
-  const heroBackground = appearance.preset === 'editorial'
-    ? `linear-gradient(145deg, ${rgba(accentSoft, 0.92)} 0%, rgba(255, 255, 255, 0.96) 58%, ${rgba(accentSoftAlt, 0.72)} 100%)`
-    : appearance.preset === 'minimal'
-      ? 'linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.94))'
-      : `linear-gradient(140deg, ${rgba(accentSoft, 0.9)} 0%, rgba(255, 255, 255, 0.95) 48%, ${rgba(accentSoftAlt, 0.78)} 100%)`;
-
+  // Phase-18 — gradient/glow tokens removed: the flat theme no longer paints
+  // page/hero/panel gradients (see return block). `accentSoft`/`accentSoftAlt`/
+  // `accentBorder` survive only for the optional 'soft'/'grid' canvas styles
+  // a DA can still pick below.
   let canvasInnerStyle: CSSProperties;
   if (appearance.canvas_style === 'plain') {
     canvasInnerStyle = {
@@ -328,39 +321,39 @@ export function buildPublicLinkTheme(input?: PublicLinkAppearanceConfig | null):
   return {
     appearance,
     accentHex,
+    // Phase-18 — "flat & clean" (Metabase-style) public surface. BI embedded-
+    // design research warns against background gradients + heavy drop shadows
+    // distracting from the data, so every surface is now a flat fill with a
+    // single thin neutral border and no (or barely-there) shadow. Accent color
+    // survives only on the small interactive bits (active page tab, badges,
+    // pills) for wayfinding. The gradient/glow tokens above are intentionally
+    // left unused so reverting is a one-block change.
     pageStyle: {
-      backgroundColor: '#F8FAFC',
-      backgroundImage: `
-        radial-gradient(circle at top left, ${rgba(accentRgb, pageGlowAlpha)} 0%, transparent 34%),
-        linear-gradient(180deg, ${rgba(accentSoftAlt, 0.72)} 0%, #FFFFFF 100%)
-      `,
+      backgroundColor: '#F7F8FA',
     },
     topBarStyle: {
-      backgroundColor: 'rgba(255, 255, 255, 0.82)',
-      borderColor: rgba(accentBorder, 0.74),
-      boxShadow: '0 10px 35px -28px rgba(15, 23, 42, 0.42)',
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
+      boxShadow: 'none',
     },
     shellStyle: {
-      backgroundColor: 'rgba(255, 255, 255, 0.92)',
-      borderColor: rgba(accentBorder, 0.8),
-      boxShadow: '0 36px 110px -60px rgba(15, 23, 42, 0.46)',
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
+      boxShadow: 'none',
     },
     heroStyle: {
-      backgroundImage: `
-        radial-gradient(circle at top right, ${rgba(accentRgb, heroGlowAlpha)} 0%, transparent 34%),
-        ${heroBackground}
-      `,
-      borderColor: rgba(accentBorder, 0.9),
-      boxShadow: '0 32px 80px -56px rgba(15, 23, 42, 0.42)',
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
+      boxShadow: 'none',
     },
     panelStyle: {
-      backgroundColor: panelBackground,
-      borderColor: rgba(accentBorder, 0.82),
-      boxShadow: '0 24px 72px -58px rgba(15, 23, 42, 0.38)',
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
+      boxShadow: 'none',
     },
     metricCardStyle: {
-      backgroundColor: rgba(accentSoftAlt, 0.88),
-      borderColor: rgba(accentBorder, 0.88),
+      backgroundColor: '#FBFCFD',
+      borderColor: NEUTRAL_BORDER,
     },
     accentBadgeStyle: {
       backgroundColor: rgba(accentRgb, 0.1),
@@ -381,22 +374,22 @@ export function buildPublicLinkTheme(input?: PublicLinkAppearanceConfig | null):
       backgroundColor: rgb(accentDeep),
       color: '#FFFFFF',
       borderColor: rgb(accentDeep),
-      boxShadow: `0 18px 36px -22px ${rgba(accentRgb, 0.52)}`,
+      boxShadow: 'none',
     },
     pageTabInactiveStyle: {
-      backgroundColor: 'rgba(255, 255, 255, 0.84)',
+      backgroundColor: '#FFFFFF',
       color: '#475569',
-      borderColor: rgba(accentBorder, 0.72),
+      borderColor: NEUTRAL_BORDER,
     },
     canvasFrameStyle: {
-      backgroundColor: 'rgba(255, 255, 255, 0.92)',
-      borderColor: rgba(accentBorder, 0.82),
-      boxShadow: '0 36px 100px -60px rgba(15, 23, 42, 0.44)',
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
+      boxShadow: 'none',
     },
     canvasInnerStyle,
     footerStyle: {
-      backgroundColor: 'rgba(255, 255, 255, 0.66)',
-      borderColor: rgba(accentBorder, 0.72),
+      backgroundColor: '#FFFFFF',
+      borderColor: NEUTRAL_BORDER,
       color: '#64748B',
     },
     density: appearance.density === 'compact'

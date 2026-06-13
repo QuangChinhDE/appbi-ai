@@ -973,3 +973,14 @@
   }
 }
 
+/* Phase-B13 — dashboard resize handles must be INVISIBLE at rest. They were
+   rendering as faint gray L-brackets at all four corners of every tile (the
+   earlier layered opacity:0 rule wasn't winning the cascade), which read as
+   visual noise. Unlayered + !important + descendant combinator so it beats the
+   library/layered rules regardless of handle nesting. Brackets reappear only
+   when the tile is hovered, so the DA can still grab a corner to resize. */
+.react-grid-item .react-resizable-handle { opacity: 0 !important; outline: none !important; }
+.react-grid-item:hover .react-resizable-handle { opacity: 1 !important; }
+.react-grid-item .react-resizable-handle::after { opacity: 0 !important; }
+.react-grid-item:hover .react-resizable-handle::after { opacity: 1 !important; }
+

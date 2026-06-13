@@ -12,6 +12,7 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
+import { liftLayoutToTop } from '@/lib/dashboard-pages';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -111,19 +112,21 @@ export function DashboardGrid({
   // 8 handles is noisy and users accidentally hit an edge when they
   // wanted a corner. Each corner stretches BOTH width and height,
   // so 4 handles cover every resize direction without confusion.
-  const layouts = dashboardCharts.map((dc) => {
-    const layout = dc.layout;
-    return {
-      i: dc.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-      minW: 2,
-      minH: 2,
-      resizeHandles: ['se', 'sw', 'ne', 'nw'] as Array<'se' | 'sw' | 'ne' | 'nw'>,
-    };
-  });
+  const layouts = liftLayoutToTop(
+    dashboardCharts.map((dc) => {
+      const layout = dc.layout;
+      return {
+        i: dc.id.toString(),
+        x: layout.x || 0,
+        y: layout.y || 0,
+        w: layout.w || 4,
+        h: layout.h || 4,
+        minW: 2,
+        minH: 2,
+        resizeHandles: ['se', 'sw', 'ne', 'nw'] as Array<'se' | 'sw' | 'ne' | 'nw'>,
+      };
+    }),
+  );
 
   // Only persist layout when the user actually finishes dragging or resizing.
   // react-grid-layout fires `onLayoutChange` for every internal recompute

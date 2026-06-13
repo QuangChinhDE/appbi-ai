@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertTriangle, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
@@ -104,13 +105,26 @@ export function ReadonlyChartTile({
     () => getEffectiveDashboardChartStyleConfig(chart, layout),
     [chart, layout],
   );
+  // Phase-B11 (revised) — PRIORITY: per-tile custom title (passed as `title` =
+  // layout.custom_title) wins; otherwise fall back to the chart's Explore
+  // title/name. (Earlier draft dropped the name fallback — wrong.)
   const configuredChartTitle =
     effectiveStyleConfig.chartTitle?.trim()
     || (typeof (chart?.config as any)?.title === 'string' ? (chart?.config as any).title.trim() : '');
-  const fallbackTitle = typeof title === 'string' && title.trim()
-    ? title.trim()
-    : (typeof chart?.name === 'string' ? chart.name.trim() : '');
-  const displayTitle = configuredChartTitle || fallbackTitle;
+  const customTileTitle = typeof title === 'string' ? title.trim() : '';
+  const chartNameTrim = typeof chart?.name === 'string' ? chart.name.trim() : '';
+  const displayTitle = customTileTitle || configuredChartTitle || chartNameTrim;
+  // Phase-B15 — dashboard theme title font/color (empty {} when unthemed).
+  const dashTheme = useDashboardChartTheme();
+  const themeTitleStyle: CSSProperties | undefined =
+    dashTheme.titleFontSize || dashTheme.titleColor
+      ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
+      : undefined;
+  // Phase-B10 — KPI/Card visuals render their OWN metric label inside the card
+  // (e.g. "TOTAL REVENUE"), so the tile-level title is a redundant second
+  // heading ("DA1 KPI" stacked above "TOTAL REVENUE"). Suppress the tile title
+  // for KPI — the card's label is the title (matches PBI Card visuals).
+  const isKpiCard = String(chart?.chart_type || '').toUpperCase() === 'KPI';
   // PBI parity (2026-06) — surface filters the BE could not apply to THIS
   // chart (field unrelated to the visual's table, or a malformed join). The
   // engine reports these in `debug.dropped_filters`; previously only the
@@ -210,7 +224,7 @@ export function ReadonlyChartTile({
     return (
       <div
         ref={visibilityRef}
-        className="dashboard-tile h-full rounded-[24px] border border-[rgb(var(--border-line))]/80 bg-surface-1"
+        className="dashboard-tile h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
         aria-hidden="true"
       />
     );
@@ -218,23 +232,47 @@ export function ReadonlyChartTile({
 
   return (
     <div
-      className={`dashboard-tile group h-full overflow-hidden rounded-[24px] border bg-surface-1 p-4 shadow-[0_28px_60px_-42px_rgba(15,23,42,0.45)] backdrop-blur transition-[border-color,box-shadow] ${
+      /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
+         drop-shadow/backdrop-blur (read as a web card before), tighter padding.
+         Phase-B14 — honor the dashboard theme's card radius/border. */
+      className={`dashboard-tile group h-full overflow-hidden rounded-lg border bg-surface-1 p-3 transition-colors ${
         isCrossFilterSource
-          ? 'border-sky-300 ring-4 ring-sky-100/80 shadow-[0_32px_72px_-42px_rgba(14,165,233,0.4)]'
-          : 'border-[rgb(var(--border-line))]/80 hover:border-[rgb(var(--border-strong))]/90 hover:shadow-[0_32px_72px_-48px_rgba(15,23,42,0.42)]'
+          ? 'border-sky-300 ring-2 ring-sky-100'
+          : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
       }`}
+      style={{
+        borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
+        borderWidth: 'var(--dashboard-card-border-width, 1px)',
+        ...(isCrossFilterSource
+          ? {}
+          : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
+        // Phase-B16 — translucent "glass" tile that floats over a bg image.
+        ...(dashTheme.cardBg
+          ? {
+              background: dashTheme.cardBg,
+              backdropFilter: dashTheme.cardBackdrop,
+              WebkitBackdropFilter: dashTheme.cardBackdrop,
+              boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
+            }
+          : {}),
+      }}
     >
       <div className="flex h-full min-h-0 flex-col">
-        <div className={`mb-3 flex min-h-[2.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-sm'}`}>
+        {/* Phase-B11 — render the header row ONLY when it has real content
+            (a set title, a dropped-filter badge, or the HAVING control); an
+            empty header band above an untitled chart was pure wasted space. */}
+        {((!isKpiCard && (displayTitle || (showChartTypeLabel && chart?.chart_type))) || droppedByBackend.length > 0 || havingOptions.length > 0) && (
+        <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
           <div className="min-w-0 flex-1">
-            {displayTitle ? (
-              <p className="truncate font-semibold text-text-primary">{displayTitle}</p>
-            ) : (
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-                Untitled chart
-              </p>
+            {/* Phase-B10 — KPI shows its own label inside the card, so skip the
+                redundant tile title here (avoids "DA1 KPI" stacked over the
+                card's "TOTAL REVENUE"). */}
+            {/* Phase-B11 — only an explicitly-set title (no "Untitled"/name
+                placeholder); calmer medium-weight muted style. */}
+            {!isKpiCard && displayTitle && (
+              <p className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
             )}
-            {showChartTypeLabel && chart?.chart_type && (
+            {showChartTypeLabel && chart?.chart_type && !isKpiCard && (
               <p className="mt-1 truncate text-[11px] text-text-quaternary">
                 {String(chart.chart_type).replace(/_/g, ' ')}
               </p>
@@ -272,6 +310,7 @@ export function ReadonlyChartTile({
             </button>
           )}
         </div>
+        )}
 
         {havingFilters.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1">
@@ -379,6 +418,7 @@ export function ReadonlyChartTile({
               formatMap={roFormatMap}
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
+              embedded
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

@@ -155,7 +155,33 @@ export interface DashboardThemeConfig {
   density?: 'compact' | 'normal' | 'comfortable' | 'spacious';
   cardRadius?: number | string;
   radius?: number | string;
+  /** Phase-B14 — card border thickness (px) + color for dashboard tiles. */
+  cardBorderWidth?: number | string;
+  cardBorderColor?: string;
   cardShadow?: string | boolean;
+  /** Phase-B15 — PBI-style personalization.
+   *  Colors */
+  dataColors?: string[];          // series/data palette for all charts
+  goodColor?: string;             // status: positive
+  neutralColor?: string;          // status: neutral
+  badColor?: string;              // status: negative
+  /** Text */
+  titleFontSize?: number | string;   // chart/tile title
+  titleColor?: string;
+  labelFontSize?: number | string;   // axis/data labels
+  kpiFontSize?: number | string;     // KPI value
+  /** Structural (charts) */
+  gridlineColor?: string;
+  axisLabelColor?: string;
+  /** Phase-B16 — report background image (data-URL) + readability controls.
+   *  Charts render ON TOP of the image. */
+  backgroundImage?: string;       // data:image/...;base64,... (downscaled)
+  backgroundSize?: string;        // default 'cover'
+  backgroundPosition?: string;    // default 'center'
+  bgOverlay?: number;             // 0..1 scrim over the image for legibility
+  glassCards?: boolean;           // translucent tiles so the image shows through
+  /** Phase-B16 — id of the applied built-in preset (for highlighting). */
+  presetId?: string;
   hoverAnimation?: 'none' | 'lift' | 'scale' | 'glow' | string;
   hoverEffect?: string;
   [k: string]: any;

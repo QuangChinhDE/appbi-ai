@@ -5,6 +5,7 @@ import * as LucideIcons from 'lucide-react';
 import { Minus, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { KpiGoalDirection, KpiValueColorRule } from '@/types/api';
+import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 
 type KpiCardProps = {
   value: number | string | null;
@@ -164,6 +165,7 @@ function getDeltaAppearance(delta: number, goalDirection: KpiGoalDirection) {
       surfaceClass: 'bg-surface-2',
       textClass: 'text-text-secondary',
       directionLabel: 'On target',
+      tone: 'neutral' as const,
     };
   }
 
@@ -175,6 +177,7 @@ function getDeltaAppearance(delta: number, goalDirection: KpiGoalDirection) {
     surfaceClass: isGood ? 'bg-success/10' : 'bg-danger/10',
     textClass: isGood ? 'text-success' : 'text-danger',
     directionLabel: isGood ? 'Performing well' : 'Needs attention',
+    tone: (isGood ? 'good' : 'bad') as 'good' | 'bad',
   };
 }
 
@@ -202,6 +205,19 @@ export function KpiCard({
   valueFontSize,
   embedded = false,
 }: KpiCardProps) {
+  // Phase-B15 — dashboard theme: KPI value size + status colors. Empty {} when
+  // rendered standalone (no DashboardThemeProvider), so behaviour is unchanged.
+  const dashTheme = useDashboardChartTheme();
+  const toneColor = (tone: 'good' | 'bad' | 'neutral'): string | undefined => {
+    if (tone === 'good') return dashTheme.goodColor;
+    if (tone === 'bad') return dashTheme.badColor;
+    return dashTheme.neutralColor;
+  };
+  // Phase-B16 — let the KPI value/accent follow the dashboard theme accent, but
+  // ONLY when this card still uses the default accent (so an explicit per-chart
+  // accent the DA set is preserved — PBI "theme default, visual override wins").
+  const effectiveAccent =
+    accentColor === DEFAULT_ACCENT_COLOR && dashTheme.accent ? dashTheme.accent : accentColor;
   const IconComponent: React.ComponentType<{ className?: string; style?: React.CSSProperties }> | null =
     iconName && (LucideIcons as any)[iconName] ? (LucideIcons as any)[iconName] : null;
   const numericValue = toNumber(value);
@@ -211,7 +227,7 @@ export function KpiCard({
     : undefined;
   const formattedValue = formatNumericValue(value, { format, decimalPlaces, currencySymbol });
   const formattedBenchmark = formatNumericValue(numericBenchmark, { format, decimalPlaces, currencySymbol });
-  const valueColor = matchedRule?.color || accentColor || FALLBACK_VALUE_COLOR;
+  const valueColor = matchedRule?.color || effectiveAccent || FALLBACK_VALUE_COLOR;
   const delta = numericValue !== null && numericBenchmark !== null ? numericValue - numericBenchmark : null;
   const deltaPercent = delta !== null && numericBenchmark !== null && numericBenchmark !== 0
     ? delta / Math.abs(numericBenchmark)
@@ -245,12 +261,17 @@ export function KpiCard({
   // Drop our own border/shadow/gradient-bar (unless the author opted into an
   // accent border) and tighten padding so the KPI fills the tile instead of
   // floating as a smaller nested card. See `embedded` prop doc.
-  const showOwnFrame = !embedded || accentBorder;
+  // Phase-B11 — inside a dashboard tile the tile already draws the card border;
+  // a second border from the KPI (incl. the accentBorder frame) = two nested
+  // borders that look cluttered. So embedded KPI is ALWAYS chromeless (no own
+  // frame, no gradient bar) — the accent still tints the value. A DA who wants
+  // a bordered/coloured card sets it via the dashboard theme later.
+  const showOwnFrame = !embedded;
   const showGradientBar = !embedded;
 
   return (
     <div
-      className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? '' : 'bg-surface-1'}`}
+      className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? 'flex h-full flex-col justify-center' : 'bg-surface-1'}`}
       style={{
         borderColor: showOwnFrame
           ? (accentBorder ? (accentColor || DEFAULT_ACCENT_COLOR) : 'rgb(var(--border-line))')
@@ -265,12 +286,15 @@ export function KpiCard({
         <div
           className="h-1.5 w-full"
           style={{
-            background: `linear-gradient(90deg, ${accentColor || DEFAULT_ACCENT_COLOR}, ${valueColor})`,
+            background: `linear-gradient(90deg, ${effectiveAccent || DEFAULT_ACCENT_COLOR}, ${valueColor})`,
           }}
         />
       )}
 
-      <div className={embedded ? 'px-1 py-1' : 'p-6 sm:p-7'}>
+      {/* Phase-B7 — when a frame IS drawn (standalone, or embedded with an
+          accent border), the value must NOT sit ~4px from the border. Only the
+          truly chromeless embedded case (no frame) uses the tight fill padding. */}
+      <div className={!embedded ? 'p-6 sm:p-7' : (showOwnFrame ? 'p-4' : 'px-1 py-1')}>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             {(label || IconComponent) && (
@@ -278,7 +302,7 @@ export function KpiCard({
                 {IconComponent && (
                   <IconComponent
                     className="h-4 w-4"
-                    style={{ color: iconColor || accentColor || DEFAULT_ACCENT_COLOR }}
+                    style={{ color: iconColor || effectiveAccent || DEFAULT_ACCENT_COLOR }}
                   />
                 )}
                 {label && <span>{label}</span>}
@@ -289,7 +313,11 @@ export function KpiCard({
               className="mt-3 break-words text-4xl font-semibold tracking-tight text-text-primary tabular-nums sm:text-5xl"
               style={{
                 color: valueColor || FALLBACK_VALUE_COLOR,
-                ...(resolvedValueFontSize ? { fontSize: resolvedValueFontSize, lineHeight: 1.08 } : {}),
+                ...(resolvedValueFontSize
+                  ? { fontSize: resolvedValueFontSize, lineHeight: 1.08 }
+                  : dashTheme.kpiFontSize
+                    ? { fontSize: dashTheme.kpiFontSize, lineHeight: 1.08 }
+                    : {}),
               }}
             >
               {formattedValue}
@@ -324,11 +352,20 @@ export function KpiCard({
             )}
 
             {hasDelta && delta !== null && deltaAppearance && DeltaIcon && (
-              <div className={`rounded-xl px-4 py-3 ${deltaAppearance.surfaceClass}`}>
-                <div className={`text-[11px] font-semibold uppercase tracking-wide ${deltaAppearance.textClass}`}>
+              <div
+                className={`rounded-xl px-4 py-3 ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.surfaceClass}`}
+                style={toneColor(deltaAppearance.tone) ? { backgroundColor: `${toneColor(deltaAppearance.tone)}1a` } : undefined}
+              >
+                <div
+                  className={`text-[11px] font-semibold uppercase tracking-wide ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.textClass}`}
+                  style={toneColor(deltaAppearance.tone) ? { color: toneColor(deltaAppearance.tone) } : undefined}
+                >
                   {deltaAppearance.directionLabel}
                 </div>
-                <div className={`mt-1 flex items-center gap-2 text-sm font-semibold tabular-nums ${deltaAppearance.textClass}`}>
+                <div
+                  className={`mt-1 flex items-center gap-2 text-sm font-semibold tabular-nums ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.textClass}`}
+                  style={toneColor(deltaAppearance.tone) ? { color: toneColor(deltaAppearance.tone) } : undefined}
+                >
                   <DeltaIcon className="h-4 w-4" />
                   <span>
                     {formatNumericValue(delta, { format, decimalPlaces, currencySymbol })}

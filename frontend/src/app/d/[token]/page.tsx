@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import GridLayout, { WidthProvider, type Layout } from 'react-grid-layout';
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
@@ -34,6 +34,8 @@ import {
   ensureDashboardPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
+  liftLayoutToTop,
+  deriveStackedLayout,
 } from '@/lib/dashboard-pages';
 import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
@@ -41,14 +43,19 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
-// Fixed (non-responsive) 12-column grid that scales cell width with the
-// container. Mirrors components/dashboards/DashboardGrid.tsx: using a plain
-// WidthProvider(GridLayout) instead of Responsive means a viewport shrink
-// (rotating a phone, opening DevTools, dragging the window) never swaps
-// breakpoints or vertically compacts tiles — the published layout renders
-// exactly as the author arranged it, only smaller. Previously this used
-// Responsive + compactType="vertical", which made charts jump on resize.
-const FixedGridLayout = WidthProvider(GridLayout);
+// Phase-B5 — COARSE-breakpoint responsive grid for the public report.
+// Two breakpoints ONLY:
+//   • lg  (≥768px): 12 columns, renders the EXACT authored layout — so any
+//     desktop resize (1920→800, DevTools, window drag) stays in lg and never
+//     reflows/jumps. This is byte-identical to the old fixed-grid behavior.
+//   • xs  (<768px): 1 column, renders a pre-derived vertical stack — proper
+//     mobile/tablet view instead of micro-tiles.
+// Explicit layouts for BOTH breakpoints means react-grid-layout never
+// auto-generates (and never reflows) a layout. compactType=null +
+// preventCollision preserve coordinates exactly as provided.
+const ResponsiveReportGrid = WidthProvider(Responsive);
+const REPORT_BREAKPOINTS = { lg: 768, xs: 0 };
+const REPORT_COLS = { lg: 12, xs: 1 };
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
 
@@ -924,16 +931,18 @@ export default function PublicDashboardPage() {
     );
   }
 
-  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
-    const layout = dashboardChart.layout;
-    return {
-      i: dashboardChart.id.toString(),
-      x: layout.x || 0,
-      y: layout.y || 0,
-      w: layout.w || 4,
-      h: layout.h || 4,
-    };
-  });
+  const layouts: Layout[] = liftLayoutToTop(
+    visibleDashboardCharts.map((dashboardChart) => {
+      const layout = dashboardChart.layout;
+      return {
+        i: dashboardChart.id.toString(),
+        x: layout.x || 0,
+        y: layout.y || 0,
+        w: layout.w || 4,
+        h: layout.h || 4,
+      };
+    }),
+  );
 
   // Phase-G — single SlicerCluster node reused in both placements:
   // stacked above the grid (top) or as a left column (left). Defined
@@ -978,65 +987,77 @@ export default function PublicDashboardPage() {
       )}
 
       <main ref={publicContentRef} className={`flex-1 min-w-0 overflow-y-auto flex flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
+        {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
+            gray page = "web widget" look). A report masthead is flat with just
+            a hairline divider; tiles are the only cards. Removes one nesting
+            level toward the PBI "flat canvas" feel. */}
         <section
-          className="overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 sm:px-5 sm:py-5"
-          style={publicTheme.panelStyle}
+          className="mx-auto w-full max-w-[1680px] overflow-visible border-b border-[rgb(var(--border-line))] px-4 py-2.5 sm:px-5 sm:py-3"
         >
-          <div className="flex items-center justify-between gap-3">
-            <h1 className="text-h2 font-emphasis tracking-[-0.022em] text-text-primary">
+          {/* Phase-B1 — compact report toolbar: title + page tabs + export
+              live on ONE slim row (was a tall H1 row + a separate tabs row).
+              Reclaims vertical space so charts start higher, like a real BI
+              report toolbar. */}
+          <div className="flex items-center gap-3">
+            <h1
+              className="shrink-0 max-w-[36%] truncate text-base font-emphasis tracking-[-0.02em] text-text-primary sm:text-lg"
+              title={presentationTitle}
+            >
               {presentationTitle}
             </h1>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleExportPdf}
-              disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
-              leadingIcon={
-                isExportingPdf || !allPagesLoaded
-                  ? <Loader2 className="h-4 w-4 animate-spin" />
-                  : <Download className="h-4 w-4" />
-              }
-              className="print:hidden"
-              title={!allPagesLoaded ? 'Loading chart data…' : 'Export this dashboard as PDF'}
-              data-html2canvas-ignore
-            >
-              <span className="hidden sm:inline">
-                {isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}
-              </span>
-            </Button>
+            {showPageTabs && (
+              <nav className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
+                {dashboardPages.map((page) => {
+                  const isActive = page.id === activePageId;
+                  const isPending = page.id === pendingPageId;
+                  return (
+                    <button
+                      key={page.id}
+                      type="button"
+                      onClick={() => {
+                        void handlePageSelect(page.id);
+                      }}
+                      className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-tiny font-emphasis transition-colors ${
+                        isActive
+                          ? 'border-transparent bg-text-primary text-text-inverse'
+                          : isPending
+                            ? 'border-brand/20 bg-brand/10 text-brand'
+                            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                      }`}
+                      style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                      disabled={isPending}
+                    >
+                      {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                      {page.name}
+                    </button>
+                  );
+                })}
+              </nav>
+            )}
+            <div className="ml-auto shrink-0">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleExportPdf}
+                disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
+                leadingIcon={
+                  isExportingPdf || !allPagesLoaded
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Download className="h-4 w-4" />
+                }
+                className="print:hidden"
+                title={!allPagesLoaded ? 'Loading chart data…' : 'Export this dashboard as PDF'}
+                data-html2canvas-ignore
+              >
+                <span className="hidden sm:inline">
+                  {isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}
+                </span>
+              </Button>
+            </div>
           </div>
 
-          {(showPageTabs || showFilterControls || showLiveState) && (
-            <div className="mt-3 space-y-3">
-              {showPageTabs && (
-                <div className="flex flex-wrap gap-2 overflow-x-auto pb-1">
-                  {dashboardPages.map((page) => {
-                    const isActive = page.id === activePageId;
-                    const isPending = page.id === pendingPageId;
-                    return (
-                      <button
-                        key={page.id}
-                        type="button"
-                        onClick={() => {
-                          void handlePageSelect(page.id);
-                        }}
-                        className={`inline-flex items-center whitespace-nowrap rounded-full border px-3 py-1.5 text-tiny font-emphasis transition-colors ${
-                          isActive
-                            ? 'border-transparent bg-text-primary text-text-inverse'
-                            : isPending
-                              ? 'border-brand/20 bg-brand/10 text-brand'
-                              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-                        }`}
-                        style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
-                        disabled={isPending}
-                      >
-                        {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                        {page.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+          {(showFilterControls || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+            <div className="mt-2 space-y-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
                   filters + [Xem chi tiết] toggle. Click opens mini-pane
@@ -1170,10 +1191,10 @@ export default function PublicDashboardPage() {
                 <div className="flex flex-col gap-3">
                   {pendingPageId && (
                     <div
-                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-tertiary"
+                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
                       style={publicTheme.neutralPillStyle}
                     >
-                      Opening next page...
+                      <Loader2 className="h-3 w-3 animate-spin" /> Đang mở trang…
                     </div>
                   )}
 
@@ -1211,10 +1232,10 @@ export default function PublicDashboardPage() {
 
                   {chartsLoading && !isApplyingFilters && (
                     <div
-                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-tertiary"
+                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
                       style={publicTheme.neutralPillStyle}
                     >
-                      Refreshing charts...
+                      <Loader2 className="h-3 w-3 animate-spin" /> Đang tải biểu đồ…
                     </div>
                   )}
                 </div>
@@ -1226,30 +1247,30 @@ export default function PublicDashboardPage() {
         {/* Phase-G — when the slicer cluster is on the Left, lay it as a
             column beside the chart grid (flex-row). Top mode keeps the
             cluster stacked above (rendered in the header section). */}
-        <div className={slicerClusterPositionLeft ? 'flex flex-row items-stretch gap-3' : ''}>
+        <div className={`mx-auto w-full max-w-[1680px] ${slicerClusterPositionLeft ? 'flex flex-row items-stretch gap-3' : ''}`}>
         {slicerClusterPositionLeft && showFilterControls && (
           <div className="w-[300px] flex-shrink-0">
             {slicerClusterNode}
           </div>
         )}
+        {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
+            page background like a PBI report canvas, not inside a second
+            bordered panel. */}
         <section
           ref={gridSectionRef}
-          className={`rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
-          style={publicTheme.canvasFrameStyle}
+          className={`p-1 transition-opacity duration-200 sm:p-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
               <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
             </div>
           ) : (
-            <div
-              className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
-              style={publicTheme.canvasInnerStyle}
-            >
-              <FixedGridLayout
+            <div className={publicTheme.density.canvasPaddingClass}>
+              <ResponsiveReportGrid
                 className="layout"
-                layout={layouts}
-                cols={12}
+                layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+                breakpoints={REPORT_BREAKPOINTS}
+                cols={REPORT_COLS}
                 rowHeight={80}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
@@ -1274,7 +1295,8 @@ export default function PublicDashboardPage() {
                   const chart = dashboardChart.chart;
                   const payload = chartData[dashboardChart.chart_id];
                   const chartError = chartErrors[dashboardChart.chart_id];
-                  const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
+                  // Phase-B11 — no auto chart-name title; only an explicit one.
+                  const title = dashboardChart.layout.custom_title ?? '';
 
                   return (
                     <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
@@ -1303,7 +1325,7 @@ export default function PublicDashboardPage() {
                     </div>
                   );
                 })}
-              </FixedGridLayout>
+              </ResponsiveReportGrid>
             </div>
           )}
         </section>

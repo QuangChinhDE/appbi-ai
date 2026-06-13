@@ -32,6 +32,7 @@ import {
   type SlicerClusterLayout,
   type SlicerImageEntry,
   isSlicerImageEntry,
+  getFilterDisplayLabel,
 } from '@/lib/filters';
 
 interface SlicerClusterProps {
@@ -118,11 +119,18 @@ export function SlicerCluster({
   // Phase-G — config menu (gear) state. Holds position toggle + Add
   // Image so the header stays uncluttered.
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
-  // Phase-13 — slicer cluster collapses by default; viewer / DA reveals
-  // it via a small toggle button. Was always-expanded → noisy on first
-  // page load for dashboards with many slicers. Default hidden matches
-  // Looker / PBI's "filters drawer" pattern.
-  const [isCollapsed, setIsCollapsed] = useState(true);
+  // Phase-18 — filters are a PRIMARY interaction on a dashboard, so show the
+  // slicer bar EXPANDED by default (BI filter-UX research: dashboards should
+  // surface filters, not hide them behind a drawer). The Phase-13 collapse
+  // was over-eager — DAs opened the public link and thought the filters had
+  // disappeared. We still auto-collapse when there are MANY slicers (>6, where
+  // an inline bar would crowd — research says >6-8 filters belong in a
+  // sidebar/drawer) or none. A manual toggle always wins once the user clicks,
+  // and reacts to slicers loading in (the public page seeds them async).
+  const [collapseOverride, setCollapseOverride] = useState<boolean | null>(null);
+  const autoCollapsed = slicerEntries.length === 0 || slicerEntries.length > 6;
+  const isCollapsed = collapseOverride ?? autoCollapsed;
+  const setIsCollapsed = (v: boolean) => setCollapseOverride(v);
   const configMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!configMenuOpen) return;
@@ -381,14 +389,20 @@ export function SlicerCluster({
   // ONE header row instead of two. Editor only (hidden when lockSlots).
   const clusterControls = lockSlots ? null : (
     <>
-      <span
-        className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-brand px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wide text-text-inverse"
-        title="Slicer zone for the viewer — do not place charts here"
+      {/* Phase-B8 — "Thu gọn" lives IN the header row here (builder) so it no
+          longer overlaps the "Add filter" button (both used to sit top-right). */}
+      <button
+        type="button"
+        onClick={() => setIsCollapsed(true)}
+        title="Thu gọn bộ lọc"
+        className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
       >
-        ⛃ Slicer
-      </span>
+        <X className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">Thu gọn</span>
+      </button>
       {/* Config gear — holds the rarely-used setup controls (position +
-          add image) so the header stays clean. */}
+          add image) so the header stays clean. (Phase-B8: the "SLICER" chip
+          was removed — redundant; the dashed zone already signals the area.) */}
       <div ref={configMenuRef} className="relative flex-shrink-0">
         <button
           type="button"
@@ -403,7 +417,7 @@ export function SlicerCluster({
           <Settings2 className="h-3.5 w-3.5" />
         </button>
         {configMenuOpen && (
-          <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
+          <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
             <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">Position</div>
             <div className="mb-2 flex gap-1">
               <button
@@ -494,6 +508,20 @@ export function SlicerCluster({
     return n;
   }, [slicerEntries]);
 
+  // Phase-18 — the collapsed pill used to read just "Filters (N)", which DAs
+  // mistook for "filters disappeared on the public link" (they saw inline
+  // slicers while building). Surface the actual field names on the pill so the
+  // applied filters are legible without opening it. Truncate to keep the pill
+  // compact: show up to 2 names then "+K".
+  const slicerNamesSummary = useMemo(() => {
+    const names = slicerEntries
+      .map((s) => getFilterDisplayLabel(s))
+      .filter((label): label is string => Boolean(label && label.trim()));
+    if (names.length === 0) return '';
+    if (names.length <= 2) return names.join(', ');
+    return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  }, [slicerEntries]);
+
   return (
     <div
       ref={containerRef}
@@ -521,22 +549,31 @@ export function SlicerCluster({
             // brand accent fill + white icon/text + drop shadow so the
             // toggle stays legible against light/dark/coloured backgrounds
             // alike.
-            className="inline-flex items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover"
             title={
-              activeSlicerCount > 0
-                ? `Show filters (${activeSlicerCount} active)`
-                : 'Show filters'
+              slicerNamesSummary
+                ? `Bộ lọc: ${slicerNamesSummary}${activeSlicerCount > 0 ? ` (${activeSlicerCount} đang áp dụng)` : ''} — bấm để mở`
+                : 'Hiện bộ lọc'
             }
           >
             <span aria-hidden>⛃</span>
-            <span>Filters</span>
+            <span className="shrink-0">Bộ lọc</span>
+            {/* Phase-18 — show the actual filter names so a collapsed pill
+                doesn't read as "filters missing". Falls back to just the
+                label + count when there are no resolvable names. */}
+            {slicerNamesSummary && (
+              <span className="hidden max-w-[22rem] truncate font-normal text-white/85 sm:inline">
+                {slicerNamesSummary}
+              </span>
+            )}
             {slicerEntries.length > 0 && (
               <span
-                className={`inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+                className={`inline-flex h-4 min-w-[1rem] shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
                   activeSlicerCount > 0
                     ? 'bg-white text-brand'
                     : 'bg-white/25 text-white'
                 }`}
+                title={activeSlicerCount > 0 ? `${activeSlicerCount} đang áp dụng` : `${slicerEntries.length} bộ lọc`}
               >
                 {activeSlicerCount > 0 ? activeSlicerCount : slicerEntries.length}
               </span>
@@ -550,14 +587,22 @@ export function SlicerCluster({
         // bar's SINGLE header via headerExtras. Images render as inline
         // cells after the bar. Right-edge "X" collapses the cluster.
         <div className="relative" style={innerLayout}>
-          <button
-            type="button"
-            onClick={() => setIsCollapsed(true)}
-            title="Hide filters"
-            className="absolute right-1 top-1 z-10 inline-flex h-6 w-6 items-center justify-center rounded text-text-tertiary hover:bg-surface-2"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+          {/* Phase-B8 — the "Thu gọn" control: on the PUBLIC viewer (lockSlots)
+              there is no "Add filter" button, so the absolute top-right pill is
+              safe. In the BUILDER it would overlap DashboardFilterBar's
+              "Add filter" (both top-right), so there it rides inside the header
+              via `clusterControls` (headerExtras) instead — see below. */}
+          {lockSlots && (
+            <button
+              type="button"
+              onClick={() => setIsCollapsed(true)}
+              title="Thu gọn bộ lọc"
+              className="absolute right-1 top-1 z-10 inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary shadow-sm transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
+            >
+              <X className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Thu gọn</span>
+            </button>
+          )}
           <div
             className="min-w-0"
             style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}

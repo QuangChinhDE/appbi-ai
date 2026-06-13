@@ -617,10 +617,9 @@ export function DashboardFilterBar({
     <div className={embedded ? 'border-t border-[rgba(255,255,255,0.06)]' : 'mb-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm'}>
       {/* ── Header bar ────────────────────────────────────────────── */}
       <div className={`flex items-center gap-2 flex-wrap ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
-        {/* Phase-G — cluster controls injected by SlicerCluster so the
-            slicer zone has ONE header (badge + config menu) instead of
-            two stacked rows. */}
-        {headerExtras}
+        {/* Phase-B8 — headerExtras (Thu gọn + config gear) moved to the RIGHT
+            group next to "Add Filter" (was on the left, forcing the user to
+            look/click both sides). See the ml-auto cluster below. */}
         {/* Filters label / expand toggle. In collapsedSlicers mode the
             slicers are always-visible buttons + the cluster has its own
             ⛃ badge, so this redundant label is hidden to declutter. */}
@@ -680,6 +679,9 @@ export function DashboardFilterBar({
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Phase-B8 — slicer-cluster controls (Thu gọn + gear) now live here,
+              on the right, grouped with Add Filter. */}
+          {headerExtras}
           {hasPendingChanges && onReset && (
             <button
               onClick={onReset}

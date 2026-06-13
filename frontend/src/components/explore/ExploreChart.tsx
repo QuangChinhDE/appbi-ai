@@ -28,6 +28,7 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
+import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 
@@ -99,11 +100,13 @@ interface CustomAxisTickProps {
   fontSize: number;
   formatter?: (v: any) => string;
   orientation: 'x' | 'y';
+  /** Phase-B15 — theme axis-label color override. */
+  fill?: string;
 }
 
 function CustomAxisTick({
   x = 0, y = 0, payload, angle, textAnchor, fontSize, formatter,
-  orientation,
+  orientation, fill,
 }: CustomAxisTickProps) {
   // A null/empty category member shows as "(blank)" (consistent with the
   // table cells + breakdown legend) instead of an invisible empty tick.
@@ -132,8 +135,8 @@ function CustomAxisTick({
         textAnchor={textAnchor}
         transform={angle !== 0 ? `rotate(${angle})` : undefined}
         fontSize={fontSize}
-        fill="currentColor"
-        className="text-text-tertiary"
+        fill={fill || 'currentColor'}
+        className={fill ? undefined : 'text-text-tertiary'}
       >
         {display}
         {truncated && <title>{raw}</title>}
@@ -638,10 +641,14 @@ function buildDataLabelContent(opts: {
     // "line series has no labels in BAR_LINE" bug). Resolve geometry
     // from whichever source provides it.
     const vb = props.viewBox ?? {};
-    const x = props.x ?? vb.x ?? 0;
-    const y = props.y ?? vb.y ?? 0;
-    const width = props.width ?? vb.width ?? 0;
-    const height = props.height ?? vb.height ?? 0;
+    // Phase-B3 — `??` does NOT catch NaN (only null/undefined), so a NaN
+    // props.x on a degenerate/sparse series produced `<text x="NaN">` and
+    // spammed ~100+ console errors. Coerce to a finite number (props → viewBox → 0).
+    const num = (a: any, b: any) => (Number.isFinite(a) ? a : (Number.isFinite(b) ? b : 0));
+    const x = num(props.x, vb.x);
+    const y = num(props.y, vb.y);
+    const width = num(props.width, vb.width);
+    const height = num(props.height, vb.height);
     const { value, payload } = props;
     if (value === null || value === undefined || value === '') return null;
     const text = formatLabel(value, payload);
@@ -690,6 +697,10 @@ function buildDataLabelContent(opts: {
         default:       cy = y - 6;
       }
     }
+
+    // Phase-B3 — never emit a label whose anchor is non-finite (degenerate
+    // series). Prevents `<text x="NaN">` SVG errors.
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
 
     // Collision check (optional). Skip labels overlapping any already-
     // placed label this frame.
@@ -1104,10 +1115,24 @@ function ExploreChartInner({
   embedded = false,
 }: ExploreChartProps) {
   const style = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
+  // Phase-B15 — dashboard theme palette + structural colors. In standalone
+  // Explore there is no DashboardThemeProvider, so this is {} and behaviour is
+  // unchanged. Inside a dashboard/public view it supplies the report palette.
+  const dashboardTheme = useDashboardChartTheme();
   const PALETTE = useMemo(
-    () => getPalette((style.palette as ChartPaletteName) || 'default').colors,
-    [style.palette],
+    () => {
+      const chosen = (style.palette as ChartPaletteName) || 'default';
+      // A theme data palette acts as the report default; an explicit non-default
+      // chart palette still wins, and per-series overrides win over both.
+      if ((chosen === 'default' || !chosen) && dashboardTheme.dataColors?.length) {
+        return dashboardTheme.dataColors;
+      }
+      return getPalette(chosen).colors;
+    },
+    [style.palette, dashboardTheme.dataColors],
   );
+  const gridStroke = dashboardTheme.gridlineColor || undefined;
+  const axisTickFill = dashboardTheme.axisLabelColor || undefined;
   // Resolve per-series color: explicit override beats palette index.
   const getSeriesColor = useCallback(
     (key: string, index: number): string => {
@@ -1472,6 +1497,7 @@ function ExploreChartInner({
             fontSize={fontSize}
             formatter={dateLike ? formatDateAxisValue : undefined}
             orientation="x"
+            fill={axisTickFill}
           />
         ) as any}
         height={height}
@@ -1481,7 +1507,7 @@ function ExploreChartInner({
     );
   };
   const renderYAxis = () => (
-    <YAxis tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
+    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
   );
   // Phase-15.82 — per-series color override handlers. Writes to
@@ -1684,8 +1710,8 @@ function ExploreChartInner({
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 flex items-center justify-center">
-          <div className={embedded ? 'w-full' : 'w-full max-w-xl'}>
+        <div className={`flex-1 flex ${embedded ? 'items-stretch' : 'items-center justify-center'}`}>
+          <div className={embedded ? 'w-full h-full' : 'w-full max-w-xl'}>
             <KpiCard
               value={kpiValue}
               label={cardLabel}
@@ -1818,6 +1844,8 @@ function ExploreChartInner({
       // Skip slices below 3% — match Recharts default to keep small
       // slice labels from overlapping near the centre.
       if (percent === undefined || percent <= 0.03) return null;
+      // Phase-B3 — guard non-finite anchors (degenerate slice geometry).
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
       const sliceKey = String(name);
       const resolved = resolveDataLabelStyle(style, sliceKey);
       // When master switch is off we still surface a compact "Name (X%)"
@@ -1995,10 +2023,10 @@ function ExploreChartInner({
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart onClick={handleScatterClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-              <XAxis dataKey="x" name={fieldLabel(scatterX, labelMap)} type="number" tick={{ fontSize }}
+              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              <XAxis dataKey="x" name={fieldLabel(scatterX, labelMap)} type="number" tick={{ fontSize, fill: axisTickFill }}
                 label={{ value: style.xAxisLabel || fieldLabel(scatterX, labelMap), position: 'insideBottom', offset: -5, fontSize }} />
-              <YAxis dataKey="y" name={fieldLabel(scatterY, labelMap)} type="number" tick={{ fontSize }}
+              <YAxis dataKey="y" name={fieldLabel(scatterY, labelMap)} type="number" tick={{ fontSize, fill: axisTickFill }}
                 tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
                 label={{ value: style.yAxisLabel || fieldLabel(scatterY, labelMap), angle: -90, position: 'insideLeft', fontSize }} />
               <ZAxis range={[40, 40]} />
@@ -2096,7 +2124,7 @@ function ExploreChartInner({
       displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
     );
     const percentYAxis = isPercent ? (
-      <YAxis tick={{ fontSize }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
+      <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
         label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
     ) : renderYAxis();
     return (
@@ -2108,7 +2136,7 @@ function ExploreChartInner({
           {wrapScrollable(
             <BarChart data={displayData} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length)}
               {percentYAxis}
               {/* Phase-15.86 — STACKED_BAR was using a bare Tooltip
@@ -2348,7 +2376,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {wrapScrollable(
             <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
               <Tooltip
@@ -2403,7 +2431,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {wrapScrollable(
             <LineChart data={displayData} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
               <Tooltip
@@ -2450,7 +2478,7 @@ function ExploreChartInner({
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
       <BarChart data={displayData} layout="vertical" onClick={handleCategoricalChartClick}>
-        {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+        {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
         {/* Phase-15.22: category labels on horizontal bar live on YAxis.
             Same interval=0 + truncate-with-tooltip treatment as XAxis on
             other types. width=160 (up from 120) gives room for typical
@@ -2464,12 +2492,13 @@ function ExploreChartInner({
               textAnchor="end"
               fontSize={fontSize}
               orientation="y"
+              fill={axisTickFill}
             />
           ) as any}
           interval={0}
           width={160}
           label={hbarYAxisLabel ? { value: hbarYAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
-        <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
+        <XAxis type="number" tick={{ fontSize, fill: axisTickFill }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
           label={hbarXAxisLabel ? { value: hbarXAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
         <Tooltip
           content={(p: any) => (
@@ -2551,11 +2580,11 @@ function ExploreChartInner({
           {TruncationBanner}
           {wrapScrollable(
             <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField!, displayData.length)}
               {renderYAxis()}
               {dualYAxis && (
-                <YAxis yAxisId="right" orientation="right" tick={{ fontSize }}
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize, fill: axisTickFill }}
                   tickFormatter={yAxisTickFormatter(style)}
                   label={yAxisRightLabel ? { value: yAxisRightLabel, angle: 90, position: 'insideRight', fontSize, dx: 15 } : undefined} />
               )}
@@ -2686,7 +2715,7 @@ function ExploreChartInner({
         {TruncationBanner}
         {wrapScrollable(
           <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+            {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
             {renderXAxis(xField, displayBarData.length)}
             {renderYAxis()}
             <Tooltip

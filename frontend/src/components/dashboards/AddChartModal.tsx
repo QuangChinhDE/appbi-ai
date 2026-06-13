@@ -9,7 +9,7 @@ import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { useChartData, useCharts } from '@/hooks/use-charts';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
-import { getDashboardChartPageId, packNewGridTiles } from '@/lib/dashboard-pages';
+import { getDashboardChartPageId, packNewGridTiles, defaultSizeForChartType } from '@/lib/dashboard-pages';
 import { ChartType } from '@/types/api';
 import type {
   Chart,
@@ -137,6 +137,10 @@ export function AddChartModal({
   const [pendingSelectionChartId, setPendingSelectionChartId] = useState<number | null>(null);
   const [width, setWidth] = useState(4);
   const [height, setHeight] = useState(4);
+  // Phase-18 — when the DA hasn't touched W/H, each added chart is sized by its
+  // TYPE (KPI small, table large, …) instead of a blanket 4×4. Touching either
+  // input switches to "manual size for all" (the old single-size behavior).
+  const [sizeTouched, setSizeTouched] = useState(false);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [searchText, setSearchText] = useState('');
   const [typeFilter, setTypeFilter] = useState<ChartTypeFilter>('all');
@@ -148,6 +152,7 @@ export function AddChartModal({
     setPendingSelectionChartId(null);
     setWidth(4);
     setHeight(4);
+    setSizeTouched(false);
     setParamValues({});
     setSearchText('');
     setTypeFilter('all');
@@ -327,7 +332,13 @@ export function AddChartModal({
     const occupied = dashboardCharts
       .filter((dc) => getDashboardChartPageId(dc.layout) === activePageId)
       .map((dc) => ({ x: dc.layout?.x, y: dc.layout?.y, w: dc.layout?.w, h: dc.layout?.h }));
-    const slots = packNewGridTiles(occupied, ids.map(() => ({ w: width, h: height })));
+    // Per-chart size: by TYPE unless the DA manually set W/H (then uniform).
+    const sizes = ids.map((id) => {
+      if (sizeTouched) return { w: width, h: height };
+      const c = availableCharts.find((candidate) => candidate.id === id);
+      return defaultSizeForChartType(c?.chart_type);
+    });
+    const slots = packNewGridTiles(occupied, sizes);
 
     for (let index = 0; index < ids.length; index++) {
       const id = ids[index];
@@ -346,8 +357,8 @@ export function AddChartModal({
       const layout: DashboardChartLayout = {
         x: slots[index]?.x ?? 0,
         y: slots[index]?.y ?? 0,
-        w: width,
-        h: height,
+        w: sizes[index]?.w ?? width,
+        h: sizes[index]?.h ?? height,
       };
 
       await Promise.resolve(onAdd(
@@ -478,7 +489,7 @@ export function AddChartModal({
                 <input
                   type="number"
                   value={width}
-                  onChange={(event) => setWidth(clampGridValue(Number(event.target.value), 2, 12, 4))}
+                  onChange={(event) => { setSizeTouched(true); setWidth(clampGridValue(Number(event.target.value), 2, 12, 4)); }}
                   min={2}
                   max={12}
                   className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
@@ -490,7 +501,7 @@ export function AddChartModal({
                 <input
                   type="number"
                   value={height}
-                  onChange={(event) => setHeight(clampGridValue(Number(event.target.value), 2, 10, 4))}
+                  onChange={(event) => { setSizeTouched(true); setHeight(clampGridValue(Number(event.target.value), 2, 10, 4)); }}
                   min={2}
                   max={10}
                   className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
@@ -499,7 +510,7 @@ export function AddChartModal({
               </div>
               </div>
               <span className="rounded-full bg-brand/12 px-3 py-1 text-[11px] font-medium text-brand">
-                Placement {width}w x {height}h
+                {sizeTouched ? `Placement ${width}w x ${height}h` : 'Kích thước: tự động theo loại chart'}
               </span>
             </div>
           </div>
