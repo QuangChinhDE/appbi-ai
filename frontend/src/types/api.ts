@@ -47,7 +47,16 @@ export type TableColumnAlignment = 'left' | 'center' | 'right';
 export interface TableHyperlinkRule {
   id?: string;
   targetColumn: string;
-  urlColumn: string;
+  /** Column whose value already holds a ready-made URL. Provide this OR urlTemplate. */
+  urlColumn?: string;
+  /**
+   * BUG-006 — URL template with {column} tokens, e.g.
+   * "https://crm.example.com/deals/{deal_id}". Token values are read from the
+   * row and URL-encoded. Lets a column (e.g. deal_id) link out even when the
+   * dataset has no column already containing a full URL. Takes precedence over
+   * urlColumn when set to a non-empty string.
+   */
+  urlTemplate?: string;
   openInNewTab?: boolean;
 }
 

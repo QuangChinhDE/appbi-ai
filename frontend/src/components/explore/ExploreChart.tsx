@@ -76,7 +76,16 @@ function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
     height = 60;
   }
   const textAnchor: 'end' | 'middle' = angle !== 0 ? 'end' : 'middle';
-  return { angle, height, textAnchor, interval: 0 as const, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
+  // BUG-010 — adaptive tick thinning. Phase-15.22 pinned interval:0 (render
+  // EVERY label), which collides badly once the category count exceeds what
+  // fits even when rotated — worst on narrow dashboard tiles. Below MAX_TICKS
+  // we still render every label (keeps the Phase-15.22 behaviour for normal
+  // charts); above it we evenly skip labels so rotated text stops overlapping.
+  // Skipped categories stay reachable via the chart's hover tooltip, and any
+  // rendered long label keeps its truncate + <title> hover (CustomAxisTick).
+  const MAX_TICKS = 40;
+  const interval: number = count > MAX_TICKS ? Math.ceil(count / MAX_TICKS) - 1 : 0;
+  return { angle, height, textAnchor, interval, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
 }
 
 /**
@@ -998,18 +1007,20 @@ function applySortRules(data: Record<string, any>[], rules: ChartSortRule[]): Re
   });
 }
 
-// Phase-15.83 — Top/Bottom N truncation retired. DA wants every row to
-// render even on charts saved with an earlier dataLimit. The function
-// signature stays so existing call sites don't need touching, but it
-// now passes data through unchanged. If the "Top N best sellers" use
-// case comes back as a real DA ask, we re-enable selectively rather
-// than as a default cap.
+// BUG-012 — Top/Bottom N limit, re-enabled as an EXPLICIT opt-in (it was
+// retired to a pass-through in Phase-15.83). It only caps when DA sets
+// style.dataLimit to a positive number; an unset / 0 / '' limit returns
+// every row, so charts that never configured a limit render unchanged.
+// Called AFTER applySortRules, so "top N" == the first N rows of the chosen
+// ordering and "bottom N" == the last N. Mirrors ChartPreview.applyDataLimit
+// (the legacy render path) so both surfaces behave identically.
 function applyDataLimit(
   data: Record<string, any>[],
-  _limit: number | '' | undefined,
-  _direction: 'top' | 'bottom' | undefined,
+  limit: number | '' | undefined,
+  direction: 'top' | 'bottom' | undefined,
 ): Record<string, any>[] {
-  return data;
+  if (!limit || typeof limit !== 'number' || limit <= 0) return data;
+  return direction === 'bottom' ? data.slice(-limit) : data.slice(0, limit);
 }
 
 // ── Time granularity bucketing ────────────────────────────────────────────────
@@ -1114,7 +1125,20 @@ function ExploreChartInner({
   formatMap,
   embedded = false,
 }: ExploreChartProps) {
-  const style = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
+  const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
+  // UX (Date Hierarchy in viewer) — read-only surfaces (dashboard tile, public
+  // link) render WITHOUT onStyleConfigChange, so the editor's persisted drill
+  // can't be changed there. Hold an EPHEMERAL drill level locally and inject it
+  // into the effective style so an end-user can re-bucket the time axis (Y/Q/M/
+  // W/D) without mutating the saved chart. Only active in embedded viewers; the
+  // standalone editor keeps persisting through onStyleConfigChange untouched.
+  const [ephemeralDrill, setEphemeralDrill] = useState<TimeGranularity | undefined>(undefined);
+  const style = useMemo(
+    () => (!onStyleConfigChange && ephemeralDrill !== undefined
+      ? { ...baseStyle, dateDrillLevel: ephemeralDrill }
+      : baseStyle),
+    [baseStyle, onStyleConfigChange, ephemeralDrill],
+  );
   // Phase-B15 — dashboard theme palette + structural colors. In standalone
   // Explore there is no DashboardThemeProvider, so this is {} and behaviour is
   // unchanged. Inside a dashboard/public view it supplies the report palette.
@@ -1301,14 +1325,23 @@ function ExploreChartInner({
   ];
   const isTimeChart = type === 'LINE' || type === 'TIME_SERIES';
   const hasTimeField = Boolean(normalizedRoleConfig.timeField || xField);
-  const canDrill = isTimeChart && Boolean(onStyleConfigChange) && hasTimeField;
+  // UX (Date Hierarchy) — drill is available either to persist (editor:
+  // onStyleConfigChange) or ephemerally in a read-only embedded viewer. The
+  // viewer path is gated on !preAggregated because re-bucketing happens
+  // client-side (applyTimeGranularity); a pre-aggregated result can't re-bucket
+  // without a BE round-trip, so we hide the chips there instead of showing a
+  // dead control. (Full pre-aggregated drill would need a BE re-query.)
+  const canDrill = isTimeChart && hasTimeField && (
+    Boolean(onStyleConfigChange) || (embedded && !preAggregated)
+  );
   const drillActive = Boolean(style.dateDrillLevel);
   const handleDrillChange = (level: TimeGranularity | 'raw') => {
-    if (!onStyleConfigChange) return;
-    onStyleConfigChange({
-      ...style,
-      dateDrillLevel: level === 'raw' ? undefined : level,
-    });
+    const next = level === 'raw' ? undefined : level;
+    if (onStyleConfigChange) {
+      onStyleConfigChange({ ...style, dateDrillLevel: next });
+      return;
+    }
+    setEphemeralDrill(next);
   };
   const DrillBar = canDrill ? (
     drillActive ? (
@@ -1484,6 +1517,15 @@ function ExploreChartInner({
   const ChartTitleEl = chartTitle ? (
     <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
   ) : null;
+
+  // BUG-009 fix — single source of truth for "is the X axis a date axis".
+  // Previously only LINE/AREA computed this locally, so BAR / STACKED_BAR /
+  // COMBO rendered a Date axis as raw ISO ("2026-01-01T00:00:00") while LINE
+  // showed "1/1/2026". Computing it once here (from sortedCategoricalData,
+  // which is what LINE/AREA already sampled) and feeding it to every branch's
+  // renderXAxis keeps the time axis format identical across all chart types
+  // and stops new branches from silently drifting again.
+  const xAxisIsDateLike = isDateLikeAxis(sortedCategoricalData, xField, xAxisLabel || normalizedRoleConfig.timeField);
 
   const renderXAxis = (dataKey: string, count: number = categoricalData.length, dateLike = false) => {
     const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel);
@@ -2137,7 +2179,7 @@ function ExploreChartInner({
             <BarChart data={displayData} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
-              {renderXAxis(xField, displayData.length)}
+              {renderXAxis(xField, displayData.length, xAxisIsDateLike)}
               {percentYAxis}
               {/* Phase-15.86 — STACKED_BAR was using a bare Tooltip
                   formatter so `tooltipExtraFields` (Phase-15.82) silently
@@ -2172,7 +2214,12 @@ function ExploreChartInner({
                 //
                 // Default mode is 'total' for backward compat (legacy
                 // STACKED rendered only the top-of-stack total).
-                const stackMode = style.stackedBarLabelMode ?? 'total';
+                // BUG-008 — default flipped from 'total' to 'both': turning
+                // Data Labels on for a stacked bar now shows the per-segment
+                // values (DA's expectation) AND keeps the stack total, instead
+                // of total-only. DA can still pick 'segment'/'total' in the
+                // "Stack label mode" toggle (Data Labels editor).
+                const stackMode = style.stackedBarLabelMode ?? 'both';
                 const showSegmentLabels = showDataLabels && (
                   isPercent || stackMode === 'segment' || stackMode === 'both'
                 );
@@ -2365,7 +2412,7 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ AREA ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'AREA') {
-    const dateLikeXAxis = isDateLikeAxis(sortedCategoricalData, xField, xAxisLabel || normalizedRoleConfig.timeField);
+    const dateLikeXAxis = xAxisIsDateLike;
     const displayData = sortRowsByDateAxis(sortedCategoricalData, xField, dateLikeXAxis && sortRules.length === 0);
     const displaySeries = categoricalSeriesWithCalc;
     return (
@@ -2419,7 +2466,7 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ LINE / TIME_SERIES ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'LINE' || type === 'TIME_SERIES') {
-    const dateLikeXAxis = type === 'TIME_SERIES' || isDateLikeAxis(timeSeriesData, xField, xAxisLabel || normalizedRoleConfig.timeField);
+    const dateLikeXAxis = type === 'TIME_SERIES' || xAxisIsDateLike;
     const displayData = sortRowsByDateAxis(timeSeriesData, xField, dateLikeXAxis && sortRules.length === 0);
     // Phase-15.82 — include calculated fields so they render as extra lines.
     const displaySeries = categoricalSeriesWithCalc;
@@ -2581,7 +2628,7 @@ function ExploreChartInner({
           {wrapScrollable(
             <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
-              {renderXAxis(xField!, displayData.length)}
+              {renderXAxis(xField!, displayData.length, xAxisIsDateLike)}
               {renderYAxis()}
               {dualYAxis && (
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize, fill: axisTickFill }}
@@ -2716,7 +2763,7 @@ function ExploreChartInner({
         {wrapScrollable(
           <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
-            {renderXAxis(xField, displayBarData.length)}
+            {renderXAxis(xField, displayBarData.length, xAxisIsDateLike)}
             {renderYAxis()}
             <Tooltip
               content={(p: any) => (

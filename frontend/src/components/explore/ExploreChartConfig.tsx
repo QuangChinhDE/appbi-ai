@@ -483,10 +483,12 @@ export function normalizeChartStyleConfig(
         ...rule,
         id: rule.id?.trim() || undefined,
         targetColumn: rule.targetColumn?.trim() || '',
-        urlColumn: rule.urlColumn?.trim() || '',
+        urlColumn: rule.urlColumn?.trim() || undefined,
+        // BUG-006 — keep the URL template (column-only rules leave it undefined).
+        urlTemplate: typeof rule.urlTemplate === 'string' ? rule.urlTemplate : undefined,
         openInNewTab: rule.openInNewTab !== false,
       }))
-      .filter((rule) => rule.targetColumn && rule.urlColumn);
+      .filter((rule) => rule.targetColumn && (rule.urlColumn || typeof rule.urlTemplate === 'string'));
     normalized.tableHyperlinkRules = validRules.length > 0 ? validRules : undefined;
   } else {
     normalized.tableHyperlinkRules = undefined;
@@ -1343,10 +1345,15 @@ function pruneTableHyperlinkRules(rules: TableHyperlinkRule[]): TableHyperlinkRu
     .map((rule) => ({
       id: rule.id?.trim() || createTableHyperlinkRuleId(),
       targetColumn: rule.targetColumn?.trim() || '',
-      urlColumn: rule.urlColumn?.trim() || '',
+      urlColumn: rule.urlColumn?.trim() || undefined,
+      // BUG-006 — preserve the URL template here too; this runs on EVERY edit
+      // (setTableHyperlinkRules), so dropping it would stop a template rule
+      // from ever persisting. Keeping the field (even empty) holds the rule in
+      // "template mode" so it doesn't vanish while the DA is still typing.
+      urlTemplate: typeof rule.urlTemplate === 'string' ? rule.urlTemplate : undefined,
       openInNewTab: rule.openInNewTab !== false,
     }))
-    .filter((rule) => rule.targetColumn && rule.urlColumn);
+    .filter((rule) => rule.targetColumn && (rule.urlColumn || typeof rule.urlTemplate === 'string'));
   return validRules.length > 0 ? validRules : undefined;
 }
 
@@ -1804,7 +1811,7 @@ function DataLabelsEditor({
                   { value: 'total', label: 'Stack total', desc: 'Show sum above the top of the stack' },
                   { value: 'both', label: 'Both', desc: 'Show segment values AND stack total' },
                 ] as const).map((opt) => {
-                  const active = (styleConfig.stackedBarLabelMode ?? 'total') === opt.value;
+                  const active = (styleConfig.stackedBarLabelMode ?? 'both') === opt.value;
                   return (
                     <button
                       key={opt.value}
@@ -1985,7 +1992,7 @@ function DataLabelsEditor({
               while picking white made the total invisible on the chart
               bg. Two independent setting groups solve it. */}
           {chartType === 'STACKED_BAR' && isAll && (() => {
-            const mode = styleConfig.stackedBarLabelMode ?? 'total';
+            const mode = styleConfig.stackedBarLabelMode ?? 'both';
             const showSeg = mode === 'segment' || mode === 'both';
             const showTot = mode === 'total' || mode === 'both';
             const seg = dlc.segmentStyle ?? {};
@@ -3768,20 +3775,28 @@ export function ExploreChartConfig({
             </>
           ) : (
             <>
+              {/* BUG-005 — the Select/Deselect-all button and the checkboxes
+                  read the RAW roleConfig.selectedColumns, NOT normalizedRoleConfig
+                  (which collapses [] → undefined for the render pipeline). That
+                  collapse made "Deselect all" write [], get re-read as undefined,
+                  and snap every box back to checked. Reading the raw value lets an
+                  explicit empty selection ([]) show as "none ticked"; `undefined`
+                  (never chosen) still means "use defaults = all columns". */}
               <div className="flex items-center justify-between mb-1">
                 <button
                   onClick={() => {
-                    const allSelected = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length;
+                    const sel = roleConfig?.selectedColumns;
+                    const allSelected = !sel || sel.length === availableColumns.length;
                     upd({ selectedColumns: allSelected ? [] : availableColumns.map(c => c.name) });
                   }}
                   className="text-xs text-brand hover:text-brand"
                 >
-                  {!normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length ? 'Deselect all' : 'Select all'}
+                  {(!roleConfig?.selectedColumns || roleConfig.selectedColumns.length === availableColumns.length) ? 'Deselect all' : 'Select all'}
                 </button>
               </div>
               <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
                 {availableColumns.map(col => {
-                  const checked = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.includes(col.name);
+                  const checked = !roleConfig?.selectedColumns || roleConfig.selectedColumns.includes(col.name);
                   // Phase-15.13: show the friendly column label; expose the
                   // raw qualified key via `title` so engineering debug still
                   // has the SQL identifier on hover.
@@ -3798,7 +3813,7 @@ export function ExploreChartConfig({
                         type="checkbox"
                         checked={checked}
                         onChange={() => {
-                          const current = normalizedRoleConfig.selectedColumns ?? availableColumns.map(c => c.name);
+                          const current = roleConfig?.selectedColumns ?? availableColumns.map(c => c.name);
                           const next = checked ? current.filter(n => n !== col.name) : [...current, col.name];
                           upd({ selectedColumns: next });
                         }}
@@ -3827,6 +3842,16 @@ export function ExploreChartConfig({
                   );
                 })}
               </div>
+              {/* BUG-005 — coherence note: when nothing is ticked ([]), the
+                  render pipeline still shows ALL columns (its long-standing
+                  "[] = no selection = show all" contract, guarded in
+                  chartDataAdapter + explore-query). Surface that so an empty
+                  tick list doesn't read as a second bug. */}
+              {Array.isArray(roleConfig?.selectedColumns) && roleConfig.selectedColumns.length === 0 && (
+                <p className="mt-1 text-[10px] text-text-quaternary italic">
+                  Chưa tích cột nào — bảng đang hiển thị tất cả cột mặc định. Tích các cột để chỉ hiển thị những cột đó.
+                </p>
+              )}
             </>
           )}
         </Disclosure>
@@ -3894,24 +3919,79 @@ export function ExploreChartConfig({
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <SelectSlot
-                      label="Text Column"
-                      required
-                      value={rule.targetColumn}
-                      options={tableFormattingColumns}
-                      placeholder="select text column"
-                      onChange={(value) => updateTableHyperlinkRule(index, { targetColumn: value })}
-                    />
-                    <SelectSlot
-                      label="URL Column"
-                      required
-                      value={rule.urlColumn}
-                      options={availableColumns}
-                      placeholder="select URL column"
-                      onChange={(value) => updateTableHyperlinkRule(index, { urlColumn: value })}
-                    />
-                  </div>
+                  <SelectSlot
+                    label="Text Column"
+                    required
+                    value={rule.targetColumn}
+                    options={tableFormattingColumns}
+                    placeholder="select text column"
+                    onChange={(value) => updateTableHyperlinkRule(index, { targetColumn: value })}
+                  />
+
+                  {/* BUG-006 — link source: an existing URL column, OR a {token}
+                      template that builds the URL from row values (e.g. a CRM
+                      deep link from an id column). Template mode is detected by
+                      the presence of the urlTemplate string. */}
+                  {(() => {
+                    const useTemplate = typeof rule.urlTemplate === 'string';
+                    const template = rule.urlTemplate ?? '';
+                    const hasToken = /\{[^}]+\}/.test(template);
+                    const schemeOk = /^(https?:\/\/|mailto:|tel:|\/)/i.test(template.trim());
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-medium text-text-tertiary">Link from</span>
+                          <div className="flex overflow-hidden rounded-md border border-[rgb(var(--border-line))]">
+                            <button
+                              type="button"
+                              onClick={() => updateTableHyperlinkRule(index, { urlTemplate: undefined })}
+                              className={`px-2 py-0.5 text-[11px] ${!useTemplate ? 'bg-brand text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
+                            >
+                              URL column
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateTableHyperlinkRule(index, { urlTemplate: rule.urlTemplate ?? '' })}
+                              className={`px-2 py-0.5 text-[11px] ${useTemplate ? 'bg-brand text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-2'}`}
+                            >
+                              URL template
+                            </button>
+                          </div>
+                        </div>
+
+                        {!useTemplate ? (
+                          <SelectSlot
+                            label="URL Column"
+                            required
+                            value={rule.urlColumn ?? ''}
+                            options={availableColumns}
+                            placeholder="select URL column"
+                            onChange={(value) => updateTableHyperlinkRule(index, { urlColumn: value })}
+                          />
+                        ) : (
+                          <div className="space-y-1">
+                            <label className="block text-[11px] font-medium text-text-secondary">URL Template</label>
+                            <input
+                              type="text"
+                              value={template}
+                              onChange={(event) => updateTableHyperlinkRule(index, { urlTemplate: event.target.value })}
+                              placeholder="https://crm.example.com/deal/{deal_id}"
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 font-mono text-xs"
+                            />
+                            <p className="text-[10px] text-text-quaternary">
+                              {`Use {column} tokens, e.g. {${rule.targetColumn || 'deal_id'}}. Values are URL-encoded.`}
+                            </p>
+                            {template.trim() !== '' && !schemeOk && (
+                              <p className="text-[10px] text-danger">Must start with http(s)://, mailto:, tel: or / — otherwise the link is dropped.</p>
+                            )}
+                            {template.trim() !== '' && schemeOk && !hasToken && (
+                              <p className="text-[10px] text-warning">No {`{column}`} token — every row links to the same URL.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
                     <input
@@ -5853,10 +5933,40 @@ export function ExploreChartConfig({
             ))}
           </div>
 
-          {/* Phase-15.83 — Top N / Bottom N inputs removed. The render
-              path now ignores dataLimit (applyDataLimit is a no-op). If
-              DA needs "top 10 best sellers" later we reintroduce as an
-              explicit feature rather than a default cap. */}
+          {/* BUG-012 — Limit (Top/Bottom N). Caps how many rows the chart
+              renders AFTER the sort rules above are applied. Blank = no cap
+              (every row renders). The render path reads styleConfig.dataLimit
+              / dataLimitDirection via applyDataLimit in ExploreChart and
+              ChartPreview. */}
+          <div className="mt-3 space-y-1.5 border-t border-[rgb(var(--border-line))] pt-3">
+            <span className="text-xs font-semibold text-text-secondary">Limit</span>
+            <div className="flex items-center gap-1.5">
+              <select
+                value={styleConfig.dataLimitDirection ?? 'top'}
+                onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
+                className="w-24 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+                <option value="top">Top</option>
+                <option value="bottom">Bottom</option>
+              </select>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                placeholder="All rows"
+                value={styleConfig.dataLimit === undefined || styleConfig.dataLimit === '' ? '' : styleConfig.dataLimit}
+                onChange={e => {
+                  const raw = e.target.value;
+                  if (raw === '') { updStyle({ dataLimit: undefined }); return; }
+                  const n = Math.max(1, Math.floor(Number(raw)));
+                  updStyle({ dataLimit: Number.isFinite(n) ? n : undefined });
+                }}
+                className="flex-1 min-w-0 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+              />
+              <span className="text-[11px] text-text-quaternary">rows</span>
+            </div>
+            <p className="text-[10px] text-text-quaternary">Applied after sorting. Leave blank to show every row.</p>
+          </div>
         </Disclosure>
       )}
           </FormatGroup>

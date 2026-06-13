@@ -147,6 +147,27 @@ function resolveSafeHref(value: unknown): string | null {
   return null;
 }
 
+// BUG-006 — interpolate a URL template's {column} tokens from a row. Token
+// values are URL-encoded so ids with spaces/slashes produce valid URLs.
+function interpolateUrlTemplate(template: string, row: Record<string, unknown>): string {
+  return template.replace(/\{([^}]+)\}/g, (_match, token) => {
+    const value = row?.[String(token).trim()];
+    return value === null || value === undefined ? '' : encodeURIComponent(String(value));
+  });
+}
+
+// BUG-006 — resolve a cell's href: a {token} URL template (preferred when set)
+// or the value of a URL column. Returns null when neither yields a safe URL,
+// so the cell falls back to plain text.
+function resolveRuleHref(rule: TableHyperlinkRule, row: Record<string, unknown>): string | null {
+  const template = rule.urlTemplate?.trim();
+  if (template) {
+    return resolveSafeHref(interpolateUrlTemplate(template, row));
+  }
+  const urlColumn = rule.urlColumn?.trim();
+  return urlColumn ? resolveSafeHref(row?.[urlColumn]) : null;
+}
+
 function buildHyperlinkRuleMap(
   rules: TableHyperlinkRule[] | null | undefined,
 ): Record<string, TableHyperlinkRule> {
@@ -154,13 +175,17 @@ function buildHyperlinkRuleMap(
   for (const rule of rules ?? []) {
     const targetColumn = rule.targetColumn?.trim();
     const urlColumn = rule.urlColumn?.trim();
-    if (!targetColumn || !urlColumn || map[targetColumn]) {
+    const urlTemplate = rule.urlTemplate?.trim();
+    // BUG-006 — a rule links via either a URL column OR a {token} template.
+    // Skip rules that provide neither.
+    if (!targetColumn || (!urlColumn && !urlTemplate) || map[targetColumn]) {
       continue;
     }
     map[targetColumn] = {
       ...rule,
       targetColumn,
       urlColumn,
+      urlTemplate,
       openInNewTab: rule.openInNewTab !== false,
     };
   }
@@ -590,7 +615,7 @@ export function TableVisualization({
                   const conditionalStyle = getCellStyle(cellValue, col, conditionalFormatting, row);
                   const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
                   const hyperlinkRule = hyperlinkRuleByColumn[col];
-                  const safeHref = hyperlinkRule ? resolveSafeHref(row?.[hyperlinkRule.urlColumn]) : null;
+                  const safeHref = hyperlinkRule ? resolveRuleHref(hyperlinkRule, row) : null;
                   const displayValue = formatCellValue(cellValue, { numberFormat, decimalPlaces, currencySymbol });
                   
                   return (

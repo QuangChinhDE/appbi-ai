@@ -63,17 +63,32 @@ function getTableHyperlinkUrlColumns(
   const seen = new Set<string>();
   const columns: string[] = [];
 
+  const add = (col?: string) => {
+    const name = col?.trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      columns.push(name);
+    }
+  };
+
   for (const rule of styleConfig?.tableHyperlinkRules ?? []) {
     const targetColumn = rule.targetColumn?.trim();
-    const urlColumn = rule.urlColumn?.trim();
-    if (!targetColumn || !urlColumn || seen.has(urlColumn)) {
+    if (!targetColumn) {
       continue;
     }
     if (targetSet && !targetSet.has(targetColumn)) {
       continue;
     }
-    seen.add(urlColumn);
-    columns.push(urlColumn);
+    // A URL-column rule needs its source column fetched even when hidden.
+    add(rule.urlColumn);
+    // BUG-006 — a URL-template rule needs every {column} it references fetched
+    // so the interpolation has data, even if those columns aren't displayed.
+    const template = rule.urlTemplate?.trim();
+    if (template) {
+      for (const match of template.matchAll(/\{([^}]+)\}/g)) {
+        add(match[1]);
+      }
+    }
   }
 
   return columns;
