@@ -648,6 +648,7 @@ export interface Dashboard {
   share_token?: string | null;
   created_at: string;
   updated_at: string;
+  last_published_at?: string | null;  // Phase-B17 optimistic-concurrency version
   dashboard_charts: DashboardChart[];
   filters_config?: any[]; // Dashboard-level filters (hybrid v1)
   /** Phase-15.81 — public viewer's top-bar slicer set. BE serves

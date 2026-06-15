@@ -613,6 +613,7 @@ class DashboardResponse(DashboardBase):
     share_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    last_published_at: Optional[datetime] = None  # Phase-B17 optimistic-concurrency version
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None

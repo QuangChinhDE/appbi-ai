@@ -3,11 +3,15 @@ API router for dashboard endpoints.
 """
 import json
 import secrets
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Optional
+
+from app.services import dashboard_presence
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -1395,6 +1399,24 @@ async def fix_html_import_chart_plan(
         raise HTTPException(status_code=500, detail=f"AI fix failed: {exc}") from exc
 
 
+def _draft_user_layouts(snapshot: Any, user_key: str) -> Dict[str, Any]:
+    """Phase-B17 — the CURRENT user's pending layout map from draft_snapshot.
+
+    Drafts are now PER-USER (`user_layouts[user_key] = {chartId: layout}`) so two
+    people editing different tiles don't clobber each other. Falls back to the
+    pre-B17 shared `layouts` map (treated as this user's) only when no per-user
+    map exists yet, for a clean migration.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    ul = snapshot.get("user_layouts")
+    if isinstance(ul, dict):
+        mine = ul.get(user_key)
+        return mine if isinstance(mine, dict) else {}
+    legacy = snapshot.get("layouts")
+    return legacy if isinstance(legacy, dict) else {}
+
+
 def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
     """Build a DashboardResponse explicitly so the draft fields
     (draft_layouts + has_draft) actually flow through to the JSON. The
@@ -1412,7 +1434,8 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     snapshot = dash.draft_snapshot or {}
-    layouts_map = snapshot.get("layouts") if isinstance(snapshot, dict) else None
+    # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
+    layouts_map = _draft_user_layouts(snapshot, str(current_user.id))
     normalized_layouts: Optional[Dict[int, Dict[str, Any]]] = None
     if isinstance(layouts_map, dict) and layouts_map:
         normalized_layouts = {}
@@ -1718,11 +1741,17 @@ def update_dashboard_draft_layout(
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
-    layouts_map: Dict[int, Dict[str, Any]] = {}
+    layouts_map: Dict[str, Dict[str, Any]] = {}
     for entry in request.chart_layouts:
-        layouts_map[int(entry.id)] = entry.layout.model_dump(exclude_none=True)
+        layouts_map[str(int(entry.id))] = entry.layout.model_dump(exclude_none=True)
     snapshot = dict(dash.draft_snapshot or {})
-    snapshot["layouts"] = layouts_map
+    # Phase-B17 — store this user's layout draft separately so a colleague's
+    # save (their own tiles) can't wipe it. The FE sends this user's FULL
+    # pending set each save, so replacing the user's bucket is correct.
+    user_layouts = dict(snapshot.get("user_layouts") or {})
+    user_layouts[str(current_user.id)] = layouts_map
+    snapshot["user_layouts"] = user_layouts
+    snapshot.pop("layouts", None)  # retire the pre-B17 shared map
     dash.draft_snapshot = snapshot
     flag_modified(dash, "draft_snapshot")
     db.commit()
@@ -1772,44 +1801,103 @@ def update_dashboard_draft_filters(
     return _serialize_dashboard_with_draft(db, dash, current_user)
 
 
+def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+class PublishRequest(BaseModel):
+    """Phase-B17 — per-tile optimistic concurrency. `tile_base_v` is the
+    layout version (`layout._v`) the editor loaded for each tile it is about to
+    publish; if a tile's LIVE version advanced (someone else published THAT tile
+    meanwhile) we 409 listing only the conflicted tiles, unless `force` is set.
+    Two people editing DIFFERENT tiles never conflict — publish applies only the
+    caller's own tiles."""
+    tile_base_v: Optional[Dict[str, int]] = None
+    force: bool = False
+
+
 @router.post("/{dashboard_id}/publish", response_model=DashboardResponse)
 def publish_dashboard_draft(
     dashboard_id: int,
+    payload: Optional[PublishRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Apply draft_snapshot onto live columns + dashboard_chart rows,
-    then clear the snapshot. Public viewers see the new state on their
-    next fetch.
+    """Apply THIS user's draft tiles onto live dashboard_chart rows + flush the
+    (shared) filter/page draft, then clear only this user's layout bucket.
 
-    Phase-15.81 v12 — publish now also flushes filter-slot drafts
-    (`filters_config` for all-pages and `pages_config` for per-page)
-    so a single Publish action ships layout + filter edits to the
-    public link together.
+    Phase-B17 — co-editing: drafts are per-user, so publish touches ONLY the
+    caller's tiles; a colleague editing other tiles is unaffected. Each tile's
+    live layout carries a `_v` bumped on publish; if a tile the caller is
+    publishing was published by someone else since the caller loaded it
+    (tile_base_v mismatch), we 409 listing those tiles (unless force).
     """
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
-    snapshot = dash.draft_snapshot or {}
 
-    # ── Layouts ──
-    layouts_map = snapshot.get("layouts") or {}
-    if layouts_map:
-        rows = (
-            db.query(DashboardChart)
-            .filter(DashboardChart.dashboard_id == dashboard_id)
-            .all()
-        )
-        for row in rows:
-            new_layout = layouts_map.get(str(row.id)) or layouts_map.get(row.id)
-            if new_layout:
-                # Merge — preserve fields the draft didn't touch (pageId, etc.)
-                merged = {**(row.layout or {}), **new_layout}
-                row.layout = merged
-                flag_modified(row, "layout")
+    user_key = str(current_user.id)
+    snapshot = dict(dash.draft_snapshot or {})
+    my_layouts = _draft_user_layouts(snapshot, user_key)  # {chartId(str): layout}
 
-    # ── Filter / slicer slots ──
+    rows = (
+        db.query(DashboardChart)
+        .filter(DashboardChart.dashboard_id == dashboard_id)
+        .all()
+    )
+    rows_by_id = {str(r.id): r for r in rows}
+
+    # ── Per-tile conflict guard ──
+    if my_layouts and payload is not None and not payload.force:
+        base_v = payload.tile_base_v or {}
+        conflicted: list[str] = []
+        for cid in my_layouts:
+            row = rows_by_id.get(str(cid))
+            if row is None:
+                continue
+            cur_v = int((row.layout or {}).get("_v", 0))
+            exp_v = base_v.get(str(cid))
+            if exp_v is not None and cur_v != exp_v:
+                # someone else published THIS tile since the caller loaded it
+                name = None
+                try:
+                    name = row.chart.name if row.chart else None
+                except Exception:
+                    name = None
+                conflicted.append(name or f"Biểu đồ #{row.id}")
+        if conflicted:
+            others = dashboard_presence.heartbeat(
+                dashboard_id, user_key,
+                getattr(current_user, "full_name", None) or current_user.email,
+                current_user.email,
+            )
+            last_editor = others[0]["name"] if others else None
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Some tiles changed since you opened them.",
+                    "tiles": conflicted,
+                    "last_editor": last_editor,
+                },
+            )
+
+    # ── Apply ONLY this user's tiles (bump per-tile version) ──
+    for cid, new_layout in my_layouts.items():
+        row = rows_by_id.get(str(cid))
+        if row is None or not new_layout:
+            continue
+        merged = {**(row.layout or {}), **new_layout}
+        merged["_v"] = int((row.layout or {}).get("_v", 0)) + 1
+        row.layout = merged
+        flag_modified(row, "layout")
+
+    # ── Filter / slicer slots (still a shared draft — applied + cleared here) ──
     draft_filters_config = snapshot.get("filters_config")
     if isinstance(draft_filters_config, list):
         dash.filters_config = draft_filters_config
@@ -1827,8 +1915,16 @@ def publish_dashboard_draft(
         dash.pages_config = draft_pages_config
         flag_modified(dash, "pages_config")
 
-    dash.draft_snapshot = None
+    # ── Clear ONLY this user's layout bucket + the applied filter drafts.
+    #    Other users' pending layout buckets survive. ──
+    ul = dict(snapshot.get("user_layouts") or {})
+    ul.pop(user_key, None)
+    new_snapshot: Dict[str, Any] = {}
+    if ul:
+        new_snapshot["user_layouts"] = ul
+    dash.draft_snapshot = new_snapshot or None
     flag_modified(dash, "draft_snapshot")
+    dash.last_published_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
@@ -1850,6 +1946,53 @@ def discard_dashboard_draft(
     db.commit()
     db.refresh(dash)
     return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+# ============ Editor presence (Phase-B17) ============
+
+class HeartbeatRequest(BaseModel):
+    """`editing_chart_id` = the dashboard_chart the user currently has focused,
+    so collaborators can see WHERE this user is editing (GG-Sheets cursor)."""
+    editing_chart_id: Optional[int] = None
+
+
+@router.post("/{dashboard_id}/editing/heartbeat", status_code=status.HTTP_200_OK)
+def dashboard_editing_heartbeat(
+    dashboard_id: int,
+    payload: Optional[HeartbeatRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Register the caller as currently editing this dashboard (and which tile)
+    and return the OTHER editors active right now + where they're editing.
+    Best-effort, in-memory, TTL-expired (see services/dashboard_presence)."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    others = dashboard_presence.heartbeat(
+        dashboard_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+        editing_chart_id=payload.editing_chart_id if payload else None,
+    )
+    return {
+        "editors": others,
+        "current_updated_at": dash.updated_at.isoformat() if dash.updated_at else None,
+    }
+
+
+@router.post("/{dashboard_id}/editing/leave", status_code=status.HTTP_200_OK)
+def dashboard_editing_leave(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Best-effort removal when an editor closes the Build page. TTL would
+    expire them anyway; this just makes others' banner clear faster."""
+    dashboard_presence.leave(dashboard_id, str(current_user.id))
+    return {"ok": True}
 
 
 # ============ Public Link Sharing ============

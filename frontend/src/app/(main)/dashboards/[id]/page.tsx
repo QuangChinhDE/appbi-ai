@@ -28,6 +28,7 @@ import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { FilterPane } from '@/components/dashboards/FilterPane';
@@ -322,6 +323,8 @@ export default function DashboardDetailPage() {
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
   const canEditResource = resPerms.canEdit;
+  // Phase-B17 — publish conflict (someone else published the SAME tiles).
+  const [publishConflict, setPublishConflict] = useState<{ editor: string | null; tiles?: string[] } | null>(null);
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
@@ -560,6 +563,34 @@ export default function DashboardDetailPage() {
   // its own filters inside the chart editor, so a focused-tile filter
   // scope here was redundant.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // Phase-B17 — presence: heartbeat my focused tile, learn where others edit.
+  const otherEditors = useDashboardPresence(dashboardId, canEditResource, focusedTileId);
+  // Stable color per collaborator (shared by the toolbar avatar + tile ring).
+  const colorFor = React.useCallback((key: string) => {
+    const palette = ['#e8590c', '#9c36b5', '#1971c2', '#2f9e44', '#e64980', '#0c8599', '#f08c00'];
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+  }, []);
+  // Compact deduped avatar chips for the toolbar (GG-Sheets style).
+  const editorChips = React.useMemo(() => {
+    const seen = new Map<string, { name: string; color: string; initials: string }>();
+    for (const e of otherEditors) {
+      if (seen.has(e.user_key)) continue;
+      const parts = (e.name || '?').trim().split(/\s+/);
+      const initials = ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?';
+      seen.set(e.user_key, { name: e.name, color: colorFor(e.user_key), initials });
+    }
+    return [...seen.values()];
+  }, [otherEditors, colorFor]);
+  // Map dashboard_chart id -> the collaborator editing it (for the tile ring).
+  const presenceByChart = React.useMemo(() => {
+    const m: Record<number, { name: string; color: string }> = {};
+    for (const e of otherEditors) {
+      if (e.editing_chart_id != null) m[e.editing_chart_id] = { name: e.name, color: colorFor(e.user_key) };
+    }
+    return m;
+  }, [otherEditors, colorFor]);
   // Phase-15.81 — replace the old top-bar popover with a docked right-hand
   // FilterPane sidebar. Persisted in window only (intentionally not URL),
   // since pane state is a viewing preference.
@@ -695,17 +726,52 @@ export default function DashboardDetailPage() {
     }
   };
 
+  // Phase-B17 — per-tile base versions for the tiles we're about to publish,
+  // from the LIVE layout we loaded (layout._v). Lets the BE flag only the tiles
+  // a colleague republished since we loaded — independent tiles never conflict.
+  const buildTileBaseV = (): Record<string, number> => {
+    const liveById = new Map<number, number>(
+      (serverDashboard?.dashboard_charts ?? []).map((dc) => [dc.id, Number((dc.layout as any)?._v ?? 0)]),
+    );
+    const ids = new Set<number>([
+      ...Object.keys(localLayoutOverrides).map(Number),
+      ...Object.keys((serverDashboard as any)?.draft_layouts ?? {}).map(Number),
+    ]);
+    const out: Record<string, number> = {};
+    ids.forEach((id) => { out[String(id)] = liveById.get(id) ?? 0; });
+    return out;
+  };
+
   const handlePublish = async () => {
-    // Flush any pending local edits into draft first, then publish.
+    // Capture base versions BEFORE the flush clears local overrides.
+    const tileBaseV = buildTileBaseV();
     const ok = await flushLocalLayoutsToDraft();
     if (!ok) {
       toast.error("Couldn't save draft — publish aborted.");
       return;
     }
     try {
-      await publishDashboardMutation.mutateAsync(dashboardId);
+      await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
       toast.success('Published — public link now serves the new version.');
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        setPublishConflict({
+          editor: err?.response?.data?.detail?.last_editor ?? null,
+          tiles: err?.response?.data?.detail?.tiles ?? [],
+        });
+      } else {
+        toast.error('Publish failed — please try again.');
+      }
+    }
+  };
+
+  // Phase-B17 — user chose "overwrite" in the conflict dialog: republish with force.
+  const handleForcePublish = async () => {
+    setPublishConflict(null);
+    try {
+      await publishDashboardMutation.mutateAsync({ dashboardId, force: true });
+      toast.success('Published (overwrote the other version).');
+    } catch {
       toast.error('Publish failed — please try again.');
     }
   };
@@ -2023,6 +2089,25 @@ export default function DashboardDetailPage() {
                       • Có local change (chưa save BE) → badge "Chưa lưu"
                       • Server has_draft=true → badge "Bản nháp"
                       • Cả 2 → badge "Chưa lưu (có cả bản nháp BE)" */}
+                  {/* Phase-B17 — compact presence: small avatars of others editing
+                      now (name on hover). Replaces the bulky banner. */}
+                  {canEditResource && editorChips.length > 0 && (
+                    <div className="ml-2 flex shrink-0 items-center" title="Đang cùng sửa">
+                      {editorChips.slice(0, 3).map((c, i) => (
+                        <span
+                          key={i}
+                          className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold text-white ring-2 ring-surface-1"
+                          style={{ backgroundColor: c.color, marginLeft: i === 0 ? 0 : -6 }}
+                          title={`${c.name} đang sửa`}
+                        >
+                          {c.initials}
+                        </span>
+                      ))}
+                      {editorChips.length > 3 && (
+                        <span className="ml-1 text-[11px] text-text-tertiary">+{editorChips.length - 3}</span>
+                      )}
+                    </div>
+                  )}
                   {canEditResource && hasAnyPendingChanges && (
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
@@ -2368,6 +2453,7 @@ export default function DashboardDetailPage() {
             allowAppearanceEdit={canEditResource}
             themeConfig={dashboard?.theme_config}
             onLayoutChange={canEditResource ? handleLayoutChange : undefined}
+            presenceByChart={presenceByChart}
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
@@ -2489,6 +2575,42 @@ export default function DashboardDetailPage() {
           removingChartId={removingChartId}
           onRemoveChart={handleRemoveChartFromManager}
         />
+
+        {/* Phase-B17 — publish conflict: someone else published since load. */}
+        {publishConflict && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
+              <h2 className="text-sm font-semibold text-text-primary">Trùng chỗ sửa</h2>
+              <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
+                {publishConflict.editor || 'Người khác'} vừa lưu{' '}
+                <b>{publishConflict.tiles && publishConflict.tiles.length > 0 ? publishConflict.tiles.join(', ') : 'biểu đồ này'}</b>.
+              </p>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPublishConflict(null)}
+                  className="rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary"
+                >
+                  Để sau
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="rounded-md bg-brand px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90"
+                >
+                  Tải lại
+                </button>
+                <button
+                  type="button"
+                  onClick={handleForcePublish}
+                  className="rounded-md border border-danger/40 px-3 py-1.5 text-[13px] font-medium text-danger hover:bg-danger/10"
+                >
+                  Ghi đè
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <ConfirmDialog
           isOpen={pendingDeletePageId !== null}

@@ -82,6 +82,8 @@ interface DashboardGridProps {
    *  brand-ring while editing, and click toggles focus. */
   focusedDashboardChartId?: number | null;
   onFocusChart?: (dashboardChartId: number) => void;
+  /** Phase-B17 — collaborators currently editing each tile (GG-Sheets cursors). */
+  presenceByChart?: Record<number, { name: string; color: string }>;
 }
 
 export function DashboardGrid({
@@ -106,6 +108,7 @@ export function DashboardGrid({
   disableLazy = false,
   focusedDashboardChartId = null,
   onFocusChart,
+  presenceByChart,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format.
   // resizeHandles: 4 corners only. Edges removed per DA feedback —
@@ -274,6 +277,7 @@ export function DashboardGrid({
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
             isFocused={focusedDashboardChartId === dc.id}
             onFocus={onFocusChart}
+            editingBy={presenceByChart?.[dc.id] ?? null}
           />
         );
         return (

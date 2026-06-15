@@ -60,6 +60,8 @@ interface ChartTileProps {
    *  edits. onFocus fires on tile body click. */
   isFocused?: boolean;
   onFocus?: (dashboardChartId: number) => void;
+  /** Phase-B17 — a collaborator currently editing this tile (GG-Sheets cursor). */
+  editingBy?: { name: string; color: string } | null;
 }
 
 /** Debounce a value to avoid cascading API calls on rapid filter changes. */
@@ -192,6 +194,7 @@ function ChartTileBase({
   onMoveToPage,
   isFocused = false,
   onFocus,
+  editingBy = null,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { ref: visibilityRef, visible: hasBeenVisible } = useStickyVisibility();
@@ -780,6 +783,8 @@ function ChartTileBase({
               boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
             }
           : {}),
+        // Phase-B17 — a collaborator is editing THIS tile: colored ring.
+        ...(editingBy ? { boxShadow: `0 0 0 2px ${editingBy.color}`, borderColor: editingBy.color } : {}),
       }}
       // Phase-15.81 v6 — click body marks this tile as focused for
       // Canvas/Grid highlight only (the FilterPane "this visual"
@@ -788,6 +793,17 @@ function ChartTileBase({
       // interactions.
       onClick={onFocus ? () => onFocus(dashboardChartId) : undefined}
     >
+      {/* Phase-B17 — GG-Sheets cursor: a small avatar dot marks who's on this
+          tile (full name on hover); the colored ring shows the location. */}
+      {editingBy && (
+        <div
+          className="absolute -top-2 left-2 z-20 flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-bold uppercase text-white shadow-sm ring-2 ring-surface-1"
+          style={{ backgroundColor: editingBy.color }}
+          title={`${editingBy.name} đang sửa`}
+        >
+          {editingBy.name.trim().charAt(0) || '?'}
+        </div>
+      )}
       {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
       {onRemove && (
       <button

@@ -206,6 +206,10 @@ class Dashboard(Base):
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    # Phase-B17 — set ONLY by POST /publish (not draft saves). Used as the
+    # optimistic-concurrency version so a second editor can't silently clobber
+    # a publish made after they loaded.
+    last_published_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     dashboard_charts = relationship("DashboardChart", back_populates="dashboard", cascade="all, delete-orphan")

@@ -140,14 +140,41 @@ export const dashboardApi = {
     return response.data;
   },
 
-  publishDraft: async (dashboardId: number): Promise<Dashboard> => {
-    const response = await apiClient.post(`/dashboards/${dashboardId}/publish`);
+  // Phase-B17 — publish accepts an optimistic-concurrency guard. Pass the
+  // dashboard.updated_at the editor loaded; the BE 409s if someone else
+  // published meanwhile (unless force=true).
+  publishDraft: async (
+    dashboardId: number,
+    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean },
+  ): Promise<Dashboard> => {
+    const body = opts
+      ? { tile_base_v: opts.tileBaseV ?? null, force: !!opts.force }
+      : undefined;
+    const response = await apiClient.post(`/dashboards/${dashboardId}/publish`, body);
     return response.data;
   },
 
   discardDraft: async (dashboardId: number): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/discard-draft`);
     return response.data;
+  },
+
+  // Phase-B17 — editor presence. Heartbeat reports which tile the user is on
+  // and returns the OTHER editors active now + where they're editing.
+  editingHeartbeat: async (
+    dashboardId: number,
+    editingChartId?: number | null,
+  ): Promise<{
+    editors: Array<{ user_key: string; name: string; email: string; seconds_ago: number; editing_chart_id: number | null }>;
+    current_updated_at: string | null;
+  }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/editing/heartbeat`, {
+      editing_chart_id: editingChartId ?? null,
+    });
+    return response.data;
+  },
+  editingLeave: async (dashboardId: number): Promise<void> => {
+    await apiClient.post(`/dashboards/${dashboardId}/editing/leave`);
   },
 
   analyzeHtmlImport: async (input: DashboardHtmlImportAnalyzeInput): Promise<DashboardHtmlImportAnalyzeResponse> => {
