@@ -1733,9 +1733,13 @@ def update_dashboard_draft_layout(
 ):
     """Stage layout edits to draft_snapshot WITHOUT touching live rows.
 
-    Replaces (not merges) the `layouts` map in draft_snapshot. Public
-    viewers stay on the last-published layout until the editor calls
-    POST /publish.
+    Phase-B17 — MERGES the sent tiles into this user's draft bucket (does NOT
+    replace it). The FE clears its local overrides after each save, so when the
+    editor saves page 2, switches to page 3 and saves again, page 3's save only
+    carries page-3 tiles — a replace would wipe page 2's already-saved draft.
+    Merging keeps every page's pending tiles until publish/discard.
+
+    Public viewers stay on the last-published layout until POST /publish.
     """
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
@@ -1745,11 +1749,11 @@ def update_dashboard_draft_layout(
     for entry in request.chart_layouts:
         layouts_map[str(int(entry.id))] = entry.layout.model_dump(exclude_none=True)
     snapshot = dict(dash.draft_snapshot or {})
-    # Phase-B17 — store this user's layout draft separately so a colleague's
-    # save (their own tiles) can't wipe it. The FE sends this user's FULL
-    # pending set each save, so replacing the user's bucket is correct.
+    # Per-user bucket, MERGED (legacy-aware so a pre-B17 shared draft migrates).
     user_layouts = dict(snapshot.get("user_layouts") or {})
-    user_layouts[str(current_user.id)] = layouts_map
+    merged = dict(_draft_user_layouts(snapshot, str(current_user.id)))
+    merged.update(layouts_map)
+    user_layouts[str(current_user.id)] = merged
     snapshot["user_layouts"] = user_layouts
     snapshot.pop("layouts", None)  # retire the pre-B17 shared map
     dash.draft_snapshot = snapshot
