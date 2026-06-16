@@ -2800,18 +2800,17 @@ def get_distinct_field_values(
             next_exists_index[0] += 1
             return alias
 
-        def _build_exists_for_path(node: str, name: str) -> tuple[str | None, str | None]:
-            """Build an `EXISTS (SELECT 1 FROM ...)` subquery whose
-            inner JOIN chain mirrors the resolver path and whose first
-            hop correlates back to the outer base_alias.
+        def _emit_exists_for_single_path(path, name: str) -> tuple[str | None, str | None]:
+            """Build ONE ``EXISTS (SELECT 1 FROM ...)`` for a single resolved
+            join path: the inner JOIN chain mirrors the path and the first hop
+            correlates back to the outer base_alias.
 
-            Returns ``(clause, drop_reason)``. ``clause`` is the SQL or
-            None when something prevents rendering; ``drop_reason`` is
-            an optional code (``no_join_path``,
-            ``cte_in_subquery``, ``view_not_found``) so the caller can
-            record an accurate diagnostic in ``dropped_filters``.
+            Returns ``(clause, drop_reason)``. ``clause`` is the SQL or None
+            when a hop can't be rendered; ``drop_reason`` is a code
+            (``no_join_path`` / ``cte_in_subquery`` / ``view_not_found`` /
+            ``field_not_on_view``) so the caller can diagnose. The multi-path
+            OR wrapper lives in ``_build_exists_for_path`` below.
             """
-            path = resolver.resolve_path(node)
             if path is None or path.is_empty():
                 return None, "no_join_path"
 
@@ -2923,6 +2922,51 @@ def get_distinct_field_values(
                 f"WHERE {' AND '.join(where_parts_inner)}",
             ]
             return "EXISTS (" + " ".join(body_parts) + ")", None
+
+        def _build_exists_for_path(node: str, name: str) -> tuple[str | None, str | None]:
+            """Cascade a filter on ``node.name`` into the dropdown's base view.
+
+            PBI-parity (2026-06): a slicer dim (e.g. owner) often reaches the
+            filter's view (e.g. a date dim) via SEVERAL equal-length paths — one
+            through each conformed fact that shares the dim's key
+            (owner→deal→date, owner→activity→date, owner→revenue→date). The
+            slicer has NO base-fact context to pick "the" path (unlike the chart
+            engine, which anchors to its FROM chain), so the old single
+            ``resolve_path`` pick chose an arbitrary fact and silently dropped
+            members whose data lives only in a sibling fact — the
+            "slicer empty while a chart on another fact has data" bug.
+
+            Correct semantics for a global slicer: a member qualifies if it has
+            matching data via ANY of those facts. So emit one EXISTS per
+            equal-shortest path and OR them. When only one shortest path exists
+            (the common, unambiguous case — verified by combos that already
+            passed) this returns exactly the single EXISTS the old code produced
+            → byte-identical, no behaviour change. Paths that can't render
+            (nested-CTE source / missing view) are skipped; the filter is
+            dropped only when NONE of the paths render.
+            """
+            candidate_paths = [
+                p for p in (resolver.resolve_paths(node) or []) if p and not p.is_empty()
+            ]
+            if not candidate_paths:
+                single = resolver.resolve_path(node)
+                candidate_paths = [single] if (single and not single.is_empty()) else []
+            if not candidate_paths:
+                return None, "no_join_path"
+
+            clauses: list[str] = []
+            last_reason: str | None = None
+            for cand in candidate_paths:
+                clause, reason = _emit_exists_for_single_path(cand, name)
+                if clause:
+                    clauses.append(clause)
+                elif reason:
+                    last_reason = reason
+            if not clauses:
+                return None, last_reason or "no_join_path"
+            if len(clauses) == 1:
+                return clauses[0], None
+            return "(" + " OR ".join(clauses) + ")", None
 
         exists_clauses: list[str] = []
         base_predicates: list[str] = []

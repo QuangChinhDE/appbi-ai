@@ -321,6 +321,59 @@ def _build_filter_fields_from_public_filters(
     return out
 
 
+def _augment_with_slicer_fields(
+    db: Session,
+    dash: Dashboard,
+    base: list[dict],
+) -> list[dict]:
+    """Guarantee every canvas slicer's field is a queryable public filter field.
+
+    A slicer is rendered on the public page, so its dropdown MUST be able to
+    fetch distinct values. The base list (access filters, or the chart-binding
+    scan) may omit a slicer's field — e.g. a slicer on a dim no chart binding
+    references — which made the public distinct-values endpoint 404 and the FE
+    mis-render it as "No values match … Try relaxing". Union the slicers'
+    own fields in (deduped) so the slicer always resolves. This is not a
+    privilege escalation: the slicer is already exposed on the canvas by the
+    dashboard author; we only allow reading its OWN domain.
+    """
+    slicers = getattr(dash, "slicers_config", None) or []
+    if not slicers:
+        return base
+    existing = {
+        (c.get("datasetId"), str(c.get("semanticField") or ""))
+        for c in base
+        if isinstance(c, dict)
+    }
+    models: dict[int, dict] = {}
+    augmented = list(base)
+    for slc in slicers:
+        if not isinstance(slc, dict):
+            continue
+        dataset_id = slc.get("datasetId")
+        if not isinstance(dataset_id, int):
+            continue
+        refs = _public_filter_semantic_refs(slc)
+        if not refs:
+            continue
+        semantic_field = refs[0]
+        key = (dataset_id, semantic_field)
+        if key in existing:
+            continue
+        column = _resolve_semantic_field_metadata(
+            db, dataset_id, semantic_field, dataset_models=models,
+        )
+        if not column:
+            continue
+        existing.add(key)
+        total = len(dash.dashboard_charts or [])
+        column["chartCoverage"] = total
+        column["datasetChartCount"] = total
+        column["sharedAcrossDataset"] = True
+        augmented.append(column)
+    return augmented
+
+
 def _build_public_filter_fields(
     db: Session,
     dash: Dashboard,
@@ -333,9 +386,14 @@ def _build_public_filter_fields(
     (datasetId, semanticField) referenced by `public_filters`, in the order DA defined.
     Legacy fallback: when no `public_filters`, scan chart bindings (preserves
     behavior for older shares that never configured Access filters).
+
+    In BOTH modes the dashboard's canvas slicers are unioned in
+    (`_augment_with_slicer_fields`) so a slicer's dropdown never 404s.
     """
     if public_filters:
-        return _build_filter_fields_from_public_filters(db, dash, public_filters)
+        return _augment_with_slicer_fields(
+            db, dash, _build_filter_fields_from_public_filters(db, dash, public_filters)
+        )
 
     dataset_models: dict[int, dict] = {}
     dataset_join_key_fields: dict[int, set[str]] = {}
@@ -432,9 +490,9 @@ def _build_public_filter_fields(
     calendar_columns = _build_public_calendar_filter_fields(db, dash)
     if calendar_columns:
         non_date_columns = [item for item in normalized_columns if item.get("type") != "date"]
-        return [*calendar_columns, *non_date_columns]
+        return _augment_with_slicer_fields(db, dash, [*calendar_columns, *non_date_columns])
 
-    return normalized_columns
+    return _augment_with_slicer_fields(db, dash, normalized_columns)
 
 
 def _public_filter_semantic_refs(filter_condition: dict) -> list[str]:

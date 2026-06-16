@@ -1590,9 +1590,16 @@ function SingleSelectBody({
     hasFilterContext: boolean;
   };
 }) {
+  // Only a TRUE cascade conflict — the BE answered (200) with zero rows for
+  // this field/filter combo. A load failure (isError, e.g. the field isn't an
+  // allowed public filter → 404) must NOT show "Try relaxing": that misreports
+  // an endpoint error as a filter conflict and sends people chasing the wrong
+  // cause. While still loading we also don't claim a conflict.
   const showConflictBanner =
     values.length === 0
-    && (conflictingFilterLabels?.length ?? 0) > 0;
+    && (conflictingFilterLabels?.length ?? 0) > 0
+    && !distinctStatus?.isError
+    && !distinctStatus?.isLoading;
   // Phase-7.6 — when no values AND no in-list conflict, also check if a
   // cross-list filter (page-level, slicer cluster) was passed via the
   // distinct query — then we know the dropdown is empty because of the
@@ -1709,9 +1716,16 @@ function MultiSelectBody({
   // are constraining it, surface the combination explicitly so the user
   // knows which filter to relax. Without this signal the user just sees
   // "Loading values…" and assumes the filter is broken.
+  // Only a TRUE cascade conflict — the BE answered (200) with zero rows for
+  // this field/filter combo. A load failure (isError, e.g. the field isn't an
+  // allowed public filter → 404) must NOT show "Try relaxing": that misreports
+  // an endpoint error as a filter conflict and sends people chasing the wrong
+  // cause. While still loading we also don't claim a conflict.
   const showConflictBanner =
     values.length === 0
-    && (conflictingFilterLabels?.length ?? 0) > 0;
+    && (conflictingFilterLabels?.length ?? 0) > 0
+    && !distinctStatus?.isError
+    && !distinctStatus?.isLoading;
   // Phase-7.6 — cross-list filter (page filter, slicer cluster filter
   // outside the current popup's filter list) can also produce 0 cascade
   // rows. Without `distinctStatus.isLoading=false + hasFilterContext` we'd
