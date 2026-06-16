@@ -726,6 +726,42 @@ export default function DashboardDetailPage() {
     }
   };
 
+  // Phase-B18 — auto-save the current page's unsaved layout edits into the
+  // draft BEFORE switching pages, so nothing is lost when moving around a
+  // multi-page dashboard. Switch happens regardless (a failed save keeps the
+  // edits in local state, not lost). The PDF-export loop sets currentPageId
+  // directly (not via this), so it isn't affected.
+  const handleSwitchPage = useCallback(async (pageId: string) => {
+    if (pageId === activePageId) { setIsPagesMenuOpen(false); return; }
+    setIsPagesMenuOpen(false);
+    // Silent auto-save (like Google Docs) — the "DRAFT" badge reflects state;
+    // no toast so frequent page switches don't spam the notification center.
+    if (canEditResource && hasLocalLayoutChanges) {
+      await flushLocalLayoutsToDraft();
+    }
+    setCurrentPageId(pageId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePageId, canEditResource, hasLocalLayoutChanges]);
+
+  // Phase-B18 — Ctrl/Cmd+S saves the draft quickly (and blocks the browser's
+  // Save-page dialog). A ref holds the latest closure so the listener stays
+  // mounted once but always sees current state.
+  const ctrlSRef = React.useRef<() => void>(() => {});
+  ctrlSRef.current = () => {
+    if (hasLocalLayoutChanges) handleSaveDraft();
+  };
+  React.useEffect(() => {
+    if (!canEditResource) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        ctrlSRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canEditResource]);
+
   // Phase-B17 — per-tile base versions for the tiles we're about to publish,
   // from the LIVE layout we loaded (layout._v). Lets the BE flag only the tiles
   // a colleague republished since we loaded — independent tiles never conflict.
@@ -2028,7 +2064,7 @@ export default function DashboardDetailPage() {
                                   <button
                                     key={page.id}
                                     type="button"
-                                    onClick={() => { setCurrentPageId(page.id); setIsPagesMenuOpen(false); }}
+                                    onClick={() => handleSwitchPage(page.id)}
                                     className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] font-[510] transition-colors ${
                                       isActive
                                         ? 'bg-[rgba(94,106,210,0.15)] text-brand'
@@ -2132,10 +2168,11 @@ export default function DashboardDetailPage() {
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                        title="Save draft to the server (the share link still serves the last published version)"
+                        title="Lưu nháp (Ctrl+S). Tự động lưu khi chuyển trang. Link công khai vẫn giữ bản đã xuất bản."
                       >
                         {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
                         Save draft
+                        <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
                       </button>
                       <button
                         type="button"

@@ -33,6 +33,10 @@ interface ReadonlyChartTileProps {
   onVisible?: () => void;
   /** When true, suppresses lazy gating (used during PDF export to render every tile). */
   forceVisible?: boolean;
+  /** Phase-B19 — public viewer dataset models {datasetId: model}, served by the
+   *  public dashboard response so the tile builds label/format maps without an
+   *  authed /datasets/{id}/model call (which would 401 → redirect to /login). */
+  publicDatasetModels?: Record<string, any> | null;
 }
 
 export function ReadonlyChartTile({
@@ -47,6 +51,7 @@ export function ReadonlyChartTile({
   isCrossFilterSource = false,
   onVisible,
   forceVisible = false,
+  publicDatasetModels = null,
 }: ReadonlyChartTileProps) {
   // Track first viewport entry. Sticky once seen so scrolling away doesn't
   // re-trigger fetch. forceVisible bypasses gating during PDF export.
@@ -96,9 +101,16 @@ export function ReadonlyChartTile({
   // chart identically to Explore — preserves measure percent/currency format.
   const roDatasetId = chartSemanticBinding?.datasetId
     ?? ((chart?.config as any)?.dataset_id ?? null);
-  const { data: roDatasetModel } = useDatasetModel(
-    typeof roDatasetId === 'number' ? roDatasetId : null,
+  // Phase-B19 — on the PUBLIC link the viewer has no AppBI account, so we must
+  // NOT hit the authed /datasets/{id}/model endpoint (it 401s → redirect to
+  // /login). When the public response supplies dataset models, use them and
+  // disable the authed fetch (passing null → useQuery disabled).
+  const { data: hookDatasetModel } = useDatasetModel(
+    publicDatasetModels ? null : (typeof roDatasetId === 'number' ? roDatasetId : null),
   );
+  const roDatasetModel = publicDatasetModels
+    ? (typeof roDatasetId === 'number' ? publicDatasetModels[String(roDatasetId)] : undefined)
+    : hookDatasetModel;
   const roLabelMap = useMemo(() => buildSemanticLabelMap(roDatasetModel?.views), [roDatasetModel]);
   const roFormatMap = useMemo(() => buildSemanticFormatMap(roDatasetModel?.views), [roDatasetModel]);
   const effectiveStyleConfig = useMemo(

@@ -614,6 +614,9 @@ class DashboardResponse(DashboardBase):
     created_at: datetime
     updated_at: datetime
     last_published_at: Optional[datetime] = None  # Phase-B17 optimistic-concurrency version
+    # Phase-B19 — per-dataset semantic models for the public viewer (so logged-out
+    # tiles build label/format maps without an authed /datasets/{id}/model call).
+    public_dataset_models: Optional[Dict[str, Any]] = None
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None

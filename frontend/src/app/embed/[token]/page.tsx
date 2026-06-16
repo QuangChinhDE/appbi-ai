@@ -943,6 +943,7 @@ export default function EmbedDashboardPage() {
                             compact
                             showChartTypeLabel={false}
                             forceVisible={forceVisibleAll}
+                            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                             onVisible={() => {
                               setVisibleChartIds((current) => {
                                 if (current.has(dashboardChart.chart_id)) return current;

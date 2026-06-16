@@ -766,6 +766,68 @@ def get_public_dashboard(
     # however, is the picker inventory and MUST cover both scopes.
     dash.public_filters_config = top_bar_filters
     dash.available_filter_fields = _build_public_filter_fields(db, dash, field_inventory)
+    # Phase-B19 — attach the dataset semantic models for every chart's dataset so
+    # a LOGGED-OUT public viewer's tiles can build label/format maps WITHOUT the
+    # authed GET /datasets/{id}/model call. That call 401'd for anonymous viewers
+    # and the global axios interceptor bounced them to the AppBI /login page —
+    # i.e. public links appeared to "require an account". Serving the models here
+    # keeps the public link password-only (or open), no account needed.
+    try:
+        from app.services.dataset_model_service import get_dataset_model
+        _ds_ids: set[int] = set()
+        for dc in dash.dashboard_charts or []:
+            cfg = (dc.chart.config if getattr(dc, "chart", None) else None) or {}
+            if not isinstance(cfg, dict):
+                continue
+            sb = cfg.get("semanticBinding")
+            ds_id = sb.get("datasetId") if isinstance(sb, dict) else None
+            if ds_id is None:
+                ds_id = cfg.get("dataset_id")
+            if ds_id is not None:
+                try:
+                    _ds_ids.add(int(ds_id))
+                except (TypeError, ValueError):
+                    pass
+        def _trim_model_for_public(m: dict) -> dict:
+            # SECURITY: expose ONLY the field label + measure-format the public
+            # tiles need (buildSemanticLabelMap/FormatMap). Strip measure
+            # expressions/SQL/where, join/explore definitions, source-table
+            # names and any view/field internals — anonymous viewers must not
+            # see the dataset's structure/logic, only what's needed to label
+            # the charts already shown.
+            views_out = []
+            for v in (m.get("views") or []):
+                if not isinstance(v, dict):
+                    continue
+                dims = [
+                    {"name": d.get("name"), "label": d.get("label")}
+                    for d in (v.get("dimensions") or [])
+                    if isinstance(d, dict) and d.get("name")
+                ]
+                meas = []
+                for me in (v.get("measures") or []):
+                    if not isinstance(me, dict) or not me.get("name"):
+                        continue
+                    fmt = me.get("format")
+                    meas.append({
+                        "name": me.get("name"),
+                        "label": me.get("label"),
+                        "format": {"kind": fmt.get("kind")} if isinstance(fmt, dict) else None,
+                    })
+                views_out.append({"name": v.get("name"), "dimensions": dims, "measures": meas})
+            return {"views": views_out}
+
+        _models: dict = {}
+        for ds_id in _ds_ids:
+            try:
+                m = get_dataset_model(db, ds_id)
+                if m:
+                    _models[str(ds_id)] = _trim_model_for_public(m)
+            except Exception:
+                pass
+        dash.public_dataset_models = _models
+    except Exception:
+        dash.public_dataset_models = {}
     # New: pass link's hidden filters as a separate field for the FE viewer
     # to merge silently into every chart-data request. Empty list when the
     # legacy share_token path is used (legacy never had per-link filters).

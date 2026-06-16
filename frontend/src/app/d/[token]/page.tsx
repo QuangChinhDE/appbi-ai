@@ -1312,6 +1312,7 @@ export default function PublicDashboardPage() {
                           onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
                           isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           forceVisible={forceVisibleAll}
+                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                           onVisible={() => {
                             setVisibleChartIds((current) => {
                               if (current.has(dashboardChart.chart_id)) return current;
