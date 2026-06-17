@@ -17,7 +17,7 @@ import {
   type BaseFilter,
   type FilterOperator,
 } from '@/lib/filters';
-import type { Chart, ChartDataResponse, ChartSemanticBinding, DashboardChartLayout } from '@/types/api';
+import type { Chart, ChartDataResponse, ChartSemanticBinding, DashboardChartLayout, TimeGranularity } from '@/types/api';
 
 interface ReadonlyChartTileProps {
   chart: Chart | null | undefined;
@@ -37,6 +37,11 @@ interface ReadonlyChartTileProps {
    *  public dashboard response so the tile builds label/format maps without an
    *  authed /datasets/{id}/model call (which would 401 → redirect to /login). */
   publicDatasetModels?: Record<string, any> | null;
+  /** #2 — public viewer date-hierarchy: current drill grain + handler. The
+   *  parent page owns the grain state and re-fetches this chart's data at the
+   *  chosen grain (BE re-query). */
+  viewerGrain?: string;
+  onViewerDrill?: (grain: TimeGranularity | undefined) => void;
 }
 
 export function ReadonlyChartTile({
@@ -52,6 +57,8 @@ export function ReadonlyChartTile({
   onVisible,
   forceVisible = false,
   publicDatasetModels = null,
+  viewerGrain,
+  onViewerDrill,
 }: ReadonlyChartTileProps) {
   // Track first viewport entry. Sticky once seen so scrolling away doesn't
   // re-trigger fetch. forceVisible bypasses gating during PDF export.
@@ -431,6 +438,8 @@ export function ReadonlyChartTile({
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
               embedded
+              viewerGrain={viewerGrain}
+              onViewerDrill={onViewerDrill}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

@@ -993,15 +993,29 @@ def delete_chart(
         )
 
 
+_VALID_VIEWER_GRAINS = {"raw", "day", "week", "month", "quarter", "year"}
+
+
+def _normalize_viewer_granularity(grain: Optional[str]) -> Optional[str]:
+    """#2 — validate the viewer date-hierarchy grain query param; lowercased
+    when valid, else None (unknown values are ignored rather than 400)."""
+    if not grain:
+        return None
+    g = str(grain).strip().lower()
+    return g if g in _VALID_VIEWER_GRAINS else None
+
+
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
     filters: Optional[str] = Query(None, description="JSON-encoded list of {field, operator, value} filter objects"),
     context: Optional[str] = Query(None, description="Runtime filter context, e.g. dashboard"),
+    granularity: Optional[str] = Query(None, description="#2 viewer date-hierarchy: re-bucket the time axis at this grain (raw|day|week|month|quarter|year)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Get chart configuration with data. Accepts optional dashboard filters."""
+    granularity_override = _normalize_viewer_granularity(granularity)
     chart = ChartService.get_by_id(db, chart_id)
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found")
@@ -1024,6 +1038,7 @@ def get_chart_data(
             chart_id,
             extra_filters=extra_filters,
             filter_context=context,
+            granularity_override=granularity_override,
         )
         return ChartDataResponse(**result)
     except ValueError as e:

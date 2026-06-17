@@ -47,15 +47,19 @@ export const publicDashboardApi = {
     chartId: number,
     sessionToken?: string,
     filters?: BaseFilter[],
+    granularity?: string,
   ): Promise<any> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    // #2 — viewer date-hierarchy: re-bucket the time axis at the grain the
+    // public end-user picked (BE re-queries). Stays on publicClient.
+    const params: Record<string, string> = {};
+    if (filters && filters.length > 0) params.filters = JSON.stringify(filters);
+    if (granularity) params.granularity = granularity;
     const res = await publicClient.get(
       `/public/dashboards/${token}/charts/${chartId}/data`,
       {
         headers,
-        params: filters && filters.length > 0
-          ? { filters: JSON.stringify(filters) }
-          : undefined,
+        params: Object.keys(params).length > 0 ? params : undefined,
       },
     );
     return res.data;

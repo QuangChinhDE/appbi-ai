@@ -395,6 +395,9 @@ function ChartTileBase({
     [debouncedFilterKey],
   );
 
+  // #2 — viewer date-hierarchy: the end-user's drill grain (BE re-query).
+  // undefined ⇒ the chart's saved grain.
+  const [viewerGrain, setViewerGrain] = useState<string | undefined>(undefined);
   const {
     data: chartData,
     isLoading: isLoadingData,
@@ -406,6 +409,7 @@ function ChartTileBase({
     debouncedFilters,
     'dashboard',
     { enabled: hasBeenVisible && !isLoadingChart && Boolean(chart) },
+    viewerGrain,
   );
 
   // Title editing state
@@ -1225,6 +1229,8 @@ function ChartTileBase({
               havingFilters={havingFilters}
               preAggregated={preAggregated}
               embedded
+              onViewerDrill={setViewerGrain}
+              viewerGrain={viewerGrain}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

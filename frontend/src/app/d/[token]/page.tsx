@@ -226,6 +226,11 @@ export default function PublicDashboardPage() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
+  // tile's active highlight; the ref is read inside the fetch callback so a
+  // grain change doesn't have to be a useCallback dependency.
+  const [chartGrains, setChartGrains] = useState<Record<number, string>>({});
+  const chartGrainsRef = useRef<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [chartsLoading, setChartsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -614,6 +619,7 @@ export default function PublicDashboardPage() {
               dashboardChart.chart_id,
               sessionToken,
               requestFilters,
+              chartGrainsRef.current[dashboardChart.chart_id],
             );
             return { chartId: dashboardChart.chart_id, data, error: null as string | null };
           } catch (err: any) {
@@ -676,6 +682,17 @@ export default function PublicDashboardPage() {
       }
     }
   }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
+
+  // #2 — public viewer date-hierarchy: change a chart's grain and re-fetch it
+  // from the BE at that bucket (works on pre-aggregated charts). The grain ref
+  // is read inside fetchChartsForPage's getChartData call.
+  const handleChartDrill = useCallback((chartId: number, grain: string | undefined) => {
+    const next = { ...chartGrainsRef.current };
+    if (grain) next[chartId] = grain; else delete next[chartId];
+    chartGrainsRef.current = next;
+    setChartGrains(next);
+    fetchChartsForPage(activePageId, getPublicSession(token) ?? undefined, undefined, { chartIds: [chartId] });
+  }, [activePageId, token, fetchChartsForPage]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
@@ -1348,6 +1365,8 @@ export default function PublicDashboardPage() {
                           isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           forceVisible={forceVisibleAll}
                           publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                          viewerGrain={chartGrains[dashboardChart.chart_id]}
+                          onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
                           onVisible={() => {
                             setVisibleChartIds((current) => {
                               if (current.has(dashboardChart.chart_id)) return current;

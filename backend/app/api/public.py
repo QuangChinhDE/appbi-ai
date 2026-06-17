@@ -2214,6 +2214,10 @@ def get_public_chart_data(
         default=None,
         description="JSON-encoded list of additional viewer filter objects.",
     ),
+    granularity: str | None = Query(
+        default=None,
+        description="#2 viewer date-hierarchy: re-bucket the time axis (raw|day|week|month|quarter|year).",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
@@ -2265,12 +2269,18 @@ def get_public_chart_data(
         context_for_log=f"chart_data:{token}:{chart_id}",
     )
 
+    # #2 — viewer date-hierarchy drill grain (validate against a whitelist;
+    # unknown values are ignored so a stray param can't break the query).
+    _grain = str(granularity or "").strip().lower()
+    granularity_override = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
+
     try:
         return ChartService.get_chart_data(
             db,
             chart_id,
             extra_filters=combined_filters or None,
             filter_context="dashboard",
+            granularity_override=granularity_override,
         )
     except ValueError as exc:
         # Phase-12.7: previously this swallowed the engine's Vietnamese

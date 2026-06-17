@@ -39,6 +39,7 @@ export const useChartData = (
   filters?: Record<string, unknown>[],
   context: ChartDataContext = 'default',
   options?: { enabled?: boolean },
+  granularity?: string,
 ) => {
   // Serialize filters to a stable string so identical filter payloads share
   // the same cache entry regardless of object-reference identity.
@@ -47,8 +48,11 @@ export const useChartData = (
   const enabled = options?.enabled ?? true;
 
   return useQuery({
-    queryKey: ['charts', id, 'data', context, filterKey],
-    queryFn: () => chartApi.getData(id, filters, context),
+    // #2 — granularity is part of the key so a viewer date-hierarchy drill
+    // (re-bucket at a new grain) fetches fresh data instead of re-serving the
+    // prior grain's cached result.
+    queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null],
+    queryFn: () => chartApi.getData(id, filters, context, granularity),
     enabled: !!id && enabled,
     staleTime: 5 * 60 * 1000,   // 5 min — avoid refetching unchanged chart data
     gcTime: 30 * 60 * 1000,     // 30 min — keep inactive entries longer

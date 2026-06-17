@@ -63,18 +63,28 @@ const MIN_ITEM_WIDTH = 48;
  * Return XAxis props that adapt angle and height to the number of data
  * points. Phase-15.22 pins interval=0 so EVERY tick label renders.
  */
-function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
+function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, maxLabelChars = 0) {
+  // #1 fix — rotation reacts to LABEL LENGTH, not just category count. Long
+  // string labels (names, "Return/Adjustment") overlapped even at a low count
+  // because the old logic only looked at `count`. Long labels rotate sooner
+  // and, when very long, go fully vertical (-90) so the horizontal footprint
+  // collapses to the text height — eliminating overlap on narrow tiles.
   let angle = 0;
   let height = 30;
-  if (count > 60) {
-    angle = -60;
-    height = 100;
-  } else if (count > 25) {
+  // `long` ≈ names / phrases ("Return/Adjustment"); short date labels
+  // ("3/1/2024" = 8) deliberately stay below this so a month axis is NOT
+  // force-rotated (no regression for the common case).
+  const long = maxLabelChars >= 11;
+  const veryLong = maxLabelChars >= 16;
+  if (count > 60 || (long && count > 8)) {
+    angle = -90;                                   // vertical → zero horizontal overlap
+    height = Math.min(150, 70 + Math.min(maxLabelChars, 22) * 4);
+  } else if (count > 25 || (long && count > 2) || veryLong) {
     angle = -45;
-    height = 80;
-  } else if (count > 12) {
+    height = 90;
+  } else if (count > 12 || long) {
     angle = -30;
-    height = 60;
+    height = 64;
   }
   const textAnchor: 'end' | 'middle' = angle !== 0 ? 'end' : 'middle';
   // BUG-010 — adaptive tick thinning. Phase-15.22 pinned interval:0 (render
@@ -805,23 +815,40 @@ interface CustomTooltipProps {
   style: ChartStyleConfig;
   fontSize: number;
   xField?: string;
+  /** #3 fix — format the tooltip title (e.g. a date axis) instead of raw String(label). */
+  labelFormatter?: (value: any) => string;
+  /** #3 fix — 100%-stacked: show each segment's share of the stack ("99.9%")
+   *  instead of the absolute value mis-formatted as percent. */
+  percentOfTotal?: boolean;
 }
-function CustomTooltip({ active, payload, label, series, style, fontSize, xField }: CustomTooltipProps) {
+function CustomTooltip({ active, payload, label, series, style, fontSize, xField, labelFormatter, percentOfTotal }: CustomTooltipProps) {
   if (!active || !payload?.length) return null;
   const row = payload[0]?.payload ?? {};
   const extras = style.tooltipExtraFields ?? [];
+  // #3 fix — date axes showed the raw ISO label ("2026-01-01T00:00:00") in the
+  // tooltip title because this used String(label) and ignored labelFormatter.
+  const titleText = (label === undefined || label === null)
+    ? undefined
+    : (labelFormatter ? labelFormatter(label) : String(label));
+  // #3 fix — for 100%-stacked the segment value is absolute; formatting it as
+  // percent produced garbage like "1032702900.0%". Show its share of the stack.
+  const stackTotal = percentOfTotal
+    ? payload.reduce((acc: number, e: any) => acc + (Number(e.value) || 0), 0)
+    : 0;
   return (
     <div
       className="bg-surface-1 border border-[rgb(var(--border-line))] rounded shadow-linear-sm"
       style={{ fontSize, padding: '8px 10px', minWidth: 140 }}
     >
-      {label !== undefined && (
-        <div className="font-semibold text-text-primary mb-1">{String(label)}</div>
+      {titleText !== undefined && (
+        <div className="font-semibold text-text-primary mb-1">{titleText}</div>
       )}
       {payload.map((entry: any, i: number) => {
         const key = entry.dataKey ?? entry.name;
         const match = series.find((s) => s.key === key);
-        const value = formatNumber(entry.value, style, key);
+        const value = percentOfTotal
+          ? (stackTotal ? `${((Number(entry.value) || 0) / stackTotal * 100).toFixed(1)}%` : '0%')
+          : formatNumber(entry.value, style, key);
         const color = entry.color ?? entry.payload?.fill;
         return (
           <div key={i} className="flex items-center gap-2 text-text-secondary">
@@ -1111,6 +1138,14 @@ export interface ExploreChartProps {
    *  it fill the tile width instead of capping at max-w-xl. Default false
    *  keeps standalone Explore rendering unchanged. */
   embedded?: boolean;
+  /** #2 — viewer date-hierarchy: when provided (Dashboard/Public tile), the
+   *  drill chips re-bucket via a BE re-query at the chosen grain (works even
+   *  on pre-aggregated charts, all measure types). The tile owns the grain
+   *  state and passes it as `viewerGrain`. */
+  onViewerDrill?: (grain: import('@/types/api').TimeGranularity | undefined) => void;
+  /** #2 — the grain currently requested by the viewer drill (for active-state
+   *  highlight). undefined ⇒ chart's saved grain. */
+  viewerGrain?: string;
 }
 
 function ExploreChartInner({
@@ -1125,6 +1160,8 @@ function ExploreChartInner({
   labelMap,
   formatMap,
   embedded = false,
+  onViewerDrill,
+  viewerGrain,
 }: ExploreChartProps) {
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   // During PDF export, turn OFF recharts enter-animations: html2canvas snapshots
@@ -1330,20 +1367,29 @@ function ExploreChartInner({
   ];
   const isTimeChart = type === 'LINE' || type === 'TIME_SERIES';
   const hasTimeField = Boolean(normalizedRoleConfig.timeField || xField);
-  // UX (Date Hierarchy) — drill is available either to persist (editor:
-  // onStyleConfigChange) or ephemerally in a read-only embedded viewer. The
-  // viewer path is gated on !preAggregated because re-bucketing happens
-  // client-side (applyTimeGranularity); a pre-aggregated result can't re-bucket
-  // without a BE round-trip, so we hide the chips there instead of showing a
-  // dead control. (Full pre-aggregated drill would need a BE re-query.)
-  const canDrill = isTimeChart && hasTimeField && (
-    Boolean(onStyleConfigChange) || (embedded && !preAggregated)
+  // #2 — date hierarchy works on ANY chart with a date X axis (line, bar,
+  // stacked bar, combo…), not only LINE/TIME_SERIES. Detect a date axis from
+  // the data so a stacked bar over `order_date` also offers the drill.
+  const hasDateAxis = isTimeChart || isDateLikeAxis(data, xField, normalizedRoleConfig.timeField);
+  // Drill is available when we can: persist (editor: onStyleConfigChange),
+  // re-query the BE at a new grain (viewer: onViewerDrill — works even on
+  // pre-aggregated dashboard/public charts, all measure types), or re-bucket
+  // client-side (embedded raw-row charts: ephemeral, no round-trip).
+  const canDrill = hasDateAxis && hasTimeField && (
+    Boolean(onStyleConfigChange) || Boolean(onViewerDrill) || (embedded && !preAggregated)
   );
-  const drillActive = Boolean(style.dateDrillLevel);
+  // Active grain to highlight: a viewer drill (BE re-query) tracks `viewerGrain`;
+  // otherwise the saved / ephemeral dateDrillLevel.
+  const effectiveDrillLevel = onViewerDrill ? viewerGrain : style.dateDrillLevel;
+  const drillActive = Boolean(effectiveDrillLevel);
   const handleDrillChange = (level: TimeGranularity | 'raw') => {
     const next = level === 'raw' ? undefined : level;
     if (onStyleConfigChange) {
       onStyleConfigChange({ ...style, dateDrillLevel: next });
+      return;
+    }
+    if (onViewerDrill) {
+      onViewerDrill(next);   // viewer: BE re-query at the new grain
       return;
     }
     setEphemeralDrill(next);
@@ -1359,7 +1405,7 @@ function ExploreChartInner({
             key={opt.value}
             type="button"
             onClick={() => handleDrillChange(opt.value)}
-            className={`px-1.5 py-0.5 rounded text-[10px] ${style.dateDrillLevel === opt.value ? 'bg-brand text-white' : 'bg-surface-2 hover:bg-surface-3'}`}
+            className={`px-1.5 py-0.5 rounded text-[10px] ${effectiveDrillLevel === opt.value ? 'bg-brand text-white' : 'bg-surface-2 hover:bg-surface-3'}`}
             title={opt.value}
           >
             {opt.label}
@@ -1533,7 +1579,15 @@ function ExploreChartInner({
   const xAxisIsDateLike = isDateLikeAxis(sortedCategoricalData, xField, xAxisLabel || normalizedRoleConfig.timeField);
 
   const renderXAxis = (dataKey: string, count: number = categoricalData.length, dateLike = false) => {
-    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel);
+    // #1 fix — measure the longest rendered label so the axis rotates for long
+    // string labels, not only for high category counts.
+    const labelSample = (categoricalData.length ? categoricalData : data).slice(0, 80);
+    const maxLabelChars = labelSample.reduce((m, r) => {
+      const v = r?.[dataKey];
+      const s = dateLike ? formatDateAxisValue(v) : (v == null || v === '' ? '(blank)' : String(v));
+      return Math.max(m, s.length);
+    }, 0);
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars);
     return (
       <XAxis
         dataKey={dataKey}
@@ -2195,9 +2249,11 @@ function ExploreChartInner({
                   <CustomTooltip
                     {...p}
                     series={displaySeries}
-                    style={isPercent ? { ...style, numberFormat: 'percent', decimalPlaces: 1 } : style}
+                    style={style}
                     fontSize={fontSize}
                     xField={xField}
+                    labelFormatter={xAxisIsDateLike ? formatDateAxisValue : undefined}
+                    percentOfTotal={isPercent}
                   />
                 )}
               />
@@ -2433,9 +2489,8 @@ function ExploreChartInner({
               {renderYAxis()}
               <Tooltip
                 content={(p: any) => (
-                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
                 )}
-                labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined}
               />
               {renderLegend()}
               {displaySeries.map((series, i) => {
@@ -2488,9 +2543,8 @@ function ExploreChartInner({
               {renderYAxis()}
               <Tooltip
                 content={(p: any) => (
-                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+                  <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
                 )}
-                labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined}
               />
               {renderLegend()}
               {displaySeries.map((series, i) => {
@@ -2554,7 +2608,7 @@ function ExploreChartInner({
           label={hbarXAxisLabel ? { value: hbarXAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
         <Tooltip
           content={(p: any) => (
-            <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} />
+            <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} labelFormatter={xAxisIsDateLike ? formatDateAxisValue : undefined} />
           )}
         />
         {renderLegend()}
@@ -2648,6 +2702,7 @@ function ExploreChartInner({
                     style={style}
                     fontSize={fontSize}
                     xField={xField}
+                    labelFormatter={xAxisIsDateLike ? formatDateAxisValue : undefined}
                   />
                 )}
               />
@@ -2772,7 +2827,7 @@ function ExploreChartInner({
             {renderYAxis()}
             <Tooltip
               content={(p: any) => (
-                <CustomTooltip {...p} series={displayBarSeries} style={style} fontSize={fontSize} xField={xField} />
+                <CustomTooltip {...p} series={displayBarSeries} style={style} fontSize={fontSize} xField={xField} labelFormatter={xAxisIsDateLike ? formatDateAxisValue : undefined} />
               )}
             />
             {renderLegend()}

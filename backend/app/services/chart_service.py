@@ -2446,6 +2446,34 @@ def _dispatch_per_measure_isolation(
     }
 
 
+def _apply_viewer_granularity(config: dict, grain: str | None) -> None:
+    """#2 — apply an end-user's runtime date-grain choice (Dashboard / Public
+    viewer date-hierarchy drill) onto the chart's ACTIVE role config so the
+    pipeline re-queries the source at that grain. This makes the drill work
+    even when the default render is pre-aggregated (client-side can't add finer
+    buckets). Mutates ``config`` in place — callers MUST pass a deep copy so the
+    saved chart contract is never touched. ``grain`` None/"" ⇒ no-op; "raw" ⇒
+    strip bucketing (raw timestamps)."""
+    if not isinstance(config, dict) or not grain:
+        return
+    role_config = get_chart_active_role_config(config)
+    if not isinstance(role_config, dict):
+        return
+    # The date field the chart buckets on: timeField (TIME_SERIES) or the
+    # plain dimension (a date column on a bar/line/combo X axis).
+    fields = [f for f in (role_config.get("timeField"), role_config.get("dimension"))
+              if isinstance(f, str) and f]
+    if not fields:
+        return
+    grains = dict(role_config.get("timeGrains") or {})
+    for field in fields:
+        if grain == "raw":
+            grains.pop(field, None)
+        else:
+            grains[field] = grain
+    role_config["timeGrains"] = grains
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -2982,8 +3010,13 @@ class ChartService:
         chart_id: int,
         extra_filters: list | None = None,
         filter_context: str | None = None,
+        granularity_override: str | None = None,
     ):
-        """Get chart configuration with data."""
+        """Get chart configuration with data.
+
+        ``granularity_override`` (#2 viewer date-hierarchy) re-buckets the time
+        axis at a grain the end-user picked in the Dashboard/Public viewer.
+        None ⇒ exact previous behaviour."""
         # [pbi-filter] entry log + chart_id context propagation — downstream
         # logs in semantic engine (SQL emit, measure-filter wrap) read this
         # contextvar so DA can grep ``chart_id=<N>`` and see EVERY log line
@@ -3014,7 +3047,8 @@ class ChartService:
             try:
                 _sf_key = "gcd::" + _hashlib.sha256(
                     _json.dumps(
-                        [int(chart_id), str(filter_context or ""), extra_filters or []],
+                        [int(chart_id), str(filter_context or ""), extra_filters or [],
+                         str(granularity_override or "")],
                         sort_keys=True, separators=(",", ":"), default=str,
                     ).encode("utf-8")
                 ).hexdigest()
@@ -3024,6 +3058,7 @@ class ChartService:
                 _sf_key,
                 lambda: ChartService._get_chart_data_inner(
                     db, chart_id, extra_filters=extra_filters, filter_context=filter_context,
+                    granularity_override=granularity_override,
                 ),
             )
         finally:
@@ -3035,10 +3070,20 @@ class ChartService:
         chart_id: int,
         extra_filters: list | None = None,
         filter_context: str | None = None,
+        granularity_override: str | None = None,
     ):
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
+
+        # #2 — viewer date-hierarchy: re-bucket at a runtime grain the end-user
+        # picked in the Dashboard/Public viewer. Apply onto a COPY so the saved
+        # chart contract is untouched; the pipeline then re-queries at that
+        # grain. None ⇒ exact previous behaviour (no copy, no change).
+        effective_config = db_chart.config or {}
+        if granularity_override:
+            effective_config = deepcopy(effective_config)
+            _apply_viewer_granularity(effective_config, granularity_override)
 
         # Prefer direct dataset_table_id FK over config-embedded source
         if db_chart.dataset_table_id is not None:
@@ -3060,7 +3105,7 @@ class ChartService:
                 datasource,
                 db_table,
                 db_chart.chart_type,
-                db_chart.config or {},
+                effective_config,
                 extra_filters=extra_filters,
                 filter_context=filter_context,
             )
@@ -3078,7 +3123,7 @@ class ChartService:
             }
 
         # Fallback: check config for legacy dataset_table source
-        config = db_chart.config or {}
+        config = effective_config
         if isinstance(config, dict) and config.get('source', {}).get('kind') == 'dataset_table':
             from app.services.dataset_crud import DatasetCRUDService
             from app.models.models import DataSource
@@ -3104,7 +3149,7 @@ class ChartService:
                 datasource,
                 db_table,
                 db_chart.chart_type,
-                db_chart.config or {},
+                effective_config,
                 extra_filters=extra_filters,
                 filter_context=filter_context,
             )

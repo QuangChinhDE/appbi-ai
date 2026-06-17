@@ -53,6 +53,7 @@ export const chartApi = {
     id: number,
     filters?: Record<string, unknown>[],
     context: ChartDataContext = 'default',
+    granularity?: string,
   ): Promise<ChartDataResponse> => {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) {
@@ -60,6 +61,11 @@ export const chartApi = {
     }
     if (context !== 'default') {
       params.context = context;
+    }
+    // #2 — viewer date-hierarchy: re-bucket the time axis at a grain the
+    // end-user picked in the Dashboard viewer (BE re-queries at this grain).
+    if (granularity) {
+      params.granularity = granularity;
     }
     const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;

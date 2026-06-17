@@ -213,6 +213,10 @@ export default function EmbedDashboardPage() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // #2 — per-chart viewer date-hierarchy grain (BE re-query); ref read inside
+  // the fetch callback so a grain change isn't a useCallback dependency.
+  const [chartGrains, setChartGrains] = useState<Record<number, string>>({});
+  const chartGrainsRef = useRef<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [chartsLoading, setChartsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -463,6 +467,7 @@ export default function EmbedDashboardPage() {
               dashboardChart.chart_id,
               sessionToken,
               requestFilters,
+              chartGrainsRef.current[dashboardChart.chart_id],
             );
             return { chartId: dashboardChart.chart_id, data, error: null as string | null };
           } catch (err: any) {
@@ -525,6 +530,16 @@ export default function EmbedDashboardPage() {
       }
     }
   }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleExpiry, token]);
+
+  // #2 — embed viewer date-hierarchy: change a chart's grain and re-fetch it
+  // from the BE at that bucket (works on pre-aggregated charts).
+  const handleChartDrill = useCallback((chartId: number, grain: string | undefined) => {
+    const next = { ...chartGrainsRef.current };
+    if (grain) next[chartId] = grain; else delete next[chartId];
+    chartGrainsRef.current = next;
+    setChartGrains(next);
+    fetchChartsForPage(activePageId, getPublicSession(token) ?? undefined, undefined, { chartIds: [chartId] });
+  }, [activePageId, token, fetchChartsForPage]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
@@ -981,6 +996,8 @@ export default function EmbedDashboardPage() {
                             showChartTypeLabel={false}
                             forceVisible={forceVisibleAll}
                             publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                            viewerGrain={chartGrains[dashboardChart.chart_id]}
+                            onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
                             onVisible={() => {
                               setVisibleChartIds((current) => {
                                 if (current.has(dashboardChart.chart_id)) return current;
