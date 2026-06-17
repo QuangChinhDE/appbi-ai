@@ -11,7 +11,7 @@
  * Single "Save" button; context-aware — saves whichever tab has unsaved changes.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -1897,6 +1897,24 @@ function MeasureRow({
   // expression/formula measure shows its fields.
   const [showAdvanced, setShowAdvanced] = useState(() => detectMode(measure) !== 'lowcode');
 
+  // `mode`/`showAdvanced` are seeded once at mount from the measure prop. When
+  // the measure GAINS advanced shape from OUTSIDE the form — i.e. a draft
+  // restore (applyDraft) or an external prop update injects an expression /
+  // where_sql / cross-table scope / depends_on — re-derive so the SQL box opens
+  // and shows the restored formula. Without this, restoring a draft onto a
+  // measure that started lowcode left the advanced section collapsed, HIDING
+  // the restored expression (it looked like the draft "didn't save the SQL").
+  // Collapsing the disclosure clears the advanced fields (toggleAdvanced) →
+  // detectMode falls back to lowcode → this never fights a manual collapse.
+  useEffect(() => {
+    const detected = detectMode(measure);
+    if (detected !== 'lowcode') {
+      setShowAdvanced(true);
+      setMode(detected);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measure.expression, measure.where_sql, measure.scope, measure.depends_on?.length]);
+
   // Opening the advanced disclosure: if the measure is still bare lowcode,
   // seed an empty sql-expression shape so the box appears. Closing it: strip
   // advanced fields back to a clean lowcode measure (mirror switchMode's
@@ -3006,7 +3024,24 @@ export interface ModelViewEditPanelProps {
   onRequestAddColumn?: (tableId: number) => void;
 }
 
-export function ModelViewEditPanel({
+/**
+ * Imperative API the parent (dataset page) uses to guard navigation away from
+ * a dirty measure editor — see the "leave modal" on the dataset page. The page
+ * owns the navigation; the panel owns the unsaved state + the save/draft/discard
+ * actions, so they're exposed here rather than lifted into the page.
+ */
+export interface ModelViewEditPanelHandle {
+  hasUnsavedChanges: () => boolean;
+  canSave: () => boolean;
+  /** Run the full Save (validate + dry-run + PUT). Resolves true on success. */
+  save: () => Promise<boolean>;
+  /** Persist the current edits to a local draft (does NOT touch the BE). */
+  saveDraft: () => void;
+  /** Revert edits to the saved view + drop the local draft. */
+  discardChanges: () => void;
+}
+
+export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelViewEditPanelProps>(function ModelViewEditPanel({
   datasetId,
   view,
   modelViews,
@@ -3022,7 +3057,7 @@ export function ModelViewEditPanel({
   singleMeasureMode = false,
   onRetargetView,
   onRequestAddColumn,
-}: ModelViewEditPanelProps) {
+}: ModelViewEditPanelProps, ref) {
   const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
 
   const tableId = view?.dataset_table_id ?? null;
@@ -3275,20 +3310,24 @@ export function ModelViewEditPanel({
       ))
     );
 
-  // ── Draft autosave (UX: never lose measure config on reload / view switch) ──
+  // ── Draft (UX: never lose measure config) — EXPLICIT mode ──────────────────
   // Snapshots the full editable model state (incl. row keys so rename detection
-  // survives a restore) to localStorage, debounced. Restore is via a banner
-  // (never auto-applied) — see useLocalDraft for the rationale.
+  // survives a restore). autosave:false → the hook never writes on its own; a
+  // draft is created ONLY when the user picks "Lưu nháp" in the leave-modal
+  // (→ saveDraft/flush) or on beforeunload (silent flush). Restore is via a
+  // banner (never auto-applied). The draft lives in localStorage and NEVER
+  // touches the BE — reports keep the saved formula until an explicit Save.
   const draftValue = useMemo(
     () => ({ measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys }),
     [measures, dimensions, viewDescription, measureRowKeys, dimensionRowKeys],
   );
   const draftKey = view ? `appbi:measure-draft:v1:${datasetId}:${view.id}` : null;
-  const { pendingDraft, restore: restoreDraft, discard: discardDraft } = useLocalDraft({
+  const { pendingDraft, restore: restoreDraft, discard: discardDraft, flush: flushDraft } = useLocalDraft({
     key: draftKey,
     value: draftValue,
     isDirty: modelIsDirty,
     enabled: canEdit && !!view,
+    autosave: false,
   });
 
   // A stored draft equal to the saved baseline (e.g. written by flush-on-leave
@@ -3335,21 +3374,33 @@ export function ModelViewEditPanel({
     setActiveNewRowKey(null);
   };
 
-  // Warn before leaving the page/closing the tab with unsaved measure changes.
-  // The autosaved draft already protects the data; this prompt just surfaces it
-  // (pattern reused from DashboardHtmlImportModal).
+  // Revert the in-memory edits back to the saved view + drop the local draft.
+  // Used by the leave-modal's "Bỏ thay đổi". Mirrors the unified view-load.
+  const discardChanges = useCallback(() => {
+    if (!view) return;
+    setMeasures(view.measures.map((m) => ({ ...m })));
+    setMeasureRowKeys(view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`));
+    setDimensions(view.dimensions.map((d) => ({ ...d })));
+    setDimensionRowKeys(view.dimensions.map((d, index) => `${view.id}:dimension:${index}:${d.name || 'field'}`));
+    setViewDescription(view.description || '');
+    setActiveNewRowKey(null);
+    discardDraft();
+  }, [view, discardDraft]);
+
+  // Hard-unload safety net (refresh / close tab / external URL): browsers don't
+  // allow a custom dialog here, so instead of the ugly native "Leave site?"
+  // prompt we SILENTLY flush the current edits to a local draft (no
+  // preventDefault). On return, the restore banner offers it back. In-app
+  // leaves are handled by the explicit leave-modal on the dataset page.
   useEffect(() => {
     if (!modelIsDirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = '';
-    };
+    const onBeforeUnload = () => { flushDraft(); };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [modelIsDirty]);
+  }, [modelIsDirty, flushDraft]);
 
-  const handleSaveModel = async () => {
-    if (!view) return;
+  const handleSaveModel = async (): Promise<boolean> => {
+    if (!view) return false;
     // ── Client-side validation: catch misconfigurations before the round-trip ──
 
     /** Mirror of backend MeasureDefinition.validate_sql_fragment */
@@ -3440,7 +3491,7 @@ export function ModelViewEditPanel({
 
     if (errors.length) {
       toast.error(errors[0]);
-      return;
+      return false;
     }
 
     // A2 (2026-06-10): compile-check measures through the REAL engine before
@@ -3471,7 +3522,7 @@ export function ModelViewEditPanel({
             toast.error(
               `Measure "${m.label || m.name}" có lỗi cú pháp — sửa trước khi lưu:\n${result.error ?? 'SQL không hợp lệ'}`,
             );
-            return;
+            return false;
           }
         }
       } finally {
@@ -3537,6 +3588,7 @@ export function ModelViewEditPanel({
       // Persisted to the BE — drop the local draft so a later reload doesn't
       // offer to "restore" what's already saved.
       discardDraft();
+      return true;
     } catch (error: unknown) {
       const response = (error as { response?: { status?: number; data?: { detail?: unknown } } })?.response;
       const detail = response?.data?.detail;
@@ -3560,14 +3612,17 @@ export function ModelViewEditPanel({
             await trySave(true);
             discardDraft();
             toast.success('Đã lưu (cần sửa lại chart đang dùng).');
+            return true;
           } catch (force_error: unknown) {
             const fd = (force_error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
             toast.error(typeof fd === 'string' ? fd : 'Force save failed');
+            return false;
           }
         }
-        return;
+        return false;
       }
       toast.error(typeof detail === 'string' ? detail : contentMode === 'measures' ? 'Failed to save measures' : 'Failed to save fields');
+      return false;
     }
   };
 
@@ -3583,6 +3638,18 @@ export function ModelViewEditPanel({
   const measuresHaveErrors = measureErrorCount > 0;
   const canSave = (activeTab === 'dictionary' ? dictDirty : modelIsDirty)
     && !(contentMode === 'measures' && measuresHaveErrors);
+
+  // Imperative API for the dataset page's leave-guard modal (see header).
+  // No deps array on purpose: the handle is rebuilt every render so `save`
+  // always closes over the latest measures/handlers (memoizing by modelIsDirty
+  // would freeze a stale handleSaveModel while edits keep the panel dirty).
+  useImperativeHandle(ref, () => ({
+    hasUnsavedChanges: () => modelIsDirty,
+    canSave: () => !measuresHaveErrors,
+    save: () => handleSaveModel(),
+    saveDraft: () => flushDraft(),
+    discardChanges: () => discardChanges(),
+  }));
 
   const handleSave = () => {
     if (activeTab === 'dictionary') handleSaveDict();
@@ -4016,4 +4083,4 @@ export function ModelViewEditPanel({
       )}
     </div>
   );
-}
+});

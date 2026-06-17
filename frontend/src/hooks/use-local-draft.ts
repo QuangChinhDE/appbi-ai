@@ -43,6 +43,15 @@ interface UseLocalDraftOptions<T> {
   enabled?: boolean;
   /** Debounce before writing a dirty value (ms). Default 800. */
   debounceMs?: number;
+  /**
+   * When true (default), a dirty `value` is debounce-written automatically and
+   * flushed to the old key on key-change. When false, the hook is EXPLICIT-only:
+   * it reads the draft on mount (for the banner) and exposes `flush()`/`discard()`,
+   * but never writes on its own — the caller decides when to persist (e.g. a
+   * "Save draft" button, or a beforeunload flush). Use this when an in-app
+   * "save / save-draft?" prompt owns the decision and silent drafts are unwanted.
+   */
+  autosave?: boolean;
 }
 
 interface UseLocalDraftResult<T> {
@@ -95,6 +104,7 @@ export function useLocalDraft<T>({
   isDirty,
   enabled = true,
   debounceMs = 800,
+  autosave = true,
 }: UseLocalDraftOptions<T>): UseLocalDraftResult<T> {
   const [pendingDraft, setPendingDraft] = useState<LocalDraft<T> | null>(null);
 
@@ -106,6 +116,8 @@ export function useLocalDraft<T>({
   isDirtyRef.current = isDirty;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const autosaveRef = useRef(autosave);
+  autosaveRef.current = autosave;
 
   // ── Read draft for the active key; flush to the OLD key on key change. ──
   useEffect(() => {
@@ -118,15 +130,16 @@ export function useLocalDraft<T>({
     return () => {
       // Persist the latest value to the key we're leaving so a fast context
       // switch (within the debounce window) doesn't drop unsaved edits.
-      if (enabledRef.current && isDirtyRef.current) {
+      // Only in autosave mode — explicit mode never writes on its own.
+      if (autosaveRef.current && enabledRef.current && isDirtyRef.current) {
         writeDraft(activeKey, valueRef.current);
       }
     };
   }, [key, enabled]);
 
-  // ── Debounced autosave for the active key. ──
+  // ── Debounced autosave for the active key (autosave mode only). ──
   useEffect(() => {
-    if (!enabled || !key) return;
+    if (!autosave || !enabled || !key) return;
     if (isDirty) {
       const timer = setTimeout(() => writeDraft(key, value), debounceMs);
       return () => clearTimeout(timer);
@@ -135,7 +148,7 @@ export function useLocalDraft<T>({
     // awaiting the caller's restore/discard decision (don't kill the banner).
     if (!pendingDraft) removeDraft(key);
     return undefined;
-  }, [key, value, isDirty, enabled, debounceMs, pendingDraft]);
+  }, [key, value, isDirty, enabled, debounceMs, pendingDraft, autosave]);
 
   const restore = useCallback((): T | null => {
     if (!pendingDraft) return null;

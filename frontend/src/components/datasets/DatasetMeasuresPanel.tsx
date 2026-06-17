@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { forwardRef, useEffect, useMemo, useState } from 'react';
 import { Loader2, RefreshCw, Sigma } from 'lucide-react';
 
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import type { DatasetTable } from '@/hooks/use-datasets';
-import { ModelViewEditPanel } from './ModelViewEditPanel';
+import { ModelViewEditPanel, type ModelViewEditPanelHandle } from './ModelViewEditPanel';
 
 interface DatasetMeasuresPanelProps {
   datasetId: number;
@@ -31,7 +31,7 @@ function tableKindRank(table: DatasetTable | null | undefined): number {
   return 3;
 }
 
-export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRetargetView, onRequestAddColumn }: DatasetMeasuresPanelProps) {
+export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, DatasetMeasuresPanelProps>(function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRetargetView, onRequestAddColumn }: DatasetMeasuresPanelProps, ref) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
 
@@ -140,6 +140,7 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedView ? (
           <ModelViewEditPanel
+            ref={ref}
             datasetId={datasetId}
             view={selectedView}
             modelViews={views}
@@ -168,4 +169,4 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
       </div>
     </div>
   );
-}
+});

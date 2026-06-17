@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useState, useMemo, useCallback, startTransition } from 'react';
+import React, { useState, useMemo, useCallback, useRef, startTransition } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus,
@@ -45,6 +45,8 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
+import type { ModelViewEditPanelHandle } from '@/components/datasets/ModelViewEditPanel';
+import { AppModalShell } from '@/components/common/AppModalShell';
 import { useDatasetModel, fetchColumnLineage, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
 import { HelpTooltipRich } from '@/components/ui/HelpTooltip';
 import type { Transformation } from '@/hooks/use-datasets';
@@ -550,6 +552,25 @@ export default function DatasetDetailPage() {
   // Add now opens the config form directly and the target table is chosen
   // inside the form. (Removed: showMeasuresAddPicker / measuresAddPickerPos.)
   const [collapsedMeasureViews, setCollapsedMeasureViews] = useState<Set<number>>(new Set());
+
+  // ── Leave-guard for the measure editor ─────────────────────────────────────
+  // The measure editor (DatasetMeasuresPanel → ModelViewEditPanel) holds unsaved
+  // edits in local state. Navigating away (switch table, switch workspace tab,
+  // breadcrumb) would silently discard them. We intercept those in-app nav
+  // actions: if the editor is dirty, open a modal asking Save / Save-draft /
+  // Discard before proceeding. (Hard unloads can't show custom UI — the panel
+  // flushes a silent draft on beforeunload instead.)
+  const measurePanelRef = useRef<ModelViewEditPanelHandle>(null);
+  const [pendingLeave, setPendingLeave] = useState<{ run: () => void } | null>(null);
+  const [leaveSaving, setLeaveSaving] = useState(false);
+
+  const requestLeaveMeasures = useCallback((proceed: () => void) => {
+    if (tablesWorkspace === 'measures' && measurePanelRef.current?.hasUnsavedChanges()) {
+      setPendingLeave({ run: proceed });
+    } else {
+      proceed();
+    }
+  }, [tablesWorkspace]);
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
@@ -1282,7 +1303,7 @@ export default function DatasetDetailPage() {
       <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
         {/* Breadcrumb */}
         <button
-          onClick={() => router.push('/datasets')}
+          onClick={() => requestLeaveMeasures(() => router.push('/datasets'))}
           className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-primary transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -1308,7 +1329,7 @@ export default function DatasetDetailPage() {
             Tables
           </button>
           <button
-            onClick={() => setActiveTab('quality')}
+            onClick={() => requestLeaveMeasures(() => setActiveTab('quality'))}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
               activeTab === 'quality'
                 ? 'bg-surface-1 text-brand shadow-linear-sm'
@@ -1319,7 +1340,7 @@ export default function DatasetDetailPage() {
             Quality
           </button>
           <button
-            onClick={() => setActiveTab('model')}
+            onClick={() => requestLeaveMeasures(() => setActiveTab('model'))}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
               activeTab === 'model'
                 ? 'bg-surface-1 text-brand shadow-linear-sm'
@@ -1482,10 +1503,15 @@ export default function DatasetDetailPage() {
                                     (measuresFocusViewId && sidebarModelViews.some((v) => v.id === measuresFocusViewId))
                                       ? measuresFocusViewId
                                       : (withMeasures?.id ?? sidebarModelViews[0]?.id ?? null);
-                                  setMeasuresFocusViewId(defaultViewId);
-                                  setMeasuresFocusMeasureName('__new__');
-                                  setTablesWorkspace('measures');
-                                  clearTableInUrl();
+                                  const go = () => {
+                                    setMeasuresFocusViewId(defaultViewId);
+                                    setMeasuresFocusMeasureName('__new__');
+                                    setTablesWorkspace('measures');
+                                    clearTableInUrl();
+                                  };
+                                  // Adding to the SAME view just appends a blank measure (no loss);
+                                  // only a switch to a different view discards in-flight edits.
+                                  if (defaultViewId !== measuresFocusViewId) requestLeaveMeasures(go); else go();
                                 }}
                                 className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
                               >
@@ -1550,10 +1576,13 @@ export default function DatasetDetailPage() {
                                           <button
                                             type="button"
                                             onClick={() => {
-                                              setMeasuresFocusViewId(mv.id);
-                                              setMeasuresFocusMeasureName(null);
-                                              setTablesWorkspace('measures');
-                                              clearTableInUrl();
+                                              const go = () => {
+                                                setMeasuresFocusViewId(mv.id);
+                                                setMeasuresFocusMeasureName(null);
+                                                setTablesWorkspace('measures');
+                                                clearTableInUrl();
+                                              };
+                                              if (mv.id !== measuresFocusViewId) requestLeaveMeasures(go); else go();
                                             }}
                                             className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                                           >
@@ -1569,10 +1598,13 @@ export default function DatasetDetailPage() {
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 // E2: add a measure to THIS table — sentinel focus opens a blank form on it.
-                                                setMeasuresFocusViewId(mv.id);
-                                                setMeasuresFocusMeasureName('__new__');
-                                                setTablesWorkspace('measures');
-                                                clearTableInUrl();
+                                                const go = () => {
+                                                  setMeasuresFocusViewId(mv.id);
+                                                  setMeasuresFocusMeasureName('__new__');
+                                                  setTablesWorkspace('measures');
+                                                  clearTableInUrl();
+                                                };
+                                                if (mv.id !== measuresFocusViewId) requestLeaveMeasures(go); else go();
                                               }}
                                               className="shrink-0 rounded p-0.5 text-text-quaternary transition-colors hover:bg-surface-3 hover:text-warning"
                                               title={`Add measure to ${mv.table_display_name || mv.name}`}
@@ -1593,10 +1625,14 @@ export default function DatasetDetailPage() {
                                                   key={measure.name}
                                                   type="button"
                                                   onClick={() => {
-                                                    setMeasuresFocusViewId(mv.id);
-                                                    setMeasuresFocusMeasureName(measure.name);
-                                                    setTablesWorkspace('measures');
-                                                    clearTableInUrl();
+                                                    const go = () => {
+                                                      setMeasuresFocusViewId(mv.id);
+                                                      setMeasuresFocusMeasureName(measure.name);
+                                                      setTablesWorkspace('measures');
+                                                      clearTableInUrl();
+                                                    };
+                                                    // Same view = switching focus measure keeps edits in state (no loss).
+                                                    if (mv.id !== measuresFocusViewId) requestLeaveMeasures(go); else go();
                                                   }}
                                                   className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left transition-colors ${
                                                     isActive
@@ -1635,9 +1671,11 @@ export default function DatasetDetailPage() {
                                           : 'text-text-primary hover:bg-surface-2'
                                       } ${sourceIssue ? 'ring-1 ring-danger/35' : ''}`}
                                       onClick={() => {
-                                        setTablesWorkspace('preview');
-                                        startTransition(() => setSelectedTableId(table.id));
-                                        replaceTableInUrl(table.id);
+                                        requestLeaveMeasures(() => {
+                                          setTablesWorkspace('preview');
+                                          startTransition(() => setSelectedTableId(table.id));
+                                          replaceTableInUrl(table.id);
+                                        });
                                       }}
                                     >
                                       {sourceIssue ? (
@@ -1725,6 +1763,7 @@ export default function DatasetDetailPage() {
             />
           ) : tablesWorkspace === 'measures' ? (
             <DatasetMeasuresPanel
+              ref={measurePanelRef}
               datasetId={datasetId!}
               tables={dataset.tables ?? []}
               canEdit={resPerms.canEdit}
@@ -1975,6 +2014,84 @@ export default function DatasetDetailPage() {
         </div>
       )}
 
+      {/* Leave-guard modal: shown when navigating away from a dirty measure
+          editor. Lets the user Save (→ applies to reports), keep a local draft
+          (reports unchanged), discard, or stay. */}
+      {pendingLeave && (() => {
+        const canSaveNow = measurePanelRef.current?.canSave() ?? false;
+        const proceed = () => {
+          const run = pendingLeave.run;
+          setPendingLeave(null);
+          run();
+        };
+        return (
+          <AppModalShell
+            onClose={() => { if (!leaveSaving) setPendingLeave(null); }}
+            title="Thay đổi measure chưa lưu"
+            description="Bạn có thay đổi chưa lưu trong measure đang sửa."
+            icon={<Sigma className="h-5 w-5" />}
+            maxWidthClass="max-w-md"
+            footer={
+              <div className="flex w-full flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { if (!leaveSaving) setPendingLeave(null); }}
+                  disabled={leaveSaving}
+                  className="mr-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Ở lại
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { measurePanelRef.current?.discardChanges(); proceed(); }}
+                  disabled={leaveSaving}
+                  className="rounded-md border border-danger/30 px-4 py-2 text-sm font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+                >
+                  Bỏ thay đổi
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { measurePanelRef.current?.saveDraft(); proceed(); }}
+                  disabled={leaveSaving}
+                  className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Lưu nháp &amp; rời
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!measurePanelRef.current) return;
+                    setLeaveSaving(true);
+                    const ok = await measurePanelRef.current.save();
+                    setLeaveSaving(false);
+                    if (ok) proceed();
+                  }}
+                  disabled={leaveSaving || !canSaveNow}
+                  title={!canSaveNow ? 'Measure còn lỗi — dùng "Lưu nháp" để giữ lại và sửa sau' : undefined}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-40"
+                >
+                  {leaveSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Lưu
+                </button>
+              </div>
+            }
+          >
+            <div className="space-y-2 p-5 text-sm text-text-secondary">
+              <p>Chọn cách xử lý trước khi rời khỏi màn hình cấu hình measure:</p>
+              <ul className="list-disc space-y-1 pl-5 text-[13px] leading-5">
+                <li><span className="font-medium text-text-primary">Lưu</span> — lưu vào hệ thống, áp dụng cho biểu đồ/báo cáo.</li>
+                <li><span className="font-medium text-text-primary">Lưu nháp</span> — chỉ lưu tạm trên máy bạn; báo cáo vẫn dùng công thức đã lưu trước đó. Quay lại bảng này sẽ có nút khôi phục.</li>
+                <li><span className="font-medium text-text-primary">Bỏ thay đổi</span> — huỷ chỉnh sửa và bản nháp.</li>
+              </ul>
+              {!canSaveNow && (
+                <p className="rounded-md bg-warning/10 px-2.5 py-1.5 text-[12px] text-warning">
+                  Measure đang còn lỗi nên chưa thể lưu chính thức — hãy dùng Lưu nháp để giữ lại và sửa tiếp sau.
+                </p>
+              )}
+            </div>
+          </AppModalShell>
+        );
+      })()}
 
     </div>
   );
