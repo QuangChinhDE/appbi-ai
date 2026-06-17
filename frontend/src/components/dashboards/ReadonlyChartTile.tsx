@@ -254,7 +254,7 @@ export function ReadonlyChartTile({
       /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
-      className={`dashboard-tile group h-full overflow-hidden rounded-lg border bg-surface-1 p-3 transition-colors ${
+      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg border bg-surface-1 p-3 transition-colors ${
         isCrossFilterSource
           ? 'border-sky-300 ring-2 ring-sky-100'
           : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
@@ -280,24 +280,14 @@ export function ReadonlyChartTile({
         {/* Phase-B11 — render the header row ONLY when it has real content
             (a set title, a dropped-filter badge, or the HAVING control); an
             empty header band above an untitled chart was pure wasted space. */}
-        {((!isKpiCard && (displayTitle || (showChartTypeLabel && chart?.chart_type))) || droppedByBackend.length > 0 || havingOptions.length > 0) && (
-        <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
-          <div className="min-w-0 flex-1">
-            {/* Phase-B10 — KPI shows its own label inside the card, so skip the
-                redundant tile title here (avoids "DA1 KPI" stacked over the
-                card's "TOTAL REVENUE"). */}
-            {/* Phase-B11 — only an explicitly-set title (no "Untitled"/name
-                placeholder); calmer medium-weight muted style. */}
-            {!isKpiCard && displayTitle && (
-              <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
-            )}
-            {showChartTypeLabel && chart?.chart_type && !isKpiCard && (
-              <p className="mt-1 truncate text-[11px] text-text-quaternary">
-                {String(chart.chart_type).replace(/_/g, ' ')}
-              </p>
-            )}
-          </div>
-          {droppedByBackend.length > 0 && (
+        {/* Action cluster = dropped-filter badge + per-chart-filter toggle.
+            Non-KPI charts render it in the header row beside the title. KPI
+            cards have NO header title (the label lives inside the card), so the
+            cluster floats top-right of the tile — parallel to the in-card
+            label — instead of leaving an empty title band above the value.
+            (Phase-B10/B11 + 2026-06 card-header consistency.) */}
+        {(() => {
+          const droppedBadge = droppedByBackend.length > 0 ? (
             <span
               className="flex-shrink-0 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
               title={(() => {
@@ -314,11 +304,11 @@ export function ReadonlyChartTile({
               <AlertTriangle className="h-3 w-3" />
               {droppedByBackend.length} bỏ qua
             </span>
-          )}
-          {havingOptions.length > 0 && (
+          ) : null;
+          const havingToggle = havingOptions.length > 0 ? (
             <button
               onClick={() => setIsHavingOpen((current) => !current)}
-                className={`ml-auto flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 transition ${
+              className={`flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 transition ${
                 isHavingOpen || havingFilters.length > 0
                   ? 'border-sky-200 bg-sky-50 text-sky-700 opacity-100'
                   : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:border-[rgb(var(--border-line))] hover:bg-surface-2 hover:text-text-primary'
@@ -327,9 +317,44 @@ export function ReadonlyChartTile({
             >
               <SlidersHorizontal className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
             </button>
-          )}
-        </div>
-        )}
+          ) : null;
+          const hasActions = Boolean(droppedBadge || havingToggle);
+
+          // KPI: float actions top-right, no header band — the card label is
+          // the title and the value stays the focus.
+          if (isKpiCard) {
+            return hasActions ? (
+              <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+                {droppedBadge}
+                {havingToggle}
+              </div>
+            ) : null;
+          }
+
+          // Non-KPI: render the header row only when it has real content.
+          const showHeader = Boolean(displayTitle || (showChartTypeLabel && chart?.chart_type) || hasActions);
+          if (!showHeader) return null;
+          return (
+            <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
+              <div className="min-w-0 flex-1">
+                {displayTitle && (
+                  <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
+                )}
+                {showChartTypeLabel && chart?.chart_type && (
+                  <p className="mt-1 truncate text-[11px] text-text-quaternary">
+                    {String(chart.chart_type).replace(/_/g, ' ')}
+                  </p>
+                )}
+              </div>
+              {hasActions && (
+                <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+                  {droppedBadge}
+                  {havingToggle}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {havingFilters.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1">

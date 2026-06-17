@@ -239,6 +239,15 @@ export default function PublicDashboardPage() {
   const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
+  // PBI parity (2026-06) — "Filters on this page" (pages_config[i].filters) are
+  // AUTHOR-side Filter-Pane entries: on a public link they are NOT rendered as
+  // viewer controls (the Filter Pane is hidden to viewers; only slicers are
+  // interactive). They STILL constrain the active page's chart data, so we keep
+  // them here and append to the chart-data request — never to the rendered
+  // control bar. Reset per page so page A's filter never leaks onto page B.
+  const [pageHiddenFilters, setPageHiddenFilters] = useState<BaseFilter[]>([]);
+  const pageHiddenFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => { pageHiddenFiltersRef.current = pageHiddenFilters; }, [pageHiddenFilters]);
   // Perf (Fix #10, 2026-06-10) — gate the FIRST chart fetch until the default
   // slicer/filter seed has run. Without this, a tile that became visible before
   // the seed effect fired a chart-data query with filters=[] (no default
@@ -471,11 +480,6 @@ export default function PublicDashboardPage() {
           ? (dashboard.public_filters_config as BaseFilter[])
           : [])
       : [];
-    const allPagesSeed: BaseFilter[] = [
-      ...slicersFromConfig,
-      ...filtersAsSlicers,
-      ...legacyPublicConfig,
-    ];
     const activePageObj = dashboardPages.find((p) => p.id === activePageId);
     const rawPageSlicers = Array.isArray((activePageObj as any)?.slicers)
       ? ((activePageObj as any).slicers as BaseFilter[])
@@ -486,43 +490,37 @@ export default function PublicDashboardPage() {
           return mode === 'visible';
         })
       : [];
-    const pageSeed: BaseFilter[] = [...rawPageSlicers, ...rawPageFilters];
-    // De-dupe by fieldKey; per-page entries take precedence over all-pages
-    // when the same field appears in both (rare, but tester intent: page-
-    // level override semantics). On token change we reset; on page switch
-    // we preserve viewer's edits for fields that still exist in the new
-    // seed set.
+    // Viewer-facing CONTROL set rendered on the public bar = report-level
+    // slicers + visible report filters (filters_config publicMode=visible) +
+    // legacy public_filters_config + THIS page's slicers. Page-level
+    // filter-pane entries (rawPageFilters) are intentionally NOT controls —
+    // see pageHiddenFilters below (PBI parity: the Filter Pane is author-side
+    // and hidden from public viewers; only slicers are interactive).
+    const controlSeed: BaseFilter[] = [
+      ...slicersFromConfig,
+      ...filtersAsSlicers,
+      ...legacyPublicConfig,
+      ...rawPageSlicers,
+    ];
+    // "Filters on this page" → constrain the ACTIVE page's chart data but stay
+    // hidden from the control bar. Reset per page (active page only), so a page
+    // A filter never leaks onto page B — and it's never a visible control.
+    setPageHiddenFilters(rawPageFilters);
+    // De-dupe by fieldKey. On token change we reset; on page switch we preserve
+    // the viewer's edits for fields still present in the new control seed.
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
-    // Page-scoped fields = any field referenced by SOME page's "this page"
-    // filters (pages_config[*].filters). Their meaning is page-dependent, so on
-    // a page switch they must reset to the ACTIVE page's seed — never carry a
-    // page A "this page" filter onto page B. Without this, a same-named all-pages
-    // slicer keeps the key alive and the preserve-by-key step below leaks page
-    // A's filter object (label + value) onto page B (the multi-page public bug).
-    const pageScopedKeys = new Set<string>();
-    for (const p of dashboardPages) {
-      const pf = Array.isArray((p as any)?.filters) ? ((p as any).filters as BaseFilter[]) : [];
-      for (const f of pf) pageScopedKeys.add(f.fieldKey ?? f.field);
-    }
     const seedByKey = new Map<string, BaseFilter>();
-    for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
-    for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    for (const f of controlSeed) seedByKey.set(f.fieldKey ?? f.field, f);
     const merged: BaseFilter[] = [];
     if (!isFirstSeed) {
       // Preserve viewer's edits for any field that still exists in the
       // seed; otherwise fall back to the (possibly newly added) seed.
       // Read from ref (not closure) so a fast page switch right after an
-      // edit doesn't drop the just-typed selection. EXCEPTION: page-scoped
-      // fields always take the active page's fresh seed so "this page" filters
-      // stay confined to their own page.
+      // edit doesn't drop the just-typed selection.
       const existingByKey = new Map<string, BaseFilter>();
       for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
-        if (pageScopedKeys.has(key)) {
-          merged.push(seedFilter);
-          continue;
-        }
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
       }
@@ -612,7 +610,23 @@ export default function PublicDashboardPage() {
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
-          const requestFilters = baseViewerFilters;
+          // Append the active page's hidden "Filters on this page" so the data
+          // is still constrained, even though they're not rendered as controls.
+          // Skip a page filter only when an ACTIVE control filter already holds
+          // that field (viewer's choice wins) — an empty same-field slicer must
+          // NOT block the page filter from applying.
+          const filterIsActive = (f: BaseFilter): boolean => {
+            const v = (f as any).value;
+            if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
+            return v != null && String(v).trim() !== '';
+          };
+          const activeBaseKeys = new Set(
+            baseViewerFilters.filter(filterIsActive).map((f) => f.fieldKey ?? f.field),
+          );
+          const requestFilters = [
+            ...baseViewerFilters,
+            ...pageHiddenFiltersRef.current.filter((f) => !activeBaseKeys.has(f.fieldKey ?? f.field)),
+          ];
           try {
             const data = await publicDashboardApi.getChartData(
               token,

@@ -257,6 +257,11 @@ export default function EmbedDashboardPage() {
   useEffect(() => {
     appliedViewerFiltersRef.current = appliedViewerFilters;
   }, [appliedViewerFilters]);
+  // PBI parity — "Filters on this page" are hidden from public controls but
+  // still constrain the active page's data (appended at fetch). See d/[token].
+  const [pageHiddenFilters, setPageHiddenFilters] = useState<BaseFilter[]>([]);
+  const pageHiddenFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => { pageHiddenFiltersRef.current = pageHiddenFilters; }, [pageHiddenFilters]);
 
   const clearTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -344,26 +349,22 @@ export default function EmbedDashboardPage() {
   // and re-seed on page switch (preserving viewer edits).
   useEffect(() => {
     if (!dashboard || !token) return;
-    const allPagesSeed = Array.isArray(dashboard.public_filters_config)
+    // Viewer-facing control set = report-level public filters only.
+    const controlSeed = Array.isArray(dashboard.public_filters_config)
       ? (dashboard.public_filters_config as BaseFilter[])
       : [];
     const activePageObj = dashboardPages.find((p) => p.id === activePageId);
-    const pageSeed: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
+    // "Filters on this page" → constrain the active page's data (appended at
+    // fetch) but stay hidden from the control bar (PBI: Filter Pane is
+    // author-side, not a public control). Reset per page.
+    const rawPageFilters: BaseFilter[] = Array.isArray((activePageObj as any)?.filters)
       ? ((activePageObj as any).filters as BaseFilter[])
       : [];
+    setPageHiddenFilters(rawPageFilters);
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
-    // Page-scoped fields (referenced by some page's "this page" filters) must
-    // reset to the active page's seed on a page switch — never carry page A's
-    // filter onto page B (the multi-page leak; same fix as /d/[token]).
-    const pageScopedKeys = new Set<string>();
-    for (const p of dashboardPages) {
-      const pf = Array.isArray((p as any)?.filters) ? ((p as any).filters as BaseFilter[]) : [];
-      for (const f of pf) pageScopedKeys.add(f.fieldKey ?? f.field);
-    }
     const seedByKey = new Map<string, BaseFilter>();
-    for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
-    for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    for (const f of controlSeed) seedByKey.set(f.fieldKey ?? f.field, f);
     const merged: BaseFilter[] = [];
     if (!isFirstSeed) {
       const existingByKey = new Map<string, BaseFilter>();
@@ -371,10 +372,6 @@ export default function EmbedDashboardPage() {
       // doesn't drop the just-typed selection.
       for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
-        if (pageScopedKeys.has(key)) {
-          merged.push(seedFilter);
-          continue;
-        }
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
       }
@@ -457,9 +454,22 @@ export default function EmbedDashboardPage() {
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
+          // Append the active page's hidden "Filters on this page" (applied to
+          // data, never rendered). Skip a page filter only when an ACTIVE
+          // control filter already holds that field (an empty same-field slicer
+          // must not block it).
+          const filterIsActive = (f: BaseFilter): boolean => {
+            const v = (f as any).value;
+            if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
+            return v != null && String(v).trim() !== '';
+          };
+          const activeBaseKeys = new Set(
+            baseViewerFilters.filter(filterIsActive).map((f) => f.fieldKey ?? f.field),
+          );
           const requestFilters = [
             ...baseViewerFilters,
             ...linkHiddenFilters,
+            ...pageHiddenFiltersRef.current.filter((f) => !activeBaseKeys.has(f.fieldKey ?? f.field)),
           ];
           try {
             const data = await publicDashboardApi.getChartData(
