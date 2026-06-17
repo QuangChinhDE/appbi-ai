@@ -29,6 +29,9 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
+import { ExportModeContext } from '@/lib/export-mode';
+import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
+import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { FilterPane } from '@/components/dashboards/FilterPane';
@@ -238,6 +241,8 @@ export default function DashboardDetailPage() {
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [editedPageName, setEditedPageName] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
   const dashboardContentRef = React.useRef<HTMLDivElement>(null);
   const chartsFetching = useIsFetching({ queryKey: ['charts'] });
   const [pendingDeletePageId, setPendingDeletePageId] = useState<string | null>(null);
@@ -1854,6 +1859,87 @@ export default function DashboardDetailPage() {
     return merged;
   }, [hasSemanticFilterColumns, semanticDistinctValues, distinctValues]);
 
+  // Phase-B22 — hybrid export: tables as real text+links (all rows), other
+  // charts as images, paginated legibly, with an applied-filters header.
+  // NOTE: must stay ABOVE the early returns below — hooks can't run
+  // conditionally (React #310 if placed after `if (isLoadingDashboard) return`).
+  const summarizeAppliedFilters = useCallback((): string => {
+    const active = (appliedGlobalFiltersLegacy || []).filter((f: any) => {
+      const v = f?.value;
+      return Array.isArray(v) ? v.length > 0 : (v != null && v !== '');
+    });
+    return active.map((f: any) => {
+      const v = f.value;
+      const val = Array.isArray(v) ? v.slice(0, 5).join(', ') + (v.length > 5 ? ` +${v.length - 5}` : '') : String(v);
+      const label = f.label || f.semanticField || f.field || 'Filter';
+      return `${label}: ${val}`;
+    }).join('  ·  ');
+  }, [appliedGlobalFiltersLegacy]);
+
+  const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
+    if (!dashboard) return;
+    setIsExportingPdf(true);
+    setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
+    const originalPageId = activePageId;
+    try {
+      const { exportDashboardPdf } = await import('@/lib/export-pdf');
+      const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
+      const filtersSummary = summarizeAppliedFilters();
+      const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+      await exportDashboardPdf({
+        filename: `${safeName}.pdf`,
+        title: dashboard.name || 'Dashboard',
+        orientation: choices.orientation,
+        format: choices.format,
+        onProgress: setExportProgress,
+        pages: chosen.map((p) => ({
+          name: p.name,
+          filtersSummary,
+          getRoot: async () => {
+            setCurrentPageId(p.id);
+            // Let the switched-to page's tiles mount + fire their fetches.
+            await new Promise<void>((resolve) => {
+              requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 400)));
+            });
+            // Build-page tiles each fetch their own data (no central fetch to
+            // await) AND recharts paints a frame AFTER data arrives — so capturing
+            // on "spinners gone" alone can snapshot a chart mid-mount (blank).
+            // Single readiness poll: wait until there are NO loading spinners AND
+            // the count of tiles holding a SIZED svg/canvas/table is stable across
+            // reads. Exits as soon as the page settles; capped so a failing tile
+            // can't hang the export.
+            let prevReady = -1;
+            let stable = 0;
+            const deadline = Date.now() + 14000;
+            while (Date.now() < deadline) {
+              const root = dashboardContentRef.current;
+              const spinners = root?.querySelectorAll('.animate-spin').length ?? 0;
+              let ready = 0;
+              root?.querySelectorAll('.react-grid-item').forEach((t) => {
+                const el = t.querySelector('svg, canvas, table') as HTMLElement | null;
+                if (el && el.getBoundingClientRect().height > 24) ready += 1;
+              });
+              if (spinners === 0 && ready > 0 && ready === prevReady) { stable += 1; if (stable >= 2) break; } else { stable = 0; }
+              prevReady = ready;
+              await new Promise((r) => setTimeout(r, 300));
+            }
+            // small final settle so the just-painted frame is fully drawn
+            await new Promise((r) => setTimeout(r, 300));
+            return dashboardContentRef.current;
+          },
+        })),
+      });
+      setIsExportDialogOpen(false);
+    } catch (err) {
+      console.error('PDF export failed', err);
+      toast.error('Failed to export PDF');
+    } finally {
+      setCurrentPageId(originalPageId);
+      setIsExportingPdf(false);
+      setExportProgress(null);
+    }
+  }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters]);
+
   if (isLoadingDashboard) {
     return (
       <div className="min-h-full bg-surface-2">
@@ -1887,48 +1973,6 @@ export default function DashboardDetailPage() {
   }
 
   const activeCrossFilter = crossFilterState?.filter ?? null;
-
-  const handleExportPdf = async () => {
-    const el = dashboardContentRef.current;
-    if (!el) return;
-    setIsExportingPdf(true);
-    try {
-      const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-
-      if (dashboardPages.length <= 1) {
-        // Single page — capture the visible content
-        const { exportElementToPdf } = await import('@/lib/export-pdf');
-        await exportElementToPdf(el, `${safeName}.pdf`);
-      } else {
-        // Multi-page: switch page, wait, capture, repeat
-        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
-        const originalPageId = activePageId;
-
-        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
-          const page = dashboardPages[pageIndex];
-          // Only switch if not already on this page
-          if (page.id !== activePageId || pageIndex > 0) {
-            setCurrentPageId(page.id);
-          }
-          // Wait for grid to stabilise after page switch
-          await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              setTimeout(resolve, 800);
-            }));
-          });
-          return dashboardContentRef.current;
-        }, `${safeName}.pdf`);
-
-        // Restore original page without animation
-        setCurrentPageId(originalPageId);
-      }
-    } catch (err) {
-      console.error('PDF export failed', err);
-      toast.error('Failed to export PDF');
-    } finally {
-      setIsExportingPdf(false);
-    }
-  };
 
   const isRenamingCurrentPage = editingPageId === currentPage?.id;
   const emptyPageMessage = currentPage
@@ -2253,7 +2297,7 @@ export default function DashboardDetailPage() {
                     <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
                       {/* Export */}
                       <button
-                        onClick={() => { handleExportPdf(); setIsMoreMenuOpen(false); }}
+                        onClick={() => { setIsExportDialogOpen(true); setIsMoreMenuOpen(false); }}
                         disabled={isExportingPdf || !allChartsReady}
                         className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                         title={!allChartsReady ? 'Loading chart data…' : 'Export as PDF'}
@@ -2460,6 +2504,7 @@ export default function DashboardDetailPage() {
           ref={dashboardContentRef}
           className={draftSlicerClusterLayout?.position === 'left' ? 'min-w-0 flex-1' : ''}
         >
+        <ExportModeContext.Provider value={isExportingPdf}>
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
@@ -2506,6 +2551,7 @@ export default function DashboardDetailPage() {
             onFocusChart={setFocusedTileId}
           />
         )}
+        </ExportModeContext.Provider>
         </div>
         </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
 
@@ -2648,6 +2694,15 @@ export default function DashboardDetailPage() {
             </div>
           </div>
         )}
+
+        <ExportPdfDialog
+          isOpen={isExportDialogOpen}
+          onClose={() => { if (!isExportingPdf) setIsExportDialogOpen(false); }}
+          pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
+          isExporting={isExportingPdf}
+          progress={exportProgress}
+          onExport={doExportPdf}
+        />
 
         <ConfirmDialog
           isOpen={pendingDeletePageId !== null}

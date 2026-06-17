@@ -387,7 +387,20 @@ export function SlicerCluster({
   // Phase-G — cluster controls injected into DashboardFilterBar's single
   // header (badge + position toggle + Add Image), so the slicer zone has
   // ONE header row instead of two. Editor only (hidden when lockSlots).
-  const clusterControls = lockSlots ? null : (
+  const clusterControls = lockSlots ? (
+    /* Phase-B20 — PUBLIC viewer: render "Thu gọn" IN the header row (via
+       headerExtras) so it flows beside Apply/Reset. The old absolute top-right
+       pill overlapped the Apply button once there were pending changes. */
+    <button
+      type="button"
+      onClick={() => setIsCollapsed(true)}
+      title="Thu gọn bộ lọc"
+      className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
+    >
+      <X className="h-3.5 w-3.5" />
+      <span className="hidden sm:inline">Thu gọn</span>
+    </button>
+  ) : (
     <>
       {/* Phase-B8 — "Thu gọn" lives IN the header row here (builder) so it no
           longer overlaps the "Add filter" button (both used to sit top-right). */}
@@ -587,22 +600,9 @@ export function SlicerCluster({
         // bar's SINGLE header via headerExtras. Images render as inline
         // cells after the bar. Right-edge "X" collapses the cluster.
         <div className="relative" style={innerLayout}>
-          {/* Phase-B8 — the "Thu gọn" control: on the PUBLIC viewer (lockSlots)
-              there is no "Add filter" button, so the absolute top-right pill is
-              safe. In the BUILDER it would overlap DashboardFilterBar's
-              "Add filter" (both top-right), so there it rides inside the header
-              via `clusterControls` (headerExtras) instead — see below. */}
-          {lockSlots && (
-            <button
-              type="button"
-              onClick={() => setIsCollapsed(true)}
-              title="Thu gọn bộ lọc"
-              className="absolute right-1 top-1 z-10 inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary shadow-sm transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
-            >
-              <X className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Thu gọn</span>
-            </button>
-          )}
+          {/* Phase-B20 — the public "Thu gọn" now rides inside the header row via
+              `clusterControls` (headerExtras), beside Apply/Reset. The previous
+              absolute top-right pill overlapped the Apply button on pending. */}
           <div
             className="min-w-0"
             style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}

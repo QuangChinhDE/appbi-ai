@@ -13,6 +13,7 @@ import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
 import { liftLayoutToTop } from '@/lib/dashboard-pages';
+import { useExportMode } from '@/lib/export-mode';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -24,8 +25,12 @@ const FixedGridLayout = WidthProvider(GridLayout);
 function LazyChartSlot({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+  // Phase-B22 — during PDF export, render immediately (don't wait for scroll)
+  // so off-screen tiles aren't blank in the capture.
+  const exporting = useExportMode();
 
   useEffect(() => {
+    if (exporting) { setVisible(true); return; }
     const el = ref.current;
     if (!el) return;
     const observer = new IntersectionObserver(
@@ -39,7 +44,7 @@ function LazyChartSlot({ children }: { children: React.ReactNode }) {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [exporting]);
 
   if (!visible) {
     return (

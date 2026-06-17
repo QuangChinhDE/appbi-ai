@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as LucideIcons from 'lucide-react';
 import { Minus, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
@@ -257,6 +257,44 @@ export function KpiCard({
     ? Math.min(Math.max(Math.round(valueFontSize), 16), 80)
     : undefined;
 
+  // Auto-fit (embedded only): in a dashboard tile the KPI fills a fixed-height
+  // cell. The old fixed text-4xl/5xl value + benchmark/delta panels overflowed
+  // a SHORT tile and the root's `overflow-hidden` then clipped the number /
+  // panels (the "card bị che số" bug). Measure the tile height and scale the
+  // value font + tighten panels so content always fits; on a very short tile,
+  // drop the secondary panels rather than crop the headline number. Tall tiles
+  // keep the original large look. Standalone Explore (embedded=false) is
+  // untouched — boxH stays 0 and all original classes/styles apply.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [boxH, setBoxH] = useState(0);
+  useEffect(() => {
+    if (!embedded) return;
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setBoxH(Math.round(entry.contentRect.height));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [embedded]);
+  const autoFit = embedded && boxH > 0;
+  const panelsPresent = showBenchmarkPanel || hasDelta || legacyComparison !== null;
+  // The benchmark/delta panels are 2-line bordered blocks (~64px) that can't
+  // shrink below their text — so when the tile isn't tall enough to show them
+  // WITHOUT cropping, drop them entirely and keep just label+value (which the
+  // font auto-scale always fits). Headline number is never cropped. Panels
+  // return on a comfortably tall tile. Threshold ≈ label+value+gap (~80) +
+  // panel block (~96) with headroom.
+  const dropPanels = autoFit && boxH < 210;
+  const compact = autoFit && boxH < 280;
+  // Value font derived from available height. Ceiling = author/theme override
+  // or 56; floor = 18 so it stays legible. Reserve more height for the value
+  // when panels share the card.
+  const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 56;
+  const autoValueFont = autoFit
+    ? Math.round(Math.min(fontCeil, Math.max(18, boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36))))
+    : undefined;
+
   // Inside a dashboard tile the surrounding tile already draws the card frame.
   // Drop our own border/shadow/gradient-bar (unless the author opted into an
   // accent border) and tighten padding so the KPI fills the tile instead of
@@ -271,6 +309,7 @@ export function KpiCard({
 
   return (
     <div
+      ref={rootRef}
       className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? 'flex h-full flex-col justify-center' : 'bg-surface-1'}`}
       style={{
         borderColor: showOwnFrame
@@ -310,14 +349,16 @@ export function KpiCard({
             )}
 
             <div
-              className="mt-3 break-words text-4xl font-semibold tracking-tight text-text-primary tabular-nums sm:text-5xl"
+              className={`break-words font-semibold tracking-tight text-text-primary tabular-nums ${compact ? 'mt-1' : 'mt-3'} ${autoFit ? '' : 'text-4xl sm:text-5xl'}`}
               style={{
                 color: valueColor || FALLBACK_VALUE_COLOR,
-                ...(resolvedValueFontSize
-                  ? { fontSize: resolvedValueFontSize, lineHeight: 1.08 }
-                  : dashTheme.kpiFontSize
-                    ? { fontSize: dashTheme.kpiFontSize, lineHeight: 1.08 }
-                    : {}),
+                ...(autoValueFont
+                  ? { fontSize: autoValueFont, lineHeight: 1.05 }
+                  : resolvedValueFontSize
+                    ? { fontSize: resolvedValueFontSize, lineHeight: 1.08 }
+                    : dashTheme.kpiFontSize
+                      ? { fontSize: dashTheme.kpiFontSize, lineHeight: 1.08 }
+                      : {}),
               }}
             >
               {formattedValue}
@@ -337,8 +378,8 @@ export function KpiCard({
           )}
         </div>
 
-        {(showBenchmarkPanel || hasDelta || legacyComparison !== null) && (
-          <div className="mt-5 grid gap-3 border-t border-[rgb(var(--border-line))] pt-4 sm:grid-cols-2">
+        {(showBenchmarkPanel || hasDelta || legacyComparison !== null) && !dropPanels && (
+          <div className={`grid gap-3 border-t border-[rgb(var(--border-line))] sm:grid-cols-2 ${compact ? 'mt-2 pt-2' : 'mt-5 pt-4'}`}>
             {showBenchmarkPanel && (
               <div className="rounded-xl bg-surface-2 px-4 py-3">
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">

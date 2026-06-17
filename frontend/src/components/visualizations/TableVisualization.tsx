@@ -2,6 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { useExportMode } from '@/lib/export-mode';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
@@ -272,7 +273,10 @@ export function TableVisualization({
     return arr;
   }, [rows, effectiveSorts]);
 
-  const displayRows = sortedRows.slice(0, maxRows);
+  // Phase-B22 — during PDF export, render EVERY row (drop the 200-cap) so the
+  // exporter captures the full table.
+  const exporting = useExportMode();
+  const displayRows = exporting ? sortedRows : sortedRows.slice(0, maxRows);
   const numericColumns = useMemo(
     () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
     [cols, rows],
@@ -527,7 +531,7 @@ export function TableVisualization({
     : undefined;
 
   return (
-    <div className={clsx("h-full overflow-auto", className)}>
+    <div className={clsx(exporting ? "w-full" : "h-full overflow-auto", className)}>
       <table
         className="border-separate border-spacing-0 text-sm min-w-full"
         style={{
@@ -681,7 +685,7 @@ export function TableVisualization({
           )}
         </table>
       
-      {rows.length > maxRows && (
+      {!exporting && rows.length > maxRows && (
         <div className="px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
           Showing {maxRows} of {rows.length} rows
           {summaryRowsData.length > 0 ? ` | Summary uses all ${rows.length} rows` : ''}

@@ -17,6 +17,9 @@ import {
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
+import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
+import type { PdfProgress } from '@/lib/export-pdf';
+import { ExportModeContext } from '@/lib/export-mode';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -231,6 +234,8 @@ export default function EmbedDashboardPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
   const [forceVisibleAll, setForceVisibleAll] = useState(false);
   const embedContentRef = useRef<HTMLDivElement>(null);
@@ -344,6 +349,14 @@ export default function EmbedDashboardPage() {
       : [];
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
+    // Page-scoped fields (referenced by some page's "this page" filters) must
+    // reset to the active page's seed on a page switch — never carry page A's
+    // filter onto page B (the multi-page leak; same fix as /d/[token]).
+    const pageScopedKeys = new Set<string>();
+    for (const p of dashboardPages) {
+      const pf = Array.isArray((p as any)?.filters) ? ((p as any).filters as BaseFilter[]) : [];
+      for (const f of pf) pageScopedKeys.add(f.fieldKey ?? f.field);
+    }
     const seedByKey = new Map<string, BaseFilter>();
     for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
     for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
@@ -354,6 +367,10 @@ export default function EmbedDashboardPage() {
       // doesn't drop the just-typed selection.
       for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
+        if (pageScopedKeys.has(key)) {
+          merged.push(seedFilter);
+          continue;
+        }
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
       }
@@ -558,17 +575,36 @@ export default function EmbedDashboardPage() {
     setAuthError(null);
   }, []);
 
-  const handleExportPdf = useCallback(async () => {
-    const el = embedContentRef.current;
-    if (!el || !dashboard) return;
+  // Phase-B22 — human-readable summary of the viewer's applied filters, baked
+  // into each PDF page header.
+  const summarizeViewerFilters = useCallback((): string => {
+    if (!appliedViewerFilters.length) return '';
+    return appliedViewerFilters
+      .map((f) => {
+        const label = getFilterDisplayLabel(f);
+        const val = formatFilterValue((f as { value?: unknown }).value);
+        return val ? `${label}: ${val}` : label;
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }, [appliedViewerFilters]);
+
+  // Phase-B22 — hybrid export (tables = real text + links, charts = sharp
+  // image), driven by the pre-export dialog. Replaces the old raster path.
+  const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
+    if (!dashboard) return;
     setIsExportingPdf(true);
+    setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
     setForceVisibleAll(true);
+    const originalPageId = activePageId;
     try {
-      const safeName = (dashboard.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      const safeName = (dashboard.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
       const storedSession = getPublicSession(token) ?? undefined;
+      const filtersSummary = summarizeViewerFilters();
 
       const ensurePageDataLoaded = async (pageId: string) => {
-        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+          .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
         const missingIds = targetCharts
           .map((dc) => dc.chart_id)
           .filter((id) => !chartData[id] && !chartErrors[id]);
@@ -576,35 +612,40 @@ export default function EmbedDashboardPage() {
         await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
       };
 
-      if (dashboardPages.length <= 1) {
-        await ensurePageDataLoaded(activePageId);
-        const { exportElementToPdf } = await import('@/lib/export-pdf');
-        await exportElementToPdf(el, `${safeName}.pdf`);
-      } else {
-        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
-        const originalPageId = activePageId;
-
-        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
-          const page = dashboardPages[pageIndex];
-          setCurrentPageId(page.id);
-          await ensurePageDataLoaded(page.id);
+      const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
+      const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+      const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
+        name: p.name,
+        filtersSummary,
+        getRoot: async () => {
+          setCurrentPageId(p.id);
+          await ensurePageDataLoaded(p.id);
           await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              setTimeout(resolve, 500);
-            }));
+            requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 700)));
           });
           return gridSectionRef.current;
-        }, `${safeName}.pdf`);
+        },
+      }));
 
-        setCurrentPageId(originalPageId);
-      }
+      const { exportDashboardPdf } = await import('@/lib/export-pdf');
+      await exportDashboardPdf({
+        filename: `${safeName}.pdf`,
+        title: reportTitle,
+        orientation: choices.orientation,
+        format: choices.format,
+        onProgress: setExportProgress,
+        pages: pageSources,
+      });
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
+      setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
       setForceVisibleAll(false);
+      setIsExportDialogOpen(false);
+      setExportProgress(null);
     }
-  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, token]);
+  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, summarizeViewerFilters, token]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -675,13 +716,8 @@ export default function EmbedDashboardPage() {
     ));
   }, [chartData, chartErrors, dashboard]);
 
-  // PDF export now fetches each page's data on-demand inside handleExportPdf,
-  // so the embed load path no longer prefetches all pages.
-
-  const allPagesLoaded = useMemo(() => {
-    if (!dashboard) return false;
-    return hasSettledPageCache(activePageId);
-  }, [activePageId, dashboard, hasSettledPageCache]);
+  // PDF export now fetches each page's data on-demand inside doExportPdf, so the
+  // embed load path no longer prefetches all pages.
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -902,6 +938,7 @@ export default function EmbedDashboardPage() {
         )}
 
         <div className="px-2 py-3 sm:px-3 sm:py-4">
+          <ExportModeContext.Provider value={isExportingPdf}>
           <section
             ref={gridSectionRef}
             className={`p-1 transition-opacity duration-200 sm:p-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
@@ -963,6 +1000,7 @@ export default function EmbedDashboardPage() {
               </div>
             )}
           </section>
+          </ExportModeContext.Provider>
         </div>
 
       </div>
@@ -970,19 +1008,28 @@ export default function EmbedDashboardPage() {
       {/* Floating PDF export — small icon-only on embed */}
       <button
         type="button"
-        onClick={handleExportPdf}
-        disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
+        onClick={() => setIsExportDialogOpen(true)}
+        disabled={isExportingPdf || chartsLoading}
         className="fixed bottom-3 right-3 z-30 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[rgb(var(--border-strong))] bg-surface-1/90 text-text-tertiary shadow-linear transition-all hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 print:hidden"
         style={publicTheme.panelStyle}
-        title={!allPagesLoaded ? 'Loading chart data…' : 'Export as PDF'}
+        title="Export as PDF"
         data-html2canvas-ignore
       >
-        {isExportingPdf || !allPagesLoaded ? (
+        {isExportingPdf ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Download className="h-3.5 w-3.5" />
         )}
       </button>
+
+      <ExportPdfDialog
+        isOpen={isExportDialogOpen}
+        onClose={() => { if (!isExportingPdf) setIsExportDialogOpen(false); }}
+        pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
+        isExporting={isExportingPdf}
+        progress={exportProgress}
+        onExport={doExportPdf}
+      />
     </DashboardThemeProvider>
   );
 }

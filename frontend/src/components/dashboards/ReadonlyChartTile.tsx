@@ -282,7 +282,7 @@ export function ReadonlyChartTile({
             {/* Phase-B11 — only an explicitly-set title (no "Untitled"/name
                 placeholder); calmer medium-weight muted style. */}
             {!isKpiCard && displayTitle && (
-              <p className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
+              <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
             )}
             {showChartTypeLabel && chart?.chart_type && !isKpiCard && (
               <p className="mt-1 truncate text-[11px] text-text-quaternary">

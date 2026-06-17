@@ -212,7 +212,18 @@ class Dashboard(Base):
     last_published_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    dashboard_charts = relationship("DashboardChart", back_populates="dashboard", cascade="all, delete-orphan")
+    # order_by id: dashboard_charts had NO deterministic order, so different
+    # eager-load queries (authed build endpoint vs public endpoint) returned the
+    # tiles in different orders. With overlapping tile positions, react-grid-layout
+    # resolves overlaps by child order → the SAME dashboard rendered with a
+    # DIFFERENT arrangement on build vs public/embed. Ordering by id makes every
+    # consumer (build, public, embed, export, AI bot) see one stable order.
+    dashboard_charts = relationship(
+        "DashboardChart",
+        back_populates="dashboard",
+        cascade="all, delete-orphan",
+        order_by="DashboardChart.id",
+    )
     public_links = relationship("DashboardPublicLink", back_populates="dashboard", cascade="all, delete-orphan")
 
 

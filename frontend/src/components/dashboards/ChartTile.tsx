@@ -17,6 +17,7 @@ import {
 } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
+import { useExportMode } from '@/lib/export-mode';
 import {
   DashboardFilter,
   applyFiltersToRows,
@@ -197,7 +198,13 @@ function ChartTileBase({
   editingBy = null,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
-  const { ref: visibilityRef, visible: hasBeenVisible } = useStickyVisibility();
+  // During PDF export, force the tile "visible" so it fetches + renders even
+  // when off-screen (the exporter never scrolls). Without this, ChartTile's own
+  // IntersectionObserver gate keeps below-fold tiles at a blank placeholder and
+  // they capture empty. (LazyChartSlot's force-visible only covers the wrapper.)
+  const exportingPdf = useExportMode();
+  const { ref: visibilityRef, visible: stickyVisible } = useStickyVisibility();
+  const hasBeenVisible = stickyVisible || exportingPdf;
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId, { enabled: hasBeenVisible });
   const chartSemanticBinding = useMemo(() => {
     const config = chart?.config as any;
@@ -416,6 +423,22 @@ function ChartTileBase({
   const [isHavingOpen, setIsHavingOpen] = useState(false);
   const [isTileMenuOpen, setIsTileMenuOpen] = useState(false);
   const [isMovePageOpen, setIsMovePageOpen] = useState(false);
+  // Phase-B21 — the ⋯ menu overflows the tile, but each react-grid-layout item
+  // has its own stacking context (transform), so a LATER sibling tile paints
+  // OVER the menu (the recurring "UI layout clipping"). While the menu is open
+  // we lift THIS tile's grid-item z-index above its siblings so the menu shows
+  // in front. Reset on close. Direct DOM (the grid-item div is owned by RGL).
+  const tileMenuAnchorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const gridItem = tileMenuAnchorRef.current?.closest('.react-grid-item') as HTMLElement | null;
+    if (!gridItem) return;
+    if (isTileMenuOpen || isMovePageOpen) {
+      gridItem.style.zIndex = '30';
+    } else {
+      gridItem.style.zIndex = '';
+    }
+    return () => { if (gridItem) gridItem.style.zIndex = ''; };
+  }, [isTileMenuOpen, isMovePageOpen]);
   // Phase-B13 — the per-tile Top/Bottom-N quick control was REMOVED from the
   // dashboard tile: letting a viewer change row count on the dashboard added
   // little analytical value, conflicted with the chart's saved config, and was
@@ -849,7 +872,7 @@ function ChartTileBase({
             {isKpiCard ? (
               <span className="flex-1" aria-hidden />
             ) : displayTitle ? (
-              <h3 className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
+              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
             ) : canEdit ? (
               /* Phase-B11 — no auto chart-name title; nudge the DA to add one. */
               <button
@@ -926,7 +949,7 @@ function ChartTileBase({
                 (configured in Explore only; see note near state). */}
 
             {/* Single overflow menu for View, Appearance, Rename, and Move to page. */}
-            <div className="relative flex-shrink-0">
+            <div ref={tileMenuAnchorRef} className="relative flex-shrink-0">
               <button
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => { setIsTileMenuOpen(v => !v); setIsMovePageOpen(false); }}

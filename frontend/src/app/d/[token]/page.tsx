@@ -18,6 +18,9 @@ import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
+import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
+import type { PdfProgress } from '@/lib/export-pdf';
+import { ExportModeContext } from '@/lib/export-mode';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
@@ -251,6 +254,8 @@ export default function PublicDashboardPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
   // Chart ids that have entered the viewport at least once. Tiles report visibility
   // via onVisible; the fetch effect uses this set to gate which charts to request.
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
@@ -484,6 +489,17 @@ export default function PublicDashboardPage() {
     // seed set.
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
+    // Page-scoped fields = any field referenced by SOME page's "this page"
+    // filters (pages_config[*].filters). Their meaning is page-dependent, so on
+    // a page switch they must reset to the ACTIVE page's seed — never carry a
+    // page A "this page" filter onto page B. Without this, a same-named all-pages
+    // slicer keeps the key alive and the preserve-by-key step below leaks page
+    // A's filter object (label + value) onto page B (the multi-page public bug).
+    const pageScopedKeys = new Set<string>();
+    for (const p of dashboardPages) {
+      const pf = Array.isArray((p as any)?.filters) ? ((p as any).filters as BaseFilter[]) : [];
+      for (const f of pf) pageScopedKeys.add(f.fieldKey ?? f.field);
+    }
     const seedByKey = new Map<string, BaseFilter>();
     for (const f of allPagesSeed) seedByKey.set(f.fieldKey ?? f.field, f);
     for (const f of pageSeed) seedByKey.set(f.fieldKey ?? f.field, f);
@@ -492,10 +508,16 @@ export default function PublicDashboardPage() {
       // Preserve viewer's edits for any field that still exists in the
       // seed; otherwise fall back to the (possibly newly added) seed.
       // Read from ref (not closure) so a fast page switch right after an
-      // edit doesn't drop the just-typed selection.
+      // edit doesn't drop the just-typed selection. EXCEPTION: page-scoped
+      // fields always take the active page's fresh seed so "this page" filters
+      // stay confined to their own page.
       const existingByKey = new Map<string, BaseFilter>();
       for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
       for (const [key, seedFilter] of seedByKey.entries()) {
+        if (pageScopedKeys.has(key)) {
+          merged.push(seedFilter);
+          continue;
+        }
         const existing = existingByKey.get(key);
         merged.push(existing ?? seedFilter);
       }
@@ -715,19 +737,37 @@ export default function PublicDashboardPage() {
     setAuthError(null);
   }, []);
 
-  const handleExportPdf = useCallback(async () => {
-    const mainEl = publicContentRef.current;
-    if (!mainEl || !dashboard) return;
+  // Phase-B22 — human-readable summary of the slicers/filters the viewer has
+  // applied, baked into each PDF page header so an exported report says which
+  // slice of data it represents.
+  const summarizeViewerFilters = useCallback((): string => {
+    if (!appliedViewerFilters.length) return '';
+    return appliedViewerFilters
+      .map((f) => {
+        const label = getFilterDisplayLabel(f);
+        const val = formatFilterValue((f as { value?: unknown }).value);
+        return val ? `${label}: ${val}` : label;
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }, [appliedViewerFilters]);
+
+  // Phase-B22 — hybrid export (tables = real text + links, charts = sharp
+  // image), driven by the pre-export dialog. Replaces the old raster path.
+  const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
+    if (!dashboard) return;
     setIsExportingPdf(true);
+    setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
     // Disable lazy gating during export so every tile renders, including
     // off-screen ones. Fetch any not-yet-loaded chart data per page below.
     setForceVisibleAll(true);
+    const originalPageId = activePageId;
     try {
-      const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
       const storedSession = getPublicSession(token) ?? undefined;
+      const filtersSummary = summarizeViewerFilters();
 
-      // Helper: ensure every chart on a given page has data fetched. Uses the
-      // same concurrency-limited path as the normal viewport fetch.
+      // Ensure every chart on a given page has data fetched (concurrency-limited).
       const ensurePageDataLoaded = async (pageId: string) => {
         const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
           .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
@@ -738,40 +778,41 @@ export default function PublicDashboardPage() {
         await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
       };
 
-      if (dashboardPages.length <= 1) {
-        // Single page — make sure all tiles for the active page have data.
-        await ensurePageDataLoaded(activePageId);
-        const { exportElementToPdf } = await import('@/lib/export-pdf');
-        await exportElementToPdf(mainEl, `${safeName}.pdf`);
-      } else {
-        // Multi-page: switch to each page, fetch its charts on-demand, then capture.
-        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
-        const originalPageId = activePageId;
-
-        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
-          const page = dashboardPages[pageIndex];
-          setCurrentPageId(page.id);
-          // Fetch any missing charts for this page before capture.
-          await ensurePageDataLoaded(page.id);
-          // Wait for React to re-render with new page's charts
+      const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
+      const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+      const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
+        name: p.name,
+        filtersSummary,
+        getRoot: async () => {
+          setCurrentPageId(p.id);
+          await ensurePageDataLoaded(p.id);
+          // Wait for React to re-render with the new page's charts + layout.
           await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              setTimeout(resolve, 500);
-            }));
+            requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 700)));
           });
           return gridSectionRef.current;
-        }, `${safeName}.pdf`);
+        },
+      }));
 
-        // Restore original page
-        setCurrentPageId(originalPageId);
-      }
+      const { exportDashboardPdf } = await import('@/lib/export-pdf');
+      await exportDashboardPdf({
+        filename: `${safeName}.pdf`,
+        title: reportTitle,
+        orientation: choices.orientation,
+        format: choices.format,
+        onProgress: setExportProgress,
+        pages: pageSources,
+      });
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
+      setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
       setForceVisibleAll(false);
+      setIsExportDialogOpen(false);
+      setExportProgress(null);
     }
-  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, token]);
+  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, summarizeViewerFilters, token]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -846,17 +887,10 @@ export default function PublicDashboardPage() {
     ));
   }, [chartData, chartErrors, dashboard]);
 
-  // PDF export now fetches each page's data on-demand inside handleExportPdf,
-  // so the dashboard load path no longer prefetches all pages. This was the
-  // single biggest source of public-link slowness — a 3-page × 15-chart
-  // dashboard fired 30 unused requests in the background on every open.
-
-  // Export button stays enabled once the active page is settled. Other pages
-  // are fetched lazily during export itself.
-  const allPagesLoaded = useMemo(() => {
-    if (!dashboard) return false;
-    return hasSettledPageCache(activePageId);
-  }, [activePageId, dashboard, hasSettledPageCache]);
+  // PDF export now fetches each page's data on-demand inside doExportPdf, so the
+  // dashboard load path no longer prefetches all pages. This was the single
+  // biggest source of public-link slowness — a 3-page × 15-chart dashboard
+  // fired 30 unused requests in the background on every open.
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -1038,19 +1072,19 @@ export default function PublicDashboardPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={handleExportPdf}
-                disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
+                onClick={() => setIsExportDialogOpen(true)}
+                disabled={isExportingPdf || chartsLoading}
                 leadingIcon={
-                  isExportingPdf || !allPagesLoaded
+                  isExportingPdf
                     ? <Loader2 className="h-4 w-4 animate-spin" />
                     : <Download className="h-4 w-4" />
                 }
                 className="print:hidden"
-                title={!allPagesLoaded ? 'Loading chart data…' : 'Export this dashboard as PDF'}
+                title="Export this dashboard as PDF"
                 data-html2canvas-ignore
               >
                 <span className="hidden sm:inline">
-                  {isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}
+                  {isExportingPdf ? 'Exporting…' : 'Export PDF'}
                 </span>
               </Button>
             </div>
@@ -1256,6 +1290,7 @@ export default function PublicDashboardPage() {
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
+        <ExportModeContext.Provider value={isExportingPdf}>
         <section
           ref={gridSectionRef}
           className={`p-1 transition-opacity duration-200 sm:p-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
@@ -1330,8 +1365,18 @@ export default function PublicDashboardPage() {
             </div>
           )}
         </section>
+        </ExportModeContext.Provider>
         </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
       </main>
+
+      <ExportPdfDialog
+        isOpen={isExportDialogOpen}
+        onClose={() => { if (!isExportingPdf) setIsExportDialogOpen(false); }}
+        pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
+        isExporting={isExportingPdf}
+        progress={exportProgress}
+        onExport={doExportPdf}
+      />
 
       {dashboard?.public_link_appearance?.ai_bot_enabled === true && (
         <DashboardAiBot

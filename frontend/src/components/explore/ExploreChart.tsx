@@ -29,6 +29,7 @@ import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
+import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 
@@ -1126,6 +1127,10 @@ function ExploreChartInner({
   embedded = false,
 }: ExploreChartProps) {
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
+  // During PDF export, turn OFF recharts enter-animations: html2canvas snapshots
+  // the SVG ~immediately, so an animating chart (bars/lines growing from 0) gets
+  // captured blank/partial. animate=false → final state is painted at once.
+  const animate = !useExportMode();
   // UX (Date Hierarchy in viewer) — read-only surfaces (dashboard tile, public
   // link) render WITHOUT onStyleConfigChange, so the editor's persisted drill
   // can't be changed there. Hold an EPHEMERAL drill level locally and inject it
@@ -1966,7 +1971,7 @@ function ExploreChartInner({
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={sortedPieData} dataKey="value" nameKey="name"
+              <Pie isAnimationActive={animate} data={sortedPieData} dataKey="value" nameKey="name"
                 cx="50%" cy="45%" outerRadius="60%"
                 // Hole % is relative to the 60% outer radius — NOT the
                 // container — so it can never exceed the outer radius and blank
@@ -2074,7 +2079,7 @@ function ExploreChartInner({
               <ZAxis range={[40, 40]} />
               <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
               {renderLegend()}
-              <Scatter name={`${fieldLabel(scatterX, labelMap)} vs ${fieldLabel(scatterY, labelMap)}`} data={sortedScatterPoints} fill={PALETTE[0]}>
+              <Scatter isAnimationActive={animate} name={`${fieldLabel(scatterX, labelMap)} vs ${fieldLabel(scatterY, labelMap)}`} data={sortedScatterPoints} fill={PALETTE[0]}>
                 {hasPerPointColors && sortedScatterPoints.map((point: any, idx: number) => (
                   <Cell key={`scatter-${idx}`} fill={getSeriesColor(String(point?.label ?? idx), idx)} />
                 ))}
@@ -2246,7 +2251,7 @@ function ExploreChartInner({
                     ? resolveSegmentLabelStyle(style, series.key, barFill)
                     : null;
                   return (
-                    <Bar key={series.key} dataKey={series.key} stackId="s" fill={barFill}
+                    <Bar isAnimationActive={animate} key={series.key} dataKey={series.key} stackId="s" fill={barFill}
                       name={series.label}
                       hide={hiddenSeries.has(series.key)}
                       barSize={barSize}
@@ -2435,7 +2440,7 @@ function ExploreChartInner({
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (
-                  <Area key={series.key} type="monotone" dataKey={series.key}
+                  <Area isAnimationActive={animate} key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
                     hide={hiddenSeries.has(series.key)}
                     stroke={getSeriesColor(series.key, i)}
@@ -2490,7 +2495,7 @@ function ExploreChartInner({
               {renderLegend()}
               {displaySeries.map((series, i) => {
                 return (
-                  <Line key={series.key} type="monotone" dataKey={series.key}
+                  <Line isAnimationActive={animate} key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
                     hide={hiddenSeries.has(series.key)}
                     stroke={getSeriesColor(series.key, i)}
@@ -2556,7 +2561,7 @@ function ExploreChartInner({
         {displaySeries.map((series, i) => {
           const baseColor = getSeriesColor(series.key, i);
           return (
-            <Bar key={series.key} dataKey={series.key}
+            <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
               name={series.label}
               hide={hiddenSeries.has(series.key)}
               fill={baseColor}
@@ -2653,7 +2658,7 @@ function ExploreChartInner({
                     const color = getSeriesColor(series.key, index);
                     if (mode === 'line') {
                       return (
-                        <Line
+                        <Line isAnimationActive={animate}
                           key={series.key}
                           dataKey={series.key}
                           name={series.label}
@@ -2676,7 +2681,7 @@ function ExploreChartInner({
                     }
                     if (mode === 'area') {
                       return (
-                        <Area
+                        <Area isAnimationActive={animate}
                           key={series.key}
                           dataKey={series.key}
                           name={series.label}
@@ -2694,7 +2699,7 @@ function ExploreChartInner({
                       );
                     }
                     return (
-                      <Bar
+                      <Bar isAnimationActive={animate}
                         key={series.key}
                         dataKey={series.key}
                         name={series.label}
@@ -2712,7 +2717,7 @@ function ExploreChartInner({
                 : (
                   <>
                     {comboBarSeries.map((series, index) => (
-                      <Bar key={series.key} dataKey={series.key} name={series.label}
+                      <Bar isAnimationActive={animate} key={series.key} dataKey={series.key} name={series.label}
                         hide={hiddenSeries.has(series.key)}
                         fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}>
@@ -2721,7 +2726,7 @@ function ExploreChartInner({
                         )}
                       </Bar>
                     ))}
-                    <Line dataKey={lineSeries.key} name={lineSeries.label}
+                    <Line isAnimationActive={animate} dataKey={lineSeries.key} name={lineSeries.label}
                       hide={hiddenSeries.has(lineSeries.key)}
                       type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
                       dot={dotsForCount(displayData.length)}
@@ -2775,7 +2780,7 @@ function ExploreChartInner({
               const baseColor = getSeriesColor(series.key, i);
               const hasConditional = conditionalSeriesRules.length > 0;
               return (
-                <Bar key={series.key} dataKey={series.key}
+                <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
                   name={series.label}
                   hide={hiddenSeries.has(series.key)}
                   fill={baseColor}
