@@ -506,6 +506,41 @@ export default function DashboardDetailPage() {
     setDraftPageFilters(activePageFilters);
   }, [activePageId, activePageFilters]);
 
+  // Per-page slicers (scope='page') — live on pages_config[activePage].slicers,
+  // the mirror of per-page filters above. A slicer tagged scope='all' stays in
+  // dashboard.slicers_config (draftGlobalSlicers) and applies to every page; a
+  // scope='page' slicer only renders + filters on its own page. Re-seeds when
+  // the active page changes so page A's slicer never leaks onto page B.
+  const activePageSlicers = React.useMemo<any[]>(
+    () => Array.isArray((currentPage as any)?.slicers) ? (currentPage as any).slicers as any[] : [],
+    [currentPage],
+  );
+  const [draftPageSlicers, setDraftPageSlicers] = useState<any[]>([]);
+  const pageSlicersServerSignatureRef = React.useRef<string>('');
+  React.useEffect(() => {
+    const sig = `${activePageId}::${JSON.stringify(activePageSlicers)}`;
+    if (pageSlicersServerSignatureRef.current === sig) return;
+    pageSlicersServerSignatureRef.current = sig;
+    setDraftPageSlicers(activePageSlicers);
+  }, [activePageId, activePageSlicers]);
+
+  // Split a combined SlicerCluster child list back into global vs per-page.
+  // Images (no `field`) and scope!=='page' slicers stay global; scope==='page'
+  // slicers route to the active page. Used by the cluster's onChildrenChange.
+  const handleSlicerChildrenChange = React.useCallback((next: any[]) => {
+    const globals: any[] = [];
+    const pages: any[] = [];
+    for (const c of next) {
+      if (c && typeof c === 'object' && (c as any).scope === 'page' && (c as any).type !== 'image') {
+        pages.push(c);
+      } else {
+        globals.push(c);
+      }
+    }
+    setDraftGlobalSlicers(globals);
+    setDraftPageSlicers(pages);
+  }, []);
+
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
   // Phase-C THẬT — slicer drafts also count toward pending.
@@ -514,9 +549,10 @@ export default function DashboardDetailPage() {
       JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters)
       || JSON.stringify(draftPageFilters) !== JSON.stringify(activePageFilters)
       || JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+      || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
       || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout),
     [draftGlobalFilters, appliedGlobalFilters, draftPageFilters, activePageFilters,
-     draftGlobalSlicers, appliedGlobalSlicers,
+     draftGlobalSlicers, appliedGlobalSlicers, draftPageSlicers, activePageSlicers,
      draftSlicerClusterLayout, appliedSlicerClusterLayout],
   );
 
@@ -576,10 +612,16 @@ export default function DashboardDetailPage() {
       if (f && typeof f === 'object' && (f as any).type === 'image') continue;
       setKeyed(f as BaseFilter);
     }
+    // 2b) per-page slicers (scope='page') — only the active page's set, so a
+    //     page-scoped slicer filters its own page's charts and no others.
+    for (const f of activePageSlicers) {
+      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
+      setKeyed(f as BaseFilter);
+    }
     // 3) locked/hidden filters — authoritative, applied last so they always win.
     for (const f of allFilters) if (isAuthoritative(f)) byKey.set(dedupeKey(f), f);
     return Array.from(byKey.values());
-  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers]);
+  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers]);
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -1127,10 +1169,16 @@ export default function DashboardDetailPage() {
         // the same session.
         const nextPages = dashboardPages.map((p) => {
           if (p.id !== activePageId) return p;
-          return draftPageFilters.length > 0
-            ? { ...p, filters: draftPageFilters }
-            // Strip the `filters` field when empty so Reset feels clean.
-            : (() => { const { filters: _drop, ...rest } = p as any; return rest; })();
+          const next: any = { ...p };
+          // Per-page filters
+          if (draftPageFilters.length > 0) next.filters = draftPageFilters;
+          else delete next.filters;
+          // Per-page slicers (scope='page'). Strip images defensively — they
+          // belong to the global cluster (slicers_config), never per page.
+          const pageSlicers = draftPageSlicers.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
+          if (pageSlicers.length > 0) next.slicers = pageSlicers;
+          else delete next.slicers;
+          return next;
         });
         body.pages_config = nextPages;
         // Mirror locally so the editor state stays consistent until
@@ -1724,6 +1772,7 @@ export default function DashboardDetailPage() {
       ...legacyDraftAll,
       ...draftPageFilters,
       ...draftGlobalSlicers,
+      ...draftPageSlicers,
     ];
 
     if (semanticColumnsResult.columns.length === 0 || combinedFilters.length === 0) {
@@ -1760,7 +1809,7 @@ export default function DashboardDetailPage() {
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, semanticColumnsResult.columns]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
@@ -2493,21 +2542,25 @@ export default function DashboardDetailPage() {
               : undefined
           }
         >
-        {(draftGlobalSlicers.length > 0 || canEditResource) && (
+        {(draftGlobalSlicers.length > 0 || draftPageSlicers.length > 0 || canEditResource) && (
           <SlicerCluster
-            children={draftGlobalSlicers}
-            onChildrenChange={setDraftGlobalSlicers}
+            children={[...draftGlobalSlicers, ...draftPageSlicers]}
+            onChildrenChange={handleSlicerChildrenChange}
             layout={draftSlicerClusterLayout}
             onLayoutChange={setDraftSlicerClusterLayout}
             columns={resolvedAvailableColumns}
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
             distinctStatus={semanticDistinctStatus}
+            // Per-slicer "Trang này / Tất cả trang" scope toggle — build only.
+            showScopeToggle={canEditResource}
             hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
+              || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
               || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
             onApply={canEditResource ? () => handleApplyFilters('all') : undefined}
             onReset={canEditResource ? () => {
               setDraftGlobalSlicers(appliedGlobalSlicers);
+              setDraftPageSlicers(activePageSlicers);
               setDraftSlicerClusterLayout(appliedSlicerClusterLayout);
             } : undefined}
             isApplying={isApplyingFilters}

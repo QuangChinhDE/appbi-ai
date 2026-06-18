@@ -97,6 +97,10 @@ export interface BaseFilter {
   publicMode?: FilterPublicMode;
   allowOverride?: boolean;
   showBanner?: boolean;
+  // Per-page slicer scope. 'all' (or absent for legacy) → dashboard.slicers_config,
+  // applies to every page. 'page' → pages_config[i].slicers, applies only to its
+  // own page. Only meaningful for slicer entries in the dashboard build editor.
+  scope?: 'all' | 'page';
   // Phase-G — per-slicer card width in px (collapsed slicer card mode).
   // Author drags the card's right edge; persisted so the public link
   // shows the same width. Undefined → default card width.

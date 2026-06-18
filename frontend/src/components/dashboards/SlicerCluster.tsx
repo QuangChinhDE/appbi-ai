@@ -59,6 +59,8 @@ interface SlicerClusterProps {
   /** When true, hides editor affordances (add slicer / add image /
    *  direction toggle / drag handles). Set on public viewer. */
   lockSlots?: boolean;
+  /** Per-slicer "Trang này / Tất cả trang" scope toggle (build only). */
+  showScopeToggle?: boolean;
 }
 
 const DEFAULT_LAYOUT: SlicerClusterLayout = {
@@ -93,6 +95,7 @@ export function SlicerCluster({
   onReset,
   isApplying,
   lockSlots = false,
+  showScopeToggle = false,
 }: SlicerClusterProps) {
   const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
   // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
@@ -622,6 +625,7 @@ export function SlicerCluster({
               initialExpanded
               embedded
               lockSlots={lockSlots}
+              showScopeToggle={showScopeToggle}
               stackVertical={isLeft}
               collapsedSlicers
               headerExtras={clusterControls}

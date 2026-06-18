@@ -186,6 +186,12 @@ interface DashboardFilterBarProps {
    * + horizontal (top) layout; vertical/left and the legacy filter bar
    * keep their existing behavior. */
   distributeChildren?: boolean;
+  /** Per-slicer "Trang này / Tất cả trang" scope toggle (dashboard build
+   * only). When true, each slicer card shows a scope toggle that writes
+   * `scope: 'all' | 'page'` onto the filter; the dashboard page routes
+   * page-scoped slicers to pages_config[i].slicers. New slicers added here
+   * default to 'page'. Off for the public viewer + the filter pane. */
+  showScopeToggle?: boolean;
 }
 
 type AddFilterColumnGroup = {
@@ -217,6 +223,7 @@ export function DashboardFilterBar({
   stackVertical = false,
   collapsedSlicers = false,
   distributeChildren = false,
+  showScopeToggle = false,
   headerExtras,
 }: DashboardFilterBarPropsWithExtras) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
@@ -427,7 +434,11 @@ export function DashboardFilterBar({
       // dispatches to the right UI (input box / slider / checkbox / …)
       // rather than re-inferring from col.type.
       interactionType: interaction,
-    };
+      // Per-page slicer rework — a slicer added in the dashboard cluster
+      // defaults to "Trang này" (page scope, PBI default). The filter pane
+      // (showScopeToggle off) never gets a scope and behaves as before.
+      ...(showScopeToggle ? { scope: 'page' as const } : {}),
+    } as BaseFilter;
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
     setAddFilterSearch('');
@@ -439,6 +450,10 @@ export function DashboardFilterBar({
     onFiltersChange(filters.filter(f => f.id !== id));
     setSearchTerms(prev => { const n = { ...prev }; delete n[id]; return n; });
   };
+
+  // Per-slicer scope toggle ("Trang này" = page / "Tất cả trang" = all).
+  const updateScope = (id: string, scope: 'all' | 'page') =>
+    onFiltersChange(filters.map(f => f.id === id ? ({ ...f, scope } as BaseFilter) : f));
 
   const clearFilter = (id: string) => {
     onFiltersChange(filters.map(f => {
@@ -935,6 +950,9 @@ export function DashboardFilterBar({
                 onRemove={() => removeFilter(f.id)}
                 conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
                 lockSlots={lockSlots}
+                showScopeToggle={showScopeToggle}
+                scope={((f as any).scope === 'page' ? 'page' : 'all')}
+                onUpdateScope={(s) => updateScope(f.id, s)}
                 collapsedPopover={collapsedSlicers}
                 popoverPlacement={stackVertical ? 'right' : 'bottom'}
                 onUpdateWidth={(w) => updateWidth(f.id, w)}
@@ -1009,6 +1027,10 @@ interface FilterCardProps {
   conflictingFilterLabels?: string[];
   /** Slicer-mode flag from parent: hides per-card remove (X) button. */
   lockSlots?: boolean;
+  /** Per-slicer scope toggle (dashboard build). */
+  showScopeToggle?: boolean;
+  scope?: 'all' | 'page';
+  onUpdateScope?: (scope: 'all' | 'page') => void;
   /** Phase-G — render as a collapsed button that opens the value
    * controls in a floating popover (overlay) instead of an
    * always-expanded inline card. Used by the slicer cluster (editor +
@@ -1056,6 +1078,9 @@ function FilterCard({
   onRemove,
   conflictingFilterLabels,
   lockSlots = false,
+  showScopeToggle = false,
+  scope = 'all',
+  onUpdateScope,
   collapsedPopover = false,
   popoverPlacement = 'bottom',
   onUpdateWidth,
@@ -1274,6 +1299,32 @@ function FilterCard({
 
       {/* Card body */}
       <div className="px-3 py-2 flex-1">
+        {/* Per-page slicer scope: "Trang này" keeps the slicer on its own
+            page; "Tất cả trang" applies it across the whole report. */}
+        {showScopeToggle && !lockSlots && onUpdateScope && (
+          <div className="mb-2 flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => onUpdateScope('page')}
+              className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
+                scope === 'page' ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+              title="Slicer chỉ lọc các chart trên trang hiện tại"
+            >
+              Trang này
+            </button>
+            <button
+              type="button"
+              onClick={() => onUpdateScope('all')}
+              className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
+                scope === 'all' ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+              title="Slicer lọc tất cả các trang trong báo cáo"
+            >
+              Tất cả trang
+            </button>
+          </div>
+        )}
         {/* Phase-15.78 — multi/single mode toggle for dropdown/text filters.
             Operator `in` → multi-select checklist (legacy behaviour);
             `eq` → single-select dropdown (PowerBI-style). Hidden on
