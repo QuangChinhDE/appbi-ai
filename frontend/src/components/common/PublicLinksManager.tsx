@@ -119,12 +119,29 @@ export function PublicLinksManager({
     // on the dashboard object, not on the column list.
     try {
       const dash = await dashboardApi.getById(dashboardId);
-      setInheritedSlicers(Array.isArray((dash as any).slicers_config)
-        ? ((dash as any).slicers_config as BaseFilter[])
-        : []);
-      setInheritedFilters(Array.isArray((dash as any).filters_config)
-        ? ((dash as any).filters_config as BaseFilter[])
-        : []);
+      const dashSlicers = Array.isArray((dash as any).slicers_config)
+        ? ((dash as any).slicers_config as BaseFilter[]) : [];
+      const dashFilters = Array.isArray((dash as any).filters_config)
+        ? ((dash as any).filters_config as BaseFilter[]) : [];
+      // Also surface PER-PAGE slicers + filters so the link modal lists EVERY
+      // gateable field — a slicer set to "Trang này" or a page-level filter
+      // used to be invisible here (only addable via "+ Thêm field"). Tag each
+      // with its page name for the row badge. Link RLS is field-wide, so a
+      // field appearing on several pages is shown once (dedup in unifiedRows).
+      const pageSlicers: BaseFilter[] = [];
+      const pageFilters: BaseFilter[] = [];
+      for (const pg of ((dash as any).pages_config || [])) {
+        if (!pg || typeof pg !== 'object') continue;
+        const pname = (pg.name || pg.id || '') as string;
+        for (const s of (pg.slicers || [])) {
+          if (s && typeof s === 'object' && (s as any).field) pageSlicers.push({ ...(s as any), _pageName: pname });
+        }
+        for (const f of (pg.filters || [])) {
+          if (f && typeof f === 'object' && (f as any).field) pageFilters.push({ ...(f as any), _pageName: pname });
+        }
+      }
+      setInheritedSlicers([...dashSlicers, ...pageSlicers]);
+      setInheritedFilters([...dashFilters, ...pageFilters]);
     } catch {
       // non-critical — section just renders empty
     }
@@ -237,6 +254,7 @@ export function PublicLinksManager({
     value?: any;
     source: LinkRowSource;
     dashboardMode?: string; // for filter-pane rows: the dashboard publicMode
+    pageName?: string;      // set when the row came from a per-page slicer/filter
   }
   const defaultActionForRow = useCallback((row: LinkFieldRow): LinkEntryAction['action'] => {
     if (row.source === 'extra') return 'lock';
@@ -266,6 +284,7 @@ export function PublicLinksManager({
         value: entry.value,
         source,
         dashboardMode: (entry as any).publicMode,
+        pageName: (entry as any)._pageName || undefined,
       });
     };
     for (const s of inheritedSlicers) push(s, 'slicer');
@@ -1174,10 +1193,14 @@ export function PublicLinksManager({
                       unifiedRows.map((row) => {
                         const action = effectiveAction(row);
                         const lockValue = linkActions[row.key]?.value ?? (action === 'lock' ? row.value : undefined);
+                        // Scope-aware badge: per-page entries show their page
+                        // name; dashboard-level ones say "mọi trang" so the
+                        // author sees exactly where each field comes from.
                         const sourceLabel =
-                          row.source === 'slicer' ? 'Slicer'
-                          : row.source === 'filter' ? 'Filter trang'
-                          : 'Thêm thủ công';
+                          row.source === 'extra' ? 'Thêm thủ công'
+                          : row.source === 'slicer'
+                            ? (row.pageName ? `Slicer · ${row.pageName}` : 'Slicer · mọi trang')
+                            : (row.pageName ? `Filter trang · ${row.pageName}` : 'Filter · mọi trang');
                         return (
                           <div
                             key={row.key}
