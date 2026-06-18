@@ -702,6 +702,9 @@ export default function EmbedDashboardPage() {
     availableFilterColumns,
     draftViewerFilters,
     filterRuntime.distinctValues,
+    // PBI parity: active page's hidden "Filters on this page" cascades into
+    // slicer values (mirror of d/[token]); see the hook + public page comments.
+    pageHiddenFilters,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),

@@ -875,6 +875,10 @@ export default function PublicDashboardPage() {
     availableFilterColumns,
     draftViewerFilters,
     filterRuntime.distinctValues,
+    // PBI parity: the active page's hidden "Filters on this page" must cascade
+    // into the slicer values too (not only into chart data). Without this a
+    // public slicer offered values outside the page-filter scope.
+    pageHiddenFilters,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),

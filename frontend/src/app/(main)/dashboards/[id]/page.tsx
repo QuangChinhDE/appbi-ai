@@ -552,14 +552,31 @@ export default function DashboardDetailPage() {
     };
     const allFilters = [...appliedGlobalFiltersLegacy, ...activePageFilters];
     const byKey = new Map<string, BaseFilter>();
+    // A later entry must NOT clobber an earlier VALUED one on the same field
+    // just because it is empty. An unselected ("All") slicer that shares a
+    // field with a valued page/report filter used to overwrite it here,
+    // silently dropping the page filter — the "Filters on this page stopped
+    // working" regression. Keep whichever carries an active value.
+    const isActiveVal = (f: BaseFilter): boolean => {
+      const v = (f as any)?.value;
+      if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
+      return v != null && String(v).trim() !== '';
+    };
+    const setKeyed = (f: BaseFilter) => {
+      const k = dedupeKey(f);
+      const ex = byKey.get(k);
+      if (!ex || isActiveVal(f) || !isActiveVal(ex)) byKey.set(k, f);
+    };
     // 1) visible filter defaults
-    for (const f of allFilters) if (!isAuthoritative(f)) byKey.set(dedupeKey(f), f);
-    // 2) slicers (skip decorative image children)
+    for (const f of allFilters) if (!isAuthoritative(f)) setKeyed(f);
+    // 2) slicers (skip decorative image children). An ACTIVE slicer still
+    //    overrides a same-field filter default (viewer interactivity); an empty
+    //    slicer leaves the valued filter intact.
     for (const f of appliedGlobalSlicers) {
       if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      byKey.set(dedupeKey(f as BaseFilter), f as BaseFilter);
+      setKeyed(f as BaseFilter);
     }
-    // 3) locked/hidden filters — authoritative, applied last so they win
+    // 3) locked/hidden filters — authoritative, applied last so they always win.
     for (const f of allFilters) if (isAuthoritative(f)) byKey.set(dedupeKey(f), f);
     return Array.from(byKey.values());
   }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers]);

@@ -17,11 +17,23 @@ export function usePublicFilterDistinctValues(
   columns: ColumnInfo[],
   filters: BaseFilter[],
   fallbackDistinctValues: Record<string, string[]>,
+  // PBI-parity: filters that must CASCADE into the slicer values but are NOT
+  // themselves rendered as interactive controls — e.g. a public "Filters on
+  // this page" entry (pageHiddenFilters). The page filter constrains the whole
+  // page, so a slicer's offered values must already be narrowed by it. These
+  // join the cascade context only; they never become distinct-fetch targets,
+  // so a hidden page-filter field doesn't spawn a spurious dropdown request.
+  // getDistinctValueFilterContext still self-strips, so a slicer that shares a
+  // field with the page filter won't pin its own list.
+  extraContextFilters: BaseFilter[] = [],
 ) {
   const activeSemanticDistinctTargets = useMemo(() => {
     if (!token || columns.length === 0 || filters.length === 0) {
       return [];
     }
+    const contextFilters = extraContextFilters.length > 0
+      ? [...filters, ...extraContextFilters]
+      : filters;
 
     const columnsByKey = new Map(
       columns.map((column) => [getColumnKey(column), column]),
@@ -43,14 +55,14 @@ export function usePublicFilterDistinctValues(
     }
 
     return Array.from(activeColumns.values()).map((column) => {
-      const filterContext = getDistinctValueFilterContext(filters, column);
+      const filterContext = getDistinctValueFilterContext(contextFilters, column);
       return {
         column,
         filterContext,
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [columns, filters, token]);
+  }, [columns, filters, extraContextFilters, token]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({

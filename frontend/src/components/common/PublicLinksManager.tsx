@@ -7,7 +7,6 @@ import {
 } from 'lucide-react';
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { toast } from '@/lib/toast';
 import {
@@ -81,20 +80,24 @@ export function PublicLinksManager({
   const [editingLink, setEditingLink] = useState<PublicLink | null>(null);
 
   const [formName, setFormName] = useState('');
-  const [formFilters, setFormFilters] = useState<BaseFilter[]>([]);
-  // Phase-E (PBI-parity rework) — per-link "hidden field" markers.
-  // Each entry stores a `field` (and optional `semanticField`/`datasetId`)
-  // that the public viewer should never see — neither as a slicer nor
-  // as a banner row. Persisted into the link's filters_config alongside
-  // value-bearing locked entries via the `hidden: true` marker.
-  // See docs/filter-semantics.md §2.3.
-  const [formHiddenFields, setFormHiddenFields] = useState<string[]>([]);
+  // Unified-table rework (2026-06-18) — the link's filter UI is now ONE
+  // table: every shareable field is a row with a Show / Lock / Hide
+  // choice (state in `linkActions`). `extraRows` holds fields that are
+  // NOT inherited dashboard slicers/filters but the author chose to gate
+  // anyway (replaces the old "Access filters" escape-hatch + "Hidden
+  // fields" sections, which overlapped and confused authors). Each is a
+  // BaseFilter carrying field/semanticField/datasetId identity.
+  const [extraRows, setExtraRows] = useState<BaseFilter[]>([]);
   const [formAppearance, setFormAppearance] = useState<PublicLinkAppearanceConfig>(DEFAULT_APPEARANCE);
   const [formPassword, setFormPassword] = useState('');
   const [passwordEnabled, setPasswordEnabled] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [changePassword, setChangePassword] = useState(false);
   const [previewMode, setPreviewMode] = useState<'public' | 'embed'>('public');
+  // Create/Edit form is split into 3 intent-based tabs so the modal isn't
+  // one long scroll: appearance (look/behaviour), data (link filters),
+  // security (password + share URLs). The preview panel stays on the right.
+  const [formTab, setFormTab] = useState<'appearance' | 'data' | 'security'>('appearance');
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const [copiedId, setCopiedId] = useState<number | null>(null);
@@ -208,12 +211,82 @@ export function PublicLinksManager({
   }, [fetchLinks, fetchColumnData]);
 
   const activeColumns: ColumnInfo[] = (propColumns?.length ?? 0) > 0 ? propColumns ?? [] : columns;
-  const activeChartCount: Map<string, number> = (propChartCount?.size ?? 0) > 0 ? propChartCount ?? new Map() : chartCount;
   const baseDistinctValues: Record<string, string[]> = Object.keys(propDistinctValues ?? {}).length > 0
     ? propDistinctValues ?? {}
     : dv;
-  const { distinctValues: activeDistinctValues, droppedFiltersByColumn: activeDroppedFilters } =
-    useFilterDistinctValues(activeColumns, formFilters, baseDistinctValues);
+  const { distinctValues: activeDistinctValues } =
+    useFilterDistinctValues(activeColumns, extraRows, baseDistinctValues);
+
+  // ── Unified link-filter table ─────────────────────────────────────
+  // Stable identity for a row, mirroring the BE dedupe shape
+  // (semanticField first, then bare field, then datasetId).
+  const entryKey = useCallback((entry: { field: string; semanticField?: string; datasetId?: number }): string => {
+    const sem = (entry.semanticField || '').toLowerCase();
+    const ds = entry.datasetId ?? '';
+    return sem ? `${ds}|${sem}` : `${ds}|${entry.field.toLowerCase()}`;
+  }, []);
+
+  // Source classification + the default action a row starts on.
+  type LinkRowSource = 'slicer' | 'filter' | 'extra';
+  interface LinkFieldRow {
+    key: string;
+    field: string;
+    semanticField?: string;
+    datasetId?: number;
+    label: string;
+    value?: any;
+    source: LinkRowSource;
+    dashboardMode?: string; // for filter-pane rows: the dashboard publicMode
+  }
+  const defaultActionForRow = useCallback((row: LinkFieldRow): LinkEntryAction['action'] => {
+    if (row.source === 'extra') return 'lock';
+    if (row.source === 'slicer') return 'show';
+    // filter-pane row inherits the dashboard's publicMode intent
+    const mode = (row.dashboardMode || 'visible').toLowerCase();
+    return mode === 'hidden' ? 'hide' : mode === 'locked' ? 'lock' : 'show';
+  }, []);
+
+  // Build the single list of rows: inherited slicers (#1) + inherited
+  // filter-pane entries (#2) + author-added extra gates (#3). De-duped
+  // by field key; an inherited row wins over an extra one on the same
+  // field so the author never sees the same field twice.
+  const unifiedRows = useMemo<LinkFieldRow[]>(() => {
+    const rows: LinkFieldRow[] = [];
+    const seen = new Set<string>();
+    const push = (entry: BaseFilter, source: LinkRowSource) => {
+      const key = entryKey(entry as any);
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        key,
+        field: entry.field,
+        semanticField: entry.semanticField,
+        datasetId: entry.datasetId,
+        label: (entry as any).label || entry.semanticField || entry.field,
+        value: entry.value,
+        source,
+        dashboardMode: (entry as any).publicMode,
+      });
+    };
+    for (const s of inheritedSlicers) push(s, 'slicer');
+    for (const f of inheritedFilters) push(f, 'filter');
+    for (const x of extraRows) push(x, 'extra');
+    return rows;
+  }, [inheritedSlicers, inheritedFilters, extraRows, entryKey]);
+
+  // The action actually in effect for a row (explicit choice or default).
+  const effectiveAction = useCallback((row: LinkFieldRow): LinkEntryAction['action'] =>
+    linkActions[row.key]?.action ?? defaultActionForRow(row),
+  [linkActions, defaultActionForRow]);
+
+  // Columns the author can still ADD as an extra gate (not already a row).
+  const addableColumns = useMemo(() => {
+    const present = new Set(unifiedRows.map((r) => r.key));
+    return activeColumns.filter((c) => !present.has(entryKey({
+      field: c.name, semanticField: c.semanticField, datasetId: c.datasetId,
+    })));
+  }, [activeColumns, unifiedRows, entryKey]);
+
   const requiresPasswordValue = passwordEnabled && (
     view === 'create'
     || changePassword
@@ -224,11 +297,12 @@ export function PublicLinksManager({
   const previewAppearance = previewTheme.appearance;
   const previewLinkName = formName.trim() || dashboardName;
   const previewTitle = previewAppearance.headline ?? previewLinkName;
-  const configuredAccessFilterCount = formFilters.filter((filter) => (
-    Array.isArray(filter.value)
-      ? filter.value.length > 0
-      : filter.value !== '' && filter.value !== null && filter.value !== undefined
-  )).length;
+  // How many fields this link actually gates (lock or hide), for the
+  // summary chip. 'show' rows inherit the dashboard and don't count.
+  const configuredAccessFilterCount = useMemo(
+    () => unifiedRows.filter((row) => effectiveAction(row) !== 'show').length,
+    [unifiedRows, effectiveAction],
+  );
 
   const resolvePasswordPayload = (): { password?: string; validationError?: string } => {
     const trimmedPassword = formPassword.trim();
@@ -272,18 +346,8 @@ export function PublicLinksManager({
     try {
       const link = await dashboardApi.createPublicLink(dashboardId, {
         name: formName.trim(),
-        // Phase-E THẬT — merge into the single `filters_config` payload:
-        //   linkActions['lock']  → {field, value, hidden:false}
-        //   linkActions['hide']  → {field, hidden:true}
-        //   linkActions['show']  → not in payload (inherit)
-        // Plus escape-hatch formFilters + formHiddenFields for advanced
-        // cases not covered by inherited entries.
-        filters_config: buildLinkFiltersPayload(
-          linkActions,
-          [...inheritedSlicers, ...inheritedFilters],
-          formFilters,
-          formHiddenFields,
-        ),
+        // Unified table → one entry per gated field (see buildLinkFiltersPayload).
+        filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
         appearance_config: formAppearance,
         password,
       });
@@ -313,18 +377,8 @@ export function PublicLinksManager({
       }
       const updated = await dashboardApi.updatePublicLink(dashboardId, editingLink.id, {
         name: formName.trim() || undefined,
-        // Phase-E THẬT — merge into the single `filters_config` payload:
-        //   linkActions['lock']  → {field, value, hidden:false}
-        //   linkActions['hide']  → {field, hidden:true}
-        //   linkActions['show']  → not in payload (inherit)
-        // Plus escape-hatch formFilters + formHiddenFields for advanced
-        // cases not covered by inherited entries.
-        filters_config: buildLinkFiltersPayload(
-          linkActions,
-          [...inheritedSlicers, ...inheritedFilters],
-          formFilters,
-          formHiddenFields,
-        ),
+        // Unified table → one entry per gated field (see buildLinkFiltersPayload).
+        filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
         appearance_config: formAppearance,
         ...passwordField,
       });
@@ -366,12 +420,8 @@ export function PublicLinksManager({
   const openEdit = (link: PublicLink) => {
     setEditingLink(link);
     setFormName(link.name);
-    // Phase-E THẬT — parse the link's filters_config back into:
-    //   linkActions       — entries matching an inherited dashboard
-    //                       slicer/filter, rendered via the 3-radio UI
-    //   formFilters       — extra locked entries that do NOT match
-    //                       any inherited row (legacy / advanced)
-    //   formHiddenFields  — extra hide markers without an inherited row
+    // Parse the link's filters_config into per-row actions + any extra
+    // (non-inherited) rows so the unified table re-renders the saved state.
     {
       const raw = (link.filters_config ?? []) as any[];
       const parsed = parseExistingLinkFilters(
@@ -379,8 +429,7 @@ export function PublicLinksManager({
         [...inheritedSlicers, ...inheritedFilters],
       );
       setLinkActions(parsed.actions);
-      setFormFilters(parsed.leftover);
-      setFormHiddenFields(parsed.leftoverHidden);
+      setExtraRows(parsed.extra);
     }
     setFormAppearance({
       ...normalizePublicLinkAppearance(link.appearance_config),
@@ -402,6 +451,7 @@ export function PublicLinksManager({
     setShowPassword(false);
     setChangePassword(false);
     setPreviewMode('public');
+    setFormTab('appearance');
     setView('edit');
   };
 
@@ -412,8 +462,7 @@ export function PublicLinksManager({
 
   const resetForm = () => {
     setFormName('');
-    setFormFilters([]);
-    setFormHiddenFields([]);
+    setExtraRows([]);
     setLinkActions({});
     setFormAppearance(DEFAULT_APPEARANCE);
     setFormPassword('');
@@ -421,104 +470,71 @@ export function PublicLinksManager({
     setShowPassword(false);
     setChangePassword(false);
     setPreviewMode('public');
+    setFormTab('appearance');
     setEditingLink(null);
   };
 
-  // Phase-E THẬT — stable key matching an inherited entry to a link
-  // override row. Mirrors the BE dedupe shape (semanticField first,
-  // then bare field, then datasetId).
-  const entryKey = (entry: { field: string; semanticField?: string; datasetId?: number }): string => {
-    const sem = (entry.semanticField || '').toLowerCase();
-    const ds = entry.datasetId ?? '';
-    return sem ? `${ds}|${sem}` : `${ds}|${entry.field.toLowerCase()}`;
-  };
-
-  // Serialize linkActions + escape-hatch formFilters/formHiddenFields
-  // into the BE wire shape for `DashboardPublicLink.filters_config`.
-  // See docs/filter-semantics.md §2.3.
+  // Serialize the unified rows + their per-row actions into the BE wire
+  // shape for `DashboardPublicLink.filters_config`. One row → at most one
+  // entry: 'show' inherits (no entry), 'hide' → {…, hidden:true}, 'lock'
+  // → a value-bearing entry. See docs/filter-semantics.md §2.3.
   const buildLinkFiltersPayload = (
     actions: Record<string, LinkEntryAction>,
-    inherited: BaseFilter[],
-    extraLocked: BaseFilter[],
-    extraHidden: string[],
+    rows: LinkFieldRow[],
   ): any[] => {
     const out: any[] = [];
-    const inheritedByKey = new Map<string, BaseFilter>();
-    for (const e of inherited) inheritedByKey.set(entryKey(e), e);
-    const handledKeys = new Set<string>();
-    for (const [key, act] of Object.entries(actions)) {
-      const inheritedEntry = inheritedByKey.get(key);
-      if (!inheritedEntry) continue;
-      handledKeys.add(key);
-      if (act.action === 'show') continue;
-      if (act.action === 'hide') {
-        out.push({
-          field: inheritedEntry.field,
-          semanticField: inheritedEntry.semanticField,
-          datasetId: inheritedEntry.datasetId,
-          hidden: true,
-        });
+    for (const row of rows) {
+      const action = actions[row.key]?.action ?? defaultActionForRow(row);
+      if (action === 'show') continue;
+      if (action === 'hide') {
+        out.push({ field: row.field, semanticField: row.semanticField, datasetId: row.datasetId, hidden: true });
         continue;
       }
-      // 'lock': write the override value back, fall back to the
-      // dashboard's saved value if the author hasn't entered one.
-      // Phase-E fix — align operator with value shape. When the
-      // override value is an array (e.g. user typed "A, B, C"), force
-      // operator to `in`/`not_in`; otherwise the inherited `eq` would
-      // emit invalid SQL `WHERE field = ('A','B','C')`.
-      const overrideValue = act.value !== undefined ? act.value : inheritedEntry.value;
-      const inheritedOp = (inheritedEntry as any).operator || 'in';
+      // 'lock' — use the author's override value, falling back to the
+      // dashboard's saved value. Align operator with value shape: an
+      // array value forces in/not_in (a scalar `eq` over a list emits
+      // invalid SQL `WHERE field = ('A','B')`).
+      const overrideValue = actions[row.key]?.value !== undefined ? actions[row.key]?.value : row.value;
+      const inheritedOp = (row as any).operator || 'in';
       const effectiveOp = Array.isArray(overrideValue)
         ? (inheritedOp === 'not_in' ? 'not_in' : 'in')
         : inheritedOp;
       out.push({
-        field: inheritedEntry.field,
-        semanticField: inheritedEntry.semanticField,
-        datasetId: inheritedEntry.datasetId,
+        field: row.field,
+        semanticField: row.semanticField,
+        datasetId: row.datasetId,
         operator: effectiveOp,
         value: overrideValue,
       });
     }
-    for (const f of extraLocked) {
-      if (handledKeys.has(entryKey(f as any))) continue;
-      out.push(f);
-    }
-    for (const f of extraHidden) {
-      out.push({ field: f, hidden: true });
-    }
     return out;
   };
 
-  // Parse an existing link.filters_config back into linkActions +
-  // escape-hatch arrays, splitting by whether each entry matches an
-  // inherited dashboard entry (action-based) or not (legacy/extra).
+  // Parse an existing link.filters_config back into per-row actions +
+  // the set of extra (non-inherited) rows that must still render. An
+  // entry that matches an inherited slicer/filter becomes an action on
+  // that row; anything else becomes an extra row carrying its identity.
   const parseExistingLinkFilters = (
     raw: any[],
     inherited: BaseFilter[],
-  ): { actions: Record<string, LinkEntryAction>; leftover: BaseFilter[]; leftoverHidden: string[] } => {
+  ): { actions: Record<string, LinkEntryAction>; extra: BaseFilter[] } => {
     const inheritedByKey = new Map<string, BaseFilter>();
     for (const e of inherited) inheritedByKey.set(entryKey(e), e);
     const actions: Record<string, LinkEntryAction> = {};
-    const leftover: BaseFilter[] = [];
-    const leftoverHidden: string[] = [];
+    const extra: BaseFilter[] = [];
     for (const entry of raw || []) {
       if (!entry || typeof entry !== 'object') continue;
       const key = entryKey(entry);
-      if (inheritedByKey.has(key)) {
-        if (entry.hidden === true) {
-          actions[key] = { action: 'hide' };
-        } else {
-          actions[key] = { action: 'lock', value: entry.value };
-        }
-      } else {
-        if (entry.hidden === true) {
-          if (typeof entry.field === 'string' && entry.field) leftoverHidden.push(entry.field);
-        } else {
-          leftover.push(entry as BaseFilter);
-        }
+      const isHidden = entry.hidden === true;
+      actions[key] = isHidden ? { action: 'hide' } : { action: 'lock', value: entry.value };
+      if (!inheritedByKey.has(key)) {
+        // Non-inherited gate — keep it as a visible row so the author
+        // can see and change it (was the old "Access filters" / "Hidden
+        // fields" leftover).
+        extra.push(entry as BaseFilter);
       }
     }
-    return { actions, leftover, leftoverHidden };
+    return { actions, extra };
   };
 
   const goBack = () => {
@@ -703,64 +719,76 @@ export function PublicLinksManager({
           </div>
         </div>
 
-        {view === 'edit' && editingLink?.is_active && (
-          <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
-            <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">Share outputs</p>
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
-                <Link2 className="h-4 w-4 text-text-quaternary" />
-                <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
-                  {origin.replace(/\/$/, '')}/d/{editingLink.token}
-                </span>
-                <IconButton
-                  aria-label="Copy page URL"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    copyText(`${origin.replace(/\/$/, '')}/d/${editingLink.token}`, () => {
-                      setCopiedId(editingLink.id);
-                      setTimeout(() => setCopiedId(null), 2000);
-                    });
-                  }}
-                >
-                  {copiedId === editingLink.id ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
-                </IconButton>
-              </div>
+      </div>
+    );
+  };
 
-              <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
-                <Code2 className="h-4 w-4 text-text-quaternary" />
-                <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
-                  {getEmbedUrl(editingLink)}
-                </span>
-                <IconButton
-                  aria-label="Copy embed URL"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    copyText(getEmbedUrl(editingLink), () => {
-                      setCopiedEmbedId(editingLink.id);
-                      setTimeout(() => setCopiedEmbedId(null), 2000);
-                    });
-                  }}
-                >
-                  {copiedEmbedId === editingLink.id ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
-                </IconButton>
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  onClick={() => {
-                    copyText(getIframeSnippet(editingLink), () => {
-                      setCopiedSnippetId(editingLink.id);
-                      setTimeout(() => setCopiedSnippetId(null), 2000);
-                    });
-                  }}
-                >
-                  {copiedSnippetId === editingLink.id ? 'Copied' : '</>'}
-                </Button>
-              </div>
-            </div>
+  // Share outputs (page URL + embed URL/snippet) — only meaningful once a
+  // link exists. Lives in the "Bảo mật & Chia sẻ" tab.
+  const renderShareOutputs = () => {
+    if (!(view === 'edit' && editingLink?.is_active)) return null;
+    return (
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+        <div className="flex items-center gap-2 text-text-primary">
+          <Link2 className="h-4 w-4 text-brand" />
+          <h3 className="text-small font-strong">Link chia sẻ</h3>
+        </div>
+        <p className="mt-2 text-caption leading-6 text-text-tertiary">
+          Link trang công khai và mã nhúng iframe cho link này.
+        </p>
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+            <Link2 className="h-4 w-4 text-text-quaternary" />
+            <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
+              {origin.replace(/\/$/, '')}/d/{editingLink!.token}
+            </span>
+            <IconButton
+              aria-label="Copy page URL"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                copyText(`${origin.replace(/\/$/, '')}/d/${editingLink!.token}`, () => {
+                  setCopiedId(editingLink!.id);
+                  setTimeout(() => setCopiedId(null), 2000);
+                });
+              }}
+            >
+              {copiedId === editingLink!.id ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+            </IconButton>
           </div>
-        )}
+
+          <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+            <Code2 className="h-4 w-4 text-text-quaternary" />
+            <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
+              {getEmbedUrl(editingLink!)}
+            </span>
+            <IconButton
+              aria-label="Copy embed URL"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                copyText(getEmbedUrl(editingLink!), () => {
+                  setCopiedEmbedId(editingLink!.id);
+                  setTimeout(() => setCopiedEmbedId(null), 2000);
+                });
+              }}
+            >
+              {copiedEmbedId === editingLink!.id ? <Check className="h-4 w-4 text-success" /> : <Copy className="h-4 w-4" />}
+            </IconButton>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => {
+                copyText(getIframeSnippet(editingLink!), () => {
+                  setCopiedSnippetId(editingLink!.id);
+                  setTimeout(() => setCopiedSnippetId(null), 2000);
+                });
+              }}
+            >
+              {copiedSnippetId === editingLink!.id ? 'Copied' : '</>'}
+            </Button>
+          </div>
+        </div>
       </div>
     );
   };
@@ -1080,278 +1108,203 @@ export function PublicLinksManager({
                   </p>
                 </div>
 
-                <PublicLinkAppearanceEditor
-                  value={formAppearance}
-                  dashboardName={dashboardName}
-                  onChange={setFormAppearance}
-                />
+                {/* Intent tabs (2026-06-18) — split the long form by purpose
+                    so the modal isn't one 9-section scroll. */}
+                <div className="flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-1">
+                  {([
+                    { id: 'appearance', label: 'Giao diện' },
+                    { id: 'data', label: 'Dữ liệu (Filter)' },
+                    { id: 'security', label: 'Bảo mật & Chia sẻ' },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setFormTab(t.id)}
+                      className={cn(
+                        'flex-1 rounded-md px-3 py-1.5 text-caption font-emphasis transition-colors',
+                        formTab === t.id
+                          ? 'bg-brand text-text-inverse shadow-linear-sm'
+                          : 'text-text-tertiary hover:text-text-secondary',
+                      )}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
 
-                {/* Phase-E THẬT (PBI-parity rework) — primary surface:
-                    per-inherited-entry 3-radio Show / Lock / Hide. The
-                    section is split by source — slicers (#1) inherit
-                    from `Dashboard.slicers_config`, filters (#2) from
-                    `Dashboard.filters_config`. Per-link override here;
-                    the BE layered-merge module is what makes the
-                    precedence stick (link_locked > viewer_slicer >
-                    dashboard_*). See docs/filter-semantics.md §2 and
-                    the wireframe approved by the user. */}
-                {(inheritedSlicers.length > 0 || inheritedFilters.length > 0) && (
-                  <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
-                    <div className="flex items-center gap-2 text-text-primary">
-                      <Filter className="h-4 w-4 text-brand" />
-                      <h3 className="text-small font-strong">Filter cho link này</h3>
-                    </div>
-                    <p className="mt-2 text-caption leading-6 text-text-tertiary">
-                      Kế thừa từ dashboard. Mỗi entry chọn hành vi: 👁 Show — viewer thấy & chỉnh; 🔒 Lock — khoá giá trị, viewer thấy banner; 🚫 Hide — viewer không thấy.
-                    </p>
-
-                    {inheritedSlicers.length > 0 && (
-                      <div className="mt-4">
-                        <div className="mb-2 text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                          Slicer (canvas, viewer luôn thấy)
-                        </div>
-                        <div className="space-y-2">
-                          {inheritedSlicers.map((entry) => {
-                            const key = entryKey(entry as any);
-                            const act = linkActions[key] ?? { action: 'show' };
-                            return (
-                              <div
-                                key={`slicer-${key}`}
-                                className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
-                              >
-                                <div className="font-emphasis text-caption text-text-primary">
-                                  {entry.label || entry.semanticField || entry.field}
-                                </div>
-                                <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
-                                  {(['show', 'lock', 'hide'] as const).map((opt) => (
-                                    <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
-                                      <input
-                                        type="radio"
-                                        name={`act-${key}`}
-                                        checked={act.action === opt}
-                                        onChange={() =>
-                                          setLinkActions((prev) => ({
-                                            ...prev,
-                                            [key]: { action: opt, value: opt === 'lock' ? (prev[key]?.value ?? entry.value) : undefined },
-                                          }))
-                                        }
-                                      />
-                                      <span>
-                                        {opt === 'show' && '👁 Show'}
-                                        {opt === 'lock' && '🔒 Lock'}
-                                        {opt === 'hide' && '🚫 Hide'}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                                {act.action === 'lock' && (
-                                  <div className="mt-2">
-                                    <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
-                                    <input
-                                      type="text"
-                                      value={Array.isArray(act.value) ? act.value.join(', ') : String(act.value ?? '')}
-                                      onChange={(e) => {
-                                        const raw = e.target.value;
-                                        const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
-                                        setLinkActions((prev) => ({
-                                          ...prev,
-                                          [key]: { action: 'lock', value: next },
-                                        }));
-                                      }}
-                                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                                      className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
-                                    />
-                                    <p className="mt-1 text-tiny text-text-quaternary">
-                                      Phân cách bằng dấu phẩy nếu có nhiều giá trị. Để trống = dùng giá trị dashboard mặc định.
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {inheritedFilters.length > 0 && (
-                      <div className="mt-5">
-                        <div className="mb-2 text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
-                          Filter pane (sidebar, viewer không thấy mặc định)
-                        </div>
-                        <div className="space-y-2">
-                          {inheritedFilters.map((entry) => {
-                            const key = entryKey(entry as any);
-                            // Default for filter-pane entries: respect dashboard's publicMode
-                            const dashboardMode = (entry as any).publicMode || 'visible';
-                            const defaultAction: LinkEntryAction['action'] =
-                              dashboardMode === 'hidden' ? 'hide'
-                              : dashboardMode === 'locked' ? 'lock'
-                              : 'show';
-                            const act = linkActions[key] ?? { action: defaultAction, value: defaultAction === 'lock' ? entry.value : undefined };
-                            return (
-                              <div
-                                key={`filter-${key}`}
-                                className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
-                              >
-                                <div className="font-emphasis text-caption text-text-primary">
-                                  {entry.label || entry.semanticField || entry.field}
-                                  <span className="ml-2 rounded bg-surface-1 px-1.5 py-0.5 text-tiny font-normal text-text-tertiary">
-                                    dashboard: {dashboardMode}
-                                  </span>
-                                </div>
-                                <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
-                                  {(['show', 'lock', 'hide'] as const).map((opt) => (
-                                    <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
-                                      <input
-                                        type="radio"
-                                        name={`act-${key}`}
-                                        checked={act.action === opt}
-                                        onChange={() =>
-                                          setLinkActions((prev) => ({
-                                            ...prev,
-                                            [key]: { action: opt, value: opt === 'lock' ? (prev[key]?.value ?? entry.value) : undefined },
-                                          }))
-                                        }
-                                      />
-                                      <span>
-                                        {opt === 'show' && '👁 Show'}
-                                        {opt === 'lock' && '🔒 Lock'}
-                                        {opt === 'hide' && '🚫 Hide'}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                                {act.action === 'lock' && (
-                                  <div className="mt-2">
-                                    <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
-                                    <input
-                                      type="text"
-                                      value={Array.isArray(act.value) ? act.value.join(', ') : String(act.value ?? '')}
-                                      onChange={(e) => {
-                                        const raw = e.target.value;
-                                        const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
-                                        setLinkActions((prev) => ({
-                                          ...prev,
-                                          [key]: { action: 'lock', value: next },
-                                        }));
-                                      }}
-                                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
-                                      className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
-                                    />
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                {formTab === 'appearance' && (
+                  <PublicLinkAppearanceEditor
+                    value={formAppearance}
+                    dashboardName={dashboardName}
+                    onChange={setFormAppearance}
+                  />
                 )}
 
+                {/* Dữ liệu tab — unified link-filter table (2026-06-18 rework).
+                    ONE surface: every shareable field is a row with Show /
+                    Lock / Hide, replacing the old three overlapping sections
+                    (3-radio + "Access filters" escape-hatch + "Hidden
+                    fields"). BE link_locked is the outermost gate, then
+                    page/dashboard filters, then the viewer's slicer. See
+                    docs/filter-semantics.md §2.3 + §3. */}
+                {formTab === 'data' && (
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
                   <div className="flex items-center gap-2 text-text-primary">
                     <Filter className="h-4 w-4 text-brand" />
-                    <h3 className="text-small font-strong">Access filters (advanced — escape hatch)</h3>
+                    <h3 className="text-small font-strong">Filter cho link này</h3>
                   </div>
                   <p className="mt-2 text-caption leading-6 text-text-tertiary">
-                    Restrict the data available through this link. Viewer filters on the public page operate on top of these rules.
+                    Mỗi field chọn 1 hành vi: <span className="font-emphasis">👁 Hiện</span> — viewer thấy & chỉnh được; <span className="font-emphasis">🔒 Khoá</span> — ép giá trị, viewer không đổi được (như RLS); <span className="font-emphasis">🚫 Ẩn</span> — bỏ hẳn field khỏi link.
+                  </p>
+                  <p className="mt-1.5 rounded-md bg-surface-2 px-3 py-2 text-tiny text-text-tertiary">
+                    Thứ tự lọc khi xem public: <span className="font-emphasis text-text-secondary">🔒 Khoá ở link</span> (ngoài cùng, không phá được) → <span className="font-emphasis text-text-secondary">Filter trang dashboard</span> → <span className="font-emphasis text-text-secondary">Slicer người xem chọn</span>.
                   </p>
 
-                  <div className="mt-4">
-                    {columnsLoading ? (
-                      <div className="flex items-center justify-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-10 text-caption text-text-tertiary">
+                  <div className="mt-4 space-y-2">
+                    {columnsLoading && unifiedRows.length === 0 ? (
+                      <div className="flex items-center justify-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-8 text-caption text-text-tertiary">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Loading available columns...
+                        Đang tải field…
                       </div>
-                    ) : activeColumns.length > 0 ? (
-                      <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                        <DashboardFilterBar
-                          columns={activeColumns}
-                          columnChartCount={activeChartCount}
-                          distinctValues={activeDistinctValues}
-                          filters={formFilters}
-                          onFiltersChange={setFormFilters}
-                        />
-                        {formFilters.length === 0 && (
-                          <p className="px-2 py-2 text-center text-tiny text-text-tertiary">
-                            No filters added. This link can access all dashboard data.
-                          </p>
-                        )}
-                      </div>
+                    ) : unifiedRows.length === 0 ? (
+                      <p className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-6 text-center text-tiny text-text-tertiary">
+                        Chưa có field nào để cấu hình. Thêm chart/slicer vào dashboard trước, hoặc thêm field bên dưới.
+                      </p>
                     ) : (
-                      <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-10 text-center">
-                        <p className="text-caption font-emphasis text-text-secondary">No columns available</p>
-                        <p className="mt-1 text-tiny text-text-tertiary">
-                          Add charts to the dashboard first, then create public filters here.
-                        </p>
-                      </div>
+                      unifiedRows.map((row) => {
+                        const action = effectiveAction(row);
+                        const lockValue = linkActions[row.key]?.value ?? (action === 'lock' ? row.value : undefined);
+                        const sourceLabel =
+                          row.source === 'slicer' ? 'Slicer'
+                          : row.source === 'filter' ? 'Filter trang'
+                          : 'Thêm thủ công';
+                        return (
+                          <div
+                            key={row.key}
+                            className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 font-emphasis text-caption text-text-primary">
+                                {row.label}
+                                <span className="ml-2 rounded bg-surface-1 px-1.5 py-0.5 text-tiny font-normal text-text-tertiary">
+                                  {sourceLabel}
+                                </span>
+                              </div>
+                              {row.source === 'extra' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setExtraRows((prev) => prev.filter((r) => entryKey(r as any) !== row.key));
+                                    setLinkActions((prev) => {
+                                      const next = { ...prev };
+                                      delete next[row.key];
+                                      return next;
+                                    });
+                                  }}
+                                  className="shrink-0 rounded p-0.5 text-text-quaternary hover:bg-[rgba(255,255,255,0.06)] hover:text-danger"
+                                  title="Bỏ field khỏi danh sách"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
+                              {(['show', 'lock', 'hide'] as const).map((opt) => (
+                                <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
+                                  <input
+                                    type="radio"
+                                    name={`act-${row.key}`}
+                                    checked={action === opt}
+                                    onChange={() =>
+                                      setLinkActions((prev) => ({
+                                        ...prev,
+                                        [row.key]: { action: opt, value: opt === 'lock' ? (prev[row.key]?.value ?? row.value) : undefined },
+                                      }))
+                                    }
+                                  />
+                                  <span>
+                                    {opt === 'show' && '👁 Hiện'}
+                                    {opt === 'lock' && '🔒 Khoá'}
+                                    {opt === 'hide' && '🚫 Ẩn'}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                            {action === 'lock' && (
+                              <div className="mt-2">
+                                <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
+                                <input
+                                  type="text"
+                                  value={Array.isArray(lockValue) ? lockValue.join(', ') : String(lockValue ?? '')}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
+                                    setLinkActions((prev) => ({
+                                      ...prev,
+                                      [row.key]: { action: 'lock', value: next },
+                                    }));
+                                  }}
+                                  placeholder={Array.isArray(row.value) ? row.value.join(', ') : String(row.value ?? 'nhập giá trị…')}
+                                  list={`vals-${row.key}`}
+                                  className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
+                                />
+                                <datalist id={`vals-${row.key}`}>
+                                  {(activeDistinctValues[row.field] ?? activeDistinctValues[row.semanticField ?? ''] ?? []).slice(0, 50).map((v) => (
+                                    <option key={v} value={v} />
+                                  ))}
+                                </datalist>
+                                <p className="mt-1 text-tiny text-text-quaternary">
+                                  Phân cách bằng dấu phẩy nếu có nhiều giá trị. Để trống = dùng giá trị dashboard mặc định.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
-                </div>
 
-                {/* Phase-E (PBI-parity rework) — hidden-field markers for
-                    this link. Author picks fields to drop from the public
-                    viewer entirely (no slicer, no banner). Persisted as
-                    `{field, hidden: true}` entries inside the link's
-                    filters_config; the BE layered-merge module reads the
-                    flag via split_link_filters_locked_vs_hidden.
-                    See docs/filter-semantics.md §2.3. */}
-                {activeColumns.length > 0 && (
-                  <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
-                    <div className="flex items-center gap-2 text-text-primary">
-                      <X className="h-4 w-4 text-warning" />
-                      <h3 className="text-small font-strong">Hidden fields (drop from viewer)</h3>
-                    </div>
-                    <p className="mt-2 text-caption leading-6 text-text-tertiary">
-                      Pick fields to remove from the public viewer entirely on this link. Viewer sees no slicer, no banner, no chance to override. Use sparingly — this is a row-level-security tool, not a UI toggle.
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {formHiddenFields.length === 0 && (
-                        <span className="text-tiny text-text-tertiary">No fields hidden.</span>
-                      )}
-                      {formHiddenFields.map((fieldName) => (
-                        <span
-                          key={fieldName}
-                          className="inline-flex items-center gap-1 rounded border border-warning/30 bg-warning/10 px-2 py-0.5 text-caption text-warning"
-                        >
-                          🚫 <span className="font-mono">{fieldName}</span>
-                          <button
-                            type="button"
-                            onClick={() => setFormHiddenFields((prev) => prev.filter((f) => f !== fieldName))}
-                            className="ml-1 rounded p-0.5 hover:bg-warning/20"
-                            title="Remove from hidden list"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
+                  {/* Add a field that isn't an inherited slicer/filter — the
+                      old "Access filters" escape-hatch power, folded in. */}
+                  {addableColumns.length > 0 && (
                     <div className="mt-3">
-                      <label className="block text-tiny text-text-tertiary">Add a field to hide:</label>
+                      <label className="block text-tiny text-text-tertiary">+ Thêm field khác để khoá / ẩn:</label>
                       <select
                         value=""
                         onChange={(e) => {
-                          const v = e.target.value;
-                          if (!v) return;
-                          setFormHiddenFields((prev) => (prev.includes(v) ? prev : [...prev, v]));
+                          const name = e.target.value;
+                          if (!name) return;
+                          const col = addableColumns.find((c) => c.name === name);
+                          if (!col) return;
+                          const newRow = {
+                            field: col.name,
+                            semanticField: col.semanticField,
+                            datasetId: col.datasetId,
+                            label: col.label || col.name,
+                            type: col.type,
+                            operator: 'in',
+                            value: [],
+                          } as unknown as BaseFilter;
+                          const k = entryKey(newRow as any);
+                          setExtraRows((prev) => [...prev, newRow]);
+                          setLinkActions((prev) => ({ ...prev, [k]: { action: 'lock', value: undefined } }));
                         }}
                         className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-caption outline-none focus:ring-1 focus:ring-brand"
                       >
-                        <option value="">— pick a field —</option>
-                        {activeColumns
-                          .filter((c) => !formHiddenFields.includes(c.name))
-                          .map((c) => (
-                            <option key={c.name} value={c.name}>
-                              {c.label || c.name}
-                              {c.datasetName ? ` · ${c.datasetName}` : ''}
-                            </option>
-                          ))}
+                        <option value="">— chọn field —</option>
+                        {addableColumns.map((c) => (
+                          <option key={c.name} value={c.name}>
+                            {c.label || c.name}{c.datasetName ? ` · ${c.datasetName}` : ''}
+                          </option>
+                        ))}
                       </select>
                     </div>
-                  </div>
+                  )}
+                </div>
                 )}
 
+                {formTab === 'security' && (
+                <>
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
                   <div className="flex items-center gap-2 text-text-primary">
                     <Lock className="h-4 w-4 text-warning" />
@@ -1475,6 +1428,9 @@ export function PublicLinksManager({
                     </div>
                   )}
                 </div>
+                {renderShareOutputs()}
+                </>
+                )}
               </div>
 
               <div className="min-h-0 overflow-y-auto pl-0 lg:pl-1">
