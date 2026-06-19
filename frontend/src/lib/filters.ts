@@ -1097,6 +1097,66 @@ export function getDistinctValueFilterContext(
 }
 
 /**
+ * Page/dashboard SCOPE filters are a HARD BOUND on viewer slicers that target
+ * the SAME field: a viewer may only narrow WITHIN the scope, never escape it.
+ *
+ * Why this exists: the previous assembly DROPPED the page-scope filter whenever
+ * an active same-field slicer was present ("viewer's choice wins"). That let a
+ * viewer pick a value OUTSIDE the author's page scope (e.g. page scoped to
+ * [Laptop,Charger,Headphones], viewer picks "Tablet") and see data the page was
+ * meant to exclude (10M instead of the 303K page total) — a scope-escape /
+ * over-exposure bug, especially on public links. The dedup-keep-one model
+ * fundamentally cannot AND two same-field filters, so we intersect here.
+ *
+ * `selections` = viewer slicer/cross-filter choices (overridable).
+ * `scopes`     = author page/dashboard scope filters (always-applied, hidden
+ *                from the viewer's controls). Returns the filter list to send to
+ *                the chart-data endpoint.
+ *
+ * Rule per field X that has a scope:
+ *   - no active same-field selection → scope applies unchanged.
+ *   - active `in` selection + `in` scope → emit ONE filter = scope ∩ selection.
+ *       empty intersection → fall back to the scope (ignore the out-of-scope
+ *       pick; never escape, never show "all").
+ *   - any other operator combo → keep the scope (the hard bound wins).
+ */
+export function applyScopeBound(
+  selections: BaseFilter[],
+  scopes: BaseFilter[],
+): BaseFilter[] {
+  const keyOf = (f: BaseFilter) =>
+    String(f.fieldKey ?? f.semanticField ?? f.field ?? '').trim().toLowerCase();
+  const activeSelByKey = new Map<string, BaseFilter>();
+  for (const s of selections) {
+    if (isFilterValueActive(s)) activeSelByKey.set(keyOf(s), s);
+  }
+  const out: BaseFilter[] = [];
+  const foldedKeys = new Set<string>();
+  for (const scope of scopes) {
+    const k = keyOf(scope);
+    const sel = activeSelByKey.get(k);
+    if (!sel) { out.push(scope); continue; }
+    foldedKeys.add(k);
+    const toList = (v: any): string[] =>
+      Array.isArray(v) ? v.map((x) => String(x)) : (v != null && String(v) !== '' ? [String(v)] : []);
+    if (sel.operator === 'in' && scope.operator === 'in') {
+      const sv = toList(sel.value);
+      const pv = toList(scope.value);
+      const inter = sv.filter((x) => pv.includes(x));
+      out.push({ ...scope, value: inter.length ? inter : scope.value });
+    } else {
+      // hard bound wins for non-list operators (rare for slicers)
+      out.push(scope);
+    }
+  }
+  for (const s of selections) {
+    if (foldedKeys.has(keyOf(s))) continue;
+    out.push(s);
+  }
+  return out;
+}
+
+/**
  * Get default operator for a filter type
  */
 export function getDefaultOperator(type: FilterType): FilterOperator {

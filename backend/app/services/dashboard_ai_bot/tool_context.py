@@ -50,7 +50,12 @@ class ToolError(Exception):
 class ToolContext:
     db: Session
     dashboard: Dashboard
-    public_filters: list[dict]  # the filters the dashboard is currently showing
+    # ALREADY-MERGED filters: callers MUST pass the output of
+    # api/public.py:_build_public_chart_filters (dashboard filter-pane + slicer
+    # defaults + link locks, with empty/hidden entries normalized), NEVER the
+    # raw DashboardPublicLink.filters_config. _fetch_chart_data applies these
+    # as-is on top of each chart's base filters.
+    public_filters: list[dict]
     allowed_chart_ids: set[int] = field(default_factory=set)
     chart_meta: dict[int, dict[str, Any]] = field(default_factory=dict)
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)

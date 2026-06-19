@@ -90,6 +90,22 @@ export function usePublicFilterDistinctValues(
       }
     });
 
+    // Bound each slicer's option list by any HARD page/dashboard scope on the
+    // SAME field (extraContextFilters = "Filters on this page" etc.). The BE
+    // distinct self-strips the dropdown's own field — which also drops the page
+    // scope — so the raw list comes back UNbounded (it offered out-of-scope
+    // products like "Tablet" on a page scoped to [Laptop,Charger,Headphones]).
+    // Intersect client-side so the viewer can only ever pick IN-scope values —
+    // the dropdown mirror of applyScopeBound on the data layer (no escape).
+    for (const scope of extraContextFilters) {
+      if (scope.operator !== 'in' || !Array.isArray(scope.value)) continue;
+      const key = getFilterKey(scope);
+      const current = mergedValues[key];
+      if (!current) continue;
+      const allow = new Set(scope.value.map((v) => String(v)));
+      mergedValues[key] = current.filter((v) => allow.has(String(v)));
+    }
+
     return mergedValues;
-  }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries]);
+  }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries, extraContextFilters]);
 }

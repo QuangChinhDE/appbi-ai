@@ -318,3 +318,66 @@ def split_link_filters_locked_vs_hidden(
         else:
             locked.append(raw)
     return locked, hidden
+
+
+# ---------------------------------------------------------------------------
+# Single source of truth for "what does a public-link entry constrain".
+#
+# Both the chart-data merge (api/public.py:_build_public_chart_filters) and the
+# structure-response strip (api/public.py:_get_share_dashboard) must agree on
+# this, or they drift: the merge would drop an empty `in []` lock as a no-op
+# while the strip would still remove the field's slicer + page-filter — leaking
+# MORE data than the page scope (the dashboard-53 empty-lock leak, 2026-06).
+# Keep this the ONLY implementation; callers must not re-derive it.
+# ---------------------------------------------------------------------------
+
+def link_entry_has_value(entry: Dict[str, Any]) -> bool:
+    """True when a public-link filter entry carries an enforceable value.
+
+    An ``in []`` / empty-list / empty-string / null value enforces nothing —
+    ``normalize_filter_conditions`` drops it with the ``empty_value`` diagnostic
+    inside ``merge_layered_filters``. Used to decide both (a) whether a hidden
+    entry should be promoted to the authoritative locked layer, and (b) whether
+    a locked field is "managed" (see ``link_managed_field_keys``).
+    """
+    if not isinstance(entry, dict):
+        return False
+    v = entry.get("value")
+    if isinstance(v, (list, tuple, dict)):
+        return len(v) > 0
+    return v not in (None, "")
+
+
+def link_managed_field_keys(
+    link_filters_config: Optional[Sequence[Dict[str, Any]]],
+) -> set[str]:
+    """Field keys the public viewer must NOT be able to control on this link.
+
+    A field is "managed" — its slicer and any same-field page/dashboard filter
+    are stripped from the served structure and the viewer gets no editable
+    control — exactly when the link ENFORCES or KILLS it:
+
+      - any entry carrying a value (``link_entry_has_value``) → enforced
+        (locked-with-value, or hidden-with-value which the merge promotes to
+        the locked layer), OR
+      - an explicit hidden kill entry (``hidden=True``) → field dropped
+        entirely (filter-semantics.md §2.3).
+
+    A LOCKED entry with an EMPTY value enforces nothing, so it is deliberately
+    NOT managed: the field keeps its page-scope filter + interactive slicer
+    (an empty lock behaves like no lock — the safe no-op).
+
+    Keys are normalized to ``(semanticField or field).strip().lower()`` to
+    match the strip sites in the public dashboard serializer.
+    """
+    keys: set[str] = set()
+    for entry in link_filters_config or []:
+        if not isinstance(entry, dict):
+            continue
+        raw_key = entry.get("semanticField") or entry.get("field") or ""
+        key = str(raw_key).strip().lower()
+        if not key:
+            continue
+        if link_entry_has_value(entry) or bool(entry.get("hidden")):
+            keys.add(key)
+    return keys

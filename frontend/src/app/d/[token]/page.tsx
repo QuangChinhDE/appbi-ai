@@ -40,7 +40,7 @@ import {
   liftLayoutToTop,
   deriveStackedLayout,
 } from '@/lib/dashboard-pages';
-import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { applyScopeBound, getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
@@ -466,9 +466,27 @@ export default function PublicDashboardPage() {
     // Legacy fallback: pre-Phase-A dashboards still send
     // `public_filters_config` only. Treat that as the slicer source
     // so old shared links keep working.
-    const slicersFromConfig = Array.isArray((dashboard as any).slicers_config)
+    const allConfigSlicers = Array.isArray((dashboard as any).slicers_config)
       ? ((dashboard as any).slicers_config as BaseFilter[])
       : [];
+    // PBI "Sync slicers" scope on public: a 'custom'-scoped slicer only shows
+    // a control on pages where pageScope[page].visible, and only filters where
+    // pageScope[page].filter. 'all' (or unset) → everywhere. ('page'-scoped
+    // slicers live in pages_config[page].slicers, surfaced via rawPageSlicers.)
+    const _slicerVisibleHere = (s: any): boolean => {
+      const sc = (s as any)?.scope || 'all';
+      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.visible);
+      return true;
+    };
+    const _slicerFiltersHere = (s: any): boolean => {
+      const sc = (s as any)?.scope || 'all';
+      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.filter);
+      return true;
+    };
+    const slicersFromConfig = allConfigSlicers.filter(_slicerVisibleHere);
+    // Custom slicers that FILTER this page but aren't VISIBLE here → apply
+    // their value silently (no control), like a hidden page filter.
+    const silentScopedSlicers = allConfigSlicers.filter((s) => !_slicerVisibleHere(s) && _slicerFiltersHere(s));
     const filtersAsSlicers = Array.isArray((dashboard as any).filters_config)
       ? ((dashboard as any).filters_config as BaseFilter[]).filter((f) => {
           const mode = (f as any).publicMode ?? 'visible';
@@ -502,10 +520,10 @@ export default function PublicDashboardPage() {
       ...legacyPublicConfig,
       ...rawPageSlicers,
     ];
-    // "Filters on this page" → constrain the ACTIVE page's chart data but stay
-    // hidden from the control bar. Reset per page (active page only), so a page
-    // A filter never leaks onto page B — and it's never a visible control.
-    setPageHiddenFilters(rawPageFilters);
+    // "Filters on this page" + filter-only scoped slicers → constrain the
+    // ACTIVE page's chart data but stay hidden from the control bar. Reset per
+    // page (active page only), so a page A filter never leaks onto page B.
+    setPageHiddenFilters([...rawPageFilters, ...silentScopedSlicers]);
     // De-dupe by fieldKey. On token change we reset; on page switch we preserve
     // the viewer's edits for fields still present in the new control seed.
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
@@ -610,23 +628,15 @@ export default function PublicDashboardPage() {
             : pageCrossFilterState
               ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
-          // Append the active page's hidden "Filters on this page" so the data
-          // is still constrained, even though they're not rendered as controls.
-          // Skip a page filter only when an ACTIVE control filter already holds
-          // that field (viewer's choice wins) — an empty same-field slicer must
-          // NOT block the page filter from applying.
-          const filterIsActive = (f: BaseFilter): boolean => {
-            const v = (f as any).value;
-            if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
-            return v != null && String(v).trim() !== '';
-          };
-          const activeBaseKeys = new Set(
-            baseViewerFilters.filter(filterIsActive).map((f) => f.fieldKey ?? f.field),
-          );
-          const requestFilters = [
-            ...baseViewerFilters,
-            ...pageHiddenFiltersRef.current.filter((f) => !activeBaseKeys.has(f.fieldKey ?? f.field)),
-          ];
+          // "Filters on this page" (pageHiddenFilters) are the author's page
+          // SCOPE — a HARD BOUND. A viewer slicer on the same field may only
+          // narrow WITHIN that scope, never escape it. `applyScopeBound`
+          // intersects them (scope ∩ selection); an out-of-scope pick falls
+          // back to the scope instead of leaking data the page excluded.
+          // (Old code DROPPED the page filter when a same-field slicer was
+          // active → viewer could pick "Tablet" outside [Laptop,Charger,
+          // Headphones] and see 10M instead of the 303K page total.)
+          const requestFilters = applyScopeBound(baseViewerFilters, pageHiddenFiltersRef.current);
           try {
             const data = await publicDashboardApi.getChartData(
               token,

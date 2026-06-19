@@ -34,6 +34,8 @@ from app.services.dashboard_ai_bot.public_link_config import (
     sanitize_report_context_note,
 )
 from app.services.filter_layered_merge import (
+    link_entry_has_value,
+    link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
     split_dashboard_filters_by_public_mode,
@@ -563,10 +565,13 @@ def _build_public_chart_filters(
     Precedence (see docs/filter-semantics.md §3):
 
       chart_base  (handled inside ChartService.get_chart_data)
-        < dashboard_filter (Dashboard.filters_config)
+        < dashboard_filter (Dashboard.filters_config, publicMode=visible)
         < dashboard_slicer (Dashboard.slicers_config — Phase-A column)
         < viewer_slicer    (FE-sent runtime filter list)
         < viewer_filter    (mini-pane overrides — reserved, empty until Phase F)
+        < dashboard_filter_locked (Dashboard.filters_config, publicMode=locked/hidden —
+                                   authoritative, sits ABOVE the viewer layers so a
+                                   slicer/viewer choice cannot relax an author lock)
         < link_locked      (DashboardPublicLink.filters_config, value-bearing entries)
 
     `link_hidden` entries on the public link drop the matching field
@@ -582,6 +587,20 @@ def _build_public_chart_filters(
     locked_link, hidden_link = split_link_filters_locked_vs_hidden(
         item for item in (link_filters_config or []) if isinstance(item, dict)
     )
+    # PBI-parity "Hide filter": a hidden link entry that carries a VALUE still
+    # ENFORCES that value (the data IS filtered) — only its banner/control is
+    # suppressed for the viewer. So route value-bearing hidden entries into the
+    # locked (authoritative, applied) layer; keep only value-LESS hidden entries
+    # as the kill-list ("remove this field from the link" legacy behaviour).
+    # Before this, ANY hidden entry dropped the field, so an "Ẩn" lock silently
+    # un-filtered the public data — diverging from the build view.
+    # `link_entry_has_value` is the SINGLE source of truth (filter_layered_merge);
+    # the structure-response strip (_get_share_dashboard) reuses it via
+    # `link_managed_field_keys` so the two sites can never disagree.
+    enforced_hidden = [e for e in hidden_link if link_entry_has_value(e)]
+    if enforced_hidden:
+        locked_link = [*locked_link, *enforced_hidden]
+        hidden_link = [e for e in hidden_link if not link_entry_has_value(e)]
     # Phase-H — split the dashboard filter pane by publicMode so locked/
     # hidden entries land in the authoritative tier (above the viewer
     # layers) instead of the low default tier. Visible ones stay as
@@ -766,6 +785,45 @@ def get_public_dashboard(
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
         ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
+
+    # Public-link gates (🔒 Khoá + 🚫 Ẩn): a field that this link LOCKS or
+    # HIDES has its value enforced server-side (see _build_public_chart_filters)
+    # and the viewer must NOT get an editable control for it — otherwise they
+    # see a slicer they can click that silently does nothing (link_locked wins).
+    # This is the "filter chặn" / RLS behaviour: the gate can't be touched by
+    # the viewer. Strip BOTH locked and hidden link fields from the slicer/
+    # filter configs the FE renders. (Only shapes the structure response — the
+    # chart-data endpoint builds its own dash + link merge, so values still
+    # apply.) The 🔒-vs-🚫 difference — a read-only banner for locked — is a
+    # separate future enhancement; for now both correctly block viewer edits.
+    # A field is "managed" — its viewer control + any same-field page/dashboard
+    # filter are stripped from the served structure — exactly when the link
+    # ENFORCES or KILLS it. This MUST mirror the chart-data merge's notion of
+    # "enforces"; both derive from `link_managed_field_keys` /
+    # `link_entry_has_value` (filter_layered_merge) so the structure response and
+    # the data merge can never disagree. Critically, an EMPTY locked value is a
+    # no-op: it does NOT strip the field, so an author who locks a field but
+    # hasn't picked a value yet keeps the page-scope filter + slicer instead of
+    # silently leaking MORE data than the page is scoped to (repro 2026-06-18 on
+    # dashboard 53: empty Product lock leaked 303K → 11M / 2 → 8 products).
+    _hidden_link_keys = link_managed_field_keys(link_hidden_filters)
+    if _hidden_link_keys:
+        def _is_hidden_link_field(entry: dict) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            return ((entry.get("semanticField") or entry.get("field") or "").strip().lower()) in _hidden_link_keys
+        dash.slicers_config = [s for s in (getattr(dash, "slicers_config", None) or []) if not _is_hidden_link_field(s)]
+        dash.filters_config = [f for f in (dash.filters_config or []) if not _is_hidden_link_field(f)]
+        _stripped_pages = []
+        for _pg in (dash.pages_config or []):
+            if isinstance(_pg, dict):
+                _pg = {**_pg}
+                if _pg.get("slicers"):
+                    _pg["slicers"] = [s for s in _pg["slicers"] if not _is_hidden_link_field(s)]
+                if _pg.get("filters"):
+                    _pg["filters"] = [f for f in _pg["filters"] if not _is_hidden_link_field(f)]
+            _stripped_pages.append(_pg)
+        dash.pages_config = _stripped_pages
 
     # Phase-15.81 — TWO filter mechanisms surface differently:
     #
@@ -2537,7 +2595,15 @@ def get_dashboard_ai_recon(
         )
 
     try:
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+        # Route link filters through the SAME merge every other public surface
+        # uses, so recon sees dashboard filter-pane + slicer defaults + link
+        # locks (and empty/hidden entries are normalized) — never the raw,
+        # un-merged link.filters_config. Closes the AI-bypass drift; matches
+        # the chat/briefing endpoints which already merge.
+        combined_filters = _build_public_chart_filters(
+            dash, public_filters, [], context_for_log="ai_recon",
+        )
+        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
         recon = build_proactive_recon(ctx)
     except Exception:
         logger.exception("AI recon build error for token=%s", token)
@@ -2620,7 +2686,12 @@ def get_dashboard_ai_pdf(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+    # Same merge as every other public surface (see recon above) — the PDF must
+    # reflect the link's enforced scope, not the raw un-merged link filters.
+    combined_filters = _build_public_chart_filters(
+        dash, public_filters, [], context_for_log="ai_pdf",
+    )
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
     payloads: list[dict] = []
     for chart_id in sorted(ctx.allowed_chart_ids):
         meta = ctx.chart_meta.get(chart_id, {})
