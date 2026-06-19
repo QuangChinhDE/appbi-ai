@@ -556,6 +556,10 @@ export interface ChartRoleConfig {
   timeField?: string;
   scatterX?: string;
   scatterY?: string;
+  /** BUBBLE only: how the X / Y axes aggregate per Label (PowerBI "Details").
+   *  Default SUM. Ignored for SCATTER / MAP_POINT (which plot raw points). */
+  scatterXAgg?: AggFn;
+  scatterYAgg?: AggFn;
   /** For TABLE type: standard flat table or dynamic pivot table */
   tableMode?: TableLayoutMode;
   /** For TABLE pivot mode: the row grouping dimension */
@@ -2664,6 +2668,38 @@ function SelectSlot({
         onSelect={onChange}
         onClear={() => onChange('')}
       />
+    </div>
+  );
+}
+
+/**
+ * BUBBLE axis aggregation. The scatter X / Y axes are stored as plain field
+ * refs (`scatterX` / `scatterY`); for BUBBLE the BE aggregates them per the
+ * Label dimension (one bubble per label). This compact select lets DA pick
+ * SUM / AVG / … for that aggregation — mirrors the Size metric's agg dropdown.
+ * 'auto' (AS-IS) is omitted: it only makes sense for a declared measure, and
+ * a raw numeric axis has nothing to "use as-is".
+ */
+function ScatterAxisAgg({
+  axis, value, onChange,
+}: {
+  axis: 'X' | 'Y'; value: AggFn; onChange: (v: AggFn) => void;
+}) {
+  return (
+    <div className="-mt-1.5 flex items-center gap-2 pl-0.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+        {axis} aggregation
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as AggFn)}
+        className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-[11px] font-bold text-brand outline-none cursor-pointer"
+        title={`How the ${axis} axis aggregates within each Label (bubble).`}
+      >
+        {AGG_OPTIONS.filter((a) => a.value !== 'auto').map((a) => (
+          <option key={a.value} value={a.value}>{a.label}</option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -4807,13 +4843,21 @@ export function ExploreChartConfig({
           </>}
 
           {isScatterLike && <>
-            <SelectSlot label="X Axis" hint="numeric" required value={sx} options={numOrAll}
+            <SelectSlot label="X Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : 'numeric'} required value={sx} options={numOrAll}
               placeholder="select X"
               onChange={v => upd({ scatterX: v || undefined })} />
-            <SelectSlot label="Y Axis" hint="numeric" required value={sy} options={numOrAll}
+            {chartType === 'BUBBLE' && sx && (
+              <ScatterAxisAgg axis="X" value={(normalizedRoleConfig.scatterXAgg as AggFn) || 'sum'}
+                onChange={v => upd({ scatterXAgg: v })} />
+            )}
+            <SelectSlot label="Y Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : 'numeric'} required value={sy} options={numOrAll}
               placeholder="select Y"
               onChange={v => upd({ scatterY: v || undefined })} />
-            <SelectSlot label="Label" hint="optional" value={dim} options={dimOrAll}
+            {chartType === 'BUBBLE' && sy && (
+              <ScatterAxisAgg axis="Y" value={(normalizedRoleConfig.scatterYAgg as AggFn) || 'sum'}
+                onChange={v => upd({ scatterYAgg: v })} />
+            )}
+            <SelectSlot label="Label" hint={chartType === 'BUBBLE' ? 'group into one bubble per value' : 'optional'} value={dim} options={dimOrAll}
               placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />
             {chartType === 'BUBBLE' && (
@@ -5586,7 +5630,14 @@ export function ExploreChartConfig({
           {/* Data Labels — moved into Advanced group (Phase-15.92). */}
           {(() => {
             const noLabelTypes = new Set(['PODIUM', 'KPI', 'GAUGE', 'BULLET']);
-            const hideFullEditor = isScatterLike || isTableLike || noLabelTypes.has(chartType);
+            // BUBBLE/MAP_POINT renderers DO draw per-point labels (the Label
+            // value next to each bubble via dataLabelConfig.enabled), so they
+            // get the full editor. Only plain SCATTER (no Label role, raw
+            // points) stays excluded. DA report: "Bubble không hiển thị Data
+            // Label" — the control was hidden because BUBBLE was lumped with
+            // SCATTER under isScatterLike.
+            const noLabelScatter = chartType === 'SCATTER';
+            const hideFullEditor = noLabelScatter || isTableLike || noLabelTypes.has(chartType);
             // No-dimension metric / podium / scatter still display a single
             // formatted value; they just don't have per-point series labels.
             // Surface JUST the Value format select so DA can pick %/currency/compact

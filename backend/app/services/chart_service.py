@@ -2007,6 +2007,43 @@ def _execute_semantic_chart_runtime(
         agg_overrides = {}
         effective_limit = min(effective_limit, 5000)
 
+    # BUBBLE — aggregate X / Y / Size by the Label dimension (PowerBI parity).
+    # The shared classifier leaves the scatter axes as raw GROUP BY dims, which
+    # is correct for SCATTER (every row is a point) but wrong for BUBBLE: the
+    # user binds a Label (≈ PowerBI "Details") and expects ONE aggregated bubble
+    # per label, with X / Y / Size summed (or averaged). Left as dims, the axes
+    # enter GROUP BY and each distinct (x, y) row becomes its own bubble — DA
+    # report: "Bubble không tự SUM theo Label khi chọn khoảng thời gian dài".
+    # Move the axes out of dimension_refs into measure_refs so only the Label
+    # stays in GROUP BY. A declared-measure axis keeps its own aggregation; a
+    # raw numeric axis defaults to SUM, overridable per-axis via scatterXAgg /
+    # scatterYAgg. Gated on a bound Label — without one, BUBBLE keeps the raw
+    # SCATTER behaviour. SCATTER / MAP_POINT are never touched here.
+    _VALID_BUBBLE_AGG = {"sum", "avg", "count", "min", "max", "count_distinct"}
+    if _normalized_ct == "BUBBLE":
+        _bubble_label = qualify(role_config.get("dimension"))
+        _bubble_axes = [
+            (qualify(role_config.get("scatterX")), str(role_config.get("scatterXAgg") or "sum").strip().lower()),
+            (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "sum").strip().lower()),
+        ]
+        if _bubble_label and any(ref for ref, _ in _bubble_axes):
+            for _axis_ref, _axis_agg in _bubble_axes:
+                if not _axis_ref:
+                    continue
+                _was_dim = _axis_ref in dimension_refs
+                if _was_dim:
+                    dimension_refs.remove(_axis_ref)
+                if _axis_ref not in measure_refs:
+                    measure_refs.append(_axis_ref)
+                # A raw numeric axis (classifier kept it as a dim) needs an
+                # explicit agg; a declared-measure axis is already in
+                # measure_refs with its own stored aggregation — leave it.
+                if _was_dim:
+                    agg_overrides.setdefault(
+                        _axis_ref,
+                        _axis_agg if _axis_agg in _VALID_BUBBLE_AGG else "sum",
+                    )
+
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
 
