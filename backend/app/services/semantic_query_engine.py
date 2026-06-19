@@ -1302,6 +1302,89 @@ class SemanticQueryEngine:
         _DATE_TYPES = {"date", "datetime", "timestamp", "timestamptz", "time"}
         return str(dim.get("type") or "").strip().lower() in _DATE_TYPES
 
+    def _filter_type_family(self, field: str, default_view: str) -> Optional[str]:
+        """Resolve a filter column's INTENT type → 'number'|'bool'|'date'|
+        'datetime'|'string'|None. Drives type-aware literal rendering so a
+        measure/dashboard filter value (which arrives as a STRING from the FE)
+        is compared against the column with a matching SQL literal — BigQuery
+        and other strict dialects reject ``INT64 = STRING`` etc. (BUG-018).
+
+        Uses the column's declared semantic ``type`` as the primary intent
+        signal (``number`` means the analyst wants a numeric comparison even if
+        the column is physically STRING — Airbyte/Sheets — in which case the
+        caller SAFE_CASTs), with physical ``source_type`` confirming bool/date.
+        Returns None for non-dimension columns → caller keeps the legacy quote.
+        """
+        if "." in field:
+            try:
+                vname, col = self._parse_field_ref(field)
+            except ValueError:
+                return None
+        else:
+            vname, col = default_view, field
+        view = self.views_cache.get(vname) or self._get_view_for_node(vname)
+        if view is None:
+            return None
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if not dim:
+            return None
+        st = str(dim.get("source_type") or "").strip().lower()
+        sem = str(dim.get("type") or "").strip().lower()
+        _NUM = {
+            "int", "integer", "int64", "bigint", "smallint", "tinyint",
+            "float", "float64", "double", "double precision", "real",
+            "numeric", "decimal", "number",
+        }
+        _BOOL = {"bool", "boolean", "yesno"}
+        _DATE = {"date"}
+        _DT = {"datetime", "timestamp", "timestamptz", "time"}
+        if st in _BOOL or sem in _BOOL:
+            return "bool"
+        if st in _DATE or sem == "date":
+            return "date"
+        if st in _DT or sem == "datetime":
+            return "datetime"
+        if sem == "number" or st in _NUM:
+            return "number"
+        return "string"
+
+    @staticmethod
+    def _coerce_typed_filter_value(value: Any, family: Optional[str]) -> Any:
+        """Coerce a filter value (which arrives as a STRING from the FE) to the
+        Python type implied by its column's declared ``family`` so the literal
+        renders with a matching SQL type (BUG-018). Numeric-looking strings on a
+        ``number`` column → int/float; truthy/falsy strings on a ``bool`` column
+        → bool. Everything else (genuine strings, dates, un-coercible text) is
+        left untouched → rendered quoted exactly as before. Shared by the
+        measure-filter and dashboard-filter paths so they never drift again.
+        """
+        def _one(v: Any) -> Any:
+            if v is None:
+                return v
+            if family == "number" and not (isinstance(v, (int, float)) and not isinstance(v, bool)):
+                s = str(v).strip()
+                if not s:
+                    return v
+                try:
+                    fv = float(s)
+                    return int(fv) if (fv.is_integer() and "." not in s and "e" not in s.lower()) else fv
+                except ValueError:
+                    return v
+            if family == "bool" and not isinstance(v, bool):
+                s = str(v).strip().lower()
+                if s in ("true", "t", "1", "yes", "y"):
+                    return True
+                if s in ("false", "f", "0", "no", "n"):
+                    return False
+            return v
+
+        if isinstance(value, list):
+            return [_one(v) for v in value]
+        return _one(value)
+
     def _render_measure(
         self,
         field_ref: str,
@@ -2317,55 +2400,81 @@ class SemanticQueryEngine:
             target_view = view_name
             field_sql = f"{view_name}.{field}"
 
-        def _q(v: Any) -> str:
+        # ── Type-aware literal rendering (BUG-018) ──────────────────────────
+        # The measure filter value arrives as a STRING from the FE text input
+        # (e.g. "1"). Quoting it blindly produced ``INT64_col >= '1'`` →
+        # BigQuery 400 "No matching signature for operator >= ... INT64, STRING".
+        # Mirror the dashboard path (``_build_where_clause``): resolve the
+        # column's declared type, coerce the value to that type's Python form,
+        # render numbers/bools unquoted, and SAFE_CAST the column when comparing
+        # against a number (no-op on genuine numerics, parses STRING-stored
+        # numerics — Airbyte/Sheets). Genuine string/date columns stay quoted
+        # (byte-identical to before).
+        from app.services.type_override_service import build_safe_cast_sql
+        _dialect = (self.database_type or "").lower()
+        family = self._filter_type_family(field, target_view)
+
+        def _present(v: Any) -> bool:
+            return not (v is None or (isinstance(v, str) and not v.strip()))
+
+        def _coerce(v: Any) -> Any:
+            return self._coerce_typed_filter_value(v, family)
+
+        def _lit(v: Any) -> str:
             if v is None:
                 return "NULL"
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if isinstance(v, bool):
+                return "TRUE" if v else "FALSE"
+            if isinstance(v, (int, float)):
                 return str(v)
             return "'" + str(v).replace("'", "''") + "'"
 
+        def _numcast(col_sql: str, *vals: Any) -> str:
+            present = [v for v in vals if _present(v)]
+            if present and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+            ):
+                return build_safe_cast_sql(col_sql, "float", _dialect)
+            return col_sql
+
         def _pred() -> Optional[str]:
             if operator == "eq":
-                return f"{field_sql} = {_q(value)}"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} = {_lit(v)}"
             if operator == "ne":
-                return f"{field_sql} <> {_q(value)}"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} <> {_lit(v)}"
             if operator == "gt":
-                return f"{field_sql} > {_q(value)}"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} > {_lit(v)}"
             if operator == "gte":
-                return f"{field_sql} >= {_q(value)}"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} >= {_lit(v)}"
             if operator == "lt":
-                return f"{field_sql} < {_q(value)}"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} < {_lit(v)}"
             if operator == "lte":
-                return f"{field_sql} <= {_q(value)}"
-            if operator == "in":
-                vals = value if isinstance(value, list) else [value]
-                return f"{field_sql} IN ({', '.join(_q(v) for v in vals)})"
-            if operator == "not_in":
-                vals = value if isinstance(value, list) else [value]
-                return f"{field_sql} NOT IN ({', '.join(_q(v) for v in vals)})"
+                v = _coerce(value); return f"{_numcast(field_sql, v)} <= {_lit(v)}"
+            if operator in ("in", "not_in"):
+                raw = value if isinstance(value, list) else [value]
+                vals = [_coerce(v) for v in raw if _present(v)]
+                if not vals:
+                    return None
+                kw = "IN" if operator == "in" else "NOT IN"
+                return f"{_numcast(field_sql, *vals)} {kw} ({', '.join(_lit(v) for v in vals)})"
             if operator == "between":
                 # Phase-15.79 — degrade to >= / <= when only one bound is
                 # supplied, mirroring _build_where_clause Phase-15.19 behaviour.
-                # Old code emitted `BETWEEN NULL AND NULL` for single-side
-                # bounds which never matches anything; with the new range-
-                # slider UI users routinely leave one thumb un-set so we now
-                # render the user's intent properly here too.
                 lo, hi = (value or [None, None])[:2]
-                lo_present = lo is not None and (not isinstance(lo, str) or lo.strip() != "")
-                hi_present = hi is not None and (not isinstance(hi, str) or hi.strip() != "")
-                if lo_present and hi_present:
-                    return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
-                if lo_present:
-                    return f"{field_sql} >= {_q(lo)}"
-                if hi_present:
-                    return f"{field_sql} <= {_q(hi)}"
+                lo, hi = _coerce(lo), _coerce(hi)
+                if _present(lo) and _present(hi):
+                    return f"{_numcast(field_sql, lo, hi)} BETWEEN {_lit(lo)} AND {_lit(hi)}"
+                if _present(lo):
+                    return f"{_numcast(field_sql, lo)} >= {_lit(lo)}"
+                if _present(hi):
+                    return f"{_numcast(field_sql, hi)} <= {_lit(hi)}"
                 return None
             if operator == "contains":
-                return f"{field_sql} LIKE '%' || {_q(value)} || '%'"
+                return f"{field_sql} LIKE '%' || {_lit(value)} || '%'"
             if operator == "starts_with":
-                return f"{field_sql} LIKE {_q(value)} || '%'"
+                return f"{field_sql} LIKE {_lit(value)} || '%'"
             if operator == "ends_with":
-                return f"{field_sql} LIKE '%' || {_q(value)}"
+                return f"{field_sql} LIKE '%' || {_lit(value)}"
             if operator == "is_null":
                 return f"{field_sql} IS NULL"
             if operator == "is_not_null":
@@ -2881,6 +2990,15 @@ class SemanticQueryEngine:
             value = filter_def.get('value')
 
             view_name, _ = self._parse_field_ref(field_ref)
+
+            # BUG-018 convergence: coerce the value to its column's declared type
+            # (number/bool) so `_lit`/`_num` below render a type-matched literal.
+            # No-op when the value is already typed (dashboard's usual case →
+            # byte-identical) or for string/date columns; fixes a string value
+            # like "1" arriving on a numeric column (→ INT64 = STRING 400).
+            value = self._coerce_typed_filter_value(
+                value, self._filter_type_family(field_ref, view_name)
+            )
 
             # ── Phase 2 routing (feature-flagged) ──────────────────────
             #
