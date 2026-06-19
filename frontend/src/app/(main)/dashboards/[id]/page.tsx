@@ -609,6 +609,43 @@ export default function DashboardDetailPage() {
     }
   }, [draftGlobalSlicers, draftPageSlicers]);
 
+  // ── Stable slicer DISPLAY order (fixes the scope-toggle "jump") ───────
+  // The cluster renders the two source arrays concatenated as
+  // [...global, ...page]. Changing a slicer's SCOPE (⚙ "Chỉ trang này" /
+  // "Tất cả trang") moves it across that global|page boundary, so the card
+  // jumped to a new column — dragging the open ⚙ popover with it. Verified
+  // on dash 53: clicking "Chỉ trang này" on the 1st slicer threw its open
+  // popover from x=109 → x=987 and slid the 2nd slicer into its slot, i.e.
+  // "ấn thì nhảy sang filter khác". We pin the display order by slicer id:
+  // a scope flip keeps the id, so the card stays put; add → appended,
+  // remove → pruned. Transient (not persisted) — on reload the saved
+  // global/page grouping reseeds it, which is fine.
+  const combinedSlicerChildren = React.useMemo(
+    () => [...draftGlobalSlicers, ...draftPageSlicers],
+    [draftGlobalSlicers, draftPageSlicers],
+  );
+  const [slicerDisplayOrder, setSlicerDisplayOrder] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    const idOf = (s: any) => String(s?.id ?? slicerKeyOf(s));
+    const ids = combinedSlicerChildren.map(idOf);
+    setSlicerDisplayOrder((prev) => {
+      const present = new Set(ids);
+      const kept = prev.filter((id) => present.has(id));
+      const keptSet = new Set(kept);
+      const added = ids.filter((id) => !keptSet.has(id));
+      const next = [...kept, ...added];
+      const unchanged = next.length === prev.length && next.every((v, i) => v === prev[i]);
+      return unchanged ? prev : next;
+    });
+  }, [combinedSlicerChildren]);
+  const orderedSlicerChildren = React.useMemo(() => {
+    const idOf = (s: any) => String(s?.id ?? slicerKeyOf(s));
+    const idx = new Map(slicerDisplayOrder.map((id, i) => [id, i] as const));
+    return [...combinedSlicerChildren].sort(
+      (a, b) => (idx.get(idOf(a)) ?? 1e9) - (idx.get(idOf(b)) ?? 1e9),
+    );
+  }, [combinedSlicerChildren, slicerDisplayOrder]);
+
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
   // Phase-C THẬT — slicer drafts also count toward pending.
@@ -2636,7 +2673,7 @@ export default function DashboardDetailPage() {
             // per-page VISIBLE hiding is applied only on the public viewer.
             // The chart PREVIEW still respects scope via effectivePageScopeFilters
             // (only slicers that filter the active page are applied).
-            children={[...draftGlobalSlicers, ...draftPageSlicers]}
+            children={orderedSlicerChildren}
             onChildrenChange={handleSlicerChildrenChange}
             layout={draftSlicerClusterLayout}
             onLayoutChange={setDraftSlicerClusterLayout}
