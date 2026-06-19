@@ -192,6 +192,14 @@ interface DashboardFilterBarProps {
    * page-scoped slicers to pages_config[i].slicers. New slicers added here
    * default to 'page'. Off for the public viewer + the filter pane. */
   showScopeToggle?: boolean;
+  /** Page list + active page for the per-slicer scope matrix (PBI Sync). */
+  dashboardPages?: { id: string; name: string }[];
+  activePageId?: string;
+  onUpdateSlicerScope?: (
+    slicerKey: string,
+    scope: 'all' | 'page' | 'custom',
+    pageScope?: Record<string, { filter: boolean; visible: boolean }>,
+  ) => void;
 }
 
 type AddFilterColumnGroup = {
@@ -224,6 +232,9 @@ export function DashboardFilterBar({
   collapsedSlicers = false,
   distributeChildren = false,
   showScopeToggle = false,
+  dashboardPages,
+  activePageId,
+  onUpdateSlicerScope,
   headerExtras,
 }: DashboardFilterBarPropsWithExtras) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
@@ -451,9 +462,6 @@ export function DashboardFilterBar({
     setSearchTerms(prev => { const n = { ...prev }; delete n[id]; return n; });
   };
 
-  // Per-slicer scope toggle ("Trang này" = page / "Tất cả trang" = all).
-  const updateScope = (id: string, scope: 'all' | 'page') =>
-    onFiltersChange(filters.map(f => f.id === id ? ({ ...f, scope } as BaseFilter) : f));
 
   const clearFilter = (id: string) => {
     onFiltersChange(filters.map(f => {
@@ -765,7 +773,7 @@ export function DashboardFilterBar({
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-white bg-brand border border-brand/60 rounded-md shadow-md ring-1 ring-black/5 hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
-              Add Filter
+              Add slicer
             </button>
 
             {addingField && addableColumns.length > 0 && (
@@ -784,7 +792,7 @@ export function DashboardFilterBar({
                     <div className="py-1">
                       <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
                         <Filter className="w-3 h-3" />
-                        Add a control
+                        Add slicer · chọn kiểu điều khiển
                       </div>
                       <ul className="py-1">
                         {SLICER_INTERACTIONS.map((m) => {
@@ -951,8 +959,12 @@ export function DashboardFilterBar({
                 conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
                 lockSlots={lockSlots}
                 showScopeToggle={showScopeToggle}
-                scope={((f as any).scope === 'page' ? 'page' : 'all')}
-                onUpdateScope={(s) => updateScope(f.id, s)}
+                slicerScope={((f as any).scope as 'all' | 'page' | 'custom') || 'all'}
+                slicerPageScope={(f as any).pageScope}
+                slicerKey={`${(f as any).datasetId ?? ''}|${String((f as any).semanticField ?? f.field ?? f.id ?? '').toLowerCase()}`}
+                dashboardPages={dashboardPages}
+                activePageId={activePageId}
+                onUpdateSlicerScope={onUpdateSlicerScope}
                 collapsedPopover={collapsedSlicers}
                 popoverPlacement={stackVertical ? 'right' : 'bottom'}
                 onUpdateWidth={(w) => updateWidth(f.id, w)}
@@ -968,7 +980,7 @@ export function DashboardFilterBar({
         <div className="px-4 py-5 text-center border-t border-[rgb(var(--border-line))]">
           {addableColumns.length > 0 ? (
             <p className="text-sm text-text-quaternary">
-              No filters added. Click <strong>Add Filter</strong> to filter all charts in this dashboard.
+              No slicers added. Click <strong>Add slicer</strong> to let viewers filter all charts in this dashboard.
             </p>
           ) : (
             <p className="text-sm text-text-quaternary">
@@ -1027,10 +1039,19 @@ interface FilterCardProps {
   conflictingFilterLabels?: string[];
   /** Slicer-mode flag from parent: hides per-card remove (X) button. */
   lockSlots?: boolean;
-  /** Per-slicer scope toggle (dashboard build). */
+  /** Per-slicer scope config (dashboard build): Chỉ trang này / Tất cả
+   * trang / Tùy chọn theo trang (ma trận Lọc/Hiện kiểu PBI Sync slicers). */
   showScopeToggle?: boolean;
-  scope?: 'all' | 'page';
-  onUpdateScope?: (scope: 'all' | 'page') => void;
+  slicerScope?: 'all' | 'page' | 'custom';
+  slicerPageScope?: Record<string, { filter: boolean; visible: boolean }>;
+  slicerKey?: string;
+  dashboardPages?: { id: string; name: string }[];
+  activePageId?: string;
+  onUpdateSlicerScope?: (
+    slicerKey: string,
+    scope: 'all' | 'page' | 'custom',
+    pageScope?: Record<string, { filter: boolean; visible: boolean }>,
+  ) => void;
   /** Phase-G — render as a collapsed button that opens the value
    * controls in a floating popover (overlay) instead of an
    * always-expanded inline card. Used by the slicer cluster (editor +
@@ -1079,8 +1100,12 @@ function FilterCard({
   conflictingFilterLabels,
   lockSlots = false,
   showScopeToggle = false,
-  scope = 'all',
-  onUpdateScope,
+  slicerScope = 'all',
+  slicerPageScope,
+  slicerKey,
+  dashboardPages,
+  activePageId,
+  onUpdateSlicerScope,
   collapsedPopover = false,
   popoverPlacement = 'bottom',
   onUpdateWidth,
@@ -1101,6 +1126,20 @@ function FilterCard({
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [popoverOpen]);
+
+  // Direction A (2026-06) — the everyday slicer card is a CLEAN control: just
+  // name + value list. All setup chrome (scope / multi-single mode / type /
+  // chart-coverage) is hidden behind a ⚙ gear and expands inline only when the
+  // author opens it. Collapsed by default so the card stops looking like the
+  // cramped "List | P | S… | 1 | 32/36 charts" strip.
+  const [configOpen, setConfigOpen] = useState(false);
+  // NOTE: keep this independent of `supportsDropdownModeToggle` (declared later)
+  // to avoid a use-before-declaration TDZ — inline the type check instead.
+  const hasConfig = !lockSlots && (
+    (showScopeToggle && !!onUpdateSlicerScope && !!slicerKey)
+    || ((f.type === 'dropdown' || f.type === 'text')
+        && (!f.interactionType || f.interactionType === 'dropdown' || f.interactionType === 'fixed_list'))
+  );
 
   // Phase-G — per-card width via a CUSTOM drag handle (NOT CSS resize +
   // ResizeObserver, which fought React's controlled width and snapped
@@ -1216,113 +1255,158 @@ function FilterCard({
 
   const cardContent = (
     <div className="bi-fade-in border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
-      {/* Card header */}
-      <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={`Type: ${TYPE_LABEL[f.type]}`}>
-            {TYPE_LABEL[f.type]}
-          </span>
-          {isEditingLabel ? (
-            // Phase-15.78 — inline label editor. Tester report (X.1):
-            // users were stuck reading raw column names like
-            // customer_acquisition_channel; this lets them rename to
-            // "Kênh mua hàng" or similar, persisted on the filter.
-            <input
-              autoFocus
-              value={labelDraft}
-              onChange={e => setLabelDraft(e.target.value)}
-              onBlur={() => { onUpdateLabel(labelDraft); setIsEditingLabel(false); }}
-              onKeyDown={e => {
-                if (e.key === 'Enter') { onUpdateLabel(labelDraft); setIsEditingLabel(false); }
-                if (e.key === 'Escape') { setLabelDraft(f.label ?? ''); setIsEditingLabel(false); }
-              }}
-              placeholder={getFilterDisplayLabel(f)}
-              className="text-sm font-semibold text-text-primary bg-surface-2 border border-brand/40 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-brand min-w-0 max-w-[12rem]"
-            />
-          ) : (
-            <button
-              onClick={() => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
-              title={f.label ? 'Click to rename — clears to default if empty' : 'Click to set a custom label'}
-              className="group/label inline-flex items-center gap-1 min-w-0"
-            >
-              <span className="text-sm font-semibold text-text-primary truncate">
-                {getFilterDisplayLabel(f)}
-              </span>
-              <Pencil className="w-3 h-3 text-text-quaternary opacity-0 group-hover/label:opacity-100 transition-opacity flex-shrink-0" />
-            </button>
-          )}
-          {contextLabel && (
-            <span className="hidden max-w-[9rem] truncate text-xs text-text-quaternary sm:inline">
-              {contextLabel}
-            </span>
-          )}
-          {selected.length > 0 && (
-            <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold flex-shrink-0">
-              {selected.length}
-            </span>
-          )}
-          {/* Chart coverage badge */}
-          {filterChartCount > 0 && (
-            <span
-              className={`px-1.5 py-0.5 text-xs rounded-full flex-shrink-0 ${
-                linkedCount > 0
-                  ? 'bg-teal-100 text-teal-700'
-                  : 'bg-surface-2 text-text-tertiary'
-              }`}
-              title={linkedCount > 0
-                ? `Linked to ${linkedCount} other column(s) - applies to more charts`
-                : `Applies to ${filterCoverageLabel}`
-              }
-            >
-              {linkedCount > 0 && <Link2 className="w-3 h-3 inline mr-0.5" />}
-              {filterCoverageLabel}
-            </span>
-          )}
+      {/* Card header — 2 lines so the slicer NAME is always legible. The old
+          single row crammed Type + name + dataset + count + coverage + actions
+          together, so the name truncated to a single letter ("Product slicer"
+          → "P", "Sales Enriched" → "S…"). Now: line 1 = type + name + actions
+          (name gets the row); line 2 = calm muted metadata. */}
+      <div className="border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {isEditingLabel ? (
+              // Phase-15.78 — inline label editor. Tester report (X.1):
+              // users were stuck reading raw column names like
+              // customer_acquisition_channel; this lets them rename to
+              // "Kênh mua hàng" or similar, persisted on the filter.
+              <input
+                autoFocus
+                value={labelDraft}
+                onChange={e => setLabelDraft(e.target.value)}
+                onBlur={() => { onUpdateLabel(labelDraft); setIsEditingLabel(false); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { onUpdateLabel(labelDraft); setIsEditingLabel(false); }
+                  if (e.key === 'Escape') { setLabelDraft(f.label ?? ''); setIsEditingLabel(false); }
+                }}
+                placeholder={getFilterDisplayLabel(f)}
+                className="text-sm font-semibold text-text-primary bg-surface-2 border border-brand/40 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-brand min-w-0 flex-1"
+              />
+            ) : (
+              <button
+                onClick={() => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
+                title={f.label ? 'Click to rename — clears to default if empty' : 'Click to set a custom label'}
+                className="group/label inline-flex items-center gap-1 min-w-0"
+              >
+                <span className="text-sm font-semibold text-text-primary truncate">
+                  {getFilterDisplayLabel(f)}
+                </span>
+                <Pencil className="w-3 h-3 text-text-quaternary opacity-0 group-hover/label:opacity-100 transition-opacity flex-shrink-0" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {hasValue && (
+              <button onClick={onClear} className="text-xs text-text-quaternary hover:text-text-secondary">
+                Clear
+              </button>
+            )}
+            {/* ⚙ — Direction A: setup chrome (scope / mode / type / coverage)
+                hidden here; expands inline only when the author opens it. */}
+            {hasConfig && (
+              <button
+                onClick={() => setConfigOpen(v => !v)}
+                title="Cấu hình slicer — phạm vi áp dụng, chế độ chọn"
+                className={`p-0.5 transition-colors ${configOpen ? 'text-brand' : 'text-text-quaternary hover:text-text-secondary'}`}
+              >
+                <Settings2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {!lockSlots && (
+              <button
+                onClick={onRemove}
+                className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
+                title="Remove filter"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {hasValue && (
-            <button onClick={onClear} className="text-xs text-text-quaternary hover:text-text-secondary">
-              Clear
-            </button>
-          )}
-          {!lockSlots && (
-            <button
-              onClick={onRemove}
-              className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
-              title="Remove filter"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+        {/* Default card: just a quiet "đang chọn N". Dataset / coverage / type
+            moved into the ⚙ config panel below to keep the everyday card clean. */}
+        {selected.length > 0 && (
+          <div className="mt-0.5 text-[11px] text-text-quaternary">
+            đang chọn <span className="font-semibold text-text-tertiary">{selected.length}</span>
+          </div>
+        )}
       </div>
 
       {/* Card body */}
       <div className="px-3 py-2 flex-1">
-        {/* Per-page slicer scope: "Trang này" keeps the slicer on its own
-            page; "Tất cả trang" applies it across the whole report. */}
-        {showScopeToggle && !lockSlots && onUpdateScope && (
-          <div className="mb-2 flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => onUpdateScope('page')}
-              className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
-                scope === 'page' ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-              title="Slicer chỉ lọc các chart trên trang hiện tại"
-            >
-              Trang này
-            </button>
-            <button
-              type="button"
-              onClick={() => onUpdateScope('all')}
-              className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
-                scope === 'all' ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-              title="Slicer lọc tất cả các trang trong báo cáo"
-            >
-              Tất cả trang
-            </button>
+        {/* ⚙ config panel (Direction A) — type · dataset · chart-coverage info,
+            shown only when the author opens the gear. Keeps the consts in use
+            and gives the setup context a calm home off the everyday card. */}
+        {configOpen && (
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[11px] text-text-quaternary">
+            <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={`Type: ${TYPE_LABEL[f.type]}`}>{TYPE_LABEL[f.type]}</span>
+            {contextLabel && <span className="max-w-[10rem] truncate" title={contextLabel}>{contextLabel}</span>}
+            {filterChartCount > 0 && (
+              <span
+                className="inline-flex items-center gap-0.5 whitespace-nowrap"
+                title={linkedCount > 0 ? `Linked to ${linkedCount} other column(s)` : `Applies to ${filterCoverageLabel}`}
+              >
+                {linkedCount > 0 && <Link2 className="w-3 h-3" />}{filterCoverageLabel}
+              </span>
+            )}
+          </div>
+        )}
+        {/* Phạm vi slicer (PBI "Sync slicers"): Chỉ trang này / Tất cả trang
+            / Tùy chọn theo trang (ma trận Lọc = lọc data trang đó, Hiện =
+            hiện control trên trang đó). */}
+        {configOpen && showScopeToggle && !lockSlots && onUpdateSlicerScope && slicerKey && (
+          <div className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+            <div className="mb-1.5 text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">Phạm vi áp dụng</div>
+            <div className="flex gap-1 text-[11px]">
+              {([
+                { sc: 'page' as const, label: 'Chỉ trang này' },
+                { sc: 'all' as const, label: 'Tất cả trang' },
+                { sc: 'custom' as const, label: 'Tùy chọn' },
+              ]).map(({ sc, label }) => (
+                <button
+                  key={sc}
+                  type="button"
+                  onClick={() => {
+                    if (sc === 'custom') {
+                      const seed: Record<string, { filter: boolean; visible: boolean }> = {};
+                      (dashboardPages || []).forEach((p) => {
+                        seed[p.id] = slicerPageScope?.[p.id] ?? { filter: true, visible: true };
+                      });
+                      onUpdateSlicerScope(slicerKey, 'custom', seed);
+                    } else {
+                      onUpdateSlicerScope(slicerKey, sc);
+                    }
+                  }}
+                  className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
+                    slicerScope === sc ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {slicerScope === 'custom' && (dashboardPages?.length ?? 0) > 0 && (
+              <div className="mt-2 space-y-0.5">
+                <div className="flex items-center justify-end gap-3 px-1 text-[10px] uppercase text-text-quaternary">
+                  <span className="w-8 text-center">Lọc</span>
+                  <span className="w-8 text-center">Hiện</span>
+                </div>
+                {(dashboardPages || []).map((p) => {
+                  const cell = slicerPageScope?.[p.id] || { filter: false, visible: false };
+                  const setCell = (patch: Partial<{ filter: boolean; visible: boolean }>) => {
+                    const next: Record<string, { filter: boolean; visible: boolean }> = { ...(slicerPageScope || {}) };
+                    next[p.id] = { filter: cell.filter, visible: cell.visible, ...patch };
+                    onUpdateSlicerScope(slicerKey, 'custom', next);
+                  };
+                  return (
+                    <div key={p.id} className="flex items-center justify-between gap-2 rounded px-1 py-0.5 text-[11px] hover:bg-surface-2">
+                      <span className="min-w-0 flex-1 truncate text-text-secondary">{p.name}{p.id === activePageId ? ' (trang này)' : ''}</span>
+                      <input type="checkbox" className="w-8" checked={!!cell.filter} onChange={(e) => setCell({ filter: e.target.checked })} title="Lọc data trang này" />
+                      <input type="checkbox" className="w-8" checked={!!cell.visible} onChange={(e) => setCell({ visible: e.target.checked })} title="Hiện control trên trang này" />
+                    </div>
+                  );
+                })}
+                <p className="px-1 pt-1 text-[10px] text-text-quaternary">Lọc = lọc dữ liệu trang đó · Hiện = hiện control cho viewer trên trang đó.</p>
+              </div>
+            )}
           </div>
         )}
         {/* Phase-15.78 — multi/single mode toggle for dropdown/text filters.
@@ -1333,12 +1417,12 @@ function FilterCard({
             the body shape (input / checkbox / slider / advanced / etc).
             Only the legacy `dropdown` and `fixed_list` interactions still
             support multi↔single toggling on the fly. */}
-        {supportsDropdownModeToggle
+        {configOpen && supportsDropdownModeToggle
           && (!f.interactionType
               || f.interactionType === 'dropdown'
               || f.interactionType === 'fixed_list') && (
           <div className="mb-2 flex items-center gap-1 text-[11px] text-text-tertiary">
-            <span className="opacity-70">Mode:</span>
+            <span className="opacity-70">Chế độ chọn:</span>
             <button
               type="button"
               onClick={() => onSwitchDropdownMode(isMultiSelect ? 'single' : 'multi')}

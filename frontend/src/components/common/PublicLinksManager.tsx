@@ -41,6 +41,65 @@ type ModalView = 'list' | 'create' | 'edit';
 
 const DEFAULT_APPEARANCE = normalizePublicLinkAppearance(null);
 
+// Chip-style value editor for a locked/hidden link field (Metabase-like).
+// Renders current values as removable chips + an input to add more (Enter or
+// comma commits; Backspace on empty removes the last). Always stores an array.
+function LinkValueChips({
+  value,
+  suggestions,
+  listId,
+  onChange,
+}: {
+  value: any;
+  suggestions: string[];
+  listId: string;
+  onChange: (next: string[]) => void;
+}) {
+  const arr: string[] = Array.isArray(value)
+    ? value.map((v) => String(v)).filter((v) => v.trim() !== '')
+    : (value != null && String(value).trim() !== '' ? [String(value)] : []);
+  const [draft, setDraft] = useState('');
+  const add = (raw: string) => {
+    raw.split(',').map((s) => s.trim()).filter(Boolean).forEach((t) => {
+      if (!arr.includes(t)) arr.push(t);
+    });
+    onChange([...arr]);
+    setDraft('');
+  };
+  const removeAt = (i: number) => onChange(arr.filter((_, j) => j !== i));
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1 focus-within:ring-1 focus-within:ring-brand">
+      {arr.map((v, i) => (
+        <span key={`${v}-${i}`} className="inline-flex items-center gap-1 rounded bg-brand/15 px-1.5 py-0.5 text-tiny text-brand">
+          {v}
+          <button type="button" onClick={() => removeAt(i)} className="rounded hover:text-danger" title="Bỏ giá trị">
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      <input
+        type="text"
+        value={draft}
+        list={listId}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v.includes(',')) add(v); else setDraft(v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); add(draft); }
+          else if (e.key === 'Backspace' && !draft && arr.length) removeAt(arr.length - 1);
+        }}
+        onBlur={() => { if (draft.trim()) add(draft); }}
+        placeholder={arr.length ? 'thêm…' : 'nhập giá trị rồi Enter…'}
+        className="min-w-[90px] flex-1 bg-transparent px-1 py-0.5 text-caption outline-none"
+      />
+      <datalist id={listId}>
+        {suggestions.slice(0, 50).map((v) => <option key={v} value={v} />)}
+      </datalist>
+    </div>
+  );
+}
+
 export function PublicLinksManager({
   dashboardId,
   dashboardName,
@@ -361,6 +420,11 @@ export function PublicLinksManager({
       toast.error(validationError);
       return;
     }
+    const emptyCreate = emptyEnforcedRows();
+    if (emptyCreate.length) {
+      toast.error(`Chọn giá trị cho field đang Khoá/Ẩn (${emptyCreate.join(', ')}), hoặc chuyển về 👁 Hiện.`);
+      return;
+    }
     setCreating(true);
     try {
       const link = await dashboardApi.createPublicLink(dashboardId, {
@@ -386,6 +450,11 @@ export function PublicLinksManager({
     const { password, validationError } = resolvePasswordPayload();
     if (validationError) {
       toast.error(validationError);
+      return;
+    }
+    const emptyUpdate = emptyEnforcedRows();
+    if (emptyUpdate.length) {
+      toast.error(`Chọn giá trị cho field đang Khoá/Ẩn (${emptyUpdate.join(', ')}), hoặc chuyển về 👁 Hiện.`);
       return;
     }
     setSaving(true);
@@ -505,14 +574,12 @@ export function PublicLinksManager({
     for (const row of rows) {
       const action = actions[row.key]?.action ?? defaultActionForRow(row);
       if (action === 'show') continue;
-      if (action === 'hide') {
-        out.push({ field: row.field, semanticField: row.semanticField, datasetId: row.datasetId, hidden: true });
-        continue;
-      }
-      // 'lock' — use the author's override value, falling back to the
-      // dashboard's saved value. Align operator with value shape: an
-      // array value forces in/not_in (a scalar `eq` over a list emits
-      // invalid SQL `WHERE field = ('A','B')`).
+      // Both 'lock' and 'hide' ENFORCE a value (PBI parity). 'hide' adds
+      // `hidden:true` so the public viewer suppresses its banner/control,
+      // but the BE still applies the value (data IS filtered). Use the
+      // author's override value, falling back to the dashboard's saved value.
+      // Align operator with value shape: an array value forces in/not_in
+      // (a scalar `eq` over a list emits invalid SQL `WHERE field = ('A','B')`).
       const overrideValue = actions[row.key]?.value !== undefined ? actions[row.key]?.value : row.value;
       const inheritedOp = (row as any).operator || 'in';
       const effectiveOp = Array.isArray(overrideValue)
@@ -524,9 +591,34 @@ export function PublicLinksManager({
         datasetId: row.datasetId,
         operator: effectiveOp,
         value: overrideValue,
+        ...(action === 'hide' ? { hidden: true } : {}),
       });
     }
     return out;
+  };
+
+  // Validate-on-save: a 'lock'/'hide' row with NO value enforces nothing at the
+  // BE (the merge drops empty entries) yet would strip the field's control +
+  // same-field page filter — silently widening what the viewer sees past the
+  // page scope (the dashboard-53 empty-lock leak). Mirrors the BE single source
+  // of truth `filter_layered_merge.link_entry_has_value`. Returns the labels of
+  // offending rows so the author can fix them or switch back to 👁 Hiện.
+  const emptyEnforcedRows = (): string[] => {
+    const isEmpty = (v: any): boolean => {
+      if (Array.isArray(v)) return v.length === 0;
+      if (v && typeof v === 'object') return Object.keys(v).length === 0;
+      return v === null || v === undefined || String(v).trim() === '';
+    };
+    const bad: string[] = [];
+    for (const row of unifiedRows) {
+      const action = linkActions[row.key]?.action ?? defaultActionForRow(row);
+      if (action === 'show') continue;
+      const overrideValue = linkActions[row.key]?.value !== undefined
+        ? linkActions[row.key]?.value
+        : (row as any).value;
+      if (isEmpty(overrideValue)) bad.push((row as any).label || row.field);
+    }
+    return bad;
   };
 
   // Parse an existing link.filters_config back into per-row actions +
@@ -545,7 +637,8 @@ export function PublicLinksManager({
       if (!entry || typeof entry !== 'object') continue;
       const key = entryKey(entry);
       const isHidden = entry.hidden === true;
-      actions[key] = isHidden ? { action: 'hide' } : { action: 'lock', value: entry.value };
+      // Both hide + lock carry a value now (PBI: hide also enforces).
+      actions[key] = { action: isHidden ? 'hide' : 'lock', value: entry.value };
       if (!inheritedByKey.has(key)) {
         // Non-inherited gate — keep it as a visible row so the author
         // can see and change it (was the old "Access filters" / "Hidden
@@ -1173,13 +1266,20 @@ export function PublicLinksManager({
                     <h3 className="text-small font-strong">Filter cho link này</h3>
                   </div>
                   <p className="mt-2 text-caption leading-6 text-text-tertiary">
-                    Mỗi field chọn 1 hành vi: <span className="font-emphasis">👁 Hiện</span> — viewer thấy & chỉnh được; <span className="font-emphasis">🔒 Khoá</span> — ép giá trị, viewer không đổi được (như RLS); <span className="font-emphasis">🚫 Ẩn</span> — bỏ hẳn field khỏi link.
+                    Mỗi field 1 hành vi: <span className="font-emphasis text-success">👁 Hiện</span> — viewer thấy & chỉnh; <span className="font-emphasis text-warning">🔒 Khoá</span> — ép giá trị (viewer thấy read-only); <span className="font-emphasis text-text-secondary">🚫 Ẩn</span> — ép giá trị nhưng viewer KHÔNG thấy gì.
                   </p>
-                  <p className="mt-1.5 rounded-md bg-surface-2 px-3 py-2 text-tiny text-text-tertiary">
-                    Thứ tự lọc khi xem public: <span className="font-emphasis text-text-secondary">🔒 Khoá ở link</span> (ngoài cùng, không phá được) → <span className="font-emphasis text-text-secondary">Filter trang dashboard</span> → <span className="font-emphasis text-text-secondary">Slicer người xem chọn</span>.
+                  {/* Live preview of what the viewer ends up seeing + the merge order. */}
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-surface-2 px-3 py-2 text-tiny">
+                    <span className="text-text-tertiary">Người xem sẽ thấy:</span>
+                    <span className="text-success">👁 {unifiedRows.filter((r) => effectiveAction(r) === 'show').length} control</span>
+                    <span className="text-warning">🔒 {unifiedRows.filter((r) => effectiveAction(r) === 'lock').length} khoá</span>
+                    <span className="text-text-secondary">🚫 {unifiedRows.filter((r) => effectiveAction(r) === 'hide').length} ẩn</span>
+                  </div>
+                  <p className="mt-1.5 text-tiny text-text-quaternary">
+                    Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá link</span> → <span className="text-text-secondary">Filter trang</span> → <span className="text-text-secondary">Slicer người xem</span>.
                   </p>
 
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-4 space-y-4">
                     {columnsLoading && unifiedRows.length === 0 ? (
                       <div className="flex items-center justify-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-8 text-caption text-text-tertiary">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1190,97 +1290,84 @@ export function PublicLinksManager({
                         Chưa có field nào để cấu hình. Thêm chart/slicer vào dashboard trước, hoặc thêm field bên dưới.
                       </p>
                     ) : (
-                      unifiedRows.map((row) => {
-                        const action = effectiveAction(row);
-                        const lockValue = linkActions[row.key]?.value ?? (action === 'lock' ? row.value : undefined);
-                        // Scope-aware badge: per-page entries show their page
-                        // name; dashboard-level ones say "mọi trang" so the
-                        // author sees exactly where each field comes from.
-                        const sourceLabel =
-                          row.source === 'extra' ? 'Thêm thủ công'
-                          : row.source === 'slicer'
-                            ? (row.pageName ? `Slicer · ${row.pageName}` : 'Slicer · mọi trang')
-                            : (row.pageName ? `Filter trang · ${row.pageName}` : 'Filter · mọi trang');
+                      ([
+                        { key: 'slicer', title: 'Slicer' },
+                        { key: 'filter', title: 'Filter trang / dashboard' },
+                        { key: 'extra', title: 'Thêm thủ công' },
+                      ] as const).map((grp) => {
+                        const groupRows = unifiedRows.filter((r) => r.source === grp.key);
+                        if (groupRows.length === 0) return null;
                         return (
-                          <div
-                            key={row.key}
-                            className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 font-emphasis text-caption text-text-primary">
-                                {row.label}
-                                <span className="ml-2 rounded bg-surface-1 px-1.5 py-0.5 text-tiny font-normal text-text-tertiary">
-                                  {sourceLabel}
-                                </span>
-                              </div>
-                              {row.source === 'extra' && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setExtraRows((prev) => prev.filter((r) => entryKey(r as any) !== row.key));
-                                    setLinkActions((prev) => {
-                                      const next = { ...prev };
-                                      delete next[row.key];
-                                      return next;
-                                    });
-                                  }}
-                                  className="shrink-0 rounded p-0.5 text-text-quaternary hover:bg-[rgba(255,255,255,0.06)] hover:text-danger"
-                                  title="Bỏ field khỏi danh sách"
-                                >
-                                  <X className="h-3.5 w-3.5" />
-                                </button>
-                              )}
+                          <div key={grp.key}>
+                            <div className="mb-1.5 text-tiny font-emphasis uppercase tracking-wide text-text-quaternary">{grp.title}</div>
+                            <div className="space-y-2">
+                              {groupRows.map((row) => {
+                                const action = effectiveAction(row);
+                                const enforces = action === 'lock' || action === 'hide';
+                                const lockValue = linkActions[row.key]?.value ?? (enforces ? row.value : undefined);
+                                const scopeBadge = row.source === 'extra' ? 'thủ công' : (row.pageName ? row.pageName : 'mọi trang');
+                                const seg = [
+                                  { opt: 'show' as const, label: '👁 Hiện', on: 'bg-success/15 text-success' },
+                                  { opt: 'lock' as const, label: '🔒 Khoá', on: 'bg-warning/15 text-warning' },
+                                  { opt: 'hide' as const, label: '🚫 Ẩn', on: 'bg-[rgba(255,255,255,0.10)] text-text-secondary' },
+                                ];
+                                return (
+                                  <div key={row.key} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <span className="truncate font-emphasis text-caption text-text-primary">{row.label}</span>
+                                        <span className="shrink-0 rounded bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-quaternary">{scopeBadge}</span>
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 text-tiny">
+                                          {seg.map(({ opt, label, on }) => (
+                                            <button
+                                              key={opt}
+                                              type="button"
+                                              onClick={() => setLinkActions((prev) => ({
+                                                ...prev,
+                                                [row.key]: { action: opt, value: (opt === 'lock' || opt === 'hide') ? (prev[row.key]?.value ?? row.value) : undefined },
+                                              }))}
+                                              className={`rounded px-2 py-1 font-medium transition-colors ${action === opt ? on : 'text-text-quaternary hover:text-text-secondary'}`}
+                                            >
+                                              {label}
+                                            </button>
+                                          ))}
+                                        </div>
+                                        {row.source === 'extra' && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setExtraRows((prev) => prev.filter((r) => entryKey(r as any) !== row.key));
+                                              setLinkActions((prev) => { const n = { ...prev }; delete n[row.key]; return n; });
+                                            }}
+                                            className="rounded p-0.5 text-text-quaternary hover:text-danger"
+                                            title="Bỏ field"
+                                          >
+                                            <X className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {enforces && (
+                                      <div className="mt-2">
+                                        <LinkValueChips
+                                          value={lockValue}
+                                          listId={`vals-${row.key}`}
+                                          suggestions={activeDistinctValues[row.field] ?? activeDistinctValues[row.semanticField ?? ''] ?? []}
+                                          onChange={(next) => setLinkActions((prev) => ({ ...prev, [row.key]: { action, value: next } }))}
+                                        />
+                                        <p className="mt-1 text-tiny text-text-quaternary">
+                                          {action === 'hide'
+                                            ? 'Dữ liệu vẫn bị lọc theo giá trị này; viewer KHÔNG thấy control/banner.'
+                                            : 'Viewer thấy banner read-only với giá trị này. Để trống = dùng giá trị dashboard.'}
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-3 text-caption text-text-secondary">
-                              {(['show', 'lock', 'hide'] as const).map((opt) => (
-                                <label key={opt} className="inline-flex cursor-pointer items-center gap-1.5">
-                                  <input
-                                    type="radio"
-                                    name={`act-${row.key}`}
-                                    checked={action === opt}
-                                    onChange={() =>
-                                      setLinkActions((prev) => ({
-                                        ...prev,
-                                        [row.key]: { action: opt, value: opt === 'lock' ? (prev[row.key]?.value ?? row.value) : undefined },
-                                      }))
-                                    }
-                                  />
-                                  <span>
-                                    {opt === 'show' && '👁 Hiện'}
-                                    {opt === 'lock' && '🔒 Khoá'}
-                                    {opt === 'hide' && '🚫 Ẩn'}
-                                  </span>
-                                </label>
-                              ))}
-                            </div>
-                            {action === 'lock' && (
-                              <div className="mt-2">
-                                <label className="block text-tiny text-text-tertiary">Giá trị khoá:</label>
-                                <input
-                                  type="text"
-                                  value={Array.isArray(lockValue) ? lockValue.join(', ') : String(lockValue ?? '')}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    const next = raw.includes(',') ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw;
-                                    setLinkActions((prev) => ({
-                                      ...prev,
-                                      [row.key]: { action: 'lock', value: next },
-                                    }));
-                                  }}
-                                  placeholder={Array.isArray(row.value) ? row.value.join(', ') : String(row.value ?? 'nhập giá trị…')}
-                                  list={`vals-${row.key}`}
-                                  className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
-                                />
-                                <datalist id={`vals-${row.key}`}>
-                                  {(activeDistinctValues[row.field] ?? activeDistinctValues[row.semanticField ?? ''] ?? []).slice(0, 50).map((v) => (
-                                    <option key={v} value={v} />
-                                  ))}
-                                </datalist>
-                                <p className="mt-1 text-tiny text-text-quaternary">
-                                  Phân cách bằng dấu phẩy nếu có nhiều giá trị. Để trống = dùng giá trị dashboard mặc định.
-                                </p>
-                              </div>
-                            )}
                           </div>
                         );
                       })

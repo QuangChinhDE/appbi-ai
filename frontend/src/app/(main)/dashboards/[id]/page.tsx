@@ -34,12 +34,14 @@ import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/
 import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
+import FilterMapModal from '@/components/dashboards/FilterMapModal';
 import { FilterPane } from '@/components/dashboards/FilterPane';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '@/lib/filters';
 import {
+  applyScopeBound,
   collectJoinKeySemanticFields,
   fromBaseFilter,
   getColumnDisplayLabel,
@@ -224,6 +226,7 @@ export default function DashboardDetailPage() {
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isPublicShareOpen, setIsPublicShareOpen] = useState(false);
+  const [isFilterMapOpen, setIsFilterMapOpen] = useState(false);
   const [isThemeOpen, setIsThemeOpen] = useState(false);
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
@@ -524,22 +527,87 @@ export default function DashboardDetailPage() {
     setDraftPageSlicers(activePageSlicers);
   }, [activePageId, activePageSlicers]);
 
+  // ── Slicer scope evaluation (PBI "Sync slicers" model) ───────────────
+  // A slicer decides, per page, whether it FILTERS that page's data and
+  // whether it shows a VISIBLE control there:
+  //   scope 'all'    → every page (filter + visible)        [slicers_config]
+  //   scope 'page'   → only its home page (filter + visible)[pages_config]
+  //   scope 'custom' → per pageScope[pageId] = {filter, visible} [slicers_config]
+  // 'page'-scoped slicers live in draftPageSlicers (current page), so they're
+  // inherently for activePageId; only globals need per-page evaluation.
+  const slicerVisibleOnPage = React.useCallback((s: any, pageId: string | undefined): boolean => {
+    if (!s || typeof s !== 'object') return false;
+    const sc = (s as any).scope || 'all';
+    if (sc === 'custom') return Boolean((s as any).pageScope?.[pageId ?? '']?.visible);
+    return true; // 'all' (page-scoped ones aren't in the globals list)
+  }, []);
+  const slicerFiltersPage = React.useCallback((s: any, pageId: string | undefined): boolean => {
+    if (!s || typeof s !== 'object') return false;
+    const sc = (s as any).scope || 'all';
+    if (sc === 'custom') return Boolean((s as any).pageScope?.[pageId ?? '']?.filter);
+    return true;
+  }, []);
+  const slicerKeyOf = (s: any): string =>
+    `${s?.datasetId ?? ''}|${String(s?.semanticField ?? s?.field ?? s?.id ?? '').toLowerCase()}`;
+
   // Split a combined SlicerCluster child list back into global vs per-page.
-  // Images (no `field`) and scope!=='page' slicers stay global; scope==='page'
-  // slicers route to the active page. Used by the cluster's onChildrenChange.
+  // Images + scope 'all'/'custom' → global; scope 'page' → current page.
+  // Globals NOT visible on the active page were never shown to the cluster,
+  // so preserve them (else a 'custom' slicer hidden on this page would vanish).
   const handleSlicerChildrenChange = React.useCallback((next: any[]) => {
-    const globals: any[] = [];
-    const pages: any[] = [];
+    const incomingPage: any[] = [];
+    const incomingGlobal: any[] = [];
     for (const c of next) {
       if (c && typeof c === 'object' && (c as any).scope === 'page' && (c as any).type !== 'image') {
-        pages.push(c);
+        incomingPage.push(c);
       } else {
-        globals.push(c);
+        incomingGlobal.push(c);
       }
     }
-    setDraftGlobalSlicers(globals);
-    setDraftPageSlicers(pages);
-  }, []);
+    setDraftGlobalSlicers((prev) => {
+      const incomingKeys = new Set(incomingGlobal.map(slicerKeyOf));
+      const preserved = prev.filter((s) =>
+        (s as any)?.type !== 'image'
+        && (s as any)?.scope !== 'page'
+        && !slicerVisibleOnPage(s, activePageId)
+        && !incomingKeys.has(slicerKeyOf(s)),
+      );
+      return [...preserved, ...incomingGlobal];
+    });
+    setDraftPageSlicers(incomingPage);
+  }, [activePageId, slicerVisibleOnPage]);
+
+  // Change a slicer's scope (from the ⚙ config popover). Moves it between the
+  // global list and the page list as needed, carrying pageScope for 'custom'.
+  const handleUpdateSlicerScope = React.useCallback((
+    slicerKey: string,
+    scope: 'all' | 'page' | 'custom',
+    pageScope?: Record<string, { filter: boolean; visible: boolean }>,
+  ) => {
+    // Find the slicer in either list.
+    const fromGlobal = draftGlobalSlicers.find((s) => slicerKeyOf(s) === slicerKey);
+    const fromPage = draftPageSlicers.find((s) => slicerKeyOf(s) === slicerKey);
+    const base = fromGlobal ?? fromPage;
+    if (!base) return;
+    const updated = { ...base, scope } as any;
+    if (scope === 'custom') updated.pageScope = pageScope ?? (base as any).pageScope ?? {};
+    else delete updated.pageScope;
+    if (scope === 'page') {
+      // → page list (current page). Remove from globals.
+      setDraftGlobalSlicers((prev) => prev.filter((s) => slicerKeyOf(s) !== slicerKey));
+      setDraftPageSlicers((prev) => {
+        const rest = prev.filter((s) => slicerKeyOf(s) !== slicerKey);
+        return [...rest, updated];
+      });
+    } else {
+      // → global list ('all' or 'custom'). Remove from page list.
+      setDraftPageSlicers((prev) => prev.filter((s) => slicerKeyOf(s) !== slicerKey));
+      setDraftGlobalSlicers((prev) => {
+        const rest = prev.filter((s) => slicerKeyOf(s) !== slicerKey);
+        return [...rest, updated];
+      });
+    }
+  }, [draftGlobalSlicers, draftPageSlicers]);
 
   // Phase-15.81 v11 — pending flag must light up for BOTH scopes so
   // the Apply button surfaces when a DA edits page filters too.
@@ -586,42 +654,52 @@ export default function DashboardDetailPage() {
       const ds = f.datasetId ?? '';
       return `${sem}|${field}|${ds}`;
     };
-    const allFilters = [...appliedGlobalFiltersLegacy, ...activePageFilters];
-    const byKey = new Map<string, BaseFilter>();
     // A later entry must NOT clobber an earlier VALUED one on the same field
     // just because it is empty. An unselected ("All") slicer that shares a
-    // field with a valued page/report filter used to overwrite it here,
-    // silently dropping the page filter — the "Filters on this page stopped
-    // working" regression. Keep whichever carries an active value.
+    // field with a valued default used to overwrite it here, silently dropping
+    // it — the "Filters on this page stopped working" regression. Keep
+    // whichever carries an active value.
     const isActiveVal = (f: BaseFilter): boolean => {
       const v = (f as any)?.value;
       if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
       return v != null && String(v).trim() !== '';
     };
+    const byKey = new Map<string, BaseFilter>();
     const setKeyed = (f: BaseFilter) => {
       const k = dedupeKey(f);
       const ex = byKey.get(k);
       if (!ex || isActiveVal(f) || !isActiveVal(ex)) byKey.set(k, f);
     };
-    // 1) visible filter defaults
-    for (const f of allFilters) if (!isAuthoritative(f)) setKeyed(f);
-    // 2) slicers (skip decorative image children). An ACTIVE slicer still
-    //    overrides a same-field filter default (viewer interactivity); an empty
-    //    slicer leaves the valued filter intact.
+    // SELECTIONS = overridable visible dashboard defaults + viewer slicers (an
+    // active slicer overrides a same-field visible default; an empty one does
+    // not). Page filters are deliberately NOT here — they are hard bounds.
+    for (const f of appliedGlobalFiltersLegacy) if (!isAuthoritative(f)) setKeyed(f);
     for (const f of appliedGlobalSlicers) {
       if (f && typeof f === 'object' && (f as any).type === 'image') continue;
+      // scope 'custom' slicers only filter pages where pageScope.filter is set.
+      if (!slicerFiltersPage(f, activePageId)) continue;
       setKeyed(f as BaseFilter);
     }
-    // 2b) per-page slicers (scope='page') — only the active page's set, so a
-    //     page-scoped slicer filters its own page's charts and no others.
     for (const f of activePageSlicers) {
       if (f && typeof f === 'object' && (f as any).type === 'image') continue;
       setKeyed(f as BaseFilter);
     }
-    // 3) locked/hidden filters — authoritative, applied last so they always win.
-    for (const f of allFilters) if (isAuthoritative(f)) byKey.set(dedupeKey(f), f);
-    return Array.from(byKey.values());
-  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers]);
+    const selections = Array.from(byKey.values());
+    // PAGE SCOPE ("Filters on this page") = HARD BOUND: a same-field selection
+    // may only narrow WITHIN it, never escape (applyScopeBound intersects them).
+    // Previously a page filter was treated as a plain default that an active
+    // slicer could override → the viewer/preview could escape the page scope
+    // (e.g. pick a product the page excluded). Mirrors the public viewer fix.
+    const pageScopes = activePageFilters.filter((f) => !isAuthoritative(f));
+    const bounded = applyScopeBound(selections, pageScopes);
+    // AUTHORITATIVE (locked/hidden) — applied last so they always win.
+    const result = new Map<string, BaseFilter>();
+    for (const f of bounded) result.set(dedupeKey(f), f);
+    for (const f of [...appliedGlobalFiltersLegacy, ...activePageFilters]) {
+      if (isAuthoritative(f)) result.set(dedupeKey(f), f);
+    }
+    return Array.from(result.values());
+  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage]);
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -2397,6 +2475,15 @@ export default function DashboardDetailPage() {
                             Public links
                           </button>
 
+                          <button
+                            onClick={() => { setIsFilterMapOpen(true); setIsMoreMenuOpen(false); }}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            title="Xem mọi filter đang tác động lên dashboard, gom theo trường"
+                          >
+                            <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                            Bản đồ filter
+                          </button>
+
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
 
                           <button
@@ -2544,6 +2631,11 @@ export default function DashboardDetailPage() {
         >
         {(draftGlobalSlicers.length > 0 || draftPageSlicers.length > 0 || canEditResource) && (
           <SlicerCluster
+            // Editor shows ALL slicers (incl. ones a 'custom' scope hides on
+            // this page) so the author can always open ⚙ to reconfigure; the
+            // per-page VISIBLE hiding is applied only on the public viewer.
+            // The chart PREVIEW still respects scope via effectivePageScopeFilters
+            // (only slicers that filter the active page are applied).
             children={[...draftGlobalSlicers, ...draftPageSlicers]}
             onChildrenChange={handleSlicerChildrenChange}
             layout={draftSlicerClusterLayout}
@@ -2552,8 +2644,13 @@ export default function DashboardDetailPage() {
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
             distinctStatus={semanticDistinctStatus}
-            // Per-slicer "Trang này / Tất cả trang" scope toggle — build only.
+            // Per-slicer scope config (⚙): Chỉ trang này / Tất cả trang /
+            // Tùy chọn theo trang (ma trận Lọc/Hiện). Build only.
             showScopeToggle={canEditResource}
+            dashboardPages={dashboardPages.map((p) => ({ id: p.id, name: (p as any).name || p.id }))}
+            activePageId={activePageId}
+            onUpdateSlicerScope={handleUpdateSlicerScope}
+            onOpenFilterMap={canEditResource ? () => setIsFilterMapOpen(true) : undefined}
             hasPendingChanges={JSON.stringify(draftGlobalSlicers) !== JSON.stringify(appliedGlobalSlicers)
               || JSON.stringify(draftPageSlicers) !== JSON.stringify(activePageSlicers)
               || JSON.stringify(draftSlicerClusterLayout) !== JSON.stringify(appliedSlicerClusterLayout)}
@@ -2829,6 +2926,14 @@ export default function DashboardDetailPage() {
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
             onClose={() => setIsPublicShareOpen(false)}
+          />
+        )}
+
+        {/* Bản đồ filter — read-only at-a-glance overview of every filter source */}
+        {isFilterMapOpen && dashboard && (
+          <FilterMapModal
+            dashboard={dashboard}
+            onClose={() => setIsFilterMapOpen(false)}
           />
         )}
         <WidgetEditModal

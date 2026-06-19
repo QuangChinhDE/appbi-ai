@@ -24,7 +24,7 @@
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Image as ImageIcon, X, Settings2, Link2 } from 'lucide-react';
+import { Image as ImageIcon, X, Settings2, Link2, Filter } from 'lucide-react';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import {
   type BaseFilter,
@@ -59,8 +59,23 @@ interface SlicerClusterProps {
   /** When true, hides editor affordances (add slicer / add image /
    *  direction toggle / drag handles). Set on public viewer. */
   lockSlots?: boolean;
-  /** Per-slicer "Trang này / Tất cả trang" scope toggle (build only). */
+  /** Per-slicer scope config (⚙): build only. */
   showScopeToggle?: boolean;
+  /** Build only — open the "Bản đồ filter" overview. When provided, a small
+   *  map button is surfaced in the cluster header (right where the DA manages
+   *  slicers) so the at-a-glance overview is discoverable without digging into
+   *  the More menu. Omitted on the public viewer → button never renders. */
+  onOpenFilterMap?: () => void;
+  /** Page list for the per-page scope matrix (id + name). */
+  dashboardPages?: { id: string; name: string }[];
+  /** Active page id (to label "trang này" + default custom seed). */
+  activePageId?: string;
+  /** Change a slicer's scope (this page / all pages / custom matrix). */
+  onUpdateSlicerScope?: (
+    slicerKey: string,
+    scope: 'all' | 'page' | 'custom',
+    pageScope?: Record<string, { filter: boolean; visible: boolean }>,
+  ) => void;
 }
 
 const DEFAULT_LAYOUT: SlicerClusterLayout = {
@@ -96,6 +111,10 @@ export function SlicerCluster({
   isApplying,
   lockSlots = false,
   showScopeToggle = false,
+  dashboardPages,
+  activePageId,
+  onUpdateSlicerScope,
+  onOpenFilterMap,
 }: SlicerClusterProps) {
   const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
   // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
@@ -405,6 +424,20 @@ export function SlicerCluster({
     </button>
   ) : (
     <>
+      {/* "Bản đồ filter" — at-a-glance overview of every filter source, surfaced
+          here (where the DA manages slicers) instead of being buried in the
+          More menu. Build only (prop omitted on the public viewer). */}
+      {onOpenFilterMap && (
+        <button
+          type="button"
+          onClick={onOpenFilterMap}
+          title="Bản đồ filter — xem mọi filter đang tác động lên dashboard"
+          className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
+        >
+          <Filter className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Bản đồ</span>
+        </button>
+      )}
       {/* Phase-B8 — "Thu gọn" lives IN the header row here (builder) so it no
           longer overlaps the "Add filter" button (both used to sit top-right). */}
       <button
@@ -626,6 +659,9 @@ export function SlicerCluster({
               embedded
               lockSlots={lockSlots}
               showScopeToggle={showScopeToggle}
+              dashboardPages={dashboardPages}
+              activePageId={activePageId}
+              onUpdateSlicerScope={onUpdateSlicerScope}
               stackVertical={isLeft}
               collapsedSlicers
               headerExtras={clusterControls}

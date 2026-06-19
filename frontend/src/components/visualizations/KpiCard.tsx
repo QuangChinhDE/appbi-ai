@@ -29,6 +29,10 @@ type KpiCardProps = {
   accentBorder?: boolean;
   gradientBg?: boolean;
   valueFontSize?: number;
+  /** #KPI-header — when the host (dashboard tile) renders the metric label in
+   *  its OWN header row (level with the toolbar), hide the in-card label so it
+   *  isn't shown twice and the card body can focus on the value (no top gap). */
+  hideLabel?: boolean;
   /** When rendered inside a dashboard tile, the tile already provides the card
    *  frame (border + shadow + padding). `embedded` drops KpiCard's own outer
    *  chrome (border, shadow, gradient top-bar) and tightens padding so the KPI
@@ -203,6 +207,7 @@ export function KpiCard({
   accentBorder = false,
   gradientBg = false,
   valueFontSize,
+  hideLabel = false,
   embedded = false,
 }: KpiCardProps) {
   // Phase-B15 — dashboard theme: KPI value size + status colors. Empty {} when
@@ -336,7 +341,7 @@ export function KpiCard({
       <div className={!embedded ? 'p-6 sm:p-7' : (showOwnFrame ? 'p-4' : 'px-1 py-1')}>
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            {(label || IconComponent) && (
+            {!hideLabel && (label || IconComponent) && (
               <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
                 {IconComponent && (
                   <IconComponent

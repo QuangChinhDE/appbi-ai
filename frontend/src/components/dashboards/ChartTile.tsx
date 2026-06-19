@@ -489,9 +489,6 @@ function ChartTileBase({
     dashTheme.titleFontSize || dashTheme.titleColor
       ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
       : undefined;
-  // Phase-B10 — KPI renders its own metric label inside the card; hide the
-  // redundant tile title (keep the toolbar/drag-handle row).
-  const isKpiCard = String(chart?.chart_type || '').toUpperCase() === 'KPI';
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -562,6 +559,22 @@ function ChartTileBase({
       styleConfig: chartRenderStyleConfig,
     };
   }, [chart?.config, chart?.chart_type, chartRenderStyleConfig]);
+
+  // KPI-header — KPI cards usually carry no separate tile title; the metric
+  // label IS the title. Surface it in the header row (level with the toolbar)
+  // instead of leaving that row empty + the label floating mid-card. The card
+  // then hides its own label (kpiLabelInHeader) and focuses on the value.
+  // Explicit custom/config titles still win. NOTE: this block reads
+  // `exploreConfig`, so it MUST sit after that useMemo — declaring it earlier
+  // is a TDZ ("used before declaration") that fails the production build.
+  const isKpiCard = String(chart?.chart_type || '').toUpperCase() === 'KPI';
+  const kpiMetricLabel = isKpiCard && exploreConfig
+    ? (exploreConfig.styleConfig?.kpiLabel?.trim()
+       || (exploreConfig.roleConfig?.metrics?.[0]
+            ? metricLabel(exploreConfig.roleConfig.metrics[0], tileLabelMap)
+            : ''))
+    : '';
+  const kpiHeaderTitle = customTitle || configuredChartTitle || kpiMetricLabel || chartName;
 
   // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
   React.useEffect(() => {
@@ -874,7 +887,11 @@ function ChartTileBase({
         ) : (
           <>
             {isKpiCard ? (
-              <span className="flex-1" aria-hidden />
+              kpiHeaderTitle ? (
+                <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</h3>
+              ) : (
+                <span className="flex-1" aria-hidden />
+              )
             ) : displayTitle ? (
               <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
             ) : canEdit ? (
@@ -1229,6 +1246,7 @@ function ChartTileBase({
               havingFilters={havingFilters}
               preAggregated={preAggregated}
               embedded
+              kpiLabelInHeader={isKpiCard}
               onViewerDrill={setViewerGrain}
               viewerGrain={viewerGrain}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null

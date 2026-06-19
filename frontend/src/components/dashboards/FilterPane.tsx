@@ -336,7 +336,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
         {/* Mode toggle (categorical only) */}
         {supportsModeToggle && (
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
-            <span>Mode:</span>
+            <span>Chế độ chọn:</span>
             <button
               type="button"
               onClick={() => switchMode(isMultiSelect ? 'single' : 'multi')}
@@ -360,7 +360,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
                           (silent WHERE).
             See docs/filter-semantics.md §2.2. */}
         <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
-          <span title="Hành vi của filter trên link public">Public:</span>
+          <span title="Hành vi của filter trên link công khai">Trên link:</span>
           <select
             value={(filter as any).publicMode ?? 'visible'}
             onChange={(e) => {
@@ -368,11 +368,14 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
               onChange({ ...filter, publicMode: next } as any);
             }}
             className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-[10px] outline-none focus:ring-1 focus:ring-brand"
-            title="Cách filter này xuất hiện cho người xem qua link public"
+            title="Cách filter này xuất hiện cho người xem qua link công khai"
           >
-            <option value="visible">👁 Visible</option>
-            <option value="locked">🔒 Locked</option>
-            <option value="hidden">🚫 Hidden</option>
+            {/* Vocab matches the Public Links modal (Hiện/Khoá/Ẩn) so the SAME
+                concept reads the same everywhere — not visible/locked/hidden here
+                and Hiện/Khoá/Ẩn there. */}
+            <option value="visible">👁 Hiện</option>
+            <option value="locked">🔒 Khoá</option>
+            <option value="hidden">🚫 Ẩn</option>
           </select>
           {((filter as any).publicMode ?? 'visible') === 'visible' && (
             <label className="ml-1 inline-flex items-center gap-1" title="Cho phép viewer chỉnh giá trị qua mini-pane">

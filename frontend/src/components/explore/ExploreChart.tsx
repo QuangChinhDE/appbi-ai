@@ -1146,6 +1146,9 @@ export interface ExploreChartProps {
   /** #2 — the grain currently requested by the viewer drill (for active-state
    *  highlight). undefined ⇒ chart's saved grain. */
   viewerGrain?: string;
+  /** #KPI-header — the host tile renders the KPI metric label in its header
+   *  row (level with the toolbar), so KpiCard hides its own label. */
+  kpiLabelInHeader?: boolean;
 }
 
 function ExploreChartInner({
@@ -1162,6 +1165,7 @@ function ExploreChartInner({
   embedded = false,
   onViewerDrill,
   viewerGrain,
+  kpiLabelInHeader = false,
 }: ExploreChartProps) {
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   // During PDF export, turn OFF recharts enter-animations: html2canvas snapshots
@@ -1834,6 +1838,7 @@ function ExploreChartInner({
               accentBorder={style.kpiAccentBorder}
               gradientBg={style.kpiGradientBg}
               valueFontSize={kpiValueFontSize}
+              hideLabel={kpiLabelInHeader}
               embedded={embedded}
             />
           </div>

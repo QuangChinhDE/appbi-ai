@@ -144,6 +144,16 @@ export function ReadonlyChartTile({
   // heading ("DA1 KPI" stacked above "TOTAL REVENUE"). Suppress the tile title
   // for KPI — the card's label is the title (matches PBI Card visuals).
   const isKpiCard = String(chart?.chart_type || '').toUpperCase() === 'KPI';
+  // KPI-header — the metric label IS the KPI's title; show it in the header row
+  // (level with the actions) and hide it inside the card so the body focuses on
+  // the value. Explicit custom/config titles still win.
+  const kpiMetricLabel = isKpiCard
+    ? ((effectiveStyleConfig as any)?.kpiLabel?.trim()
+       || ((roleConfig as any)?.metrics?.[0]
+            ? metricLabel((roleConfig as any).metrics[0], roLabelMap)
+            : ''))
+    : '';
+  const kpiHeaderTitle = customTileTitle || configuredChartTitle || kpiMetricLabel || chartNameTrim;
   // PBI parity (2026-06) — surface filters the BE could not apply to THIS
   // chart (field unrelated to the visual's table, or a malformed join). The
   // engine reports these in `debug.dropped_filters`; previously only the
@@ -320,15 +330,24 @@ export function ReadonlyChartTile({
           ) : null;
           const hasActions = Boolean(droppedBadge || havingToggle);
 
-          // KPI: float actions top-right, no header band — the card label is
-          // the title and the value stays the focus.
+          // KPI: header row carries the metric label (the de-facto title) on
+          // the left, level with the actions on the right; the card body then
+          // hides its own label and keeps the value as the focus.
           if (isKpiCard) {
-            return hasActions ? (
-              <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
-                {droppedBadge}
-                {havingToggle}
+            if (!kpiHeaderTitle && !hasActions) return null;
+            return (
+              <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
+                {kpiHeaderTitle && (
+                  <p data-pdf-tile-title className="min-w-0 flex-1 truncate font-medium text-text-secondary" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
+                )}
+                {hasActions && (
+                  <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+                    {droppedBadge}
+                    {havingToggle}
+                  </div>
+                )}
               </div>
-            ) : null;
+            );
           }
 
           // Non-KPI: render the header row only when it has real content.
@@ -463,6 +482,7 @@ export function ReadonlyChartTile({
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
               embedded
+              kpiLabelInHeader={isKpiCard}
               viewerGrain={viewerGrain}
               onViewerDrill={onViewerDrill}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
