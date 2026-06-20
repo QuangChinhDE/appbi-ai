@@ -295,6 +295,12 @@ export interface ChartStyleConfig {
   tableSummaryRows?: TableSummaryRowConfig[];
   tableColumnWidths?: Record<string, number>;
   tableColumnAlignments?: Record<string, TableColumnAlignment>;
+  /** Phase-16.x — per-column number format chosen in the Table chart config
+   *  (Explore), keyed by column ref. Overrides the measure's declared format
+   *  and the table-wide Number Format for that column only. Empty/absent =
+   *  inherit (measure format → table-wide format). Lets DA format a % or money
+   *  column at chart-build time without editing the dataset measure. */
+  tableColumnFormats?: Record<string, NumberFormat>;
   tableHyperlinkRules?: TableHyperlinkRule[];
   // Chart title (shown above the chart)
   chartTitle?: string;
@@ -3618,6 +3624,14 @@ export function ExploreChartConfig({
     });
   };
 
+  const tableColumnFormats = normalizedStyleConfig.tableColumnFormats ?? {};
+  const updateTableColumnFormat = (columnName: string, format: NumberFormat | '') => {
+    const next = { ...tableColumnFormats };
+    if (!format) delete next[columnName];
+    else next[columnName] = format;
+    updStyle({ tableColumnFormats: Object.keys(next).length > 0 ? next : undefined });
+  };
+
   const updateTableHyperlinkRule = (index: number, patch: Partial<TableHyperlinkRule>) => {
     setTableHyperlinkRules(
       tableHyperlinkRules.map((rule, ruleIndex) => (
@@ -4128,6 +4142,22 @@ export function ExploreChartConfig({
                         );
                       })}
                     </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-xs font-semibold text-text-secondary">Number format</label>
+                    <select
+                      value={tableColumnFormats[column.name] ?? ''}
+                      onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
+                      className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-[11px]"
+                    >
+                      <option value="">Inherit (measure / table default)</option>
+                      <option value="auto">Number (raw)</option>
+                      <option value="compact">Compact (1.2K, 3.4M)</option>
+                      <option value="number">Full number (1,234)</option>
+                      <option value="percent">Percent (%)</option>
+                      <option value="currency">Currency ({normalizedStyleConfig.currencySymbol || '$'})</option>
+                    </select>
                   </div>
                 </div>
               );

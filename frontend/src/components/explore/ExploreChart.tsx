@@ -1584,6 +1584,22 @@ function ExploreChartInner({
   const hbarXAxisLabel = style.xAxisLabel || derivedMetricLabel || undefined;
   const hbarYAxisLabel = style.yAxisLabel || derivedDimLabel || undefined;
 
+  // Phase-16.x — effective per-column formats for tables: the semantic
+  // formatMap (measure.format.kind) overlaid with the user's per-column choice
+  // from the Table config (style.tableColumnFormats wins). Lets DA format a %
+  // or currency column at chart-build time without editing the dataset.
+  const effectiveColumnFormats = useMemo(() => {
+    const overrides = style.tableColumnFormats;
+    if (!formatMap && !overrides) return undefined;
+    const merged = new Map<string, NumberFormat>(formatMap ?? []);
+    if (overrides) {
+      for (const [key, fmt] of Object.entries(overrides)) {
+        if (fmt) merged.set(key, fmt);
+      }
+    }
+    return merged.size > 0 ? merged : undefined;
+  }, [formatMap, style.tableColumnFormats]);
+
   const ChartTitleEl = chartTitle ? (
     <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
   ) : null;
@@ -2205,7 +2221,7 @@ function ExploreChartInner({
             decimalPlaces={style.decimalPlaces}
             currencySymbol={style.currencySymbol}
             columnLabels={labelMap}
-            columnFormats={formatMap}
+            columnFormats={effectiveColumnFormats}
           />
         </div>
       </div>
@@ -2225,7 +2241,7 @@ function ExploreChartInner({
         onStyleConfigChange={onStyleConfigChange}
         onSelectDataPoint={onSelectDataPoint}
         labelMap={labelMap}
-        formatMap={formatMap}
+        formatMap={effectiveColumnFormats}
       />
     );
   }
