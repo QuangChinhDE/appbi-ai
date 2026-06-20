@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
 import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
@@ -353,6 +353,58 @@ function ChartFrame({ title, titleFontSize, children }: { title?: string; titleF
   );
 }
 
+/**
+ * Phase-16.x — responsive SVG sizing.
+ *
+ * DA-reported: advanced (hand-rolled SVG) charts used a FIXED
+ * `viewBox="0 0 800 420"`. On a dashboard tile whose aspect ratio differs
+ * from 800:420, the default `preserveAspectRatio="xMidYMid meet"` scaled the
+ * whole drawing to FIT + centred it — so the content stayed small in the
+ * middle with large empty bands (the "kéo rộng → khoảng trống lớn" bug).
+ *
+ * `useElementSize` measures the actual rendered pixel box via ResizeObserver,
+ * and `ResponsiveSvg` sets the `viewBox` to those real pixels so 1 user unit =
+ * 1 px (no scaling, no letterbox). Every renderer draws into the measured
+ * (w, h) it receives, so the content reflows to fill the tile exactly the way
+ * Recharts' ResponsiveContainer does for the cartesian charts.
+ */
+function useElementSize<T extends HTMLElement = HTMLDivElement>() {
+  const ref = useRef<T | null>(null);
+  const [size, setSize] = useState<{ width: number; height: number }>({ width: SVG_W, height: SVG_H });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        setSize((prev) =>
+          Math.abs(prev.width - r.width) > 0.5 || Math.abs(prev.height - r.height) > 0.5
+            ? { width: r.width, height: r.height }
+            : prev,
+        );
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width: size.width, height: size.height };
+}
+
+function ResponsiveSvg({ children }: { children: (w: number, h: number) => React.ReactNode }) {
+  const { ref, width, height } = useElementSize<HTMLDivElement>();
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  return (
+    <div ref={ref} className="h-full w-full">
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="100%" className="block">
+        {children(w, h)}
+      </svg>
+    </div>
+  );
+}
+
 function DonutOrPolarChart({
   type,
   items,
@@ -369,93 +421,71 @@ function DonutOrPolarChart({
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0);
   const max = Math.max(...items.map((item) => Math.max(item.value, 0)), 1);
   if (total <= 0) return <EmptyAdvanced message="No positive values to render this chart." />;
-
-  let cursor = 0;
-  const cx = 300;
-  const cy = 205;
-  const outer = 145;
-  const inner = type === 'DONUT' ? Math.max(45, outer * ((style.pieInnerRadius ?? 55) / 100)) : 0;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {items.map((item, index) => {
-        const angle = type === 'POLAR_AREA' ? 360 / items.length : (Math.max(item.value, 0) / total) * 360;
-        const radius = type === 'POLAR_AREA' ? 35 + (safeSqrtShare(item.value, max) * (outer - 35)) : outer;
-        const path = ringSegment(cx, cy, radius, type === 'DONUT' ? inner : 0, cursor, cursor + angle);
-        const mid = cursor + angle / 2;
-        const labelPoint = polar(cx, cy, Math.max(radius + 24, 80), mid);
-        // Phase-15.84 — DONUT/POLAR_AREA read the new DataLabelConfig
-        // master switch + per-slice format override (if any). Position /
-        // rotation / background aren't meaningful for this radial layout
-        // so we honour only the parts that have visual meaning here.
-        const dlc = style.dataLabelConfig;
-        const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
-        const sliceOverride = dlc?.overrides?.[item.name];
-        const sliceFontColor = sliceOverride?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
-        const sliceFontSize = sliceOverride?.fontSize ?? dlc?.fontSize ?? 11;
-        // Phase-15.86 — when DataLabels enabled AND user provided a
-        // template, expand it. Per-series format precedence:
-        // override.format > seriesFormats[slice] > dlc.format > global.
-        // Fall back to the legacy compact "Name VALUE (X%)" composition
-        // when no template is set.
-        const effectiveFormat = sliceOverride?.format
-          ?? style.seriesFormats?.[item.name]
-          ?? dlc?.format
-          ?? style.numberFormat;
-        const styleForLabel = effectiveFormat
-          ? { ...style, numberFormat: effectiveFormat }
-          : style;
-        const sharePct = item.value / Math.max(total, 1);
-        let labelText: string;
-        if (labelsEnabled) {
-          if (style.dataLabelTemplate) {
-            labelText = expandLabelTemplate({
-              template: style.dataLabelTemplate,
-              formatted: formatNumber(item.value, styleForLabel),
-              rawName: item.name,
-              percent: sharePct,
-            });
-          } else {
-            labelText = `${item.name.slice(0, 12)} ${formatNumber(item.value, styleForLabel)} (${formatPercent(item.value, total)})`;
-          }
-        } else {
-          labelText = item.name.slice(0, 16);
-        }
-        cursor += angle;
-        // Phase-15.85 — respect per-slice colour override from
-        // style.seriesColors. Previously DONUT/POLAR_AREA ignored the
-        // overrides and rendered every slice with the active palette.
-        const sliceColor = resolveSliceColor(style, palette, item.name, index);
-        // Phase-15.85 — DA-reported overlap on DONUT (small slices at
-        // similar angles produced colliding labels, e.g. "Resales" and
-        // "Unknown" rendering on top of each other near the top of the
-        // ring). Skip labels for slices whose share is below 3% — they
-        // stay reachable via the legend on the right and the SVG
-        // <title> hover. Matches the Recharts PIE behaviour we already
-        // use in the main chart.
-        const showLabelForSlice = labelsEnabled
-          ? sharePct >= 0.03 && index < 10
-          : index < 10;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — donut/polar fills the tile; ring grows to the shorter
+        // side of the plot area (legend reserved on the right).
+        const legendW = Math.min(200, Math.max(118, W * 0.28));
+        const areaW = Math.max(40, W - legendW);
+        const cx = areaW / 2;
+        const cy = H / 2;
+        const outer = Math.max(24, Math.min(areaW, H) / 2 - 38);
+        const inner = type === 'DONUT' ? Math.max(outer * 0.3, outer * ((style.pieInnerRadius ?? 55) / 100)) : 0;
+        const legendCount = Math.min(items.length, 12);
+        const legendY = Math.max(12, (H - legendCount * 22) / 2);
+        let cursor = 0;
         return (
-          <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <path d={path} fill={sliceColor} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
-            {showLabelForSlice && (
-              <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>
-                {labelText}
-              </text>
-            )}
-            <title>{item.name}: {formatNumber(item.value, style)}</title>
-          </g>
+          <>
+            {items.map((item, index) => {
+              const angle = type === 'POLAR_AREA' ? 360 / items.length : (Math.max(item.value, 0) / total) * 360;
+              const radius = type === 'POLAR_AREA' ? (outer * 0.24) + (safeSqrtShare(item.value, max) * (outer - outer * 0.24)) : outer;
+              const path = ringSegment(cx, cy, radius, type === 'DONUT' ? inner : 0, cursor, cursor + angle);
+              const mid = cursor + angle / 2;
+              const labelPoint = polar(cx, cy, Math.max(radius + 16, outer * 0.6), mid);
+              const dlc = style.dataLabelConfig;
+              const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+              const sliceOverride = dlc?.overrides?.[item.name];
+              const sliceFontColor = sliceOverride?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
+              const sliceFontSize = sliceOverride?.fontSize ?? dlc?.fontSize ?? 11;
+              const effectiveFormat = sliceOverride?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+              const styleForLabel = effectiveFormat ? { ...style, numberFormat: effectiveFormat } : style;
+              const sharePct = item.value / Math.max(total, 1);
+              let labelText: string;
+              if (labelsEnabled) {
+                if (style.dataLabelTemplate) {
+                  labelText = expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: sharePct });
+                } else {
+                  labelText = `${item.name.slice(0, 12)} ${formatNumber(item.value, styleForLabel)} (${formatPercent(item.value, total)})`;
+                }
+              } else {
+                labelText = item.name.slice(0, 16);
+              }
+              cursor += angle;
+              const sliceColor = resolveSliceColor(style, palette, item.name, index);
+              const showLabelForSlice = labelsEnabled ? sharePct >= 0.03 && index < 10 : index < 10;
+              return (
+                <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
+                  <path d={path} fill={sliceColor} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
+                  {showLabelForSlice && (
+                    <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>{labelText}</text>
+                  )}
+                  <title>{item.name}: {formatNumber(item.value, style)}</title>
+                </g>
+              );
+            })}
+            <g transform={`translate(${areaW + 8} ${legendY})`}>
+              {items.slice(0, 12).map((item, index) => (
+                <g key={item.name} transform={`translate(0 ${index * 22})`}>
+                  <rect width={10} height={10} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
+                  <text x={18} y={9} fontSize={11} fill="rgb(var(--text-secondary))">{item.name.slice(0, 24)}</text>
+                </g>
+              ))}
+            </g>
+          </>
         );
-      })}
-      <g transform="translate(520 84)">
-        {items.slice(0, 12).map((item, index) => (
-          <g key={item.name} transform={`translate(0 ${index * 22})`}>
-            <rect width={10} height={10} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
-            <text x={18} y={9} fontSize={11} fill="rgb(var(--text-secondary))">{item.name.slice(0, 24)}</text>
-          </g>
-        ))}
-      </g>
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -464,7 +494,6 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
   metrics: MetricConfig[];
   field?: string;
   palette: string[];
-  // Phase-15.85 — pass style so Series colors override resolver can run.
   style: ChartStyleConfig;
   preAggregated?: boolean;
 }) {
@@ -477,125 +506,116 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
     values: labels.map((label) => aggregateMetric(groupedRows.get(label) ?? [], metric, preAggregated)),
   }));
   const max = Math.max(...series.flatMap((item) => item.values.map((value) => Math.abs(value))), 1);
-  const cx = 400;
-  const cy = 210;
-  const radius = 150;
   const angles = labels.map((_, index) => index * 360 / labels.length);
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {[0.25, 0.5, 0.75, 1].map((scale) => (
-        <polygon key={scale} points={angles.map((angle) => {
-          const p = polar(cx, cy, radius * scale, angle);
-          return `${p.x},${p.y}`;
-        }).join(' ')} fill="none" stroke="rgb(var(--border-line))" />
-      ))}
-      {angles.map((angle, index) => {
-        const p = polar(cx, cy, radius + 24, angle);
-        const axis = polar(cx, cy, radius, angle);
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — radar grows to the shorter side of the tile, centred.
+        const cx = W / 2;
+        const cy = H / 2;
+        const radius = Math.max(24, Math.min(W, H) / 2 - 44);
         return (
-          <g key={labels[index]}>
-            <line x1={cx} y1={cy} x2={axis.x} y2={axis.y} stroke="rgb(var(--border-line))" />
-            <text x={p.x} y={p.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">{labels[index].slice(0, 16)}</text>
-          </g>
-        );
-      })}
-      {/* Phase-15.86 — RADAR DataLabels.
-          When enabled, render numeric labels at each polygon vertex
-          (one per metric × axis-category). Per-series font/color/format
-          from DataLabelConfig.overrides[metricKey] is honoured. */}
-      {series.map((item, index) => {
-        const mKey = metricKey(item.metric);
-        const points = item.values.map((value, valueIndex) => {
-          const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
-          return `${p.x},${p.y}`;
-        }).join(' ');
-        const radarColor = resolveSliceColor(style, palette, mKey, index);
-        const dlc = style.dataLabelConfig;
-        const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
-        const override = dlc?.overrides?.[mKey];
-        const fontColor = override?.fontColor ?? dlc?.fontColor ?? radarColor;
-        const fontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
-        const fmt = override?.format ?? style.seriesFormats?.[mKey] ?? dlc?.format ?? style.numberFormat;
-        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
-        return (
-          <g key={mKey}>
-            <polygon points={points} fill={radarColor} opacity={0.16} stroke={radarColor} strokeWidth={2} />
-            {/* Phase-15.86 — metric legend uses metricLabel (humanised
-                via measure.label when available), not raw metricKey. */}
-            <text x={28} y={28 + index * 18} fontSize={11} fill={radarColor}>{metricLabel(item.metric)}</text>
-            {labelsEnabled && item.values.map((value, valueIndex) => {
-              const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
-              const text = formatNumber(value, styleForLabel);
+          <>
+            {[0.25, 0.5, 0.75, 1].map((scale) => (
+              <polygon key={scale} points={angles.map((angle) => {
+                const p = polar(cx, cy, radius * scale, angle);
+                return `${p.x},${p.y}`;
+              }).join(' ')} fill="none" stroke="rgb(var(--border-line))" />
+            ))}
+            {angles.map((angle, index) => {
+              const p = polar(cx, cy, radius + 20, angle);
+              const axis = polar(cx, cy, radius, angle);
               return (
-                <text key={`${mKey}-${valueIndex}`} x={p.x} y={p.y - 4}
-                  fontSize={fontSize}
-                  textAnchor="middle"
-                  fill={fontColor}
-                  style={{ pointerEvents: 'none' }}
-                >
-                  {text}
-                </text>
+                <g key={labels[index]}>
+                  <line x1={cx} y1={cy} x2={axis.x} y2={axis.y} stroke="rgb(var(--border-line))" />
+                  <text x={p.x} y={p.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">{labels[index].slice(0, 16)}</text>
+                </g>
               );
             })}
-            {/* SVG native tooltip per series — at least gives a hover cue */}
-            <title>{metricLabel(item.metric)}</title>
-          </g>
+            {series.map((item, index) => {
+              const mKey = metricKey(item.metric);
+              const points = item.values.map((value, valueIndex) => {
+                const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
+                return `${p.x},${p.y}`;
+              }).join(' ');
+              const radarColor = resolveSliceColor(style, palette, mKey, index);
+              const dlc = style.dataLabelConfig;
+              const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+              const override = dlc?.overrides?.[mKey];
+              const fontColor = override?.fontColor ?? dlc?.fontColor ?? radarColor;
+              const fontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+              const fmt = override?.format ?? style.seriesFormats?.[mKey] ?? dlc?.format ?? style.numberFormat;
+              const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              return (
+                <g key={mKey}>
+                  <polygon points={points} fill={radarColor} opacity={0.16} stroke={radarColor} strokeWidth={2} />
+                  <text x={20} y={24 + index * 18} fontSize={11} fill={radarColor}>{metricLabel(item.metric)}</text>
+                  {labelsEnabled && item.values.map((value, valueIndex) => {
+                    const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
+                    return (
+                      <text key={`${mKey}-${valueIndex}`} x={p.x} y={p.y - 4} fontSize={fontSize} textAnchor="middle" fill={fontColor} style={{ pointerEvents: 'none' }}>
+                        {formatNumber(value, styleForLabel)}
+                      </text>
+                    );
+                  })}
+                  <title>{metricLabel(item.metric)}</title>
+                </g>
+              );
+            })}
+          </>
         );
-      })}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
 function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
   if (!items.length) return <EmptyAdvanced message="No funnel stages to render." />;
   const max = Math.max(...items.map((item) => item.value), 1);
-  const h = Math.min(56, 320 / Math.max(items.length, 1));
-  // Phase-15.86 — DA could not turn off labels because they were
-  // rendered unconditionally. Honour the master switch (new
-  // dataLabelConfig.enabled OR legacy showDataLabels). Default is true
-  // for funnel stages — the label IS the stage identifier, hiding it
-  // makes the chart unreadable. So when the master switch is off, we
-  // fall back to showing just the stage name without the numeric value.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {items.map((item, index) => {
-        const topWidth = 560 * positiveShare(item.value, max);
-        const next = items[index + 1]?.value ?? item.value * 0.82;
-        const bottomWidth = 560 * positiveShare(next, max);
-        const y = 42 + index * (h + 8);
-        const x1 = 400 - topWidth / 2;
-        const x2 = 400 + topWidth / 2;
-        const x3 = 400 + bottomWidth / 2;
-        const x4 = 400 - bottomWidth / 2;
-        // Phase-15.86 — per-stage label style. Format precedence: override
-        // > seriesFormats > dlc.format > global. Color defaults to white
-        // (legacy) because labels sit on top of a coloured shape.
-        const override = dlc?.overrides?.[item.name];
-        const fontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
-        const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
-        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
-        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
-        const labelText = labelsEnabled
-          ? (style.dataLabelTemplate
-              ? expandLabelTemplate({
-                  template: style.dataLabelTemplate,
-                  formatted: formatNumber(item.value, styleForLabel),
-                  rawName: item.name,
-                  percent: item.value / max,
-                })
-              : `${item.name.slice(0, 28)} - ${formatNumber(item.value, styleForLabel)}`)
-          : item.name.slice(0, 28);
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — stages stack to fill the tile height; widths scale to W.
+        const padT = 36, padB = 18, gap = 8;
+        const n = Math.max(items.length, 1);
+        const h = Math.max(3, Math.min(72, (H - padT - padB) / n - gap));
+        const cx = W / 2;
+        const maxW = W * 0.78;
         return (
-          <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.9} />
-            <text x={400} y={y + h / 2 + 4} fontSize={fontSize} textAnchor="middle" fill={fontColor}>{labelText}</text>
-            <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
-          </g>
+          <>
+            {items.map((item, index) => {
+              const topWidth = maxW * positiveShare(item.value, max);
+              const next = items[index + 1]?.value ?? item.value * 0.82;
+              const bottomWidth = maxW * positiveShare(next, max);
+              const y = padT + index * (h + gap);
+              const x1 = cx - topWidth / 2;
+              const x2 = cx + topWidth / 2;
+              const x3 = cx + bottomWidth / 2;
+              const x4 = cx - bottomWidth / 2;
+              const override = dlc?.overrides?.[item.name];
+              const fontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
+              const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
+              const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+              const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              const labelText = labelsEnabled
+                ? (style.dataLabelTemplate
+                    ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: item.value / max })
+                    : `${item.name.slice(0, 28)} - ${formatNumber(item.value, styleForLabel)}`)
+                : item.name.slice(0, 28);
+              return (
+                <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
+                  <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.9} />
+                  <text x={cx} y={y + h / 2 + 4} fontSize={fontSize} textAnchor="middle" fill={fontColor}>{labelText}</text>
+                  <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                </g>
+              );
+            })}
+          </>
         );
-      })}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -618,119 +638,136 @@ function styleWithEffectiveNumberFormat(
 }
 
 function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
-  // Phase-15.86 — primary arc colour respects seriesColors override.
-  // Key = the chart's primary metric key (or 'value' fallback for legacy
-  // saved charts that don't pass one).
   const arcColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
-  // BI-standard (Power BI): a gauge with NO target must not pin the needle
-  // full (which falsely reads as "goal met"). When no target is set, scale
-  // the arc to 2× the value so the needle sits mid-arc, and label it honestly
-  // as "No target set" instead of fabricating "Target {value}".
   const hasTarget = target > 0;
   const scaleMax = hasTarget ? target : Math.max(value * 2, 1);
   const pct = Math.max(0, Math.min(value / scaleMax, 1));
   const start = -115;
   const end = 115;
   const valueEnd = start + (end - start) * pct;
-  const arc = (r: number, a0: number, a1: number) => {
-    const p0 = polar(400, 260, r, a0);
-    const p1 = polar(400, 260, r, a1);
-    return `M ${p0.x} ${p0.y} A ${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${p1.x} ${p1.y}`;
-  };
-  const needle = polar(400, 260, 112, valueEnd);
   const labelStyle = styleWithEffectiveNumberFormat(style, seriesKey);
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      <path d={arc(150, start, end)} fill="none" stroke="rgb(var(--surface-3))" strokeWidth={34} strokeLinecap="round" />
-      <path d={arc(150, start, valueEnd)} fill="none" stroke={arcColor} strokeWidth={34} strokeLinecap="round" />
-      <line x1={400} y1={260} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
-      <circle cx={400} cy={260} r={8} fill="rgb(var(--text-primary))" />
-      <text x={400} y={330} fontSize={34} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-      <text x={400} y={354} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
-    </svg>
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — gauge scales with the tile; needle + value text below.
+        const r = Math.max(28, Math.min(W * 0.4, H * 0.46));
+        const cx = W / 2;
+        const cy = Math.min(H * 0.62, H - r * 0.5 - 10);
+        const arc = (rr: number, a0: number, a1: number) => {
+          const p0 = polar(cx, cy, rr, a0);
+          const p1 = polar(cx, cy, rr, a1);
+          return `M ${p0.x} ${p0.y} A ${rr} ${rr} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${p1.x} ${p1.y}`;
+        };
+        const needle = polar(cx, cy, r * 0.75, valueEnd);
+        const stroke = Math.max(10, r * 0.22);
+        const valFont = Math.max(16, Math.min(40, r * 0.24));
+        return (
+          <>
+            <path d={arc(r, start, end)} fill="none" stroke="rgb(var(--surface-3))" strokeWidth={stroke} strokeLinecap="round" />
+            <path d={arc(r, start, valueEnd)} fill="none" stroke={arcColor} strokeWidth={stroke} strokeLinecap="round" />
+            <line x1={cx} y1={cy} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
+            <circle cx={cx} cy={cy} r={8} fill="rgb(var(--text-primary))" />
+            <text x={cx} y={cy + r * 0.46} fontSize={valFont} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
+            <text x={cx} y={cy + r * 0.46 + 22} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
+          </>
+        );
+      }}
+    </ResponsiveSvg>
   );
 }
 
 function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
-  // BI-standard: only draw the target marker + "Target" label when a target
-  // is actually set. With no target, scale to value×1.25 and omit the marker
-  // (previously it drew a target line AT the value position + "Target {value}"
-  // — a fabricated goal that misreads as "exactly met").
   const hasTarget = target > 0;
   const max = (hasTarget ? Math.max(value, target) : value * 1.25) || 1;
-  const valueWidth = 560 * Math.max(0, value / max);
-  const targetX = 120 + 560 * Math.max(0, target / max);
-  // Phase-15.86 — value bar honours seriesColors override.
   const barColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
   const labelStyle = styleWithEffectiveNumberFormat(style, seriesKey);
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      <rect x={120} y={175} width={560} height={70} rx={8} fill="rgb(var(--surface-3))" />
-      <rect x={120} y={175} width={valueWidth} height={70} rx={8} fill={barColor} />
-      {hasTarget && <line x1={targetX} y1={150} x2={targetX} y2={272} stroke="rgb(var(--text-primary))" strokeWidth={4} />}
-      <text x={120} y={315} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
-      <text x={680} y={315} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, labelStyle)}</text>
-      <text x={400} y={130} fontSize={30} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-      <text x={400} y={152} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
-    </svg>
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — value bar fills the tile width; centred vertically.
+        const padX = Math.min(120, Math.max(24, W * 0.1));
+        const barX = padX;
+        const barW = Math.max(20, W - 2 * padX);
+        const barH = Math.max(26, Math.min(84, H * 0.3));
+        const barY = H / 2 - barH / 2;
+        const valueWidth = barW * Math.max(0, value / max);
+        const targetX = barX + barW * Math.max(0, target / max);
+        const valFont = Math.max(18, Math.min(36, H * 0.13));
+        return (
+          <>
+            <rect x={barX} y={barY} width={barW} height={barH} rx={8} fill="rgb(var(--surface-3))" />
+            <rect x={barX} y={barY} width={valueWidth} height={barH} rx={8} fill={barColor} />
+            {hasTarget && <line x1={targetX} y1={barY - 18} x2={targetX} y2={barY + barH + 18} stroke="rgb(var(--text-primary))" strokeWidth={4} />}
+            <text x={barX} y={barY + barH + 22} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
+            <text x={barX + barW} y={barY + barH + 22} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, labelStyle)}</text>
+            <text x={W / 2} y={barY - 22} fontSize={valFont} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
+            <text x={W / 2} y={barY - 6} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
+          </>
+        );
+      }}
+    </ResponsiveSvg>
   );
 }
 
 function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
   if (!items.length) return <EmptyAdvanced message="No categories to render." />;
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0) || 1;
-  let x = 20;
-  let y = 20;
-  let rowH = 0;
-  // Phase-15.86 — DataLabels master switch. When disabled, treemap
-  // shows only the name (no value), so DA can pick a "minimal" look
-  // for embedded dashboards. Default true since labels are the main
-  // identifier in a treemap.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
+  const sorted = [...items].sort((a, b) => Math.max(b.value, 0) - Math.max(a.value, 0));
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {items.map((item, index) => {
-        const area = (SVG_W - 40) * (SVG_H - 40) * (Math.max(item.value, 0) / total);
-        const w = Math.max(90, Math.min(300, Math.sqrt(area) * 1.55));
-        const h = Math.max(46, area / w);
-        if (x + w > SVG_W - 20) {
-          x = 20;
-          y += rowH + 8;
-          rowH = 0;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — row-strip treemap that ALWAYS fits the tile: rows split
+        // the height by value share, cells split each row's width by share, so
+        // total height === tile height (no overflow / clipping, no big gaps).
+        const pad = 6;
+        const innerW = Math.max(10, W - pad * 2);
+        const innerH = Math.max(10, H - pad * 2);
+        const perRow = Math.max(1, Math.round(Math.sqrt(sorted.length)));
+        const rows: NameValue[][] = [];
+        for (let i = 0; i < sorted.length; i += perRow) rows.push(sorted.slice(i, i + perRow));
+        const cells: Array<{ item: NameValue; x: number; y: number; w: number; h: number; index: number }> = [];
+        let y = pad;
+        let gi = 0;
+        for (const row of rows) {
+          const rowSum = row.reduce((s, it) => s + Math.max(it.value, 0), 0) || 1;
+          const rowH = innerH * (rowSum / total);
+          let x = pad;
+          for (const it of row) {
+            const cw = innerW * (Math.max(it.value, 0) / rowSum);
+            cells.push({ item: it, x, y, w: Math.max(1, cw - 3), h: Math.max(1, rowH - 3), index: gi++ });
+            x += cw;
+          }
+          y += rowH;
         }
-        const rect = { x, y, w, h };
-        x += w + 8;
-        rowH = Math.max(rowH, h);
-        // Phase-15.86 — per-cell label style. format precedence and
-        // fontColor/fontSize honoured. Defaults stay white because the
-        // background is a coloured rect.
-        const override = dlc?.overrides?.[item.name];
-        const nameFontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
-        const valueFontSize = Math.max((override?.fontSize ?? dlc?.fontSize ?? 12) - 1, 9);
-        const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
-        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
-        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
-        const valueLabel = style.dataLabelTemplate
-          ? expandLabelTemplate({
-              template: style.dataLabelTemplate,
-              formatted: formatNumber(item.value, styleForLabel),
-              rawName: item.name,
-              percent: item.value / total,
-            })
-          : formatNumber(item.value, styleForLabel);
         return (
-          <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-            <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={8} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.88} />
-            <text x={rect.x + 10} y={rect.y + 20} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{item.name.slice(0, 22)}</text>
-            {labelsEnabled && (
-              <text x={rect.x + 10} y={rect.y + 38} fontSize={valueFontSize} fill={fontColor}>{valueLabel}</text>
-            )}
-            <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
-          </g>
+          <>
+            {cells.map(({ item, x, y, w, h, index }) => {
+              const override = dlc?.overrides?.[item.name];
+              const nameFontSize = override?.fontSize ?? dlc?.fontSize ?? 12;
+              const valueFontSize = Math.max((override?.fontSize ?? dlc?.fontSize ?? 12) - 1, 9);
+              const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
+              const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+              const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              const valueLabel = style.dataLabelTemplate
+                ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: item.value / total })
+                : formatNumber(item.value, styleForLabel);
+              const showName = w >= 44 && h >= 22;
+              const showVal = labelsEnabled && w >= 50 && h >= 38;
+              return (
+                <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
+                  <rect x={x} y={y} width={w} height={h} rx={6} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.88} />
+                  {showName && <text x={x + 8} y={y + 18} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{item.name.slice(0, 22)}</text>}
+                  {showVal && <text x={x + 8} y={y + 34} fontSize={valueFontSize} fill={fontColor}>{valueLabel}</text>}
+                  <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                </g>
+              );
+            })}
+          </>
         );
-      })}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -745,16 +782,26 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
   });
   const min = Math.min(0, ...bars.flatMap((bar) => [bar.start, bar.end]));
   const max = Math.max(0, ...bars.flatMap((bar) => [bar.start, bar.end]));
-  const scaleY = (value: number) => 360 - ((value - min) / Math.max(max - min, 1)) * 300;
-  const barW = Math.max(14, 650 / Math.max(bars.length, 1) - 8);
   // Phase-15.86 — WATERFALL DataLabels master switch + format precedence.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      <line x1={60} y1={scaleY(0)} x2={760} y2={scaleY(0)} stroke="rgb(var(--border-line))" />
-      {bars.map((bar, index) => {
-        const x = 70 + index * (barW + 8);
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — bars fill the tile width; value axis fills the height.
+        const padL = 58, padR = 36, padT = 22, padB = 58;
+        const plotTop = padT;
+        const plotBottom = Math.max(plotTop + 10, H - padB);
+        const plotH = plotBottom - plotTop;
+        const scaleY = (value: number) => plotBottom - ((value - min) / Math.max(max - min, 1)) * plotH;
+        const gap = 8;
+        const barW = Math.max(8, Math.max(10, W - padL - padR) / Math.max(bars.length, 1) - gap);
+        const labelY = H - 18;
+        return (
+          <>
+            <line x1={padL - 10} y1={scaleY(0)} x2={W - padR + 10} y2={scaleY(0)} stroke="rgb(var(--border-line))" />
+            {bars.map((bar, index) => {
+        const x = padL + index * (barW + gap);
         const y1 = scaleY(bar.start);
         const y2 = scaleY(bar.end);
         const y = Math.min(y1, y2);
@@ -784,16 +831,19 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
           <g key={bar.name} onClick={() => onSelect?.(bar.name)} className="cursor-pointer">
             <rect x={x} y={y} width={barW} height={h} rx={4} fill={color} />
             {labelsEnabled && (
-              <text x={x + barW / 2} y={Math.max(18, y - 6)} fontSize={labelFontSize} textAnchor="middle" fill={labelColor}>
+              <text x={x + barW / 2} y={Math.max(14, y - 6)} fontSize={labelFontSize} textAnchor="middle" fill={labelColor}>
                 {labelText}
               </text>
             )}
-            <text x={x + barW / 2} y={388} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} 388)`} fill="rgb(var(--text-tertiary))">{bar.name.slice(0, 12)}</text>
+            <text x={x + barW / 2} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} ${labelY})`} fill="rgb(var(--text-tertiary))">{bar.name.slice(0, 12)}</text>
             <title>{bar.name}: {formatNumber(bar.value, styleForLabel)}</title>
           </g>
         );
-      })}
-    </svg>
+            })}
+          </>
+        );
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -837,45 +887,60 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   const isGeoProjected = type === 'MAP_POINT'
     && /\b(lon|lng|long|longitude)\b/i.test(scatterX)
     && /\b(lat|latitude)\b/i.test(scatterY);
-  const sx = isGeoProjected
-    ? (value: number) => 70 + ((value + 180) / 360) * 650
-    : (value: number) => 70 + ((value - minX) / Math.max(maxX - minX, 1)) * 650;
-  const sy = isGeoProjected
-    ? (value: number) => 360 - ((value + 90) / 180) * 300
-    : (value: number) => 360 - ((value - minY) / Math.max(maxY - minY, 1)) * 300;
-  const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * 20 : 5;
   // Phase-15.86 — BUBBLE/MAP_POINT DataLabels. Master switch shows the
   // dimension label next to each point. fontSize/fontColor per-point
   // override (keyed by label).
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      <rect x={55} y={35} width={690} height={335} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
-      <text x={70} y={394} fontSize={11} fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
-      <text x={28} y={55} fontSize={11} fill="rgb(var(--text-tertiary))" transform="rotate(-90 28 55)">{fieldLabel(scatterY, labelMap)}</text>
-      {points.map((point, index) => {
-        const pointKey = String(point.label ?? index);
-        const override = dlc?.overrides?.[pointKey];
-        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
-        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Plot rect derived from the live tile size so the scatter/bubble
+        // field fills the tile (Phase-16.x responsive rewrite).
+        const padL = 58, padR = 28, padT = 28, padB = 46;
+        const fx0 = padL, fy0 = padT;
+        const plotW = Math.max(10, W - padL - padR);
+        const plotH = Math.max(10, H - padT - padB);
+        const fy1 = fy0 + plotH;
+        const sx = isGeoProjected
+          ? (value: number) => fx0 + ((value + 180) / 360) * plotW
+          : (value: number) => fx0 + ((value - minX) / Math.max(maxX - minX, 1)) * plotW;
+        const sy = isGeoProjected
+          ? (value: number) => fy1 - ((value + 90) / 180) * plotH
+          : (value: number) => fy1 - ((value - minY) / Math.max(maxY - minY, 1)) * plotH;
+        // Bubble radius scales with the plot so big tiles get bigger bubbles.
+        const rMax = Math.max(8, Math.min(34, Math.min(plotW, plotH) * 0.14));
+        const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * rMax : 5;
         return (
-          <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
-            <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, pointKey, index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
-            {labelsEnabled && point.label !== undefined && (
-              <text x={sx(point.x)} y={sy(point.y) - sr(point.r) - 4}
-                fontSize={labelFontSize}
-                textAnchor="middle"
-                fill={labelFontColor}
-                style={{ pointerEvents: 'none' }}>
-                {String(point.label).slice(0, 16)}
-              </text>
-            )}
-            <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
-          </g>
+          <>
+            <rect x={fx0} y={fy0} width={plotW} height={plotH} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
+            <text x={fx0 + 6} y={H - 14} fontSize={11} fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
+            <text x={18} y={fy0 + 18} fontSize={11} fill="rgb(var(--text-tertiary))" transform={`rotate(-90 18 ${fy0 + 18})`}>{fieldLabel(scatterY, labelMap)}</text>
+            {points.map((point, index) => {
+              const pointKey = String(point.label ?? index);
+              const override = dlc?.overrides?.[pointKey];
+              const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+              const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
+              return (
+                <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
+                  <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, pointKey, index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
+                  {labelsEnabled && point.label !== undefined && (
+                    <text x={sx(point.x)} y={sy(point.y) - sr(point.r) - 4}
+                      fontSize={labelFontSize}
+                      textAnchor="middle"
+                      fill={labelFontColor}
+                      style={{ pointerEvents: 'none' }}>
+                      {String(point.label).slice(0, 16)}
+                    </text>
+                  )}
+                  <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
+                </g>
+              );
+            })}
+          </>
         );
-      })}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -884,61 +949,57 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
   const sources = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 18);
   const targets = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 14);
   const max = Math.max(...pairs.map((pair) => Math.abs(pair.value)), 1);
-  const cellW = 660 / Math.max(targets.length, 1);
-  const cellH = 300 / Math.max(sources.length, 1);
-  // Phase-15.86 — heatmap base colour is a SINGLE hue, opacity scaled
-  // by value. Three layers of override:
-  //   1. style.seriesColors['__heatmap__'] — explicit gradient base
-  //   2. style.seriesColors[firstTarget] — first column's colour lets DA
-  //      "pick a hue" without inventing a synthetic key
-  //   3. palette[0] — legacy default
   const gradientBase = style.seriesColors?.['__heatmap__']
     ?? (targets[0] && style.seriesColors?.[targets[0]])
     ?? palette[0];
-  // DataLabels master switch (cell-size gate still applies).
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   const dlFontSize = dlc?.fontSize ?? 10;
   const dlFontColor = dlc?.fontColor ?? 'rgb(var(--text-primary))';
   const dlFormat = dlc?.format ?? style.numberFormat;
   const styleForLabel = dlFormat ? { ...style, numberFormat: dlFormat } : style;
-  const valueMap = new Map(pairs.map((pair) => [`${pair.source}\u0000${pair.target}`, pair.value]));
+  const valueMap = new Map(pairs.map((pair) => [JSON.stringify([pair.source, pair.target]), pair.value]));
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {sources.map((source, row) => (
-        <text key={source} x={112} y={65 + row * cellH + cellH / 2} textAnchor="end" fontSize={10} fill="rgb(var(--text-tertiary))">{source.slice(0, 18)}</text>
-      ))}
-      {targets.map((target, col) => (
-        <text key={target} x={132 + col * cellW + cellW / 2} y={40} textAnchor="middle" fontSize={10} fill="rgb(var(--text-tertiary))">{target.slice(0, 10)}</text>
-      ))}
-      {sources.map((source, row) => targets.map((target, col) => {
-        const value = valueMap.get(`${source}\u0000${target}`) ?? 0;
-        const opacity = value !== 0 ? 0.12 + (Math.abs(value) / max) * 0.84 : 0.05;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — grid fills the tile (minus label gutters) at the live size.
+        const gutterL = Math.min(150, Math.max(64, W * 0.16));
+        const gutterT = 44;
+        const padR = 14, padB = 12;
+        const gridW = Math.max(10, W - gutterL - padR);
+        const gridH = Math.max(10, H - gutterT - padB);
+        const cellW = gridW / Math.max(targets.length, 1);
+        const cellH = gridH / Math.max(sources.length, 1);
+        const gx = gutterL, gy = gutterT;
         return (
-          <g key={`${source}-${target}`} onClick={() => onSelect?.(source)} className="cursor-pointer">
-            <rect x={125 + col * cellW} y={52 + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={gradientBase} opacity={opacity} />
-            {labelsEnabled && cellW >= 42 && cellH >= 20 && value !== 0 && (
-              <text
-                x={125 + col * cellW + cellW / 2}
-                y={52 + row * cellH + cellH / 2 + 4}
-                textAnchor="middle"
-                fontSize={dlFontSize}
-                fill={dlFontColor}
-              >
-                {style.dataLabelTemplate
-                  ? expandLabelTemplate({
-                      template: style.dataLabelTemplate,
-                      formatted: formatNumber(value, styleForLabel),
-                      rawName: `${source}/${target}`,
-                    })
-                  : formatNumber(value, styleForLabel)}
-              </text>
-            )}
-            <title>{source} / {target}: {formatNumber(value, styleForLabel)}</title>
-          </g>
+          <>
+            {sources.map((source, row) => (
+              <text key={source} x={gx - 8} y={gy + row * cellH + cellH / 2 + 3} textAnchor="end" fontSize={10} fill="rgb(var(--text-tertiary))">{source.slice(0, 18)}</text>
+            ))}
+            {targets.map((target, col) => (
+              <text key={target} x={gx + col * cellW + cellW / 2} y={gy - 10} textAnchor="middle" fontSize={10} fill="rgb(var(--text-tertiary))">{target.slice(0, 10)}</text>
+            ))}
+            {sources.map((source, row) => targets.map((target, col) => {
+              const value = valueMap.get(JSON.stringify([source, target])) ?? 0;
+              const opacity = value !== 0 ? 0.12 + (Math.abs(value) / max) * 0.84 : 0.05;
+              return (
+                <g key={`${source}-${target}`} onClick={() => onSelect?.(source)} className="cursor-pointer">
+                  <rect x={gx + col * cellW} y={gy + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={gradientBase} opacity={opacity} />
+                  {labelsEnabled && cellW >= 42 && cellH >= 20 && value !== 0 && (
+                    <text x={gx + col * cellW + cellW / 2} y={gy + row * cellH + cellH / 2 + 4} textAnchor="middle" fontSize={dlFontSize} fill={dlFontColor}>
+                      {style.dataLabelTemplate
+                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(value, styleForLabel), rawName: `${source}/${target}` })
+                        : formatNumber(value, styleForLabel)}
+                    </text>
+                  )}
+                  <title>{source} / {target}: {formatNumber(value, styleForLabel)}</title>
+                </g>
+              );
+            }))}
+          </>
         );
-      }))}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -1030,16 +1091,25 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
   const yMaxSet = style.yAxisMax !== undefined && style.yAxisMax !== '' && Number.isFinite(Number(style.yAxisMax));
   const min = yMinSet ? Number(style.yAxisMin) : whiskerMin;
   const max = yMaxSet ? Number(style.yAxisMax) : whiskerMax;
-  const sy = (value: number) => {
-    const raw = 355 - ((value - min) / Math.max(max - min, 1)) * 300;
-    return Math.max(55, Math.min(355, raw));
-  };
-  const step = 680 / Math.max(stats.length, 1);
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {stats.map((item, index) => {
-        const x = 70 + index * step + step / 2;
-        const boxW = Math.min(36, step * 0.55);
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — box row fills the tile width; value axis fills the height.
+        const padL = 56, padR = 20, padT = 28, padB = 64;
+        const plotTop = padT;
+        const plotBottom = Math.max(plotTop + 10, H - padB);
+        const plotH = plotBottom - plotTop;
+        const sy = (value: number) => {
+          const raw = plotBottom - ((value - min) / Math.max(max - min, 1)) * plotH;
+          return Math.max(plotTop, Math.min(plotBottom, raw));
+        };
+        const step = Math.max(10, W - padL - padR) / Math.max(stats.length, 1);
+        const labelY = H - 16;
+        return (
+          <>
+            {stats.map((item, index) => {
+        const x = padL + index * step + step / 2;
+        const boxW = Math.min(40, step * 0.55);
         const boxColor = resolveSliceColor(style, palette, item.name, index);
         // Phase-15.86 — BOXPLOT median value label (DataLabels enabled).
         const dlc = style.dataLabelConfig;
@@ -1068,12 +1138,15 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
                 {formatNumber(item.med, styleForLabel)}
               </text>
             )}
-            <text x={x} y={390} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} 390)`} fill="rgb(var(--text-tertiary))">{item.name.slice(0, 12)}</text>
+            <text x={x} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} ${labelY})`} fill="rgb(var(--text-tertiary))">{item.name.slice(0, 12)}</text>
             <title>{item.name}: median {formatNumber(item.med, styleForLabel)}</title>
           </g>
         );
-      })}
-    </svg>
+            })}
+          </>
+        );
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -1083,10 +1156,6 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
   const sources = Array.from(new Set(flows.map((flow) => flow.source)));
   const targets = Array.from(new Set(flows.map((flow) => flow.target)));
   const max = Math.max(...flows.map((flow) => flow.value), 1);
-  const yFor = (items: string[], name: string) => 60 + Math.max(0, items.indexOf(name)) * (300 / Math.max(items.length - 1, 1));
-  // Phase-15.86 — DataLabels master switch. When enabled, mid-flow
-  // values render along each flow path so DA can read magnitudes
-  // without hovering. fontSize/fontColor/format honoured.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   const dlFontSize = dlc?.fontSize ?? 10;
@@ -1094,46 +1163,62 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
   const dlFormat = dlc?.format ?? style.numberFormat;
   const styleForLabel = dlFormat ? { ...style, numberFormat: dlFormat } : style;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {flows.map((flow, index) => {
-        const y1 = yFor(sources, flow.source);
-        const y2 = yFor(targets, flow.target);
-        const width = 2 + positiveShare(flow.value, max) * 24;
-        const midX = 400;
-        const midY = (y1 + y2) / 2;
-        const flowOverride = dlc?.overrides?.[flow.source];
-        const flowFontColor = flowOverride?.fontColor ?? dlFontColor;
-        const flowFontSize = flowOverride?.fontSize ?? dlFontSize;
-        const flowFmt = flowOverride?.format ?? style.seriesFormats?.[flow.source] ?? dlFormat;
-        const flowStyle = flowFmt ? { ...style, numberFormat: flowFmt } : styleForLabel;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — node columns span the tile width; rows fill the height.
+        const padT = 40, padB = 40;
+        const nodeW = Math.min(140, Math.max(70, W * 0.17));
+        const leftX = 10;
+        const rightX = W - nodeW - 10;
+        const srcRightX = leftX + nodeW;
+        const c1 = srcRightX + (rightX - srcRightX) * 0.35;
+        const c2 = srcRightX + (rightX - srcRightX) * 0.65;
+        const midX = (srcRightX + rightX) / 2;
+        const maxStroke = Math.max(10, Math.min(36, (H - padT - padB) / Math.max(sources.length, targets.length, 1) * 0.55));
+        const yFor = (items: string[], name: string) => padT + Math.max(0, items.indexOf(name)) * ((H - padT - padB) / Math.max(items.length - 1, 1));
         return (
-          <g key={`${flow.source}-${flow.target}-${index}`}>
-            <path d={`M 185 ${y1} C 330 ${y1}, 470 ${y2}, 615 ${y2}`}
-              fill="none" stroke={resolveSliceColor(style, palette, flow.source, index)} strokeWidth={width} opacity={0.38}
-              onClick={() => onSelect?.(flow.source)} className="cursor-pointer">
-              <title>{flow.source}{' -> '}{flow.target}: {formatNumber(flow.value, flowStyle)}</title>
-            </path>
-            {labelsEnabled && (
-              <text x={midX} y={midY - 4} fontSize={flowFontSize} textAnchor="middle" fill={flowFontColor} style={{ pointerEvents: 'none' }}>
-                {formatNumber(flow.value, flowStyle)}
-              </text>
-            )}
-          </g>
+          <>
+            {flows.map((flow, index) => {
+              const y1 = yFor(sources, flow.source);
+              const y2 = yFor(targets, flow.target);
+              const width = 2 + positiveShare(flow.value, max) * maxStroke;
+              const midY = (y1 + y2) / 2;
+              const flowOverride = dlc?.overrides?.[flow.source];
+              const flowFontColor = flowOverride?.fontColor ?? dlFontColor;
+              const flowFontSize = flowOverride?.fontSize ?? dlFontSize;
+              const flowFmt = flowOverride?.format ?? style.seriesFormats?.[flow.source] ?? dlFormat;
+              const flowStyle = flowFmt ? { ...style, numberFormat: flowFmt } : styleForLabel;
+              return (
+                <g key={`${flow.source}-${flow.target}-${index}`}>
+                  <path d={`M ${srcRightX} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${rightX} ${y2}`}
+                    fill="none" stroke={resolveSliceColor(style, palette, flow.source, index)} strokeWidth={width} opacity={0.38}
+                    onClick={() => onSelect?.(flow.source)} className="cursor-pointer">
+                    <title>{flow.source}{' -> '}{flow.target}: {formatNumber(flow.value, flowStyle)}</title>
+                  </path>
+                  {labelsEnabled && (
+                    <text x={midX} y={midY - 4} fontSize={flowFontSize} textAnchor="middle" fill={flowFontColor} style={{ pointerEvents: 'none' }}>
+                      {formatNumber(flow.value, flowStyle)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {sources.map((source, index) => (
+              <g key={source} onClick={() => onSelect?.(source)} className="cursor-pointer">
+                <rect x={leftX} y={yFor(sources, source) - 13} width={nodeW} height={26} rx={6} fill={resolveSliceColor(style, palette, source, index)} opacity={0.85} />
+                <text x={leftX + nodeW / 2} y={yFor(sources, source) + 4} textAnchor="middle" fontSize={11} fill="#fff">{source.slice(0, 18)}</text>
+              </g>
+            ))}
+            {targets.map((target) => (
+              <g key={target}>
+                <rect x={rightX} y={yFor(targets, target) - 13} width={nodeW} height={26} rx={6} fill="rgb(var(--surface-3))" stroke="rgb(var(--border-line))" />
+                <text x={rightX + nodeW / 2} y={yFor(targets, target) + 4} textAnchor="middle" fontSize={11} fill="rgb(var(--text-secondary))">{target.slice(0, 18)}</text>
+              </g>
+            ))}
+          </>
         );
-      })}
-      {sources.map((source, index) => (
-        <g key={source} onClick={() => onSelect?.(source)} className="cursor-pointer">
-          <rect x={55} y={yFor(sources, source) - 13} width={130} height={26} rx={6} fill={resolveSliceColor(style, palette, source, index)} opacity={0.85} />
-          <text x={120} y={yFor(sources, source) + 4} textAnchor="middle" fontSize={11} fill="#fff">{source.slice(0, 18)}</text>
-        </g>
-      ))}
-      {targets.map((target) => (
-        <g key={target}>
-          <rect x={615} y={yFor(targets, target) - 13} width={130} height={26} rx={6} fill="rgb(var(--surface-3))" stroke="rgb(var(--border-line))" />
-          <text x={680} y={yFor(targets, target) + 4} textAnchor="middle" fontSize={11} fill="rgb(var(--text-secondary))">{target.slice(0, 18)}</text>
-        </g>
-      ))}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -1150,91 +1235,92 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
   const sourceSet = new Set(inner.map((item) => item.name));
   const outerPairs = pairs.filter((pair) => sourceSet.has(pair.source));
   const total = inner.reduce((sum, item) => sum + item.value, 0) || 1;
-  let cursor = 0;
-  const sourceAngles = new Map<string, { start: number; end: number }>();
-  // Phase-15.86 — DataLabels on inner-ring slices.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   const dlFontSize = dlc?.fontSize ?? 11;
   const dlFontColor = dlc?.fontColor ?? '#fff';
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {inner.map((item, index) => {
-        const angle = (item.value / total) * 360;
-        const start = cursor;
-        const end = cursor + angle;
-        sourceAngles.set(item.name, { start, end });
-        cursor = end;
-        // Phase-15.86 — slice label at mid-angle on the inner ring.
-        // Skip very small slices (<5%) so labels don't overlap.
-        const sharePct = item.value / total;
-        const mid = (start + end) / 2;
-        const labelPos = polar(400, 210, 83, mid);
-        const override = dlc?.overrides?.[item.name];
-        const fontColor = override?.fontColor ?? dlFontColor;
-        const fontSize = override?.fontSize ?? dlFontSize;
-        const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
-        const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — sunburst rings grow to the shorter side (legend reserved).
+        const legendW = Math.min(200, Math.max(118, W * 0.26));
+        const areaW = Math.max(40, W - legendW);
+        const cx = areaW / 2;
+        const cy = H / 2;
+        const R = Math.max(28, Math.min(areaW, H) / 2 - 12);
+        const r1in = R * 0.25, r1out = R * 0.55, r2in = R * 0.57, r2out = R;
+        const labelR = R * 0.4;
+        const sourceAngles = new Map<string, { start: number; end: number }>();
+        let cursor = 0;
         return (
-          <g key={item.name}>
-            <path d={ringSegment(400, 210, 115, 52, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
-              onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-              <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
-            </path>
-            {labelsEnabled && sharePct >= 0.05 && (
-              <text x={labelPos.x} y={labelPos.y} textAnchor="middle" fontSize={fontSize} fill={fontColor} style={{ pointerEvents: 'none' }}>
-                {style.dataLabelTemplate
-                  ? expandLabelTemplate({
-                      template: style.dataLabelTemplate,
-                      formatted: formatNumber(item.value, styleForLabel),
-                      rawName: item.name,
-                      percent: sharePct,
-                    })
-                  : formatNumber(item.value, styleForLabel)}
-              </text>
-            )}
-          </g>
+          <>
+            {inner.map((item, index) => {
+              const angle = (item.value / total) * 360;
+              const start = cursor;
+              const end = cursor + angle;
+              sourceAngles.set(item.name, { start, end });
+              cursor = end;
+              const sharePct = item.value / total;
+              const mid = (start + end) / 2;
+              const labelPos = polar(cx, cy, labelR, mid);
+              const override = dlc?.overrides?.[item.name];
+              const fontColor = override?.fontColor ?? dlFontColor;
+              const fontSize = override?.fontSize ?? dlFontSize;
+              const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
+              const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              return (
+                <g key={item.name}>
+                  <path d={ringSegment(cx, cy, r1out, r1in, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
+                    onClick={() => onSelect?.(item.name)} className="cursor-pointer">
+                    <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                  </path>
+                  {labelsEnabled && sharePct >= 0.05 && (
+                    <text x={labelPos.x} y={labelPos.y} textAnchor="middle" fontSize={fontSize} fill={fontColor} style={{ pointerEvents: 'none' }}>
+                      {style.dataLabelTemplate
+                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: sharePct })
+                        : formatNumber(item.value, styleForLabel)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {outerPairs.map((pair, index) => {
+              const range = sourceAngles.get(pair.source);
+              if (!range) return null;
+              const siblings = outerPairs.filter((item) => item.source === pair.source);
+              const siblingTotal = siblings.reduce((sum, item) => sum + item.value, 0) || 1;
+              const before = siblings.slice(0, siblings.indexOf(pair)).reduce((sum, item) => sum + item.value, 0);
+              const start = range.start + ((before / siblingTotal) * (range.end - range.start));
+              const end = start + ((pair.value / siblingTotal) * (range.end - range.start));
+              return (
+                <path key={`${pair.source}-${pair.target}-${index}`} d={ringSegment(cx, cy, r2out, r2in, start, end)} fill={resolveSliceColor(style, palette, pair.target, index)} opacity={0.62}>
+                  <title>{pair.source} / {pair.target}: {formatNumber(pair.value, style)}</title>
+                </path>
+              );
+            })}
+            {inner.map((item, index) => {
+              const sharePct = item.value / total;
+              const label = item.name === '' || item.name == null ? '(blank)' : String(item.name).slice(0, 16);
+              return (
+                <g key={`sb-legend-${item.name}`} transform={`translate(${areaW + 8} ${16 + index * 20})`} className="cursor-pointer" onClick={() => onSelect?.(item.name)}>
+                  <rect width={11} height={11} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
+                  <text x={17} y={10} fontSize={11} fill="rgb(var(--text-secondary))">
+                    {`${label} · ${(sharePct * 100).toFixed(sharePct < 0.1 ? 1 : 0)}%`}
+                  </text>
+                </g>
+              );
+            })}
+          </>
         );
-      })}
-      {outerPairs.map((pair, index) => {
-        const range = sourceAngles.get(pair.source);
-        if (!range) return null;
-        const siblings = outerPairs.filter((item) => item.source === pair.source);
-        const siblingTotal = siblings.reduce((sum, item) => sum + item.value, 0) || 1;
-        const before = siblings.slice(0, siblings.indexOf(pair)).reduce((sum, item) => sum + item.value, 0);
-        const start = range.start + ((before / siblingTotal) * (range.end - range.start));
-        const end = start + ((pair.value / siblingTotal) * (range.end - range.start));
-        return (
-          <path key={`${pair.source}-${pair.target}-${index}`} d={ringSegment(400, 210, 168, 118, start, end)} fill={resolveSliceColor(style, palette, pair.target, index)} opacity={0.62}>
-            <title>{pair.source} / {pair.target}: {formatNumber(pair.value, style)}</title>
-          </path>
-        );
-      })}
-      {/* Always-on legend for the inner ring — a sunburst is unreadable
-          without it (slice labels only appeared when the DataLabels toggle
-          was on). Lists each source with its colour + value share. */}
-      {inner.map((item, index) => {
-        const sharePct = item.value / total;
-        const label = item.name === '' || item.name == null ? '(blank)' : String(item.name).slice(0, 16);
-        return (
-          <g key={`sb-legend-${item.name}`} transform={`translate(600 ${64 + index * 20})`} className="cursor-pointer" onClick={() => onSelect?.(item.name)}>
-            <rect width={11} height={11} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
-            <text x={17} y={10} fontSize={11} fill="rgb(var(--text-secondary))">
-              {`${label} · ${(sharePct * 100).toFixed(sharePct < 0.1 ? 1 : 0)}%`}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
 function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; palette: string[]; style: ChartStyleConfig; onSelect?: (source: string) => void }) {
-  // RIBBON's X is the time field — the axis MUST be chronological. The BE
-  // returns rows in GROUP-BY order (interleaved by the breakdown column), so
-  // `new Set(...)` insertion order is NOT sorted. Sort by parsed date (string
-  // fallback for non-date sources) BEFORE slicing so the rank-flow reads
-  // left-to-right in time order. TimelineChart already does the equivalent.
+  // RIBBON's X is the time field — the axis MUST be chronological. Sort by
+  // parsed date (string fallback) BEFORE slicing so the rank-flow reads
+  // left-to-right in time order.
   const times = Array.from(new Set(pairs.map((pair) => pair.source)))
     .sort((a, b) => {
       const ta = new Date(String(a)).getTime();
@@ -1245,49 +1331,56 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
     .slice(0, 20);
   const cats = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 8);
   if (times.length < 2 || cats.length === 0) return <EmptyAdvanced message="Select time, series, and value fields." />;
-  const valueMap = new Map(pairs.map((pair) => [`${pair.source}\u0000${pair.target}`, pair.value]));
+  const valueMap = new Map(pairs.map((pair) => [JSON.stringify([pair.source, pair.target]), pair.value]));
   const rankByTime = new Map<string, Map<string, number>>();
   for (const time of times) {
     const ranked = cats
-      .map((cat) => ({ cat, value: valueMap.get(`${time}\u0000${cat}`) ?? 0 }))
+      .map((cat) => ({ cat, value: valueMap.get(JSON.stringify([time, cat])) ?? 0 }))
       .sort((a, b) => b.value - a.value);
     rankByTime.set(time, new Map(ranked.map((item, index) => [item.cat, index])));
   }
-  const x = (index: number) => 70 + index * (660 / Math.max(times.length - 1, 1));
-  const y = (rank: number) => 55 + rank * (300 / Math.max(cats.length - 1, 1));
-  // Phase-15.86 — RIBBON DataLabels: write the category name at the
-  // last point of each ribbon so DA can identify which category each
-  // ribbon represents without hovering each line.
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      {cats.map((cat, catIndex) => {
-        const d = times.map((time, timeIndex) => `${timeIndex === 0 ? 'M' : 'L'} ${x(timeIndex)} ${y(rankByTime.get(time)?.get(cat) ?? cats.length - 1)}`).join(' ');
-        const catColor = resolveSliceColor(style, palette, cat, catIndex);
-        const override = dlc?.overrides?.[cat];
-        const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
-        const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? catColor;
-        const lastTime = times[times.length - 1];
-        const lastRank = rankByTime.get(lastTime)?.get(cat) ?? cats.length - 1;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — ribbon flow fills the tile at the live size.
+        const padL = 60, padR = 86, padT = 40, padB = 58;
+        const x = (index: number) => padL + index * ((W - padL - padR) / Math.max(times.length - 1, 1));
+        const y = (rank: number) => padT + rank * ((H - padT - padB) / Math.max(cats.length - 1, 1));
+        const labelY = H - 16;
+        const ribbonW = Math.max(4, Math.min(14, (H - padT - padB) / Math.max(cats.length, 1) * 0.4));
         return (
-          <g key={cat}>
-            <path d={d} fill="none" stroke={catColor} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
-              onClick={() => onSelect?.(cat)} className="cursor-pointer">
-              <title>{cat}</title>
-            </path>
-            {labelsEnabled && (
-              <text x={x(times.length - 1) + 8} y={y(lastRank) + 4} fontSize={labelFontSize} fill={labelFontColor} style={{ pointerEvents: 'none' }}>
-                {cat.slice(0, 18)}
-              </text>
-            )}
-          </g>
+          <>
+            {cats.map((cat, catIndex) => {
+              const d = times.map((time, timeIndex) => `${timeIndex === 0 ? 'M' : 'L'} ${x(timeIndex)} ${y(rankByTime.get(time)?.get(cat) ?? cats.length - 1)}`).join(' ');
+              const catColor = resolveSliceColor(style, palette, cat, catIndex);
+              const override = dlc?.overrides?.[cat];
+              const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+              const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? catColor;
+              const lastTime = times[times.length - 1];
+              const lastRank = rankByTime.get(lastTime)?.get(cat) ?? cats.length - 1;
+              return (
+                <g key={cat}>
+                  <path d={d} fill="none" stroke={catColor} strokeWidth={ribbonW} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
+                    onClick={() => onSelect?.(cat)} className="cursor-pointer">
+                    <title>{cat}</title>
+                  </path>
+                  {labelsEnabled && (
+                    <text x={x(times.length - 1) + 8} y={y(lastRank) + 4} fontSize={labelFontSize} fill={labelFontColor} style={{ pointerEvents: 'none' }}>
+                      {cat.slice(0, 18)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {times.map((time, index) => (
+              <text key={time} x={x(index)} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x(index)} ${labelY})`} fill="rgb(var(--text-tertiary))">{time.slice(0, 12)}</text>
+            ))}
+          </>
         );
-      })}
-      {times.map((time, index) => (
-        <text key={time} x={x(index)} y={392} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x(index)} 392)`} fill="rgb(var(--text-tertiary))">{time.slice(0, 12)}</text>
-      ))}
-    </svg>
+      }}
+    </ResponsiveSvg>
   );
 }
 
@@ -1310,7 +1403,6 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
   if (!events.length) return <EmptyAdvanced message="No valid timeline rows to render." />;
   const min = Math.min(...events.map((event) => event.time));
   const max = Math.max(...events.map((event) => event.time));
-  const x = (time: number) => 70 + ((time - min) / Math.max(max - min, 1)) * 660;
   const maxValue = Math.max(...events.map((event) => Math.abs(event.value)), 1);
   // Phase-15.86 — DataLabels master switch. Master defaults to true so
   // existing charts (where labels always rendered for first 18 events)
@@ -1318,10 +1410,19 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
   return (
-    <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
-      <line x1={70} y1={210} x2={730} y2={210} stroke="rgb(var(--border-line))" strokeWidth={2} />
-      {events.map((event, index) => {
-        const yy = index % 2 === 0 ? 155 : 265;
+    <ResponsiveSvg>
+      {(W, H) => {
+        // Phase-16.x — timeline spans the tile width; events alternate above/
+        // below a centred axis that scales with the tile height.
+        const padL = 60, padR = 60;
+        const axisY = H / 2;
+        const off = Math.min(Math.max(H * 0.18, 40), 120);
+        const x = (time: number) => padL + ((time - min) / Math.max(max - min, 1)) * Math.max(10, W - padL - padR);
+        return (
+          <>
+            <line x1={padL} y1={axisY} x2={W - padR} y2={axisY} stroke="rgb(var(--border-line))" strokeWidth={2} />
+            {events.map((event, index) => {
+        const yy = index % 2 === 0 ? axisY - off : axisY + off;
         const r = metric ? 5 + Math.sqrt(Math.abs(event.value) / maxValue) * 12 : 7;
         // Phase-15.86 — per-event style override.
         const override = dlc?.overrides?.[event.label];
@@ -1331,18 +1432,21 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
         const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
         return (
           <g key={`${event.label}-${event.time}-${index}`} onClick={() => onSelect?.(dimension, event.label)} className="cursor-pointer">
-            <line x1={x(event.time)} y1={210} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
+            <line x1={x(event.time)} y1={axisY} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
             <circle cx={x(event.time)} cy={yy} r={r} fill={resolveSliceColor(style, palette, event.label, index)} opacity={0.82} />
             {labelsEnabled && index < 18 && (
-              <text x={x(event.time)} y={yy + (yy < 210 ? -14 : 24)} fontSize={labelFontSize} textAnchor="middle" fill={labelFontColor}>
+              <text x={x(event.time)} y={yy + (yy < axisY ? -14 : 24)} fontSize={labelFontSize} textAnchor="middle" fill={labelFontColor}>
                 {event.label.slice(0, 14)}
               </text>
             )}
             <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, styleForLabel)}` : ''}</title>
           </g>
         );
-      })}
-    </svg>
+            })}
+          </>
+        );
+      }}
+    </ResponsiveSvg>
   );
 }
 
