@@ -792,12 +792,12 @@ function formatCellValue(
     currencySymbol?: string;
   } = {},
 ): string {
-  // BI-standard (Power BI): a null/blank member renders as "(blank)" so a
-  // missing dimension value (e.g. an unmapped snowflake join key) is visible
-  // and distinguishable from an intentional empty string — not an invisible
-  // empty cell that looks like a rendering glitch.
+  // DA preference (2026-06): a missing value renders as an EMPTY cell rather
+  // than the literal word "(blank)" — the word is visually noisy in a dense
+  // table (DA report: a column of "(blank)" rows is hard to read). An empty
+  // cell is the cleaner, expected look.
   if (value === null || value === undefined) {
-    return '(blank)';
+    return '';
   }
 
   if (typeof value === 'boolean') {
