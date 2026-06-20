@@ -1436,53 +1436,56 @@ function ExploreChartInner({
     }
     setEphemeralDrill(next);
   };
+  // Phase-16.x — date-drill control moved to the chart's TOP-RIGHT as a proper
+  // chip (was a faint underlined "Enable date drill…" text line at top-left
+  // that read like stray chart content and crowded the y-axis / legend). Right
+  // alignment is the conventional spot for a per-visual drill toggle and keeps
+  // it clear of the plot.
   const DrillBar = canDrill ? (
-    drillActive ? (
-      <div className="px-1 py-1 flex items-center gap-1 text-[10px] text-text-tertiary mb-1">
-        <span className="font-semibold mr-1" title="Date drill — temporarily re-buckets the chart. Overrides the Granularity setting in the Style tab.">
-          Drill (overrides Granularity):
-        </span>
-        {DRILL_LEVELS.map((opt) => (
+    <div className="flex items-center justify-end gap-1 px-1 mb-1">
+      {drillActive ? (
+        <>
+          <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title="Drill thời gian — tạm gom biểu đồ theo cấp ngày, đè lên Granularity ở tab Style.">
+            Gom theo:
+          </span>
+          {DRILL_LEVELS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => handleDrillChange(opt.value)}
+              className={`rounded px-1.5 py-0.5 text-[10px] ${effectiveDrillLevel === opt.value ? 'bg-brand text-white' : 'border border-[rgb(var(--border-line))] bg-surface-2 hover:bg-surface-3'}`}
+              title={opt.value}
+            >
+              {opt.label}
+            </button>
+          ))}
           <button
-            key={opt.value}
             type="button"
-            onClick={() => handleDrillChange(opt.value)}
-            className={`px-1.5 py-0.5 rounded text-[10px] ${effectiveDrillLevel === opt.value ? 'bg-brand text-white' : 'bg-surface-2 hover:bg-surface-3'}`}
-            title={opt.value}
+            onClick={() => handleDrillChange('raw')}
+            className="ml-0.5 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-quaternary hover:bg-surface-3"
+            title="Tắt drill — quay về Granularity ở tab Style"
           >
-            {opt.label}
+            × Tắt
           </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => handleDrillChange('raw')}
-          className="ml-1 px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-text-quaternary"
-          title="Clear drill — fall back to the Style tab's Granularity"
-        >
-          × clear
-        </button>
-      </div>
-    ) : (
-      <div className="px-1 mb-0.5 text-[10px]">
+        </>
+      ) : (
         <button
           type="button"
           onClick={() => {
-            // Seed the drill level from whatever the Style tab already has,
-            // falling back to 'month' so the bar appears at a sensible
-            // default rather than 'raw' (which would render identically to
-            // disabled state — confusing).
+            // Seed from the Style tab's granularity, else 'month' (a sensible
+            // default — 'raw' would look identical to disabled).
             const seed = (style.timeGranularity && style.timeGranularity !== 'raw')
               ? (style.timeGranularity as TimeGranularity)
               : 'month';
             handleDrillChange(seed);
           }}
-          className="text-text-quaternary hover:text-text-tertiary underline-offset-2 hover:underline"
-          title="Start drilling: temporarily switch the chart's time bucket (Y/Q/M/W/D). The Style tab's Granularity is the fall-back."
+          className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-secondary"
+          title="Drill thời gian: tạm đổi cấp gom thời gian (Năm/Quý/Tháng/Tuần/Ngày) cho biểu đồ. Granularity ở tab Style là mặc định."
         >
-          Enable date drill…
+          <span aria-hidden>▾</span> Gom theo thời gian
         </button>
-      </div>
-    )
+      )}
+    </div>
   ) : null;
 
   // Phase-15.83 — banner removed; FE no longer truncates. Keep variable
@@ -1695,13 +1698,21 @@ function ExploreChartInner({
   const legendLayout: 'horizontal' | 'vertical' = legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal';
   const renderLegend = () => showLegend ? (
     <Legend
-      // Phase-16.x — a BOTTOM legend sits flush at the container edge (below
-      // the plot margin), so on prod — where the CSP-blocked web font falls
-      // back to a taller-glyph font — the legend's descenders (g/p/y in
-      // "MQL", "Won/Lead"…) got clipped by the card edge. paddingBottom +
-      // lineHeight give the text slack; Recharts reserves the padded height so
-      // the legend stays fully inside. Side/top legends are unaffected.
-      wrapperStyle={{ fontSize, cursor: 'pointer', ...(legendPos === 'bottom' ? { paddingBottom: 8, lineHeight: 1.4 } : {}) }}
+      // Phase-16.x — separate the legend's area from the plot so they never
+      // collide. A BOTTOM legend sits flush at the container edge (below the
+      // plot margin); on prod the CSP-blocked web font falls back to taller
+      // glyphs whose descenders (g/p/y in "MQL", "Won/Lead"…) got clipped by
+      // the card edge. A TOP legend sat flush against the plot top, so the
+      // top axis tick label ("600" / "1.6K" on a dual-axis combo) overlapped
+      // it (measured ~8px). Vertical padding makes Recharts reserve a taller
+      // legend band, giving a clear gap between the legend text and the plot /
+      // card edge. Side legends are unaffected.
+      wrapperStyle={{
+        fontSize,
+        cursor: 'pointer',
+        ...(legendPos === 'bottom' ? { paddingTop: 4, paddingBottom: 8, lineHeight: 1.4 } : {}),
+        ...(legendPos === 'top' ? { paddingBottom: 18, lineHeight: 1.4 } : {}),
+      }}
       verticalAlign={legendPos === 'left' || legendPos === 'right' ? 'middle' : legendPos as any}
       align={legendPos === 'left' || legendPos === 'right' ? legendPos as any : 'center'}
       layout={legendLayout}
