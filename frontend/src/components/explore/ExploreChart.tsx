@@ -60,6 +60,21 @@ const SCROLL_THRESHOLD = 25;
 const MIN_ITEM_WIDTH = 48;
 
 /**
+ * Phase-16.x — base margin for every Recharts cartesian chart.
+ *
+ * DA report (prod): the bottom of the x-axis tick labels was clipped by the
+ * chart's SVG edge (a few px cut off the date labels). Root cause is the
+ * default Recharts bottom margin (5px) being too tight once the axis band
+ * sits flush at the surface bottom — and it gets worse with the prod
+ * fallback font (CSP blocks the web-font CDN), whose taller glyphs push the
+ * labels a few px further down. A slightly larger bottom margin moves the
+ * axis band up so labels always sit fully inside the SVG. Top/right get a
+ * little room too (top data labels + last x-label overflow); left stays at
+ * the Recharts default so the Y-axis title isn't squeezed.
+ */
+const CHART_BASE_MARGIN = { top: 8, right: 12, left: 5, bottom: 14 } as const;
+
+/**
  * Return XAxis props that adapt angle and height to the number of data
  * points. Phase-15.22 pins interval=0 so EVERY tick label renders.
  */
@@ -2240,7 +2255,7 @@ function ExploreChartInner({
           {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
-            <BarChart data={displayData} onClick={handleCategoricalChartClick}
+            <BarChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, xAxisIsDateLike)}
@@ -2488,7 +2503,7 @@ function ExploreChartInner({
           {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
-            <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
+            <AreaChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
@@ -2542,7 +2557,7 @@ function ExploreChartInner({
           {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
-            <LineChart data={displayData} onClick={handleCategoricalChartClick}>
+            <LineChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
@@ -2588,7 +2603,7 @@ function ExploreChartInner({
       ? Math.max(displayData.length * MIN_ROW_HEIGHT, 400)
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
-      <BarChart data={displayData} layout="vertical" onClick={handleCategoricalChartClick}>
+      <BarChart data={displayData} layout="vertical" margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
         {/* Phase-15.22: category labels on horizontal bar live on YAxis.
             Same interval=0 + truncate-with-tooltip treatment as XAxis on
@@ -2690,7 +2705,7 @@ function ExploreChartInner({
           {DrillBar}
           {TruncationBanner}
           {wrapScrollable(
-            <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
+            <ComposedChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField!, displayData.length, xAxisIsDateLike)}
               {renderYAxis()}
@@ -2826,7 +2841,7 @@ function ExploreChartInner({
         {DrillBar}
         {TruncationBanner}
         {wrapScrollable(
-          <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
+          <BarChart data={displayBarData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
             {renderXAxis(xField, displayBarData.length, xAxisIsDateLike)}
             {renderYAxis()}
