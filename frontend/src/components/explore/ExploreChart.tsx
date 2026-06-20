@@ -57,6 +57,9 @@ import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedEx
  * 38 → 48 for the same reason — gives rotated text room to breathe.
  */
 const SCROLL_THRESHOLD = 25;
+// Cross-highlight: opacity applied to the non-selected (dimmed) portion of a
+// mark while a highlight selection is active (PBI uses ~25-30%).
+const HIGHLIGHT_DIM_OPACITY = 0.25;
 const MIN_ITEM_WIDTH = 48;
 
 /**
@@ -242,6 +245,18 @@ function CustomLegend({
   // chart re-renders triggered by colour changes; only an explicit
   // outside-click or ESC closes it.
   const [openKey, setOpenKey] = React.useState<string | null>(null);
+  // Collapse cross-highlight's `<key>__hl` / `<key>__rest` stacked segments
+  // back to ONE legend entry per logical series (the split is a rendering
+  // detail; without this the legend showed each series twice whenever a
+  // highlight was active). Also guards against any accidental repeat.
+  const baseKeyOf = (k: string) => k.replace(/__(hl|rest)$/, '');
+  const seenKeys = new Set<string>();
+  const dedupedPayload = payload.filter((entry) => {
+    const bk = baseKeyOf(String(entry.dataKey ?? entry.value ?? ''));
+    if (seenKeys.has(bk)) return false;
+    seenKeys.add(bk);
+    return true;
+  });
   return (
     <ul
       style={{
@@ -250,24 +265,36 @@ function CustomLegend({
         margin: 0,
         display: 'flex',
         flexDirection: layout === 'vertical' ? 'column' : 'row',
-        flexWrap: 'wrap',
-        gap: layout === 'vertical' ? 4 : 12,
-        justifyContent: 'center',
+        // Horizontal (top/bottom) legends stay a SINGLE row and scroll
+        // horizontally instead of wrapping into a tall pile that eats the plot
+        // (PBI/Tableau behaviour). `safe center` centers a short legend but
+        // flips to start-aligned once it overflows, so the first item is never
+        // clipped behind the centering offset. Vertical (side) legends keep
+        // wrapping into columns as before.
+        flexWrap: layout === 'vertical' ? 'wrap' : 'nowrap',
+        overflowX: layout === 'vertical' ? 'visible' : 'auto',
+        overflowY: 'hidden',
+        gap: layout === 'vertical' ? 4 : 14,
+        justifyContent: layout === 'vertical' ? 'center' : 'safe center',
+        maxWidth: '100%',
+        scrollbarWidth: 'thin',
         fontSize,
       }}
     >
-      {payload.map((entry) => {
+      {dedupedPayload.map((entry) => {
         // Recharts types dataKey as `string | number | ((row) => any)`. We
         // only ever pass strings (`metricKey()` results) so the cast is
         // safe in practice, but force-stringify defensively in case a
         // future series ever uses a function dataKey — otherwise the
-        // hiddenSeries Set lookup would silently miss every entry.
-        const key = String(entry.dataKey ?? entry.value ?? '');
+        // hiddenSeries Set lookup would silently miss every entry. Normalize
+        // to the base key so toggle/visibility act on the whole series even
+        // when a highlight split it into `__hl`/`__rest`.
+        const key = baseKeyOf(String(entry.dataKey ?? entry.value ?? ''));
         const isHidden = hiddenSeries.has(key);
         const swatchColor = seriesColors?.[key] ?? entry.color ?? '#888';
         const canEditColor = Boolean(onColorChange);
         return (
-          <li key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <li key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
             {canEditColor ? (
               <Popover.Root
                 open={openKey === key}
@@ -361,6 +388,11 @@ function CustomLegend({
                 color: isHidden ? 'var(--text-quaternary, #999)' : 'inherit',
                 textDecoration: isHidden ? 'line-through' : 'none',
                 userSelect: 'none',
+                // Keep each label on ONE line — without this, multi-word labels
+                // ("joshua hall") wrapped inside their item, making every legend
+                // row ~50px tall (two text lines). nowrap + the row's horizontal
+                // scroll keeps the legend a single thin band.
+                whiteSpace: 'nowrap',
               }}
             >
               {entry.value}
@@ -399,8 +431,15 @@ function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Number formatting ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function formatNumber(value: any, style?: ChartStyleConfig, seriesKey?: string): string {
+  if (value === null || value === undefined || value === '') return '–';
   const n = Number(value);
-  if (isNaN(n)) return String(value);
+  if (!Number.isFinite(n)) {
+    // A genuine non-numeric STRING (e.g. a category label "Tablet") passes
+    // through unchanged. A non-finite NUMBER (NaN / ±Infinity — e.g. a
+    // calculated field dividing by a zero/null denominator) must NEVER render
+    // the literal "NaN"/"Infinity"; show an em-dash placeholder instead.
+    return typeof value === 'string' ? value : '–';
+  }
   // Phase-15.82 — per-series format override. seriesFormats[key] beats
   // the global numberFormat so DA can mix % and VND in one chart.
   const perSeriesFmt = seriesKey ? style?.seriesFormats?.[seriesKey] : undefined;
@@ -485,7 +524,11 @@ function resolveDataLabelStyle(
     background: override?.background ?? dlc?.background ?? false,
     backgroundColor: override?.backgroundColor ?? dlc?.backgroundColor ?? 'rgba(255,255,255,0.85)',
     format: override?.format ?? dlc?.format,
-    autoHideOverlap: dlc?.autoHideOverlap ?? false,
+    // Default ON (Power BI / Tableau parity): when data labels are enabled,
+    // labels that would collide with an already-placed one are dropped, so a
+    // dense or skewed chart shows a few readable labels instead of an illegible
+    // black band. Explicit `false` still turns it off.
+    autoHideOverlap: dlc?.autoHideOverlap ?? true,
   };
 }
 
@@ -850,6 +893,34 @@ function CustomTooltip({ active, payload, label, series, style, fontSize, xField
   const stackTotal = percentOfTotal
     ? payload.reduce((acc: number, e: any) => acc + (Number(e.value) || 0), 0)
     : 0;
+  // Cross-highlight renders each bar as two stacked segments `<key>__hl` +
+  // `<key>__rest`. Collapse them back to one row per series showing the TOTAL,
+  // so the tooltip reads the same as without highlight (no `__hl/__rest` leak).
+  const HL_SPLIT = /__(hl|rest)$/;
+  const isSplitTooltip = payload.some((e: any) => HL_SPLIT.test(String(e?.dataKey ?? '')));
+  // Collapse split keys back to one row per series showing the TOTAL.
+  //   • BAR/HBAR: only `__hl` + `__rest` are present → they SUM to the total.
+  //   • LINE/AREA: the bare series key (= total) coexists with `__hl` (the
+  //     highlighted overlay) → the bare value IS the total; do NOT add `__hl`.
+  const tooltipEntries = isSplitTooltip
+    ? Array.from(
+        payload.reduce((map: Map<string, any>, e: any) => {
+          const rawKey = String(e?.dataKey ?? e?.name ?? '');
+          const base = rawKey.replace(HL_SPLIT, '');
+          const isBare = !HL_SPLIT.test(rawKey);
+          const prev = map.get(base);
+          if (!prev) {
+            map.set(base, { dataKey: base, name: base, value: Number(e?.value) || 0, color: e?.color ?? e?.payload?.fill, payload: e?.payload, hasBare: isBare });
+          } else if (isBare) {
+            prev.value = Number(e?.value) || 0;
+            prev.hasBare = true;
+          } else if (!prev.hasBare) {
+            prev.value = (Number(prev.value) || 0) + (Number(e?.value) || 0);
+          }
+          return map;
+        }, new Map<string, any>()).values(),
+      )
+    : payload;
   return (
     <div
       className="bg-surface-1 border border-[rgb(var(--border-line))] rounded shadow-linear-sm"
@@ -858,7 +929,7 @@ function CustomTooltip({ active, payload, label, series, style, fontSize, xField
       {titleText !== undefined && (
         <div className="font-semibold text-text-primary mb-1">{titleText}</div>
       )}
-      {payload.map((entry: any, i: number) => {
+      {tooltipEntries.map((entry: any, i: number) => {
         const key = entry.dataKey ?? entry.name;
         const match = series.find((s) => s.key === key);
         const value = percentOfTotal
@@ -1139,6 +1210,14 @@ export interface ExploreChartProps {
   /** When true, backend already ran GROUP BY aggregation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip client-side applyGroupByAgg */
   preAggregated?: boolean;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  /** Cross-highlight (PBI-parity) — the P-filtered subset of `data`, SAME row
+   *  shape as `data` (same chart config / column keys), already aggregated by
+   *  the BE under the active selection. `null`/`undefined` ⇒ no highlight
+   *  active (render unchanged). An EMPTY array ⇒ highlight active but this
+   *  chart contributes nothing to the selection (all marks dim). Renderers
+   *  draw the highlighted portion solid and dim the remainder while keeping
+   *  the full baseline geometry (totals/context preserved). */
+  highlightData?: Record<string, any>[] | null;
   /** Phase-4: map qualified-or-bare field → display label, so legends and
    *  tooltips show measure.label instead of SQL identifiers. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
@@ -1175,6 +1254,7 @@ function ExploreChartInner({
   havingFilters = [],
   preAggregated = false,
   onSelectDataPoint,
+  highlightData,
   labelMap,
   formatMap,
   embedded = false,
@@ -1376,13 +1456,64 @@ function ExploreChartInner({
     return sortedCategoricalData;
   }, [type, sortedCategoricalData]);
 
-  if (!data || data.length === 0) {
-    return <EmptyState message="No data. Run the query first." />;
-  }
+  // ── Cross-highlight (PBI-parity) ──────────────────────────────────────
+  // `highlightData` is the P-filtered subset of `data` (same row shape),
+  // aggregated by the BE. We build a parallel model from it so the
+  // highlighted value of each category/slice/KPI is on the SAME basis as the
+  // baseline model — then renderers draw the highlighted part solid and dim
+  // the remainder, never mutating the baseline geometry.
+  const isHighlight = highlightData != null;
+  const highlightModel = useMemo(
+    () => (highlightData != null
+      ? buildExploreChartModel({ type, data: highlightData, roleConfig, havingFilters, preAggregated, labelMap })
+      : null),
+    [highlightData, type, roleConfig, havingFilters, preAggregated, labelMap],
+  );
+  // category (x value) → row of highlighted series values
+  const highlightCatLookup = useMemo(() => {
+    const m = new Map<string, Record<string, any>>();
+    if (!highlightModel || !xField) return m;
+    for (const row of highlightModel.categoricalData) {
+      m.set(String(row[xField] ?? ''), row);
+    }
+    return m;
+  }, [highlightModel, xField]);
+  // pie slice name → highlighted value
+  const highlightPieLookup = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!highlightModel) return m;
+    for (const row of highlightModel.pieData) {
+      m.set(String((row as any)?.name ?? ''), Number((row as any)?.value) || 0);
+    }
+    return m;
+  }, [highlightModel]);
+  // Split each categorical row into a solid highlighted segment (`<key>__hl`)
+  // and a dimmed remainder (`<key>__rest`) so a cartesian bar can be drawn as
+  // a 2-segment stack — the highlighted part at the base, the rest faded on
+  // top. The stack height stays = baseline total (context preserved). The
+  // original `<key>` is kept on the row so tooltips still read the total.
+  const buildHighlightSplitRows = useCallback(
+    (rows: Record<string, any>[], seriesList: { key: string }[]) => rows.map((row) => {
+      const hlRow = highlightCatLookup.get(String(row[xField ?? ''] ?? ''));
+      const out: Record<string, any> = { ...row };
+      for (const s of seriesList) {
+        const total = Number(row[s.key]) || 0;
+        const hlRaw = hlRow ? (Number(hlRow[s.key]) || 0) : 0;
+        const hl = Math.max(0, Math.min(hlRaw, total));
+        out[`${s.key}__hl`] = hl;
+        out[`${s.key}__rest`] = Math.max(total - hl, 0);
+      }
+      return out;
+    }),
+    [highlightCatLookup, xField],
+  );
 
-  if (invalidMessage) {
-    return <EmptyState message={invalidMessage} />;
-  }
+  // NOTE: the empty-data / invalid-message guards were here, but several hooks
+  // are declared BELOW (autoDualYForBarLine, effectiveColumnFormats,
+  // resolveConditionalColor, …). Returning early on empty data skipped those
+  // hooks, so when a cross-filter emptied a chart the hook COUNT dropped between
+  // renders → React #300 ("rendered fewer hooks"), crashing the tile. The
+  // guards now live just below the last hook (before the type branches).
 
   // Truncation banner ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shown above the chart when data points exceed MAX_CHART_POINTS
   // Phase-15.83 — DA dropped the FE row cap entirely. No banner, no toggle.
@@ -1836,6 +1967,16 @@ function ExploreChartInner({
     emitSelection(dimension, payload?.label);
   };
 
+  // Empty / invalid guards — MUST sit below every hook above (moved here from
+  // mid-hooks) so the hook count never changes between renders when a filter
+  // empties the chart (was React #300, crashed the tile on cross-filter).
+  if (!data || data.length === 0) {
+    return <EmptyState message="No data. Run the query first." />;
+  }
+  if (invalidMessage) {
+    return <EmptyState message={invalidMessage} />;
+  }
+
   if (type === 'KPI') {
     if (!kpiMetric || kpiValue === undefined) return <EmptyState message="Select a value column to render this card." />;
     const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric, labelMap);
@@ -1891,13 +2032,23 @@ function ExploreChartInner({
       ?? style.numberFormat
       ?? 'compact';
     const kpiDecimals = style.seriesDecimalPlaces?.[kpiMetricKey] ?? style.decimalPlaces;
+    // Cross-highlight: when a selection is active, show the highlighted
+    // (P-filtered) value as the main figure and keep the baseline total as a
+    // small caption underneath so the share is readable (PBI-parity). When
+    // this KPI can't resolve the selection, highlightModel.kpiValue is
+    // undefined → fall back to the baseline value (card reads unaffected).
+    const kpiHighlightValue = isHighlight ? highlightModel?.kpiValue : undefined;
+    const kpiDisplayValue = kpiHighlightValue !== undefined ? kpiHighlightValue : kpiValue;
+    const kpiBaselineCaption = (isHighlight && kpiHighlightValue !== undefined)
+      ? formatNumber(kpiValue, style, kpiMetricKey)
+      : null;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className={`flex-1 flex ${embedded ? 'items-stretch' : 'items-center justify-center'}`}>
+        <div className={`flex-1 flex flex-col ${embedded ? 'items-stretch' : 'items-center justify-center'}`}>
           <div className={embedded ? 'w-full h-full' : 'w-full max-w-xl'}>
             <KpiCard
-              value={kpiValue}
+              value={kpiDisplayValue}
               label={cardLabel}
               format={kpiFormat}
               decimalPlaces={kpiDecimals}
@@ -1921,6 +2072,11 @@ function ExploreChartInner({
               embedded={embedded}
             />
           </div>
+          {kpiBaselineCaption !== null && (
+            <div className="mt-1 px-1 text-center text-[11px] font-medium text-text-tertiary">
+              trên tổng {kpiBaselineCaption}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2120,9 +2276,20 @@ function ExploreChartInner({
                 label={renderPieLabel}
                 labelLine={showDataLabels}
               >
-                {sortedPieData.map((row: any, i) => (
-                  <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} />
-                ))}
+                {sortedPieData.map((row: any, i) => {
+                  // Cross-highlight: dim each slice by its highlighted share
+                  // (hl / total). The clicked slice (or any slice carrying the
+                  // selection) stays solid; unrelated slices fade. Geometry
+                  // (slice size = baseline value) is untouched.
+                  const sliceTotal = Number(row?.value) || 0;
+                  const sliceHl = highlightPieLookup.get(String(row?.name ?? '')) || 0;
+                  const sliceOpacity = isHighlight
+                    ? (sliceTotal > 0 ? Math.max(HIGHLIGHT_DIM_OPACITY, Math.min(1, sliceHl / sliceTotal)) : HIGHLIGHT_DIM_OPACITY)
+                    : 1;
+                  return (
+                    <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} fillOpacity={sliceOpacity} />
+                  );
+                })}
               </Pie>
               {/* Phase-15.86 — CustomTooltip on PIE so `tooltipExtraFields`
                   surfaces the row's other columns (eg. region, segment)
@@ -2202,6 +2369,11 @@ function ExploreChartInner({
     // point's label (dimension value) so the Series colors editor entries
     // matching that label paint the correct dot.
     const hasPerPointColors = Boolean(style.seriesColors && Object.keys(style.seriesColors).length > 0);
+    // Cross-highlight: dim points whose dimension value is not the selected one.
+    const hlScatterLabels = isHighlight
+      ? new Set((highlightModel?.scatterPoints ?? []).map((p: any) => String(p?.label)))
+      : null;
+    const renderScatterCells = isHighlight || hasPerPointColors;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -2218,8 +2390,12 @@ function ExploreChartInner({
               <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
               {renderLegend()}
               <Scatter isAnimationActive={animate} name={`${fieldLabel(scatterX, labelMap)} vs ${fieldLabel(scatterY, labelMap)}`} data={sortedScatterPoints} fill={PALETTE[0]}>
-                {hasPerPointColors && sortedScatterPoints.map((point: any, idx: number) => (
-                  <Cell key={`scatter-${idx}`} fill={getSeriesColor(String(point?.label ?? idx), idx)} />
+                {renderScatterCells && sortedScatterPoints.map((point: any, idx: number) => (
+                  <Cell
+                    key={`scatter-${idx}`}
+                    fill={hasPerPointColors ? getSeriesColor(String(point?.label ?? idx), idx) : PALETTE[0]}
+                    fillOpacity={hlScatterLabels ? (hlScatterLabels.has(String(point?.label)) ? 1 : HIGHLIGHT_DIM_OPACITY) : 1}
+                  />
                 ))}
                 {scatterLabelField && (() => {
                   // Phase-15.86 — when DataLabels enabled, route through
@@ -2248,6 +2424,13 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'TABLE') {
+    // Cross-highlight: dim rows whose dimension key isn't in the P subset.
+    // Key = all string (dimension) cells, computed identically on both sides.
+    const tableRowDimKey = (row: Record<string, any>) =>
+      Object.keys(row).filter((k) => typeof row[k] === 'string').sort().map((k) => `${k}=${row[k]}`).join('|');
+    const tableHighlightKeys = isHighlight
+      ? new Set((highlightModel?.tableData ?? []).map(tableRowDimKey))
+      : null;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -2255,6 +2438,8 @@ function ExploreChartInner({
           <TableVisualization
             data={tableData}
             columns={tableColumns}
+            highlightRowKeys={tableHighlightKeys}
+            rowDimKey={tableRowDimKey}
             conditionalFormatting={style.tableEnableConditionalFormatting ? style.tableConditionalFormatting : undefined}
             heatmapRules={style.tableEnableHeatmap ? style.tableHeatmapRules : undefined}
             summaryRows={style.tableSummaryRows}
@@ -2380,10 +2565,12 @@ function ExploreChartInner({
                 // of total-only. DA can still pick 'segment'/'total' in the
                 // "Stack label mode" toggle (Data Labels editor).
                 const stackMode = style.stackedBarLabelMode ?? 'both';
-                const showSegmentLabels = showDataLabels && (
+                // Suppress labels while a cross-highlight is active (matches
+                // BAR/LINE/AREA) — the dimmed view stays clean.
+                const showSegmentLabels = showDataLabels && !isHighlight && (
                   isPercent || stackMode === 'segment' || stackMode === 'both'
                 );
-                const showTotalLabels = showDataLabels && !isPercent && (
+                const showTotalLabels = showDataLabels && !isHighlight && !isPercent && (
                   stackMode === 'total' || stackMode === 'both'
                 );
                 // Phase-15.90 — total label uses its own resolver with
@@ -2411,6 +2598,12 @@ function ExploreChartInner({
                       hide={hiddenSeries.has(series.key)}
                       barSize={barSize}
                       radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
+                      {/* Cross-highlight (source): dim every category column whose
+                          x-value isn't the clicked one — the selected stack stays
+                          solid, the rest fade. Per-row Cell keeps the segment fill. */}
+                      {isHighlight && displayData.map((row: any, idx: number) => (
+                        <Cell key={`hl-${idx}`} fillOpacity={highlightCatLookup.has(String(row[xField ?? ''] ?? '')) ? 1 : HIGHLIGHT_DIM_OPACITY} />
+                      ))}
                       {/* Per-segment % label (percent mode) */}
                       {segDL && isPercent && (
                         <LabelList
@@ -2573,8 +2766,10 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ AREA ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'AREA') {
     const dateLikeXAxis = xAxisIsDateLike;
-    const displayData = sortRowsByDateAxis(sortedCategoricalData, xField, dateLikeXAxis && sortRules.length === 0);
+    const baseAreaData = sortRowsByDateAxis(sortedCategoricalData, xField, dateLikeXAxis && sortRules.length === 0);
     const displaySeries = categoricalSeriesWithCalc;
+    // Cross-highlight: dim baseline area, overlay solid `__hl` area.
+    const displayData = isHighlight ? buildHighlightSplitRows(baseAreaData, displaySeries) : baseAreaData;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -2593,24 +2788,42 @@ function ExploreChartInner({
               />
               {renderLegend()}
               {displaySeries.map((series, i) => {
+                const color = getSeriesColor(series.key, i);
                 return (
-                  <Area isAnimationActive={animate} key={series.key} type="monotone" dataKey={series.key}
-                    name={series.label}
-                    hide={hiddenSeries.has(series.key)}
-                    stroke={getSeriesColor(series.key, i)}
-                    fill={getSeriesColor(series.key, i)}
-                    fillOpacity={areaOpacity} strokeWidth={lineWidth}
-                    dot={dotsForCount(displayData.length)}
-                    strokeDasharray={lineDash}>
-                    {showDataLabels && (
-                      // Phase-15.84 bugfix — AREA chart was missing its
-                      // LabelList entirely; toggling DataLabels did
-                      // nothing for area-renders. 'point' orientation
-                      // because Recharts passes data-point coordinates
-                      // (cx,cy) rather than rectangle bounds for Area.
-                      <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                  <React.Fragment key={series.key}>
+                    <Area isAnimationActive={animate} type="monotone" dataKey={series.key}
+                      name={series.label}
+                      hide={hiddenSeries.has(series.key)}
+                      stroke={color}
+                      fill={color}
+                      fillOpacity={isHighlight ? areaOpacity * HIGHLIGHT_DIM_OPACITY : areaOpacity}
+                      strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
+                      strokeWidth={lineWidth}
+                      dot={dotsForCount(displayData.length)}
+                      strokeDasharray={lineDash}>
+                      {showDataLabels && !isHighlight && (
+                        // Phase-15.84 bugfix — AREA chart was missing its
+                        // LabelList entirely; toggling DataLabels did
+                        // nothing for area-renders. 'point' orientation
+                        // because Recharts passes data-point coordinates
+                        // (cx,cy) rather than rectangle bounds for Area.
+                        <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                      )}
+                    </Area>
+                    {isHighlight && (
+                      <Area isAnimationActive={animate} type="monotone" dataKey={`${series.key}__hl`}
+                        name={series.label}
+                        hide={hiddenSeries.has(series.key)}
+                        stroke={color}
+                        fill={color}
+                        fillOpacity={areaOpacity}
+                        strokeOpacity={1}
+                        strokeWidth={lineWidth + 1}
+                        dot={dotsForCount(displayData.length)}
+                        legendType="none"
+                        connectNulls={false} />
                     )}
-                  </Area>
+                  </React.Fragment>
                 );
               })}
               {renderBenchmarkLine('y')}
@@ -2626,9 +2839,12 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ LINE / TIME_SERIES ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'LINE' || type === 'TIME_SERIES') {
     const dateLikeXAxis = type === 'TIME_SERIES' || xAxisIsDateLike;
-    const displayData = sortRowsByDateAxis(timeSeriesData, xField, dateLikeXAxis && sortRules.length === 0);
+    const baseLineData = sortRowsByDateAxis(timeSeriesData, xField, dateLikeXAxis && sortRules.length === 0);
     // Phase-15.82 — include calculated fields so they render as extra lines.
     const displaySeries = categoricalSeriesWithCalc;
+    // Cross-highlight: dim the baseline line and overlay a solid line of the
+    // P-contribution (`<key>__hl`). Keeps full series context (PBI-parity).
+    const displayData = isHighlight ? buildHighlightSplitRows(baseLineData, displaySeries) : baseLineData;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -2647,18 +2863,33 @@ function ExploreChartInner({
               />
               {renderLegend()}
               {displaySeries.map((series, i) => {
+                const stroke = getSeriesColor(series.key, i);
                 return (
-                  <Line isAnimationActive={animate} key={series.key} type="monotone" dataKey={series.key}
-                    name={series.label}
-                    hide={hiddenSeries.has(series.key)}
-                    stroke={getSeriesColor(series.key, i)}
-                    strokeWidth={lineWidth}
-                    dot={dotsForCount(displayData.length)}
-                    strokeDasharray={lineDash}>
-                    {showDataLabels && (
-                      <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                  <React.Fragment key={series.key}>
+                    <Line isAnimationActive={animate} type="monotone" dataKey={series.key}
+                      name={series.label}
+                      hide={hiddenSeries.has(series.key)}
+                      stroke={stroke}
+                      strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
+                      strokeWidth={lineWidth}
+                      dot={dotsForCount(displayData.length)}
+                      strokeDasharray={lineDash}>
+                      {showDataLabels && !isHighlight && (
+                        <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                      )}
+                    </Line>
+                    {isHighlight && (
+                      <Line isAnimationActive={animate} type="monotone" dataKey={`${series.key}__hl`}
+                        name={series.label}
+                        hide={hiddenSeries.has(series.key)}
+                        stroke={stroke}
+                        strokeOpacity={1}
+                        strokeWidth={lineWidth + 1}
+                        dot={dotsForCount(displayData.length)}
+                        legendType="none"
+                        connectNulls={false} />
                     )}
-                  </Line>
+                  </React.Fragment>
                 );
               })}
               {renderBenchmarkLine('y')}
@@ -2677,12 +2908,15 @@ function ExploreChartInner({
     // Phase-15.86 — include calc fields so they render as extra bars.
     const displaySeries = categoricalSeriesWithCalc;
     const hasConditional = conditionalSeriesRules.length > 0;
+    // Cross-highlight: 2-segment stack (solid base + dimmed remainder), same
+    // as vertical BAR.
+    const hbarData = isHighlight ? buildHighlightSplitRows(displayData, displaySeries) : displayData;
     const MIN_ROW_HEIGHT = 32; // px per row for horizontal bars
     const chartHeight = displayData.length > SCROLL_THRESHOLD
       ? Math.max(displayData.length * MIN_ROW_HEIGHT, 400)
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
-      <BarChart data={displayData} layout="vertical" margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+      <BarChart data={hbarData} layout="vertical" margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
         {/* Phase-15.22: category labels on horizontal bar live on YAxis.
             Same interval=0 + truncate-with-tooltip treatment as XAxis on
@@ -2713,6 +2947,18 @@ function ExploreChartInner({
         {renderLegend()}
         {displaySeries.map((series, i) => {
           const baseColor = getSeriesColor(series.key, i);
+          if (isHighlight) {
+            return (
+              <React.Fragment key={series.key}>
+                <Bar isAnimationActive={animate} dataKey={`${series.key}__hl`} stackId={series.key}
+                  name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor}
+                  fillOpacity={1} barSize={barSize} radius={[0, 0, 0, 0]} />
+                <Bar isAnimationActive={animate} dataKey={`${series.key}__rest`} stackId={series.key}
+                  name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor} legendType="none"
+                  fillOpacity={HIGHLIGHT_DIM_OPACITY} barSize={barSize} radius={[0, barRadius, barRadius, 0]} />
+              </React.Fragment>
+            );
+          }
           return (
             <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
               name={series.label}
@@ -2913,6 +3159,9 @@ function ExploreChartInner({
   // up as a bar alongside other metrics in BAR / GROUPED_BAR. Was
   // limited to LINE/AREA in the original Phase-15.82 rollout.
   const displayBarSeries = categoricalSeriesWithCalc;
+  // Cross-highlight: when active, draw each bar as a 2-segment stack
+  // (solid highlighted base + dimmed remainder). Otherwise render unchanged.
+  const barChartData = isHighlight ? buildHighlightSplitRows(displayBarData, displayBarSeries) : displayBarData;
   return (
     <div className="h-full flex flex-col">
       {ChartTitleEl}
@@ -2920,9 +3169,9 @@ function ExploreChartInner({
         {DrillBar}
         {TruncationBanner}
         {wrapScrollable(
-          <BarChart data={displayBarData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+          <BarChart data={barChartData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
-            {renderXAxis(xField, displayBarData.length, xAxisIsDateLike)}
+            {renderXAxis(xField, barChartData.length, xAxisIsDateLike)}
             {renderYAxis()}
             <Tooltip
               content={(p: any) => (
@@ -2933,6 +3182,21 @@ function ExploreChartInner({
             {displayBarSeries.map((series, i) => {
               const baseColor = getSeriesColor(series.key, i);
               const hasConditional = conditionalSeriesRules.length > 0;
+              if (isHighlight) {
+                // Stacked highlight: base segment solid (the P value), top
+                // segment faded (total − P). Same `stackId` keeps each series
+                // as its own stack, so multi-series grouping is preserved.
+                return (
+                  <React.Fragment key={series.key}>
+                    <Bar isAnimationActive={animate} dataKey={`${series.key}__hl`} stackId={series.key}
+                      name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor}
+                      fillOpacity={1} barSize={barSize} radius={[0, 0, 0, 0]} />
+                    <Bar isAnimationActive={animate} dataKey={`${series.key}__rest`} stackId={series.key}
+                      name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor} legendType="none"
+                      fillOpacity={HIGHLIGHT_DIM_OPACITY} barSize={barSize} radius={[barRadius, barRadius, 0, 0]} />
+                  </React.Fragment>
+                );
+              }
               return (
                 <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
                   name={series.label}
@@ -2954,7 +3218,7 @@ function ExploreChartInner({
             {renderBenchmarkLine('y')}
             {renderAnnotations()}
           </BarChart>,
-          displayBarData.length,
+          barChartData.length,
         )}
       </div>
     </div>

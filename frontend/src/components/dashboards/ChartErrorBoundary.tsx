@@ -3,6 +3,9 @@
 import React from 'react';
 import { AlertTriangle, Loader2, RotateCcw, X, ChevronDown } from 'lucide-react';
 import { IconButton } from '@/components/ui/Button';
+import { useI18n } from '@/providers/LanguageProvider';
+
+type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 interface State {
   hasError: boolean;
@@ -29,9 +32,10 @@ type ChartErrorBoundaryProps = React.PropsWithChildren<{
    * Dashboards don't pass it, so their behaviour is unchanged.
    */
   resetKey?: unknown;
+  t: Translate;
 }>;
 
-export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps, State> {
+class ChartErrorBoundaryInner extends React.Component<ChartErrorBoundaryProps, State> {
   constructor(props: ChartErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, detailsOpen: false };
@@ -58,19 +62,20 @@ export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps,
 
   render() {
     if (this.state.hasError) {
+      const { t } = this.props;
       const canRemove = this.props.onRemove && this.props.dashboardChartId !== undefined;
       return (
         <div className="bi-fade-in relative h-full rounded-xl border border-danger/30 bg-surface-1 p-4 shadow-linear-sm">
           {canRemove && (
             <IconButton
-              aria-label="Remove chart"
+              aria-label={t('dashboards.chartErrorBoundary.removeChart')}
               variant="secondary"
               size="xs"
               type="button"
               onClick={() => this.props.onRemove?.(this.props.dashboardChartId as number)}
               disabled={this.props.isRemoving}
               className="absolute right-2 top-2 border-danger/30 text-danger hover:bg-danger/10"
-              title="Remove chart"
+              title={t('dashboards.chartErrorBoundary.removeChart')}
             >
               {this.props.isRemoving ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -85,9 +90,11 @@ export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps,
               <AlertTriangle className="h-5 w-5 text-danger" />
             </div>
             <div className="text-center">
-              <p className="text-[13px] font-semibold text-danger">Không hiển thị được chart</p>
+              <p className="text-[13px] font-semibold text-danger">
+                {t('dashboards.chartErrorBoundary.title')}
+              </p>
               <p className="mt-0.5 text-tiny text-text-tertiary">
-                Lỗi runtime khiến tile này không render được.
+                {t('dashboards.chartErrorBoundary.subtitle')}
               </p>
             </div>
 
@@ -98,7 +105,7 @@ export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps,
                 className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1 text-tiny font-[510] text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
               >
                 <RotateCcw className="h-3 w-3" />
-                Thử lại
+                {t('dashboards.chartErrorBoundary.retry')}
               </button>
               {this.state.message && (
                 <button
@@ -109,7 +116,7 @@ export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps,
                   <ChevronDown
                     className={`h-3 w-3 transition-transform ${this.state.detailsOpen ? 'rotate-180' : ''}`}
                   />
-                  Chi tiết
+                  {t('dashboards.chartErrorBoundary.details')}
                 </button>
               )}
             </div>
@@ -125,4 +132,9 @@ export class ChartErrorBoundary extends React.Component<ChartErrorBoundaryProps,
     }
     return this.props.children;
   }
+}
+
+export function ChartErrorBoundary(props: Omit<ChartErrorBoundaryProps, 't'>) {
+  const { t } = useI18n();
+  return <ChartErrorBoundaryInner {...props} t={t} />;
 }

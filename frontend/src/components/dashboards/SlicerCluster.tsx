@@ -25,6 +25,7 @@
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { Image as ImageIcon, X, Settings2, Link2, Filter } from 'lucide-react';
+import { useI18n } from '@/providers/LanguageProvider';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import {
   type BaseFilter,
@@ -116,6 +117,7 @@ export function SlicerCluster({
   onUpdateSlicerScope,
   onOpenFilterMap,
 }: SlicerClusterProps) {
+  const { t } = useI18n();
   const rawLayout: SlicerClusterLayout = { ...DEFAULT_LAYOUT, ...(layout || {}) };
   // 'free' positioning was removed (cảnh báo: tránh ném slicer lung tung).
   // Any dashboard saved with position='free' falls back to 'top'.
@@ -416,11 +418,11 @@ export function SlicerCluster({
     <button
       type="button"
       onClick={() => setIsCollapsed(true)}
-      title="Thu gọn bộ lọc"
+      title={t('dashboards.slicerCluster.collapseFilters')}
       className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
     >
       <X className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">Thu gọn</span>
+      <span className="hidden sm:inline">{t('dashboards.slicerCluster.collapse')}</span>
     </button>
   ) : (
     <>
@@ -431,11 +433,11 @@ export function SlicerCluster({
         <button
           type="button"
           onClick={onOpenFilterMap}
-          title="Bản đồ filter — xem mọi filter đang tác động lên dashboard"
+          title={t('dashboards.slicerCluster.filterMapTooltip')}
           className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
         >
           <Filter className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Bản đồ</span>
+          <span className="hidden sm:inline">{t('dashboards.slicerCluster.filterMap')}</span>
         </button>
       )}
       {/* Phase-B8 — "Thu gọn" lives IN the header row here (builder) so it no
@@ -443,11 +445,11 @@ export function SlicerCluster({
       <button
         type="button"
         onClick={() => setIsCollapsed(true)}
-        title="Thu gọn bộ lọc"
+        title={t('dashboards.slicerCluster.collapseFilters')}
         className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
       >
         <X className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">Thu gọn</span>
+        <span className="hidden sm:inline">{t('dashboards.slicerCluster.collapse')}</span>
       </button>
       {/* Config gear — holds the rarely-used setup controls (position +
           add image) so the header stays clean. (Phase-B8: the "SLICER" chip
@@ -461,27 +463,27 @@ export function SlicerCluster({
               ? 'border-brand bg-brand/10 text-brand'
               : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
-          title="Customize slicer cluster (position, image)"
+          title={t('dashboards.slicerCluster.customizeTooltip')}
         >
           <Settings2 className="h-3.5 w-3.5" />
         </button>
         {configMenuOpen && (
           <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
-            <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">Position</div>
+            <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">{t('dashboards.slicerCluster.position')}</div>
             <div className="mb-2 flex gap-1">
               <button
                 type="button"
                 onClick={() => handlePositionChange('top')}
                 className={`flex-1 rounded border px-2 py-1 text-tiny ${effectiveLayout.position === 'top' ? 'border-brand bg-brand text-text-inverse' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'}`}
               >
-                ▤ Top
+                ▤ {t('dashboards.slicerCluster.top')}
               </button>
               <button
                 type="button"
                 onClick={() => handlePositionChange('left')}
                 className={`flex-1 rounded border px-2 py-1 text-tiny ${effectiveLayout.position === 'left' ? 'border-brand bg-brand text-text-inverse' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'}`}
               >
-                ▥ Left
+                ▥ {t('dashboards.slicerCluster.left')}
               </button>
             </div>
             {/* Phase-10 — Auto-distribute toggle. When ON, slicer cards
@@ -489,7 +491,7 @@ export function SlicerCluster({
                 `flex-1`. When OFF, each card keeps the drag-set width.
                 Toggling ON also CLEARS every existing widthPx so a later
                 toggle OFF gives a clean baseline (no stale narrow widths). */}
-            <div className="mb-2 mt-2 px-1 text-tiny font-emphasis text-text-tertiary">Layout</div>
+            <div className="mb-2 mt-2 px-1 text-tiny font-emphasis text-text-tertiary">{t('dashboards.slicerCluster.layout')}</div>
             <button
               type="button"
               onClick={() => {
@@ -511,21 +513,21 @@ export function SlicerCluster({
                   ? 'border-brand bg-brand/10 text-brand'
                   : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
               }`}
-              title="Distribute each slicer evenly across the row (clears manual drag widths)"
+              title={t('dashboards.slicerCluster.autoDistributeTooltip')}
             >
               <span aria-hidden>⇔</span>
               <span>
                 {effectiveLayout.distribute === 'auto'
-                  ? 'Auto-distribute (on)'
-                  : 'Auto-distribute'}
+                  ? t('dashboards.slicerCluster.autoDistributeOn')
+                  : t('dashboards.slicerCluster.autoDistribute')}
               </span>
             </button>
             <label
               className="flex cursor-pointer items-center gap-1.5 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
-              title="Add an image (logo) to the slicer cluster"
+              title={t('dashboards.slicerCluster.addImageTooltip')}
             >
               <ImageIcon className="h-3.5 w-3.5" />
-              <span>Add image / logo</span>
+              <span>{t('dashboards.slicerCluster.addImage')}</span>
               <input
                 type="file"
                 accept="image/*"
@@ -601,12 +603,12 @@ export function SlicerCluster({
             className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover"
             title={
               slicerNamesSummary
-                ? `Bộ lọc: ${slicerNamesSummary}${activeSlicerCount > 0 ? ` (${activeSlicerCount} đang áp dụng)` : ''} — bấm để mở`
-                : 'Hiện bộ lọc'
+                ? `${t('dashboards.slicerCluster.filtersLabel')}: ${slicerNamesSummary}${activeSlicerCount > 0 ? ` (${t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount })})` : ''} — ${t('dashboards.slicerCluster.clickToOpen')}`
+                : t('dashboards.slicerCluster.showFilters')
             }
           >
             <span aria-hidden>⛃</span>
-            <span className="shrink-0">Bộ lọc</span>
+            <span className="shrink-0">{t('dashboards.slicerCluster.filtersLabel')}</span>
             {/* Phase-18 — show the actual filter names so a collapsed pill
                 doesn't read as "filters missing". Falls back to just the
                 label + count when there are no resolvable names. */}
@@ -622,7 +624,7 @@ export function SlicerCluster({
                     ? 'bg-white text-brand'
                     : 'bg-white/25 text-white'
                 }`}
-                title={activeSlicerCount > 0 ? `${activeSlicerCount} đang áp dụng` : `${slicerEntries.length} bộ lọc`}
+                title={activeSlicerCount > 0 ? t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount }) : t('dashboards.slicerCluster.filterCount', { count: slicerEntries.length })}
               >
                 {activeSlicerCount > 0 ? activeSlicerCount : slicerEntries.length}
               </span>
@@ -696,6 +698,7 @@ interface ImageCellProps {
 }
 
 function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
+  const { t } = useI18n();
   const [isEditing, setIsEditing] = useState(false);
 
   const renderedImg = (
@@ -733,7 +736,7 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
             type="button"
             onClick={() => setIsEditing((v) => !v)}
             className="absolute -left-1 -top-1 rounded-full bg-surface-1 p-0.5 text-text-quaternary shadow ring-1 ring-[rgb(var(--border-line))] hover:text-brand"
-            title="Edit image settings"
+            title={t('dashboards.slicerCluster.editImageTooltip')}
           >
             <Settings2 className="h-3 w-3" />
           </button>
@@ -741,7 +744,7 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
             type="button"
             onClick={onRemove}
             className="absolute -right-1 -top-1 rounded-full bg-surface-1 p-0.5 text-text-quaternary shadow ring-1 ring-[rgb(var(--border-line))] hover:text-danger"
-            title="Remove image"
+            title={t('dashboards.slicerCluster.removeImageTooltip')}
           >
             <X className="h-3 w-3" />
           </button>
@@ -754,7 +757,7 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
           style={{ position: 'absolute' }}
         >
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-tiny font-emphasis text-text-secondary">Image settings</span>
+            <span className="text-tiny font-emphasis text-text-secondary">{t('dashboards.slicerCluster.imageSettings')}</span>
             <button
               type="button"
               onClick={() => setIsEditing(false)}
@@ -764,17 +767,17 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
             </button>
           </div>
 
-          <label className="block text-tiny text-text-tertiary">Alt text</label>
+          <label className="block text-tiny text-text-tertiary">{t('dashboards.slicerCluster.altText')}</label>
           <input
             type="text"
             value={img.alt ?? ''}
             onChange={(e) => onUpdate({ alt: e.target.value })}
-            placeholder="Company logo"
+            placeholder={t('dashboards.slicerCluster.altTextPlaceholder')}
             className="mb-2 w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
           />
 
           <label className="block text-tiny text-text-tertiary">
-            <Link2 className="mr-1 inline h-3 w-3" />Click link (optional)
+            <Link2 className="mr-1 inline h-3 w-3" />{t('dashboards.slicerCluster.clickLink')}
           </label>
           <input
             type="url"
@@ -784,20 +787,20 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
             className="mb-2 w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
           />
 
-          <label className="block text-tiny text-text-tertiary">Fit mode</label>
+          <label className="block text-tiny text-text-tertiary">{t('dashboards.slicerCluster.fitMode')}</label>
           <select
             value={img.fit ?? 'contain'}
             onChange={(e) => onUpdate({ fit: e.target.value as SlicerImageEntry['fit'] })}
             className="mb-2 w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
           >
-            <option value="contain">Contain (fit inside box)</option>
-            <option value="cover">Cover (fill box, may crop)</option>
-            <option value="fill">Fill (stretch)</option>
+            <option value="contain">{t('dashboards.slicerCluster.fitContain')}</option>
+            <option value="cover">{t('dashboards.slicerCluster.fitCover')}</option>
+            <option value="fill">{t('dashboards.slicerCluster.fitFill')}</option>
           </select>
 
           <div className="flex gap-2">
             <div className="flex-1">
-              <label className="block text-tiny text-text-tertiary">Width (px)</label>
+              <label className="block text-tiny text-text-tertiary">{t('dashboards.slicerCluster.widthPx')}</label>
               <input
                 type="number"
                 value={img.widthPx ?? ''}
@@ -806,12 +809,12 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
                     widthPx: e.target.value === '' ? undefined : Number(e.target.value),
                   })
                 }
-                placeholder="auto"
+                placeholder={t('dashboards.slicerCluster.autoPlaceholder')}
                 className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
               />
             </div>
             <div className="flex-1">
-              <label className="block text-tiny text-text-tertiary">Height (px)</label>
+              <label className="block text-tiny text-text-tertiary">{t('dashboards.slicerCluster.heightPx')}</label>
               <input
                 type="number"
                 value={img.heightPx ?? ''}
@@ -820,14 +823,14 @@ function ImageCell({ img, editable, onUpdate, onRemove }: ImageCellProps) {
                     heightPx: e.target.value === '' ? undefined : Number(e.target.value),
                   })
                 }
-                placeholder="auto"
+                placeholder={t('dashboards.slicerCluster.autoPlaceholder')}
                 className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-caption outline-none focus:ring-1 focus:ring-brand"
               />
             </div>
           </div>
 
           <p className="mt-2 text-tiny text-text-quaternary">
-            Để trống = tự động fit theo nội dung.
+            {t('dashboards.slicerCluster.emptyAutoFitHint')}
           </p>
         </div>
       )}

@@ -500,6 +500,10 @@ export interface DashboardChartLayout {
    *  their own per-visual filter (mirrors the styleConfigOverride pattern).
    *  Sent into chart-data API as extra_filters at runtime. */
   tileFilters?: any[];
+  /** Per-chart cross-highlight opt-out (default ON / undefined = on). When
+   *  false, the tile neither emits click-highlights nor reacts as a target.
+   *  Toggled from the tile's ⋯ menu. */
+  highlightEnabled?: boolean;
   // Canvas-mode geometry (px). Stored alongside grid coords so toggling modes
   // never loses cell positions.
   xPx?: number;

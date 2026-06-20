@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
@@ -33,6 +33,7 @@ import {
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 import { ChartDetailModal } from './ChartDetailModal';
 
@@ -51,6 +52,12 @@ interface ChartTileProps {
   onDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
+  /** Cross-highlight (PBI-parity). The active selection's P filter, resolved
+   *  at the page level. When set AND interactions mode = highlight, this tile
+   *  computes a highlighted overlay (source: locally; target: a parallel
+   *  P-filtered query) and renders it dim+solid WITHOUT narrowing baseline. */
+  highlightFilter?: BaseFilter | null;
+  isHighlightSource?: boolean;
   instanceParameters?: Record<string, any>;
   availablePages?: DashboardPageConfig[];
   currentPageId?: string | null;
@@ -76,32 +83,50 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 /**
- * Defer chart fetch until the tile enters the viewport. Once visible we keep it
- * mounted so scrolling away doesn't drop the cache or refetch needlessly.
+ * Track a tile's viewport relationship for two distinct purposes:
+ *  - `visible` (STICKY): true once the tile has ever entered the viewport, and
+ *    stays true. Drives mount/render so scrolling away never drops the cached
+ *    chart + its last data (we keep showing real numbers).
+ *  - `current` (LIVE): true only while the tile is in/near the viewport right
+ *    now. Drives the *active data fetch* — so a filter change re-runs queries
+ *    ONLY for the tiles you're actually looking at; off-screen tiles defer
+ *    their refetch until you scroll back to them (instead of all 32 charts
+ *    hammering BigQuery at once on every filter apply).
  */
 function useStickyVisibility(rootMargin = '300px') {
-  const ref = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (visible) return;
-    const node = ref.current;
-    if (!node || typeof IntersectionObserver === 'undefined') {
+  const [current, setCurrent] = useState(false);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  // Callback ref so we re-attach the observer whenever the host node changes.
+  // The tile renders different roots across its lifecycle (off-screen
+  // placeholder → skeleton → real chart card); a plain useRef+useEffect would
+  // keep observing the FIRST node (the placeholder) after it unmounts, leaving
+  // `current` frozen at true and defeating the off-screen deferral. Observing
+  // whatever node is currently mounted keeps `current` honest as you scroll.
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (!node) return;
+    if (typeof IntersectionObserver === 'undefined') {
       setVisible(true);
+      setCurrent(true);
       return;
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisible(true);
-          observer.disconnect();
-        }
+        const isVisible = entries.some((entry) => entry.isIntersecting);
+        setCurrent(isVisible);
+        if (isVisible) setVisible(true);
       },
       { rootMargin },
     );
     observer.observe(node);
-    return () => observer.disconnect();
-  }, [visible, rootMargin]);
-  return { ref, visible };
+    observerRef.current = observer;
+  }, [rootMargin]);
+  useEffect(() => () => observerRef.current?.disconnect(), []);
+  return { ref, visible, current };
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -189,6 +214,8 @@ function ChartTileBase({
   onDataLoaded,
   onSelectCrossFilter,
   isCrossFilterSource = false,
+  highlightFilter = null,
+  isHighlightSource = false,
   instanceParameters,
   availablePages = [],
   currentPageId = null,
@@ -197,14 +224,20 @@ function ChartTileBase({
   onFocus,
   editingBy = null,
 }: ChartTileProps) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   // During PDF export, force the tile "visible" so it fetches + renders even
   // when off-screen (the exporter never scrolls). Without this, ChartTile's own
   // IntersectionObserver gate keeps below-fold tiles at a blank placeholder and
   // they capture empty. (LazyChartSlot's force-visible only covers the wrapper.)
   const exportingPdf = useExportMode();
-  const { ref: visibilityRef, visible: stickyVisible } = useStickyVisibility();
+  const { ref: visibilityRef, visible: stickyVisible, current: currentlyVisible } = useStickyVisibility();
   const hasBeenVisible = stickyVisible || exportingPdf;
+  // Gate the active data fetch on CURRENT viewport presence (PDF export forces
+  // it on). A filter change refetches only what you're looking at; off-screen
+  // tiles wait until scrolled into view. They keep showing their prior data
+  // (keepPrevious) so deferral is invisible until you reach them.
+  const isActiveViewport = currentlyVisible || exportingPdf;
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId, { enabled: hasBeenVisible });
   const chartSemanticBinding = useMemo(() => {
     const config = chart?.config as any;
@@ -355,6 +388,39 @@ function ChartTileBase({
     return filters.length > 0 ? filters : undefined;
   }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
 
+  // Cross-highlight: resolve the active selection's P filter into the server
+  // shape FOR THIS CHART (same resolution the baseline serverFilters uses).
+  // Returns [] when this chart can't bind P (no field / no join path) — the
+  // caller treats that as "not affected" and renders the tile unchanged.
+  const highlightServerEntries = useMemo(() => {
+    if (!highlightFilter || !isFilterValueActive(highlightFilter)) return [] as Record<string, unknown>[];
+    const out: Record<string, unknown>[] = [];
+    for (const targetFilter of expandLinkedFilterTargets(highlightFilter)) {
+      const semanticRef = targetFilter.semanticField ?? targetFilter.fieldKey;
+      const hasSemanticRef = Boolean(semanticRef && semanticRef.includes('.'));
+      const resolvedField = hasSemanticRef && !chartSemanticBinding
+        ? null
+        : resolveChartFieldForFilter(targetFilter, chartSemanticBinding);
+      const canDeferToSemanticJoin = hasSemanticRef
+        && canDeferFilterToChartSemanticBinding(targetFilter, chartSemanticBinding);
+      if (!resolvedField && !canDeferToSemanticJoin) continue;
+      const field = resolvedField ?? targetFilter.field;
+      const calendarMapping = resolveCalendarFieldMapping(chartSemanticBinding, semanticRef);
+      out.push({
+        field,
+        operator: targetFilter.operator,
+        value: targetFilter.value,
+        semanticField: targetFilter.semanticField,
+        datasetId: targetFilter.datasetId,
+        ...(calendarMapping ? {
+          calendarField: calendarMapping.calendarField,
+          calendarSourceField: calendarMapping.sourceField,
+        } : {}),
+      });
+    }
+    return out;
+  }, [highlightFilter, chartSemanticBinding]);
+
   // Track which active global filters this chart could NOT consume. The
   // dashboard filter bar fan-outs every global filter to every tile, but
   // most charts have only a subset of fields available — silent dropping
@@ -408,7 +474,34 @@ function ChartTileBase({
     chartId,
     debouncedFilters,
     'dashboard',
-    { enabled: hasBeenVisible && !isLoadingChart && Boolean(chart) },
+    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart), keepPrevious: true },
+    viewerGrain,
+  );
+
+  // Cross-highlight overlay query (target tiles only): the SAME chart, the
+  // SAME baseline filters, PLUS the active selection P. Returns the
+  // P-contribution per category WITHOUT touching the baseline query above, so
+  // the existing filter pipeline runs byte-identically. Source tiles derive
+  // their highlight locally (no extra request) and skip this.
+  const overlayFilters = useMemo(() => {
+    if (!highlightFilter || isHighlightSource) return undefined;
+    if (highlightServerEntries.length === 0) return undefined;
+    return [...(debouncedFilters ?? []), ...highlightServerEntries];
+  }, [highlightFilter, isHighlightSource, highlightServerEntries, debouncedFilters]);
+  const overlayFilterKey = useMemo(
+    () => (overlayFilters ? JSON.stringify(overlayFilters) : null),
+    [overlayFilters],
+  );
+  const debouncedOverlayKey = useDebouncedValue(overlayFilterKey, 300);
+  const debouncedOverlayFilters = useMemo(
+    () => (debouncedOverlayKey ? JSON.parse(debouncedOverlayKey) as Record<string, unknown>[] : undefined),
+    [debouncedOverlayKey],
+  );
+  const { data: overlayChartData } = useChartData(
+    chartId,
+    debouncedOverlayFilters,
+    'dashboard',
+    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && Boolean(debouncedOverlayFilters) },
     viewerGrain,
   );
 
@@ -466,6 +559,21 @@ function ChartTileBase({
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
   }, [havingFiltersKey, dashboardId, dashboardChartId, currentLayout, havingFilters, queryClient]);
+
+  // Per-chart cross-highlight opt-out (default ON, Power BI parity). Persisted
+  // in the tile layout; DashboardGrid/Canvas gate BOTH the click-source and the
+  // highlight-target on this flag, so turning it off makes the chart fully
+  // inert to highlighting (not clickable, doesn't dim when others are clicked).
+  const highlightEnabled = currentLayout?.highlightEnabled !== false;
+  const toggleHighlightEnabled = useCallback(() => {
+    if (!canEdit) return;
+    dashboardApi.updateLayout(dashboardId, [{
+      id: dashboardChartId,
+      layout: { ...currentLayout, highlightEnabled: !highlightEnabled },
+    }]).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    }).catch(() => { /* layout save is best-effort */ });
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient]);
 
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
@@ -651,6 +759,23 @@ function ChartTileBase({
     return rows;
   }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, preAggregated, chartSemanticBinding]);
 
+  // Cross-highlight data passed to the chart renderer:
+  //   • null  → no highlight active OR this tile can't bind the selection
+  //             (renders unchanged — "not affected", PBI-style).
+  //   • array → the P-filtered subset (same row shape as filteredData).
+  //       - source tile: the selected category's own baseline rows (local).
+  //       - target tile: the parallel overlay query's rows.
+  const highlightData = useMemo<Record<string, any>[] | null>(() => {
+    if (!highlightFilter) return null;
+    if (isHighlightSource) {
+      const field = highlightFilter.field;
+      const target = String(highlightFilter.value);
+      return filteredData.filter((r) => String(r?.[field]) === target);
+    }
+    if (highlightServerEntries.length === 0) return null;
+    return overlayChartData?.data ?? null;
+  }, [highlightFilter, isHighlightSource, highlightServerEntries, filteredData, overlayChartData]);
+
   const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown } | null) => {
     if (!onSelectCrossFilter) return;
     if (!selection || selection.value === undefined || selection.value === null || selection.value === '') {
@@ -744,7 +869,7 @@ function ChartTileBase({
           onClick={() => onRemove(dashboardChartId)}
           disabled={isRemoving}
           className={`absolute right-2 top-2 rounded-md border p-1.5 shadow-linear-sm disabled:cursor-not-allowed disabled:opacity-50 ${tone === 'danger' ? 'border-danger/30 bg-surface-1 text-danger hover:bg-danger/10' : 'border-[rgb(var(--border-strong))] bg-surface-1 text-danger hover:border-danger/40 hover:bg-danger/10'}`}
-          title="Remove chart"
+          title={t('dashboards.tile.removeChart')}
         >
           {isRemoving ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -786,7 +911,7 @@ function ChartTileBase({
   if (!chart) {
     return renderStatusCard(
       <div className="text-center">
-        <p className="text-text-tertiary">Failed to load chart</p>
+        <p className="text-text-tertiary">{t('dashboards.tile.failedToLoadChart')}</p>
       </div>,
       'danger'
     );
@@ -794,12 +919,13 @@ function ChartTileBase({
 
   return (
     <div
+      ref={visibilityRef}
       /* Phase-B12 — no `overflow-hidden` on the tile: the ⋯ menu popup was
          clipped when the tile was small. The chart body has its own
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
       className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg border bg-surface-1 p-3 ${
-        isCrossFilterSource
+        isCrossFilterSource || isHighlightSource
           ? 'border-warning/40 ring-1 ring-warning'
           : isFocused
             ? 'border-brand/50 ring-2 ring-brand/40'
@@ -811,7 +937,7 @@ function ChartTileBase({
       style={{
         borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
         borderWidth: 'var(--dashboard-card-border-width, 1px)',
-        ...(isCrossFilterSource || isFocused
+        ...(isCrossFilterSource || isHighlightSource || isFocused
           ? {}
           : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
         // Phase-B16 — translucent "glass" tile that floats over a bg image.
@@ -839,7 +965,7 @@ function ChartTileBase({
         <div
           className="absolute -top-2 left-2 z-20 flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-bold uppercase text-white shadow-sm ring-2 ring-surface-1"
           style={{ backgroundColor: editingBy.color }}
-          title={`${editingBy.name} đang sửa`}
+          title={t('dashboards.tile.collaboratorEditing', { name: editingBy.name })}
         >
           {editingBy.name.trim().charAt(0) || '?'}
         </div>
@@ -851,7 +977,7 @@ function ChartTileBase({
         onClick={() => onRemove(dashboardChartId)}
         disabled={isRemoving}
         className="absolute top-2 right-2 z-10 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm opacity-0 transition-opacity group-hover:opacity-100 hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-        title="Remove chart"
+        title={t('dashboards.tile.removeChart')}
       >
         {isRemoving ? (
           <Loader2 className="h-4 w-4 text-danger animate-spin" />
@@ -900,9 +1026,9 @@ function ChartTileBase({
                 onMouseDown={e => e.stopPropagation()}
                 onClick={startEditingTitle}
                 className="flex-1 truncate text-left text-sm italic text-text-quaternary opacity-0 transition hover:text-brand group-hover:opacity-100"
-                title="Thêm tiêu đề cho biểu đồ"
+                title={t('dashboards.tile.addTitleHint')}
               >
-                + Tiêu đề
+                {t('dashboards.tile.addTitle')}
               </button>
             ) : (
               <span className="flex-1" aria-hidden />
@@ -917,13 +1043,15 @@ function ChartTileBase({
                   const lines: string[] = [];
                   const total = skippedGlobalFilters.length + droppedByBackend.length;
                   lines.push(
-                    `This chart could not apply ${total} filter${total !== 1 ? 's' : ''}:`,
+                    total !== 1
+                      ? t('dashboards.tile.couldNotApplyFiltersPlural', { count: total })
+                      : t('dashboards.tile.couldNotApplyFiltersOne', { count: total }),
                   );
                   for (const f of skippedGlobalFilters) {
-                    lines.push(`• ${getFilterDisplayLabel(f)} — not in this chart's data model`);
+                    lines.push(t('dashboards.tile.skippedNotInModel', { field: getFilterDisplayLabel(f) }));
                   }
                   for (const d of droppedByBackend) {
-                    const ref = d.semantic_field || d.field || '(unknown field)';
+                    const ref = d.semantic_field || d.field || t('dashboards.tile.unknownField');
                     const reason = d.detail || d.reason;
                     lines.push(`• ${ref} — ${reason}`);
                   }
@@ -931,7 +1059,7 @@ function ChartTileBase({
                 })()}
               >
                 <AlertTriangle className="h-3 w-3" />
-                {skippedGlobalFilters.length + droppedByBackend.length} skipped
+                {t('dashboards.tile.skippedBadge', { count: skippedGlobalFilters.length + droppedByBackend.length })}
               </span>
             )}
             <a
@@ -940,7 +1068,7 @@ function ChartTileBase({
               rel="noreferrer"
               onMouseDown={e => e.stopPropagation()}
               className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-0 transition hover:bg-surface-2 hover:text-brand focus:opacity-100 group-hover:opacity-100"
-              title="Open chart in Explore in a new tab"
+              title={t('dashboards.tile.openInExploreNewTab')}
             >
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -957,7 +1085,7 @@ function ChartTileBase({
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100'
                 }`}
-                title="Per-chart filters (HAVING)"
+                title={t('dashboards.tile.perChartFilters')}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 {havingFilters.length > 0 && (
@@ -977,7 +1105,7 @@ function ChartTileBase({
                 className={`transition-opacity text-text-quaternary hover:text-brand ${
                   isTileMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
-                title="More options"
+                title={t('dashboards.tile.moreOptions')}
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
@@ -997,7 +1125,7 @@ function ChartTileBase({
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                     >
                       <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                      View details
+                      {t('dashboards.tile.viewDetails')}
                     </button>
                     <a
                       href={`/explore/${chartId}`}
@@ -1007,7 +1135,7 @@ function ChartTileBase({
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                     >
                       <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                      Open in Explore
+                      {t('dashboards.tile.openInExplore')}
                     </a>
                     {allowAppearanceEdit && (
                       <button
@@ -1015,7 +1143,7 @@ function ChartTileBase({
                         className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                       >
                         <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                        Edit appearance
+                        {t('dashboards.tile.editAppearance')}
                       </button>
                     )}
                     {canEdit && (
@@ -1024,7 +1152,20 @@ function ChartTileBase({
                         className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                       >
                         <Pencil className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                        Rename title
+                        {t('dashboards.tile.renameTitle')}
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button
+                        onClick={() => { toggleHighlightEnabled(); setIsTileMenuOpen(false); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        title={t('dashboards.tile.highlightOnClickHint')}
+                      >
+                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        <span className="flex-1 text-left">{t('dashboards.tile.highlightOnClick')}</span>
+                        <span className={`text-[11px] font-semibold ${highlightEnabled ? 'text-brand' : 'text-text-quaternary'}`}>
+                          {highlightEnabled ? t('dashboards.tile.toggleOn') : t('dashboards.tile.toggleOff')}
+                        </span>
                       </button>
                     )}
                     {canEdit && availablePages.length > 1 && onMoveToPage && (
@@ -1035,7 +1176,7 @@ function ChartTileBase({
                           className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                         >
                           <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                          <span className="flex-1 text-left">Move to page</span>
+                          <span className="flex-1 text-left">{t('dashboards.tile.moveToPage')}</span>
                         </button>
                         {isMovePageOpen && (
                           <div className="bg-[rgba(0,0,0,0.02)]">
@@ -1085,7 +1226,7 @@ function ChartTileBase({
           <div className="flex flex-wrap gap-1">
             {havingFilters.map(f => (
               <span key={f.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-brand/10 border border-brand/30 text-brand text-xs rounded">
-                <span className="font-mono opacity-60 text-[0.6rem] uppercase">having</span>
+                <span className="font-mono opacity-60 text-[0.6rem] uppercase">{t('dashboards.tile.havingLabel')}</span>
                 {havingOptions.find(o => o.key === f.field)?.label ?? f.field}
                 {` ${f.operator} ${f.value}`}
                 {canEdit && (
@@ -1121,12 +1262,12 @@ function ChartTileBase({
               onChange={e => setDraftHavingOp(e.target.value as FilterOperator)}
               className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             >
-              <option value="gt">&gt; greater than</option>
-              <option value="gte">&gt;= greater or equal</option>
-              <option value="lt">&lt; less than</option>
-              <option value="lte">&lt;= less or equal</option>
-              <option value="eq">= equals</option>
-              <option value="neq">!= not equals</option>
+              <option value="gt">{t('dashboards.tile.opGt')}</option>
+              <option value="gte">{t('dashboards.tile.opGte')}</option>
+              <option value="lt">{t('dashboards.tile.opLt')}</option>
+              <option value="lte">{t('dashboards.tile.opLte')}</option>
+              <option value="eq">{t('dashboards.tile.opEq')}</option>
+              <option value="neq">{t('dashboards.tile.opNeq')}</option>
             </select>
             <input
               type="number"
@@ -1136,21 +1277,21 @@ function ChartTileBase({
                 if (e.key === 'Enter') confirmHaving();
                 if (e.key === 'Escape') setIsHavingOpen(false);
               }}
-              placeholder="value"
+              placeholder={t('dashboards.tile.valuePlaceholder')}
               className="text-xs border border-[rgb(var(--border-strong))] rounded px-1.5 py-0.5 w-20 focus:outline-none focus:ring-1 focus:ring-brand"
             />
             <button
               onClick={confirmHaving}
               className="text-xs px-2 py-0.5 bg-brand text-white rounded hover:bg-brand-hover"
             >
-              Apply
+              {t('dashboards.tile.apply')}
             </button>
             {havingFilters.length > 0 && (
               <button
                 onClick={() => setHavingFilters([])}
                 className="text-xs text-text-quaternary hover:text-text-secondary"
               >
-                Clear all
+                {t('dashboards.tile.clearAll')}
               </button>
             )}
           </div>
@@ -1162,16 +1303,27 @@ function ChartTileBase({
           chart is wired for cross-filter, so users discover the click-to-
           filter affordance instead of having to read docs. */}
       <div
-        className={`flex-1 min-h-0 overflow-hidden ${
+        className={`relative flex-1 min-h-0 overflow-hidden ${
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
             ? 'cursor-crosshair'
             : ''
         }`}
         title={
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
-            ? 'Click a data point to filter other charts in this dashboard'
+            ? t('dashboards.tile.crossFilterHint')
             : undefined
         }
+        onClick={(e) => {
+          // Click on EMPTY chart space → clear the dashboard selection (revert
+          // to baseline; slicer/page filters are untouched). A click on a data
+          // mark selects instead (handled by the chart's own onSelectDataPoint),
+          // so we bail when the target is a mark. Scoped to Recharts charts.
+          if (!onSelectCrossFilter || chartSemanticBinding?.datasetId == null) return;
+          const target = e.target as Element | null;
+          if (!target?.closest?.('.recharts-wrapper')) return;
+          if (target.closest('.recharts-bar-rectangle, .recharts-rectangle, .recharts-sector, .recharts-dot, .recharts-active-dot, .recharts-symbols, .recharts-pie-sector')) return;
+          onSelectCrossFilter(null);
+        }}
       >
         {isLoadingData ? (
           <div className="flex h-full items-center justify-center">
@@ -1181,12 +1333,12 @@ function ChartTileBase({
           <div className="flex h-full items-center justify-center rounded-md border border-warning/30 bg-warning/5 p-4 text-center">
             <div className="max-w-sm">
               <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
-              <p className="text-sm font-semibold text-text-primary">Load data failed</p>
+              <p className="text-sm font-semibold text-text-primary">{t('dashboards.tile.loadDataFailed')}</p>
               <p className="mt-1 text-xs uppercase tracking-[0.14em] text-text-quaternary">
                 {String(chart.chart_type).replace(/_/g, ' ')}
               </p>
               <p className="mt-2 line-clamp-3 text-xs text-text-tertiary">
-                {getErrorMessage(chartDataError, 'Could not load data for this chart.')}
+                {getErrorMessage(chartDataError, t('dashboards.tile.couldNotLoadData'))}
               </p>
               <div className="mt-3 flex flex-wrap justify-center gap-2">
                 <button
@@ -1196,7 +1348,7 @@ function ChartTileBase({
                   className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2"
                 >
                   {isFetchingData ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  Retry
+                  {t('dashboards.tile.retry')}
                 </button>
                 <button
                   type="button"
@@ -1205,7 +1357,7 @@ function ChartTileBase({
                   className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2"
                 >
                   <Eye className="h-3.5 w-3.5" />
-                  Details
+                  {t('dashboards.tile.details')}
                 </button>
                 <a
                   href={`/explore/${chartId}`}
@@ -1215,7 +1367,7 @@ function ChartTileBase({
                   className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/15"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  Explore
+                  {t('dashboards.tile.explore')}
                 </a>
               </div>
             </div>
@@ -1224,8 +1376,8 @@ function ChartTileBase({
           <div className="flex h-full items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-4 text-center">
             <div>
               <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
-              <p className="text-sm font-medium text-text-primary">No chart data available</p>
-              <p className="mt-1 text-xs text-text-tertiary">Open the chart details or Explore to inspect the configuration.</p>
+              <p className="text-sm font-medium text-text-primary">{t('dashboards.tile.noChartData')}</p>
+              <p className="mt-1 text-xs text-text-tertiary">{t('dashboards.tile.noChartDataHint')}</p>
             </div>
           </div>
         ) : exploreConfig ? (
@@ -1249,6 +1401,7 @@ function ChartTileBase({
               kpiLabelInHeader={isKpiCard}
               onViewerDrill={setViewerGrain}
               viewerGrain={viewerGrain}
+              highlightData={highlightData}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}
@@ -1267,6 +1420,15 @@ function ChartTileBase({
             />
           </div>
         )}
+        {/* keepPrevious overlay — while a filter/grain change re-runs the query
+            we render the PREVIOUS data underneath; dim it + spin so the tile
+            reads as "refreshing" rather than blanking. Only when we already
+            have data on screen (not the first load) and aren't in an error. */}
+        {isFetchingData && chartData && !isLoadingData && !chartDataError ? (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-surface-1/45 backdrop-blur-[0.5px] transition-opacity duration-150">
+            <Loader2 className="h-5 w-5 animate-spin text-brand" />
+          </div>
+        ) : null}
       </div>
 
       <ChartDetailModal
@@ -1306,6 +1468,8 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.allowAppearanceEdit !== next.allowAppearanceEdit) return false;
   if (prev.isRemoving !== next.isRemoving) return false;
   if (prev.isCrossFilterSource !== next.isCrossFilterSource) return false;
+  if (prev.isHighlightSource !== next.isHighlightSource) return false;
+  if (prev.highlightFilter !== next.highlightFilter) return false;
   if (prev.isFocused !== next.isFocused) return false;
   if (prev.currentPageId !== next.currentPageId) return false;
   // Layout reference change is fine — we render the same DOM either way;
@@ -1320,6 +1484,9 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   // so the perf concern that originally motivated the skip doesn't apply.
   if (prev.currentLayout?.tileFilters !== next.currentLayout?.tileFilters) return false;
   if (prev.currentLayout?.styleConfigOverride !== next.currentLayout?.styleConfigOverride) return false;
+  // Per-chart highlight opt-out toggles the ⋯ menu label + (via the grid) the
+  // click-source/target gating, so the tile must re-render when it flips.
+  if (prev.currentLayout?.highlightEnabled !== next.currentLayout?.highlightEnabled) return false;
   if (prev.onRemove !== next.onRemove) return false;
   if (prev.onDataLoaded !== next.onDataLoaded) return false;
   if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;

@@ -65,6 +65,7 @@ import {
   tidyPageLayout,
 } from '@/lib/dashboard-pages';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 function semanticDimensionToFilterType(type: string | undefined): FilterType {
   switch ((type ?? '').toLowerCase()) {
@@ -184,6 +185,7 @@ function normalizeLegacyDateFilter(filter: TypedFilter, dateColumn: ColumnInfo |
 // no second source of truth needed.
 
 export default function DashboardDetailPage() {
+  const { t } = useI18n();
   const params = useParams();
   const dashboardId = Number(params.id);
 
@@ -457,6 +459,7 @@ export default function DashboardDetailPage() {
       setCrossFilterState(null);
     }
   }, [visibleDashboardCharts, crossFilterState]);
+
 
   // Track the last applied filter snapshot.
   React.useEffect(() => {
@@ -849,7 +852,7 @@ export default function DashboardDetailPage() {
       next[t.id] = { ...(existing?.layout ?? {}), x: t.x, y: t.y, w: t.w, h: t.h };
     }
     setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
-    toast.success('Đã sắp xếp gọn — bấm Lưu để giữ.');
+    toast.success(t('dashboards.detail.tidyDone'));
   }, [dashboard, activePageId]);
 
   // Canvas-mode layout updates: same pattern — local state only.
@@ -899,9 +902,9 @@ export default function DashboardDetailPage() {
   const handleSaveDraft = async () => {
     const ok = await flushLocalLayoutsToDraft();
     if (ok) {
-      toast.success('Draft saved.');
+      toast.success(t('dashboards.detail.draftSaved'));
     } else {
-      toast.error('Failed to save draft — please try again.');
+      toast.error(t('dashboards.detail.draftSaveFailed'));
     }
   };
 
@@ -962,12 +965,12 @@ export default function DashboardDetailPage() {
     const tileBaseV = buildTileBaseV();
     const ok = await flushLocalLayoutsToDraft();
     if (!ok) {
-      toast.error("Couldn't save draft — publish aborted.");
+      toast.error(t('dashboards.detail.publishAbortedDraftFailed'));
       return;
     }
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
-      toast.success('Published — public link now serves the new version.');
+      toast.success(t('dashboards.detail.publishedNewVersion'));
     } catch (err: any) {
       if (err?.response?.status === 409) {
         setPublishConflict({
@@ -975,7 +978,7 @@ export default function DashboardDetailPage() {
           tiles: err?.response?.data?.detail?.tiles ?? [],
         });
       } else {
-        toast.error('Publish failed — please try again.');
+        toast.error(t('dashboards.detail.publishFailed'));
       }
     }
   };
@@ -985,9 +988,9 @@ export default function DashboardDetailPage() {
     setPublishConflict(null);
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, force: true });
-      toast.success('Published (overwrote the other version).');
+      toast.success(t('dashboards.detail.publishedOverwrote'));
     } catch {
-      toast.error('Publish failed — please try again.');
+      toast.error(t('dashboards.detail.publishFailed'));
     }
   };
 
@@ -996,9 +999,9 @@ export default function DashboardDetailPage() {
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
-        toast.success('Reverted to the published version.');
+        toast.success(t('dashboards.detail.revertedToPublished'));
       } catch (err) {
-        toast.error("Couldn't discard the BE draft — please try again.");
+        toast.error(t('dashboards.detail.discardDraftFailed'));
       }
     }
   };
@@ -1100,11 +1103,11 @@ export default function DashboardDetailPage() {
           return acc;
         }, null);
         if (newest !== null) setEditingWidgetId(newest);
-        toast.success(`Added ${widgetType.replace('_', ' ')} widget`);
+        toast.success(t('dashboards.detail.widgetAdded', { type: widgetType.replace('_', ' ') }));
       } catch (err) {
         console.error('Failed to add widget:', err);
         const detail = (err as any)?.response?.data?.detail;
-        toast.error(typeof detail === 'string' ? detail : 'Failed to add widget. Please try again.');
+        toast.error(typeof detail === 'string' ? detail : t('dashboards.detail.widgetAddFailed'));
       } finally {
         setIsWidgetMenuOpen(false);
       }
@@ -1127,22 +1130,23 @@ export default function DashboardDetailPage() {
   }, [dashboard, dashboardId, updateDashboardMutation]);
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
+    // One selection drives the whole dashboard (PBI parity): the SOURCE chart
+    // dims its non-selected marks (highlight-local, see grid wiring) and every
+    // OTHER chart FILTERS to the clicked value (cross-filter). Toggling the same
+    // point clears it; a null emit (click on empty chart space) clears
+    // unconditionally — reverting to the dashboard baseline. Slicer/page filters
+    // are separate state, so this never touches them.
     setCrossFilterState((current) => {
       if (!filter) {
-        return current?.sourceChartId === sourceChartId ? null : current;
+        return null;
       }
-
       if (
         current?.sourceChartId === sourceChartId &&
         areFiltersEquivalent(current.filter, filter)
       ) {
         return null;
       }
-
-      return {
-        sourceChartId,
-        filter,
-      };
+      return { sourceChartId, filter };
     });
   }, []);
 
@@ -1163,7 +1167,7 @@ export default function DashboardDetailPage() {
     } catch (error) {
       console.error('Failed to add chart:', error);
       const detail = (error as any)?.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : 'Failed to add chart. Please try again.');
+      toast.error(typeof detail === 'string' ? detail : t('dashboards.detail.chartAddFailed'));
     }
   };
 
@@ -1191,10 +1195,10 @@ export default function DashboardDetailPage() {
         dashboardId,
         dashboardChartId: dashboardChart.id,
       });
-      toast.success('Chart removed from dashboard');
+      toast.success(t('dashboards.detail.chartRemoved'));
     } catch (error) {
       console.error('Failed to remove chart:', error);
-      toast.error('Failed to remove chart. Please try again.');
+      toast.error(t('dashboards.detail.chartRemoveFailed'));
     } finally {
       setRemovingChartId(undefined);
     }
@@ -1218,7 +1222,7 @@ export default function DashboardDetailPage() {
       setIsEditingName(false);
     } catch (error) {
       console.error('Failed to update dashboard name:', error);
-      toast.error('Failed to update name. Please try again.');
+      toast.error(t('dashboards.detail.nameUpdateFailed'));
     }
   };
 
@@ -1307,13 +1311,13 @@ export default function DashboardDetailPage() {
       filtersSnapshotRef.current = JSON.stringify(draftGlobalFilters);
       toast.success(
         scope === 'all'
-          ? 'Filter draft saved for the whole dashboard. Click "Save & publish" to go live.'
-          : 'Filter draft saved for the current page.',
+          ? t('dashboards.detail.filterDraftSavedAll')
+          : t('dashboards.detail.filterDraftSavedPage'),
       );
     } catch (error) {
       console.error('Failed to save dashboard filters:', error);
       setLocalPagesConfig(null);
-      toast.error('Applied in this session, but failed to save dashboard filters.');
+      toast.error(t('dashboards.detail.filterSaveFailed'));
     } finally {
       setIsApplyingFilters(false);
     }
@@ -1352,10 +1356,10 @@ export default function DashboardDetailPage() {
       setCurrentPageId(nextPage.id);
       setEditingPageId(nextPage.id);
       setEditedPageName(nextPage.name);
-      toast.success('Dashboard page added');
+      toast.success(t('dashboards.detail.pageAdded'));
     } catch (error) {
       console.error('Failed to add dashboard page:', error);
-      toast.error('Failed to add page. Please try again.');
+      toast.error(t('dashboards.detail.pageAddFailed'));
     }
   };
 
@@ -1383,10 +1387,10 @@ export default function DashboardDetailPage() {
       await persistPagesConfig(nextPages);
       setEditingPageId(null);
       setEditedPageName('');
-      toast.success('Page renamed');
+      toast.success(t('dashboards.detail.pageRenamed'));
     } catch (error) {
       console.error('Failed to rename page:', error);
-      toast.error('Failed to rename page. Please try again.');
+      toast.error(t('dashboards.detail.pageRenameFailed'));
     }
   };
 
@@ -1443,10 +1447,10 @@ export default function DashboardDetailPage() {
         setCurrentPageId(fallbackPage.id);
       }
       setEditingPageId((current) => current === pendingDeletePageId ? null : current);
-      toast.success('Page deleted');
+      toast.success(t('dashboards.detail.pageDeleted'));
     } catch (error) {
       console.error('Failed to delete page:', error);
-      toast.error('Failed to delete page. Please try again.');
+      toast.error(t('dashboards.detail.pageDeleteFailed'));
     } finally {
       setPendingDeletePageId(null);
     }
@@ -1469,11 +1473,11 @@ export default function DashboardDetailPage() {
           },
         }],
       });
-      toast.success('Chart moved to another page');
+      toast.success(t('dashboards.detail.chartMoved'));
     } catch (error) {
       console.error('Failed to move chart to page:', error);
       const detail = (error as any)?.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : 'Failed to move chart. Please try again.');
+      toast.error(typeof detail === 'string' ? detail : t('dashboards.detail.chartMoveFailed'));
     }
   };
 
@@ -2060,7 +2064,7 @@ export default function DashboardDetailPage() {
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
     setIsExportingPdf(true);
-    setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
+    setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.detail.exportPreparing') });
     const originalPageId = activePageId;
     try {
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
@@ -2113,7 +2117,7 @@ export default function DashboardDetailPage() {
       setIsExportDialogOpen(false);
     } catch (err) {
       console.error('PDF export failed', err);
-      toast.error('Failed to export PDF');
+      toast.error(t('dashboards.detail.exportFailed'));
     } finally {
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
@@ -2127,7 +2131,7 @@ export default function DashboardDetailPage() {
         <div className="w-full px-8 py-6">
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-brand" />
-            <span className="ml-2">Loading dashboard...</span>
+            <span className="ml-2">{t('dashboards.detail.loadingDashboard')}</span>
           </div>
         </div>
       </div>
@@ -2139,13 +2143,13 @@ export default function DashboardDetailPage() {
       <div className="min-h-full bg-surface-2">
         <div className="w-full px-8 py-6">
           <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-12 text-center shadow-linear-sm">
-            <p className="text-text-tertiary">Dashboard not found</p>
+            <p className="text-text-tertiary">{t('dashboards.detail.notFound')}</p>
             <Link
               href="/dashboards"
               className="inline-flex items-center text-brand hover:text-brand mt-4"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
-              Back to Dashboards
+              {t('dashboards.detail.backToDashboards')}
             </Link>
           </div>
         </div>
@@ -2154,18 +2158,23 @@ export default function DashboardDetailPage() {
   }
 
   const activeCrossFilter = crossFilterState?.filter ?? null;
+  // Source-dim is driven by the SAME selection: the grid passes this only to
+  // the source tile (others get null), so the clicked chart dims its
+  // non-selected marks while everyone else filters.
+  const activeHighlight = crossFilterState?.filter ?? null;
+  const highlightSourceChartId = crossFilterState?.sourceChartId ?? null;
 
   const isRenamingCurrentPage = editingPageId === currentPage?.id;
   const emptyPageMessage = currentPage
-    ? `No charts on ${currentPage.name} yet. Add a chart to start this page.`
-    : 'No charts in this dashboard yet.';
+    ? t('dashboards.detail.emptyPageNamed', { name: currentPage.name })
+    : t('dashboards.detail.emptyDashboard');
   const fallbackDeletePage = pendingDeletePageId
     ? dashboardPages.find((page) => page.id !== pendingDeletePageId) ?? null
     : null;
   const activeCrossFilterSourceTitle = crossFilterState
     ? (visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
       ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
-      ?? `Chart ${crossFilterState.sourceChartId}`)
+      ?? t('dashboards.detail.chartFallbackName', { id: crossFilterState.sourceChartId }))
     : null;
 
   return (
@@ -2179,7 +2188,7 @@ export default function DashboardDetailPage() {
             <Link
               href="/dashboards"
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
-              title="Back to Dashboards"
+              title={t('dashboards.detail.backToDashboards')}
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
@@ -2205,14 +2214,14 @@ export default function DashboardDetailPage() {
                     onClick={handleSaveName}
                     disabled={updateDashboardMutation.isPending}
                     className="rounded-md p-1 text-success hover:bg-success/10"
-                    title="Save"
+                    title={t('dashboards.detail.save')}
                   >
                     <Check className="h-3.5 w-3.5" />
                   </button>
                   <button
                     onClick={handleCancelEditName}
                     className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
-                    title="Cancel"
+                    title={t('common.cancel')}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -2226,7 +2235,7 @@ export default function DashboardDetailPage() {
                     <button
                       onClick={handleStartEditName}
                       className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
-                      title="Rename dashboard"
+                      title={t('dashboards.detail.renameDashboard')}
                     >
                       <Edit2 className="h-3 w-3" />
                     </button>
@@ -2250,7 +2259,7 @@ export default function DashboardDetailPage() {
                         type="button"
                         onClick={handleSavePageName}
                         className="rounded-md p-1 text-success hover:bg-success/10"
-                        title="Save page name"
+                        title={t('dashboards.detail.savePageName')}
                       >
                         <Check className="h-3 w-3" />
                       </button>
@@ -2258,7 +2267,7 @@ export default function DashboardDetailPage() {
                         type="button"
                         onClick={handleCancelRenamePage}
                         className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
-                        title="Cancel"
+                        title={t('common.cancel')}
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -2272,9 +2281,9 @@ export default function DashboardDetailPage() {
                         type="button"
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                        title="Switch page"
+                        title={t('dashboards.detail.switchPage')}
                       >
-                        <span className="max-w-[10rem] truncate">{currentPage?.name ?? 'Page'}</span>
+                        <span className="max-w-[10rem] truncate">{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
                         <span className="text-text-quaternary">· {dashboardPages.length}</span>
                         <ChevronDown className="h-3 w-3" />
                       </button>
@@ -2310,7 +2319,7 @@ export default function DashboardDetailPage() {
                                   className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                                 >
                                   <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                                  Rename current page
+                                  {t('dashboards.detail.renameCurrentPage')}
                                 </button>
                                 <button
                                   onClick={() => { setPendingDeletePageId(activePageId); setIsPagesMenuOpen(false); }}
@@ -2318,14 +2327,14 @@ export default function DashboardDetailPage() {
                                   className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
                                 >
                                   <Trash2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                                  Delete current page
+                                  {t('dashboards.detail.deleteCurrentPage')}
                                 </button>
                                 <button
                                   onClick={() => { handleAddPage(); setIsPagesMenuOpen(false); }}
                                   className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                                 >
                                   <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                                  Add page
+                                  {t('dashboards.detail.addPage')}
                                 </button>
                               </>
                             )}
@@ -2353,13 +2362,13 @@ export default function DashboardDetailPage() {
                   {/* Phase-B17 — compact presence: small avatars of others editing
                       now (name on hover). Replaces the bulky banner. */}
                   {canEditResource && editorChips.length > 0 && (
-                    <div className="ml-2 flex shrink-0 items-center" title="Đang cùng sửa">
+                    <div className="ml-2 flex shrink-0 items-center" title={t('dashboards.detail.coEditing')}>
                       {editorChips.slice(0, 3).map((c, i) => (
                         <span
                           key={i}
                           className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold text-white ring-2 ring-surface-1"
                           style={{ backgroundColor: c.color, marginLeft: i === 0 ? 0 : -6 }}
-                          title={`${c.name} đang sửa`}
+                          title={t('dashboards.detail.editorEditing', { name: c.name })}
                         >
                           {c.initials}
                         </span>
@@ -2379,11 +2388,11 @@ export default function DashboardDetailPage() {
                         }`}
                         title={
                           hasLocalLayoutChanges
-                            ? 'Unsaved changes — click Save draft or Save & publish to keep them.'
-                            : 'A draft is saved but not yet published. The share link still serves the previous version.'
+                            ? t('dashboards.detail.unsavedTooltip')
+                            : t('dashboards.detail.draftTooltip')
                         }
                       >
-                        {hasLocalLayoutChanges ? 'Unsaved' : 'Draft'}
+                        {hasLocalLayoutChanges ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
                       </span>
                       <button
                         type="button"
@@ -2393,10 +2402,10 @@ export default function DashboardDetailPage() {
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                        title="Lưu nháp (Ctrl+S). Tự động lưu khi chuyển trang. Link công khai vẫn giữ bản đã xuất bản."
+                        title={t('dashboards.detail.saveDraftTooltip')}
                       >
                         {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Save draft
+                        {t('dashboards.detail.saveDraft')}
                         <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
                       </button>
                       <button
@@ -2407,19 +2416,19 @@ export default function DashboardDetailPage() {
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
-                        title="Push the changes to the public share link"
+                        title={t('dashboards.detail.publishTooltip')}
                       >
                         {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        Save &amp; publish
+                        {t('dashboards.detail.saveAndPublish')}
                       </button>
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
                         disabled={discardDraftMutation.isPending}
                         className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                        title="Discard changes and revert to the published layout"
+                        title={t('dashboards.detail.discardTooltip')}
                       >
-                        Discard
+                        {t('dashboards.detail.discard')}
                       </button>
                     </div>
                   )}
@@ -2444,17 +2453,17 @@ export default function DashboardDetailPage() {
                         ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-brand hover:bg-[rgba(255,255,255,0.04)]'
                         : 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary hover:bg-[rgba(255,255,255,0.04)]'
                   }`}
-                  title={isFilterPaneOpen ? 'Hide Filter Pane' : 'Show Filter Pane'}
+                  title={isFilterPaneOpen ? t('dashboards.detail.hideFilterPane') : t('dashboards.detail.showFilterPane')}
                 >
                   <Filter className="h-3 w-3" />
-                  <span>Filters</span>
+                  <span>{t('dashboards.detail.filters')}</span>
                   {appliedGlobalFilters.length > 0 && (
                     <span className="rounded-full bg-brand/20 px-1.5 text-[10px] font-[600] leading-[1.4] text-brand">
                       {appliedGlobalFilters.length}
                     </span>
                   )}
                   {hasPendingFilterChanges && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-warning" title="Unapplied changes" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-warning" title={t('dashboards.detail.unappliedChanges')} />
                   )}
                 </button>
                 {/* Phase-15.81 — popover removed. Filter editing lives in
@@ -2467,7 +2476,7 @@ export default function DashboardDetailPage() {
                 <button
                   onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); setIsWidgetSubmenuOpen(false); }}
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
-                  title="More options"
+                  title={t('dashboards.detail.moreOptions')}
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
                 </button>
@@ -2481,14 +2490,14 @@ export default function DashboardDetailPage() {
                         onClick={() => { setIsExportDialogOpen(true); setIsMoreMenuOpen(false); }}
                         disabled={isExportingPdf || !allChartsReady}
                         className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                        title={!allChartsReady ? 'Loading chart data…' : 'Export as PDF'}
+                        title={!allChartsReady ? t('dashboards.detail.loadingChartData') : t('dashboards.detail.exportAsPdf')}
                       >
                         {isExportingPdf || !allChartsReady ? (
                           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-text-quaternary" />
                         ) : (
                           <Download className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                         )}
-                        {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+                        {isExportingPdf ? t('dashboards.detail.exporting') : t('dashboards.detail.exportPdf')}
                       </button>
 
                       {/* Share team */}
@@ -2498,7 +2507,7 @@ export default function DashboardDetailPage() {
                           className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                         >
                           <Share2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                          Share with team
+                          {t('dashboards.detail.shareWithTeam')}
                         </button>
                       )}
 
@@ -2509,16 +2518,16 @@ export default function DashboardDetailPage() {
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Globe className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            Public links
+                            {t('dashboards.detail.publicLinks')}
                           </button>
 
                           <button
                             onClick={() => { setIsFilterMapOpen(true); setIsMoreMenuOpen(false); }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                            title="Xem mọi filter đang tác động lên dashboard, gom theo trường"
+                            title={t('dashboards.detail.filterMapTooltip')}
                           >
                             <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            Bản đồ filter
+                            {t('dashboards.detail.filterMap')}
                           </button>
 
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
@@ -2526,24 +2535,24 @@ export default function DashboardDetailPage() {
                           <button
                             onClick={() => { handleToggleLayoutMode(); setIsMoreMenuOpen(false); }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                            title={`Switch to ${(dashboard?.layout_mode ?? 'grid') === 'grid' ? 'canvas' : 'grid'} mode`}
+                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvasMode') : t('dashboards.detail.switchToGridMode')}
                           >
                             {(dashboard?.layout_mode ?? 'grid') === 'grid' ? (
                               <Move className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             ) : (
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             )}
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? 'Switch to Canvas' : 'Switch to Grid'}
+                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
                           </button>
 
                           {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
                             <button
                               onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
                               className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                              title="Cào các chart về lưới ngay ngắn, cân chiều cao mỗi hàng"
+                              title={t('dashboards.detail.tidyTooltip')}
                             >
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                              Sắp xếp gọn
+                              {t('dashboards.detail.tidyLayout')}
                             </button>
                           )}
 
@@ -2552,15 +2561,18 @@ export default function DashboardDetailPage() {
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            Theme
+                            {t('dashboards.detail.theme')}
                           </button>
+
+                          {/* Cross-highlight is now default-on with a per-chart toggle in each
+                              tile's ⋯ menu — no dashboard-wide switch needed. */}
 
                           <button
                             onClick={() => { setIsChartManagerOpen(true); setIsMoreMenuOpen(false); }}
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            Manage charts
+                            {t('dashboards.detail.manageCharts')}
                           </button>
 
                           <button
@@ -2568,7 +2580,7 @@ export default function DashboardDetailPage() {
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            Import HTML
+                            {t('dashboards.detail.importHtml')}
                           </button>
 
                           {/* Widgets submenu */}
@@ -2578,17 +2590,17 @@ export default function DashboardDetailPage() {
                             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
-                            <span className="flex-1 text-left">Add widget</span>
+                            <span className="flex-1 text-left">{t('dashboards.detail.addWidget')}</span>
                             <ChevronDown className={`h-3 w-3 transition-transform ${isWidgetSubmenuOpen ? 'rotate-180' : ''}`} />
                           </button>
                           {isWidgetSubmenuOpen && (
                             <div className="bg-[rgba(255,255,255,0.02)]">
                               {([
-                                ['text', 'Text / Markdown'],
-                                ['countdown', 'Countdown'],
-                                ['image', 'Image'],
-                                ['shape', 'Shape / Divider'],
-                                ['parameter_switcher', 'Parameter switcher'],
+                                ['text', t('dashboards.detail.widgetText')],
+                                ['countdown', t('dashboards.detail.widgetCountdown')],
+                                ['image', t('dashboards.detail.widgetImage')],
+                                ['shape', t('dashboards.detail.widgetShape')],
+                                ['parameter_switcher', t('dashboards.detail.widgetParamSwitcher')],
                               ] as const).map(([k, label]) => (
                                 <button
                                   key={k}
@@ -2613,7 +2625,7 @@ export default function DashboardDetailPage() {
                   className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
                 >
                   <Plus className="h-3 w-3" />
-                  <span>Add Chart</span>
+                  <span>{t('dashboards.detail.addChart')}</span>
                 </button>
               )}
             </div>
@@ -2634,7 +2646,7 @@ export default function DashboardDetailPage() {
         {activeCrossFilter && (
           <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/20 bg-[rgba(245,158,11,0.05)] px-4 py-2.5 text-[13px] font-[510] text-warning">
             <span>
-              Cross-filter from {activeCrossFilterSourceTitle}:
+              {t('dashboards.detail.crossFilterFrom', { title: activeCrossFilterSourceTitle ?? '' })}
             </span>
             <span className="truncate font-[400] text-text-secondary">
               {getFilterDisplayLabel(activeCrossFilter)} = {formatFilterValue(activeCrossFilter.value)}
@@ -2644,7 +2656,7 @@ export default function DashboardDetailPage() {
               onClick={() => setCrossFilterState(null)}
               className="ml-auto inline-flex items-center rounded border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:text-text-primary"
             >
-              Clear
+              {t('dashboards.detail.clear')}
             </button>
           </div>
         )}
@@ -2723,6 +2735,8 @@ export default function DashboardDetailPage() {
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
+            highlightFilter={activeHighlight}
+            highlightSourceChartId={highlightSourceChartId}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
@@ -2746,6 +2760,8 @@ export default function DashboardDetailPage() {
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
+            highlightFilter={activeHighlight}
+            highlightSourceChartId={highlightSourceChartId}
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}

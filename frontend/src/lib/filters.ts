@@ -753,13 +753,24 @@ export function resolveChartSemanticField(
   const mapped = binding.fieldMap?.[chartField];
   if (mapped) return mapped;
 
-  if (!binding.baseViewName || !chartField) return null;
+  if (!chartField) return null;
 
-  const semanticField = `${binding.baseViewName}.${chartField}`;
   const availableSemanticFields = new Set([
     ...(binding.dimensionFields ?? []),
     ...(binding.measureFields ?? []),
   ]);
+
+  // The clicked field may ALREADY be a fully-qualified semantic field
+  // (`view.column`) — the norm when the chart's xField comes from a JOINED
+  // view (snowflake), so it does NOT start with baseViewName. Prepending
+  // baseViewName again would yield `base.view.column` and miss. Accept it
+  // as-is when it's a known dimension/measure. Fixes click-to-select (both
+  // cross-filter and cross-highlight) on charts grouped by a joined-view dim.
+  if (availableSemanticFields.has(chartField)) return chartField;
+
+  if (!binding.baseViewName) return null;
+
+  const semanticField = `${binding.baseViewName}.${chartField}`;
   return availableSemanticFields.has(semanticField) ? semanticField : null;
 }
 

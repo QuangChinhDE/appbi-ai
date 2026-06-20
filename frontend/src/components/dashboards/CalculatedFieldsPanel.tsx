@@ -15,6 +15,7 @@ import React, { useMemo, useState } from 'react';
 import { AlertTriangle, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
+import { useI18n } from '@/providers/LanguageProvider';
 import { AddColumnModal } from '@/components/datasets/AddColumnModal';
 import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 import type { DashboardHtmlImportCalculatedField } from '@/types/dashboard-html-import';
@@ -85,10 +86,13 @@ export function CalculatedFieldsPanel({
   previewRows = [],
   sourceKeys,
   fieldErrors,
-  title = 'Calculated Fields',
-  subtitle = 'Excel-style formulas with [Column] references. IF / ROUND / ABS / COALESCE / NULLIF supported.',
+  title,
+  subtitle,
   defaultSourceKey,
 }: CalculatedFieldsPanelProps) {
+  const { t } = useI18n();
+  const resolvedTitle = title ?? t('dashboards.calculatedFields.title');
+  const resolvedSubtitle = subtitle ?? t('dashboards.calculatedFields.subtitle');
   // editingIndex: -1 = adding new, >=0 = editing existing, null = closed
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
@@ -174,9 +178,9 @@ export function CalculatedFieldsPanel({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="flex items-center gap-2 text-sm font-semibold text-text-primary">
-            <Sparkles className="h-4 w-4 text-brand" /> {title}
+            <Sparkles className="h-4 w-4 text-brand" /> {resolvedTitle}
           </p>
-          <p className="mt-1 text-caption text-text-secondary">{subtitle}</p>
+          <p className="mt-1 text-caption text-text-secondary">{resolvedSubtitle}</p>
         </div>
         <Button
           variant="secondary"
@@ -184,7 +188,7 @@ export function CalculatedFieldsPanel({
           leadingIcon={<Plus className="h-3 w-3" />}
           onClick={() => setEditingIndex(-1)}
         >
-          New field
+          {t('dashboards.calculatedFields.newField')}
         </Button>
       </div>
 
@@ -208,7 +212,7 @@ export function CalculatedFieldsPanel({
                       {field.name} = {wrapBareIdentifiers(field.expression, columnNames)}
                     </p>
                     {field.source_key && sortedSourceKeys.length > 1 && (
-                      <p className="text-caption text-brand/80 mt-0.5">Source: {field.source_key}</p>
+                      <p className="text-caption text-brand/80 mt-0.5">{t('dashboards.calculatedFields.sourceLabel')} {field.source_key}</p>
                     )}
                     {error && (
                       <p className="mt-1 flex items-start gap-1 text-caption text-danger">
@@ -224,7 +228,7 @@ export function CalculatedFieldsPanel({
                       leadingIcon={<Pencil className="h-3 w-3" />}
                       onClick={() => setEditingIndex(index)}
                     >
-                      Edit
+                      {t('dashboards.calculatedFields.edit')}
                     </Button>
                     <Button
                       variant="ghost"
@@ -232,7 +236,7 @@ export function CalculatedFieldsPanel({
                       leadingIcon={<Trash2 className="h-3 w-3" />}
                       onClick={() => remove(index)}
                     >
-                      Remove
+                      {t('dashboards.calculatedFields.remove')}
                     </Button>
                   </div>
                 </div>

@@ -34,6 +34,7 @@ import { authApi } from '@/lib/api-client';
 import { extractApiError } from '@/lib/api-errors';
 import { useNotifications, type AppNotification, type AppNotificationLevel } from '@/lib/notifications';
 import { useI18n } from '@/providers/LanguageProvider';
+import { useUserLanguage } from '@/hooks/use-user-language';
 import { GettingStartedModal } from '@/components/common/GettingStartedGuide';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Input';
@@ -76,7 +77,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { language, setLanguage, t } = useI18n();
+  const { language, setLanguage, t } = useUserLanguage();
   const { data: user } = useCurrentUser();
   const { data: permData } = usePermissions();
   const {

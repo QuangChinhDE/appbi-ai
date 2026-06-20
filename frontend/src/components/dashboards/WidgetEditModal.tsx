@@ -7,6 +7,7 @@ import { Modal } from '@/components/common/Modal';
 import { dashboardApi } from '@/lib/api/dashboards';
 import type { DashboardChart, DashboardWidgetType } from '@/types/api';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type Props = {
   isOpen: boolean;
@@ -15,15 +16,15 @@ type Props = {
   widget: DashboardChart | null;
 };
 
-const WIDGET_LABEL: Record<string, string> = {
-  text: 'Text / Markdown',
-  countdown: 'Countdown',
-  image: 'Image',
-  shape: 'Shape / Divider',
-  parameter_switcher: 'Parameter switcher',
-};
-
 export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props) {
+  const { t } = useI18n();
+  const WIDGET_LABEL: Record<string, string> = {
+    text: t('dashboards.widgetEdit.typeText'),
+    countdown: t('dashboards.widgetEdit.typeCountdown'),
+    image: t('dashboards.widgetEdit.typeImage'),
+    shape: t('dashboards.widgetEdit.typeShape'),
+    parameter_switcher: t('dashboards.widgetEdit.typeParameterSwitcher'),
+  };
   const queryClient = useQueryClient();
   const [config, setConfig] = useState<Record<string, any>>({});
   const [isSaving, setIsSaving] = useState(false);
@@ -46,11 +47,11 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
     try {
       await dashboardApi.updateWidget(dashboardId, widget.id, config);
       await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-      toast.success('Widget updated');
+      toast.success(t('dashboards.widgetEdit.savedToast'));
       onClose();
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      toast.error(typeof detail === 'string' ? detail : 'Failed to save widget');
+      toast.error(typeof detail === 'string' ? detail : t('dashboards.widgetEdit.saveFailedToast'));
     } finally {
       setIsSaving(false);
     }
@@ -63,7 +64,7 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
         onClick={onClose}
         className="inline-flex h-8 items-center rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2"
       >
-        Cancel
+        {t('common.cancel')}
       </button>
       <button
         type="button"
@@ -72,7 +73,7 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
         className="inline-flex h-8 items-center gap-1.5 rounded-md bg-brand px-3 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover disabled:opacity-60"
       >
         {isSaving && <Loader2 className="h-3 w-3 animate-spin" />}
-        {isSaving ? 'Saving…' : 'Save'}
+        {isSaving ? t('dashboards.widgetEdit.saving') : t('dashboards.widgetEdit.save')}
       </button>
     </div>
   );
@@ -81,7 +82,7 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`Edit widget — ${WIDGET_LABEL[widgetType] ?? widgetType}`}
+      title={t('dashboards.widgetEdit.title', { type: WIDGET_LABEL[widgetType] ?? widgetType })}
       size="md"
       footer={footer}
     >
@@ -112,9 +113,10 @@ const inputClass =
   'w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1.5 text-[13px] text-text-primary focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand';
 
 function TextWidgetForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
   return (
     <>
-      <Field label="Template" hint="Supports {{today()}}, {{daysUntil('YYYY-MM-DD')}}, {{param('name')}}.">
+      <Field label={t('dashboards.widgetEdit.template')} hint={t('dashboards.widgetEdit.templateHint')}>
         <textarea
           value={config.template ?? ''}
           onChange={(e) => set('template', e.target.value)}
@@ -124,14 +126,14 @@ function TextWidgetForm({ config, set }: { config: any; set: (k: string, v: any)
         />
       </Field>
       <div className="grid grid-cols-3 gap-3">
-        <Field label="Align">
+        <Field label={t('dashboards.widgetEdit.align')}>
           <select value={config.align ?? 'left'} onChange={(e) => set('align', e.target.value)} className={inputClass}>
-            <option value="left">Left</option>
-            <option value="center">Center</option>
-            <option value="right">Right</option>
+            <option value="left">{t('dashboards.widgetEdit.alignLeft')}</option>
+            <option value="center">{t('dashboards.widgetEdit.alignCenter')}</option>
+            <option value="right">{t('dashboards.widgetEdit.alignRight')}</option>
           </select>
         </Field>
-        <Field label="Font size">
+        <Field label={t('dashboards.widgetEdit.fontSize')}>
           <input
             type="number"
             min={10}
@@ -141,7 +143,7 @@ function TextWidgetForm({ config, set }: { config: any; set: (k: string, v: any)
             className={inputClass}
           />
         </Field>
-        <Field label="Color">
+        <Field label={t('dashboards.widgetEdit.color')}>
           <input
             type="color"
             value={config.color ?? '#000000'}
@@ -152,7 +154,7 @@ function TextWidgetForm({ config, set }: { config: any; set: (k: string, v: any)
       </div>
       <label className="flex items-center gap-2 text-[12px] text-text-secondary">
         <input type="checkbox" checked={!!config.bold} onChange={(e) => set('bold', e.target.checked)} />
-        Bold
+        {t('dashboards.widgetEdit.bold')}
       </label>
     </>
   );
@@ -169,18 +171,19 @@ function CountdownWidgetForm({ config, set }: { config: any; set: (k: string, v:
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   })();
 
+  const { t } = useI18n();
   return (
     <>
-      <Field label="Label">
+      <Field label={t('dashboards.widgetEdit.label')}>
         <input
           type="text"
           value={config.label ?? ''}
           onChange={(e) => set('label', e.target.value)}
           className={inputClass}
-          placeholder="Còn lại"
+          placeholder={t('dashboards.widgetEdit.countdownLabelPlaceholder')}
         />
       </Field>
-      <Field label="Target date & time">
+      <Field label={t('dashboards.widgetEdit.targetDateTime')}>
         <input
           type="datetime-local"
           value={localValue}
@@ -195,7 +198,7 @@ function CountdownWidgetForm({ config, set }: { config: any; set: (k: string, v:
           className={inputClass}
         />
       </Field>
-      <Field label="Accent color">
+      <Field label={t('dashboards.widgetEdit.accentColor')}>
         <input
           type="color"
           value={config.accent ?? '#facc15'}
@@ -208,9 +211,10 @@ function CountdownWidgetForm({ config, set }: { config: any; set: (k: string, v:
 }
 
 function ImageWidgetForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
   return (
     <>
-      <Field label="Image URL" hint="Paste a public URL — http(s)://… or a data: URL.">
+      <Field label={t('dashboards.widgetEdit.imageUrl')} hint={t('dashboards.widgetEdit.imageUrlHint')}>
         <input
           type="url"
           value={config.url ?? ''}
@@ -219,7 +223,7 @@ function ImageWidgetForm({ config, set }: { config: any; set: (k: string, v: any
           placeholder="https://…"
         />
       </Field>
-      <Field label="Alt text">
+      <Field label={t('dashboards.widgetEdit.altText')}>
         <input
           type="text"
           value={config.alt ?? ''}
@@ -227,10 +231,10 @@ function ImageWidgetForm({ config, set }: { config: any; set: (k: string, v: any
           className={inputClass}
         />
       </Field>
-      <Field label="Fit">
+      <Field label={t('dashboards.widgetEdit.fit')}>
         <select value={config.fit ?? 'contain'} onChange={(e) => set('fit', e.target.value)} className={inputClass}>
-          <option value="contain">Contain</option>
-          <option value="cover">Cover</option>
+          <option value="contain">{t('dashboards.widgetEdit.fitContain')}</option>
+          <option value="cover">{t('dashboards.widgetEdit.fitCover')}</option>
         </select>
       </Field>
       {config.url ? (
@@ -244,17 +248,18 @@ function ImageWidgetForm({ config, set }: { config: any; set: (k: string, v: any
 }
 
 function ShapeWidgetForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
   return (
     <>
-      <Field label="Kind">
+      <Field label={t('dashboards.widgetEdit.kind')}>
         <select value={config.kind ?? 'rect'} onChange={(e) => set('kind', e.target.value)} className={inputClass}>
-          <option value="rect">Rectangle</option>
-          <option value="line">Line</option>
-          <option value="divider">Divider</option>
+          <option value="rect">{t('dashboards.widgetEdit.kindRectangle')}</option>
+          <option value="line">{t('dashboards.widgetEdit.kindLine')}</option>
+          <option value="divider">{t('dashboards.widgetEdit.kindDivider')}</option>
         </select>
       </Field>
       <div className="grid grid-cols-3 gap-3">
-        <Field label="Color">
+        <Field label={t('dashboards.widgetEdit.color')}>
           <input
             type="color"
             value={config.color ?? '#94a3b8'}
@@ -262,7 +267,7 @@ function ShapeWidgetForm({ config, set }: { config: any; set: (k: string, v: any
             className="h-9 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1"
           />
         </Field>
-        <Field label="Radius (px)">
+        <Field label={t('dashboards.widgetEdit.radiusPx')}>
           <input
             type="number"
             min={0}
@@ -272,7 +277,7 @@ function ShapeWidgetForm({ config, set }: { config: any; set: (k: string, v: any
             className={inputClass}
           />
         </Field>
-        <Field label="Opacity">
+        <Field label={t('dashboards.widgetEdit.opacity')}>
           <input
             type="number"
             min={0}
@@ -295,6 +300,7 @@ function ParameterSwitcherForm({
   config: any;
   setConfig: React.Dispatch<React.SetStateAction<Record<string, any>>>;
 }) {
+  const { t } = useI18n();
   const options: Array<{ label: string; value: string }> = Array.isArray(config.options) ? config.options : [];
   const updateOption = (i: number, patch: Partial<{ label: string; value: string }>) => {
     const next = options.map((o, idx) => (idx === i ? { ...o, ...patch } : o));
@@ -316,7 +322,7 @@ function ParameterSwitcherForm({
   return (
     <>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Parameter name" hint="The shared name charts will read.">
+        <Field label={t('dashboards.widgetEdit.parameterName')} hint={t('dashboards.widgetEdit.parameterNameHint')}>
           <input
             type="text"
             value={config.paramName ?? ''}
@@ -325,55 +331,55 @@ function ParameterSwitcherForm({
             placeholder="period"
           />
         </Field>
-        <Field label="Label">
+        <Field label={t('dashboards.widgetEdit.label')}>
           <input
             type="text"
             value={config.label ?? ''}
             onChange={(e) => setConfig((p) => ({ ...p, label: e.target.value }))}
             className={inputClass}
-            placeholder="Chu kỳ"
+            placeholder={t('dashboards.widgetEdit.parameterLabelPlaceholder')}
           />
         </Field>
       </div>
-      <Field label="Layout">
+      <Field label={t('dashboards.widgetEdit.layout')}>
         <select
           value={config.layout ?? 'tabs'}
           onChange={(e) => setConfig((p) => ({ ...p, layout: e.target.value }))}
           className={inputClass}
         >
-          <option value="tabs">Tabs</option>
-          <option value="dropdown">Dropdown</option>
+          <option value="tabs">{t('dashboards.widgetEdit.layoutTabs')}</option>
+          <option value="dropdown">{t('dashboards.widgetEdit.layoutDropdown')}</option>
         </select>
       </Field>
       <div>
         <div className="mb-1 flex items-center justify-between">
-          <label className="text-[12px] font-[510] text-text-secondary">Options</label>
+          <label className="text-[12px] font-[510] text-text-secondary">{t('dashboards.widgetEdit.options')}</label>
           <button
             type="button"
             onClick={addOption}
             className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] font-[510] text-text-secondary hover:bg-surface-2"
           >
-            <Plus className="h-3 w-3" /> Add option
+            <Plus className="h-3 w-3" /> {t('dashboards.widgetEdit.addOption')}
           </button>
         </div>
         <div className="space-y-2">
           {options.length === 0 && (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-[12px] text-text-tertiary">
-              No options yet.
+              {t('dashboards.widgetEdit.noOptions')}
             </p>
           )}
           {options.map((opt, i) => (
             <div key={i} className="grid grid-cols-[1fr_1fr_auto] items-center gap-2">
               <input
                 type="text"
-                placeholder="Label"
+                placeholder={t('dashboards.widgetEdit.optionLabelPlaceholder')}
                 value={opt.label ?? ''}
                 onChange={(e) => updateOption(i, { label: e.target.value })}
                 className={inputClass}
               />
               <input
                 type="text"
-                placeholder="Value"
+                placeholder={t('dashboards.widgetEdit.optionValuePlaceholder')}
                 value={opt.value ?? ''}
                 onChange={(e) => updateOption(i, { value: e.target.value })}
                 className={inputClass}
@@ -382,7 +388,7 @@ function ParameterSwitcherForm({
                 type="button"
                 onClick={() => removeOption(i)}
                 className="rounded-md p-1.5 text-text-quaternary hover:bg-danger/10 hover:text-danger"
-                title="Remove"
+                title={t('dashboards.widgetEdit.removeOption')}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>

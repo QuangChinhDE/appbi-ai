@@ -21,6 +21,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Filter as FilterIcon, ChevronDown, ChevronRight, Search, X, Pencil, Check, Hash, Calendar, Type, ToggleLeft, ToggleRight, AlertTriangle, Plus } from 'lucide-react';
+import { useI18n } from '@/providers/LanguageProvider';
 import type {
   BaseFilter,
   ColumnInfo,
@@ -83,6 +84,7 @@ interface FieldListProps {
   columns: ColumnInfo[];
 }
 export function FieldList({ columns }: FieldListProps) {
+  const { t } = useI18n();
   const [search, setSearch] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
@@ -109,7 +111,7 @@ export function FieldList({ columns }: FieldListProps) {
   return (
     <div className="flex h-full flex-col border-r border-[rgb(var(--border-line))] bg-surface-1">
       <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Fields</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.filterPane.fields')}</span>
       </div>
       <div className="border-b border-[rgb(var(--border-line))] px-2 py-1.5">
         <div className="relative">
@@ -118,7 +120,7 @@ export function FieldList({ columns }: FieldListProps) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search fields..."
+            placeholder={t('dashboards.filterPane.searchFields')}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -126,7 +128,7 @@ export function FieldList({ columns }: FieldListProps) {
       <div className="flex-1 overflow-y-auto py-1">
         {groups.length === 0 && (
           <p className="px-3 py-4 text-center text-xs text-text-quaternary">
-            {search ? 'No fields match' : 'No fields available'}
+            {search ? t('dashboards.filterPane.noFieldsMatch') : t('dashboards.filterPane.noFieldsAvailable')}
           </p>
         )}
         {groups.map((group) => {
@@ -152,7 +154,7 @@ export function FieldList({ columns }: FieldListProps) {
                         draggable
                         onDragStart={(e) => setDragField(e, { columnKey: key, source: 'field-list' })}
                         className="group flex cursor-grab items-center gap-2 rounded px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand active:cursor-grabbing"
-                        title={`Drag to add a filter on ${getColumnDisplayLabel(col)}`}
+                        title={t('dashboards.filterPane.dragToAddFilter', { field: getColumnDisplayLabel(col) })}
                       >
                         <FieldIcon type={col.type} />
                         <span className="truncate">{getColumnDisplayLabel(col)}</span>
@@ -217,6 +219,7 @@ function dropReasonLabel(reason: string): string {
 }
 
 export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onChange, onRemove }: FilterCardPBIProps) {
+  const { t } = useI18n();
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState(filter.label ?? '');
   const [search, setSearch] = useState('');
@@ -290,7 +293,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
             type="button"
             onClick={() => { setLabelDraft(filter.label ?? ''); setIsEditingLabel(true); }}
             className="group/label flex min-w-0 flex-1 items-center gap-1 text-left"
-            title="Click to rename"
+            title={t('dashboards.filterPane.clickToRename')}
           >
             <span className="truncate text-xs font-semibold text-text-primary">
               {getFilterDisplayLabel(filter)}
@@ -307,7 +310,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
         <button
           type="button"
           onClick={onRemove}
-          title="Remove filter"
+          title={t('dashboards.filterPane.removeFilter')}
           className="rounded p-0.5 text-text-quaternary hover:bg-danger/10 hover:text-danger"
         >
           <X className="h-3.5 w-3.5" />
@@ -319,7 +322,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
         {/* Phase-15.94 — dropped-cascade banner */}
         {droppedFilters && droppedFilters.length > 0 && (
           <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-            <p className="font-medium">Một số filter bị bỏ qua khi tải danh sách này</p>
+            <p className="font-medium">{t('dashboards.filterPane.droppedBannerTitle')}</p>
             <ul className="mt-0.5 list-disc pl-4 text-amber-700">
               {droppedFilters.slice(0, 3).map((d, i) => (
                 <li key={`${d.field}-${i}`}>
@@ -327,7 +330,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
                 </li>
               ))}
               {droppedFilters.length > 3 && (
-                <li>+{droppedFilters.length - 3} filter khác…</li>
+                <li>{t('dashboards.filterPane.droppedMore', { count: droppedFilters.length - 3 })}</li>
               )}
             </ul>
           </div>
@@ -336,16 +339,16 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
         {/* Mode toggle (categorical only) */}
         {supportsModeToggle && (
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
-            <span>Chế độ chọn:</span>
+            <span>{t('dashboards.filterPane.selectMode')}</span>
             <button
               type="button"
               onClick={() => switchMode(isMultiSelect ? 'single' : 'multi')}
               className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 transition-colors hover:bg-surface-1"
-              title={isMultiSelect ? 'Click for single-select' : 'Click for multi-select'}
+              title={isMultiSelect ? t('dashboards.filterPane.clickForSingle') : t('dashboards.filterPane.clickForMulti')}
             >
               {isMultiSelect
-                ? <><ToggleRight className="h-3 w-3 text-brand" /> Multi</>
-                : <><ToggleLeft className="h-3 w-3 text-text-quaternary" /> Single</>}
+                ? <><ToggleRight className="h-3 w-3 text-brand" /> {t('dashboards.filterPane.multi')}</>
+                : <><ToggleLeft className="h-3 w-3 text-text-quaternary" /> {t('dashboards.filterPane.single')}</>}
             </button>
           </div>
         )}
@@ -360,7 +363,7 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
                           (silent WHERE).
             See docs/filter-semantics.md §2.2. */}
         <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
-          <span title="Hành vi của filter trên link công khai">Trên link:</span>
+          <span title={t('dashboards.filterPane.onLinkTitle')}>{t('dashboards.filterPane.onLink')}</span>
           <select
             value={(filter as any).publicMode ?? 'visible'}
             onChange={(e) => {
@@ -368,35 +371,35 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
               onChange({ ...filter, publicMode: next } as any);
             }}
             className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-[10px] outline-none focus:ring-1 focus:ring-brand"
-            title="Cách filter này xuất hiện cho người xem qua link công khai"
+            title={t('dashboards.filterPane.publicModeTitle')}
           >
             {/* Vocab matches the Public Links modal (Hiện/Khoá/Ẩn) so the SAME
                 concept reads the same everywhere — not visible/locked/hidden here
                 and Hiện/Khoá/Ẩn there. */}
-            <option value="visible">👁 Hiện</option>
-            <option value="locked">🔒 Khoá</option>
-            <option value="hidden">🚫 Ẩn</option>
+            <option value="visible">{t('dashboards.filterPane.publicVisible')}</option>
+            <option value="locked">{t('dashboards.filterPane.publicLocked')}</option>
+            <option value="hidden">{t('dashboards.filterPane.publicHidden')}</option>
           </select>
           {((filter as any).publicMode ?? 'visible') === 'visible' && (
-            <label className="ml-1 inline-flex items-center gap-1" title="Cho phép viewer chỉnh giá trị qua mini-pane">
+            <label className="ml-1 inline-flex items-center gap-1" title={t('dashboards.filterPane.overrideTitle')}>
               <input
                 type="checkbox"
                 checked={Boolean((filter as any).allowOverride)}
                 onChange={(e) => onChange({ ...filter, allowOverride: e.target.checked } as any)}
                 className="h-3 w-3"
               />
-              <span>override</span>
+              <span>{t('dashboards.filterPane.override')}</span>
             </label>
           )}
           {((filter as any).publicMode ?? 'visible') === 'locked' && (
-            <label className="ml-1 inline-flex items-center gap-1" title="Hiện banner 'Đang lọc theo…' cho viewer">
+            <label className="ml-1 inline-flex items-center gap-1" title={t('dashboards.filterPane.bannerTitle')}>
               <input
                 type="checkbox"
                 checked={(filter as any).showBanner !== false}
                 onChange={(e) => onChange({ ...filter, showBanner: e.target.checked } as any)}
                 className="h-3 w-3"
               />
-              <span>banner</span>
+              <span>{t('dashboards.filterPane.banner')}</span>
             </label>
           )}
         </div>
@@ -469,6 +472,7 @@ function NumberBody({ filter, onUpdateValue, onUpdateOperator }: {
   onUpdateValue: (v: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-1.5">
       <select
@@ -476,13 +480,13 @@ function NumberBody({ filter, onUpdateValue, onUpdateOperator }: {
         onChange={(e) => onUpdateOperator(e.target.value as FilterOperator)}
         className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
       >
-        <option value="eq">= equals</option>
-        <option value="neq">≠ not equals</option>
-        <option value="gt">&gt; greater</option>
-        <option value="gte">≥ at least</option>
-        <option value="lt">&lt; less</option>
-        <option value="lte">≤ at most</option>
-        <option value="between">between</option>
+        <option value="eq">{t('dashboards.filterPane.opEq')}</option>
+        <option value="neq">{t('dashboards.filterPane.opNeq')}</option>
+        <option value="gt">{t('dashboards.filterPane.opGt')}</option>
+        <option value="gte">{t('dashboards.filterPane.opGte')}</option>
+        <option value="lt">{t('dashboards.filterPane.opLt')}</option>
+        <option value="lte">{t('dashboards.filterPane.opLte')}</option>
+        <option value="between">{t('dashboards.filterPane.opBetween')}</option>
       </select>
       {filter.operator === 'between' ? (
         <NumberRangeInputs filter={filter} onUpdate={onUpdateValue} />
@@ -491,7 +495,7 @@ function NumberBody({ filter, onUpdateValue, onUpdateOperator }: {
           type="number"
           value={typeof filter.value === 'number' ? filter.value : filter.value ?? ''}
           onChange={(e) => onUpdateValue(e.target.value === '' ? '' : Number(e.target.value))}
-          placeholder="Value..."
+          placeholder={t('dashboards.filterPane.valuePlaceholder')}
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       )}
@@ -500,6 +504,7 @@ function NumberBody({ filter, onUpdateValue, onUpdateOperator }: {
 }
 
 function NumberRangeInputs({ filter, onUpdate }: { filter: BaseFilter; onUpdate: (v: any) => void }) {
+  const { t } = useI18n();
   const [lo, hi] = Array.isArray(filter.value) ? [filter.value[0] ?? '', filter.value[1] ?? ''] : ['', ''];
   const loNum = lo !== '' && lo != null ? Number(lo) : NaN;
   const hiNum = hi !== '' && hi != null ? Number(hi) : NaN;
@@ -515,7 +520,7 @@ function NumberRangeInputs({ filter, onUpdate }: { filter: BaseFilter; onUpdate:
           type="number"
           value={lo}
           onChange={(e) => onUpdate([e.target.value, hi])}
-          placeholder="Min"
+          placeholder={t('dashboards.filterPane.min')}
           className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
         <span className="text-text-quaternary text-xs">–</span>
@@ -523,7 +528,7 @@ function NumberRangeInputs({ filter, onUpdate }: { filter: BaseFilter; onUpdate:
           type="number"
           value={hi}
           onChange={(e) => onUpdate([lo, e.target.value])}
-          placeholder="Max"
+          placeholder={t('dashboards.filterPane.max')}
           className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       </div>
@@ -558,6 +563,7 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
   setSearch: (s: string) => void;
   onToggle: (val: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-1">
       {values.length > 6 && (
@@ -567,7 +573,7 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search values..."
+            placeholder={t('dashboards.filterPane.searchValues')}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-6 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -575,7 +581,7 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
       <div className="max-h-40 overflow-y-auto space-y-0.5">
         {filtered.length === 0 ? (
           <p className="py-1 text-xs italic text-text-quaternary">
-            {values.length === 0 ? 'Loading values...' : 'No match'}
+            {values.length === 0 ? t('dashboards.filterPane.loadingValues') : t('dashboards.filterPane.noMatch')}
           </p>
         ) : (
           filtered.map((val) => {
@@ -593,7 +599,7 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
                   onChange={() => onToggle(val)}
                   className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-1 focus:ring-brand"
                 />
-                <span className="truncate flex-1">{val || '(empty)'}</span>
+                <span className="truncate flex-1">{val || t('dashboards.filterPane.empty')}</span>
               </label>
             );
           })
@@ -611,6 +617,7 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
   setSearch: (s: string) => void;
   onSelect: (val: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-1">
       {values.length > 6 && (
@@ -620,7 +627,7 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search values..."
+            placeholder={t('dashboards.filterPane.searchValues')}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-6 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -628,7 +635,7 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
       <div className="max-h-40 overflow-y-auto space-y-0.5">
         {filtered.length === 0 ? (
           <p className="py-1 text-xs italic text-text-quaternary">
-            {values.length === 0 ? 'Loading values...' : 'No match'}
+            {values.length === 0 ? t('dashboards.filterPane.loadingValues') : t('dashboards.filterPane.noMatch')}
           </p>
         ) : (
           filtered.map((val) => {
@@ -646,7 +653,7 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
                   onChange={() => onSelect(val)}
                   className="h-3.5 w-3.5 border-[rgb(var(--border-strong))] text-brand focus:ring-1 focus:ring-brand"
                 />
-                <span className="truncate flex-1">{val || '(empty)'}</span>
+                <span className="truncate flex-1">{val || t('dashboards.filterPane.empty')}</span>
               </label>
             );
           })
@@ -716,6 +723,7 @@ export function FilterPane({
   onReset,
   isApplying = false,
 }: FilterPaneProps) {
+  const { t } = useI18n();
   // Phase-15 — default both sections COLLAPSED so opening the FilterPane
   // doesn't immediately render every existing filter card. Matches the
   // SlicerCluster's default-collapse pattern (Phase-13). DA clicks the
@@ -769,11 +777,11 @@ export function FilterPane({
       <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-3 py-2">
         <div className="flex items-center gap-1.5">
           <FilterIcon className="h-3.5 w-3.5 text-text-tertiary" />
-          <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Filters</span>
+          <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.filterPane.filters')}</span>
         </div>
         {hasPendingChanges && (
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-            <AlertTriangle className="h-2.5 w-2.5" /> Unapplied
+            <AlertTriangle className="h-2.5 w-2.5" /> {t('dashboards.filterPane.unapplied')}
           </span>
         )}
       </div>
@@ -781,7 +789,7 @@ export function FilterPane({
       <div className="flex-1 overflow-y-auto">
         <Section
           scope="page"
-          title="Filters on this page"
+          title={t('dashboards.filterPane.filtersThisPage')}
           subtitle={pageLabel}
           expanded={expanded.page}
           onToggle={() => setExpanded((p) => ({ ...p, page: !p.page }))}
@@ -794,8 +802,8 @@ export function FilterPane({
         />
         <Section
           scope="all"
-          title="Filters on all pages"
-          subtitle="Apply to every chart in this dashboard"
+          title={t('dashboards.filterPane.filtersAllPages')}
+          subtitle={t('dashboards.filterPane.filtersAllPagesSubtitle')}
           expanded={expanded.all}
           onToggle={() => setExpanded((p) => ({ ...p, all: !p.all }))}
           filters={allFilters}
@@ -822,7 +830,7 @@ export function FilterPane({
                 disabled={!hasPendingChanges}
                 className="rounded border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Reset
+                {t('dashboards.filterPane.reset')}
               </button>
             )}
             {onApplyPage && (
@@ -831,10 +839,10 @@ export function FilterPane({
                 onClick={onApplyPage}
                 disabled={!hasPendingChanges || isApplying}
                 className="ml-auto inline-flex items-center gap-1 rounded border border-brand/40 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/10 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Save draft + re-query the active page only"
+                title={t('dashboards.filterPane.applyThisPageTitle')}
               >
                 <Check className="h-3 w-3" />
-                {isApplying ? 'Applying...' : 'Apply this page'}
+                {isApplying ? t('dashboards.filterPane.applying') : t('dashboards.filterPane.applyThisPage')}
               </button>
             )}
             {onApplyAll && (
@@ -847,15 +855,15 @@ export function FilterPane({
                     ? 'bg-brand hover:bg-brand-hover ring-2 ring-brand/30 ring-offset-1 shadow-md'
                     : 'bg-brand hover:bg-brand-hover'
                 }`}
-                title="Save draft + re-query every chart on the dashboard"
+                title={t('dashboards.filterPane.applyAllPagesTitle')}
               >
                 <Check className="h-3 w-3" />
-                {isApplying ? 'Applying...' : 'Apply all pages'}
+                {isApplying ? t('dashboards.filterPane.applying') : t('dashboards.filterPane.applyAllPages')}
               </button>
             )}
           </div>
           <p className="text-[10px] text-text-quaternary">
-            Apply lưu nháp filter. Bấm "Lưu &amp; xuất bản" trên topbar khi muốn đẩy ra public link.
+            {t('dashboards.filterPane.applyDraftNote')}
           </p>
         </div>
       )}
@@ -882,6 +890,7 @@ interface SectionProps {
   droppedFiltersByColumn?: Record<string, FilterCardDroppedInfo[]>;
 }
 function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, droppedFiltersByColumn }: SectionProps) {
+  const { t } = useI18n();
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
@@ -950,7 +959,7 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
           }`}
         >
           {filters.length === 0 && (
-            <p className="px-1 text-[11px] text-text-quaternary">No filters yet</p>
+            <p className="px-1 text-[11px] text-text-quaternary">{t('dashboards.filterPane.noFiltersYet')}</p>
           )}
           {filters.map((f) => (
             <FilterCardPBI
@@ -975,7 +984,7 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
                 className="flex w-full items-center justify-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus className="h-3 w-3" />
-                {addable.length === 0 ? 'All fields already used here' : 'Add filter'}
+                {addable.length === 0 ? t('dashboards.filterPane.allFieldsUsed') : t('dashboards.filterPane.addFilter')}
               </button>
             ) : (
               <AddFilterPicker
@@ -1012,6 +1021,7 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
   onPick: (columnKey: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const [search, setSearch] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -1019,10 +1029,10 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
   const tableLabelOf = (col: ColumnInfo) =>
     col.tableLabel
     ?? col.semanticField?.split('.')[0]
-    ?? 'Other';
+    ?? t('dashboards.filterPane.tableFallbackOther');
   const datasetLabelOf = (col: ColumnInfo) =>
     col.datasetName
-    ?? (col.datasetId != null ? `Dataset ${col.datasetId}` : 'Unscoped');
+    ?? (col.datasetId != null ? t('dashboards.filterPane.datasetN', { id: col.datasetId }) : t('dashboards.filterPane.datasetUnscoped'));
 
   // Build a two-level grouping: dataset → table → columns. Stable
   // insertion order: datasets/tables appear in the order their first
@@ -1092,13 +1102,13 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
             if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
             if (e.key === 'Enter' && firstMatch) { e.preventDefault(); onPick(getColumnKey(firstMatch)); }
           }}
-          placeholder="Search dataset, table, or field..."
+          placeholder={t('dashboards.filterPane.searchDatasetTableField')}
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
         />
       </div>
       <div className="max-h-72 overflow-y-auto space-y-2">
         {datasetGroups.length === 0 && (
-          <p className="px-1 py-2 text-center text-[11px] text-text-quaternary">No columns match</p>
+          <p className="px-1 py-2 text-center text-[11px] text-text-quaternary">{t('dashboards.filterPane.noColumnsMatch')}</p>
         )}
         {datasetGroups.map((ds) => (
           <div key={ds.datasetKey}>
@@ -1124,9 +1134,9 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
                       // which column lives on which table.
                       const subLabel = col.name;
                       const tooltipParts = [
-                        `Field: ${col.semanticField ?? col.name}`,
-                        col.datasetName ? `Dataset: ${col.datasetName}` : null,
-                        `Type: ${col.type}`,
+                        t('dashboards.filterPane.tooltipField', { field: col.semanticField ?? col.name }),
+                        col.datasetName ? t('dashboards.filterPane.tooltipDataset', { dataset: col.datasetName }) : null,
+                        t('dashboards.filterPane.tooltipType', { type: col.type }),
                       ].filter(Boolean);
                       return (
                         <button
@@ -1157,7 +1167,7 @@ function AddFilterPicker({ columns, onPick, onCancel }: {
           onClick={onCancel}
           className="text-[10px] text-text-quaternary hover:text-text-secondary"
         >
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </div>

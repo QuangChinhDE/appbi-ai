@@ -15,6 +15,7 @@ import {
   Eye, Lock, EyeOff, AlertTriangle, Info,
 } from 'lucide-react';
 import { getFilterDisplayLabel } from '@/lib/filters';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface FilterMapModalProps {
   dashboard: any;
@@ -51,37 +52,40 @@ function formatValue(v: any, op?: string): string {
   return String(v);
 }
 
-const KIND_META: Record<SourceKind, { label: string; Icon: any; cls: string }> = {
-  chart_base:       { label: 'Filter gốc chart', Icon: Settings2,          cls: 'text-amber-300' },
-  slicer:           { label: 'Slicer',           Icon: SlidersHorizontal,  cls: 'text-sky-300' },
-  dashboard_filter: { label: 'Filter dashboard', Icon: LayoutGrid,         cls: 'text-indigo-300' },
-  page_filter:      { label: 'Filter trang',     Icon: FileText,           cls: 'text-teal-300' },
+const KIND_META: Record<SourceKind, { labelKey: string; Icon: any; cls: string }> = {
+  chart_base:       { labelKey: 'dashboards.filterMap.kindChartBase',       Icon: Settings2,          cls: 'text-amber-300' },
+  slicer:           { labelKey: 'dashboards.filterMap.kindSlicer',          Icon: SlidersHorizontal,  cls: 'text-sky-300' },
+  dashboard_filter: { labelKey: 'dashboards.filterMap.kindDashboardFilter', Icon: LayoutGrid,         cls: 'text-indigo-300' },
+  page_filter:      { labelKey: 'dashboards.filterMap.kindPageFilter',      Icon: FileText,           cls: 'text-teal-300' },
+};
+
+const PUBLIC_BADGE_META: Record<PublicState, { txtKey: string; Icon: any; cls: string }> = {
+  visible: { txtKey: 'dashboards.filterMap.publicVisible', Icon: Eye,      cls: 'bg-success/15 text-success' },
+  locked:  { txtKey: 'dashboards.filterMap.publicLocked',  Icon: Lock,     cls: 'bg-warning/15 text-warning' },
+  hidden:  { txtKey: 'dashboards.filterMap.publicHidden',  Icon: EyeOff,   cls: 'bg-[rgba(255,255,255,0.08)] text-text-secondary' },
+  apply:   { txtKey: 'dashboards.filterMap.publicApply',   Icon: FileText, cls: 'bg-[rgba(255,255,255,0.06)] text-text-tertiary' },
+  always:  { txtKey: 'dashboards.filterMap.publicAlways',  Icon: Settings2, cls: 'bg-[rgba(255,255,255,0.06)] text-text-tertiary' },
 };
 
 function PublicBadge({ state }: { state: PublicState }) {
-  const map: Record<PublicState, { txt: string; Icon: any; cls: string }> = {
-    visible: { txt: 'Hiện',     Icon: Eye,      cls: 'bg-success/15 text-success' },
-    locked:  { txt: 'Khoá',     Icon: Lock,     cls: 'bg-warning/15 text-warning' },
-    hidden:  { txt: 'Ẩn',       Icon: EyeOff,   cls: 'bg-[rgba(255,255,255,0.08)] text-text-secondary' },
-    apply:   { txt: 'Áp ngầm',  Icon: FileText, cls: 'bg-[rgba(255,255,255,0.06)] text-text-tertiary' },
-    always:  { txt: 'Luôn áp',  Icon: Settings2, cls: 'bg-[rgba(255,255,255,0.06)] text-text-tertiary' },
-  };
-  const m = map[state];
+  const { t } = useI18n();
+  const m = PUBLIC_BADGE_META[state];
   const Icon = m.Icon;
   return (
     <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-[510] ${m.cls}`}>
       <Icon className="h-3 w-3" />
-      {m.txt}
+      {t(m.txtKey)}
     </span>
   );
 }
 
 export default function FilterMapModal({ dashboard, onClose }: FilterMapModalProps) {
+  const { t } = useI18n();
   const rows = useMemo<FilterRow[]>(() => {
     const out: FilterRow[] = [];
     const d = dashboard || {};
     const pages: any[] = Array.isArray(d.pages_config) ? d.pages_config : [];
-    const pageName = (p: any) => p?.name || p?.title || p?.id || 'trang';
+    const pageName = (p: any) => p?.name || p?.title || p?.id || t('dashboards.filterMap.pageFallback');
 
     const push = (e: any, base: Omit<FilterRow, 'fieldLabel' | 'valueText' | 'emptyWarn'> & { warnIfEmpty?: boolean }) => {
       if (!e || typeof e !== 'object') return;
@@ -101,10 +105,10 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
       const mode = (f?.publicMode || 'visible') as PublicState;
       push(f, {
         kind: 'dashboard_filter',
-        sourceLabel: 'Filter dashboard',
-        scope: 'Tất cả trang',
+        sourceLabel: t('dashboards.filterMap.kindDashboardFilter'),
+        scope: t('dashboards.filterMap.scopeAllPages'),
         publicState: mode === 'locked' || mode === 'hidden' ? mode : 'visible',
-        editableBy: mode === 'visible' ? 'Người xem' : 'Tác giả',
+        editableBy: mode === 'visible' ? t('dashboards.filterMap.editableViewer') : t('dashboards.filterMap.editableAuthor'),
         // empty value + locked/hidden = enforces nothing (no-op) → warn
         warnIfEmpty: mode === 'locked' || mode === 'hidden',
       });
@@ -115,10 +119,10 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
       const sc = s?.scope || 'all';
       push(s, {
         kind: 'slicer',
-        sourceLabel: 'Slicer',
-        scope: sc === 'custom' ? 'Tùy chọn theo trang' : sc === 'page' ? 'Trang này' : 'Tất cả trang',
+        sourceLabel: t('dashboards.filterMap.kindSlicer'),
+        scope: sc === 'custom' ? t('dashboards.filterMap.scopeCustomPerPage') : sc === 'page' ? t('dashboards.filterMap.scopeThisPage') : t('dashboards.filterMap.scopeAllPages'),
         publicState: 'visible',
-        editableBy: 'Người xem',
+        editableBy: t('dashboards.filterMap.editableViewer'),
       });
     }
 
@@ -127,19 +131,19 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
       for (const f of (p?.filters || [])) {
         push(f, {
           kind: 'page_filter',
-          sourceLabel: `Filter trang · ${pageName(p)}`,
-          scope: `Trang: ${pageName(p)}`,
+          sourceLabel: t('dashboards.filterMap.sourcePageFilter', { page: pageName(p) }),
+          scope: t('dashboards.filterMap.scopePage', { page: pageName(p) }),
           publicState: 'apply',
-          editableBy: 'Tác giả',
+          editableBy: t('dashboards.filterMap.editableAuthor'),
         });
       }
       for (const s of (p?.slicers || [])) {
         push(s, {
           kind: 'slicer',
-          sourceLabel: `Slicer trang · ${pageName(p)}`,
-          scope: `Trang: ${pageName(p)}`,
+          sourceLabel: t('dashboards.filterMap.sourcePageSlicer', { page: pageName(p) }),
+          scope: t('dashboards.filterMap.scopePage', { page: pageName(p) }),
           publicState: 'visible',
-          editableBy: 'Người xem',
+          editableBy: t('dashboards.filterMap.editableViewer'),
         });
       }
     }
@@ -148,21 +152,21 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
     for (const dc of (d.dashboard_charts || [])) {
       const cfg = dc?.chart?.config || {};
       const baseF = cfg.baseFilters ?? cfg.filters ?? [];
-      const chartName = dc?.layout?.custom_title || dc?.chart?.name || `Chart ${dc?.chart_id ?? ''}`;
+      const chartName = dc?.layout?.custom_title || dc?.chart?.name || t('dashboards.filterMap.chartFallback', { id: dc?.chart_id ?? '' });
       for (const f of (Array.isArray(baseF) ? baseF : [])) {
         push(f, {
           kind: 'chart_base',
-          sourceLabel: `Chart · ${chartName}`,
-          scope: 'Chỉ chart này',
+          sourceLabel: t('dashboards.filterMap.sourceChart', { chart: chartName }),
+          scope: t('dashboards.filterMap.scopeChartOnly'),
           publicState: 'always',
-          editableBy: 'Cố định (sửa ở Explore)',
+          editableBy: t('dashboards.filterMap.editableFixed'),
         });
       }
     }
 
     out.sort((a, b) => a.fieldLabel.localeCompare(b.fieldLabel) || a.kind.localeCompare(b.kind));
     return out;
-  }, [dashboard]);
+  }, [dashboard, t]);
 
   // group rows by field for at-a-glance scanning
   const groups = useMemo(() => {
@@ -191,15 +195,15 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
           <div className="flex items-start gap-2.5">
             <SlidersHorizontal className="mt-0.5 h-5 w-5 text-text-tertiary" />
             <div>
-              <h2 className="text-base font-semibold text-text-primary">Bản đồ Filter</h2>
+              <h2 className="text-base font-semibold text-text-primary">{t('dashboards.filterMap.title')}</h2>
               <p className="mt-0.5 text-caption text-text-tertiary">
                 {rows.length === 0
-                  ? 'Toàn bộ filter đang tác động lên dashboard này'
-                  : `${groups.length} trường · ${rows.length} filter từ mọi nguồn`}
+                  ? t('dashboards.filterMap.subtitleEmpty')
+                  : t('dashboards.filterMap.subtitleCount', { fields: groups.length, filters: rows.length })}
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="rounded-lg p-1 text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary" aria-label="Close">
+          <button onClick={onClose} className="rounded-lg p-1 text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary" aria-label={t('common.cancel')}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -211,14 +215,14 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
             return (
               <span key={k} className="inline-flex items-center gap-1">
                 <Icon className={`h-3 w-3 ${KIND_META[k].cls}`} />
-                {KIND_META[k].label}
+                {t(KIND_META[k].labelKey)}
               </span>
             );
           })}
           {warnCount > 0 && (
             <span className="inline-flex items-center gap-1 text-warning">
               <AlertTriangle className="h-3 w-3" />
-              {warnCount} khoá chưa có giá trị
+              {t('dashboards.filterMap.warnCount', { count: warnCount })}
             </span>
           )}
         </div>
@@ -227,7 +231,7 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
         <div className="flex-1 overflow-y-auto px-5 py-3">
           {rows.length === 0 ? (
             <div className="py-12 text-center text-sm text-text-tertiary">
-              Dashboard chưa có filter nào. Thêm Slicer hoặc Filter để giới hạn dữ liệu.
+              {t('dashboards.filterMap.emptyState')}
             </div>
           ) : (
             <div className="space-y-3">
@@ -252,7 +256,7 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
                               {r.emptyWarn ? (
                                 <span className="inline-flex items-center gap-1 text-warning">
                                   <AlertTriangle className="h-3.5 w-3.5" />
-                                  Chưa có giá trị → không lọc
+                                  {t('dashboards.filterMap.noValueNoFilter')}
                                 </span>
                               ) : (
                                 <span className="break-words">{r.valueText}</span>
@@ -276,8 +280,8 @@ export default function FilterMapModal({ dashboard, onClose }: FilterMapModalPro
         <div className="flex items-start gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3 text-[11px] text-text-tertiary">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Thứ tự áp filter: <span className="text-text-secondary">🔒 Khoá link → Filter trang → Slicer người xem</span>.
-            Filter Khoá/Ẩn riêng cho từng link công khai cấu hình ở <span className="text-text-secondary">Public links</span>.
+            {t('dashboards.filterMap.footerOrderLabel')} <span className="text-text-secondary">{t('dashboards.filterMap.footerOrderValue')}</span>.
+            {' '}{t('dashboards.filterMap.footerLinkPrefix')} <span className="text-text-secondary">{t('dashboards.filterMap.footerPublicLinks')}</span>.
           </span>
         </div>
       </div>

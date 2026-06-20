@@ -25,6 +25,7 @@ import {
   isFilterValueActive,
 } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ─── Type badge helpers ────────────────────────────────────────
 const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: 'D', dropdown: '=' };
@@ -42,13 +43,6 @@ const TYPE_PILL: Record<FilterType, string> = {
   date:     'bg-teal-50 text-teal-600 ring-1 ring-teal-100',
   dropdown: 'bg-surface-2 text-text-tertiary ring-1 ring-[rgb(var(--border-line))]',
 };
-const TYPE_LABEL: Record<FilterType, string> = {
-  text:     'Text',
-  number:   'Num',
-  date:     'Date',
-  dropdown: 'List',
-};
-
 // ─── Phase-9: Looker-style "Add Filter" — pick interaction type first ───
 //
 // Replaces the legacy "pick column → auto-infer operator from column.type"
@@ -237,6 +231,7 @@ export function DashboardFilterBar({
   onUpdateSlicerScope,
   headerExtras,
 }: DashboardFilterBarPropsWithExtras) {
+  const { t } = useI18n();
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
@@ -337,7 +332,9 @@ export function DashboardFilterBar({
     const datasets = new Map<string, AddFilterDatasetGroup>();
     for (const column of sourceColumns) {
       const datasetLabel = column.datasetName
-        ?? (column.datasetId != null ? `Dataset ${column.datasetId}` : 'Unscoped');
+        ?? (column.datasetId != null
+          ? t('dashboards.filterBar.datasetPrefix', { id: column.datasetId })
+          : t('dashboards.filterBar.datasetUnscoped'));
       const datasetKey = column.datasetId != null
         ? `id:${column.datasetId}`
         : `name:${datasetLabel}`;
@@ -570,9 +567,11 @@ export function DashboardFilterBar({
   const getCoverageLabel = (column: ColumnInfo) => {
     const covered = column.chartCoverage ?? columnChartCount.get(getColumnKey(column)) ?? 0;
     if (column.datasetChartCount && column.datasetChartCount > 0) {
-      return `${covered}/${column.datasetChartCount} charts`;
+      return t('dashboards.filterBar.coverageCharts', { covered, total: column.datasetChartCount });
     }
-    return `${covered} chart${covered !== 1 ? 's' : ''}`;
+    return covered === 1
+      ? t('dashboards.filterBar.coverageChartOne', { count: covered })
+      : t('dashboards.filterBar.coverageChartPlural', { count: covered });
   };
 
   const renderColumnOption = (column: ColumnInfo) => {
@@ -599,7 +598,7 @@ export function DashboardFilterBar({
         </span>
         <span className="flex shrink-0 items-center gap-2">
           {sameTypeCount > 0 && (
-            <span className="flex items-center gap-0.5 text-xs text-teal-500" title={`Will auto-link ${sameTypeCount} other date column(s)`}>
+            <span className="flex items-center gap-0.5 text-xs text-teal-500" title={t('dashboards.filterBar.autoLinkTooltip', { count: sameTypeCount })}>
               <Link2 className="w-3 h-3" />
               +{sameTypeCount}
             </span>
@@ -652,7 +651,7 @@ export function DashboardFilterBar({
             className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
           >
             <Filter className="w-4 h-4 text-brand" />
-            <span>Filters</span>
+            <span>{t('dashboards.filterBar.filters')}</span>
             {activeCount > 0 && (
               <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold">
                 {activeCount}
@@ -669,10 +668,10 @@ export function DashboardFilterBar({
         {hasPendingChanges && !collapsedSlicers && (
           <span
             className="inline-flex items-center gap-1 rounded-full border-2 border-amber-400 bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold text-amber-900 shadow-sm animate-pulse"
-            title="You have filter changes that haven't been applied yet. Click Apply to update the dashboard."
+            title={t('dashboards.filterBar.unappliedChangesTooltip')}
           >
             <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-            Unapplied changes
+            {t('dashboards.filterBar.unappliedChanges')}
           </span>
         )}
 
@@ -711,7 +710,7 @@ export function DashboardFilterBar({
               className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-surface-2"
             >
               <RotateCcw className="h-3 w-3" />
-              Reset
+              {t('dashboards.filterBar.reset')}
             </button>
           )}
 
@@ -729,7 +728,7 @@ export function DashboardFilterBar({
               }`}
             >
               <Check className="h-3 w-3" />
-              {isApplying ? 'Applying...' : 'Apply'}
+              {isApplying ? t('dashboards.filterBar.applying') : t('dashboards.filterBar.apply')}
             </button>
           )}
 
@@ -741,7 +740,7 @@ export function DashboardFilterBar({
               onClick={() => onFiltersChange([])}
               className="text-xs text-text-quaternary hover:text-danger transition-colors"
             >
-              Clear all
+              {t('dashboards.filterBar.clearAll')}
             </button>
           )}
 
@@ -763,7 +762,7 @@ export function DashboardFilterBar({
                 }
               }}
               disabled={addableColumns.length === 0}
-              title={addableColumns.length === 0 ? 'No dashboard filter fields available' : undefined}
+              title={addableColumns.length === 0 ? t('dashboards.filterBar.noFieldsAvailable') : undefined}
               // Phase-17 — chrome that survives any DashboardThemeProvider
               // background colour. The old `text-brand` on transparent bg
               // disappeared when the DA painted the canvas with a colour
@@ -773,7 +772,7 @@ export function DashboardFilterBar({
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-white bg-brand border border-brand/60 rounded-md shadow-md ring-1 ring-black/5 hover:bg-brand-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
-              Add slicer
+              {t('dashboards.filterBar.addSlicer')}
             </button>
 
             {addingField && addableColumns.length > 0 && (
@@ -792,7 +791,7 @@ export function DashboardFilterBar({
                     <div className="py-1">
                       <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
                         <Filter className="w-3 h-3" />
-                        Add slicer · chọn kiểu điều khiển
+                        {t('dashboards.filterBar.addSlicerPickControl')}
                       </div>
                       <ul className="py-1">
                         {SLICER_INTERACTIONS.map((m) => {
@@ -812,7 +811,7 @@ export function DashboardFilterBar({
                                   // Re-focus the search field once the column step renders.
                                   setTimeout(() => addFilterSearchRef.current?.focus(), 60);
                                 }}
-                                title={disabled ? 'No columns compatible with this type' : undefined}
+                                title={disabled ? t('dashboards.filterBar.noColumnsForType') : undefined}
                                 className={`w-full flex items-start gap-3 px-3 py-2 text-left text-sm transition-colors ${
                                   disabled
                                     ? 'opacity-40 cursor-not-allowed'
@@ -821,13 +820,15 @@ export function DashboardFilterBar({
                               >
                                 <Icon className="w-4 h-4 mt-0.5 text-text-tertiary flex-shrink-0" />
                                 <div className="min-w-0 flex-1">
-                                  <div className="font-medium text-text-secondary">{m.label}</div>
+                                  <div className="font-medium text-text-secondary">{t(`dashboards.interaction.${m.id}.label`)}</div>
                                   <div className="text-[11px] text-text-quaternary leading-snug truncate">
-                                    {m.description}
+                                    {t(`dashboards.interaction.${m.id}.desc`)}
                                   </div>
                                 </div>
                                 <span className="text-[10px] text-text-quaternary mt-1">
-                                  {compatCount} {compatCount === 1 ? 'column' : 'columns'}
+                                  {compatCount === 1
+                                    ? t('dashboards.filterBar.columnCountOne', { count: compatCount })
+                                    : t('dashboards.filterBar.columnCountPlural', { count: compatCount })}
                                 </span>
                               </button>
                             </li>
@@ -849,11 +850,11 @@ export function DashboardFilterBar({
                             className="inline-flex items-center gap-0.5 text-[11px] text-text-tertiary hover:text-brand"
                           >
                             <ArrowLeft className="w-3 h-3" />
-                            Change type
+                            {t('dashboards.filterBar.changeType')}
                           </button>
                           <span className="text-[11px] text-text-quaternary">/</span>
                           <span className="text-[11px] font-semibold text-text-secondary truncate">
-                            {SLICER_INTERACTIONS.find((m) => m.id === pickedType)?.label}
+                            {t(`dashboards.interaction.${pickedType}.label`)}
                           </span>
                         </div>
                         <div className="relative">
@@ -863,7 +864,7 @@ export function DashboardFilterBar({
                             type="text"
                             value={addFilterSearch}
                             onChange={(e) => setAddFilterSearch(e.target.value)}
-                            placeholder="Search columns..."
+                            placeholder={t('dashboards.filterBar.searchColumns')}
                             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
                             onKeyDown={(e) => {
                               if (e.key === 'Escape') {
@@ -887,8 +888,8 @@ export function DashboardFilterBar({
                       ) : (
                         <p className="px-3 py-3 text-xs text-text-quaternary italic">
                           {compatibleColumns.length === 0
-                            ? 'No columns compatible with this type.'
-                            : 'No search match.'}
+                            ? t('dashboards.filterBar.noColumnsForTypePeriod')
+                            : t('dashboards.filterBar.noSearchMatch')}
                         </p>
                       )}
                     </>
@@ -980,17 +981,17 @@ export function DashboardFilterBar({
         <div className="px-4 py-5 text-center border-t border-[rgb(var(--border-line))]">
           {addableColumns.length > 0 ? (
             <p className="text-sm text-text-quaternary">
-              No slicers added. Click <strong>Add slicer</strong> to let viewers filter all charts in this dashboard.
+              {t('dashboards.filterBar.emptyNoSlicersPrefix')} <strong>{t('dashboards.filterBar.addSlicer')}</strong> {t('dashboards.filterBar.emptyNoSlicersSuffix')}
             </p>
           ) : (
             <p className="text-sm text-text-quaternary">
-              No shared dashboard filters are available here. Use chart-level filters for chart-specific analysis.
+              {t('dashboards.filterBar.emptyNoSharedFilters')}
             </p>
           )}
           {columns.filter(c => c.type === 'date').length > 1 && (
             <p className="text-xs text-teal-500 mt-1">
               <Link2 className="w-3 h-3 inline mr-1" />
-              Tip: Adding a date filter will auto-link all date columns across charts.
+              {t('dashboards.filterBar.dateAutoLinkTip')}
             </p>
           )}
         </div>
@@ -1110,6 +1111,13 @@ function FilterCard({
   popoverPlacement = 'bottom',
   onUpdateWidth,
 }: FilterCardProps) {
+  const { t } = useI18n();
+  const typeLabel: Record<FilterType, string> = {
+    text: t('dashboards.filterBar.typeText'),
+    number: t('dashboards.filterBar.typeNumber'),
+    date: t('dashboards.filterBar.typeDate'),
+    dropdown: t('dashboards.filterBar.typeList'),
+  };
   const [showLinked, setShowLinked] = useState(false);
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState(f.label ?? '');
@@ -1224,8 +1232,10 @@ function FilterCard({
     [allColumns, f],
   );
   const filterCoverageLabel = primaryColumn?.datasetChartCount
-    ? `${filterChartCount}/${primaryColumn.datasetChartCount} charts`
-    : `${filterChartCount} chart${filterChartCount !== 1 ? 's' : ''}`;
+    ? t('dashboards.filterBar.coverageCharts', { covered: filterChartCount, total: primaryColumn.datasetChartCount })
+    : filterChartCount === 1
+      ? t('dashboards.filterBar.coverageChartOne', { count: filterChartCount })
+      : t('dashboards.filterBar.coverageChartPlural', { count: filterChartCount });
   const contextLabel = primaryColumn ? getColumnContextLabel(primaryColumn) : getColumnContextLabel({
     name: f.field,
     key: f.fieldKey,
@@ -1236,7 +1246,7 @@ function FilterCard({
   // Phase-G — short value summary for the collapsed slicer button.
   const valueSummary: string = (() => {
     if (isMultiSelect) {
-      if (selected.length === 0) return 'All';
+      if (selected.length === 0) return t('dashboards.filterCard.valueAll');
       if (selected.length === 1) return String(selected[0]);
       return `${selected[0]} +${selected.length - 1}`;
     }
@@ -1247,9 +1257,9 @@ function FilterCard({
       if (Array.isArray(f.value) && (f.value[0] || f.value[1])) {
         return `${f.value[0] ?? '…'} → ${f.value[1] ?? '…'}`;
       }
-      return 'All';
+      return t('dashboards.filterCard.valueAll');
     }
-    if (f.value == null || f.value === '') return 'All';
+    if (f.value == null || f.value === '') return t('dashboards.filterCard.valueAll');
     return String(f.value);
   })();
 
@@ -1283,7 +1293,7 @@ function FilterCard({
             ) : (
               <button
                 onClick={() => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
-                title={f.label ? 'Click to rename — clears to default if empty' : 'Click to set a custom label'}
+                title={f.label ? t('dashboards.filterCard.renameWithDefault') : t('dashboards.filterCard.setCustomLabel')}
                 className="group/label inline-flex items-center gap-1 min-w-0"
               >
                 <span className="text-sm font-semibold text-text-primary truncate">
@@ -1296,7 +1306,7 @@ function FilterCard({
           <div className="flex items-center gap-1 flex-shrink-0">
             {hasValue && (
               <button onClick={onClear} className="text-xs text-text-quaternary hover:text-text-secondary">
-                Clear
+                {t('dashboards.filterCard.clear')}
               </button>
             )}
             {/* ⚙ — Direction A: setup chrome (scope / mode / type / coverage)
@@ -1304,7 +1314,7 @@ function FilterCard({
             {hasConfig && (
               <button
                 onClick={() => setConfigOpen(v => !v)}
-                title="Cấu hình slicer — phạm vi áp dụng, chế độ chọn"
+                title={t('dashboards.filterCard.configSlicerTooltip')}
                 className={`p-0.5 transition-colors ${configOpen ? 'text-brand' : 'text-text-quaternary hover:text-text-secondary'}`}
               >
                 <Settings2 className="w-3.5 h-3.5" />
@@ -1314,7 +1324,7 @@ function FilterCard({
               <button
                 onClick={onRemove}
                 className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
-                title="Remove filter"
+                title={t('dashboards.filterCard.removeFilter')}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -1325,7 +1335,7 @@ function FilterCard({
             moved into the ⚙ config panel below to keep the everyday card clean. */}
         {selected.length > 0 && (
           <div className="mt-0.5 text-[11px] text-text-quaternary">
-            đang chọn <span className="font-semibold text-text-tertiary">{selected.length}</span>
+            {t('dashboards.filterCard.selectingCount')} <span className="font-semibold text-text-tertiary">{selected.length}</span>
           </div>
         )}
       </div>
@@ -1337,12 +1347,12 @@ function FilterCard({
             and gives the setup context a calm home off the everyday card. */}
         {configOpen && (
           <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[11px] text-text-quaternary">
-            <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={`Type: ${TYPE_LABEL[f.type]}`}>{TYPE_LABEL[f.type]}</span>
+            <span className={`bi-filter-chip ${TYPE_PILL[f.type]}`} title={t('dashboards.filterCard.typeTooltip', { type: typeLabel[f.type] })}>{typeLabel[f.type]}</span>
             {contextLabel && <span className="max-w-[10rem] truncate" title={contextLabel}>{contextLabel}</span>}
             {filterChartCount > 0 && (
               <span
                 className="inline-flex items-center gap-0.5 whitespace-nowrap"
-                title={linkedCount > 0 ? `Linked to ${linkedCount} other column(s)` : `Applies to ${filterCoverageLabel}`}
+                title={linkedCount > 0 ? t('dashboards.filterCard.linkedToTooltip', { count: linkedCount }) : t('dashboards.filterCard.appliesToTooltip', { coverage: filterCoverageLabel })}
               >
                 {linkedCount > 0 && <Link2 className="w-3 h-3" />}{filterCoverageLabel}
               </span>
@@ -1354,12 +1364,12 @@ function FilterCard({
             hiện control trên trang đó). */}
         {configOpen && showScopeToggle && !lockSlots && onUpdateSlicerScope && slicerKey && (
           <div className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
-            <div className="mb-1.5 text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">Phạm vi áp dụng</div>
+            <div className="mb-1.5 text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">{t('dashboards.filterCard.scopeApplyTitle')}</div>
             <div className="flex gap-1 text-[11px]">
               {([
-                { sc: 'page' as const, label: 'Chỉ trang này' },
-                { sc: 'all' as const, label: 'Tất cả trang' },
-                { sc: 'custom' as const, label: 'Tùy chọn' },
+                { sc: 'page' as const, label: t('dashboards.filterCard.scopeThisPage') },
+                { sc: 'all' as const, label: t('dashboards.filterCard.scopeAllPages') },
+                { sc: 'custom' as const, label: t('dashboards.filterCard.scopeCustom') },
               ]).map(({ sc, label }) => (
                 <button
                   key={sc}
@@ -1386,8 +1396,8 @@ function FilterCard({
             {slicerScope === 'custom' && (dashboardPages?.length ?? 0) > 0 && (
               <div className="mt-2 space-y-0.5">
                 <div className="flex items-center justify-end gap-3 px-1 text-[10px] uppercase text-text-quaternary">
-                  <span className="w-8 text-center">Lọc</span>
-                  <span className="w-8 text-center">Hiện</span>
+                  <span className="w-8 text-center">{t('dashboards.filterCard.scopeColFilter')}</span>
+                  <span className="w-8 text-center">{t('dashboards.filterCard.scopeColShow')}</span>
                 </div>
                 {(dashboardPages || []).map((p) => {
                   const cell = slicerPageScope?.[p.id] || { filter: false, visible: false };
@@ -1398,13 +1408,13 @@ function FilterCard({
                   };
                   return (
                     <div key={p.id} className="flex items-center justify-between gap-2 rounded px-1 py-0.5 text-[11px] hover:bg-surface-2">
-                      <span className="min-w-0 flex-1 truncate text-text-secondary">{p.name}{p.id === activePageId ? ' (trang này)' : ''}</span>
-                      <input type="checkbox" className="w-8" checked={!!cell.filter} onChange={(e) => setCell({ filter: e.target.checked })} title="Lọc data trang này" />
-                      <input type="checkbox" className="w-8" checked={!!cell.visible} onChange={(e) => setCell({ visible: e.target.checked })} title="Hiện control trên trang này" />
+                      <span className="min-w-0 flex-1 truncate text-text-secondary">{p.name}{p.id === activePageId ? t('dashboards.filterCard.thisPageSuffix') : ''}</span>
+                      <input type="checkbox" className="w-8" checked={!!cell.filter} onChange={(e) => setCell({ filter: e.target.checked })} title={t('dashboards.filterCard.filterPageDataTooltip')} />
+                      <input type="checkbox" className="w-8" checked={!!cell.visible} onChange={(e) => setCell({ visible: e.target.checked })} title={t('dashboards.filterCard.showControlTooltip')} />
                     </div>
                   );
                 })}
-                <p className="px-1 pt-1 text-[10px] text-text-quaternary">Lọc = lọc dữ liệu trang đó · Hiện = hiện control cho viewer trên trang đó.</p>
+                <p className="px-1 pt-1 text-[10px] text-text-quaternary">{t('dashboards.filterCard.scopeHelp')}</p>
               </div>
             )}
           </div>
@@ -1422,16 +1432,16 @@ function FilterCard({
               || f.interactionType === 'dropdown'
               || f.interactionType === 'fixed_list') && (
           <div className="mb-2 flex items-center gap-1 text-[11px] text-text-tertiary">
-            <span className="opacity-70">Chế độ chọn:</span>
+            <span className="opacity-70">{t('dashboards.filterCard.selectionMode')}</span>
             <button
               type="button"
               onClick={() => onSwitchDropdownMode(isMultiSelect ? 'single' : 'multi')}
               className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 hover:bg-surface-2 transition-colors"
-              title={isMultiSelect ? 'Click to switch to single-select' : 'Click to switch to multi-select'}
+              title={isMultiSelect ? t('dashboards.filterCard.switchToSingle') : t('dashboards.filterCard.switchToMulti')}
             >
               {isMultiSelect
-                ? <><ToggleRight className="w-3.5 h-3.5 text-brand" /> Multi</>
-                : <><ToggleLeft className="w-3.5 h-3.5 text-text-quaternary" /> Single</>}
+                ? <><ToggleRight className="w-3.5 h-3.5 text-brand" /> {t('dashboards.filterCard.multi')}</>
+                : <><ToggleLeft className="w-3.5 h-3.5 text-text-quaternary" /> {t('dashboards.filterCard.single')}</>}
             </button>
           </div>
         )}
@@ -1521,9 +1531,9 @@ function FilterCard({
           >
             <Link2 className="w-3 h-3" />
             <span>
-              Link columns
+              {t('dashboards.filterCard.linkColumns')}
               {linkedCount > 0 && (
-                <span className="ml-1 text-teal-600 font-semibold">({linkedCount} linked)</span>
+                <span className="ml-1 text-teal-600 font-semibold">{t('dashboards.filterCard.linkedCount', { count: linkedCount })}</span>
               )}
             </span>
             {showLinked
@@ -1534,7 +1544,7 @@ function FilterCard({
           {showLinked && (
             <div className="px-3 pb-2 space-y-0.5">
               <p className="text-xs text-text-quaternary mb-1">
-                Same filter value will apply to checked columns across charts:
+                {t('dashboards.filterCard.linkColumnsHint')}
               </p>
               {linkableColumns.map(col => {
                 const columnKey = getColumnKey(col);
@@ -1559,7 +1569,9 @@ function FilterCard({
                     <span className="truncate flex-1">{getColumnDisplayLabel(col)}</span>
                     {count > 0 && (
                       <span className="text-xs text-text-quaternary flex-shrink-0">
-                        {count} chart{count !== 1 ? 's' : ''}
+                        {count === 1
+                          ? t('dashboards.filterBar.coverageChartOne', { count })
+                          : t('dashboards.filterBar.coverageChartPlural', { count })}
                       </span>
                     )}
                   </label>
@@ -1632,7 +1644,7 @@ function FilterCard({
             onPointerMove={onWidthHandleMove}
             onPointerUp={onWidthHandleUp}
             className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize rounded-r-lg hover:bg-brand/30"
-            title="Kéo để chỉnh rộng"
+            title={t('dashboards.filterCard.dragToResize')}
           />
         )}
         {/* Title row — editable label (double-click in editor). */}
@@ -1654,7 +1666,7 @@ function FilterCard({
             <span
               className="group/lbl flex min-w-0 items-center gap-1 truncate text-[11px] font-semibold uppercase tracking-wide text-text-tertiary"
               onDoubleClick={lockSlots ? undefined : () => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
-              title={lockSlots ? undefined : 'Double-click để đổi tên'}
+              title={lockSlots ? undefined : t('dashboards.filterCard.doubleClickToRename')}
             >
               <span className="truncate">{getFilterDisplayLabel(f)}</span>
               {!lockSlots && <Pencil className="h-2.5 w-2.5 flex-shrink-0 text-text-quaternary opacity-0 transition-opacity group-hover/lbl:opacity-100" />}
@@ -1725,6 +1737,7 @@ function SingleSelectBody({
     hasFilterContext: boolean;
   };
 }) {
+  const { t } = useI18n();
   // Only a TRUE cascade conflict — the BE answered (200) with zero rows for
   // this field/filter combo. A load failure (isError, e.g. the field isn't an
   // allowed public filter → 404) must NOT show "Try relaxing": that misreports
@@ -1747,10 +1760,10 @@ function SingleSelectBody({
     <div>
       {showConflictBanner && (
         <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-          <p className="font-medium">No values match current filter combination.</p>
+          <p className="font-medium">{t('dashboards.selectBody.noValuesMatchCombo')}</p>
           <p className="mt-0.5 text-amber-700">
-            Try relaxing: {conflictingFilterLabels!.slice(0, 3).join(', ')}
-            {conflictingFilterLabels!.length > 3 ? ` (+${conflictingFilterLabels!.length - 3} more)` : ''}
+            {t('dashboards.selectBody.tryRelaxing', { labels: conflictingFilterLabels!.slice(0, 3).join(', ') })}
+            {conflictingFilterLabels!.length > 3 ? t('dashboards.selectBody.tryRelaxingMore', { count: conflictingFilterLabels!.length - 3 }) : ''}
           </p>
         </div>
       )}
@@ -1761,7 +1774,7 @@ function SingleSelectBody({
             type="text"
             value={search}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search values..."
+            placeholder={t('dashboards.selectBody.searchValues')}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -1769,7 +1782,7 @@ function SingleSelectBody({
       {selectedValue && (
         <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
           <button onClick={onClear} className="text-xs text-text-tertiary hover:text-text-secondary">
-            Clear selection
+            {t('dashboards.selectBody.clearSelection')}
           </button>
         </div>
       )}
@@ -1778,15 +1791,15 @@ function SingleSelectBody({
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
               ? (showConflictBanner
-                  ? 'No matching values'
+                  ? t('dashboards.selectBody.noMatchingValues')
                   : distinctStatus?.isError
-                    ? 'Failed to load values.'
+                    ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
-                      ? 'No values match the active filter on this dashboard.'
+                      ? t('dashboards.selectBody.noValuesActiveFilter')
                       : (distinctStatus && !distinctStatus.isLoading)
-                        ? 'No values available.'
-                        : 'Loading values...')
-              : 'No match'}
+                        ? t('dashboards.selectBody.noValuesAvailable')
+                        : t('dashboards.selectBody.loadingValues'))
+              : t('dashboards.selectBody.noMatch')}
           </p>
         ) : (
           filteredValues.map(val => {
@@ -1804,7 +1817,7 @@ function SingleSelectBody({
                   onChange={() => onSelect(val)}
                   className="w-3.5 h-3.5 border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1"
                 />
-                <span className="truncate flex-1">{val || '(empty)'}</span>
+                <span className="truncate flex-1">{val || t('dashboards.selectBody.empty')}</span>
               </label>
             );
           })
@@ -1812,7 +1825,7 @@ function SingleSelectBody({
       </div>
       {search && filteredValues.length < values.length && (
         <p className="text-xs text-text-quaternary mt-1">
-          {filteredValues.length} of {values.length}
+          {t('dashboards.selectBody.countOfTotal', { shown: filteredValues.length, total: values.length })}
         </p>
       )}
     </div>
@@ -1847,6 +1860,7 @@ function MultiSelectBody({
     hasFilterContext: boolean;
   };
 }) {
+  const { t } = useI18n();
   // When the cascading distinct query yields no values BUT other filters
   // are constraining it, surface the combination explicitly so the user
   // knows which filter to relax. Without this signal the user just sees
@@ -1874,10 +1888,10 @@ function MultiSelectBody({
     <div>
       {showConflictBanner && (
         <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-          <p className="font-medium">No values match current filter combination.</p>
+          <p className="font-medium">{t('dashboards.selectBody.noValuesMatchCombo')}</p>
           <p className="mt-0.5 text-amber-700">
-            Try relaxing: {conflictingFilterLabels!.slice(0, 3).join(', ')}
-            {conflictingFilterLabels!.length > 3 ? ` (+${conflictingFilterLabels!.length - 3} more)` : ''}
+            {t('dashboards.selectBody.tryRelaxing', { labels: conflictingFilterLabels!.slice(0, 3).join(', ') })}
+            {conflictingFilterLabels!.length > 3 ? t('dashboards.selectBody.tryRelaxingMore', { count: conflictingFilterLabels!.length - 3 }) : ''}
           </p>
         </div>
       )}
@@ -1889,7 +1903,7 @@ function MultiSelectBody({
             type="text"
             value={search}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="Search values..."
+            placeholder={t('dashboards.selectBody.searchValues')}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
@@ -1899,11 +1913,11 @@ function MultiSelectBody({
       {values.length > 1 && !search && (
         <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
           <button onClick={onSelectAll} className="text-xs text-brand hover:text-brand">
-            Select all
+            {t('dashboards.selectBody.selectAll')}
           </button>
           <span className="text-text-quaternary">|</span>
           <button onClick={onDeselectAll} className="text-xs text-text-tertiary hover:text-text-secondary">
-            Deselect all
+            {t('dashboards.selectBody.deselectAll')}
           </button>
         </div>
       )}
@@ -1914,15 +1928,15 @@ function MultiSelectBody({
           <p className="text-xs text-text-quaternary italic py-1">
             {values.length === 0
               ? (showConflictBanner
-                  ? 'No matching values'
+                  ? t('dashboards.selectBody.noMatchingValues')
                   : distinctStatus?.isError
-                    ? 'Failed to load values.'
+                    ? t('dashboards.selectBody.failedToLoad')
                     : emptyDueToFilter
-                      ? 'No values match the active filter on this dashboard.'
+                      ? t('dashboards.selectBody.noValuesActiveFilter')
                       : (distinctStatus && !distinctStatus.isLoading)
-                        ? 'No values available.'
-                        : 'Loading values...')
-              : 'No match'}
+                        ? t('dashboards.selectBody.noValuesAvailable')
+                        : t('dashboards.selectBody.loadingValues'))
+              : t('dashboards.selectBody.noMatch')}
           </p>
         ) : (
           filteredValues.map(val => {
@@ -1940,7 +1954,7 @@ function MultiSelectBody({
                   onChange={() => onToggleValue(val)}
                   className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1"
                 />
-                <span className="truncate flex-1">{val || '(empty)'}</span>
+                <span className="truncate flex-1">{val || t('dashboards.selectBody.empty')}</span>
               </label>
             );
           })
@@ -1949,7 +1963,7 @@ function MultiSelectBody({
 
       {search && filteredValues.length < values.length && (
         <p className="text-xs text-text-quaternary mt-1">
-          {filteredValues.length} of {values.length}
+          {t('dashboards.selectBody.countOfTotal', { shown: filteredValues.length, total: values.length })}
         </p>
       )}
     </div>
@@ -1971,6 +1985,7 @@ function NumberRangeBody({
   filter: BaseFilter;
   onUpdateValue: (v: any) => void;
 }) {
+  const { t } = useI18n();
   const [lo, hi] = Array.isArray(f.value)
     ? [f.value[0] ?? '', f.value[1] ?? '']
     : ['', ''];
@@ -2003,7 +2018,7 @@ function NumberRangeBody({
           type="number"
           value={lo}
           onChange={e => updateLo(e.target.value)}
-          placeholder="Min"
+          placeholder={t('dashboards.numberRange.min')}
           className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
         <span className="text-text-quaternary text-xs">–</span>
@@ -2011,7 +2026,7 @@ function NumberRangeBody({
           type="number"
           value={hi}
           onChange={e => updateHi(e.target.value)}
-          placeholder="Max"
+          placeholder={t('dashboards.numberRange.max')}
           className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       </div>
@@ -2024,7 +2039,7 @@ function NumberRangeBody({
           value={Number.isFinite(loNum) ? loNum : min}
           onChange={e => updateLo(Number(e.target.value))}
           className="w-full accent-brand"
-          title={`Min: ${Number.isFinite(loNum) ? loNum : '(not set)'}`}
+          title={t('dashboards.numberRange.minTitle', { value: Number.isFinite(loNum) ? loNum : t('dashboards.numberRange.notSet') })}
         />
         <input
           type="range"
@@ -2034,11 +2049,11 @@ function NumberRangeBody({
           value={Number.isFinite(hiNum) ? hiNum : max}
           onChange={e => updateHi(Number(e.target.value))}
           className="w-full accent-brand"
-          title={`Max: ${Number.isFinite(hiNum) ? hiNum : '(not set)'}`}
+          title={t('dashboards.numberRange.maxTitle', { value: Number.isFinite(hiNum) ? hiNum : t('dashboards.numberRange.notSet') })}
         />
         {!hasBoth && (
           <p className="text-[10px] text-text-quaternary leading-tight">
-            Type Min &amp; Max to enable visual range; sliders re-scale automatically.
+            {t('dashboards.numberRange.typeBothHint')}
           </p>
         )}
       </div>
@@ -2067,12 +2082,13 @@ function TextInputBody({
   onUpdateValue: (v: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
 }) {
+  const { t } = useI18n();
   const opLabel: Record<string, string> = {
-    contains: 'contains',
-    starts_with: 'starts with',
-    ends_with: 'ends with',
-    eq: 'equals',
-    ne: 'not equals',
+    contains: t('dashboards.textInput.opContains'),
+    starts_with: t('dashboards.textInput.opStartsWith'),
+    ends_with: t('dashboards.textInput.opEndsWith'),
+    eq: t('dashboards.textInput.opEquals'),
+    ne: t('dashboards.textInput.opNotEquals'),
   };
   // If filter was created with a non-text-style operator (e.g. 'in'),
   // reset to a sensible default the first time the body renders. The
@@ -2095,7 +2111,7 @@ function TextInputBody({
         type="text"
         value={value}
         onChange={(e) => onUpdateValue(e.target.value)}
-        placeholder="Enter value..."
+        placeholder={t('dashboards.textInput.enterValue')}
         className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
       />
     </div>
@@ -2113,6 +2129,7 @@ function CheckboxBody({
   filter: BaseFilter;
   onUpdateValue: (v: any) => void;
 }) {
+  const { t } = useI18n();
   const current = typeof f.value === 'string' ? f.value : '';
   return (
     <div className="space-y-2">
@@ -2126,7 +2143,7 @@ function CheckboxBody({
               : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
           }`}
         >
-          Any
+          {t('dashboards.checkbox.any')}
         </button>
         <button
           type="button"
@@ -2137,7 +2154,7 @@ function CheckboxBody({
               : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
           }`}
         >
-          ✓ On
+          {t('dashboards.checkbox.on')}
         </button>
         <button
           type="button"
@@ -2148,11 +2165,11 @@ function CheckboxBody({
               : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
           }`}
         >
-          ✕ Off
+          {t('dashboards.checkbox.off')}
         </button>
       </div>
       <p className="text-[10px] text-text-quaternary leading-tight">
-        Boolean columns stored as &quot;1&quot;/&quot;0&quot; or &quot;true&quot;/&quot;false&quot; both match. Need a custom literal? Use the &quot;Advanced filter&quot; type instead.
+        {t('dashboards.checkbox.hint')}
       </p>
     </div>
   );
@@ -2171,6 +2188,7 @@ function StringAdvancedBody({
   onUpdateValue: (v: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
 }) {
+  const { t } = useI18n();
   const op = f.operator;
   const value = typeof f.value === 'string' ? f.value : '';
   const usesValue = !(op === 'is_null' || op === 'is_not_null');
@@ -2181,20 +2199,20 @@ function StringAdvancedBody({
         onChange={(e) => onUpdateOperator(e.target.value as FilterOperator)}
         className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
       >
-        <option value="eq">= equals</option>
-        <option value="ne">≠ not equals</option>
-        <option value="contains">⊂ contains</option>
-        <option value="starts_with">⊂ starts with</option>
-        <option value="ends_with">⊃ ends with</option>
-        <option value="is_null">∅ is empty</option>
-        <option value="is_not_null">≠∅ is not empty</option>
+        <option value="eq">{t('dashboards.advancedBody.opEquals')}</option>
+        <option value="ne">{t('dashboards.advancedBody.opNotEquals')}</option>
+        <option value="contains">{t('dashboards.advancedBody.opContains')}</option>
+        <option value="starts_with">{t('dashboards.advancedBody.opStartsWith')}</option>
+        <option value="ends_with">{t('dashboards.advancedBody.opEndsWith')}</option>
+        <option value="is_null">{t('dashboards.advancedBody.opIsEmpty')}</option>
+        <option value="is_not_null">{t('dashboards.advancedBody.opIsNotEmpty')}</option>
       </select>
       {usesValue && (
         <input
           type="text"
           value={value}
           onChange={(e) => onUpdateValue(e.target.value)}
-          placeholder="Value..."
+          placeholder={t('dashboards.advancedBody.valuePlaceholder')}
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       )}
@@ -2211,6 +2229,7 @@ function NumberBody({
   onUpdateValue: (v: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-2">
       <select
@@ -2218,15 +2237,15 @@ function NumberBody({
         onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
         className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
       >
-        <option value="eq">= equals</option>
-        <option value="neq">≠ not equals</option>
-        <option value="gt">&gt; greater than</option>
-        <option value="gte">≥ greater or equal</option>
-        <option value="lt">&lt; less than</option>
-        <option value="lte">≤ less or equal</option>
-        <option value="between">↔ between</option>
-        <option value="is_null">∅ is empty</option>
-        <option value="is_not_null">≠∅ is not empty</option>
+        <option value="eq">{t('dashboards.numberBody.opEquals')}</option>
+        <option value="neq">{t('dashboards.numberBody.opNotEquals')}</option>
+        <option value="gt">{t('dashboards.numberBody.opGreater')}</option>
+        <option value="gte">{t('dashboards.numberBody.opGreaterEqual')}</option>
+        <option value="lt">{t('dashboards.numberBody.opLess')}</option>
+        <option value="lte">{t('dashboards.numberBody.opLessEqual')}</option>
+        <option value="between">{t('dashboards.numberBody.opBetween')}</option>
+        <option value="is_null">{t('dashboards.numberBody.opIsEmpty')}</option>
+        <option value="is_not_null">{t('dashboards.numberBody.opIsNotEmpty')}</option>
       </select>
       {f.operator === 'is_null' || f.operator === 'is_not_null' ? null : f.operator === 'between' ? (
         <NumberRangeBody filter={f} onUpdateValue={onUpdateValue} />
@@ -2235,7 +2254,7 @@ function NumberBody({
           type="number"
           value={typeof f.value === 'number' ? f.value : f.value ?? ''}
           onChange={e => onUpdateValue(e.target.value === '' ? '' : Number(e.target.value))}
-          placeholder="Enter value..."
+          placeholder={t('dashboards.numberBody.enterValue')}
           className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       )}
@@ -2255,6 +2274,7 @@ function DateBody({
   onUpdateOperator: (op: FilterOperator) => void;
   onUpdateDatePreset: (preset: DatePreset) => void;
 }) {
+  const { t } = useI18n();
   const activePreset = f.datePreset ?? 'custom';
   const isCustom = activePreset === 'custom';
 
@@ -2279,33 +2299,33 @@ function DateBody({
             onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
           >
-            <option value="between">↔ between dates</option>
-            <option value="eq">= on date</option>
-            <option value="gt">&gt; after</option>
-            <option value="gte">≥ on or after</option>
-            <option value="lt">&lt; before</option>
-            <option value="lte">≤ on or before</option>
-            <option value="is_null">∅ is empty</option>
-            <option value="is_not_null">≠∅ is not empty</option>
+            <option value="between">{t('dashboards.dateBody.opBetween')}</option>
+            <option value="eq">{t('dashboards.dateBody.opOn')}</option>
+            <option value="gt">{t('dashboards.dateBody.opAfter')}</option>
+            <option value="gte">{t('dashboards.dateBody.opOnOrAfter')}</option>
+            <option value="lt">{t('dashboards.dateBody.opBefore')}</option>
+            <option value="lte">{t('dashboards.dateBody.opOnOrBefore')}</option>
+            <option value="is_null">{t('dashboards.dateBody.opIsEmpty')}</option>
+            <option value="is_not_null">{t('dashboards.dateBody.opIsNotEmpty')}</option>
           </select>
           {f.operator === 'is_null' || f.operator === 'is_not_null' ? null : f.operator === 'between' ? (
             <div className="space-y-1.5">
               <DateInput
                 value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
                 onChange={d => onUpdateValue([d, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
-                placeholder="From date DD/MM/YYYY"
+                placeholder={t('dashboards.dateBody.fromDatePlaceholder')}
               />
               <DateInput
                 value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
                 onChange={d => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', d])}
-                placeholder="To date DD/MM/YYYY"
+                placeholder={t('dashboards.dateBody.toDatePlaceholder')}
               />
             </div>
           ) : (
             <DateInput
               value={typeof f.value === 'string' ? f.value : ''}
               onChange={d => onUpdateValue(d)}
-              placeholder="DD/MM/YYYY"
+              placeholder={t('dashboards.dateBody.datePlaceholder')}
             />
           )}
         </>

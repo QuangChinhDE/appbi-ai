@@ -2,9 +2,12 @@ export type AppLanguage = 'en' | 'vi';
 
 export type TranslationValues = Record<string, string | number>;
 
-type MessageCatalog = Record<string, string>;
+export type MessageCatalog = Record<string, string>;
 
-export const en: MessageCatalog = {
+/** A per-module catalog: paired English + Vietnamese entries that get merged into the global tables. */
+export type ModuleCatalog = { en: MessageCatalog; vi: MessageCatalog };
+
+const baseEn: MessageCatalog = {
   'common.loading': 'Loading...',
   'common.search': 'Search...',
   'common.gridView': 'Grid view',
@@ -82,6 +85,63 @@ export const en: MessageCatalog = {
   'overview.explore.updated': 'Updated 7d',
   'overview.explore.updatedHelper': 'Charts touched in the last seven days',
   'module.dashboards.title': 'Dashboards',
+  'dashboards.canvas.emptyMessage': 'No charts in this dashboard. Click "Add Chart" to get started.',
+  'dashboards.canvas.dragToMove': 'Drag to move',
+  'dashboards.canvas.editWidget': 'Edit widget',
+  'dashboards.canvas.removeWidget': 'Remove widget',
+  'dashboards.canvas.dragToResize': 'Drag to resize',
+  'dashboards.addChart.modalTitle': 'Add Chart to Dashboard',
+  'dashboards.addChart.allChartTypes': 'All chart types',
+  'dashboards.addChart.chooseExisting': 'Choose Existing',
+  'dashboards.addChart.createNew': 'Create New',
+  'dashboards.addChart.pageLabel': 'Page: {{name}}',
+  'dashboards.addChart.widthLabel': 'W',
+  'dashboards.addChart.heightLabel': 'H',
+  'dashboards.addChart.placementManual': 'Placement {{width}}w x {{height}}h',
+  'dashboards.addChart.placementAuto': 'Size: automatic by chart type',
+  'dashboards.addChart.searchPlaceholder': 'Search saved charts',
+  'dashboards.addChart.scopeAll': 'All accessible',
+  'dashboards.addChart.scopeMine': 'Mine only',
+  'dashboards.addChart.scopeShared': 'Shared only',
+  'dashboards.addChart.catalogHelper': 'Search, narrow the catalog, then inspect the full chart preview before adding it.',
+  'dashboards.addChart.loadingCatalog': 'Loading chart catalog...',
+  'dashboards.addChart.chartsAvailable': '{{count}} charts available',
+  'dashboards.addChart.chartAvailable': '{{count}} chart available',
+  'dashboards.addChart.alreadyAddedNotice': 'Charts already added to this page are hidden from this picker.',
+  'dashboards.addChart.noMatches': 'No charts match the current search or filters.',
+  'dashboards.addChart.sectionRecommendedTitle': 'Recommended for this dashboard',
+  'dashboards.addChart.sectionRecommendedHelper': 'Charts connected to datasets already used in this dashboard.',
+  'dashboards.addChart.sectionReuseTitle': 'Already used on another page',
+  'dashboards.addChart.sectionReuseHelper': 'Reusable charts already attached elsewhere in this dashboard.',
+  'dashboards.addChart.sectionSharedTitle': 'Shared with you',
+  'dashboards.addChart.sectionSharedHelper': 'Charts owned by someone else but available for this dashboard.',
+  'dashboards.addChart.sectionOtherTitle': 'Other charts',
+  'dashboards.addChart.sectionOtherHelper': 'Everything else you can access.',
+  'dashboards.addChart.shared': 'Shared',
+  'dashboards.addChart.usedOn': 'Used on {{pages}}',
+  'dashboards.addChart.updatedOn': 'Updated {{date}}',
+  'dashboards.addChart.selected': 'Selected',
+  'dashboards.addChart.select': 'Select',
+  'dashboards.addChart.previewLabel': 'Preview',
+  'dashboards.addChart.previewEmpty': 'Pick a chart from the catalog to review it here before adding it.',
+  'dashboards.addChart.savedChartPreview': 'Saved chart preview',
+  'dashboards.addChart.multiSelectedTitle': '{{count}} charts selected',
+  'dashboards.addChart.singleSelectPrompt': 'Pick 1 chart to preview',
+  'dashboards.addChart.multiSelectedHelper': 'All will be added at once (default parameters). To preview and adjust parameters, select exactly 1 chart.',
+  'dashboards.addChart.singleSelectHelper': 'Click a chart in the list on the left — the preview renders fully with data and parameters before you add it.',
+  'dashboards.addChart.instanceParameters': 'Instance parameters',
+  'dashboards.addChart.instanceParametersHelper': 'Leave blank to keep the chart default values.',
+  'dashboards.addChart.dateRangePlaceholder': 'YYYY-MM-DD..YYYY-MM-DD',
+  'dashboards.addChart.optionalPlaceholder': 'optional',
+  'dashboards.addChart.dateRangeHint': 'Use `start..end` or `start,end`.',
+  'dashboards.addChart.addNotice': 'The chart will be added at the top. You can drag or resize it after adding.',
+  'dashboards.addChart.addNoticeWithPage': 'The chart will be added at the top of {{name}}. You can drag or resize it after adding.',
+  'dashboards.addChart.backToPicker': 'Back to picker',
+  'dashboards.addChart.saveAndAdd': 'Save Chart & Add',
+  'dashboards.addChart.adding': 'Adding...',
+  'dashboards.addChart.addChart': 'Add Chart',
+  'dashboards.addChart.addCharts': 'Add {{count}} charts',
+  'dashboards.addChart.previewError': 'Failed to load chart preview.',
   'module.datasets.title': 'Dataset Datasets',
   'module.datasources.title': 'Data Sources',
   'module.explore.title': 'Explore',
@@ -91,7 +151,7 @@ export const en: MessageCatalog = {
   'action.newChart': 'New Chart',
 };
 
-export const vi: MessageCatalog = {
+const baseVi: MessageCatalog = {
   'common.loading': 'Đang tải...',
   'common.search': 'Tìm kiếm...',
   'common.gridView': 'Dạng lưới',
@@ -169,6 +229,63 @@ export const vi: MessageCatalog = {
   'overview.explore.updated': 'Cập nhật 7 ngày',
   'overview.explore.updatedHelper': 'Chart được chạm tới trong 7 ngày gần đây',
   'module.dashboards.title': 'Dashboards',
+  'dashboards.canvas.emptyMessage': 'Chưa có biểu đồ nào trong dashboard này. Bấm "Thêm biểu đồ" để bắt đầu.',
+  'dashboards.canvas.dragToMove': 'Kéo để di chuyển',
+  'dashboards.canvas.editWidget': 'Sửa widget',
+  'dashboards.canvas.removeWidget': 'Xóa widget',
+  'dashboards.canvas.dragToResize': 'Kéo để thay đổi kích thước',
+  'dashboards.addChart.modalTitle': 'Thêm biểu đồ vào Dashboard',
+  'dashboards.addChart.allChartTypes': 'Tất cả loại biểu đồ',
+  'dashboards.addChart.chooseExisting': 'Chọn có sẵn',
+  'dashboards.addChart.createNew': 'Tạo mới',
+  'dashboards.addChart.pageLabel': 'Trang: {{name}}',
+  'dashboards.addChart.widthLabel': 'R',
+  'dashboards.addChart.heightLabel': 'C',
+  'dashboards.addChart.placementManual': 'Bố cục {{width}}r x {{height}}c',
+  'dashboards.addChart.placementAuto': 'Kích thước: tự động theo loại chart',
+  'dashboards.addChart.searchPlaceholder': 'Tìm biểu đồ đã lưu',
+  'dashboards.addChart.scopeAll': 'Tất cả truy cập được',
+  'dashboards.addChart.scopeMine': 'Chỉ của tôi',
+  'dashboards.addChart.scopeShared': 'Chỉ được chia sẻ',
+  'dashboards.addChart.catalogHelper': 'Tìm kiếm, lọc danh mục, rồi xem trước đầy đủ biểu đồ trước khi thêm.',
+  'dashboards.addChart.loadingCatalog': 'Đang tải danh mục biểu đồ...',
+  'dashboards.addChart.chartsAvailable': 'Có {{count}} biểu đồ',
+  'dashboards.addChart.chartAvailable': 'Có {{count}} biểu đồ',
+  'dashboards.addChart.alreadyAddedNotice': 'Các biểu đồ đã thêm vào trang này được ẩn khỏi danh sách chọn.',
+  'dashboards.addChart.noMatches': 'Không có biểu đồ nào khớp với tìm kiếm hoặc bộ lọc hiện tại.',
+  'dashboards.addChart.sectionRecommendedTitle': 'Gợi ý cho dashboard này',
+  'dashboards.addChart.sectionRecommendedHelper': 'Các biểu đồ kết nối với dataset đã dùng trong dashboard này.',
+  'dashboards.addChart.sectionReuseTitle': 'Đã dùng ở trang khác',
+  'dashboards.addChart.sectionReuseHelper': 'Biểu đồ tái sử dụng đã gắn ở nơi khác trong dashboard này.',
+  'dashboards.addChart.sectionSharedTitle': 'Được chia sẻ với bạn',
+  'dashboards.addChart.sectionSharedHelper': 'Biểu đồ do người khác sở hữu nhưng có sẵn cho dashboard này.',
+  'dashboards.addChart.sectionOtherTitle': 'Biểu đồ khác',
+  'dashboards.addChart.sectionOtherHelper': 'Tất cả những gì khác mà bạn truy cập được.',
+  'dashboards.addChart.shared': 'Được chia sẻ',
+  'dashboards.addChart.usedOn': 'Dùng ở {{pages}}',
+  'dashboards.addChart.updatedOn': 'Cập nhật {{date}}',
+  'dashboards.addChart.selected': 'Đã chọn',
+  'dashboards.addChart.select': 'Chọn',
+  'dashboards.addChart.previewLabel': 'Xem trước',
+  'dashboards.addChart.previewEmpty': 'Chọn một biểu đồ từ danh mục để xem lại tại đây trước khi thêm.',
+  'dashboards.addChart.savedChartPreview': 'Xem trước biểu đồ đã lưu',
+  'dashboards.addChart.multiSelectedTitle': '{{count}} chart đã chọn',
+  'dashboards.addChart.singleSelectPrompt': 'Chọn 1 chart để xem trước',
+  'dashboards.addChart.multiSelectedHelper': 'Tất cả sẽ được add cùng lúc (parameters mặc định). Để xem trước + chỉnh parameters, chọn đúng 1 chart.',
+  'dashboards.addChart.singleSelectHelper': 'Click vào 1 chart ở danh sách bên trái — preview render đầy đủ với data + parameters trước khi add.',
+  'dashboards.addChart.instanceParameters': 'Tham số riêng',
+  'dashboards.addChart.instanceParametersHelper': 'Để trống để giữ giá trị mặc định của biểu đồ.',
+  'dashboards.addChart.dateRangePlaceholder': 'YYYY-MM-DD..YYYY-MM-DD',
+  'dashboards.addChart.optionalPlaceholder': 'tùy chọn',
+  'dashboards.addChart.dateRangeHint': 'Dùng `start..end` hoặc `start,end`.',
+  'dashboards.addChart.addNotice': 'Biểu đồ sẽ được thêm ở trên cùng. Bạn có thể kéo hoặc đổi kích thước sau khi thêm.',
+  'dashboards.addChart.addNoticeWithPage': 'Biểu đồ sẽ được thêm ở trên cùng của {{name}}. Bạn có thể kéo hoặc đổi kích thước sau khi thêm.',
+  'dashboards.addChart.backToPicker': 'Quay lại danh sách chọn',
+  'dashboards.addChart.saveAndAdd': 'Lưu biểu đồ & Thêm',
+  'dashboards.addChart.adding': 'Đang thêm...',
+  'dashboards.addChart.addChart': 'Thêm biểu đồ',
+  'dashboards.addChart.addCharts': 'Thêm {{count}} biểu đồ',
+  'dashboards.addChart.previewError': 'Không tải được bản xem trước biểu đồ.',
   'module.datasets.title': 'Dataset Datasets',
   'module.datasources.title': 'Data Sources',
   'module.explore.title': 'Explore',
@@ -177,5 +294,42 @@ export const vi: MessageCatalog = {
   'action.newDataSource': 'Tạo nguồn dữ liệu',
   'action.newChart': 'Tạo chart',
 };
+
+// Per-module catalogs. Add a new module file under `./catalog/`, export its
+// `ModuleCatalog`, and register it here. Every key MUST be defined in both `en`
+// and `vi` (the fallback chain en -> key still protects against typos).
+import { dashboardsCatalog } from './catalog/dashboards';
+import { dashboardsDetailCatalog } from './catalog/dashboards-detail';
+import { dashboardsModalsCatalog } from './catalog/dashboards-modals';
+import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
+import { datasetsCatalog } from './catalog/datasets';
+import { exploreCatalog } from './catalog/explore';
+import { workboardsCatalog } from './catalog/workboards';
+import { datasourcesCatalog } from './catalog/datasources';
+import { publicCatalog } from './catalog/public';
+import { sharedCatalog } from './catalog/shared';
+
+const moduleCatalogs: ModuleCatalog[] = [
+  dashboardsCatalog,
+  dashboardsDetailCatalog,
+  dashboardsModalsCatalog,
+  dashboardsAiBotCatalog,
+  datasetsCatalog,
+  exploreCatalog,
+  workboardsCatalog,
+  datasourcesCatalog,
+  publicCatalog,
+  sharedCatalog,
+];
+
+function mergeCatalogs(base: MessageCatalog, pick: (c: ModuleCatalog) => MessageCatalog): MessageCatalog {
+  return moduleCatalogs.reduce<MessageCatalog>(
+    (acc, catalog) => Object.assign(acc, pick(catalog)),
+    { ...base },
+  );
+}
+
+export const en: MessageCatalog = mergeCatalogs(baseEn, (c) => c.en);
+export const vi: MessageCatalog = mergeCatalogs(baseVi, (c) => c.vi);
 
 export const messages: Record<AppLanguage, MessageCatalog> = { en, vi };

@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import type { DashboardChart, DashboardWidgetType } from '@/types/api';
 import { renderTemplate } from '@/lib/dashboard-expression';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type Props = {
   widget: DashboardChart;
@@ -16,6 +17,7 @@ type Props = {
  * dashboard rendered by an older client.
  */
 export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
+  const { t } = useI18n();
   const type: DashboardWidgetType = (widget.widget_type ?? 'chart') as DashboardWidgetType;
   const cfg = widget.widget_config ?? {};
 
@@ -39,7 +41,7 @@ export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
     default:
       return (
         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
-          Unknown widget: {String(type)}
+          {t('dashboards.widget.unknownType')}: {String(type)}
         </div>
       );
   }
@@ -99,6 +101,7 @@ function renderInlineMarkdown(text: string) {
 }
 
 function CountdownWidget({ config }: { config: any }) {
+  const { t: translate } = useI18n();
   const target = String(config.target ?? config.target_date ?? config.targetDate ?? '');
   const label = String(config.label ?? '');
   const accent = config.accent || '#facc15';
@@ -137,13 +140,13 @@ function CountdownWidget({ config }: { config: any }) {
           </div>
         )}
         {!positive ? (
-          <div className="mt-2 text-2xl font-semibold text-text-primary">Đã kết thúc</div>
+          <div className="mt-2 text-2xl font-semibold text-text-primary">{translate('dashboards.countdown.ended')}</div>
         ) : (
           <div className="mt-2 flex items-baseline justify-center gap-2 text-text-primary">
             <span className="text-3xl font-bold tabular-nums" style={{ color: accent }}>
               {days}
             </span>
-            <span className="text-xs uppercase tracking-widest text-text-tertiary">ngày</span>
+            <span className="text-xs uppercase tracking-widest text-text-tertiary">{translate('dashboards.countdown.days')}</span>
             <span className="text-3xl font-bold tabular-nums" style={{ color: accent }}>
               {pad(hours)}:{pad(minutes)}:{pad(seconds)}
             </span>
@@ -155,13 +158,14 @@ function CountdownWidget({ config }: { config: any }) {
 }
 
 function ImageWidget({ config }: { config: any }) {
+  const { t } = useI18n();
   const url = String(config.url ?? '');
   const fit = (config.fit ?? 'contain') as 'contain' | 'cover';
   const alt = String(config.alt ?? '');
   if (!url) {
     return (
       <div className="flex h-full items-center justify-center bg-surface-2 text-xs text-text-tertiary">
-        Image URL not set
+        {t('dashboards.image.urlNotSet')}
       </div>
     );
   }

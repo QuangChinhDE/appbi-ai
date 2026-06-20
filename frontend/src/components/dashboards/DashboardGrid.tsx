@@ -14,6 +14,7 @@ import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
 import { liftLayoutToTop } from '@/lib/dashboard-pages';
 import { useExportMode } from '@/lib/export-mode';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -71,6 +72,11 @@ interface DashboardGridProps {
   globalFilters?: BaseFilter[];
   crossFilters?: BaseFilter[];
   crossFilterSourceChartId?: number | null;
+  /** Cross-highlight (PBI-parity) — the active selection's P filter and its
+   *  source chart. Applies to every tile (source dims locally; targets overlay
+   *  a P-filtered query). null when no highlight active / mode off. */
+  highlightFilter?: BaseFilter | null;
+  highlightSourceChartId?: number | null;
   onChartDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
   onSelectCrossFilter?: (chartId: number, filter: BaseFilter | null) => void;
   availablePages?: DashboardPageConfig[];
@@ -102,6 +108,8 @@ export function DashboardGrid({
   globalFilters = [],
   crossFilters = [],
   crossFilterSourceChartId = null,
+  highlightFilter = null,
+  highlightSourceChartId = null,
   onChartDataLoaded,
   onSelectCrossFilter,
   availablePages = [],
@@ -115,6 +123,7 @@ export function DashboardGrid({
   onFocusChart,
   presenceByChart,
 }: DashboardGridProps) {
+  const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
   // resizeHandles: 4 corners only. Edges removed per DA feedback —
   // 8 handles is noisy and users accidentally hit an edge when they
@@ -177,10 +186,10 @@ export function DashboardGrid({
         </div>
         <div>
           <h3 className="text-base font-semibold text-text-primary">
-            {emptyMessage ? '' : 'Bắt đầu xây dashboard'}
+            {emptyMessage ? '' : t('dashboards.grid.emptyTitle')}
           </h3>
           <p className="mt-1 max-w-sm text-[13px] text-text-tertiary">
-            {emptyMessage ?? 'Chưa có chart nào trên dashboard này. Click "Add Chart" ở thanh trên để chèn KPI, biểu đồ hoặc widget.'}
+            {emptyMessage ?? t('dashboards.grid.emptyMessage')}
           </p>
         </div>
       </div>
@@ -224,7 +233,7 @@ export function DashboardGrid({
             {canEdit && (
               <div
                 className="drag-handle bi-drag-grip absolute inset-x-0 top-0 z-10 h-5 bg-transparent"
-                title="Drag to move"
+                title={t('dashboards.grid.dragToMove')}
               />
             )}
             <DashboardWidget widget={dc} />
@@ -236,7 +245,7 @@ export function DashboardGrid({
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={() => onEditWidget(dc.id)}
                     className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-brand/40 hover:bg-brand/10 hover:text-brand"
-                    title="Edit widget"
+                    title={t('dashboards.grid.editWidget')}
                   >
                     <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M11.5 2.5l2 2L5 13l-3 1 1-3 8.5-8.5z" strokeLinejoin="round" strokeLinecap="round" />
@@ -250,7 +259,7 @@ export function DashboardGrid({
                     onClick={() => onRemoveChart(dc.id)}
                     disabled={removingChartId === dc.id}
                     className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-                    title="Remove widget"
+                    title={t('dashboards.grid.removeWidget')}
                   >
                     <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-danger" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />
@@ -272,9 +281,18 @@ export function DashboardGrid({
             isRemoving={removingChartId === dc.id}
             dashboardFilters={dashboardFilters}
             globalFilters={globalFilters}
-            crossFilters={crossFilterSourceChartId === dc.chart_id ? [] : crossFilters}
+            /* Click a point → SOURCE chart dims its non-selected marks, every
+               OTHER chart FILTERS to the value (PBI parity):
+                 • source tile: highlightFilter set (local dim), crossFilters []
+                   (not filtered itself).
+                 • target tiles: highlightFilter null, crossFilters [P] (filter).
+               Per-chart opt-out (layout.highlightEnabled === false): tile neither
+               emits clicks, dims, nor gets filtered. */
+            crossFilters={crossFilterSourceChartId === dc.chart_id || dc.layout?.highlightEnabled === false ? [] : crossFilters}
+            highlightFilter={dc.layout?.highlightEnabled === false || highlightSourceChartId !== dc.chart_id ? null : highlightFilter}
+            isHighlightSource={highlightSourceChartId === dc.chart_id}
             onDataLoaded={onChartDataLoaded}
-            onSelectCrossFilter={onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
+            onSelectCrossFilter={onSelectCrossFilter && dc.layout?.highlightEnabled !== false ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
             isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
             instanceParameters={dc.parameters ?? {}}
             availablePages={availablePages}

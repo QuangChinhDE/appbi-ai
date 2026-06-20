@@ -1889,7 +1889,7 @@ function DataLabelsEditor({
               <div className="mt-2">
                 <Toggle
                   label="Auto-hide overlapping labels"
-                  checked={dlc.autoHideOverlap ?? false}
+                  checked={dlc.autoHideOverlap ?? true}
                   onChange={(v) => patchConfig({ ...dlc, autoHideOverlap: v })}
                 />
                 <p className="text-[10px] text-text-quaternary mt-1">

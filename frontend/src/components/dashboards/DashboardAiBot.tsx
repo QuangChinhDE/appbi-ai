@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   fetchAiRecon,
   streamAiAgentChat,
@@ -333,6 +334,7 @@ export function DashboardAiBot({
   keyConfigured,
   viewerFilters,
 }: Props) {
+  const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   // When keyConfigured the admin has pre-set a key server-side — start in 'chat'
   // (or 'briefing' if no stored briefing) instead of the key-entry view.
@@ -400,12 +402,12 @@ export function DashboardAiBot({
       // the welcome message. We only set it here as a backup if the user
       // somehow lands in the chat view with no messages yet.
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Không thể tải dữ liệu dashboard.';
+      const msg = err instanceof Error ? err.message : t('dashboards.aiBot.reconLoadError');
       setReconError(msg);
     } finally {
       setReconLoading(false);
     }
-  }, [recon, sessionToken, token]);
+  }, [recon, sessionToken, t, token]);
 
   const handleOpen = useCallback(async () => {
     setIsOpen(true);
@@ -504,7 +506,7 @@ export function DashboardAiBot({
     const trimmed = apiKey.trim();
     const chosenModel = modelId || DEFAULT_MODELS[provider];
     if (!trimmed) {
-      setKeyError('Vui lòng nhập API key.');
+      setKeyError(t('dashboards.aiBot.enterApiKeyError'));
       return;
     }
     setKeyError('');
@@ -533,16 +535,17 @@ export function DashboardAiBot({
       });
       setMessages([{
         role: 'assistant',
-        content:
-          `Tôi nhớ bạn đang xem dashboard này với vai trò **${stored.role}**, ` +
-          `lĩnh vực **${stored.domain_label}**, trọng tâm **${stored.focus}**. ` +
-          'Hỏi gì cũng được — hoặc bấm "Đổi briefing" ở thanh trên để khảo sát lại.',
+        content: t('dashboards.aiBot.rememberedBriefing', {
+          role: stored.role,
+          domain: stored.domain_label,
+          focus: stored.focus,
+        }),
       }]);
       setView('chat');
     } else {
       setView('briefing');
     }
-  }, [apiKey, loadRecon, modelId, persistKey, provider, token]);
+  }, [apiKey, loadRecon, modelId, persistKey, provider, t, token]);
 
   const handleBriefingDone = useCallback((result: BriefingWizardResult) => {
     setBriefing(result.briefing);
@@ -720,12 +723,12 @@ export function DashboardAiBot({
         });
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Lỗi không xác định.';
+      const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
       const lastIdx = latestMessages.length - 1;
       if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
         latestMessages = [
           ...latestMessages.slice(0, lastIdx),
-          { ...latestMessages[lastIdx], content: `[Lỗi: ${msg}]` },
+          { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }) },
         ];
       }
       setMessages(latestMessages);
@@ -764,6 +767,7 @@ export function DashboardAiBot({
     resolvedThinkingCostCapUsd,
     sessionKey,
     sessionToken,
+    t,
     thinkingMode,
     token,
   ]);
@@ -868,8 +872,8 @@ export function DashboardAiBot({
         onClick={handleOpen}
         className="fixed bottom-5 right-5 z-50 flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition-all hover:scale-105 active:scale-95"
         style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)', boxShadow: '0 4px 16px rgba(6,182,212,0.45)' }}
-        title="Hỏi AI về dashboard này"
-        aria-label="Mở AI Assistant"
+        title={t('dashboards.aiBot.openTitle')}
+        aria-label={t('dashboards.aiBot.openAria')}
       >
         <BotIcon />
       </button>
@@ -903,30 +907,30 @@ export function DashboardAiBot({
               }`}
               title={
                 thinkingMode
-                  ? `Thinking mode · tối đa $${resolvedThinkingCostCapUsd.toFixed(2)}/câu`
-                  : `Normal mode · tối đa $${resolvedNormalCostCapUsd.toFixed(2)}/câu`
+                  ? t('dashboards.aiBot.thinkingModeTitle', { cap: resolvedThinkingCostCapUsd.toFixed(2) })
+                  : t('dashboards.aiBot.normalModeTitle', { cap: resolvedNormalCostCapUsd.toFixed(2) })
               }
             >
               {thinkingMode ? <Brain className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
-              <span>{thinkingMode ? 'Thinking' : 'Normal'}</span>
+              <span>{thinkingMode ? t('dashboards.aiBot.thinkingLabel') : t('dashboards.aiBot.normalLabel')}</span>
             </button>
           )}
           {view === 'chat' && !keyConfigured && (
             <button
               onClick={handleChangeKey}
               className="flex items-center gap-1 rounded px-2 py-1 text-micro text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
-              title="Thay đổi API key"
+              title={t('dashboards.aiBot.changeKeyTitle')}
             >
               <Key className="h-3 w-3" />
-              <span>Đổi key</span>
+              <span>{t('dashboards.aiBot.changeKeyLabel')}</span>
             </button>
           )}
           {view === 'chat' && (
             <button
               onClick={() => setShowClearConfirm(true)}
               className="rounded p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-danger"
-              title="Xóa lịch sử chat"
-              aria-label="Xóa lịch sử chat"
+              title={t('dashboards.aiBot.clearHistoryTitle')}
+              aria-label={t('dashboards.aiBot.clearHistoryTitle')}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -934,7 +938,7 @@ export function DashboardAiBot({
           <button
             onClick={() => setIsOpen(false)}
             className="rounded p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
-            aria-label="Đóng"
+            aria-label={t('dashboards.aiBot.closeAria')}
           >
             <X className="h-4 w-4" />
           </button>
@@ -970,7 +974,7 @@ export function DashboardAiBot({
         <>
           {sessionRestored && (
             <div className="flex items-center justify-between gap-2 px-4 py-2 bg-surface-2 border-b border-[rgb(var(--border-line))]/50">
-              <span className="text-micro text-text-secondary">↩ Tiếp tục từ phiên trước</span>
+              <span className="text-micro text-text-secondary">{t('dashboards.aiBot.sessionRestored')}</span>
               <button
                 className="text-micro text-text-tertiary hover:text-text-primary transition-colors"
                 onClick={() => setSessionRestored(false)}
@@ -1017,10 +1021,10 @@ export function DashboardAiBot({
           setMessages([]);
           setView('briefing');
         }}
-        title="Xóa lịch sử chat?"
-        description="Toàn bộ tin nhắn trong tab này sẽ bị xóa và phiên mới sẽ bắt đầu. Hành động này không thể hoàn tác."
-        confirmLabel="Xóa lịch sử"
-        cancelLabel="Hủy"
+        title={t('dashboards.aiBot.clearConfirmTitle')}
+        description={t('dashboards.aiBot.clearConfirmDescription')}
+        confirmLabel={t('dashboards.aiBot.clearConfirmButton')}
+        cancelLabel={t('common.cancel')}
         variant="danger"
       />
     </div>
@@ -1113,15 +1117,16 @@ function KeyInputView({
   onPersistKeyChange: (v: boolean) => void;
   onSubmit: () => void;
 }) {
+  const { t } = useI18n();
   const selectedProvider = PROVIDERS.find((p) => p.value === provider) ?? PROVIDERS[0];
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-label text-text-secondary">
-        Nhập API key để bắt đầu chat. Key chỉ được giữ trong bộ nhớ tab này (sessionStorage) — đóng tab là mất; không bao giờ gửi về server của chúng tôi.
+        {t('dashboards.aiBot.keyIntro')}
       </p>
       <div>
         <label className="mb-1.5 block text-micro font-strong text-text-secondary">
-          Nhà cung cấp AI
+          {t('dashboards.aiBot.providerLabel')}
         </label>
         <div className="relative">
           <select
@@ -1137,7 +1142,7 @@ function KeyInputView({
         </div>
       </div>
       <div>
-        <label className="mb-1.5 block text-micro font-strong text-text-secondary">Model</label>
+        <label className="mb-1.5 block text-micro font-strong text-text-secondary">{t('dashboards.aiBot.modelLabel')}</label>
         <div className="relative">
           <select
             value={modelId}
@@ -1151,19 +1156,19 @@ function KeyInputView({
           <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
         </div>
         <p className="mt-1 text-micro text-text-quaternary">
-          Mặc định là model mạnh nhất. Đổi sang bản nhẹ hơn nếu key của bạn chưa được cấp quyền.
+          {t('dashboards.aiBot.modelHint')}
         </p>
       </div>
       <div>
         <div className="mb-1.5 flex items-center justify-between">
-          <label className="text-micro font-strong text-text-secondary">API Key</label>
+          <label className="text-micro font-strong text-text-secondary">{t('dashboards.aiBot.apiKeyLabel')}</label>
           <a
             href={selectedProvider.keyLink}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 text-micro text-brand hover:underline"
           >
-            Lấy key miễn phí
+            {t('dashboards.aiBot.getFreeKey')}
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
@@ -1186,7 +1191,7 @@ function KeyInputView({
           className="mt-0.5 h-3.5 w-3.5 rounded border-[rgb(var(--border-line))] bg-surface-2 text-brand focus:ring-1 focus:ring-brand"
         />
         <span>
-          Ghi nhớ key trong tab này (sessionStorage). Tự xóa khi đóng tab — không bao giờ ghi vào localStorage.
+          {t('dashboards.aiBot.rememberKeyHint')}
         </span>
       </label>
       <button
@@ -1195,10 +1200,10 @@ function KeyInputView({
         className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 text-caption font-strong text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Bot className="h-4 w-4" />
-        Bắt đầu chat
+        {t('dashboards.aiBot.startChat')}
       </button>
       <p className="text-center text-micro text-text-quaternary">
-        Bỏ tick &quot;Ghi nhớ key&quot; nếu bạn dùng máy chung — khi đó key chỉ ở RAM cho đến khi đóng panel.
+        {t('dashboards.aiBot.sharedMachineHint')}
       </p>
     </div>
   );
@@ -1247,6 +1252,7 @@ function ChatView({
   onAcceptNudge: (q: string) => void;
   onRateMessage: (index: number, rating: 'up' | 'down') => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {briefing && (
@@ -1290,7 +1296,7 @@ function ChatView({
         {idleNudge && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1.5 text-tiny text-text-secondary">
             <Sparkles className="h-3 w-3 flex-shrink-0 text-brand" />
-            <span className="text-text-tertiary">Tôi gợi ý hỏi tiếp:</span>
+            <span className="text-text-tertiary">{t('dashboards.aiBot.idleNudgePrefix')}</span>
             <button
               onClick={() => onAcceptNudge(idleNudge)}
               className="flex-1 truncate rounded-full border border-brand/40 bg-brand/10 px-2 py-0.5 text-left text-tiny font-strong text-brand transition-colors hover:bg-brand/20"
@@ -1301,7 +1307,7 @@ function ChatView({
             <button
               onClick={onDismissNudge}
               className="rounded p-0.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
-              aria-label="Bỏ qua gợi ý"
+              aria-label={t('dashboards.aiBot.dismissNudgeAria')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -1313,7 +1319,7 @@ function ChatView({
             value={inputText}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Hỏi về số liệu hoặc xu hướng..."
+            placeholder={t('dashboards.aiBot.inputPlaceholder')}
             rows={1}
             className="min-h-[28px] flex-1 resize-none border-0 bg-transparent text-caption text-text-primary placeholder:text-text-quaternary focus:outline-none focus:ring-0"
             style={{ maxHeight: 120 }}
@@ -1323,12 +1329,12 @@ function ChatView({
             onClick={onSend}
             disabled={!inputText.trim() || isStreaming || !!reconError}
             className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
-            aria-label="Gửi"
+            aria-label={t('dashboards.aiBot.sendAria')}
           >
             {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
         </div>
-        <p className="mt-1.5 px-1 text-micro text-text-quaternary">Enter để gửi · Shift+Enter để xuống dòng</p>
+        <p className="mt-1.5 px-1 text-micro text-text-quaternary">{t('dashboards.aiBot.sendHint')}</p>
       </div>
     </div>
   );
@@ -1347,6 +1353,7 @@ function BriefingPill({
   convState: AiConversationState | null;
   onReset: () => void;
 }) {
+  const { t } = useI18n();
   const findings = convState?.findings.length ?? 0;
   const seen = convState?.seen_chart_ids.length ?? 0;
   const roleLabel = ROLE_LABEL_VI[briefing.role] || briefing.role;
@@ -1360,17 +1367,17 @@ function BriefingPill({
       </span>
       {(findings > 0 || seen > 0) && (
         <span className="ml-2 text-text-tertiary text-[0.7rem]">
-          {findings > 0 && <span title="Số phát hiện đã nhớ">📌 {findings}</span>}
+          {findings > 0 && <span title={t('dashboards.aiBot.findingsTitle')}>📌 {findings}</span>}
           {findings > 0 && seen > 0 && ' · '}
-          {seen > 0 && <span title="Số chart đã đọc summary">🗂 {seen}</span>}
+          {seen > 0 && <span title={t('dashboards.aiBot.seenChartsTitle')}>🗂 {seen}</span>}
         </span>
       )}
       <button
         onClick={onReset}
         className="ml-auto rounded px-1.5 py-0.5 text-[0.7rem] text-text-tertiary transition-colors hover:bg-surface-3 hover:text-brand"
-        title="Mở lại khảo sát mở đầu"
+        title={t('dashboards.aiBot.resetBriefingTitle')}
       >
-        Đổi briefing
+        {t('dashboards.aiBot.resetBriefingLabel')}
       </button>
     </div>
   );
@@ -1407,6 +1414,7 @@ function MessageBubble({
   onPickSuggestion?: (q: string) => void;
   onRate?: (index: number, rating: 'up' | 'down') => void;
 }) {
+  const { t } = useI18n();
   const isUser = message.role === 'user';
   // Strip [FOLLOWUP] lines from the body so they render as chips, not text.
   // While the message is still streaming, hold the chips back — the markers
@@ -1453,7 +1461,7 @@ function MessageBubble({
         )}
         {!isUser && !streaming && message.content && onRate && (
           <div className="mt-1.5 flex items-center gap-1 border-t border-[rgb(var(--border-line))]/30 pt-1.5">
-            <span className="text-micro text-text-quaternary mr-1">Phản hồi:</span>
+            <span className="text-micro text-text-quaternary mr-1">{t('dashboards.aiBot.ratingLabel')}</span>
             <button
               type="button"
               onClick={() => onRate(messageIndex, 'up')}
@@ -1462,8 +1470,8 @@ function MessageBubble({
                   ? 'text-success bg-success/10'
                   : 'text-text-quaternary hover:text-success hover:bg-success/10'
               }`}
-              title="Trả lời hữu ích"
-              aria-label="Đánh giá tốt"
+              title={t('dashboards.aiBot.rateUpTitle')}
+              aria-label={t('dashboards.aiBot.rateUpAria')}
             >
               <ThumbsUp className="h-3 w-3" />
             </button>
@@ -1475,8 +1483,8 @@ function MessageBubble({
                   ? 'text-danger bg-danger/10'
                   : 'text-text-quaternary hover:text-danger hover:bg-danger/10'
               }`}
-              title="Trả lời chưa tốt"
-              aria-label="Đánh giá chưa tốt"
+              title={t('dashboards.aiBot.rateDownTitle')}
+              aria-label={t('dashboards.aiBot.rateDownAria')}
             >
               <ThumbsDown className="h-3 w-3" />
             </button>
@@ -1569,6 +1577,7 @@ function ReadingPlanPanel({
   stepStatuses?: ('pending' | 'running' | 'done')[];
   collapsed?: boolean;
 }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(!collapsed);
   useEffect(() => { setExpanded(!collapsed); }, [collapsed]);
   if (!items || items.length === 0) return null;
@@ -1582,7 +1591,7 @@ function ReadingPlanPanel({
       >
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
-          AI đang đọc dashboard ({doneCount}/{items.length} bước)
+          {t('dashboards.aiBot.readingPlanHeader', { done: doneCount, total: items.length })}
         </span>
         <span className="text-text-tertiary">{expanded ? '▾' : '▸'}</span>
       </button>
@@ -1590,7 +1599,7 @@ function ReadingPlanPanel({
         <div className="mt-1.5 space-y-1.5">
           {overallGoal && (
             <div className="text-tiny italic text-text-tertiary">
-              Mục tiêu: {overallGoal}
+              {t('dashboards.aiBot.readingPlanGoal', { goal: overallGoal })}
             </div>
           )}
           <ol className="space-y-1">
@@ -1615,11 +1624,11 @@ function ReadingPlanPanel({
                       </span>
                       {it.chart_id !== null && it.chart_id !== undefined && (
                         <span className="text-[10px] text-text-quaternary">
-                          chart #{it.chart_id}
+                          {t('dashboards.aiBot.chartRef', { id: it.chart_id })}
                         </span>
                       )}
                       {status === 'running' && (
-                        <span className="text-[10px] font-medium text-brand">đang đọc…</span>
+                        <span className="text-[10px] font-medium text-brand">{t('dashboards.aiBot.stepReading')}</span>
                       )}
                     </div>
                     <div className={`mt-0.5 leading-snug ${status === 'done' ? 'text-text-tertiary line-through' : 'text-text-secondary'}`}>
@@ -1643,6 +1652,7 @@ function StatusLog({
   log: NonNullable<ChatMessage['statusLog']>;
   collapsed?: boolean;
 }) {
+  const { t } = useI18n();
   // Collapse to one line per tool, showing OK/error after the run completes
   const visible = log.filter((l) => l.text || l.error);
   const [expanded, setExpanded] = useState(!collapsed);
@@ -1660,7 +1670,9 @@ function StatusLog({
       >
         <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
         <span className="italic">
-          Đã đọc {visible.length} bước{errs ? ` · ${errs} lỗi` : ''} · xem chi tiết
+          {t('dashboards.aiBot.statusLogSummary', { count: visible.length })}
+          {errs ? t('dashboards.aiBot.statusLogErrorSuffix', { errs }) : ''}
+          {t('dashboards.aiBot.statusLogViewDetail')}
         </span>
         <ChevronDown className="h-3 w-3" />
       </button>
@@ -1674,7 +1686,7 @@ function StatusLog({
           onClick={() => setExpanded(false)}
           className="self-start text-tiny text-text-tertiary hover:text-text-secondary"
         >
-          Ẩn chi tiết ▴
+          {t('dashboards.aiBot.hideDetail')}
         </button>
       )}
       {visible.map((entry, i) => (
@@ -1702,6 +1714,7 @@ function StatusLog({
 // feedback even between provider deltas.
 
 function ReconProgress() {
+  const { t } = useI18n();
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const start = Date.now();
@@ -1713,13 +1726,13 @@ function ReconProgress() {
     <div className="flex flex-col gap-1.5 rounded-lg border border-brand/20 bg-brand/5 px-3 py-2 text-tiny text-text-secondary">
       <div className="flex items-center gap-2">
         <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
-        <span className="font-strong text-brand">Đang quét nhanh dashboard…</span>
+        <span className="font-strong text-brand">{t('dashboards.aiBot.reconScanning')}</span>
         <span className="ml-auto text-text-tertiary">{elapsed}s</span>
       </div>
       <div className="text-text-tertiary">
         {slow
-          ? 'Dashboard có nhiều biểu đồ — đang tải insight pack ban đầu. Bạn có thể bắt đầu hỏi ngay, AI sẽ tự đọc thêm khi cần.'
-          : 'Đang đọc cấu trúc các biểu đồ và tổng hợp insight pack đầu tiên.'}
+          ? t('dashboards.aiBot.reconSlow')
+          : t('dashboards.aiBot.reconNormal')}
       </div>
     </div>
   );
@@ -1760,14 +1773,15 @@ function ThinkingBubble({
   status: string;
   log: NonNullable<ChatMessage['statusLog']>;
 }) {
-  const liveText = (status && status.trim()) || 'Đang suy nghĩ…';
+  const { t } = useI18n();
+  const liveText = (status && status.trim()) || t('dashboards.aiBot.thinkingFallback');
   const visible = log.filter((l) => l.text || l.error);
   return (
     <div className="flex justify-start">
       <div className="w-full max-w-[85%] rounded-xl border border-brand/30 bg-brand/5 px-3 py-2 text-caption shadow-sm">
         <div className="mb-1.5 flex items-center gap-1.5 text-tiny font-strong text-brand">
           <Sparkles className="h-3.5 w-3.5 animate-pulse" />
-          <span>AI Analyst đang phân tích</span>
+          <span>{t('dashboards.aiBot.analyzing')}</span>
         </div>
         {visible.length > 0 && (
           <div className="mb-1.5 flex flex-col gap-1 border-y border-brand/15 py-1.5 text-tiny text-text-secondary">
@@ -1966,6 +1980,7 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 function ChartChip({ chartId, chartName }: { chartId: number; chartName?: string }) {
+  const { t } = useI18n();
   // If the model only emitted `[chart:N]`, look up the name from the
   // dashboard manifest so the user sees the chart TITLE, not a raw id.
   const namesMap = React.useContext(ChartNamesContext);
@@ -1984,8 +1999,8 @@ function ChartChip({ chartId, chartName }: { chartId: number; chartName?: string
   // a small monospace suffix only on hover via tooltip, never in-line.
   const label = resolvedName || `chart:${chartId}`;
   const tooltip = resolvedName
-    ? `Bấm để xem "${resolvedName}" trên dashboard (#${chartId})`
-    : `Bấm để xem biểu đồ #${chartId} trên dashboard`;
+    ? t('dashboards.aiBot.chartChipTooltipNamed', { name: resolvedName, id: chartId })
+    : t('dashboards.aiBot.chartChipTooltip', { id: chartId });
   return (
     <button
       onClick={handleClick}

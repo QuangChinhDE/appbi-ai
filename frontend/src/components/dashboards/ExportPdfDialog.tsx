@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { X, FileDown, Loader2 } from 'lucide-react';
 import type { PdfOrientation, PdfPageSize, PdfProgress } from '@/lib/export-pdf';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export interface ExportPdfChoices {
   orientation: PdfOrientation;
@@ -23,6 +24,7 @@ type Props = {
 /** Phase-B22 — pre-export "custom layout" dialog: orientation, page size, and
  *  which dashboard pages to include. Shared by build / public / embed. */
 export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport, progress }: Props) {
+  const { t } = useI18n();
   const [orientation, setOrientation] = useState<PdfOrientation>('landscape');
   const [format, setFormat] = useState<PdfPageSize>('a4');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(pages.map((p) => p.id)));
@@ -49,7 +51,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-4">
-          <h2 className="text-base font-semibold text-text-primary">Xuất PDF</h2>
+          <h2 className="text-base font-semibold text-text-primary">{t('dashboards.exportPdf.title')}</h2>
           <button onClick={onClose} disabled={isExporting} className="text-text-tertiary hover:text-text-primary disabled:opacity-40">
             <X className="h-4 w-4" />
           </button>
@@ -59,7 +61,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
           <div className="space-y-3 px-5 py-6">
             <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
               <Loader2 className="h-4 w-4 animate-spin text-brand" />
-              <span>Đang xuất PDF…</span>
+              <span>{t('dashboards.exportPdf.exporting')}</span>
               <span className="ml-auto tabular-nums text-text-tertiary">{pct}%</span>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-surface-3">
@@ -69,23 +71,23 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
               />
             </div>
             <p className="min-h-[2.5rem] text-[13px] leading-snug text-text-secondary">
-              {progress?.message || 'Đang chuẩn bị…'}
+              {progress?.message || t('dashboards.exportPdf.preparing')}
             </p>
             <p className="text-[11px] text-text-quaternary">
-              Hệ thống đang lần lượt tải dữ liệu từng trang, chụp từng biểu đồ và dựng bảng (giữ link, đủ mọi dòng) rồi nén lại thành 1 file PDF. Báo cáo nhiều biểu đồ có thể mất vài chục giây — vui lòng giữ tab này mở.
+              {t('dashboards.exportPdf.progressHint')}
             </p>
           </div>
         ) : (
           <div className="space-y-4 px-5 py-5">
             <div>
-              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Hướng giấy</div>
+              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.orientation')}</div>
               <div className="flex gap-2">
-                <button className={segBtn(orientation === 'landscape')} onClick={() => setOrientation('landscape')}>Ngang</button>
-                <button className={segBtn(orientation === 'portrait')} onClick={() => setOrientation('portrait')}>Dọc</button>
+                <button className={segBtn(orientation === 'landscape')} onClick={() => setOrientation('landscape')}>{t('dashboards.exportPdf.landscape')}</button>
+                <button className={segBtn(orientation === 'portrait')} onClick={() => setOrientation('portrait')}>{t('dashboards.exportPdf.portrait')}</button>
               </div>
             </div>
             <div>
-              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Khổ giấy</div>
+              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.pageSize')}</div>
               <div className="flex gap-2">
                 {(['a4', 'a3', 'letter'] as PdfPageSize[]).map((f) => (
                   <button key={f} className={segBtn(format === f)} onClick={() => setFormat(f)}>{f.toUpperCase()}</button>
@@ -94,7 +96,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
             </div>
             {pages.length > 1 && (
               <div>
-                <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Trang ({chosenIds.length}/{pages.length})</div>
+                <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.pages', { chosen: chosenIds.length, total: pages.length })}</div>
                 <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2">
                   {pages.map((p) => (
                     <label key={p.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-surface-2">
@@ -106,19 +108,19 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
               </div>
             )}
             <p className="text-[11px] text-text-quaternary">
-              Bảng được xuất dưới dạng văn bản (chọn/sao chép được, giữ link), đủ mọi dòng; các biểu đồ khác xuất ảnh nét. Bộ lọc đang áp dụng hiển thị ở đầu mỗi trang.
+              {t('dashboards.exportPdf.tableHint')}
             </p>
           </div>
         )}
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3">
-          <button onClick={onClose} disabled={isExporting} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3 disabled:opacity-40">Huỷ</button>
+          <button onClick={onClose} disabled={isExporting} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3 disabled:opacity-40">{t('common.cancel')}</button>
           <button
             onClick={() => canExport && onExport({ orientation, format, pageIds: chosenIds })}
             disabled={!canExport}
             className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50"
           >
             {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
-            {isExporting ? `Đang xuất… ${pct}%` : 'Xuất PDF'}
+            {isExporting ? t('dashboards.exportPdf.exportingPct', { pct }) : t('dashboards.exportPdf.title')}
           </button>
         </div>
       </div>

@@ -3,7 +3,7 @@
  */
 'use client';
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { chartApi } from '@/lib/api/charts';
 import {
   ChartCreate,
@@ -38,7 +38,7 @@ export const useChartData = (
   id: number,
   filters?: Record<string, unknown>[],
   context: ChartDataContext = 'default',
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; keepPrevious?: boolean },
   granularity?: string,
 ) => {
   // Serialize filters to a stable string so identical filter payloads share
@@ -54,6 +54,13 @@ export const useChartData = (
     queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null],
     queryFn: () => chartApi.getData(id, filters, context, granularity),
     enabled: !!id && enabled,
+    // keepPrevious — on a filter/grain change the queryKey changes; instead of
+    // dropping to a blank skeleton (which made a filtered dashboard "flash
+    // empty" for every slow BQ round-trip), serve the PREVIOUS result as a
+    // placeholder while the new one loads. The tile dims it + shows a spinner
+    // overlay (isFetching), so the user keeps reading real numbers until the
+    // fresh data lands. Opt-in so modal/preview flows are unaffected.
+    placeholderData: options?.keepPrevious ? keepPreviousData : undefined,
     staleTime: 5 * 60 * 1000,   // 5 min — avoid refetching unchanged chart data
     gcTime: 30 * 60 * 1000,     // 30 min — keep inactive entries longer
   });

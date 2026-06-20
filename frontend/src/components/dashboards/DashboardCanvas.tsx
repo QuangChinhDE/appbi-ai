@@ -7,6 +7,7 @@ import { DashboardWidget } from './DashboardWidget';
 import type { DashboardChart, DashboardCanvasConfig, DashboardPageConfig } from '@/types/api';
 import type { DashboardFilter, BaseFilter } from '@/lib/filters';
 import { ensureCanvasCoords } from '@/lib/dashboard-layout-convert';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type ResizeDir = 'n' | 'e' | 's' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
 type DragMode = { kind: 'move' } | { kind: 'resize'; dir: ResizeDir };
@@ -39,6 +40,9 @@ interface DashboardCanvasProps {
   globalFilters?: BaseFilter[];
   crossFilters?: BaseFilter[];
   crossFilterSourceChartId?: number | null;
+  /** Cross-highlight (PBI-parity) — active selection P + its source chart. */
+  highlightFilter?: BaseFilter | null;
+  highlightSourceChartId?: number | null;
   onChartDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
   onSelectCrossFilter?: (chartId: number, filter: BaseFilter | null) => void;
   availablePages?: DashboardPageConfig[];
@@ -66,6 +70,8 @@ export function DashboardCanvas({
   globalFilters = [],
   crossFilters = [],
   crossFilterSourceChartId = null,
+  highlightFilter = null,
+  highlightSourceChartId = null,
   onChartDataLoaded,
   onSelectCrossFilter,
   availablePages = [],
@@ -76,6 +82,7 @@ export function DashboardCanvas({
   focusedDashboardChartId = null,
   onFocusChart,
 }: DashboardCanvasProps) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(canvasConfig?.width ?? 1440);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -222,7 +229,7 @@ export function DashboardCanvas({
     return (
       <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2">
         <p className="text-caption text-text-tertiary">
-          {emptyMessage ?? 'No charts in this dashboard. Click "Add Chart" to get started.'}
+          {emptyMessage ?? t('dashboards.canvas.emptyMessage')}
         </p>
       </div>
     );
@@ -269,7 +276,7 @@ export function DashboardCanvas({
                 <div
                   className="absolute inset-x-0 top-0 z-10 h-6 cursor-move bg-transparent"
                   onPointerDown={(e) => onPointerDown(e, dc, { kind: 'move' })}
-                  title="Drag to move"
+                  title={t('dashboards.canvas.dragToMove')}
                 />
               )}
               {dc.widget_type && dc.widget_type !== 'chart' ? (
@@ -289,7 +296,7 @@ export function DashboardCanvas({
                           onPointerDown={(e) => e.stopPropagation()}
                           onClick={() => onEditWidget(dc.id)}
                           className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-brand/40 hover:bg-brand/10 hover:text-brand"
-                          title="Edit widget"
+                          title={t('dashboards.canvas.editWidget')}
                         >
                           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M11.5 2.5l2 2L5 13l-3 1 1-3 8.5-8.5z" strokeLinejoin="round" strokeLinecap="round" />
@@ -303,7 +310,7 @@ export function DashboardCanvas({
                           onClick={() => onRemoveChart(dc.id)}
                           disabled={removingChartId === dc.id}
                           className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
-                          title="Remove widget"
+                          title={t('dashboards.canvas.removeWidget')}
                         >
                           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-danger" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />
@@ -331,10 +338,13 @@ export function DashboardCanvas({
                   isRemoving={removingChartId === dc.id}
                   dashboardFilters={dashboardFilters}
                   globalFilters={globalFilters}
-                  crossFilters={crossFilterSourceChartId === dc.chart_id ? [] : crossFilters}
+                  /* Source dims, targets filter, per-chart opt-out — see DashboardGrid. */
+                  crossFilters={crossFilterSourceChartId === dc.chart_id || dc.layout?.highlightEnabled === false ? [] : crossFilters}
+                  highlightFilter={dc.layout?.highlightEnabled === false || highlightSourceChartId !== dc.chart_id ? null : highlightFilter}
+                  isHighlightSource={highlightSourceChartId === dc.chart_id}
                   onDataLoaded={onChartDataLoaded}
                   onSelectCrossFilter={
-                    onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined
+                    onSelectCrossFilter && dc.layout?.highlightEnabled !== false ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined
                   }
                   isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
                   instanceParameters={dc.parameters ?? {}}
@@ -356,22 +366,22 @@ export function DashboardCanvas({
                   <div
                     className="canvas-resize-handle canvas-resize-nw"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'nw' })}
-                    title="Kéo để resize"
+                    title={t('dashboards.canvas.dragToResize')}
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-ne"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'ne' })}
-                    title="Kéo để resize"
+                    title={t('dashboards.canvas.dragToResize')}
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-sw"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'sw' })}
-                    title="Kéo để resize"
+                    title={t('dashboards.canvas.dragToResize')}
                   />
                   <div
                     className="canvas-resize-handle canvas-resize-se"
                     onPointerDown={(e) => onPointerDown(e, dc, { kind: 'resize', dir: 'se' })}
-                    title="Kéo để resize"
+                    title={t('dashboards.canvas.dragToResize')}
                   />
                 </>
               )}

@@ -59,6 +59,11 @@ export interface TableVisualizationProps {
    * column declared as percent/currency at the dataset level formats itself.
    */
   columnFormats?: Record<string, NumberFormat> | Map<string, NumberFormat>;
+  /** Cross-highlight (PBI-parity): when set, rows whose dimension key is NOT in
+   *  this set are dimmed (the selection's matching rows stay full opacity).
+   *  Pass together with `rowDimKey` so both sides compute the key identically. */
+  highlightRowKeys?: Set<string> | null;
+  rowDimKey?: (row: Record<string, any>) => string;
 }
 
 /**
@@ -227,6 +232,8 @@ export function TableVisualization({
   currencySymbol = '$',
   columnLabels,
   columnFormats,
+  highlightRowKeys,
+  rowDimKey,
 }: TableVisualizationProps) {
   const rows = data ?? [];
   // Phase-16.x — per-column number format resolver. A column whose field is a
@@ -626,14 +633,17 @@ export function TableVisualization({
             </tr>
           </thead>
           <tbody>
-            {displayRows.map((row, i) => (
-              <tr 
-                key={i} 
+            {displayRows.map((row, i) => {
+              const rowDimmed = !!(highlightRowKeys && rowDimKey && !highlightRowKeys.has(rowDimKey(row)));
+              return (
+              <tr
+                key={i}
                 className={clsx(
                   "transition-colors",
                   i % 2 === 0 ? "bg-surface-1" : "bg-surface-2",
                   enableDrilldown && onRowClick && "cursor-pointer hover:bg-brand/15"
                 )}
+                style={rowDimmed ? { opacity: 0.3 } : undefined}
                 onClick={() => enableDrilldown && onRowClick?.(row)}
               >
                 {cols.map((col) => {
@@ -674,7 +684,8 @@ export function TableVisualization({
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
           {summaryRowsData.length > 0 && (
             <tfoot className="sticky bottom-0 z-20 shadow-[0_-10px_20px_rgba(15,23,42,0.08)]">

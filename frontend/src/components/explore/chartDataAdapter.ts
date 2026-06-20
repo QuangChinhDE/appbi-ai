@@ -175,7 +175,11 @@ export function applyCalculatedFields(
   return rows.map((row) => {
     const next: Record<string, any> = { ...row };
     for (const f of fields) {
-      next[f.id] = evaluateCalculatedField(f.expression, row);
+      const v = evaluateCalculatedField(f.expression, row);
+      // Divide-by-zero / null denominator yields NaN or ±Infinity. Store null
+      // so downstream (labels, tooltips, sorting) treats it as "no value" — a
+      // raw NaN otherwise surfaced as the literal text "NaN" on the chart.
+      next[f.id] = (typeof v === 'number' && !Number.isFinite(v)) ? null : v;
     }
     return next;
   });

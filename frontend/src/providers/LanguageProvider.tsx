@@ -1,17 +1,19 @@
 'use client';
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 
-import { authApi } from '@/lib/api-client';
-import { useCurrentUser } from '@/hooks/use-current-user';
 import { AppLanguage, messages, TranslationValues } from '@/i18n/messages';
 
 const STORAGE_KEY = 'appbi.language';
 
 interface LanguageContextValue {
   language: AppLanguage;
-  setLanguage: (next: AppLanguage) => Promise<void>;
+  /** True once the viewer has made an explicit choice (or one was restored from localStorage). */
+  hasLocalPreference: boolean;
+  /** Explicit viewer choice — persists to localStorage. Does NOT touch the backend (see useUserLanguage). */
+  setLanguage: (next: AppLanguage) => void;
+  /** Apply a server-derived preference WITHOUT marking it as an explicit local choice. No-op if a local choice exists. */
+  applyServerLanguage: (next: AppLanguage) => void;
   t: (key: string, values?: TranslationValues) => string;
   locale: string;
 }
@@ -36,9 +38,14 @@ function getBrowserLanguage(): AppLanguage {
   return language.startsWith('vi') ? 'vi' : 'en';
 }
 
+/**
+ * Public-safe language provider. Holds language state from localStorage / browser only.
+ * It NEVER calls an authenticated endpoint, so it is safe to mount at the app root —
+ * including public link / embed / workspace-portal routes that must not trigger a
+ * 401 -> /login redirect. Backend preference sync lives in `useUserLanguage` and is
+ * only used inside the authenticated app shell.
+ */
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const queryClient = useQueryClient();
-  const { data: currentUser } = useCurrentUser();
   const [language, setLanguageState] = useState<AppLanguage>('en');
   const [hasLocalPreference, setHasLocalPreference] = useState(false);
   const initializedRef = useRef(false);
@@ -56,35 +63,25 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!initializedRef.current || hasLocalPreference) return;
-    if (currentUser?.preferred_language && isAppLanguage(currentUser.preferred_language)) {
-      setLanguageState(currentUser.preferred_language);
-    }
-  }, [currentUser?.preferred_language, hasLocalPreference]);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(STORAGE_KEY, language);
     document.documentElement.lang = language;
   }, [language]);
 
-  const setLanguage = useCallback(
-    async (next: AppLanguage) => {
-      setLanguageState(next);
-      setHasLocalPreference(true);
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(STORAGE_KEY, next);
-      }
-      if (!currentUser) return;
-      try {
-        await authApi.updatePreferences({ preferred_language: next });
-        queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
-      } catch (error) {
-        console.error('Failed to update language preference', error);
-      }
-    },
-    [currentUser, queryClient],
-  );
+  const setLanguage = useCallback((next: AppLanguage) => {
+    setLanguageState(next);
+    setHasLocalPreference(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(STORAGE_KEY, next);
+    }
+  }, []);
+
+  const applyServerLanguage = useCallback((next: AppLanguage) => {
+    setHasLocalPreference((hasLocal) => {
+      if (!hasLocal) setLanguageState(next);
+      return hasLocal;
+    });
+  }, []);
 
   const t = useCallback(
     (key: string, values?: TranslationValues) => {
@@ -97,11 +94,13 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<LanguageContextValue>(
     () => ({
       language,
+      hasLocalPreference,
       setLanguage,
+      applyServerLanguage,
       t,
       locale: language === 'vi' ? 'vi-VN' : 'en-US',
     }),
-    [language, setLanguage, t],
+    [language, hasLocalPreference, setLanguage, applyServerLanguage, t],
   );
 
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

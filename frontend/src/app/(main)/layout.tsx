@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 
 import { SessionKeepAlive } from '@/components/auth/SessionKeepAlive';
 import { Sidebar } from '@/components/layout/Sidebar';
-import { LanguageProvider } from '@/providers/LanguageProvider';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
@@ -28,7 +27,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <LanguageProvider>
+    <>
       <SessionKeepAlive />
       <div className="flex h-screen overflow-hidden bg-surface-0 print:block">
         <div className="print:hidden">
@@ -45,6 +44,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
-    </LanguageProvider>
+    </>
   );
 }

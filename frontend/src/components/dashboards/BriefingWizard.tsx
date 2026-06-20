@@ -13,6 +13,7 @@ import {
   type AiBriefingGuessOption,
   type AiProvider,
 } from '@/lib/api/public';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ type Step = 'loading' | 'domain' | 'profile' | 'brief' | 'error';
 export function BriefingWizard({
   token, sessionToken, apiKey, provider, model, onSkip, onComplete,
 }: Props) {
+  const { t } = useI18n();
   const [step, setStep] = useState<Step>('loading');
   const [error, setError] = useState('');
   const [guess, setGuess] = useState<AiBriefingGuess | null>(null);
@@ -69,16 +71,16 @@ export function BriefingWizard({
         if (cancelled) return;
         setGuess(g);
         setDomain(g.domain || 'generic');
-        setDomainLabel(g.domain_label || g.domain || 'Tổng hợp');
+        setDomainLabel(g.domain_label || g.domain || t('dashboards.briefingWizard.domainFallback'));
         setStep('domain');
       } catch (err: unknown) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Không tải được dự đoán.');
+        setError(err instanceof Error ? err.message : t('dashboards.briefingWizard.loadGuessError'));
         setStep('error');
       }
     })();
     return () => { cancelled = true; };
-  }, [token, sessionToken]);
+  }, [token, sessionToken, t]);
 
   // ── Step 1 handlers ────────────────────────────────────────────────────────
 
@@ -128,12 +130,12 @@ export function BriefingWizard({
     } catch (err: unknown) {
       const fallback = buildFallbackBrief(guess, briefingArg);
       setBriefText(fallback);
-      setBriefError(err instanceof Error ? err.message : 'Không sinh được brief.');
+      setBriefError(err instanceof Error ? err.message : t('dashboards.briefingWizard.briefGenError'));
       onComplete({ briefing: briefingArg, executiveBrief: fallback });
     } finally {
       setBriefStreaming(false);
     }
-  }, [apiKey, guess, model, onComplete, provider, sessionToken, token]);
+  }, [apiKey, guess, model, onComplete, provider, sessionToken, token, t]);
 
   const handleProfileConfirm = useCallback(() => {
     if (!guess) return;
@@ -156,7 +158,7 @@ export function BriefingWizard({
     return (
       <div className="flex flex-1 items-center justify-center gap-2 p-4 text-caption text-text-tertiary">
         <Loader2 className="h-4 w-4 animate-spin text-brand" />
-        Đang đọc nhanh dashboard để chuẩn bị câu hỏi mở đầu…
+        {t('dashboards.briefingWizard.loadingScan')}
       </div>
     );
   }
@@ -167,7 +169,7 @@ export function BriefingWizard({
         <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 p-3 text-caption text-danger">
           <AlertTriangle className="h-4 w-4 flex-shrink-0" />
           <div>
-            <div className="font-strong">Không tải được khảo sát mở đầu</div>
+            <div className="font-strong">{t('dashboards.briefingWizard.errorTitle')}</div>
             <div className="text-tiny opacity-80">{error}</div>
           </div>
         </div>
@@ -175,7 +177,7 @@ export function BriefingWizard({
           onClick={onSkip}
           className="rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
         >
-          Bỏ qua, vào chat thẳng
+          {t('dashboards.briefingWizard.skipToChat')}
         </button>
       </div>
     );
@@ -240,6 +242,7 @@ function DomainStep({
   onConfirm: () => void;
   onSkip: () => void;
 }) {
+  const { t } = useI18n();
   const [showPicker, setShowPicker] = useState(false);
   const altDomains = useMemo(
     () => guess.alt_domains.filter((a) => a.domain !== domain).slice(0, 3),
@@ -248,17 +251,17 @@ function DomainStep({
   const confidencePct = Math.round((guess.confidence ?? 0) * 100);
   return (
     <div className="flex flex-col gap-3 overflow-y-auto p-4">
-      <Header step={1} total={3} title="Lĩnh vực dashboard" onSkip={onSkip} />
+      <Header step={1} total={3} title={t('dashboards.briefingWizard.step1Title')} onSkip={onSkip} />
 
       <div className="rounded-lg border border-brand/20 bg-brand/5 p-3 text-caption">
         <div className="mb-1 flex items-center gap-1.5 text-tiny font-strong text-brand">
-          <Sparkles className="h-3.5 w-3.5" /> AI đoán:
+          <Sparkles className="h-3.5 w-3.5" /> {t('dashboards.briefingWizard.aiGuessLabel')}
         </div>
         <div className="text-text-primary">
-          Đây có vẻ là dashboard về <span className="font-strong">{domainLabel}</span>
+          {t('dashboards.briefingWizard.guessPrefix')} <span className="font-strong">{domainLabel}</span>
           {confidencePct > 0 && (
             <span className="ml-1 text-text-tertiary text-tiny">
-              (độ tự tin {confidencePct}%)
+              {t('dashboards.briefingWizard.confidence', { pct: confidencePct })}
             </span>
           )}
           .
@@ -279,7 +282,7 @@ function DomainStep({
       </div>
 
       <div className="text-caption text-text-secondary">
-        Đúng không? Nếu chưa khớp, sửa lại lĩnh vực dưới đây.
+        {t('dashboards.briefingWizard.confirmPrompt')}
       </div>
 
       {altDomains.length > 0 && !showPicker && (
@@ -297,7 +300,7 @@ function DomainStep({
             onClick={() => setShowPicker(true)}
             className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-tiny text-text-secondary transition-colors hover:bg-surface-3"
           >
-            Khác…
+            {t('dashboards.briefingWizard.otherDomain')}
           </button>
         </div>
       )}
@@ -323,13 +326,13 @@ function DomainStep({
           onClick={onSkip}
           className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-caption text-text-secondary transition-colors hover:bg-surface-3"
         >
-          Bỏ qua
+          {t('dashboards.briefingWizard.skip')}
         </button>
         <button
           onClick={onConfirm}
           className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
         >
-          Đúng rồi <ChevronRight className="h-3.5 w-3.5" />
+          {t('dashboards.briefingWizard.confirmDomain')} <ChevronRight className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
@@ -357,22 +360,23 @@ function ProfileStep({
   onConfirm: () => void;
   onSkip: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-3 overflow-y-auto p-4">
-      <Header step={2} total={3} title="Bạn là ai, đang tìm gì?" onSkip={onSkip} />
+      <Header step={2} total={3} title={t('dashboards.briefingWizard.step2Title')} onSkip={onSkip} />
 
       <div className="rounded-lg bg-surface-2 px-3 py-2 text-tiny text-text-secondary">
-        Lĩnh vực: <span className="font-strong text-text-primary">{domainLabel}</span>
+        {t('dashboards.briefingWizard.domainLabelPrefix')} <span className="font-strong text-text-primary">{domainLabel}</span>
         <button
           onClick={onBack}
           className="ml-2 text-brand hover:underline"
         >
-          Đổi
+          {t('dashboards.briefingWizard.changeDomain')}
         </button>
       </div>
 
       <div>
-        <Label icon={<User className="h-3 w-3" />} text="Vai trò của bạn" />
+        <Label icon={<User className="h-3 w-3" />} text={t('dashboards.briefingWizard.roleLabel')} />
         <OptionPills
           options={guess.role_options}
           value={role}
@@ -381,7 +385,7 @@ function ProfileStep({
       </div>
 
       <div>
-        <Label icon={<Target className="h-3 w-3" />} text="Bạn quan tâm điều gì hôm nay" />
+        <Label icon={<Target className="h-3 w-3" />} text={t('dashboards.briefingWizard.focusLabel')} />
         <OptionPills
           options={guess.focus_options}
           value={focus}
@@ -390,7 +394,7 @@ function ProfileStep({
       </div>
 
       <div>
-        <Label icon={<Calendar className="h-3 w-3" />} text="Khung thời gian" />
+        <Label icon={<Calendar className="h-3 w-3" />} text={t('dashboards.briefingWizard.timeframeLabel')} />
         <OptionPills
           options={guess.timeframe_options}
           value={timeframe}
@@ -399,11 +403,11 @@ function ProfileStep({
       </div>
 
       <div>
-        <Label icon={<Lightbulb className="h-3 w-3" />} text="Ghi chú thêm (tuỳ chọn)" />
+        <Label icon={<Lightbulb className="h-3 w-3" />} text={t('dashboards.briefingWizard.noteLabel')} />
         <textarea
           value={note}
           onChange={(e) => onNote(e.target.value)}
-          placeholder="Vd: Quan tâm tới phòng IT, đặc biệt là task quá hạn"
+          placeholder={t('dashboards.briefingWizard.notePlaceholder')}
           rows={2}
           maxLength={600}
           className="w-full resize-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-primary placeholder:text-text-quaternary focus:border-brand/60 focus:outline-none"
@@ -415,13 +419,13 @@ function ProfileStep({
           onClick={onBack}
           className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-caption text-text-secondary transition-colors hover:bg-surface-3"
         >
-          Quay lại
+          {t('dashboards.briefingWizard.back')}
         </button>
         <button
           onClick={onConfirm}
           className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
         >
-          Tóm tắt cho tôi <Sparkles className="h-3.5 w-3.5" />
+          {t('dashboards.briefingWizard.summarizeForMe')} <Sparkles className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
@@ -437,15 +441,16 @@ function BriefStep({
   streaming: boolean;
   warning: string;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-3 overflow-y-auto p-4">
-      <Header step={3} total={3} title="Tóm tắt khởi đầu" hideSkip />
+      <Header step={3} total={3} title={t('dashboards.briefingWizard.step3Title')} hideSkip />
 
       <div className="rounded-lg border border-brand/30 bg-brand/5 p-3 text-caption text-text-primary">
         {streaming && !text && (
           <div className="flex items-center gap-2 text-text-tertiary">
             <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
-            <span className="italic">AI đang viết Executive Brief…</span>
+            <span className="italic">{t('dashboards.briefingWizard.writingBrief')}</span>
           </div>
         )}
         {text && (
@@ -456,13 +461,13 @@ function BriefStep({
       {warning && !streaming && (
         <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-tiny text-warning">
           <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>Có lỗi khi gọi LLM ({warning}). Hiển thị bản tóm tắt heuristic.</span>
+          <span>{t('dashboards.briefingWizard.llmWarning', { warning })}</span>
         </div>
       )}
 
       {!streaming && text && (
         <div className="text-tiny text-text-tertiary">
-          Bot đã sẵn sàng nhận câu hỏi. Brief này được giữ làm bối cảnh cho mọi câu hỏi tiếp theo.
+          {t('dashboards.briefingWizard.botReady')}
         </div>
       )}
     </div>
@@ -480,10 +485,11 @@ function Header({
   onSkip?: () => void;
   hideSkip?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-between">
       <div>
-        <div className="text-tiny text-text-tertiary">Bước {step}/{total}</div>
+        <div className="text-tiny text-text-tertiary">{t('dashboards.briefingWizard.stepCounter', { step, total })}</div>
         <div className="text-caption font-strong text-text-primary">{title}</div>
       </div>
       {!hideSkip && onSkip && (
@@ -491,7 +497,7 @@ function Header({
           onClick={onSkip}
           className="text-tiny text-text-tertiary hover:text-text-secondary"
         >
-          Bỏ qua khảo sát
+          {t('dashboards.briefingWizard.skipSurvey')}
         </button>
       )}
     </div>

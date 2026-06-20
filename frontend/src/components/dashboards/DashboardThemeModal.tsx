@@ -3,6 +3,7 @@
 import React, { useRef, useState } from 'react';
 import { X, Plus, Trash2, LayoutTemplate, Palette as PaletteIcon, Type, Square, BarChart3, ImageIcon, Upload, Check } from 'lucide-react';
 import type { DashboardThemeConfig } from '@/types/api';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type Props = {
   initial: DashboardThemeConfig | null | undefined;
@@ -253,6 +254,7 @@ async function downscaleImageToDataUrl(file: File): Promise<string> {
 }
 
 export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
+  const { t } = useI18n();
   const [section, setSection] = useState<SectionKey>('mau');
   const [theme, setTheme] = useState<DashboardThemeConfig>({
     mode: initial?.mode ?? 'light',
@@ -321,7 +323,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
     try {
       const dataUrl = await downscaleImageToDataUrl(file);
       if (dataUrl.length > BG_HARD_CAP_BYTES) {
-        setBgError('Ảnh quá lớn sau khi nén. Hãy chọn ảnh nhỏ hơn.');
+        setBgError(t('dashboards.themeModal.bgErrorTooLarge'));
         return;
       }
       setTheme((t) => ({
@@ -332,7 +334,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         bgOverlay: typeof t.bgOverlay === 'number' && t.bgOverlay > 0 ? t.bgOverlay : 0.15,
       }));
     } catch {
-      setBgError('Không đọc được ảnh. Thử ảnh JPG/PNG khác.');
+      setBgError(t('dashboards.themeModal.bgErrorRead'));
     }
   };
 
@@ -394,8 +396,8 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
       <div className="flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg" style={{ height: 'min(660px, 90vh)' }}>
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold">Giao diện Dashboard</h2>
-            <p className="text-xs text-text-tertiary">Cá nhân hóa toàn bộ báo cáo — áp dụng cho cả Build và link công khai.</p>
+            <h2 className="text-base font-semibold">{t('dashboards.themeModal.title')}</h2>
+            <p className="text-xs text-text-tertiary">{t('dashboards.themeModal.subtitle')}</p>
           </div>
           <button onClick={onClose} className="text-text-tertiary hover:text-text-primary">
             <X className="h-4 w-4" />
@@ -429,8 +431,8 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           {section === 'mau' && (
             <div className="space-y-5">
               <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Mẫu dựng sẵn</div>
-                <p className="mb-2.5 text-xs text-text-quaternary">Chọn 1 mẫu là áp luôn nền + bảng màu + kiểu thẻ. Xem trước ngay trên thẻ.</p>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.presetsHeading')}</div>
+                <p className="mb-2.5 text-xs text-text-quaternary">{t('dashboards.themeModal.presetsHint')}</p>
                 <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
                   {PRESETS.map((p) => (
                     <ThemePresetCard key={p.id} preset={p} active={theme.presetId === p.id} onApply={() => applyPreset(p)} />
@@ -440,24 +442,24 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Chế độ</span>
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.modeLabel')}</span>
                   <select value={theme.mode} onChange={(e) => update('mode', e.target.value as 'light' | 'dark')} className={inputCls}>
-                    <option value="light">Sáng</option>
-                    <option value="dark">Tối</option>
+                    <option value="light">{t('dashboards.themeModal.modeLight')}</option>
+                    <option value="dark">{t('dashboards.themeModal.modeDark')}</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Màu nền trang</span>
-                  <input type="text" value={theme.background || ''} placeholder="(vd #f8fafc hoặc gradient)" onChange={(e) => update('background', e.target.value)} className={inputCls} />
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.pageBgLabel')}</span>
+                  <input type="text" value={theme.background || ''} placeholder={t('dashboards.themeModal.pageBgPlaceholder')} onChange={(e) => update('background', e.target.value)} className={inputCls} />
                 </label>
               </div>
 
               {/* Background IMAGE */}
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  <ImageIcon className="h-3.5 w-3.5" /> Ảnh nền báo cáo
+                  <ImageIcon className="h-3.5 w-3.5" /> {t('dashboards.themeModal.bgImageHeading')}
                 </div>
-                <p className="mb-2.5 text-xs text-text-quaternary">Tải ảnh làm nền — biểu đồ nằm trên ảnh (thẻ kính mờ). Ảnh được nén tự động. Lưu ý: ảnh nền sẽ đè lên màu nền của mẫu, nên các mẫu sẽ chỉ khác nhau ở bảng màu &amp; thẻ.</p>
+                <p className="mb-2.5 text-xs text-text-quaternary">{t('dashboards.themeModal.bgImageHint')}</p>
                 <input
                   ref={fileRef}
                   type="file"
@@ -474,19 +476,19 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                       />
                       <div className="flex flex-col gap-1.5">
                         <button type="button" onClick={() => fileRef.current?.click()} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-xs hover:bg-surface-3">
-                          Đổi ảnh
+                          {t('dashboards.themeModal.changeImage')}
                         </button>
                         <button type="button" onClick={() => update('backgroundImage', '')} className="flex items-center gap-1 text-xs text-text-quaternary hover:text-danger">
-                          <Trash2 className="h-3.5 w-3.5" /> Gỡ ảnh
+                          <Trash2 className="h-3.5 w-3.5" /> {t('dashboards.themeModal.removeImage')}
                         </button>
                       </div>
                     </div>
                     <label className="flex items-center gap-2 text-sm">
                       <input type="checkbox" checked={!!theme.glassCards} onChange={(e) => update('glassCards', e.target.checked)} className="accent-[rgb(var(--brand))]" />
-                      <span className="text-text-secondary">Thẻ trong suốt (kính mờ) để thấy ảnh</span>
+                      <span className="text-text-secondary">{t('dashboards.themeModal.glassCards')}</span>
                     </label>
                     <label className="flex items-center gap-3 text-sm">
-                      <span className="w-28 shrink-0 text-text-tertiary">Lớp phủ mờ</span>
+                      <span className="w-28 shrink-0 text-text-tertiary">{t('dashboards.themeModal.overlayLabel')}</span>
                       <input type="range" min={0} max={70} step={5}
                         value={Math.round((typeof theme.bgOverlay === 'number' ? theme.bgOverlay : 0) * 100)}
                         onChange={(e) => update('bgOverlay', Number(e.target.value) / 100)}
@@ -497,7 +499,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 ) : (
                   <button type="button" onClick={() => fileRef.current?.click()}
                     className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-4 text-sm text-text-tertiary hover:border-brand/50 hover:text-text-primary">
-                    <Upload className="h-4 w-4" /> Chọn ảnh nền
+                    <Upload className="h-4 w-4" /> {t('dashboards.themeModal.pickImage')}
                   </button>
                 )}
                 {bgError && <p className="mt-2 text-xs text-danger">{bgError}</p>}
@@ -509,12 +511,12 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           {section === 'color' && (
             <div className="space-y-5">
               <div className="space-y-3">
-                <ColorRow label="Màu nhấn" value={theme.accent} fallback="#2563eb" placeholder="#2563eb" onChange={(v) => update('accent', v)} />
+                <ColorRow label={t('dashboards.themeModal.accentColor')} value={theme.accent} fallback="#2563eb" placeholder="#2563eb" onChange={(v) => update('accent', v)} />
               </div>
 
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Bảng màu dữ liệu</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.dataPaletteHeading')}</div>
                   <div className="flex gap-1">
                     {PALETTE_PRESETS.map((p) => (
                       <button key={p.label} type="button" onClick={() => update('dataColors', [...p.colors])}
@@ -528,7 +530,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                     ))}
                   </div>
                 </div>
-                <p className="mb-2 text-xs text-text-quaternary">Màu cho các chuỗi/cột trong mọi biểu đồ. Để trống = dùng bảng màu của từng chart.</p>
+                <p className="mb-2 text-xs text-text-quaternary">{t('dashboards.themeModal.dataPaletteHint')}</p>
                 <div className="flex flex-wrap gap-2">
                   {dataColors.map((c, i) => (
                     <div key={i} className="group relative">
@@ -547,19 +549,19 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                   {dataColors.length > 0 && (
                     <button type="button" onClick={() => update('dataColors', undefined)}
                       className="flex h-9 items-center gap-1 rounded-md px-2 text-xs text-text-quaternary hover:text-text-secondary">
-                      <Trash2 className="h-3.5 w-3.5" /> Xoá hết
+                      <Trash2 className="h-3.5 w-3.5" /> {t('dashboards.themeModal.clearAll')}
                     </button>
                   )}
                 </div>
               </div>
 
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Màu trạng thái</div>
-                <p className="mb-2 text-xs text-text-quaternary">Dùng cho chênh lệch KPI (tốt / trung tính / xấu).</p>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.statusColorsHeading')}</div>
+                <p className="mb-2 text-xs text-text-quaternary">{t('dashboards.themeModal.statusColorsHint')}</p>
                 <div className="space-y-2.5">
-                  <ColorRow label="Tốt" value={theme.goodColor} fallback="#16a34a" onChange={(v) => update('goodColor', v)} />
-                  <ColorRow label="Trung tính" value={theme.neutralColor} fallback="#6b7280" onChange={(v) => update('neutralColor', v)} />
-                  <ColorRow label="Xấu" value={theme.badColor} fallback="#dc2626" onChange={(v) => update('badColor', v)} />
+                  <ColorRow label={t('dashboards.themeModal.statusGood')} value={theme.goodColor} fallback="#16a34a" onChange={(v) => update('goodColor', v)} />
+                  <ColorRow label={t('dashboards.themeModal.statusNeutral')} value={theme.neutralColor} fallback="#6b7280" onChange={(v) => update('neutralColor', v)} />
+                  <ColorRow label={t('dashboards.themeModal.statusBad')} value={theme.badColor} fallback="#dc2626" onChange={(v) => update('badColor', v)} />
                 </div>
               </div>
             </div>
@@ -569,21 +571,21 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           {section === 'text' && (
             <div className="space-y-4">
               <label className="flex flex-col gap-1 text-sm">
-                <span className="text-text-tertiary">Phông chữ</span>
-                <input type="text" value={theme.fontFamily || ''} placeholder='(tuỳ chọn, vd "Inter, sans-serif")'
+                <span className="text-text-tertiary">{t('dashboards.themeModal.fontFamily')}</span>
+                <input type="text" value={theme.fontFamily || ''} placeholder={t('dashboards.themeModal.fontFamilyPlaceholder')}
                   onChange={(e) => update('fontFamily', e.target.value)} className={inputCls} />
               </label>
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
-                <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Cỡ chữ</div>
+                <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.fontSizeHeading')}</div>
                 <div className="space-y-3">
-                  <SliderRow label="Tiêu đề chart" value={titleSizeNum} min={10} max={28} onChange={(px) => update('titleFontSize', px)} />
-                  <SliderRow label="Nhãn trục/số" value={labelSizeNum} min={8} max={18} onChange={(px) => update('labelFontSize', px)} />
-                  <SliderRow label="Số KPI" value={kpiSizeNum} min={20} max={72} onChange={(px) => update('kpiFontSize', px)} />
+                  <SliderRow label={t('dashboards.themeModal.chartTitleSize')} value={titleSizeNum} min={10} max={28} onChange={(px) => update('titleFontSize', px)} />
+                  <SliderRow label={t('dashboards.themeModal.axisLabelSize')} value={labelSizeNum} min={8} max={18} onChange={(px) => update('labelFontSize', px)} />
+                  <SliderRow label={t('dashboards.themeModal.kpiSize')} value={kpiSizeNum} min={20} max={72} onChange={(px) => update('kpiFontSize', px)} />
                 </div>
               </div>
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3 space-y-2.5">
-                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Màu chữ</div>
-                <ColorRow label="Màu tiêu đề" value={theme.titleColor} fallback="#0f172a" onChange={(v) => update('titleColor', v)} />
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.textColorHeading')}</div>
+                <ColorRow label={t('dashboards.themeModal.titleColor')} value={theme.titleColor} fallback="#0f172a" onChange={(v) => update('titleColor', v)} />
               </div>
             </div>
           )}
@@ -593,45 +595,45 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Kiểu thẻ</span>
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.cardStyleLabel')}</span>
                   <select value={theme.cardStyle} onChange={(e) => update('cardStyle', e.target.value as 'soft' | 'sharp' | 'flat' | 'elevated')} className={inputCls}>
-                    <option value="soft">Bo mềm</option>
-                    <option value="elevated">Nổi khối</option>
-                    <option value="sharp">Sắc cạnh</option>
-                    <option value="flat">Phẳng</option>
+                    <option value="soft">{t('dashboards.themeModal.cardStyleSoft')}</option>
+                    <option value="elevated">{t('dashboards.themeModal.cardStyleElevated')}</option>
+                    <option value="sharp">{t('dashboards.themeModal.cardStyleSharp')}</option>
+                    <option value="flat">{t('dashboards.themeModal.cardStyleFlat')}</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Mật độ</span>
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.densityLabel')}</span>
                   <select value={theme.density ?? 'normal'} onChange={(e) => update('density', e.target.value as 'compact' | 'normal' | 'spacious')} className={inputCls}>
-                    <option value="compact">Gọn</option>
-                    <option value="normal">Vừa</option>
-                    <option value="spacious">Thoáng</option>
+                    <option value="compact">{t('dashboards.themeModal.densityCompact')}</option>
+                    <option value="normal">{t('dashboards.themeModal.densityNormal')}</option>
+                    <option value="spacious">{t('dashboards.themeModal.densitySpacious')}</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Đổ bóng</span>
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.shadowLabel')}</span>
                   <select value={theme.cardShadow ? 'on' : 'off'} onChange={(e) => update('cardShadow', e.target.value === 'on' ? '0 10px 30px -18px rgba(15,23,42,0.45)' : undefined as any)} className={inputCls}>
-                    <option value="off">Không</option>
-                    <option value="on">Có</option>
+                    <option value="off">{t('dashboards.themeModal.shadowOff')}</option>
+                    <option value="on">{t('dashboards.themeModal.shadowOn')}</option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm">
-                  <span className="text-text-tertiary">Hiệu ứng hover</span>
+                  <span className="text-text-tertiary">{t('dashboards.themeModal.hoverLabel')}</span>
                   <select value={theme.hoverAnimation ?? 'none'} onChange={(e) => update('hoverAnimation', e.target.value)} className={inputCls}>
-                    <option value="none">Không</option>
-                    <option value="lift">Nâng lên</option>
-                    <option value="scale">Phóng to</option>
-                    <option value="glow">Phát sáng</option>
+                    <option value="none">{t('dashboards.themeModal.hoverNone')}</option>
+                    <option value="lift">{t('dashboards.themeModal.hoverLift')}</option>
+                    <option value="scale">{t('dashboards.themeModal.hoverScale')}</option>
+                    <option value="glow">{t('dashboards.themeModal.hoverGlow')}</option>
                   </select>
                 </label>
               </div>
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
-                <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-tertiary">Viền &amp; bo góc</div>
+                <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.borderRadiusHeading')}</div>
                 <div className="space-y-3">
-                  <SliderRow label="Bo góc" value={radiusNum} min={0} max={24} onChange={(px) => update('cardRadius', px)} />
-                  <SliderRow label="Độ dày viền" value={borderNum} min={0} max={4} onChange={(px) => update('cardBorderWidth', px)} />
-                  <ColorRow label="Màu viền" value={theme.cardBorderColor} fallback="#e2e8f0" onChange={(v) => update('cardBorderColor', v)} />
+                  <SliderRow label={t('dashboards.themeModal.cornerRadius')} value={radiusNum} min={0} max={24} onChange={(px) => update('cardRadius', px)} />
+                  <SliderRow label={t('dashboards.themeModal.borderWidth')} value={borderNum} min={0} max={4} onChange={(px) => update('cardBorderWidth', px)} />
+                  <ColorRow label={t('dashboards.themeModal.borderColor')} value={theme.cardBorderColor} fallback="#e2e8f0" onChange={(v) => update('cardBorderColor', v)} />
                 </div>
               </div>
             </div>
@@ -641,10 +643,10 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           {section === 'chart' && (
             <div className="space-y-4">
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3 space-y-2.5">
-                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">Lưới &amp; trục</div>
-                <p className="text-xs text-text-quaternary">Áp dụng cho đường lưới và nhãn trục của mọi biểu đồ có trục.</p>
-                <ColorRow label="Màu đường lưới" value={theme.gridlineColor} fallback="#e2e8f0" onChange={(v) => update('gridlineColor', v)} />
-                <ColorRow label="Màu nhãn trục" value={theme.axisLabelColor} fallback="#64748b" onChange={(v) => update('axisLabelColor', v)} />
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.gridAxisHeading')}</div>
+                <p className="text-xs text-text-quaternary">{t('dashboards.themeModal.gridAxisHint')}</p>
+                <ColorRow label={t('dashboards.themeModal.gridlineColor')} value={theme.gridlineColor} fallback="#e2e8f0" onChange={(v) => update('gridlineColor', v)} />
+                <ColorRow label={t('dashboards.themeModal.axisLabelColor')} value={theme.axisLabelColor} fallback="#64748b" onChange={(v) => update('axisLabelColor', v)} />
               </div>
             </div>
           )}
@@ -652,10 +654,10 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
 
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3">
           <button onClick={onClose} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3">
-            Huỷ
+            {t('common.cancel')}
           </button>
           <button onClick={submit} disabled={saving} className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-            {saving ? 'Đang lưu…' : 'Lưu giao diện'}
+            {saving ? t('dashboards.themeModal.saving') : t('dashboards.themeModal.save')}
           </button>
         </div>
       </div>

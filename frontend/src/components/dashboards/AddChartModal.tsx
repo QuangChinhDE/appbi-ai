@@ -9,6 +9,7 @@ import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { useChartData, useCharts } from '@/hooks/use-charts';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { useI18n } from '@/providers/LanguageProvider';
 import { getDashboardChartPageId, packNewGridTiles, defaultSizeForChartType } from '@/lib/dashboard-pages';
 import { ChartType } from '@/types/api';
 import type {
@@ -129,6 +130,7 @@ export function AddChartModal({
   isAdding,
   currentPageName,
 }: AddChartModalProps) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<AddChartModalMode>('existing');
   // Multi-select: the dashboard Add-Chart picker can stage several saved charts and
   // add them all on one confirm (DA6-F3). A single staged chart still drives the
@@ -279,30 +281,30 @@ export function AddChartModal({
     return [
       {
         key: 'recommended',
-        title: 'Recommended for this dashboard',
-        helper: 'Charts connected to datasets already used in this dashboard.',
+        title: t('dashboards.addChart.sectionRecommendedTitle'),
+        helper: t('dashboards.addChart.sectionRecommendedHelper'),
         items: sections.recommended,
       },
       {
         key: 'reuse',
-        title: 'Already used on another page',
-        helper: 'Reusable charts already attached elsewhere in this dashboard.',
+        title: t('dashboards.addChart.sectionReuseTitle'),
+        helper: t('dashboards.addChart.sectionReuseHelper'),
         items: sections.reuse,
       },
       {
         key: 'shared',
-        title: 'Shared with you',
-        helper: 'Charts owned by someone else but available for this dashboard.',
+        title: t('dashboards.addChart.sectionSharedTitle'),
+        helper: t('dashboards.addChart.sectionSharedHelper'),
         items: sections.shared,
       },
       {
         key: 'other',
-        title: 'Other charts',
-        helper: 'Everything else you can access.',
+        title: t('dashboards.addChart.sectionOtherTitle'),
+        helper: t('dashboards.addChart.sectionOtherHelper'),
         items: sections.other,
       },
     ].filter((section) => section.items.length > 0);
-  }, [activePageId, availableCharts, dashboardDatasetIds, pageIdsByChartId]);
+  }, [activePageId, availableCharts, dashboardDatasetIds, pageIdsByChartId, t]);
 
   const handleChartChange = (id: number) => {
     setPendingSelectionChartId(null);
@@ -406,7 +408,7 @@ export function AddChartModal({
   };
 
   const selectedChartPreviewError = selectedChartDataQuery.error
-    ? getApiErrorMessage(selectedChartDataQuery.error, 'Failed to load chart preview.')
+    ? getApiErrorMessage(selectedChartDataQuery.error, t('dashboards.addChart.previewError'))
     : null;
 
   const footer = mode === 'existing'
@@ -418,7 +420,7 @@ export function AddChartModal({
           className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm hover:bg-surface-2"
           disabled={isAdding}
         >
-          Cancel
+          {t('common.cancel')}
         </button>
         <button
           type="button"
@@ -428,10 +430,10 @@ export function AddChartModal({
         >
           <Plus className="mr-2 h-4 w-4" />
           {isAdding
-            ? 'Adding...'
+            ? t('dashboards.addChart.adding')
             : selectedChartIds.size > 1
-              ? `Add ${selectedChartIds.size} charts`
-              : 'Add Chart'}
+              ? t('dashboards.addChart.addCharts', { count: selectedChartIds.size })
+              : t('dashboards.addChart.addChart')}
         </button>
       </>
     )
@@ -441,7 +443,7 @@ export function AddChartModal({
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
-      title="Add Chart to Dashboard"
+      title={t('dashboards.addChart.modalTitle')}
       size="full"
       footer={footer}
       bodyClassName="overflow-hidden p-0"
@@ -461,7 +463,7 @@ export function AddChartModal({
                 }`}
               >
                 <BarChart3 className="h-3.5 w-3.5" />
-                Choose Existing
+                {t('dashboards.addChart.chooseExisting')}
               </button>
               <button
                 type="button"
@@ -473,19 +475,19 @@ export function AddChartModal({
                 }`}
               >
                 <Sparkles className="h-3.5 w-3.5" />
-                Create New
+                {t('dashboards.addChart.createNew')}
               </button>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               {mode === 'existing' && currentPageName && (
                 <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1 text-[11px] font-medium text-text-secondary shadow-linear-sm">
-                  Page: {currentPageName}
+                  {t('dashboards.addChart.pageLabel', { name: currentPageName })}
                 </span>
               )}
               <div className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 shadow-linear-sm">
               <div className="flex items-center gap-2">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">W</label>
+                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">{t('dashboards.addChart.widthLabel')}</label>
                 <input
                   type="number"
                   value={width}
@@ -497,7 +499,7 @@ export function AddChartModal({
                 />
               </div>
               <div className="flex items-center gap-2">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">H</label>
+                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">{t('dashboards.addChart.heightLabel')}</label>
                 <input
                   type="number"
                   value={height}
@@ -510,7 +512,9 @@ export function AddChartModal({
               </div>
               </div>
               <span className="rounded-full bg-brand/12 px-3 py-1 text-[11px] font-medium text-brand">
-                {sizeTouched ? `Placement ${width}w x ${height}h` : 'Kích thước: tự động theo loại chart'}
+                {sizeTouched
+                  ? t('dashboards.addChart.placementManual', { width, height })
+                  : t('dashboards.addChart.placementAuto')}
               </span>
             </div>
           </div>
@@ -527,7 +531,7 @@ export function AddChartModal({
                       type="text"
                       value={searchText}
                       onChange={(event) => setSearchText(event.target.value)}
-                      placeholder="Search saved charts"
+                      placeholder={t('dashboards.addChart.searchPlaceholder')}
                       className="h-10 w-full rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 py-2 pl-9 pr-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     />
                   </div>
@@ -539,7 +543,7 @@ export function AddChartModal({
                   >
                     {CHART_TYPE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.label}
+                        {option.value === 'all' ? t('dashboards.addChart.allChartTypes') : option.label}
                       </option>
                     ))}
                   </select>
@@ -549,26 +553,28 @@ export function AddChartModal({
                     onChange={(event) => setScopeFilter(event.target.value as ChartListScope)}
                     className="h-10 w-[10rem] rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                   >
-                    <option value="all">All accessible</option>
-                    <option value="mine">Mine only</option>
-                    <option value="shared">Shared only</option>
+                    <option value="all">{t('dashboards.addChart.scopeAll')}</option>
+                    <option value="mine">{t('dashboards.addChart.scopeMine')}</option>
+                    <option value="shared">{t('dashboards.addChart.scopeShared')}</option>
                   </select>
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <p className="text-text-tertiary">
-                    Search, narrow the catalog, then inspect the full chart preview before adding it.
+                    {t('dashboards.addChart.catalogHelper')}
                   </p>
                   <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
                     {isLoading
-                      ? 'Loading chart catalog...'
-                      : `${availableCharts.length} chart${availableCharts.length !== 1 ? 's' : ''} available`}
+                      ? t('dashboards.addChart.loadingCatalog')
+                      : availableCharts.length !== 1
+                        ? t('dashboards.addChart.chartsAvailable', { count: availableCharts.length })
+                        : t('dashboards.addChart.chartAvailable', { count: availableCharts.length })}
                   </span>
                 </div>
 
                 {currentPageName && currentPageChartIds.size > 0 && (
                   <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
-                    Charts already added to <span className="font-semibold">{currentPageName}</span> are hidden from this picker.
+                    {t('dashboards.addChart.alreadyAddedNotice')}
                   </div>
                 )}
               </div>
@@ -576,7 +582,7 @@ export function AddChartModal({
               <div className="h-full min-h-0 overflow-y-auto px-4 py-4">
                 {!isLoading && availableCharts.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-sm text-text-tertiary">
-                    No charts match the current search or filters.
+                    {t('dashboards.addChart.noMatches')}
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -612,7 +618,7 @@ export function AddChartModal({
                                       <p className="truncate text-sm font-semibold text-text-primary">{chart.name}</p>
                                       {chart.is_shared && (
                                         <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[11px] font-medium text-brand">
-                                          Shared
+                                          {t('dashboards.addChart.shared')}
                                         </span>
                                       )}
                                       <OwnerBadge email={chart.owner_email} />
@@ -632,11 +638,11 @@ export function AddChartModal({
                                       </span>
                                       {pageLabels.length > 0 && (
                                         <span className="rounded-full bg-surface-2 px-2 py-1 font-medium text-text-secondary">
-                                          Used on {pageLabels.join(', ')}
+                                          {t('dashboards.addChart.usedOn', { pages: pageLabels.join(', ') })}
                                         </span>
                                       )}
                                       <span className="rounded-full bg-surface-2 px-2 py-1 font-medium text-text-secondary">
-                                        Updated {new Date(chart.updated_at).toLocaleDateString()}
+                                        {t('dashboards.addChart.updatedOn', { date: new Date(chart.updated_at).toLocaleDateString() })}
                                       </span>
                                     </div>
                                   </div>
@@ -644,7 +650,7 @@ export function AddChartModal({
                                   <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
                                     isSelected ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary'
                                   }`}>
-                                    {isSelected ? 'Selected' : 'Select'}
+                                    {isSelected ? t('dashboards.addChart.selected') : t('dashboards.addChart.select')}
                                   </span>
                                 </div>
                               </button>
@@ -663,7 +669,7 @@ export function AddChartModal({
                 <div className="border-b border-[rgb(var(--border-line))] px-4 py-3.5">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Preview</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.addChart.previewLabel')}</p>
                       {selectedChart ? (
                         <>
                           <h3 className="mt-1 truncate text-base font-semibold text-text-primary">{selectedChart.name}</h3>
@@ -682,12 +688,12 @@ export function AddChartModal({
                         </>
                       ) : (
                         <p className="mt-2 text-sm text-text-tertiary">
-                          Pick a chart from the catalog to review it here before adding it.
+                          {t('dashboards.addChart.previewEmpty')}
                         </p>
                       )}
                     </div>
                     <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
-                      Saved chart preview
+                      {t('dashboards.addChart.savedChartPreview')}
                     </span>
                   </div>
                 </div>
@@ -710,13 +716,13 @@ export function AddChartModal({
                       <div>
                         <p className="text-[13px] font-semibold text-text-primary">
                           {selectedChartIds.size > 1
-                            ? `${selectedChartIds.size} charts đã chọn`
-                            : 'Chọn 1 chart để xem trước'}
+                            ? t('dashboards.addChart.multiSelectedTitle', { count: selectedChartIds.size })
+                            : t('dashboards.addChart.singleSelectPrompt')}
                         </p>
                         <p className="mt-0.5 text-xs text-text-tertiary">
                           {selectedChartIds.size > 1
-                            ? 'Tất cả sẽ được add cùng lúc (parameters mặc định). Để xem trước + chỉnh parameters, chọn đúng 1 chart.'
-                            : 'Click vào 1 chart ở danh sách bên trái — preview render đầy đủ với data + parameters trước khi add.'}
+                            ? t('dashboards.addChart.multiSelectedHelper')
+                            : t('dashboards.addChart.singleSelectHelper')}
                         </p>
                       </div>
                     </div>
@@ -728,9 +734,9 @@ export function AddChartModal({
                 <div className="overflow-hidden rounded-[22px] border border-brand/25 bg-surface-1 shadow-linear-sm">
                   <div className="border-b border-brand/25 bg-brand/10 px-4 py-3">
                     <p className="text-xs font-medium uppercase tracking-wide text-brand">
-                      Instance parameters
+                      {t('dashboards.addChart.instanceParameters')}
                     </p>
-                    <p className="mt-1 text-xs text-brand">Leave blank to keep the chart default values.</p>
+                    <p className="mt-1 text-xs text-brand">{t('dashboards.addChart.instanceParametersHelper')}</p>
                   </div>
                   <div className="max-h-[18rem] space-y-3 overflow-y-auto p-4">
                     {chartParams.map((param) => {
@@ -741,7 +747,9 @@ export function AddChartModal({
                           ? 'date'
                           : 'text';
                       const placeholder = param.default_value
-                        ?? (inputKind === 'date_range' ? 'YYYY-MM-DD..YYYY-MM-DD' : 'optional');
+                        ?? (inputKind === 'date_range'
+                          ? t('dashboards.addChart.dateRangePlaceholder')
+                          : t('dashboards.addChart.optionalPlaceholder'));
 
                       return (
                         <div key={param.parameter_name}>
@@ -765,7 +773,7 @@ export function AddChartModal({
                             disabled={isAdding}
                           />
                           {inputKind === 'date_range' && (
-                            <p className="mt-1 text-[11px] text-text-tertiary">Use `start..end` or `start,end`.</p>
+                            <p className="mt-1 text-[11px] text-text-tertiary">{t('dashboards.addChart.dateRangeHint')}</p>
                           )}
                         </div>
                       );
@@ -775,7 +783,9 @@ export function AddChartModal({
               )}
 
               <div className="rounded-[20px] border border-brand/25 bg-brand/8 px-4 py-3 text-sm text-brand">
-                The chart will be added at the top{currentPageName ? ` of ${currentPageName}` : ''}. You can drag or resize it after adding.
+                {currentPageName
+                  ? t('dashboards.addChart.addNoticeWithPage', { name: currentPageName })
+                  : t('dashboards.addChart.addNotice')}
               </div>
             </div>
           </div>
@@ -789,8 +799,8 @@ export function AddChartModal({
                 initialDatasetId={preferredDatasetId}
                 onBack={() => setMode('existing')}
                 onChartSaved={handleCreateAndAdd}
-                backLabel="Back to picker"
-                saveButtonLabel="Save Chart & Add"
+                backLabel={t('dashboards.addChart.backToPicker')}
+                saveButtonLabel={t('dashboards.addChart.saveAndAdd')}
               />
             </div>
           </div>

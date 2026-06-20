@@ -264,6 +264,16 @@ export default function PublicDashboardPage() {
     sourceChartId: number;
     filter: BaseFilter;
   } | null>(null);
+  // Cross-highlight (PBI-parity) — opt-in per dashboard via theme_config. When
+  // mode='highlight', a data-point click sets THIS (not crossFilterState), so
+  // the baseline (viewer + link + page-scope filters) stays applied and the
+  // selection is a visual overlay only. `highlightChartData` holds the parallel
+  // P-filtered fetch per target chart.
+  const [highlightState, setHighlightState] = useState<{
+    sourceChartId: number;
+    filter: BaseFilter;
+  } | null>(null);
+  const [highlightChartData, setHighlightChartData] = useState<Record<number, ChartDataResponse>>({});
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -563,23 +573,29 @@ export default function PublicDashboardPage() {
     }
   }, [crossFilterState, visibleDashboardCharts]);
 
+  // Highlight is the DEFAULT click interaction (matches the authed builder);
+  // per-chart opt-out via layout.highlightEnabled. Only explicit 'off' falls
+  // back to legacy cross-filter.
+  const interactionsMode: 'off' | 'highlight' =
+    ((dashboard as any)?.theme_config?.interactions?.mode === 'off') ? 'off' : 'highlight';
+
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
+    // One selection (PBI parity): SOURCE chart dims its non-selected marks,
+    // every OTHER chart FILTERS to the clicked value (fetchChartsForPage adds it
+    // to the target queries). A null emit (click on empty chart space) clears
+    // unconditionally → reverts to the viewer's baseline; the page/locked/slicer
+    // filters (appliedViewerFilters) are separate and untouched.
     setCrossFilterState((current) => {
       if (!filter) {
-        return current?.sourceChartId === sourceChartId ? null : current;
+        return null;
       }
-
       if (
         current?.sourceChartId === sourceChartId
         && areFiltersEquivalent(current.filter, filter)
       ) {
         return null;
       }
-
-      return {
-        sourceChartId,
-        filter,
-      };
+      return { sourceChartId, filter };
     });
   }, []);
 
@@ -706,6 +722,64 @@ export default function PublicDashboardPage() {
       }
     }
   }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
+
+  // Cross-highlight (public): when a selection is active, fetch a PARALLEL
+  // P-filtered dataset per TARGET chart (baseline viewer/page filters + the
+  // selection), stored separately so the baseline tiles keep their full data
+  // and the renderer overlays the highlighted portion. Source tile dims locally
+  // (no fetch). Gated on interactionsMode='highlight' (opt-in) so existing
+  // public links are byte-for-byte unchanged.
+  useEffect(() => {
+    if (interactionsMode !== 'highlight' || !highlightState || !dashboard) {
+      setHighlightChartData((cur) => (Object.keys(cur).length ? {} : cur));
+      return;
+    }
+    const session = getPublicSession(token);
+    const targets = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id && dc.chart_id !== highlightState.sourceChartId)
+      // Per-chart opt-out: don't fetch a highlight overlay for tiles the author
+      // turned off (they render their baseline unchanged).
+      .filter((dc) => (dc.layout as any)?.highlightEnabled !== false);
+    let cancelled = false;
+    (async () => {
+      const entries = await runWithConcurrency(
+        targets,
+        async (dc) => {
+          const requestFilters = applyScopeBound(
+            [...appliedViewerFilters, highlightState.filter],
+            pageHiddenFiltersRef.current,
+          );
+          try {
+            const data = await publicDashboardApi.getChartData(
+              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id],
+            );
+            return { chartId: dc.chart_id, data };
+          } catch {
+            return { chartId: dc.chart_id, data: null };
+          }
+        },
+        CHART_FETCH_CONCURRENCY,
+      );
+      if (cancelled) return;
+      const map: Record<number, ChartDataResponse> = {};
+      for (const e of entries) if (e.data) map[e.chartId] = e.data as ChartDataResponse;
+      setHighlightChartData(map);
+    })();
+    return () => { cancelled = true; };
+  }, [highlightState, interactionsMode, activePageId, appliedViewerFilters, dashboard, token]);
+
+  // Drop the highlight when its source tile leaves the page; clear the unused
+  // interaction state when the mode flips, so they never overlap.
+  useEffect(() => {
+    if (!highlightState || !dashboard) return;
+    const exists = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .some((dc) => dc.chart_id === highlightState.sourceChartId);
+    if (!exists) setHighlightState(null);
+  }, [activePageId, dashboard, highlightState]);
+  useEffect(() => {
+    if (interactionsMode === 'highlight') setCrossFilterState(null);
+    else setHighlightState(null);
+  }, [interactionsMode]);
 
   // #2 — public viewer date-hierarchy: change a chart's grain and re-fetch it
   // from the BE at that bucket (works on pre-aggregated charts). The grain ref
@@ -1303,6 +1377,32 @@ export default function PublicDashboardPage() {
                     </div>
                   )}
 
+                  {highlightState && (
+                    <div
+                      className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+                      style={publicTheme.accentPillStyle}
+                    >
+                      <p className="font-emphasis">
+                        Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
+                          ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
+                          ?? `Chart ${highlightState.sourceChartId}`}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="break-words text-text-secondary">
+                          {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onClick={() => setHighlightState(null)}
+                          style={publicTheme.neutralPillStyle}
+                        >
+                          Bỏ chọn
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {chartLoadError && (
                     <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
                       {chartLoadError}
@@ -1389,8 +1489,14 @@ export default function PublicDashboardPage() {
                           layout={dashboardChart.layout}
                           compact={publicTheme.density.compact}
                           showChartTypeLabel={false}
-                          onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
+                          onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
                           isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          /* Source-only dim: the clicked chart dims its non-selected marks
+                             (local, no fetch); every other chart instead FILTERS (handled by
+                             fetchChartsForPage). Per-chart opt-out via layout.highlightEnabled. */
+                          highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+                          isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          highlightData={null}
                           forceVisible={forceVisibleAll}
                           publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}

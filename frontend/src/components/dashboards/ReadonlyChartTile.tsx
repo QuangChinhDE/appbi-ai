@@ -6,6 +6,7 @@ import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
+import { useI18n } from '@/providers/LanguageProvider';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
 import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
@@ -29,6 +30,13 @@ interface ReadonlyChartTileProps {
   showChartTypeLabel?: boolean;
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
+  /** Cross-highlight (PBI-parity). The active selection's P filter (resolved at
+   *  the page level). Source tile dims its own non-selected marks locally;
+   *  target tiles receive `highlightData` (the P-filtered subset, same row
+   *  shape as chartData.data) which the parent page fetches. */
+  highlightFilter?: BaseFilter | null;
+  isHighlightSource?: boolean;
+  highlightData?: Record<string, any>[] | null;
   /** Fires once when the tile first scrolls into view (or its 300px buffer). */
   onVisible?: () => void;
   /** When true, suppresses lazy gating (used during PDF export to render every tile). */
@@ -54,12 +62,16 @@ export function ReadonlyChartTile({
   showChartTypeLabel = true,
   onSelectCrossFilter,
   isCrossFilterSource = false,
+  highlightFilter = null,
+  isHighlightSource = false,
+  highlightData = null,
   onVisible,
   forceVisible = false,
   publicDatasetModels = null,
   viewerGrain,
   onViewerDrill,
 }: ReadonlyChartTileProps) {
+  const { t } = useI18n();
   // Track first viewport entry. Sticky once seen so scrolling away doesn't
   // re-trigger fetch. forceVisible bypasses gating during PDF export.
   const visibilityRef = useRef<HTMLDivElement | null>(null);
@@ -213,6 +225,22 @@ export function ReadonlyChartTile({
     });
   };
 
+  // Cross-highlight data for the renderer:
+  //   • source tile → the selected category's own rows, filtered locally from
+  //     this chart's baseline data (no extra fetch).
+  //   • target tile → the parent-fetched P-filtered subset (`highlightData`).
+  //   • null when no highlight active / this chart can't bind the selection.
+  const effectiveHighlightData = useMemo<Record<string, any>[] | null>(() => {
+    if (!highlightFilter) return null;
+    const rows = chartData?.data ?? [];
+    if (isHighlightSource) {
+      const field = highlightFilter.field;
+      const target = String(highlightFilter.value);
+      return rows.filter((r) => String(r?.[field]) === target);
+    }
+    return highlightData ?? null;
+  }, [highlightFilter, isHighlightSource, highlightData, chartData]);
+
   const havingOptions = useMemo<Array<{ key: string; label: string }>>(
     () => (
       Array.isArray((roleConfig as any)?.metrics)
@@ -265,14 +293,14 @@ export function ReadonlyChartTile({
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
       className={`dashboard-tile group relative h-full overflow-hidden rounded-lg border bg-surface-1 p-3 transition-colors ${
-        isCrossFilterSource
+        isCrossFilterSource || isHighlightSource
           ? 'border-sky-300 ring-2 ring-sky-100'
           : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
       }`}
       style={{
         borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
         borderWidth: 'var(--dashboard-card-border-width, 1px)',
-        ...(isCrossFilterSource
+        ...(isCrossFilterSource || isHighlightSource
           ? {}
           : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
         // Phase-B16 — translucent "glass" tile that floats over a bg image.
@@ -302,17 +330,17 @@ export function ReadonlyChartTile({
               className="flex-shrink-0 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
               title={(() => {
                 const lines: string[] = [
-                  `Biểu đồ này không áp được ${droppedByBackend.length} filter:`,
+                  t('dashboards.readonlyChartTile.droppedFiltersTitle', { count: droppedByBackend.length }),
                 ];
                 for (const d of droppedByBackend) {
-                  const ref = d.semantic_field || d.field || '(không rõ field)';
+                  const ref = d.semantic_field || d.field || t('dashboards.readonlyChartTile.unknownField');
                   lines.push(`• ${ref} — ${d.detail || d.reason}`);
                 }
                 return lines.join('\n');
               })()}
             >
               <AlertTriangle className="h-3 w-3" />
-              {droppedByBackend.length} bỏ qua
+              {t('dashboards.readonlyChartTile.droppedBadge', { count: droppedByBackend.length })}
             </span>
           ) : null;
           const havingToggle = havingOptions.length > 0 ? (
@@ -323,7 +351,7 @@ export function ReadonlyChartTile({
                   ? 'border-sky-200 bg-sky-50 text-sky-700 opacity-100'
                   : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:border-[rgb(var(--border-line))] hover:bg-surface-2 hover:text-text-primary'
               }`}
-              title="Per-chart filters"
+              title={t('dashboards.readonlyChartTile.perChartFilters')}
             >
               <SlidersHorizontal className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
             </button>
@@ -412,12 +440,12 @@ export function ReadonlyChartTile({
               onChange={(event) => setDraftHavingOp(event.target.value as FilterOperator)}
               className="rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-sky-400"
             >
-              <option value="gt">&gt; greater than</option>
-              <option value="gte">≥ greater or equal</option>
-              <option value="lt">&lt; less than</option>
-              <option value="lte">≤ less or equal</option>
-              <option value="eq">= equals</option>
-              <option value="neq">≠ not equals</option>
+              <option value="gt">&gt; {t('dashboards.readonlyChartTile.opGreaterThan')}</option>
+              <option value="gte">≥ {t('dashboards.readonlyChartTile.opGreaterOrEqual')}</option>
+              <option value="lt">&lt; {t('dashboards.readonlyChartTile.opLessThan')}</option>
+              <option value="lte">≤ {t('dashboards.readonlyChartTile.opLessOrEqual')}</option>
+              <option value="eq">= {t('dashboards.readonlyChartTile.opEquals')}</option>
+              <option value="neq">≠ {t('dashboards.readonlyChartTile.opNotEquals')}</option>
             </select>
             <input
               type="number"
@@ -427,33 +455,45 @@ export function ReadonlyChartTile({
                 if (event.key === 'Enter') confirmHaving();
                 if (event.key === 'Escape') setIsHavingOpen(false);
               }}
-              placeholder="value"
+              placeholder={t('dashboards.readonlyChartTile.valuePlaceholder')}
               className="w-24 rounded-lg border border-[rgb(var(--border-strong))] px-2 py-1 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-sky-400"
             />
             <button
               onClick={confirmHaving}
               className="rounded-lg bg-surface-inverse px-2.5 py-1 text-xs text-white hover:bg-surface-3"
             >
-              Apply
+              {t('dashboards.readonlyChartTile.apply')}
             </button>
             {havingFilters.length > 0 && (
               <button
                 onClick={() => setHavingFilters([])}
                 className="text-xs text-text-tertiary hover:text-text-secondary"
               >
-                Clear all
+                {t('dashboards.readonlyChartTile.clearAll')}
               </button>
             )}
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div
+          className="flex-1 min-h-0 overflow-hidden"
+          onClick={(e) => {
+            // Click on EMPTY chart space clears the cross-filter selection
+            // (reverts to the viewer's baseline; page/locked/slicer filters
+            // untouched). A click on a data mark selects instead.
+            if (!onSelectCrossFilter || chartSemanticBinding?.datasetId == null) return;
+            const target = e.target as Element | null;
+            if (!target?.closest?.('.recharts-wrapper')) return;
+            if (target.closest('.recharts-bar-rectangle, .recharts-rectangle, .recharts-sector, .recharts-dot, .recharts-active-dot, .recharts-symbols, .recharts-pie-sector')) return;
+            onSelectCrossFilter(null);
+          }}
+        >
           {!chart ? (
             <div className="flex h-full items-center justify-center text-center">
               <div>
                 <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
                 <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-warning`}>
-                  Chart metadata unavailable
+                  {t('dashboards.readonlyChartTile.metadataUnavailable')}
                 </p>
               </div>
             </div>
@@ -462,7 +502,7 @@ export function ReadonlyChartTile({
               <div>
                 <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
                 <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-warning`}>
-                  Failed to load chart
+                  {t('dashboards.readonlyChartTile.failedToLoad')}
                 </p>
                 <p className="mt-1 text-xs text-warning">{error}</p>
               </div>
@@ -485,6 +525,7 @@ export function ReadonlyChartTile({
               kpiLabelInHeader={isKpiCard}
               viewerGrain={viewerGrain}
               onViewerDrill={onViewerDrill}
+              highlightData={effectiveHighlightData}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}
