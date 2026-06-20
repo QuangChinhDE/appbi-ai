@@ -2205,6 +2205,7 @@ function ExploreChartInner({
             decimalPlaces={style.decimalPlaces}
             currencySymbol={style.currencySymbol}
             columnLabels={labelMap}
+            columnFormats={formatMap}
           />
         </div>
       </div>
@@ -2224,6 +2225,7 @@ function ExploreChartInner({
         onStyleConfigChange={onStyleConfigChange}
         onSelectDataPoint={onSelectDataPoint}
         labelMap={labelMap}
+        formatMap={formatMap}
       />
     );
   }

@@ -50,6 +50,15 @@ export interface TableVisualizationProps {
    * fall back to a humanised version of the bare segment.
    */
   columnLabels?: Record<string, string> | Map<string, string>;
+  /**
+   * Phase-16.x — per-column number format. {column-key → NumberFormat}, keyed
+   * by the same qualified-or-bare field ref as the data columns. Lets a
+   * percent measure render "30%" and a currency measure "$1,234" in their own
+   * column while other columns keep the table-wide `numberFormat`. Built from
+   * the semantic model's measure `format.kind` (buildSemanticFormatMap), so a
+   * column declared as percent/currency at the dataset level formats itself.
+   */
+  columnFormats?: Record<string, NumberFormat> | Map<string, NumberFormat>;
 }
 
 /**
@@ -217,8 +226,23 @@ export function TableVisualization({
   decimalPlaces = 1,
   currencySymbol = '$',
   columnLabels,
+  columnFormats,
 }: TableVisualizationProps) {
   const rows = data ?? [];
+  // Phase-16.x — per-column number format resolver. A column whose field is a
+  // declared percent/currency/number measure formats by THAT format; others
+  // fall back to the table-wide `numberFormat`. Accepts qualified ("view.field")
+  // or bare ("field") keys (tries both).
+  const getColumnFormat = (col: string): NumberFormat => {
+    if (columnFormats) {
+      const get = (k: string) =>
+        columnFormats instanceof Map ? columnFormats.get(k) : columnFormats[k];
+      const bare = col.includes('.') ? col.split('.').slice(-1)[0] : col;
+      const hit = get(col) ?? get(bare);
+      if (hit) return hit;
+    }
+    return numberFormat;
+  };
   // Phase-15.24: `rows[0] ?? {}` guard. BE can return a row that
   // serialises to `null` when every column is null (rare but observed
   // on TABLE charts post Hướng A). `Object.keys(null)` throws TypeError
@@ -620,7 +644,7 @@ export function TableVisualization({
                   const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
                   const hyperlinkRule = hyperlinkRuleByColumn[col];
                   const safeHref = hyperlinkRule ? resolveRuleHref(hyperlinkRule, row) : null;
-                  const displayValue = formatCellValue(cellValue, { numberFormat, decimalPlaces, currencySymbol });
+                  const displayValue = formatCellValue(cellValue, { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
                   
                   return (
                     <td
@@ -675,7 +699,7 @@ export function TableVisualization({
                         )}
                         style={{ textAlign: alignment }}
                       >
-                        <div className="break-words">{formatCellValue(summaryRow[col], { numberFormat, decimalPlaces, currencySymbol })}</div>
+                        <div className="break-words">{formatCellValue(summaryRow[col], { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol })}</div>
                       </td>
                     );
                   })}

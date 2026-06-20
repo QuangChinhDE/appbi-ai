@@ -93,6 +93,10 @@ interface AdvancedExploreChartProps {
   /** Phase-15.13: same semantic label map used by ExploreChart; forwarded to
    *  TableVisualization when rendering MATRIX so headers humanise. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
+  /** Phase-16.x: per-column number format (field → percent/currency/number)
+   *  forwarded to MATRIX's TableVisualization so a percent/currency measure
+   *  formats in its own column. */
+  formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
 }
 
 interface NameValue {
@@ -1494,6 +1498,7 @@ export function AdvancedExploreChart({
   onStyleConfigChange,
   onSelectDataPoint,
   labelMap,
+  formatMap,
 }: AdvancedExploreChartProps) {
   const title = style.chartTitle?.trim() || undefined;
   const titleFontSize = Math.max(style.chartTitleFontSize ?? style.fontSize ?? 12, 14);
@@ -1570,6 +1575,7 @@ export function AdvancedExploreChart({
           decimalPlaces={style.decimalPlaces}
           currencySymbol={style.currencySymbol}
           columnLabels={labelMap}
+          columnFormats={formatMap}
         />
       </ChartFrame>
     );
