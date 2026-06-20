@@ -4088,77 +4088,70 @@ export function ExploreChartConfig({
             </button>
           </div>
 
-          <div className="space-y-2">
+          <div className="flex items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
+            <span className="min-w-0 flex-1">Column</span>
+            <span className="w-[84px] text-center">Align</span>
+            <span className="w-[112px]">Format</span>
+            <span className="w-6" />
+          </div>
+          <div className="space-y-1">
             {tableFormattingColumns.map((column) => {
               const currentWidth = tableColumnWidths[column.name];
               const currentAlignment = tableColumnAlignments[column.name] ?? 'left';
 
               return (
+                // Phase-16.x — compact single-row layout (was a 3-tier card per
+                // column, which made a many-column table's config scroll forever).
                 <div
                   key={`table-column-layout-${column.name}`}
-                  className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
+                  className="flex items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div
-                        className="truncate text-xs font-semibold text-text-secondary"
-                        title={column.name}
-                      >
-                        {colLabel(column)}
-                      </div>
-                      <div className="mt-1 text-[11px] text-text-quaternary">
-                        {column.type || 'column'}
-                        {currentWidth ? ` | ${Math.round(currentWidth)}px` : ' | auto width'}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => resetTableColumnWidth(column.name)}
-                      disabled={!currentWidth}
-                      className="rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-[11px] font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-1 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Reset width
-                    </button>
+                  <div
+                    className="min-w-0 flex-1 truncate text-xs font-medium text-text-secondary"
+                    title={`${column.name} · ${column.type || 'column'}${currentWidth ? ` · ${Math.round(currentWidth)}px` : ' · auto width'}`}
+                  >
+                    {colLabel(column)}
                   </div>
-
-                  <div className="mt-3">
-                    <label className="mb-1.5 block text-xs font-semibold text-text-secondary">Value alignment</label>
-                    <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-1">
-                      {TABLE_COLUMN_ALIGNMENT_OPTIONS.map((option) => {
-                        const active = currentAlignment === option.value;
-                        return (
-                          <button
-                            key={`${column.name}-${option.value}`}
-                            type="button"
-                            onClick={() => updateTableColumnAlignment(column.name, option.value)}
-                            className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                              active
-                                ? 'bg-brand/10 text-brand'
-                                : 'text-text-tertiary hover:bg-surface-2'
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <div className="inline-flex w-[84px] shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
+                    {TABLE_COLUMN_ALIGNMENT_OPTIONS.map((option) => {
+                      const active = currentAlignment === option.value;
+                      return (
+                        <button
+                          key={`${column.name}-${option.value}`}
+                          type="button"
+                          title={`Align ${option.label}`}
+                          onClick={() => updateTableColumnAlignment(column.name, option.value)}
+                          className={`flex-1 py-1 text-[11px] font-semibold transition-colors ${
+                            active ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2'
+                          }`}
+                        >
+                          {option.label.charAt(0)}
+                        </button>
+                      );
+                    })}
                   </div>
-
-                  <div className="mt-3">
-                    <label className="mb-1.5 block text-xs font-semibold text-text-secondary">Number format</label>
-                    <select
-                      value={tableColumnFormats[column.name] ?? ''}
-                      onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
-                      className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-[11px]"
-                    >
-                      <option value="">Inherit (measure / table default)</option>
-                      <option value="auto">Number (raw)</option>
-                      <option value="compact">Compact (1.2K, 3.4M)</option>
-                      <option value="number">Full number (1,234)</option>
-                      <option value="percent">Percent (%)</option>
-                      <option value="currency">Currency ({normalizedStyleConfig.currencySymbol || '$'})</option>
-                    </select>
-                  </div>
+                  <select
+                    value={tableColumnFormats[column.name] ?? ''}
+                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
+                    title="Number format for this column"
+                    className="w-[112px] shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-1 text-[11px]"
+                  >
+                    <option value="">Default</option>
+                    <option value="auto">Number</option>
+                    <option value="compact">Compact</option>
+                    <option value="number">1,234</option>
+                    <option value="percent">Percent %</option>
+                    <option value="currency">Currency {normalizedStyleConfig.currencySymbol || '$'}</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => resetTableColumnWidth(column.name)}
+                    disabled={!currentWidth}
+                    title="Reset column width"
+                    className="w-6 shrink-0 rounded-md border border-[rgb(var(--border-line))] py-1 text-[11px] text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-1 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    ↺
+                  </button>
                 </div>
               );
             })}

@@ -21,7 +21,7 @@ import type {
   MetricConfig,
   NumberFormat,
 } from './ExploreChartConfig';
-import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
+import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig, normalizeRoleConfig } from './ExploreChartConfig';
 import type { ChartSortRule, TimeGranularity } from '@/types/api';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
@@ -1195,10 +1195,33 @@ function ExploreChartInner({
   // standalone editor keeps persisting through onStyleConfigChange untouched.
   const [ephemeralDrill, setEphemeralDrill] = useState<TimeGranularity | undefined>(undefined);
   const style = useMemo(
-    () => (!onStyleConfigChange && ephemeralDrill !== undefined
-      ? { ...baseStyle, dateDrillLevel: ephemeralDrill }
-      : baseStyle),
-    [baseStyle, onStyleConfigChange, ephemeralDrill],
+    () => {
+      let s = (!onStyleConfigChange && ephemeralDrill !== undefined
+        ? { ...baseStyle, dateDrillLevel: ephemeralDrill }
+        : baseStyle);
+      // Phase-16.x — "format follows the field": overlay each measure's declared
+      // format (formatMap, from measure.format.kind) UNDER any explicit
+      // per-series override, keyed by the series' metricKey. This makes a
+      // percent / currency measure auto-render as 30% / $1,234 in data labels,
+      // tooltips and (via renderYAxis) the value axis — across every chart type
+      // — without the user setting Per-series format by hand. Explicit
+      // seriesFormats still win; this is only the default.
+      if (formatMap && formatMap.size) {
+        const nrc = normalizeRoleConfig(type, roleConfig);
+        const seriesMetrics = [...nrc.metrics, nrc.lineMetric, nrc.benchmarkMetric].filter(Boolean) as { field: string; agg: string }[];
+        const merged = { ...(s.seriesFormats ?? {}) };
+        let changed = false;
+        for (const m of seriesMetrics) {
+          const key = metricKey(m as any);
+          if (merged[key]) continue;
+          const fmt = formatMap.get(m.field) ?? (m.field.includes('.') ? formatMap.get(m.field.split('.').slice(-1)[0]) : undefined);
+          if (fmt) { merged[key] = fmt; changed = true; }
+        }
+        if (changed) s = { ...s, seriesFormats: merged };
+      }
+      return s;
+    },
+    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, type, roleConfig],
   );
   // Phase-B15 — dashboard theme palette + structural colors. In standalone
   // Explore there is no DashboardThemeProvider, so this is {} and behaviour is
@@ -1642,10 +1665,18 @@ function ExploreChartInner({
       />
     );
   };
-  const renderYAxis = () => (
-    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain} allowDataOverflow={yAxisClamp}
+  const renderYAxis = () => {
+    // Phase-16.x — when the chart plots a SINGLE metric, format the value axis
+    // with THAT metric's resolved format (incl. the measure's % / currency via
+    // the merged seriesFormats above) so the axis matches the data labels. With
+    // multiple metrics the axis can't pick one format, so it keeps the global.
+    const axisSeriesKey = metrics.length === 1 ? metricKey(metrics[0]) : undefined;
+    const axisTickFormatter = (value: any) => formatNumber(value, style, axisSeriesKey);
+    return (
+    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp}
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
-  );
+    );
+  };
   // Phase-15.82 — per-series color override handlers. Writes to
   // style.seriesColors so the chart re-renders with the new palette.
   const handleSeriesColorChange = useCallback((key: string, color: string) => {
@@ -1664,7 +1695,13 @@ function ExploreChartInner({
   const legendLayout: 'horizontal' | 'vertical' = legendPos === 'left' || legendPos === 'right' ? 'vertical' : 'horizontal';
   const renderLegend = () => showLegend ? (
     <Legend
-      wrapperStyle={{ fontSize, cursor: 'pointer' }}
+      // Phase-16.x — a BOTTOM legend sits flush at the container edge (below
+      // the plot margin), so on prod — where the CSP-blocked web font falls
+      // back to a taller-glyph font — the legend's descenders (g/p/y in
+      // "MQL", "Won/Lead"…) got clipped by the card edge. paddingBottom +
+      // lineHeight give the text slack; Recharts reserves the padded height so
+      // the legend stays fully inside. Side/top legends are unaffected.
+      wrapperStyle={{ fontSize, cursor: 'pointer', ...(legendPos === 'bottom' ? { paddingBottom: 8, lineHeight: 1.4 } : {}) }}
       verticalAlign={legendPos === 'left' || legendPos === 'right' ? 'middle' : legendPos as any}
       align={legendPos === 'left' || legendPos === 'right' ? legendPos as any : 'center'}
       layout={legendLayout}
@@ -2229,12 +2266,25 @@ function ExploreChartInner({
   }
 
   if (ADVANCED_EXPLORE_CHART_TYPES.has(type)) {
+    // Phase-16.x — single-value SVG charts (bubble/heatmap/gauge/funnel/…) read
+    // only the chart-wide numberFormat. When the user hasn't picked one and the
+    // primary measure declares a format (%/currency), use it so those charts
+    // auto-format too. MATRIX is excluded — it has many columns and formats them
+    // individually via columnFormats (a chart-wide % would wrongly hit all).
+    const advancedStyle = (() => {
+      const primary = metrics[0];
+      const chartWideSet = style.numberFormat && style.numberFormat !== 'compact';
+      if (type === 'MATRIX' || !primary || !effectiveColumnFormats || chartWideSet) return style;
+      const fmt = effectiveColumnFormats.get(primary.field)
+        ?? (primary.field.includes('.') ? effectiveColumnFormats.get(primary.field.split('.').slice(-1)[0]) : undefined);
+      return fmt ? { ...style, numberFormat: fmt } : style;
+    })();
     return (
       <AdvancedExploreChart
         type={type}
         data={data}
         model={model}
-        style={style}
+        style={advancedStyle}
         palette={PALETTE}
         havingFilters={havingFilters}
         preAggregated={preAggregated}
