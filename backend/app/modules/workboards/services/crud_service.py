@@ -23,6 +23,7 @@ from app.modules.workboards.schemas import (
     WorkboardUpdate,
 )
 from app.modules.workboards.services.app_user_service import hash_pin
+from app.modules.workboards.services.ocr_secrets import encrypt_layout_ocr_keys
 from app.services.dataset_model_service import get_dataset_model
 from app.services.datasource_service import DataSourceConnectionService
 
@@ -552,6 +553,7 @@ class WorkboardService:
             requested_pk_columns=payload.primary_key_columns,
             raw_layout=payload.layout_json,
         )
+        layout_json = encrypt_layout_ocr_keys(layout_json, None)
 
         db_obj = Workboard(
             name=payload.name,
@@ -662,7 +664,9 @@ class WorkboardService:
             )
             update_data["dataset_id"] = target_dataset_id
             update_data["primary_table_id"] = target_primary_table_id
-            update_data["layout_json"] = refreshed_layout
+            update_data["layout_json"] = encrypt_layout_ocr_keys(
+                refreshed_layout, db_obj.layout_json or {}
+            )
             update_data["primary_key_columns"] = refreshed_pk
             update_data["lookup_tables"] = refreshed_lookups
 

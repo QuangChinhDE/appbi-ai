@@ -208,7 +208,31 @@ def get_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     wb.user_permission = require_view_access(db, current_user, wb, "workboards")
+    # Mask OCR tokens before the layout leaves the server (owner sees only
+    # "đã cấu hình", never the raw key). Transient — no commit, not persisted.
+    from app.modules.workboards.services.ocr_secrets import mask_layout_ocr_keys
+    if isinstance(wb.layout_json, dict):
+        wb.layout_json = mask_layout_ocr_keys(wb.layout_json)
     return wb
+
+
+@router.get("/{workboard_id}/ocr-key")
+def reveal_workboard_ocr_key(
+    workboard_id: int,
+    screen_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reveal the DECRYPTED OCR token for one form screen — owner/editor only.
+
+    Backs the "eye" toggle in the builder so the person who configured the
+    token can verify it. Gated by edit access; never exposed to the runtime.
+    """
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    from app.modules.workboards.services.ocr_secrets import get_screen_ocr_config
+    cfg = get_screen_ocr_config(wb.layout_json or {}, screen_id)
+    return {"api_key": (cfg or {}).get("api_key") or ""}
 
 
 @router.patch("/{workboard_id}", response_model=WorkboardResponse)

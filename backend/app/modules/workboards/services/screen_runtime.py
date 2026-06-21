@@ -819,6 +819,9 @@ def render_form_screen(
         ),
         "pages": [p.model_dump() for p in (screen.form.pages or [])],
         "sections": list(screen.form.sections or []),
+        # Expose ONLY whether photo-capture/OCR is on — never the token/model.
+        "ocr": {"enabled": bool(getattr(screen.form.ocr, "enabled", False))}
+        if screen.form.ocr is not None else {"enabled": False},
         # Columns the server will auto-fill on insert when blank. The FE
         # treats these as readonly + shows a hint so users don't think the
         # form is broken when typing into them is ignored.

@@ -453,6 +453,38 @@ class ScreenRlsRule(BaseModel):
 # Screen specs (one per kind)
 # ---------------------------------------------------------------------------
 
+class OcrConfig(BaseModel):
+    """Per-form "chụp ảnh tự điền" (OCR) configuration.
+
+    When ``enabled``, the runtime shows a photo-capture card; the backend
+    sends the image to a vision model and returns values keyed by the form's
+    columns. ``api_key`` is BYOK — the builder configures it, the backend
+    ENCRYPTS it at rest inside ``layout_json`` and NEVER returns the raw key
+    to the runtime (only ``enabled`` reaches the public app). On the builder
+    GET it is masked (the runtime/public serializers strip it entirely).
+    """
+
+    enabled: bool = False
+    provider: Literal["anthropic", "openai", "gemini"] = "anthropic"
+    model: Optional[str] = Field(
+        default=None, max_length=120,
+        description="Vision model id (e.g. claude-3-5-sonnet-latest, gpt-4o, gemini-2.5-flash).",
+    )
+    api_key: Optional[str] = Field(
+        default=None, max_length=600,
+        description="BYOK token. Stored encrypted; blank on save = keep existing.",
+    )
+    hint: Optional[str] = Field(
+        default=None, max_length=1000,
+        description="Optional guidance for the model (e.g. layout of the paper form).",
+    )
+    # Response-only flag: builder GET sets True when a key is stored (so the UI
+    # can show "đã lưu khoá") without exposing the secret. Popped on save.
+    api_key_set: Optional[bool] = None
+    # 'ignore' (not 'forbid') tolerates legacy/extra keys round-tripping.
+    model_config = ConfigDict(extra="ignore")
+
+
 class FormScreenSpec(BaseModel):
     """A data-entry screen bound to one dataset table.
 
@@ -471,6 +503,7 @@ class FormScreenSpec(BaseModel):
     )
     pages: List[FormPage] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
+    ocr: Optional[OcrConfig] = None
 
     model_config = ConfigDict(extra="forbid")
 

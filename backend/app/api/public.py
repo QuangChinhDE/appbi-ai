@@ -50,6 +50,10 @@ if settings.WORKBOARDS_ENABLED:
     from app.modules.workboards.roles import is_owner_role
     from app.modules.workboards.services import app_user_service
     from app.modules.workboards.services.public_links import WorkboardPublicLinkService
+    from app.modules.workboards.services.ocr_secrets import (
+        strip_layout_ocr_keys as _strip_ocr,
+        get_screen_ocr_config,
+    )
     from app.modules.workboards.services.rls_service import (
         identity_from_app_user,
     )
@@ -1037,7 +1041,7 @@ if settings.WORKBOARDS_ENABLED:
                 "name": workboard.name,
                 "description": workboard.description,
                 "slug": workboard.slug,
-                "layout": workboard.layout_json or {},
+                "layout": _strip_ocr(workboard.layout_json or {}),
             },
             "link": {
                 "id": str(link.get("id")),
@@ -1945,6 +1949,68 @@ if settings.WORKBOARDS_ENABLED:
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return {"action": "insert", **result}
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/ocr-extract")
+    @_limiter.limit("20/minute")
+    def workspace_screen_ocr_extract(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Run "chụp ảnh tự điền": send a captured photo to the form's configured
+        vision model and return values keyed by the form columns. Token/model are
+        read (decrypted) from the workboard server-side — never from the client."""
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        if screen.kind != "form" or screen.form is None:
+            raise HTTPException(status_code=400, detail="Screen is not a form.")
+
+        image = body.get("image") if isinstance(body, dict) else None
+        if not isinstance(image, str) or not image:
+            raise HTTPException(status_code=400, detail="image is required.")
+        if len(image) > 12_000_000:  # ~9 MB raw
+            raise HTTPException(status_code=413, detail="Ảnh quá lớn (tối đa ~9 MB).")
+
+        cfg = get_screen_ocr_config(wb.layout_json or {}, screen_id)
+        if not cfg:
+            raise HTTPException(status_code=400, detail="Tính năng chụp ảnh tự điền chưa được bật cho biểu mẫu này.")
+
+        fields = [
+            {
+                "column": f.column,
+                "label": f.label,
+                "widget": f.widget,
+                "lookup": f.lookup.model_dump() if getattr(f, "lookup", None) is not None else None,
+            }
+            for f in screen.form.fields
+            if not getattr(f, "readonly", False)
+            and not getattr(f, "computed_from_dataset", None)
+        ]
+        from app.modules.workboards.services import form_ocr_service
+        try:
+            result = form_ocr_service.extract(
+                image=image,
+                fields=fields,
+                provider=cfg.get("provider") or "anthropic",
+                api_key=cfg.get("api_key") or "",
+                model=cfg.get("model"),
+                hint=cfg.get("hint"),
+            )
+        except form_ocr_service.OcrError as exc:
+            raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
+        return result
 
 
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows/bulk")
