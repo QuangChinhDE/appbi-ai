@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, Trash2, UserX, Users } from 'lucide-react';
+import { Plus, Edit2, Trash2, UserX, Users, Search } from 'lucide-react';
 import { permissionsApi, usersApi } from '@/lib/api-client';
 import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
@@ -149,7 +149,7 @@ export default function PermissionsPage() {
 
 function MatrixTab() {
   const qc = useQueryClient();
-  const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [userQuery, setUserQuery] = useState('');
   const [pendingChanges, setPendingChanges] = useState<Record<string, Record<string, string>>>({});
 
   const { data: matrix, isLoading } = useQuery<PermissionMatrix>({
@@ -200,36 +200,37 @@ function MatrixTab() {
     toast.info('Changes discarded');
   };
 
-  const hasPending = Object.keys(pendingChanges).length > 0;
+  const pendingCount = Object.keys(pendingChanges).length;
+  const hasPending = pendingCount > 0;
 
   if (isLoading) return <div className="animate-pulse h-64 bg-surface-2 rounded-lg" />;
 
   const modules = matrix?.modules || [];
-  const users = matrix?.users || [];
+  const allUsers = matrix?.users || [];
   const moduleLevels = matrix?.module_levels ?? {};
+  const needle = userQuery.trim().toLowerCase();
+  const users = needle
+    ? allUsers.filter(
+        (u) => u.full_name.toLowerCase().includes(needle) || u.email.toLowerCase().includes(needle),
+      )
+    : allUsers;
 
   return (
     <>
-      {/* Preset bar */}
-      <div className="flex items-center gap-2 mb-5 flex-wrap">
-        <span className="text-caption text-text-tertiary mr-1">Apply preset:</span>
-        {PRESETS.map((p) => (
-          <Button
-            key={p}
+      {/* Toolbar: search + hint */}
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="w-full sm:w-80">
+          <Input
             size="sm"
-            variant="secondary"
-            onClick={() => {
-              if (!selectedUser) { toast.info('Select a user first, then click preset'); return; }
-              presetMutation.mutate({ userId: selectedUser, preset: p });
-            }}
-            disabled={presetMutation.isPending}
-          >
-            {PRESET_LABELS[p]}
-          </Button>
-        ))}
-        {!selectedUser && (
-          <span className="text-tiny text-text-quaternary italic">Select a user first, then click preset</span>
-        )}
+            value={userQuery}
+            onChange={(e) => setUserQuery(e.target.value)}
+            placeholder="Search users by name or email…"
+            leadingIcon={<Search />}
+          />
+        </div>
+        <span className="text-tiny text-text-quaternary">
+          Set each cell, or use <span className="font-emphasis text-text-tertiary">Quick set</span> to apply a preset to a whole row.
+        </span>
       </div>
 
       {/* Matrix table */}
@@ -245,27 +246,32 @@ function MatrixTab() {
                   {MODULE_LABELS[m] || m}
                 </th>
               ))}
+              <th className="text-center px-3 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary min-w-[130px]">
+                Quick set
+              </th>
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => {
-              const isSelected = selectedUser === user.user_id;
+            {users.length === 0 ? (
+              <tr>
+                <td colSpan={modules.length + 2} className="px-5 py-10 text-center text-caption text-text-tertiary">
+                  No users matching “{userQuery}”.
+                </td>
+              </tr>
+            ) : users.map((user) => {
               const rowPending = !!pendingChanges[user.user_id];
               const isOwner = user.permissions?.settings === 'full';
               return (
                 <tr
                   key={user.user_id}
-                  onClick={() => setSelectedUser(isSelected ? null : user.user_id)}
                   className={cn(
-                    'transition-colors cursor-pointer border-b border-[rgb(var(--border-line))] last:border-0',
-                    isSelected && 'bg-brand/10',
-                    !isSelected && rowPending && 'bg-warning/10',
-                    !isSelected && !rowPending && 'hover:bg-surface-2',
+                    'transition-colors border-b border-[rgb(var(--border-line))] last:border-0',
+                    rowPending ? 'bg-warning/10' : 'hover:bg-surface-2',
                   )}
                 >
                   <td className={cn(
                     'px-5 py-3 sticky left-0',
-                    isSelected ? 'bg-brand/10' : rowPending ? 'bg-warning/10' : 'bg-surface-1',
+                    rowPending ? 'bg-warning/10' : 'bg-surface-1',
                   )}>
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
@@ -307,6 +313,23 @@ function MatrixTab() {
                       </td>
                     );
                   })}
+                  <td className="px-3 py-3 text-center">
+                    <select
+                      value=""
+                      disabled={presetMutation.isPending}
+                      onChange={(e) => {
+                        const preset = e.target.value;
+                        if (preset) presetMutation.mutate({ userId: user.user_id, preset });
+                      }}
+                      title="Apply a preset to this user"
+                      className="min-w-[110px] cursor-pointer appearance-none rounded-md bg-surface-2 px-3 py-1.5 text-center text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-3 focus-visible:shadow-focus-brand focus-visible:outline-none"
+                    >
+                      <option value="">Preset…</option>
+                      {PRESETS.map((p) => (
+                        <option key={p} value={p}>{PRESET_LABELS[p]}</option>
+                      ))}
+                    </select>
+                  </td>
                 </tr>
               );
             })}
@@ -324,36 +347,40 @@ function MatrixTab() {
                 {label}
               </span>
               <span>
-                {val === 'none' ? '— module ẩn khỏi sidebar'
-                  : val === 'view' ? '— xem own + shared, tương tác filters'
-                  : val === 'edit' ? '— CRUD own, xem shared, share cho người khác'
-                  : '— CRUD tất cả, manage config'}
+                {val === 'none' ? '— module hidden from the sidebar'
+                  : val === 'view' ? '— view own + shared, interact with filters'
+                  : val === 'edit' ? '— CRUD own, view shared, share with others'
+                  : '— CRUD everything, manage config'}
               </span>
             </div>
           );
         })}
       </div>
 
-      {/* Action buttons */}
-      <div className="flex items-center justify-center gap-3 mt-6">
-        <Button
-          variant="secondary"
-          size="md"
-          onClick={handleResetAll}
-          disabled={!hasPending}
-        >
-          Reset to defaults
-        </Button>
-        <Button
-          variant="primary"
-          size="md"
-          onClick={handleSaveAll}
-          disabled={!hasPending || saveMutation.isPending}
-          loading={saveMutation.isPending}
-        >
-          {saveMutation.isPending ? 'Saving…' : 'Save changes'}
-        </Button>
-      </div>
+      {/* Sticky save bar — only when there are unsaved changes */}
+      {hasPending && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 animate-in slide-in-from-bottom-4 fade-in duration-200">
+          <div className="flex items-center gap-3 rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2.5 shadow-lg">
+            <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">
+              <span className="h-2 w-2 rounded-full bg-warning" />
+              {pendingCount} user{pendingCount === 1 ? '' : 's'} with unsaved changes
+            </span>
+            <div className="h-4 w-px bg-[rgb(var(--border-line))]" />
+            <Button variant="secondary" size="sm" onClick={handleResetAll} disabled={saveMutation.isPending}>
+              Discard
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSaveAll}
+              disabled={saveMutation.isPending}
+              loading={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
