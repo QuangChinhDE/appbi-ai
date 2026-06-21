@@ -183,7 +183,7 @@ export function ReadonlyChartTile({
     [chart?.config],
   );
 
-  const handleCrossFilterSelection = (selection: { field: string; value: unknown } | null) => {
+  const handleCrossFilterSelection = (selection: { field: string; value: unknown; dateRange?: [string, string]; dateGrain?: string } | null) => {
     if (!onSelectCrossFilter) return;
     if (!selection || selection.value === undefined || selection.value === null || selection.value === '') {
       onSelectCrossFilter(null);
@@ -193,6 +193,23 @@ export function ReadonlyChartTile({
     const semanticField = resolveChartSemanticField(chartSemanticBinding, selection.field);
     if (!semanticField || chartSemanticBinding?.datasetId == null) {
       onSelectCrossFilter(null);
+      return;
+    }
+
+    // Time-bucketed click: bound the whole bucket with a `between` date range
+    // instead of an equality that would match no raw row. (See ChartTile.)
+    if (selection.dateRange) {
+      onSelectCrossFilter({
+        id: `public-cross-${chart?.id ?? 'chart'}-${selection.field}-${selection.dateRange[0]}-${selection.dateRange[1]}`,
+        field: selection.field,
+        fieldKey: semanticField,
+        semanticField,
+        datasetId: chartSemanticBinding.datasetId,
+        type: 'date',
+        operator: 'between',
+        value: selection.dateRange,
+        label: getFriendlyFieldLabel(selection.field),
+      });
       return;
     }
 
@@ -235,6 +252,13 @@ export function ReadonlyChartTile({
     const rows = chartData?.data ?? [];
     if (isHighlightSource) {
       const field = highlightFilter.field;
+      if (highlightFilter.operator === 'between' && Array.isArray(highlightFilter.value)) {
+        const [start, end] = (highlightFilter.value as any[]).map((v) => String(v).slice(0, 10));
+        return rows.filter((r) => {
+          const day = String(r?.[field] ?? '').slice(0, 10);
+          return day && (!start || day >= start) && (!end || day <= end);
+        });
+      }
       const target = String(highlightFilter.value);
       return rows.filter((r) => String(r?.[field]) === target);
     }

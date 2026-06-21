@@ -61,6 +61,31 @@ const SCROLL_THRESHOLD = 25;
 // Cross-highlight: opacity applied to the non-selected (dimmed) portion of a
 // mark while a highlight selection is active (PBI uses ~25-30%).
 const HIGHLIGHT_DIM_OPACITY = 0.25;
+
+// A click on a time-bucketed axis (Year/Quarter/Month/Week) yields the bucket's
+// START date. Cross-filter/highlight must then bound the WHOLE bucket, not match
+// that single day — `date = 2025-01-01` finds nothing because raw rows fall on
+// 01-15, 04-10, … So convert the bucket start + grain into an inclusive
+// [start, end] YYYY-MM-DD range for a `between` date filter. Returns null when
+// the value isn't a parseable date.
+function dateBucketRange(value: unknown, grain: string): [string, string] | null {
+  const d = new Date(value as any);
+  if (Number.isNaN(d.getTime())) return null;
+  const Y = d.getUTCFullYear();
+  const M = d.getUTCMonth(); // 0-based
+  const D = d.getUTCDate();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const iso = (y: number, m0: number, dd: number) => `${y}-${pad(m0 + 1)}-${pad(dd)}`;
+  const lastDay = (y: number, m0: number) => new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+  switch (grain) {
+    case 'year': return [iso(Y, 0, 1), iso(Y, 11, 31)];
+    case 'quarter': { const qs = Math.floor(M / 3) * 3; return [iso(Y, qs, 1), iso(Y, qs + 2, lastDay(Y, qs + 2))]; }
+    case 'month': return [iso(Y, M, 1), iso(Y, M, lastDay(Y, M))];
+    case 'week': { const e = new Date(Date.UTC(Y, M, D + 6)); return [iso(Y, M, D), iso(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate())]; }
+    case 'day': return [iso(Y, M, D), iso(Y, M, D)];
+    default: return null;
+  }
+}
 const MIN_ITEM_WIDTH = 48;
 
 /**
@@ -1210,7 +1235,7 @@ export interface ExploreChartProps {
   havingFilters?: BaseFilter[];
   /** When true, backend already ran GROUP BY aggregation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip client-side applyGroupByAgg */
   preAggregated?: boolean;
-  onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  onSelectDataPoint?: (selection: { field: string; value: unknown; dateRange?: [string, string]; dateGrain?: string } | null) => void;
   /** Cross-highlight (PBI-parity) — the P-filtered subset of `data`, SAME row
    *  shape as `data` (same chart config / column keys), already aggregated by
    *  the BE under the active selection. `null`/`undefined` ⇒ no highlight
@@ -1952,8 +1977,23 @@ function ExploreChartInner({
   };
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ KPI ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  // The grain the displayed time-axis is currently bucketed at (viewer drill /
+  // editor drill / LINE timeGranularity). Used so a click on a bucket emits a
+  // RANGE filter instead of an (empty-matching) equality on the bucket start.
+  const emitDateGrain: string | undefined = (() => {
+    if (effectiveDrillLevel && effectiveDrillLevel !== 'raw') return effectiveDrillLevel as string;
+    if (isTimeChart && style.timeGranularity && style.timeGranularity !== 'raw') return style.timeGranularity as string;
+    return undefined;
+  })();
   const emitSelection = (field: string | undefined, value: unknown) => {
     if (!onSelectDataPoint || !field || value === undefined || value === null || value === '') return;
+    if (emitDateGrain && hasDateAxis) {
+      const range = dateBucketRange(value, emitDateGrain);
+      if (range) {
+        onSelectDataPoint({ field, value, dateRange: range, dateGrain: emitDateGrain });
+        return;
+      }
+    }
     onSelectDataPoint({ field, value });
   };
   const handleCategoricalChartClick = (event: any) => {

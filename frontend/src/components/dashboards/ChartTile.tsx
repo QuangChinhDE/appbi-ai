@@ -780,6 +780,14 @@ function ChartTileBase({
     if (!highlightFilter) return null;
     if (isHighlightSource) {
       const field = highlightFilter.field;
+      // Date bucket (between [start,end]): match rows whose day falls in range.
+      if (highlightFilter.operator === 'between' && Array.isArray(highlightFilter.value)) {
+        const [start, end] = (highlightFilter.value as any[]).map((v) => String(v).slice(0, 10));
+        return filteredData.filter((r) => {
+          const day = String(r?.[field] ?? '').slice(0, 10);
+          return day && (!start || day >= start) && (!end || day <= end);
+        });
+      }
       const target = String(highlightFilter.value);
       return filteredData.filter((r) => String(r?.[field]) === target);
     }
@@ -787,7 +795,7 @@ function ChartTileBase({
     return overlayChartData?.data ?? null;
   }, [highlightFilter, isHighlightSource, highlightServerEntries, filteredData, overlayChartData]);
 
-  const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown } | null) => {
+  const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown; dateRange?: [string, string]; dateGrain?: string } | null) => {
     if (!onSelectCrossFilter) return;
     if (!selection || selection.value === undefined || selection.value === null || selection.value === '') {
       onSelectCrossFilter(null);
@@ -797,6 +805,25 @@ function ChartTileBase({
     const semanticField = resolveChartSemanticField(chartSemanticBinding, selection.field);
     if (!semanticField || chartSemanticBinding?.datasetId == null) {
       onSelectCrossFilter(null);
+      return;
+    }
+
+    // Time-bucketed click (Year/Quarter/Month/Week): the value is the bucket
+    // START. Equality would match nothing (raw rows fall mid-bucket), so bound
+    // the whole bucket with a `between` date range. Drives source-dim AND the
+    // cross-filter/highlight on every target.
+    if (selection.dateRange) {
+      onSelectCrossFilter({
+        id: `cross-${chartId}-${selection.field}-${selection.dateRange[0]}-${selection.dateRange[1]}`,
+        field: selection.field,
+        fieldKey: semanticField,
+        semanticField,
+        datasetId: chartSemanticBinding.datasetId,
+        type: 'date',
+        operator: 'between',
+        value: selection.dateRange,
+        label: selection.field,
+      });
       return;
     }
 
