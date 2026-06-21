@@ -1021,6 +1021,9 @@ export default function EmbedDashboardPage() {
                             }}
                             onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
                             isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                            highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+                            isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                            highlightData={null}
                           />
                         </ChartErrorBoundary>
                       </div>

@@ -2542,6 +2542,7 @@ function ExploreChartInner({
         preAggregated={preAggregated}
         onStyleConfigChange={onStyleConfigChange}
         onSelectDataPoint={onSelectDataPoint}
+        highlightData={highlightData}
         labelMap={labelMap}
         formatMap={effectiveColumnFormats}
       />

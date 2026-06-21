@@ -7,6 +7,7 @@ import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
 import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
+import { buildExploreChartModel } from './chartDataAdapter';
 
 type ChartRow = Record<string, unknown>;
 
@@ -90,7 +91,11 @@ interface AdvancedExploreChartProps {
   havingFilters?: BaseFilter[];
   preAggregated?: boolean;
   onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
-  onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  onSelectDataPoint?: (selection: { field: string; value: unknown; dateRange?: [string, string]; dateGrain?: string } | null) => void;
+  /** Cross-highlight (PBI-parity): the P-filtered subset of `data` (same row
+   *  shape). When set, this chart (the selection SOURCE) dims its non-selected
+   *  marks. null ⇒ no highlight. */
+  highlightData?: Record<string, any>[] | null;
   /** Phase-15.13: same semantic label map used by ExploreChart; forwarded to
    *  TableVisualization when rendering MATRIX so headers humanise. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
@@ -416,12 +421,14 @@ function DonutOrPolarChart({
   style,
   palette,
   onSelect,
+  highlightNames,
 }: {
   type: string;
   items: NameValue[];
   style: ChartStyleConfig;
   palette: string[];
   onSelect?: (name: string) => void;
+  highlightNames?: Set<string> | null;
 }) {
   const { t } = useI18n();
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0);
@@ -472,7 +479,7 @@ function DonutOrPolarChart({
               const showLabelForSlice = labelsEnabled ? sharePct >= 0.03 && index < 10 : index < 10;
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-                  <path d={path} fill={sliceColor} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
+                  <path d={path} fill={sliceColor} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
                   {showLabelForSlice && (
                     <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>{labelText}</text>
                   )}
@@ -576,7 +583,7 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
   );
 }
 
-function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
+function FunnelChartSvg({ items, style, palette, onSelect, highlightNames }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void; highlightNames?: Set<string> | null }) {
   const { t } = useI18n();
   if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noFunnelStages')} />;
   const max = Math.max(...items.map((item) => item.value), 1);
@@ -614,7 +621,7 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
                 : item.name.slice(0, 28);
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-                  <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.9} />
+                  <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.9} />
                   <text x={cx} y={y + h / 2 + 4} fontSize={fontSize} textAnchor="middle" fill={fontColor}>{labelText}</text>
                   <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
                 </g>
@@ -719,7 +726,7 @@ function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: n
   );
 }
 
-function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
+function TreemapChart({ items, style, palette, onSelect, highlightNames }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void; highlightNames?: Set<string> | null }) {
   const { t } = useI18n();
   if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCategories')} />;
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0) || 1;
@@ -768,7 +775,7 @@ function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[];
               const showVal = labelsEnabled && w >= 50 && h >= 38;
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-                  <rect x={x} y={y} width={w} height={h} rx={6} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.88} />
+                  <rect x={x} y={y} width={w} height={h} rx={6} fill={resolveSliceColor(style, palette, item.name, index)} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.88} />
                   {showName && <text x={x + 8} y={y + 18} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{item.name.slice(0, 22)}</text>}
                   {showVal && <text x={x + 8} y={y + 34} fontSize={valueFontSize} fill={fontColor}>{valueLabel}</text>}
                   <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
@@ -1512,6 +1519,7 @@ export function AdvancedExploreChart({
   preAggregated = false,
   onStyleConfigChange,
   onSelectDataPoint,
+  highlightData,
   labelMap,
   formatMap,
 }: AdvancedExploreChartProps) {
@@ -1558,6 +1566,24 @@ export function AdvancedExploreChart({
     return Number.isFinite(staticTarget) && staticTarget > 0 ? staticTarget : 0;
   }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue]);
 
+  // Cross-highlight (source-dim): names present in the P-filtered subset stay
+  // solid; the rest dim. null ⇒ no highlight (render unchanged).
+  const HIGHLIGHT_DIM = 0.25;
+  const highlightNames = useMemo<Set<string> | null>(() => {
+    if (highlightData == null) return null;
+    const grouped = groupByMetric(highlightData, dimension, primaryMetric, preAggregated);
+    return new Set(grouped.map((g) => String(g.name)));
+  }, [highlightData, dimension, primaryMetric, preAggregated]);
+  // For MATRIX (a pivot table): dim rows whose dimension cells aren't in the
+  // P subset. Key by all string (dimension) cells — same on both sides.
+  const matrixRowDimKey = (row: Record<string, any>) =>
+    Object.keys(row).filter((k) => typeof row[k] === 'string').sort().map((k) => `${k}=${row[k]}`).join('|');
+  const matrixHighlightKeys = useMemo<Set<string> | null>(() => {
+    if (highlightData == null) return null;
+    const hm = buildExploreChartModel({ type: 'MATRIX', data: highlightData, roleConfig, havingFilters: havingFilters ?? [], preAggregated });
+    return new Set((hm.tableData ?? []).map(matrixRowDimKey));
+  }, [highlightData, roleConfig, havingFilters, preAggregated]);
+
   const emitDimension = (value: unknown) => {
     if (dimension) onSelectDataPoint?.({ field: dimension, value });
   };
@@ -1592,6 +1618,10 @@ export function AdvancedExploreChart({
           currencySymbol={style.currencySymbol}
           columnLabels={labelMap}
           columnFormats={formatMap}
+          highlightRowKeys={matrixHighlightKeys}
+          rowDimKey={matrixRowDimKey}
+          enableDrilldown={Boolean(onSelectDataPoint && dimension)}
+          onRowClick={onSelectDataPoint && dimension ? (row) => emitDimension(row?.[dimension]) : undefined}
         />
       </ChartFrame>
     );
@@ -1600,17 +1630,17 @@ export function AdvancedExploreChart({
   return (
     <ChartFrame title={title} titleFontSize={titleFontSize}>
       {type === 'DONUT' || type === 'POLAR_AREA' ? (
-        <DonutOrPolarChart type={type} items={items} style={style} palette={palette} onSelect={emitDimension} />
+        <DonutOrPolarChart type={type} items={items} style={style} palette={palette} onSelect={emitDimension} highlightNames={highlightNames} />
       ) : type === 'RADAR' ? (
         <RadarChartSvg rows={data} metrics={roleConfig.metrics} field={dimension} palette={palette} style={style} preAggregated={preAggregated} />
       ) : type === 'FUNNEL' ? (
-        <FunnelChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
+        <FunnelChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} highlightNames={highlightNames} />
       ) : type === 'GAUGE' ? (
         <GaugeChartSvg value={totalValue} target={targetValue} style={style} palette={palette} seriesKey={primaryMetric ? metricKey(primaryMetric) : undefined} />
       ) : type === 'BULLET' ? (
         <BulletChartSvg value={totalValue} target={targetValue} style={style} palette={palette} seriesKey={primaryMetric ? metricKey(primaryMetric) : undefined} />
       ) : type === 'TREEMAP' ? (
-        <TreemapChart items={items} style={style} palette={palette} onSelect={emitDimension} />
+        <TreemapChart items={items} style={style} palette={palette} onSelect={emitDimension} highlightNames={highlightNames} />
       ) : type === 'WATERFALL' ? (
         <WaterfallChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
