@@ -7,6 +7,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Hash, Settings2, X, Trash2, Eye } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ===================== Types =====================
 
@@ -259,6 +260,7 @@ interface FormatPanelProps {
 }
 
 function FormatPanel({ column, format, values, onApply, onClose, onReset, onDelete, onEdit }: FormatPanelProps) {
+  const { t } = useI18n();
   // Local draft — changes staged here, only committed on "Áp dụng"
   // For date-type columns, pre-select 'date' formatType so the dropdown + date rendering work immediately
   const initDraft = (f: ColFormat): ColFormat => {
@@ -308,7 +310,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
       await onApply(draft);
       onClose();
     } catch (error: any) {
-      setSaveError(error?.message ?? 'Không thể lưu định dạng cột');
+      setSaveError(error?.message ?? t('datasets.formatPanel.saveError'));
     } finally {
       setIsSaving(false);
     }
@@ -322,7 +324,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
       await onReset();
       onClose();
     } catch (error: any) {
-      setSaveError(error?.message ?? 'Không thể đặt lại định dạng cột');
+      setSaveError(error?.message ?? t('datasets.formatPanel.resetError'));
     } finally {
       setIsSaving(false);
     }
@@ -341,7 +343,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b bg-surface-2 rounded-t-lg">
         <span className="font-semibold text-text-secondary text-[11px] truncate max-w-[180px]">
-          ⚙ Định dạng: {column.name}
+          ⚙ {t('datasets.formatPanel.headerLabel')} {column.name}
         </span>
         <button onClick={onClose} className="text-text-quaternary hover:text-text-secondary flex-shrink-0">
           <X className="w-3.5 h-3.5" />
@@ -351,19 +353,19 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
       <div className="p-3 space-y-3">
         {/* Format type — all types always visible so user can override any column */}
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Định dạng kiểu cột</label>
+          <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.formatTypeLabel')}</label>
           <select
             value={draft.formatType}
             onChange={(e) => upd({ formatType: e.target.value as FormatType })}
             className="w-full border border-[rgb(var(--border-strong))] rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
           >
-            <option value="default">Mặc định (auto)</option>
-            <option value="number">Số</option>
-            <option value="currency">Tiền tệ</option>
-            <option value="percentage">Phần trăm (%)</option>
-            <option value="date">Ngày tháng (DATE)</option>
-            <option value="datetime">Ngày giờ (DATETIME)</option>
-            <option value="text">Văn bản</option>
+            <option value="default">{t('datasets.formatPanel.typeDefault')}</option>
+            <option value="number">{t('datasets.formatPanel.typeNumber')}</option>
+            <option value="currency">{t('datasets.formatPanel.typeCurrency')}</option>
+            <option value="percentage">{t('datasets.formatPanel.typePercentage')}</option>
+            <option value="date">{t('datasets.formatPanel.typeDate')}</option>
+            <option value="datetime">{t('datasets.formatPanel.typeDatetime')}</option>
+            <option value="text">{t('datasets.formatPanel.typeText')}</option>
           </select>
         </div>
 
@@ -372,7 +374,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
           <>
             {draft.formatType === 'currency' && (
               <div>
-                <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Ký hiệu tiền tệ</label>
+                <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.currencySymbolLabel')}</label>
                 <select
                   value={draft.currencySymbol}
                   onChange={(e) => upd({ currencySymbol: e.target.value })}
@@ -390,22 +392,22 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
 
             {draft.formatType !== 'percentage' && (
               <div>
-                <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Đơn vị rút gọn</label>
+                <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.displayUnitLabel')}</label>
                 <select
                   value={draft.displayUnit}
                   onChange={(e) => upd({ displayUnit: e.target.value as DisplayUnit })}
                   className="w-full border border-[rgb(var(--border-strong))] rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                 >
-                  <option value="none">Không rút gọn</option>
-                  <option value="K">K — nghìn</option>
-                  <option value="M">M — triệu</option>
-                  <option value="B">B — tỷ</option>
+                  <option value="none">{t('datasets.formatPanel.unitNone')}</option>
+                  <option value="K">{t('datasets.formatPanel.unitK')}</option>
+                  <option value="M">{t('datasets.formatPanel.unitM')}</option>
+                  <option value="B">{t('datasets.formatPanel.unitB')}</option>
                 </select>
               </div>
             )}
 
             <div>
-              <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Số chữ số thập phân</label>
+              <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.decimalPlacesLabel')}</label>
               <div className="flex items-center gap-2">
                 <input
                   type="range"
@@ -427,7 +429,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
                   onChange={(e) => upd({ thousandsSeparator: e.target.checked })}
                   className="w-3.5 h-3.5 rounded text-brand accent-blue-600"
                 />
-                <span className="text-text-secondary">Dấu phân cách nghìn (1,000)</span>
+                <span className="text-text-secondary">{t('datasets.formatPanel.thousandsSeparator')}</span>
               </label>
             )}
           </>
@@ -436,7 +438,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         {/* Date / Datetime */}
         {draftIsDate && (
           <div>
-            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Định dạng ngày{draftIsDatetime ? ' giờ' : ''}</label>
+            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{draftIsDatetime ? t('datasets.formatPanel.datetimeFormatLabel') : t('datasets.formatPanel.dateFormatLabel')}</label>
             <select
               value={draft.dateFormat}
               onChange={(e) => upd({ dateFormat: e.target.value as DateFmt })}
@@ -468,7 +470,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
 
         {/* Text case */}
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Định dạng chữ</label>
+          <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.textCaseLabel')}</label>
           <div className="grid grid-cols-4 gap-1">
             {(['none', 'upper', 'lower', 'title'] as TextCase[]).map((tc) => (
               <button
@@ -489,22 +491,22 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         {/* Prefix / Suffix */}
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Tiền tố</label>
+            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.prefixLabel')}</label>
             <input
               type="text"
               value={draft.prefix}
               onChange={(e) => upd({ prefix: e.target.value })}
-              placeholder="vd: ~"
+              placeholder={t('datasets.formatPanel.prefixPlaceholder')}
               className="w-full border border-[rgb(var(--border-strong))] rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             />
           </div>
           <div>
-            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">Hậu tố</label>
+            <label className="block text-[10px] text-text-tertiary mb-1 font-semibold uppercase tracking-wide">{t('datasets.formatPanel.suffixLabel')}</label>
             <input
               type="text"
               value={draft.suffix}
               onChange={(e) => upd({ suffix: e.target.value })}
-              placeholder="vd: pts"
+              placeholder={t('datasets.formatPanel.suffixPlaceholder')}
               className="w-full border border-[rgb(var(--border-strong))] rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             />
           </div>
@@ -513,12 +515,12 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         {/* Validation warning */}
         {isDirty && !validation.valid && (
           <div className="rounded border border-warning/40 bg-warning/10 p-2 text-[10px] text-warning space-y-0.5">
-            <p className="font-semibold">⚠️ {validation.invalidCount}/{validation.total} giá trị không hợp lệ</p>
-            <p className="text-warning">Cột này chứa dữ liệu không khớp kiểu <strong>{draft.formatType}</strong>.
-              Cần sửa dữ liệu trước khi áp dụng.</p>
+            <p className="font-semibold">⚠️ {t('datasets.formatPanel.invalidCount', { count: validation.invalidCount, total: validation.total })}</p>
+            <p className="text-warning">{t('datasets.formatPanel.invalidTypePrefix')} <strong>{draft.formatType}</strong>.
+              {t('datasets.formatPanel.invalidTypeSuffix')}</p>
             {validation.examples.length > 0 && (
               <p className="font-mono text-[9px] text-warning break-all">
-                VD: {validation.examples.map((e) => `"${e}"`).join(', ')}
+                {t('datasets.formatPanel.examplePrefix')} {validation.examples.map((e) => `"${e}"`).join(', ')}
               </p>
             )}
           </div>
@@ -542,7 +544,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
               : 'bg-warning/15 text-warning cursor-not-allowed'
           }`}
         >
-          {!isDirty ? 'Chưa có thay đổi' : !validation.valid ? 'Dữ liệu chưa hợp lệ' : 'Áp dụng & Lưu'}
+          {!isDirty ? t('datasets.formatPanel.noChanges') : !validation.valid ? t('datasets.formatPanel.dataInvalid') : t('datasets.formatPanel.applyAndSave')}
         </button>
 
         {/* Reset */}
@@ -551,7 +553,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
           disabled={isSaving}
           className="w-full text-center text-[10px] text-text-quaternary hover:text-danger py-1.5 border border-dashed border-[rgb(var(--border-strong))] rounded hover:border-danger/40 transition-colors"
         >
-          Đặt lại mặc định
+          {t('datasets.formatPanel.resetDefault')}
         </button>
 
         {/* Delete computed column */}
@@ -561,7 +563,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
             className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-semibold text-brand border border-brand/30 rounded hover:bg-brand/15 hover:border-brand/50 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-            Sửa công thức
+            {t('datasets.formatPanel.editFormula')}
           </button>
         )}
         {onDelete && (
@@ -570,7 +572,7 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
             className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-semibold text-danger border border-danger/30 rounded hover:bg-danger/10 hover:border-danger/30 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Xóa cột này
+            {t('datasets.formatPanel.deleteColumn')}
           </button>
         )}
       </div>
@@ -597,6 +599,7 @@ export function DatasetTableGrid({
   datasetId,
   tableId,
 }: DatasetTableGridProps) {
+  const { t } = useI18n();
   const computedColSet = useMemo(() => new Set(computedColumns ?? []), [computedColumns]);
   const [columnFormats, setColumnFormats] = useState<Record<string, ColFormat>>({});
   const [summaryCol, setSummaryCol] = useState<string | null>(null);
@@ -731,11 +734,11 @@ export function DatasetTableGrid({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h3 className="text-lg font-medium text-text-primary mb-1">Không thể tải dữ liệu</h3>
+          <h3 className="text-lg font-medium text-text-primary mb-1">{t('datasets.grid.loadError')}</h3>
           <p className="text-sm text-text-tertiary mb-4">{error}</p>
           {onRetry && (
             <button onClick={onRetry} className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover transition-colors">
-              Thử lại
+              {t('datasets.grid.retry')}
             </button>
           )}
         </div>
@@ -753,8 +756,8 @@ export function DatasetTableGrid({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
           </div>
-          <h3 className="text-lg font-medium text-text-primary mb-1">No data</h3>
-          <p className="text-sm text-text-tertiary">This table has no rows</p>
+          <h3 className="text-lg font-medium text-text-primary mb-1">{t('datasets.grid.noData')}</h3>
+          <p className="text-sm text-text-tertiary">{t('datasets.grid.noRows')}</p>
         </div>
       </div>
     );
@@ -790,7 +793,7 @@ export function DatasetTableGrid({
                         ? 'bg-warning/10 text-warning'
                         : 'bg-surface-2 text-text-secondary'
                     }`}
-                    title={`${column.name} (${column.type})${isComputed ? ' — cột công thức' : ''}`}
+                    title={`${column.name} (${column.type})${isComputed ? ` — ${t('datasets.grid.computedColumn')}` : ''}`}
                   >
                     <div className="flex items-center justify-between gap-1">
                       {/* Column name + type badge */}
@@ -803,7 +806,7 @@ export function DatasetTableGrid({
                           {effectiveType}
                         </span>
                         {hasCustomFmt && (
-                          <span className="text-brand text-[8px] leading-none shrink-0" title="Đã tuỳ chỉnh định dạng">●</span>
+                          <span className="text-brand text-[8px] leading-none shrink-0" title={t('datasets.grid.customFormatBadge')}>●</span>
                         )}
                       </div>
 
@@ -820,7 +823,7 @@ export function DatasetTableGrid({
                                 ? 'opacity-100 text-brand bg-brand/15'
                                 : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
                             }`}
-                            title="Xem tổng quan dữ liệu"
+                            title={t('datasets.grid.viewSummary')}
                           >
                             <Eye className="w-3.5 h-3.5" />
                           </button>
@@ -838,7 +841,7 @@ export function DatasetTableGrid({
                               ? 'opacity-100 text-brand hover:bg-brand/15'
                               : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
                           }`}
-                          title="Định dạng cột"
+                          title={t('datasets.grid.formatColumn')}
                         >
                           <Settings2 className="w-3.5 h-3.5" />
                         </button>}
@@ -884,7 +887,7 @@ export function DatasetTableGrid({
                   <button
                     onClick={onAddColumn}
                     className="w-8 h-8 flex items-center justify-center text-text-quaternary hover:text-brand hover:bg-brand/15 rounded transition-colors"
-                    title="Add column"
+                    title={t('datasets.grid.addColumn')}
                   >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -924,12 +927,12 @@ export function DatasetTableGrid({
 
       <div className="border-t bg-surface-2 px-4 py-2 flex items-center gap-4">
         <p className="text-xs text-text-tertiary">
-          Showing {rows.length} {rows.length === 1 ? 'row' : 'rows'}
+          {t('datasets.grid.showingRows', { count: rows.length })}
         </p>
         {computedColSet.size > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-warning">
             <span className="inline-block w-2 h-2 rounded-full bg-warning/60" />
-            {computedColSet.size} cột công thức
+            {t('datasets.grid.computedColumnsCount', { count: computedColSet.size })}
           </span>
         )}
         {Object.keys(columnFormats).length > 0 && (
@@ -937,7 +940,7 @@ export function DatasetTableGrid({
             onClick={() => setColumnFormats({})}
             className="text-xs text-text-quaternary hover:text-danger transition-colors"
           >
-            Xoá tất cả định dạng ({Object.keys(columnFormats).length} cột)
+            {t('datasets.grid.clearAllFormats', { count: Object.keys(columnFormats).length })}
           </button>
         )}
       </div>

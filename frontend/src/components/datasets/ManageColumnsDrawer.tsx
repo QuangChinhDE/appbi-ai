@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, Trash2, Cpu } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 
 interface ManageColumnsDrawerProps {
@@ -26,6 +27,7 @@ export function ManageColumnsDrawer({
   onClose,
   onSave,
 }: ManageColumnsDrawerProps) {
+  const { t } = useI18n();
   const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set());
   const [deletedComputed, setDeletedComputed] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
@@ -135,7 +137,7 @@ export function ManageColumnsDrawer({
       onClose();
     } catch (error) {
       console.error('Failed to save column selection:', error);
-      toast.error('Failed to save column selection.');
+      toast.error(t('datasets.manageColumns.saveFailed'));
     } finally {
       setIsSaving(false);
     }
@@ -156,9 +158,9 @@ export function ManageColumnsDrawer({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">Manage Columns</h2>
+            <h2 className="text-lg font-semibold text-text-primary">{t('datasets.manageColumns.title')}</h2>
             <p className="text-sm text-text-tertiary mt-1">
-              {selectedColumns.size} of {fullSourceColumns.length} columns selected
+              {t('datasets.manageColumns.selectedCount', { selected: selectedColumns.size, total: fullSourceColumns.length })}
             </p>
           </div>
           <button
@@ -177,7 +179,7 @@ export function ManageColumnsDrawer({
             className="text-sm text-brand hover:text-brand"
             disabled={isSaving}
           >
-            Select All
+            {t('datasets.manageColumns.selectAll')}
           </button>
           <span className="text-text-quaternary">|</span>
           <button
@@ -185,12 +187,12 @@ export function ManageColumnsDrawer({
             className="text-sm text-brand hover:text-brand"
             disabled={isSaving}
           >
-            Deselect All
+            {t('datasets.manageColumns.deselectAll')}
           </button>
         </div>
         {deletedComputed.size > 0 && (
           <div className="border-b border-danger/20 bg-danger/10 px-6 py-2 text-xs text-danger">
-            ⚠️ {deletedComputed.size} cột công thức sẽ bị xóa khi lưu
+            ⚠️ {t('datasets.manageColumns.pendingDeleteWarning', { count: deletedComputed.size })}
           </div>
         )}
 
@@ -233,22 +235,22 @@ export function ManageColumnsDrawer({
                   }`}>
                     {column}
                   </span>
-                  <span className="text-[10px] text-brand font-medium shrink-0">công thức</span>
+                  <span className="text-[10px] text-brand font-medium shrink-0">{t('datasets.manageColumns.formulaBadge')}</span>
                   {isPendingDelete ? (
                     <button
                       onClick={() => handleUndoDelete(column)}
                       disabled={isSaving}
                       className="text-xs text-text-tertiary hover:text-text-primary underline shrink-0"
-                      title="Hoàn tác xóa"
+                      title={t('datasets.manageColumns.undoDeleteTitle')}
                     >
-                      Hoàn tác
+                      {t('datasets.manageColumns.undo')}
                     </button>
                   ) : (
                     <button
                       onClick={() => handleDeleteComputed(column)}
                       disabled={isSaving}
                       className="p-1 text-danger hover:text-danger hover:bg-danger/10 rounded transition-colors shrink-0"
-                      title="Xóa cột công thức"
+                      title={t('datasets.manageColumns.deleteFormulaTitle')}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -266,7 +268,7 @@ export function ManageColumnsDrawer({
             disabled={isSaving}
             className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={handleSave}
@@ -274,7 +276,7 @@ export function ManageColumnsDrawer({
             className="px-4 py-2 bg-brand text-white text-sm rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-            Apply
+            {t('datasets.manageColumns.apply')}
           </button>
         </div>
       </div>

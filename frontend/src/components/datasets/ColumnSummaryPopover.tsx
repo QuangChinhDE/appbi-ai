@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface TopValue {
   value: string | null;
@@ -54,6 +55,7 @@ const isTypeKnown = (columnType?: string): boolean => {
 };
 
 export function ColumnSummaryPopover({ datasetId, tableId, columnName, columnType, onClose }: Props) {
+  const { t } = useI18n();
   const [data, setData] = useState<ColumnSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,7 +74,7 @@ export function ColumnSummaryPopover({ datasetId, tableId, columnName, columnTyp
       })
       .catch((err) => {
         if (!alive) return;
-        setError(err?.message || 'Không tải được summary');
+        setError(err?.message || t('datasets.columnSummary.loadError'));
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -105,7 +107,7 @@ export function ColumnSummaryPopover({ datasetId, tableId, columnName, columnTyp
             {columnName}
           </span>
           <span className="text-[11px]" style={{ color: 'rgb(var(--text-tertiary))' }}>
-            {columnType || 'Chưa xác định kiểu'}
+            {columnType || t('datasets.columnSummary.unknownType')}
           </span>
         </div>
         <button
@@ -120,7 +122,7 @@ export function ColumnSummaryPopover({ datasetId, tableId, columnName, columnTyp
       <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
         {loading && (
           <div className="text-[12px]" style={{ color: 'rgb(var(--text-tertiary))' }}>
-            Đang tổng hợp dữ liệu cột…
+            {t('datasets.columnSummary.aggregating')}
           </div>
         )}
         {error && !loading && (
@@ -135,6 +137,7 @@ export function ColumnSummaryPopover({ datasetId, tableId, columnName, columnTyp
 }
 
 function Body({ data, typeKnown }: { data: ColumnSummary; typeKnown: boolean }) {
+  const { t } = useI18n();
   const { detected_kind, total_rows, null_count } = data;
 
   if (total_rows === 0 || detected_kind === 'empty') {
@@ -142,7 +145,7 @@ function Body({ data, typeKnown }: { data: ColumnSummary; typeKnown: boolean }) 
       <>
         <QualityBar valid={0} empty={0} total={0} />
         <div className="text-[12px] italic" style={{ color: 'rgb(var(--text-tertiary))' }}>
-          Cột không có dữ liệu.
+          {t('datasets.columnSummary.noData')}
         </div>
       </>
     );
@@ -171,6 +174,7 @@ function Body({ data, typeKnown }: { data: ColumnSummary; typeKnown: boolean }) 
 }
 
 function QualityBar({ valid, empty, total }: { valid: number; empty: number; total: number }) {
+  const { t } = useI18n();
   const validPct = total > 0 ? (valid / total) * 100 : 0;
   const emptyPct = total > 0 ? (empty / total) * 100 : 100;
 
@@ -183,13 +187,13 @@ function QualityBar({ valid, empty, total }: { valid: number; empty: number; tot
         {validPct > 0 && (
           <div
             style={{ width: `${validPct}%`, background: 'rgb(var(--success))' }}
-            title={`Valid: ${valid.toLocaleString('en-US')} (${validPct.toFixed(1)}%)`}
+            title={`${t('datasets.columnSummary.valid')}: ${valid.toLocaleString('en-US')} (${validPct.toFixed(1)}%)`}
           />
         )}
         {emptyPct > 0 && (
           <div
             style={{ width: `${emptyPct}%`, background: 'rgb(var(--text-quaternary) / 0.4)' }}
-            title={`Empty: ${empty.toLocaleString('en-US')} (${emptyPct.toFixed(1)}%)`}
+            title={`${t('datasets.columnSummary.empty')}: ${empty.toLocaleString('en-US')} (${emptyPct.toFixed(1)}%)`}
           />
         )}
       </div>
@@ -198,10 +202,10 @@ function QualityBar({ valid, empty, total }: { valid: number; empty: number; tot
         style={{ color: 'rgb(var(--text-tertiary))' }}
       >
         <span>
-          <span style={{ color: 'rgb(var(--success))' }}>●</span> Valid {validPct.toFixed(1)}%
+          <span style={{ color: 'rgb(var(--success))' }}>●</span> {t('datasets.columnSummary.valid')} {validPct.toFixed(1)}%
         </span>
         <span>
-          <span style={{ color: 'rgb(var(--text-quaternary))' }}>●</span> Empty {emptyPct.toFixed(1)}%
+          <span style={{ color: 'rgb(var(--text-quaternary))' }}>●</span> {t('datasets.columnSummary.empty')} {emptyPct.toFixed(1)}%
         </span>
       </div>
     </div>
@@ -209,26 +213,28 @@ function QualityBar({ valid, empty, total }: { valid: number; empty: number; tot
 }
 
 function NumericBody({ data }: { data: ColumnSummary }) {
+  const { t } = useI18n();
   return (
     <>
       {data.histogram.length > 0 && <Histogram bins={data.histogram} />}
       <div className="grid grid-cols-3 gap-2">
-        <Stat label="Min" value={formatNumber(data.min_value)} />
-        <Stat label="Avg" value={formatNumber(data.avg_value)} />
-        <Stat label="Max" value={formatNumber(data.max_value)} />
+        <Stat label={t('datasets.columnSummary.min')} value={formatNumber(data.min_value)} />
+        <Stat label={t('datasets.columnSummary.avg')} value={formatNumber(data.avg_value)} />
+        <Stat label={t('datasets.columnSummary.max')} value={formatNumber(data.max_value)} />
       </div>
-      <Row label="Distinct" value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
+      <Row label={t('datasets.columnSummary.distinct')} value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
     </>
   );
 }
 
 function DateBody({ data }: { data: ColumnSummary }) {
+  const { t } = useI18n();
   return (
     <>
       {data.top_values.length > 0 && (
         <TopValuesList values={data.top_values} totalRows={data.total_rows - data.null_count} />
       )}
-      <Row label="Distinct" value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
+      <Row label={t('datasets.columnSummary.distinct')} value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
     </>
   );
 }
@@ -274,6 +280,7 @@ function BooleanBody({ data }: { data: ColumnSummary }) {
 }
 
 function CategoricalBody({ data, unknownType }: { data: ColumnSummary; unknownType: boolean }) {
+  const { t } = useI18n();
   const totalNonNull = data.total_rows - data.null_count;
   const topValue = data.top_values[0];
   return (
@@ -282,21 +289,21 @@ function CategoricalBody({ data, unknownType }: { data: ColumnSummary; unknownTy
         <TopValuesList values={data.top_values} totalRows={totalNonNull} />
       ) : (
         <div className="text-[12px] italic" style={{ color: 'rgb(var(--text-tertiary))' }}>
-          Không có giá trị để hiển thị.
+          {t('datasets.columnSummary.noValues')}
         </div>
       )}
       <div className="space-y-1.5 pt-1">
-        <Row label="Distinct" value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
+        <Row label={t('datasets.columnSummary.distinct')} value={data.distinct_count?.toLocaleString('en-US') ?? '—'} />
         {topValue && (
           <Row
-            label="Most common"
-            value={`${topValue.value === null || topValue.value === '' ? '(empty)' : topValue.value} · ${topValue.count.toLocaleString('en-US')}`}
+            label={t('datasets.columnSummary.mostCommon')}
+            value={`${topValue.value === null || topValue.value === '' ? t('datasets.columnSummary.emptyValue') : topValue.value} · ${topValue.count.toLocaleString('en-US')}`}
           />
         )}
         {unknownType && (data.min_value !== null || data.max_value !== null) && (
           <>
-            <Row label="Min" value={data.min_value !== null ? String(data.min_value) : '—'} />
-            <Row label="Max" value={data.max_value !== null ? String(data.max_value) : '—'} />
+            <Row label={t('datasets.columnSummary.min')} value={data.min_value !== null ? String(data.min_value) : '—'} />
+            <Row label={t('datasets.columnSummary.max')} value={data.max_value !== null ? String(data.max_value) : '—'} />
           </>
         )}
       </div>
@@ -349,6 +356,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function Histogram({ bins }: { bins: HistogramBin[] }) {
+  const { t } = useI18n();
   const max = Math.max(...bins.map((b) => b.count), 1);
   return (
     <div>
@@ -356,7 +364,7 @@ function Histogram({ bins }: { bins: HistogramBin[] }) {
         className="text-[10px] mb-1 uppercase tracking-wider"
         style={{ color: 'rgb(var(--text-tertiary))' }}
       >
-        Phân bố
+        {t('datasets.columnSummary.distribution')}
       </div>
       <div className="flex items-end gap-[2px] h-16">
         {bins.map((b, i) => {
@@ -387,13 +395,14 @@ function Histogram({ bins }: { bins: HistogramBin[] }) {
 }
 
 function TopValuesList({ values, totalRows }: { values: TopValue[]; totalRows: number }) {
+  const { t } = useI18n();
   return (
     <div>
       <div
         className="text-[10px] mb-1 uppercase tracking-wider"
         style={{ color: 'rgb(var(--text-tertiary))' }}
       >
-        Top giá trị
+        {t('datasets.columnSummary.topValues')}
       </div>
       <div className="space-y-1">
         {values.map((v, i) => {
@@ -413,7 +422,7 @@ function TopValuesList({ values, totalRows }: { values: TopValue[]; totalRows: n
                   style={{ color: 'rgb(var(--text-secondary))' }}
                 >
                   {v.value === null || v.value === '' ? (
-                    <em style={{ color: 'rgb(var(--text-tertiary))' }}>(empty)</em>
+                    <em style={{ color: 'rgb(var(--text-tertiary))' }}>{t('datasets.columnSummary.emptyValue')}</em>
                   ) : (
                     v.value
                   )}

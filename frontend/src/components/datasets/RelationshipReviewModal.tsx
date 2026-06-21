@@ -39,6 +39,7 @@ import {
 
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
+import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
 import {
   type RelationshipSuggestion,
@@ -122,6 +123,7 @@ function formatReason(tag: string): string {
 }
 
 function ConfidencePill({ value }: { value?: number }) {
+  const { t } = useI18n();
   if (value == null) return null;
   const pct = Math.round(value * 100);
   const lowConfidence = value < CONFIDENCE_LOW_THRESHOLD;
@@ -132,14 +134,14 @@ function ConfidencePill({ value }: { value?: number }) {
       }`}
       title={
         lowConfidence
-          ? 'Low confidence — please double-check this relationship before applying'
-          : 'High confidence'
+          ? t('datasets.relationshipReview.lowConfidenceTooltip')
+          : t('datasets.relationshipReview.highConfidenceTooltip')
       }
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${lowConfidence ? 'bg-danger' : 'bg-success'}`}
       />
-      {pct}% match
+      {t('datasets.relationshipReview.percentMatch', { pct })}
     </span>
   );
 }
@@ -150,6 +152,7 @@ export default function RelationshipReviewModal({
   onClose,
   onApplied,
 }: Props) {
+  const { t } = useI18n();
   const [data, setData] = useState<RelationshipSuggestionsResponse | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rejected, setRejected] = useState<Set<string>>(new Set());
@@ -185,7 +188,7 @@ export default function RelationshipReviewModal({
       setSelected(recKeys);
       setRejected(new Set());
     } catch (err) {
-      toast.error('Failed to load relationship data.');
+      toast.error(t('datasets.relationshipReview.loadFailed'));
       console.error(err);
     }
   };
@@ -250,9 +253,9 @@ export default function RelationshipReviewModal({
           datasetId,
           selections: selectedSuggestions,
         });
-        toast.success(`Added ${result.added} relationship${result.added === 1 ? '' : 's'}.`);
+        toast.success(t('datasets.relationshipReview.addedToast', { count: result.added }));
         if (result.errors.length > 0) {
-          toast.error(`${result.errors.length} relationship(s) failed — see console.`);
+          toast.error(t('datasets.relationshipReview.applyPartialFailed', { count: result.errors.length }));
           console.warn('Apply errors:', result.errors);
         }
       }
@@ -265,7 +268,7 @@ export default function RelationshipReviewModal({
       onApplied();
       onClose();
     } catch (err) {
-      toast.error('Apply failed.');
+      toast.error(t('datasets.relationshipReview.applyFailed'));
       console.error(err);
     }
   };
@@ -273,10 +276,10 @@ export default function RelationshipReviewModal({
   const handleClearRejections = async () => {
     try {
       const result = await clearRejections.mutateAsync({ datasetId });
-      toast.success(`Cleared ${result.cleared} rejection${result.cleared === 1 ? '' : 's'}.`);
+      toast.success(t('datasets.relationshipReview.clearedToast', { count: result.cleared }));
       await runGenerate(deepScan);
     } catch (err) {
-      toast.error('Failed to reset rejections.');
+      toast.error(t('datasets.relationshipReview.resetRejectionsFailed'));
       console.error(err);
     }
   };
@@ -290,7 +293,7 @@ export default function RelationshipReviewModal({
     <Modal
       isOpen={open}
       onClose={onClose}
-      title="Detect relationships"
+      title={t('datasets.relationshipReview.title')}
       size="2xl"
       contentClassName="h-[85vh]"
       footer={
@@ -299,8 +302,10 @@ export default function RelationshipReviewModal({
             {data && (
               <>
                 <span>
-                  {selectedSuggestions.length} to add ·{' '}
-                  {rejectedSuggestions.length} to reject
+                  {t('datasets.relationshipReview.toAddToReject', {
+                    add: selectedSuggestions.length,
+                    reject: rejectedSuggestions.length,
+                  })}
                 </span>
                 {data.rejected_count > 0 && (
                   <button
@@ -309,14 +314,14 @@ export default function RelationshipReviewModal({
                     className="inline-flex items-center gap-1 text-info hover:underline"
                   >
                     <RotateCcw className="h-3 w-3" />
-                    Reset {data.rejected_count} rejection{data.rejected_count === 1 ? '' : 's'}
+                    {t('datasets.relationshipReview.resetRejections', { count: data.rejected_count })}
                   </button>
                 )}
               </>
             )}
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={isApplying}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -329,7 +334,7 @@ export default function RelationshipReviewModal({
               (selectedSuggestions.length === 0 && rejectedSuggestions.length === 0)
             }
           >
-            Apply
+            {t('datasets.relationshipReview.apply')}
           </Button>
         </>
       }
@@ -338,16 +343,21 @@ export default function RelationshipReviewModal({
         <div className="flex items-center justify-between rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="flex-1">
             <p className="text-caption font-medium text-text-primary">
-              How detection works
+              {t('datasets.relationshipReview.howItWorksTitle')}
             </p>
             <p className="text-caption text-text-tertiary">
-              Three steps run by default: <strong>DB foreign keys</strong>,{' '}
-              <strong>column-name match</strong> (e.g. <code className="font-mono">customer_id</code>{' '}
-              → table <code className="font-mono">customer</code>), and{' '}
-              <strong>same-name overlap probe</strong> (two tables sharing a
-              column name with matching values). Enable <strong>Deep scan</strong>{' '}
-              to additionally probe value overlap between differently-named
-              columns (slower).
+              {t('datasets.relationshipReview.howItWorksIntro')}{' '}
+              <strong>{t('datasets.relationshipReview.stepDbFk')}</strong>,{' '}
+              <strong>{t('datasets.relationshipReview.stepColumnMatch')}</strong>{' '}
+              {t('datasets.relationshipReview.stepColumnMatchEg')}{' '}
+              <code className="font-mono">customer_id</code>{' '}
+              {t('datasets.relationshipReview.stepColumnMatchArrowTable')}{' '}
+              <code className="font-mono">customer</code>),{' '}
+              {t('datasets.relationshipReview.stepAnd')}{' '}
+              <strong>{t('datasets.relationshipReview.stepSameName')}</strong>{' '}
+              {t('datasets.relationshipReview.stepSameNameDesc')}{' '}
+              <strong>{t('datasets.relationshipReview.deepScan')}</strong>{' '}
+              {t('datasets.relationshipReview.deepScanHelp')}
             </p>
           </div>
           <div className="flex items-center gap-2 ml-3">
@@ -359,7 +369,7 @@ export default function RelationshipReviewModal({
                 disabled={isLoading}
                 className="h-4 w-4"
               />
-              <span className="font-medium">Deep scan</span>
+              <span className="font-medium">{t('datasets.relationshipReview.deepScan')}</span>
             </label>
             <button
               type="button"
@@ -372,7 +382,7 @@ export default function RelationshipReviewModal({
               ) : (
                 <RotateCcw className="h-3.5 w-3.5" />
               )}
-              Re-scan
+              {t('datasets.relationshipReview.reScan')}
             </button>
           </div>
         </div>
@@ -382,8 +392,8 @@ export default function RelationshipReviewModal({
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             <span>
               {deepScan
-                ? 'Probing data values across tables… this may take 10–30 seconds.'
-                : 'Scanning foreign keys, column names, and same-name overlaps…'}
+                ? t('datasets.relationshipReview.reScanningDeep')
+                : t('datasets.relationshipReview.reScanningBasic')}
             </span>
           </div>
         )}
@@ -393,7 +403,7 @@ export default function RelationshipReviewModal({
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <div className="flex-1">
-                <p className="text-caption font-medium text-warning">Warnings</p>
+                <p className="text-caption font-medium text-warning">{t('datasets.relationshipReview.warnings')}</p>
                 <ul className="mt-1 space-y-1 text-caption text-text-secondary">
                   {warnings.map((w, idx) => (
                     <li key={idx}>{w.reason}</li>
@@ -407,13 +417,13 @@ export default function RelationshipReviewModal({
         {isFirstLoad ? (
           <DetectingPlaceholder deepScan={deepScan} />
         ) : !data ? (
-          <p className="text-center text-caption text-text-tertiary">No data.</p>
+          <p className="text-center text-caption text-text-tertiary">{t('datasets.relationshipReview.noData')}</p>
         ) : (
           <>
             <Section
-              title={`Already saved (${existing.length})`}
-              hint="Relationships already on the model — read-only here."
-              empty="No relationships saved yet."
+              title={t('datasets.relationshipReview.alreadySaved', { count: existing.length })}
+              hint={t('datasets.relationshipReview.alreadySavedHint')}
+              empty={t('datasets.relationshipReview.alreadySavedEmpty')}
             >
               {existing.map((s) => (
                 <RelationshipRow
@@ -426,8 +436,8 @@ export default function RelationshipReviewModal({
             </Section>
 
             <Section
-              title={`New suggestions (${recommended.length})`}
-              hint="Tick to add, or click × to reject (won't be suggested again)."
+              title={t('datasets.relationshipReview.newSuggestions', { count: recommended.length })}
+              hint={t('datasets.relationshipReview.newSuggestionsHint')}
               empty={
                 <EmptyRecommendationsHint
                   data={data}
@@ -458,8 +468,8 @@ export default function RelationshipReviewModal({
 
             {obsolete.length > 0 && (
               <Section
-                title={`Possibly stale (${obsolete.length})`}
-                hint="Saved joins whose columns or views no longer exist — review manually on the canvas."
+                title={t('datasets.relationshipReview.possiblyStale', { count: obsolete.length })}
+                hint={t('datasets.relationshipReview.possiblyStaleHint')}
               >
                 {obsolete.map((s) => (
                   <RelationshipRow
@@ -480,18 +490,19 @@ export default function RelationshipReviewModal({
 }
 
 function DetectingPlaceholder({ deepScan }: { deepScan: boolean }) {
+  const { t } = useI18n();
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-6">
       <div className="flex flex-col items-center gap-3 text-center">
         <Loader2 className="h-6 w-6 animate-spin text-brand" />
         <div>
           <p className="text-caption font-medium text-text-primary">
-            Detecting relationships…
+            {t('datasets.relationshipReview.detecting')}
           </p>
           <p className="mt-1 text-caption text-text-tertiary">
             {deepScan
-              ? 'Probing value overlap across every type-compatible column pair. This takes 10–30 seconds depending on the datasource.'
-              : 'Reading foreign-key constraints, matching column names, and probing same-name columns across tables.'}
+              ? t('datasets.relationshipReview.detectingDeep')
+              : t('datasets.relationshipReview.detectingBasic')}
           </p>
         </div>
         <div className="mt-2 w-full max-w-md space-y-1.5">
@@ -546,13 +557,14 @@ function EmptyRecommendationsHint({
   deepScan: boolean;
   onToggleDeepScan: () => void;
 }) {
+  const { t } = useI18n();
   const stats = data?.stats;
   if (!data) return null;
   const reasons: string[] = [];
   if (stats) {
     if (stats.tables_scanned <= 1) {
       reasons.push(
-        `Dataset only has ${stats.tables_scanned} table — at least 2 tables are needed to form a relationship.`,
+        t('datasets.relationshipReview.reasonTooFewTables', { count: stats.tables_scanned }),
       );
     }
     if (
@@ -562,42 +574,48 @@ function EmptyRecommendationsHint({
       stats.tables_scanned > 1
     ) {
       reasons.push(
-        'No declared foreign keys, no `*_id` columns matching another table\'s name, and no two tables share a column name with overlapping values.',
+        t('datasets.relationshipReview.reasonNoSignals'),
       );
     }
     if (stats.already_existing_skipped > 0) {
       reasons.push(
-        `${stats.already_existing_skipped} relationship(s) are already saved (see "Already saved" above) — the detector doesn't re-suggest them.`,
+        t('datasets.relationshipReview.reasonAlreadyExisting', { count: stats.already_existing_skipped }),
       );
     }
     if (stats.rejected_skipped > 0) {
       reasons.push(
-        `${stats.rejected_skipped} suggestion(s) were previously rejected. Click "Reset rejections" below to see them again.`,
+        t('datasets.relationshipReview.reasonRejectedSkipped', { count: stats.rejected_skipped }),
       );
     }
     if (stats.quota_warnings > 0) {
       reasons.push(
-        `Datasource rate limit hit (e.g. Google Sheets 60 reads/minute) — ${stats.quota_warnings} table(s) were skipped. Wait a minute and click Re-scan.`,
+        t('datasets.relationshipReview.reasonQuota', { count: stats.quota_warnings }),
       );
     } else if (!deepScan) {
       reasons.push(
-        'Deep scan is off. Enable it and Re-scan to probe value overlap between differently-named columns too.',
+        t('datasets.relationshipReview.reasonDeepScanOff'),
       );
     } else if (stats.key_like_columns_total === 0) {
       reasons.push(
-        'No table has any "key-like" columns (numeric / short string). Check that columns_cache has been populated and types are tagged.',
+        t('datasets.relationshipReview.reasonNoKeyLike'),
       );
     } else if (stats.overlap_probes_run === 0) {
       reasons.push(
-        `Found ${stats.key_like_columns_total} key-like column(s) but no type-compatible pairs. Cached type labels may not match the detector's known types — ask a dev to check BE logs for "Overlap probe".`,
+        t('datasets.relationshipReview.reasonNoCompatiblePairs', { count: stats.key_like_columns_total }),
       );
     } else if (stats.overlap_probes_failed > 0 && stats.overlap_probes_hit === 0) {
       reasons.push(
-        `Probed ${stats.overlap_probes_run} column pair(s), ${stats.overlap_probes_failed} of which failed (timeout / type mismatch). See BE logs for "Overlap probe SQL failed".`,
+        t('datasets.relationshipReview.reasonProbesFailed', {
+          run: stats.overlap_probes_run,
+          failed: stats.overlap_probes_failed,
+        }),
       );
     } else if (stats.overlap_probes_below_threshold > 0 && stats.overlap_probes_hit === 0) {
       reasons.push(
-        `Probed ${stats.overlap_probes_run} column pair(s), ${stats.overlap_probes_below_threshold} of which had less than 50% overlap. The data may not match across tables — verify staging or test with real data.`,
+        t('datasets.relationshipReview.reasonProbesBelowThreshold', {
+          run: stats.overlap_probes_run,
+          below: stats.overlap_probes_below_threshold,
+        }),
       );
     }
   }
@@ -607,7 +625,7 @@ function EmptyRecommendationsHint({
       <div className="flex items-start gap-2">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-info" />
         <div className="flex-1 space-y-2">
-          <p className="font-medium text-text-primary">No new suggestions</p>
+          <p className="font-medium text-text-primary">{t('datasets.relationshipReview.noNewSuggestions')}</p>
           {reasons.length > 0 && (
             <ul className="ml-4 list-disc space-y-1 text-text-tertiary">
               {reasons.map((reason, idx) => (
@@ -618,26 +636,35 @@ function EmptyRecommendationsHint({
           {stats && (
             <div className="space-y-0.5 text-text-quaternary">
               <p>
-                Scanned: {stats.tables_scanned} table(s) ·{' '}
-                {stats.key_like_columns_total} key-like column(s) ·{' '}
-                {stats.fk_constraints_found} FK ·{' '}
-                {stats.name_matches_found} name match ·{' '}
-                {stats.same_name_hits} same-name hit
+                {t('datasets.relationshipReview.statsScanned', {
+                  tables: stats.tables_scanned,
+                  keyLike: stats.key_like_columns_total,
+                  fk: stats.fk_constraints_found,
+                  nameMatch: stats.name_matches_found,
+                  sameName: stats.same_name_hits,
+                })}
                 {stats.overlap_probes_run > 0
-                  ? ` · deep ${stats.overlap_probes_hit} hit / ${stats.overlap_probes_below_threshold} below threshold / ${stats.overlap_probes_failed} failed (total ${stats.overlap_probes_run})`
+                  ? t('datasets.relationshipReview.statsDeepProbes', {
+                      hit: stats.overlap_probes_hit,
+                      below: stats.overlap_probes_below_threshold,
+                      failed: stats.overlap_probes_failed,
+                      total: stats.overlap_probes_run,
+                    })
                   : ''}
               </p>
               <p>
-                DB introspection:{' '}
                 {stats.tables_with_db_pk > 0 || stats.tables_with_raw_types > 0
-                  ? `${stats.tables_with_db_pk} table(s) with PK, ${stats.tables_with_raw_types} with raw type — used to pick target column and cardinality.`
-                  : 'Could not read PK / type from source DB (datasource is not PG / MySQL / BigQuery, or the query failed).'}
+                  ? t('datasets.relationshipReview.statsDbIntrospectionOk', {
+                      pk: stats.tables_with_db_pk,
+                      rawType: stats.tables_with_raw_types,
+                    })
+                  : t('datasets.relationshipReview.statsDbIntrospectionFail')}
               </p>
               {stats.datasource_reads > 0 && (
                 <p>
-                  Datasource reads: {stats.datasource_reads}
+                  {t('datasets.relationshipReview.statsDatasourceReads', { count: stats.datasource_reads })}
                   {stats.quota_warnings > 0
-                    ? ` · ${stats.quota_warnings} quota warning(s)`
+                    ? t('datasets.relationshipReview.statsQuotaWarnings', { count: stats.quota_warnings })
                     : ''}
                 </p>
               )}
@@ -649,7 +676,7 @@ function EmptyRecommendationsHint({
               onClick={onToggleDeepScan}
               className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-2 py-1 text-caption text-brand hover:bg-brand/20"
             >
-              Enable Deep scan and re-run
+              {t('datasets.relationshipReview.enableDeepScanRerun')}
             </button>
           )}
         </div>
@@ -677,6 +704,7 @@ function RelationshipRow({
   obsoleteReason?: string;
   labelFor: (viewName: string) => string;
 }) {
+  const { t } = useI18n();
   const isActive = variant === 'recommended' && selected;
   const isDimmed = variant === 'recommended' && rejected;
   const lowConfidence =
@@ -704,7 +732,7 @@ function RelationshipRow({
           checked={!!selected}
           onChange={onToggleSelect}
           className="mt-1 h-4 w-4"
-          aria-label="Add this relationship"
+          aria-label={t('datasets.relationshipReview.addThisRelationship')}
         />
       )}
       {variant === 'kept' && (

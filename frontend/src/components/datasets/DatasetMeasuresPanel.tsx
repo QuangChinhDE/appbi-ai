@@ -5,6 +5,7 @@ import { Loader2, RefreshCw, Sigma } from 'lucide-react';
 
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import type { DatasetTable } from '@/hooks/use-datasets';
+import { useI18n } from '@/providers/LanguageProvider';
 import { ModelViewEditPanel, type ModelViewEditPanelHandle } from './ModelViewEditPanel';
 
 interface DatasetMeasuresPanelProps {
@@ -32,6 +33,7 @@ function tableKindRank(table: DatasetTable | null | undefined): number {
 }
 
 export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, DatasetMeasuresPanelProps>(function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus, onRetargetView, onRequestAddColumn }: DatasetMeasuresPanelProps, ref) {
+  const { t } = useI18n();
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
 
@@ -91,7 +93,7 @@ export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, Dataset
     return (
       <div className="flex h-full items-center justify-center text-text-tertiary">
         <Loader2 className="mr-2 h-5 w-5 animate-spin text-brand" />
-        Loading measures...
+        {t('datasets.measuresPanel.loading')}
       </div>
     );
   }
@@ -99,14 +101,14 @@ export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, Dataset
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-danger">
-        <p className="text-sm font-medium">Failed to load measures</p>
+        <p className="text-sm font-medium">{t('datasets.measuresPanel.loadError')}</p>
         <button
           type="button"
           onClick={() => refetch()}
           className="inline-flex items-center gap-1.5 rounded-md border border-danger/40 px-3 py-1.5 text-xs font-medium hover:bg-danger/10"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Retry
+          {t('datasets.measuresPanel.retry')}
         </button>
       </div>
     );
@@ -117,9 +119,9 @@ export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, Dataset
       <div className="flex h-full items-center justify-center px-6 text-center">
         <div className="max-w-sm">
           <Sigma className="mx-auto mb-3 h-8 w-8 text-text-quaternary" />
-          <h3 className="text-sm font-semibold text-text-primary">No measures available</h3>
+          <h3 className="text-sm font-semibold text-text-primary">{t('datasets.measuresPanel.emptyTitle')}</h3>
           <p className="mt-1 text-xs leading-5 text-text-tertiary">
-            Generate the dataset model first, then define business measures from the Tables workspace.
+            {t('datasets.measuresPanel.emptyHint')}
           </p>
         </div>
       </div>
@@ -148,7 +150,7 @@ export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, Dataset
             canEdit={canEdit}
             showDictionaryTab={false}
             contentMode="measures"
-            titleKicker="Business measures"
+            titleKicker={t('datasets.measuresPanel.titleKicker')}
             focusMeasureName={focusMeasureName}
             triggerAddMeasure={triggerAddMeasure}
             singleMeasureMode={singleMeasureMode}
@@ -159,9 +161,9 @@ export const DatasetMeasuresPanel = forwardRef<ModelViewEditPanelHandle, Dataset
           <div className="flex h-full items-center justify-center px-6 text-center">
             <div className="max-w-sm">
               <Sigma className="mx-auto mb-3 h-8 w-8 text-text-quaternary" />
-              <h3 className="text-sm font-semibold text-text-primary">Select a base table</h3>
+              <h3 className="text-sm font-semibold text-text-primary">{t('datasets.measuresPanel.selectBaseTitle')}</h3>
               <p className="mt-1 text-xs leading-5 text-text-tertiary">
-                Measures are saved on the selected semantic base table.
+                {t('datasets.measuresPanel.selectBaseHint')}
               </p>
             </div>
           </div>

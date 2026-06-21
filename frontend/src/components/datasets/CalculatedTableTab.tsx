@@ -6,6 +6,7 @@ import { AlertCircle, Loader2, Sigma, TableProperties } from 'lucide-react';
 import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
 import { buildDatasetTableAliasMap } from '@/lib/dataset-table-aliases';
 import { SqlEditor } from '@/components/ui/SqlEditor';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface CalculatedTableTabProps {
   onAddTable?: (input: AddTableInput) => Promise<void>;
@@ -42,6 +43,7 @@ export function CalculatedTableTab({
   initialQuery = '',
   saveError,
 }: CalculatedTableTabProps) {
+  const { t } = useI18n();
   const [displayName, setDisplayName] = useState(initialDisplayName);
   const [query, setQuery] = useState(initialQuery);
   const [search, setSearch] = useState('');
@@ -83,12 +85,12 @@ export function CalculatedTableTab({
 
   const validateQuery = (sql: string): string | null => {
     const trimmed = sql.trim();
-    if (!trimmed) return 'SQL is required';
+    if (!trimmed) return t('datasets.calculatedTable.sqlRequired');
     const normalized = trimmed.toLowerCase();
     if (!(normalized.startsWith('select') || normalized.startsWith('with'))) {
-      return 'Calculated table SQL must start with SELECT or WITH';
+      return t('datasets.calculatedTable.mustStartWithSelectOrWith');
     }
-    if (trimmed.includes(';')) return 'Only one SQL statement is allowed';
+    if (trimmed.includes(';')) return t('datasets.calculatedTable.onlyOneStatement');
     return null;
   };
 
@@ -123,22 +125,22 @@ export function CalculatedTableTab({
     <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="space-y-5">
         <div>
-          <label className="mb-2 block text-sm font-medium text-text-secondary">Calculated table name *</label>
+          <label className="mb-2 block text-sm font-medium text-text-secondary">{t('datasets.calculatedTable.nameLabel')}</label>
           <input
             type="text"
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
-            placeholder="e.g. Monthly Revenue"
+            placeholder={t('datasets.calculatedTable.namePlaceholder')}
             className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
             disabled={isLoading}
           />
-          <p className="mt-1 text-xs text-text-tertiary">This is the name shown inside the dataset.</p>
+          <p className="mt-1 text-xs text-text-tertiary">{t('datasets.calculatedTable.nameHelp')}</p>
         </div>
 
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <label className="block text-sm font-medium text-text-secondary">Dataset SQL *</label>
-            <span className="text-xs text-text-tertiary">Use only tables from this dataset</span>
+            <label className="block text-sm font-medium text-text-secondary">{t('datasets.calculatedTable.sqlLabel')}</label>
+            <span className="text-xs text-text-tertiary">{t('datasets.calculatedTable.sqlHint')}</span>
           </div>
           <SqlEditor
             value={query}
@@ -161,9 +163,9 @@ export function CalculatedTableTab({
           )}
           <div className="mt-2 space-y-1 text-xs text-text-tertiary">
             <p>
-              Use the aliases from the right panel, for example <code>{exampleAlias}</code>.
+              {t('datasets.calculatedTable.aliasHintBefore')} <code>{exampleAlias}</code>.
             </p>
-            <p>Only SELECT/WITH queries are allowed. Supports comments and line numbers.</p>
+            <p>{t('datasets.calculatedTable.queryConstraints')}</p>
           </div>
         </div>
 
@@ -172,7 +174,7 @@ export function CalculatedTableTab({
             <div className="mr-4 flex flex-1 items-start gap-2 text-sm text-danger">
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
               <div className="flex-1 min-w-0">
-                <span className="font-medium">Lỗi từ CSDL:</span>
+                <span className="font-medium">{t('datasets.calculatedTable.dbError')}</span>
                 <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{saveError}</pre>
               </div>
             </div>
@@ -184,7 +186,7 @@ export function CalculatedTableTab({
             className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-            {onSave ? 'Save changes' : 'Create calculated table'}
+            {onSave ? t('datasets.calculatedTable.saveChanges') : t('datasets.calculatedTable.createButton')}
           </button>
         </div>
       </div>
@@ -193,14 +195,14 @@ export function CalculatedTableTab({
         <div className="border-b border-[rgb(var(--border-line))] px-4 py-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
             <TableProperties className="h-4 w-4 text-brand" />
-            Dataset tables
+            {t('datasets.calculatedTable.datasetTablesTitle')}
           </div>
-          <p className="mt-1 text-xs text-text-tertiary">Click an alias to insert it into the SQL editor.</p>
+          <p className="mt-1 text-xs text-text-tertiary">{t('datasets.calculatedTable.clickAliasHelp')}</p>
           <input
             type="text"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search tables or aliases..."
+            placeholder={t('datasets.calculatedTable.searchPlaceholder')}
             className="mt-3 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
             disabled={isLoading}
           />
@@ -209,7 +211,7 @@ export function CalculatedTableTab({
         <div className="max-h-[28rem] space-y-2 overflow-y-auto px-3 py-3">
           {referenceTables.length === 0 ? (
             <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-5 text-sm text-text-tertiary">
-              No dataset tables available for calculated SQL yet.
+              {t('datasets.calculatedTable.noTables')}
             </div>
           ) : (
             referenceTables.map((table) => {

@@ -51,6 +51,7 @@ import { useDatasetModel, fetchColumnLineage, type DatasetModelView, type Measur
 import { HelpTooltipRich } from '@/components/ui/HelpTooltip';
 import type { Transformation } from '@/hooks/use-datasets';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
 function evalExcelFormulaInPage(
@@ -183,9 +184,6 @@ const DEFAULT_CALENDAR_SETTINGS: CalendarDimensionSettings = {
   auto_join_temporal_columns: true,
   excluded_auto_joins: [],
 };
-
-const CALENDAR_REQUIRES_DATASOURCE_MESSAGE =
-  'Add at least one source or SQL table backed by a datasource before creating the Standard Date table.';
 
 const LOOKUP_TABLE_IDENTIFIER_PREFIX = 'dataset-table://';
 
@@ -391,6 +389,7 @@ function CalendarDimensionModal({
   onSave,
   onRemove,
 }: CalendarDimensionModalProps) {
+  const { t } = useI18n();
   if (!isOpen) return null;
 
   return (
@@ -398,19 +397,19 @@ function CalendarDimensionModal({
       <div className="w-full max-w-lg rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
         <div className="border-b px-6 py-4">
           <h2 className="text-xl font-semibold text-text-primary">
-            {isExisting ? 'Calendar Dimension' : 'Add Calendar Dimension'}
+            {isExisting ? t('datasets.calendarModal.titleExisting') : t('datasets.calendarModal.titleNew')}
           </h2>
           <p className="mt-1 text-sm text-text-tertiary">
             {isExisting
-              ? 'Update the standard Date table for this dataset.'
-              : 'Create a standard Date table and auto-connect temporal columns when needed.'}
+              ? t('datasets.calendarModal.descExisting')
+              : t('datasets.calendarModal.descNew')}
           </p>
         </div>
 
         <div className="space-y-4 px-6 py-5">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-2 block text-sm font-medium text-text-secondary">Start date</label>
+              <label className="mb-2 block text-sm font-medium text-text-secondary">{t('datasets.calendarModal.startDate')}</label>
               <input
                 type="date"
                 value={draft.start_date}
@@ -424,7 +423,7 @@ function CalendarDimensionModal({
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-text-secondary">End date</label>
+              <label className="mb-2 block text-sm font-medium text-text-secondary">{t('datasets.calendarModal.endDate')}</label>
               <input
                 type="date"
                 value={draft.end_date}
@@ -440,7 +439,7 @@ function CalendarDimensionModal({
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-text-secondary">Week starts on</label>
+            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('datasets.calendarModal.weekStartsOn')}</label>
             <select
               value={draft.week_start_day}
               onChange={(e) => onDraftChange((current) => ({
@@ -451,8 +450,8 @@ function CalendarDimensionModal({
               className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
               disabled={!canEdit || isSaving}
             >
-              <option value="monday">Monday</option>
-              <option value="sunday">Sunday</option>
+              <option value="monday">{t('datasets.calendarModal.monday')}</option>
+              <option value="sunday">{t('datasets.calendarModal.sunday')}</option>
             </select>
           </div>
 
@@ -469,9 +468,9 @@ function CalendarDimensionModal({
               disabled={!canEdit || isSaving}
             />
             <div>
-              <div className="text-sm font-medium text-text-primary">Auto-connect time columns</div>
+              <div className="text-sm font-medium text-text-primary">{t('datasets.calendarModal.autoConnect')}</div>
               <p className="mt-1 text-xs text-text-tertiary">
-                Automatically link date, datetime, and timestamp columns to this Date table.
+                {t('datasets.calendarModal.autoConnectHint')}
               </p>
             </div>
           </label>
@@ -486,7 +485,7 @@ function CalendarDimensionModal({
                 disabled={isSaving}
                 className="rounded-md px-3 py-2 text-sm font-medium text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Remove calendar
+                {t('datasets.calendarModal.removeCalendar')}
               </button>
             )}
           </div>
@@ -497,7 +496,7 @@ function CalendarDimensionModal({
               className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2"
               disabled={isSaving}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
             <button
               type="button"
@@ -506,8 +505,8 @@ function CalendarDimensionModal({
               disabled={!canEdit || isSaving}
             >
               {isSaving
-                ? (isExisting ? 'Saving...' : 'Creating...')
-                : (isExisting ? 'Save changes' : 'Create calendar')}
+                ? (isExisting ? t('datasets.calendarModal.saving') : t('datasets.calendarModal.creating'))
+                : (isExisting ? t('datasets.calendarModal.saveChanges') : t('datasets.calendarModal.createCalendar'))}
             </button>
           </div>
         </div>
@@ -517,6 +516,7 @@ function CalendarDimensionModal({
 }
 
 export default function DatasetDetailPage() {
+  const { t } = useI18n();
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -834,7 +834,7 @@ export default function DatasetDetailPage() {
       if (data?.detail?.constraints) {
         setDeleteConstraints(data.detail.constraints);
       } else {
-        toast.error(data?.detail?.message ?? data?.detail ?? 'Không thể xóa bảng.');
+        toast.error(data?.detail?.message ?? data?.detail ?? t('datasets.detail.deleteTableError'));
         setTableToDelete(null);
       }
     } finally {
@@ -880,7 +880,7 @@ export default function DatasetDetailPage() {
         },
       });
     } catch (error: any) {
-      const message = extractDatasetErrorMessage(error, 'Khong the cap nhat dinh dang cot', selectedTable);
+      const message = extractDatasetErrorMessage(error, t('datasets.detail.columnFormatError'), selectedTable);
       toast.error(message);
       throw new Error(message);
     }
@@ -899,11 +899,10 @@ export default function DatasetDetailPage() {
         const lines = lineage.semantic_refs.slice(0, 6).join('\n');
         const extra =
           lineage.semantic_refs.length > 6
-            ? `\n… và ${lineage.semantic_refs.length - 6} tham chiếu khác.`
+            ? '\n' + t('datasets.detail.lineageMoreRefs', { count: lineage.semantic_refs.length - 6 })
             : '';
         const proceed = window.confirm(
-          `Cột "${colName}" đang được semantic layer sử dụng:\n\n${lines}${extra}\n\n` +
-            `Xoá cột sẽ làm hỏng các dimension/measure trên. Vẫn tiếp tục?`,
+          t('datasets.detail.deleteColumnLineageConfirm', { colName, lines, extra }),
         );
         if (!proceed) return;
       }
@@ -1026,13 +1025,13 @@ export default function DatasetDetailPage() {
       if (result.truncated) {
         const rowsLabel = typeof result.rowsWritten === 'number'
           ? result.rowsWritten.toLocaleString()
-          : 'the available';
-        toast.success(`Exported ${rowsLabel} rows to Excel. File stopped at the Excel row limit.`);
+          : t('datasets.detail.exportAvailableRows');
+        toast.success(t('datasets.detail.exportTruncated', { rows: rowsLabel }));
       } else {
-        toast.success(`Exported ${selectedTableTitle || 'table'} to Excel.`);
+        toast.success(t('datasets.detail.exportSuccess', { table: selectedTableTitle || t('datasets.detail.tableFallback') }));
       }
     } catch (error: any) {
-      toast.error(extractDatasetErrorMessage(error, 'Cannot export table to Excel', selectedTable));
+      toast.error(extractDatasetErrorMessage(error, t('datasets.detail.exportError'), selectedTable));
     } finally {
       setIsExportingExcel(false);
     }
@@ -1040,7 +1039,7 @@ export default function DatasetDetailPage() {
 
   const openCalendarModal = () => {
     if (!calendarEnabled && !canCreateCalendarDimension) {
-      toast.error(CALENDAR_REQUIRES_DATASOURCE_MESSAGE);
+      toast.error(t('datasets.detail.calendarRequiresDatasource'));
       return;
     }
     setCalendarDraft({
@@ -1053,11 +1052,11 @@ export default function DatasetDetailPage() {
   const handleSaveCalendarSettings = async () => {
     if (!datasetId) return;
     if (!calendarEnabled && !canCreateCalendarDimension) {
-      toast.error(CALENDAR_REQUIRES_DATASOURCE_MESSAGE);
+      toast.error(t('datasets.detail.calendarRequiresDatasource'));
       return;
     }
     if (calendarDraft.start_date && calendarDraft.end_date && calendarDraft.start_date > calendarDraft.end_date) {
-      toast.error('Start date must be before end date.');
+      toast.error(t('datasets.detail.calendarDateOrderError'));
       return;
     }
     try {
@@ -1081,9 +1080,9 @@ export default function DatasetDetailPage() {
         replaceTableInUrl(nextCalendarTable.id);
       }
       setIsCalendarModalOpen(false);
-      toast.success(calendarEnabled ? 'Calendar dimension updated' : 'Calendar dimension created');
+      toast.success(calendarEnabled ? t('datasets.detail.calendarUpdated') : t('datasets.detail.calendarCreated'));
     } catch (error: any) {
-      toast.error(extractDatasetErrorMessage(error, 'Khong the cap nhat calendar settings'));
+      toast.error(extractDatasetErrorMessage(error, t('datasets.detail.calendarSaveError')));
     }
   };
 
@@ -1110,9 +1109,9 @@ export default function DatasetDetailPage() {
         else clearTableInUrl();
       }
       setIsCalendarModalOpen(false);
-      toast.success('Calendar dimension removed');
+      toast.success(t('datasets.detail.calendarRemoved'));
     } catch (error: any) {
-      toast.error(extractDatasetErrorMessage(error, 'Khong the xoa calendar dimension'));
+      toast.error(extractDatasetErrorMessage(error, t('datasets.detail.calendarRemoveError')));
     }
   };
 
@@ -1266,7 +1265,7 @@ export default function DatasetDetailPage() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin text-brand mx-auto mb-3" />
-          <p className="text-text-secondary">Loading dataset...</p>
+          <p className="text-text-secondary">{t('datasets.detail.loadingDataset')}</p>
         </div>
       </div>
     );
@@ -1282,15 +1281,15 @@ export default function DatasetDetailPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-text-primary mb-2">Dataset not found</h2>
+          <h2 className="text-xl font-semibold text-text-primary mb-2">{t('datasets.detail.notFoundTitle')}</h2>
           <p className="text-text-secondary mb-4">
-            {datasetError instanceof Error ? datasetError.message : 'Could not load dataset'}
+            {datasetError instanceof Error ? datasetError.message : t('datasets.detail.notFoundBody')}
           </p>
           <button
             onClick={() => router.push('/datasets')}
             className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover transition-colors"
           >
-            Back to Datasets
+            {t('datasets.detail.backToDatasets')}
           </button>
         </div>
       </div>
@@ -1307,7 +1306,7 @@ export default function DatasetDetailPage() {
           className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-primary transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
-          Datasets
+          {t('datasets.detail.breadcrumbDatasets')}
         </button>
         <span className="text-text-quaternary">/</span>
         <span className="text-sm font-medium text-text-primary truncate max-w-[200px]">{dataset.name}</span>
@@ -1326,7 +1325,7 @@ export default function DatasetDetailPage() {
             }`}
           >
             <Database className="h-3.5 w-3.5" />
-            Tables
+            {t('datasets.detail.tabTables')}
           </button>
           <button
             onClick={() => requestLeaveMeasures(() => setActiveTab('quality'))}
@@ -1337,7 +1336,7 @@ export default function DatasetDetailPage() {
             }`}
           >
             <ShieldCheck className="h-3.5 w-3.5" />
-            Quality
+            {t('datasets.detail.tabQuality')}
           </button>
           <button
             onClick={() => requestLeaveMeasures(() => setActiveTab('model'))}
@@ -1348,7 +1347,7 @@ export default function DatasetDetailPage() {
             }`}
           >
             <Sigma className="h-3.5 w-3.5" />
-            Model
+            {t('datasets.detail.tabModel')}
           </button>
         </div>
 
@@ -1364,7 +1363,7 @@ export default function DatasetDetailPage() {
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
             >
               {isExportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              Export Excel
+              {t('datasets.detail.exportExcel')}
             </button>
             {resPerms.canEdit && !selectedTableIsGenerated && (
               <div className="w-px h-4 bg-surface-3 mx-1" />
@@ -1375,12 +1374,12 @@ export default function DatasetDetailPage() {
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors"
               >
                 <Columns className="w-3.5 h-3.5" />
-                Columns
+                {t('datasets.detail.columns')}
               </button>
             )}
             <div className="w-px h-4 bg-surface-3 mx-1" />
             <label className="flex items-center gap-1.5 text-xs text-text-tertiary">
-              Rows:
+              {t('datasets.detail.rowsLabel')}
               <select
                 value={previewLimit}
                 onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
@@ -1398,7 +1397,7 @@ export default function DatasetDetailPage() {
               onClick={() => refetchPreview()}
               disabled={loadingPreview}
               className="p-1 text-text-quaternary hover:text-text-secondary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
-              title="Refresh preview"
+              title={t('datasets.detail.refreshPreview')}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
             </button>
@@ -1417,7 +1416,7 @@ export default function DatasetDetailPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
                 <input
                   type="text"
-                  placeholder="Search tables..."
+                  placeholder={t('datasets.detail.searchTablesPlaceholder')}
                   value={tableSearchQuery}
                   onChange={(e) => setTableSearchQuery(e.target.value)}
                   className="w-full pl-8 pr-3 py-1.5 text-xs border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
@@ -1429,7 +1428,7 @@ export default function DatasetDetailPage() {
             <div className="flex-1 overflow-y-auto p-2">
               {tableSearchQuery && filteredTables.length === 0 && filteredFlatMeasures.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-4 py-6 text-center text-xs text-text-tertiary">
-                  No tables or measures match your search
+                  {t('datasets.detail.noTablesOrMeasuresMatch')}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -1462,23 +1461,23 @@ export default function DatasetDetailPage() {
                             <span className="text-xs text-text-quaternary">{displayCount}</span>
                             {group === 'calculated' && (
                               <HelpTooltipRich side="left">
-                                <p className="mb-1.5 font-semibold text-text-inverse">Calculated Table</p>
-                                <p className="leading-5 text-text-inverse/80">Tương đương <span className="font-medium text-text-inverse">Calculated Table</span> trong Power BI — tạo bảng mới bằng SQL từ các bảng hiện có.</p>
+                                <p className="mb-1.5 font-semibold text-text-inverse">{t('datasets.detail.calcTableTipTitle')}</p>
+                                <p className="leading-5 text-text-inverse/80">{t('datasets.detail.calcTableTipBody')}</p>
                                 <ul className="mt-1.5 space-y-1 leading-5 text-text-inverse/80">
-                                  <li>• Lưu kết quả như bảng thật, có thể preview dữ liệu</li>
-                                  <li>• Dùng khi cần JOIN nhiều nguồn, reshape hoặc aggregate trước</li>
-                                  <li>• Sau khi tạo, định nghĩa Measures trên bảng này</li>
+                                  <li>{t('datasets.detail.calcTableTipBullet1')}</li>
+                                  <li>{t('datasets.detail.calcTableTipBullet2')}</li>
+                                  <li>{t('datasets.detail.calcTableTipBullet3')}</li>
                                 </ul>
                               </HelpTooltipRich>
                             )}
                             {group === 'measures' && (
                               <HelpTooltipRich side="left">
-                                <p className="mb-1.5 font-semibold text-text-inverse">Measures</p>
-                                <p className="leading-5 text-text-inverse/80">Tương đương <span className="font-medium text-text-inverse">Measures</span> trong Power BI — công thức tính chỉ số nghiệp vụ gắn vào bảng.</p>
+                                <p className="mb-1.5 font-semibold text-text-inverse">{t('datasets.detail.measuresTipTitle')}</p>
+                                <p className="leading-5 text-text-inverse/80">{t('datasets.detail.measuresTipBody')}</p>
                                 <ul className="mt-1.5 space-y-1 leading-5 text-text-inverse/80">
-                                  <li>• Không tạo bảng mới — chỉ định nghĩa cách tính (SUM, AVG…)</li>
-                                  <li>• Hiển thị trong chart dưới dạng trục Y / giá trị</li>
-                                  <li>• Cần JOIN nhiều bảng? Tạo Calculated Table trước, sau đó thêm Measure vào đó</li>
+                                  <li>{t('datasets.detail.measuresTipBullet1')}</li>
+                                  <li>{t('datasets.detail.measuresTipBullet2')}</li>
+                                  <li>{t('datasets.detail.measuresTipBullet3')}</li>
                                 </ul>
                               </HelpTooltipRich>
                             )}
@@ -1516,18 +1515,18 @@ export default function DatasetDetailPage() {
                                 className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
                               >
                                 <Plus className="h-3 w-3" />
-                                Add
+                                {t('datasets.detail.add')}
                               </button>
                             ) : group === 'calendar' ? (
                               <button
                                 type="button"
                                 onClick={openCalendarModal}
                                 disabled={!calendarEnabled && !canCreateCalendarDimension}
-                                title={!calendarEnabled && !canCreateCalendarDimension ? CALENDAR_REQUIRES_DATASOURCE_MESSAGE : undefined}
+                                title={!calendarEnabled && !canCreateCalendarDimension ? t('datasets.detail.calendarRequiresDatasource') : undefined}
                                 className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <Plus className="h-3 w-3" />
-                                {calendarEnabled ? 'Edit' : 'Add'}
+                                {calendarEnabled ? t('datasets.detail.edit') : t('datasets.detail.add')}
                               </button>
                             ) : (
                               <button
@@ -1536,7 +1535,7 @@ export default function DatasetDetailPage() {
                                 className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
                               >
                                 <Plus className="h-3 w-3" />
-                                Add
+                                {t('datasets.detail.add')}
                               </button>
                             )
                           )}

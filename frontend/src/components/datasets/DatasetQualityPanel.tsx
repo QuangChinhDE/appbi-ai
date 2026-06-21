@@ -47,6 +47,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { apiClient as api } from '@/lib/api-client';
 import { DatasetQualityReportModal } from '@/components/datasets/DatasetQualityReportModal';
@@ -359,25 +360,27 @@ function buildSuggestedRuleName(
 function RuleResultPill({ result }: {
   result?: { passed?: boolean; skipped?: boolean; error?: boolean; rows_failed?: number | null; rows_checked?: number | null; detail?: string | null } | null;
 }) {
+  const { t } = useI18n();
   if (!result) return null;
   if (result.skipped)
-    return <span title={result.detail ?? undefined} className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-tertiary cursor-help">skipped</span>;
+    return <span title={result.detail ?? undefined} className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-tertiary cursor-help">{t('datasets.quality.pill.skipped')}</span>;
   if (result.error)
-    return <span title={result.detail ?? 'Execution error'} className="inline-flex items-center gap-0.5 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger cursor-help"><XCircle className="h-3 w-3" />error</span>;
+    return <span title={result.detail ?? t('datasets.quality.pill.executionError')} className="inline-flex items-center gap-0.5 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger cursor-help"><XCircle className="h-3 w-3" />{t('datasets.quality.pill.error')}</span>;
   if (result.passed)
-    return <span title={result.detail ?? 'All rows passed'} className="inline-flex items-center gap-0.5 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success cursor-help"><CheckCircle2 className="h-3 w-3" />pass</span>;
-  const detail = result.rows_failed != null ? `${result.rows_failed} fail` : 'fail';
+    return <span title={result.detail ?? t('datasets.quality.pill.allRowsPassed')} className="inline-flex items-center gap-0.5 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success cursor-help"><CheckCircle2 className="h-3 w-3" />{t('datasets.quality.pill.pass')}</span>;
+  const detail = result.rows_failed != null ? t('datasets.quality.pill.failCount', { count: result.rows_failed }) : t('datasets.quality.pill.fail');
   return <span title={result.detail ?? undefined} className="inline-flex items-center gap-0.5 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger cursor-help"><XCircle className="h-3 w-3" />{detail}</span>;
 }
 
 function InlineToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
       onClick={() => !disabled && onChange(!checked)}
       disabled={disabled}
       className={`flex items-center transition-colors disabled:opacity-40 ${checked ? 'text-brand' : 'text-text-quaternary'}`}
-      title={checked ? 'Enabled — click to disable' : 'Disabled — click to enable'}
+      title={checked ? t('datasets.quality.toggle.enabledHint') : t('datasets.quality.toggle.disabledHint')}
     >
       {checked ? <ToggleRight className="h-5 w-5" /> : <ToggleLeft className="h-5 w-5" />}
     </button>
@@ -486,6 +489,7 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
   label?: string;
   helpText?: string;
 }) {
+  const { t } = useI18n();
   const options = getColumnOptions(tables, tableId);
   return (
     <div>
@@ -495,7 +499,7 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
           options={options}
           value={value}
           onChange={onChange}
-          placeholder={placeholder ?? 'Search columns…'}
+          placeholder={placeholder ?? t('datasets.quality.column.searchPlaceholder')}
         />
       ) : (
         <input
@@ -516,6 +520,7 @@ function SearchableSelect({ options, value, onChange, placeholder }: {
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen]   = useState(false);
   const [query, setQuery] = useState('');
   const [focusIdx, setFocusIdx] = useState(0);
@@ -564,7 +569,7 @@ function SearchableSelect({ options, value, onChange, placeholder }: {
   }
 
   const displayValue = open ? query : value;
-  const hintPlaceholder = placeholder ?? `Search columns (${options.length} available)…`;
+  const hintPlaceholder = placeholder ?? t('datasets.quality.column.searchAvailable', { count: options.length });
 
   return (
     <div ref={containerRef} className="relative">
@@ -585,7 +590,7 @@ function SearchableSelect({ options, value, onChange, placeholder }: {
             type="button"
             onClick={() => { onChange(''); inputRef.current?.focus(); }}
             className="text-text-quaternary hover:text-text-secondary"
-            aria-label="Clear"
+            aria-label={t('datasets.quality.column.clearAria')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -594,7 +599,7 @@ function SearchableSelect({ options, value, onChange, placeholder }: {
       {open && (
         <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-md">
           {filtered.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+            <p className="px-3 py-2 text-xs text-text-quaternary">{t('datasets.quality.common.noMatches')}</p>
           ) : (
             filtered.map((opt, idx) => (
               <button
@@ -623,6 +628,7 @@ function MultiColumnPicker({ tableId, tables, value, onChange }: {
   value: string[];
   onChange: (v: string[]) => void;
 }) {
+  const { t } = useI18n();
   const options = getColumnOptions(tables, tableId);
   const [query, setQuery] = useState('');
 
@@ -651,8 +657,8 @@ function MultiColumnPicker({ tableId, tables, value, onChange }: {
   return (
     <div>
       <FieldLabel
-        label={`Columns (${value.length} selected)`}
-        helpText="Each selected column becomes its own rule with identical logic. Use search to quickly find columns in wide tables."
+        label={t('datasets.quality.multiColumn.label', { count: value.length })}
+        helpText={t('datasets.quality.multiColumn.help')}
         action={
           value.length > 0 ? (
             <button
@@ -660,14 +666,14 @@ function MultiColumnPicker({ tableId, tables, value, onChange }: {
               onClick={() => onChange([])}
               className="text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
             >
-              Clear
+              {t('datasets.quality.common.clear')}
             </button>
           ) : undefined
         }
       />
       {options.length === 0 ? (
         <p className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-xs text-text-quaternary">
-          No columns available for this table. Refresh the schema to populate the column list.
+          {t('datasets.quality.multiColumn.noColumns')}
         </p>
       ) : (
         <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
@@ -677,7 +683,7 @@ function MultiColumnPicker({ tableId, tables, value, onChange }: {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${options.length} columns…`}
+              placeholder={t('datasets.quality.multiColumn.searchPlaceholder', { count: options.length })}
               className="w-full bg-transparent text-sm focus:outline-none"
             />
             <button
@@ -685,12 +691,12 @@ function MultiColumnPicker({ tableId, tables, value, onChange }: {
               onClick={toggleAllVisible}
               className="shrink-0 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
             >
-              {allVisibleSelected ? 'Deselect all' : 'Select all'}
+              {allVisibleSelected ? t('datasets.quality.multiColumn.deselectAll') : t('datasets.quality.multiColumn.selectAll')}
             </button>
           </div>
           <div className="max-h-64 overflow-auto py-1">
             {filtered.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+              <p className="px-3 py-2 text-xs text-text-quaternary">{t('datasets.quality.common.noMatches')}</p>
             ) : (
               filtered.map((col) => {
                 const checked = selectedSet.has(col);
@@ -730,6 +736,7 @@ function RuleTypeSearchSelect({ value, onChange }: {
   value: string;
   onChange: (v: string) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen]   = useState(false);
   const [query, setQuery] = useState('');
   const [focusIdx, setFocusIdx] = useState(0);
@@ -785,7 +792,7 @@ function RuleTypeSearchSelect({ value, onChange }: {
           onFocus={() => { setOpen(true); setFocusIdx(0); setQuery(''); }}
           onChange={(e) => { setQuery(e.target.value); setOpen(true); setFocusIdx(0); }}
           onKeyDown={handleKey}
-          placeholder="Search rule types…"
+          placeholder={t('datasets.quality.ruleType.searchPlaceholder')}
           className="w-full bg-transparent text-sm focus:outline-none"
         />
         {!open && (
@@ -795,7 +802,7 @@ function RuleTypeSearchSelect({ value, onChange }: {
       {open && (
         <div className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
           {filtered.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-text-quaternary">No matches — try different keywords</p>
+            <p className="px-3 py-3 text-xs text-text-quaternary">{t('datasets.quality.ruleType.noMatches')}</p>
           ) : (
             filtered.map((rt, idx) => {
               const dimMeta = DQ_DIMENSIONS.find((d) => d.key === rt.naturalDimension);
@@ -837,6 +844,7 @@ function TableSearchSelect({ tables, value, onChange, disabled, includeAllOption
   includeAllOption?: boolean;
   allLabel?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen]   = useState(false);
   const [query, setQuery] = useState('');
   const [focusIdx, setFocusIdx] = useState(0);
@@ -863,10 +871,10 @@ function TableSearchSelect({ tables, value, onChange, disabled, includeAllOption
     : tables;
 
   const options = [
-    ...(includeAllOption ? [{ id: 'all' as const, label: allLabel ?? 'All tables' }] : []),
+    ...(includeAllOption ? [{ id: 'all' as const, label: allLabel ?? t('datasets.quality.table.allTables') }] : []),
     ...filteredTables.map((table) => ({
       id: table.id as number | 'all',
-      label: table.display_name || table.source_table_name || 'Untitled table',
+      label: table.display_name || table.source_table_name || t('datasets.quality.table.untitled'),
     })),
   ];
 
@@ -878,8 +886,8 @@ function TableSearchSelect({ tables, value, onChange, disabled, includeAllOption
 
   const currentTable = value === 'all' ? null : tables.find((t) => t.id === value);
   const currentLabel = value === 'all'
-    ? (allLabel ?? 'All tables')
-    : (currentTable?.display_name || currentTable?.source_table_name || 'Select table');
+    ? (allLabel ?? t('datasets.quality.table.allTables'))
+    : (currentTable?.display_name || currentTable?.source_table_name || t('datasets.quality.table.selectTable'));
   const displayValue = open ? query : currentLabel;
 
   if (disabled) {
@@ -906,7 +914,7 @@ function TableSearchSelect({ tables, value, onChange, disabled, includeAllOption
             else if (e.key === 'Enter') { e.preventDefault(); if (options[focusIdx]) selectTable(options[focusIdx].id); }
             else if (e.key === 'Escape') { setOpen(false); setQuery(''); }
           }}
-          placeholder={includeAllOption ? `Filter ${tables.length} tables…` : `Search ${tables.length} tables…`}
+          placeholder={includeAllOption ? t('datasets.quality.table.filterPlaceholder', { count: tables.length }) : t('datasets.quality.table.searchPlaceholder', { count: tables.length })}
           className="w-full bg-transparent text-sm focus:outline-none"
         />
         <ChevronDown className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
@@ -914,7 +922,7 @@ function TableSearchSelect({ tables, value, onChange, disabled, includeAllOption
       {open && (
         <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
           {options.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+            <p className="px-3 py-2 text-xs text-text-quaternary">{t('datasets.quality.common.noMatches')}</p>
           ) : (
             options.map((option, idx) => (
               <button
@@ -1009,11 +1017,12 @@ const INTENT_CARDS: Array<{
 function IntentCardsGrid({ onSelect }: {
   onSelect: (ruleType: string, dimension: QualityDimension) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="rounded-2xl border border-brand/20 bg-brand/5 p-3">
       <div className="flex items-center gap-2 mb-2">
         <Wand2 className="h-3.5 w-3.5 text-brand" />
-        <h4 className="text-xs font-semibold text-brand">Quick start</h4>
+        <h4 className="text-xs font-semibold text-brand">{t('datasets.quality.intent.quickStart')}</h4>
       </div>
       <div className="grid gap-1.5 grid-cols-4 lg:grid-cols-8">
         {INTENT_CARDS.map((card) => (
@@ -1043,6 +1052,7 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
   tables: DatasetTable[];
   onApply: (suggestion: QualityAISuggestResponse) => void;
 }) {
+  const { t } = useI18n();
   const [description, setDescription] = useState('');
   const [lastResult, setLastResult]   = useState<QualityAISuggestResponse | null>(null);
   const mutation = useAISuggestQualityRule(datasetId);
@@ -1082,7 +1092,7 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
     <div className="rounded-2xl border border-purple-500/20 bg-purple-500/5 p-3">
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-3.5 w-3.5 text-purple-500" />
-        <span className="text-xs font-semibold text-purple-700 dark:text-purple-400">AI assist</span>
+        <span className="text-xs font-semibold text-purple-700 dark:text-purple-400">{t('datasets.quality.ai.assist')}</span>
       </div>
       <div className="flex gap-2">
         <input
@@ -1090,7 +1100,7 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleGenerate(); } }}
-          placeholder='Describe rule, e.g. "amount must not be null" or "status in (active, closed)"'
+          placeholder={t('datasets.quality.ai.placeholder')}
           className="min-w-0 flex-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-xs focus:border-purple-500/50 focus:outline-none placeholder:text-text-quaternary"
         />
         <button
@@ -1108,7 +1118,7 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
 
       {mutation.isError && (
         <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-danger">
-          {(mutation.error as any)?.response?.data?.detail ?? 'AI unavailable'}
+          {(mutation.error as any)?.response?.data?.detail ?? t('datasets.quality.ai.unavailable')}
         </div>
       )}
 
@@ -1123,7 +1133,7 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
             onClick={handleApply}
             className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-purple-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-purple-700"
           >
-            <Check className="h-3 w-3" /> Apply
+            <Check className="h-3 w-3" /> {t('datasets.quality.ai.apply')}
           </button>
         </div>
       )}
@@ -1142,6 +1152,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
   tableId: number;
   tables: DatasetTable[];
 }) {
+  const { t } = useI18n();
   const colOptions = getColumnOptions(tables, tableId);
   const selectedTable = tables.find((table) => table.id === tableId);
   const secondaryTableId = typeof config.secondary_table_id === 'number' ? config.secondary_table_id : undefined;
@@ -1152,8 +1163,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div>
           <FieldLabel
-            label="Minimum completeness %"
-            helpText="Set the lowest allowed percentage of non-null rows. The rule fails when completeness drops below this threshold."
+            label={t('datasets.quality.config.completenessPct.label')}
+            helpText={t('datasets.quality.config.completenessPct.help')}
           />
           <div className="flex items-center gap-2">
             <input type="number" min={0} max={100} step={1}
@@ -1170,11 +1181,11 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div>
           <FieldLabel
-            label="Allowed values"
-            helpText="Add every value that is permitted for this column. Any other non-null value fails the check."
-            action={<span className="text-[11px] font-normal text-text-quaternary">Enter or comma to add</span>}
+            label={t('datasets.quality.config.acceptedValues.label')}
+            helpText={t('datasets.quality.config.acceptedValues.help')}
+            action={<span className="text-[11px] font-normal text-text-quaternary">{t('datasets.quality.config.acceptedValues.enterHint')}</span>}
           />
-          <TagInput values={config.values ?? []} onChange={(values) => onPatch({ values })} placeholder="Add value and press Enter…" />
+          <TagInput values={config.values ?? []} onChange={(values) => onPatch({ values })} placeholder={t('datasets.quality.config.acceptedValues.placeholder')} />
         </div>
       );
 
@@ -1183,8 +1194,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
         <div className="space-y-2">
           <div>
             <FieldLabel
-              label="Regex pattern"
-              helpText="Use a datasource-compatible regular expression. Every non-null value in the selected column must match it."
+              label={t('datasets.quality.config.patternMatch.patternLabel')}
+              helpText={t('datasets.quality.config.patternMatch.patternHelp')}
             />
             <input type="text"
               value={config.pattern ?? ''}
@@ -1194,9 +1205,9 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           </div>
           <div>
             <FieldLabel
-              label="Flags"
-              helpText="Optional regex flags supported by your datasource, such as i for case-insensitive matching."
-              action={<span className="text-[11px] font-normal text-text-quaternary">Optional</span>}
+              label={t('datasets.quality.config.patternMatch.flagsLabel')}
+              helpText={t('datasets.quality.config.patternMatch.flagsHelp')}
+              action={<span className="text-[11px] font-normal text-text-quaternary">{t('datasets.quality.common.optional')}</span>}
             />
             <input type="text"
               value={(config as any).flags ?? ''}
@@ -1205,7 +1216,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               className="w-24 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-sm focus:border-brand/50 focus:outline-none" />
           </div>
           <div className="flex flex-wrap gap-1 items-center">
-            <span className="text-[11px] text-text-quaternary mr-0.5">Presets:</span>
+            <span className="text-[11px] text-text-quaternary mr-0.5">{t('datasets.quality.config.patternMatch.presets')}</span>
             {REGEX_PRESETS.map((p) => (
               <button key={p.label} type="button"
                 onClick={() => onPatch({ pattern: p.pattern, ...(p.flags ? { flags: p.flags } : {}) } as any)}
@@ -1223,8 +1234,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
         <div className="flex gap-2">
           <div className="flex-1">
             <FieldLabel
-              label="Min"
-              helpText="Inclusive lower bound for valid values. Leave blank if only a maximum matters."
+              label={t('datasets.quality.config.range.minLabel')}
+              helpText={t('datasets.quality.config.range.minHelp')}
             />
             <input type="text" value={config.min ?? ''}
               onChange={(e) => onPatch({ min: e.target.value || undefined })}
@@ -1233,8 +1244,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           </div>
           <div className="flex-1">
             <FieldLabel
-              label="Max"
-              helpText="Inclusive upper bound for valid values. Leave blank if only a minimum matters."
+              label={t('datasets.quality.config.range.maxLabel')}
+              helpText={t('datasets.quality.config.range.maxHelp')}
             />
             <input type="text" value={config.max ?? ''}
               onChange={(e) => onPatch({ max: e.target.value || undefined })}
@@ -1248,17 +1259,17 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div>
           <FieldLabel
-            label="Format type"
-            helpText="Choose a built-in validator such as email, phone, URL, or date."
+            label={t('datasets.quality.config.format.label')}
+            helpText={t('datasets.quality.config.format.help')}
           />
           <select value={config.format ?? ''}
             onChange={(e) => onPatch({ format: (e.target.value || undefined) as QualityFormat | undefined })}
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none">
-            <option value="">— select format —</option>
+            <option value="">{t('datasets.quality.config.format.selectOption')}</option>
             {FORMAT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
           </select>
           <p className="mt-1.5 text-[11px] text-text-quaternary">
-            For UPPER/LOWER case or custom format checks, switch to "Pattern Match" — it has presets.
+            {t('datasets.quality.config.format.note')}
           </p>
         </div>
       );
@@ -1267,16 +1278,16 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div>
           <FieldLabel
-            label="Columns for unique combination"
-            helpText="Add the columns whose combined values must be unique across the table."
+            label={t('datasets.quality.config.uniqueCombo.label')}
+            helpText={t('datasets.quality.config.uniqueCombo.help')}
           />
           <TagInput
             values={config.columns ?? []}
             onChange={(columns) => onPatch({ columns })}
-            placeholder="Add column and press Enter…"
+            placeholder={t('datasets.quality.config.uniqueCombo.placeholder')}
             suggestions={colOptions}
           />
-          <p className="mt-1 text-[11px] text-text-quaternary">Fails if any combination of these columns is duplicated.</p>
+          <p className="mt-1 text-[11px] text-text-quaternary">{t('datasets.quality.config.uniqueCombo.note')}</p>
         </div>
       );
 
@@ -1284,8 +1295,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div>
           <FieldLabel
-            label="SQL boolean expression"
-            helpText="Write a SQL condition that returns TRUE for valid rows and FALSE for failing rows."
+            label={t('datasets.quality.config.crossColumn.label')}
+            helpText={t('datasets.quality.config.crossColumn.help')}
           />
           <textarea rows={4}
             value={config.expression ?? ''}
@@ -1293,25 +1304,25 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             placeholder={'end_date >= start_date\namount > 0 AND status != \'void\''}
             className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-xs focus:border-brand/50 focus:outline-none resize-none" />
           <p className="mt-1 text-[11px] text-text-quaternary">
-            Can reference any column in the selected table. Use standard SQL operators — conditional logic and multi-column checks both work.
+            {t('datasets.quality.config.crossColumn.note')}
           </p>
           <ExpressionExamples
             defaultOpen
             examples={[
               {
-                title: 'Conditional equality (Case 1)',
+                title: t('datasets.quality.config.crossColumn.example1Title'),
                 sql: "status != 'fully_received' OR income_value = (receivable + received)",
-                note: 'When status = fully_received, income_value must equal receivable + received.',
+                note: t('datasets.quality.config.crossColumn.example1Note'),
               },
               {
-                title: 'Conditional validity (Case 3)',
+                title: t('datasets.quality.config.crossColumn.example2Title'),
                 sql: "deal_id >= 0 OR owner_email = 'khoa.hoc@base.vn'",
-                note: 'Negative deal_id is only valid for a specific owner.',
+                note: t('datasets.quality.config.crossColumn.example2Note'),
               },
               {
-                title: 'Multi-column non-null + positive',
+                title: t('datasets.quality.config.crossColumn.example3Title'),
                 sql: 'amount IS NOT NULL AND amount > 0',
-                note: 'Combine common checks into a single rule.',
+                note: t('datasets.quality.config.crossColumn.example3Note'),
               },
             ]}
             onCopy={(sql) => onPatch({ expression: sql })}
@@ -1324,15 +1335,15 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
         <div className="space-y-2">
           <div>
             <FieldLabel
-              label="Related table"
-              helpText="Choose the second table that this rule should compare against."
+              label={t('datasets.quality.config.crossTable.relatedTableLabel')}
+              helpText={t('datasets.quality.config.crossTable.relatedTableHelp')}
             />
             <select
               value={secondaryTableId ?? ''}
               onChange={(e) => onPatch({ secondary_table_id: e.target.value ? Number(e.target.value) : undefined })}
               className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
             >
-              <option value="">— select related table —</option>
+              <option value="">{t('datasets.quality.config.crossTable.selectRelatedOption')}</option>
               {tables.map((table) => (
                 <option key={table.id} value={table.id}>{table.display_name || table.source_table_name}</option>
               ))}

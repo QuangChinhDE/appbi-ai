@@ -14,6 +14,7 @@ import {
   type AddJoinParams,
 } from '@/hooks/use-dataset-model';
 import { extractApiError } from '@/lib/api-errors';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export type JoinType = 'left' | 'inner' | 'right' | 'full';
 export type RelationshipType =
@@ -173,6 +174,7 @@ export function RelationshipDialog({
   initialValue,
   isSaving = false,
 }: RelationshipDialogProps) {
+  const { t } = useI18n();
   const [fromViewId, setFromViewId] = useState<number | ''>(initialValue?.fromViewId ?? '');
   const [toViewId, setToViewId] = useState<number | ''>(initialValue?.toViewId ?? '');
   const [joinPairs, setJoinPairs] = useState<JoinPair[]>(() => buildJoinPairsFromInitialValue(initialValue));
@@ -318,15 +320,15 @@ export function RelationshipDialog({
   const handleSave = async () => {
     setError('');
     if (!fromViewId || !toViewId) {
-      setError('Please select both tables.');
+      setError(t('datasets.relationshipDialog.errorSelectBothTables'));
       return;
     }
     if (fromViewId === toViewId) {
-      setError('Cannot join a table to itself.');
+      setError(t('datasets.relationshipDialog.errorSelfJoin'));
       return;
     }
     if (normalizedJoinPairs.fromColumns.length !== joinPairs.length || normalizedJoinPairs.toColumns.length !== joinPairs.length) {
-      setError('Please select join columns for every key pair.');
+      setError(t('datasets.relationshipDialog.errorSelectJoinColumns'));
       return;
     }
 
@@ -351,7 +353,7 @@ export function RelationshipDialog({
       // BE có thể trả detail dạng object (vd JOIN_INACTIVE_CASCADE 409) —
       // dùng extractApiError để chuyển an toàn về string, tránh React #31
       // khi render object trực tiếp vào JSX.
-      setError(extractApiError(saveError, 'Failed to save relationship.'));
+      setError(extractApiError(saveError, t('datasets.relationshipDialog.errorSaveFailed')));
     }
   };
 
@@ -362,10 +364,10 @@ export function RelationshipDialog({
   const suggestedUniquenessLabel = joinSuggestion
     && joinSuggestion.from_unique != null
     && joinSuggestion.to_unique != null
-    ? ` (${joinSuggestion.from_unique ? 'from unique' : 'from duplicate'}, ${joinSuggestion.to_unique ? 'to unique' : 'to duplicate'})`
+    ? ` (${joinSuggestion.from_unique ? t('datasets.relationshipDialog.fromUnique') : t('datasets.relationshipDialog.fromDuplicate')}, ${joinSuggestion.to_unique ? t('datasets.relationshipDialog.toUnique') : t('datasets.relationshipDialog.toDuplicate')})`
     : '';
   const blockingMessage = joinSuggestion?.can_create === false
-    ? (joinSuggestion.message || 'This relationship cannot be created.')
+    ? (joinSuggestion.message || t('datasets.relationshipDialog.cannotCreate'))
     : null;
   const previewPairs = normalizedJoinPairs.fromColumns.map((fromColumn, index) => ({
     fromColumn,
@@ -375,8 +377,8 @@ export function RelationshipDialog({
   return (
     <AppModalShell
       onClose={onClose}
-      title={initialValue?.fromViewId ? 'Edit Relationship' : 'Add Relationship'}
-      description="Define how two semantic views join and how their cardinality should be interpreted."
+      title={initialValue?.fromViewId ? t('datasets.relationshipDialog.titleEdit') : t('datasets.relationshipDialog.titleAdd')}
+      description={t('datasets.relationshipDialog.description')}
       icon={<Link2 className="h-5 w-5" />}
       maxWidthClass="max-w-[96vw]"
       panelClassName="w-[640px]"
@@ -389,7 +391,7 @@ export function RelationshipDialog({
             disabled={isSaving}
             className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={handleSave}
@@ -406,10 +408,10 @@ export function RelationshipDialog({
             {isSaving ? (
               <>
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                Saving...
+                {t('datasets.relationshipDialog.saving')}
               </>
             ) : (
-              'Save Relationship'
+              t('datasets.relationshipDialog.saveButton')
             )}
           </button>
         </>
@@ -419,13 +421,13 @@ export function RelationshipDialog({
         <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              From Table
+              {t('datasets.relationshipDialog.fromTable')}
             </label>
             <Select
               value={String(fromViewId)}
               onChange={handleFromViewChange}
               options={viewOptions.filter((option) => option.value !== String(toViewId))}
-              placeholder="Select table..."
+              placeholder={t('datasets.relationshipDialog.selectTablePlaceholder')}
             />
           </div>
 
@@ -439,13 +441,13 @@ export function RelationshipDialog({
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              To Table
+              {t('datasets.relationshipDialog.toTable')}
             </label>
             <Select
               value={String(toViewId)}
               onChange={handleToViewChange}
               options={viewOptions.filter((option) => option.value !== String(fromViewId))}
-              placeholder="Select table..."
+              placeholder={t('datasets.relationshipDialog.selectTablePlaceholder')}
             />
           </div>
         </div>
@@ -453,13 +455,13 @@ export function RelationshipDialog({
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              Join Keys
+              {t('datasets.relationshipDialog.joinKeys')}
             </label>
             <button
               type="button"
               onClick={handleAddKey}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2"
-              title="Add another key pair"
+              title={t('datasets.relationshipDialog.addKeyPair')}
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -472,21 +474,21 @@ export function RelationshipDialog({
             >
               <div className="space-y-1.5">
                 <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-                  From Column {joinPairs.length > 1 ? index + 1 : ''}
+                  {t('datasets.relationshipDialog.fromColumn')} {joinPairs.length > 1 ? index + 1 : ''}
                 </label>
                 {fromColumns.length > 0 ? (
                   <Select
                     value={pair.fromColumn}
                     onChange={(value) => handleJoinPairChange(index, 'fromColumn', value)}
                     options={fromColumns}
-                    placeholder="Select column..."
+                    placeholder={t('datasets.relationshipDialog.selectColumnPlaceholder')}
                   />
                 ) : (
                   <input
                     type="text"
                     value={pair.fromColumn}
                     onChange={(event) => handleJoinPairChange(index, 'fromColumn', event.target.value)}
-                    placeholder="e.g. user_id"
+                    placeholder={t('datasets.relationshipDialog.fromColumnPlaceholder')}
                     className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
                       focus:outline-none focus:ring-2 focus:ring-brand"
                   />
@@ -499,21 +501,21 @@ export function RelationshipDialog({
 
               <div className="space-y-1.5">
                 <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-                  To Column {joinPairs.length > 1 ? index + 1 : ''}
+                  {t('datasets.relationshipDialog.toColumn')} {joinPairs.length > 1 ? index + 1 : ''}
                 </label>
                 {toColumns.length > 0 ? (
                   <Select
                     value={pair.toColumn}
                     onChange={(value) => handleJoinPairChange(index, 'toColumn', value)}
                     options={toColumns}
-                    placeholder="Select column..."
+                    placeholder={t('datasets.relationshipDialog.selectColumnPlaceholder')}
                   />
                 ) : (
                   <input
                     type="text"
                     value={pair.toColumn}
                     onChange={(event) => handleJoinPairChange(index, 'toColumn', event.target.value)}
-                    placeholder="e.g. id"
+                    placeholder={t('datasets.relationshipDialog.toColumnPlaceholder')}
                     className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
                       focus:outline-none focus:ring-2 focus:ring-brand"
                   />
@@ -526,7 +528,7 @@ export function RelationshipDialog({
                   onClick={() => handleRemoveKey(index)}
                   disabled={joinPairs.length <= 1}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Remove key pair"
+                  title={t('datasets.relationshipDialog.removeKeyPair')}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -538,7 +540,7 @@ export function RelationshipDialog({
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              Relationship Type
+              {t('datasets.relationshipDialog.relationshipType')}
             </label>
             <Select
               value={relationship}
@@ -556,8 +558,8 @@ export function RelationshipDialog({
             {(isSuggestingRelationship || suggestedRelationshipLabel) && (
               <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
                 {isSuggestingRelationship
-                  ? 'Checking join cardinality...'
-                  : `Suggested from current data: ${suggestedRelationshipLabel}${suggestedUniquenessLabel}`}
+                  ? t('datasets.relationshipDialog.checkingCardinality')
+                  : t('datasets.relationshipDialog.suggestedFromData', { label: `${suggestedRelationshipLabel}${suggestedUniquenessLabel}` })}
               </p>
             )}
             {/* Phase-3b: many-to-many is allowed but high-risk. Show a red
@@ -565,15 +567,14 @@ export function RelationshipDialog({
                 they're nudged toward a bridge-table design. */}
             {relationship === 'many_to_many' && (
               <p className="rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-[11px] leading-snug text-danger">
-                ⚠ Many-to-many có thể nhân đôi giá trị aggregate do cartesian fan-out.
-                Nên tạo bridge table + 2 quan hệ N:1 thay vì N:N trực tiếp.
+                {t('datasets.relationshipDialog.manyToManyWarning')}
               </p>
             )}
           </div>
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              Join Type
+              {t('datasets.relationshipDialog.joinType')}
             </label>
             <Select
               value={joinType}
@@ -585,19 +586,18 @@ export function RelationshipDialog({
 
         <div className="space-y-1.5">
           <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-            Alias <span className="normal-case text-text-quaternary">(optional - for role-playing, e.g. "creator", "updater")</span>
+            {t('datasets.relationshipDialog.alias')} <span className="normal-case text-text-quaternary">{t('datasets.relationshipDialog.aliasHint')}</span>
           </label>
           <input
             type="text"
             value={alias}
             onChange={(event) => setAlias(event.target.value)}
-            placeholder={toView ? `Leave blank to use "${toView.name}"` : 'e.g. creator, updater'}
+            placeholder={toView ? t('datasets.relationshipDialog.aliasPlaceholderBlank', { name: toView.name }) : t('datasets.relationshipDialog.aliasPlaceholderExample')}
             className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
               focus:outline-none focus:ring-2 focus:ring-brand"
           />
           <p className="text-xs text-text-quaternary">
-            Use this when the same table is joined more than once via different keys. Field references will use
-            the alias (e.g. <code>creator.email</code>) instead of the table name.
+            {t('datasets.relationshipDialog.aliasHelpPrefix')} <code>creator.email</code> {t('datasets.relationshipDialog.aliasHelpSuffix')}
           </p>
         </div>
 
@@ -613,18 +613,18 @@ export function RelationshipDialog({
                 onChange={(e) => setIsActive(e.target.checked)}
                 className="h-3.5 w-3.5"
               />
-              Active relationship
+              {t('datasets.relationshipDialog.activeRelationship')}
             </label>
             <p className="text-xs text-text-quaternary leading-snug">
               {isActive
-                ? 'Quan hệ đang chạy. Engine sẽ dùng để resolve join path.'
-                : 'Tắt — engine sẽ bỏ qua. Dùng khi cần break vòng lặp hoặc giữ role-playing thay thế.'}
+                ? t('datasets.relationshipDialog.activeHelpOn')
+                : t('datasets.relationshipDialog.activeHelpOff')}
             </p>
           </div>
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              Cross-filter direction
+              {t('datasets.relationshipDialog.crossFilterDirection')}
             </label>
             <Select
               value={crossFilter}
@@ -633,8 +633,8 @@ export function RelationshipDialog({
             />
             <p className="text-xs text-text-quaternary leading-snug">
               {crossFilter === 'both'
-                ? 'Hai chiều: filter từ fact → dim sẽ cũng lan sang dim → fact. Cẩn thận với ambiguous paths.'
-                : 'Một chiều — chuẩn cho hầu hết star schema.'}
+                ? t('datasets.relationshipDialog.crossFilterHelpBoth')
+                : t('datasets.relationshipDialog.crossFilterHelpSingle')}
             </p>
           </div>
         </div>
@@ -646,8 +646,8 @@ export function RelationshipDialog({
         {toView && (relationship === 'many_to_one' || relationship === 'one_to_one') && (
           <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              Primary key on {toView.table_display_name || toView.name}{' '}
-              <span className="text-text-quaternary normal-case">(tùy chọn — bật symmetric aggregate)</span>
+              {t('datasets.relationshipDialog.primaryKeyOn', { name: toView.table_display_name || toView.name })}{' '}
+              <span className="text-text-quaternary normal-case">{t('datasets.relationshipDialog.primaryKeyHint')}</span>
             </label>
             <div className="flex flex-wrap gap-1.5">
               {toColumns.map((col) => {
@@ -679,9 +679,7 @@ export function RelationshipDialog({
               })}
             </div>
             <p className="text-xs text-text-quaternary leading-snug">
-              Composite PK = chọn nhiều cột. Bỏ trống = giữ nguyên khai báo
-              hiện tại (engine fallback EXISTS rewrite — đúng nhưng chậm hơn
-              symmetric trên dataset lớn).
+              {t('datasets.relationshipDialog.primaryKeyHelp')}
             </p>
           </div>
         )}

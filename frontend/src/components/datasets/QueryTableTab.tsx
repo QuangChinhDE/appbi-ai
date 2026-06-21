@@ -11,6 +11,7 @@ import { useDatasourceTables, useDatasourceTableColumns } from '@/hooks/use-data
 import type { AddTableInput } from '@/hooks/use-datasets';
 import { SqlEditor, type SqlDialect } from '@/components/ui/SqlEditor';
 import { dataSourceApi } from '@/lib/api/datasources';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ function ColumnTagAutocomplete({
   loading?: boolean;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [input, setInput] = useState('');
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -138,7 +140,7 @@ function ColumnTagAutocomplete({
           onChange={e => { setInput(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder={loading ? 'Đang tải cột...' : columns.length ? 'Tìm và chọn cột...' : 'Chọn bảng trước'}
+          placeholder={loading ? t('datasets.queryTable.loadingColumns') : columns.length ? t('datasets.queryTable.searchSelectColumn') : t('datasets.queryTable.selectTableFirstShort')}
           disabled={disabled || loading}
           className="w-full px-3 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:bg-surface-2"
         />
@@ -214,6 +216,7 @@ function JoinRow({
   onRemove: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const handleTableChange = (tbl: string) => {
     const sugg = suggestJoinKeys(baseTable, tbl);
     onChange({ ...join, joinTable: tbl, leftKey: sugg.left, rightKey: sugg.right });
@@ -244,7 +247,7 @@ function JoinRow({
           className="flex-1 border border-[rgb(var(--border-strong))] rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
           disabled={disabled}
         >
-          <option value="">Chọn bảng JOIN...</option>
+          <option value="">{t('datasets.queryTable.selectJoinTable')}</option>
           {candidates.map(c => (
             <option key={c.name} value={c.name}>
               {c.score >= 2 ? '⭐ ' : ''}{c.name}
@@ -264,7 +267,7 @@ function JoinRow({
             value={join.leftKey}
             onChange={v => onChange({ ...join, leftKey: v })}
             columns={leftTableColumns}
-            placeholder={`cột của ${baseTable}`}
+            placeholder={t('datasets.queryTable.columnOfTable', { table: baseTable })}
             disabled={disabled}
           />
           <span className="text-xs text-text-quaternary shrink-0">=</span>
@@ -272,7 +275,7 @@ function JoinRow({
             value={join.rightKey}
             onChange={v => onChange({ ...join, rightKey: v })}
             columns={rightTableColumns}
-            placeholder={`cột của ${join.joinTable}`}
+            placeholder={t('datasets.queryTable.columnOfTable', { table: join.joinTable })}
             disabled={disabled}
           />
         </div>
@@ -393,6 +396,7 @@ export function QueryTableTab({
   onSave,
   saveError,
 }: QueryTableTabProps) {
+  const { t } = useI18n();
   // Common
   const [selectedDatasourceId, setSelectedDatasourceId] = useState<number | null>(
     initialDatasourceId ?? null,
@@ -496,20 +500,20 @@ export function QueryTableTab({
 
   const validateQuery = (sql: string): string | null => {
     const trimmed = sql.trim();
-    if (!trimmed) return 'Query không được để trống';
+    if (!trimmed) return t('datasets.queryTable.errQueryEmpty');
     const normalized = trimmed.toLowerCase();
-    if (!(normalized.startsWith('select') || normalized.startsWith('with'))) return 'Query phải bắt đầu bằng SELECT hoặc WITH';
+    if (!(normalized.startsWith('select') || normalized.startsWith('with'))) return t('datasets.queryTable.errMustStartSelect');
     const dangerous = ['delete', 'drop', 'truncate', 'alter', 'create', 'insert', 'update'];
     for (const kw of dangerous) {
-      if (new RegExp(`\\b${kw}\\b`, 'i').test(trimmed)) return `Từ khóa không được phép: ${kw.toUpperCase()}`;
+      if (new RegExp(`\\b${kw}\\b`, 'i').test(trimmed)) return t('datasets.queryTable.errForbiddenKeyword', { keyword: kw.toUpperCase() });
     }
-    if (trimmed.includes(';')) return 'Không được dùng nhiều câu lệnh (dấu ;)';
+    if (trimmed.includes(';')) return t('datasets.queryTable.errMultipleStatements');
     return null;
   };
 
   // Validate SQL against the actual database to get real errors
   const validateSqlOnServer = async (sqlText: string): Promise<string | null> => {
-    if (!selectedDatasourceId) return 'Chưa chọn datasource';
+    if (!selectedDatasourceId) return t('datasets.queryTable.noDatasourceSelected');
     setIsValidating(true);
     setServerError(null);
     try {
@@ -520,7 +524,7 @@ export function QueryTableTab({
       return null;
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      const msg = typeof detail === 'object' ? detail?.message || JSON.stringify(detail) : detail || err.message || 'Lỗi không xác định';
+      const msg = typeof detail === 'object' ? detail?.message || JSON.stringify(detail) : detail || err.message || t('datasets.queryTable.unknownError');
       setServerError(msg);
       return msg;
     } finally {
@@ -563,7 +567,7 @@ export function QueryTableTab({
     <div className="p-6 space-y-5">
       {/* Datasource */}
       <div>
-        <label className="block text-sm font-medium text-text-secondary mb-1">Datasource *</label>
+        <label className="block text-sm font-medium text-text-secondary mb-1">{t('datasets.queryTable.datasourceLabel')}</label>
         {lockDatasource ? (
           <input
             type="text"
@@ -581,7 +585,7 @@ export function QueryTableTab({
             className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand"
             disabled={loadingDatasources || isLoading}
           >
-            <option value="">Chọn datasource...</option>
+            <option value="">{t('datasets.queryTable.selectDatasource')}</option>
             {datasources?.map(ds => (
               <option key={ds.id} value={ds.id}>{ds.name} ({ds.type})</option>
             ))}
@@ -591,12 +595,12 @@ export function QueryTableTab({
 
       {/* Display name */}
       <div>
-        <label className="block text-sm font-medium text-text-secondary mb-1">Tên hiển thị *</label>
+        <label className="block text-sm font-medium text-text-secondary mb-1">{t('datasets.queryTable.displayNameLabel')}</label>
         <input
           type="text"
           value={displayName}
           onChange={e => setDisplayName(e.target.value)}
-          placeholder="vd: Doanh thu tháng"
+          placeholder={t('datasets.queryTable.displayNamePlaceholder')}
           className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand"
           disabled={isLoading}
         />
@@ -606,7 +610,7 @@ export function QueryTableTab({
       <div>
         <div className="flex items-center justify-between mb-2">
           <label className="block text-sm font-medium text-text-secondary">
-            {mode === 'visual' ? 'Visual Query Builder' : 'SQL Query *'}
+            {mode === 'visual' ? t('datasets.queryTable.visualBuilderTitle') : t('datasets.queryTable.sqlQueryLabel')}
           </label>
           <button
             type="button"
@@ -614,11 +618,11 @@ export function QueryTableTab({
             className="flex items-center gap-1 text-xs text-brand hover:text-brand"
           >
             <Code className="w-3.5 h-3.5" />
-            {mode === 'visual' ? 'Chuyển sang SQL nâng cao' : 'Dùng Visual Builder'}
+            {mode === 'visual' ? t('datasets.queryTable.switchToAdvanced') : t('datasets.queryTable.switchToVisual')}
           </button>
         </div>
         <p className="mb-2 text-xs text-text-tertiary">
-          WHERE, GROUP BY, CTE, va bieu thuc SQL tu do chi ho tro trong SQL nang cao.
+          {t('datasets.queryTable.advancedOnlyHint')}
         </p>
 
         {mode === 'visual' ? (
@@ -626,13 +630,13 @@ export function QueryTableTab({
             {/* Base table */}
             <div>
               <label className="block text-xs font-semibold text-text-secondary mb-1 flex items-center">
-                Bảng nguồn *
-                <HelpTooltip text="Chọn datasource bên trên trước để hiện danh sách bảng." />
+                {t('datasets.queryTable.baseTableLabel')}
+                <HelpTooltip text={t('datasets.queryTable.baseTableHelp')} />
               </label>
               {!selectedDatasourceId ? (
-                <p className="text-xs text-text-quaternary italic">Chọn datasource trước</p>
+                <p className="text-xs text-text-quaternary italic">{t('datasets.queryTable.selectDatasourceFirst')}</p>
               ) : loadingTables ? (
-                <div className="flex items-center gap-2 text-xs text-text-quaternary"><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang tải danh sách bảng...</div>
+                <div className="flex items-center gap-2 text-xs text-text-quaternary"><Loader2 className="w-3.5 h-3.5 animate-spin" />{t('datasets.queryTable.loadingTables')}</div>
               ) : (
                 <select
                   value={vBaseTable}
@@ -640,8 +644,8 @@ export function QueryTableTab({
                   className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isLoading}
                 >
-                  <option value="">Chọn bảng...</option>
-                  {tableNames.map(t => <option key={t} value={t}>{t}</option>)}
+                  <option value="">{t('datasets.queryTable.selectTable')}</option>
+                  {tableNames.map(tn => <option key={tn} value={tn}>{tn}</option>)}
                 </select>
               )}
             </div>
@@ -651,8 +655,8 @@ export function QueryTableTab({
                 {/* Column picker */}
                 <div>
                   <label className="block text-xs font-semibold text-text-secondary mb-1 flex items-center">
-                    Cột cần lấy
-                    <HelpTooltip text="Để trống = lấy tất cả cột (*)" />
+                    {t('datasets.queryTable.columnsToSelectLabel')}
+                    <HelpTooltip text={t('datasets.queryTable.columnsToSelectHelp')} />
                   </label>
                   <ColumnTagAutocomplete
                     columns={availableColumns}
@@ -666,7 +670,7 @@ export function QueryTableTab({
                 {/* JOIN */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs font-semibold text-text-secondary">JOIN (tuỳ chọn)</label>
+                    <label className="text-xs font-semibold text-text-secondary">{t('datasets.queryTable.joinLabel')}</label>
                     <button
                       type="button"
                       disabled={isLoading || tableNames.length < 2}
@@ -682,7 +686,7 @@ export function QueryTableTab({
                       }}
                       className="flex items-center gap-1 text-xs text-brand hover:text-brand disabled:opacity-40"
                     >
-                      <Plus className="w-3.5 h-3.5" /> Thêm JOIN
+                      <Plus className="w-3.5 h-3.5" /> {t('datasets.queryTable.addJoin')}
                     </button>
                   </div>
                   {vJoins.map((j, idx) => (
@@ -703,19 +707,19 @@ export function QueryTableTab({
                 {/* Sort + Limit */}
                 <div className="flex gap-3">
                   <div className="flex-1">
-                    <label className="block text-xs font-semibold text-text-secondary mb-1">Sắp xếp theo</label>
+                    <label className="block text-xs font-semibold text-text-secondary mb-1">{t('datasets.queryTable.sortByLabel')}</label>
                     <input
                       type="text"
                       value={vSortField}
                       onChange={e => setVSortField(e.target.value)}
-                      placeholder="tên cột (tuỳ chọn)"
+                      placeholder={t('datasets.queryTable.sortByPlaceholder')}
                       className="w-full px-2 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                       disabled={isLoading}
                     />
                   </div>
                   {vSortField && (
                     <div>
-                      <label className="block text-xs font-semibold text-text-secondary mb-1">Thứ tự</label>
+                      <label className="block text-xs font-semibold text-text-secondary mb-1">{t('datasets.queryTable.orderLabel')}</label>
                       <select
                         value={vSortDir}
                         onChange={e => setVSortDir(e.target.value as 'ASC' | 'DESC')}
@@ -729,13 +733,13 @@ export function QueryTableTab({
                   )}
                   <div>
                     <label className="block text-xs font-semibold text-text-secondary mb-1">
-                      Giới hạn dòng
+                      {t('datasets.queryTable.rowLimitLabel')}
                     </label>
                     <input
                       type="number"
                       value={vLimit}
                       onChange={e => setVLimit(e.target.value)}
-                      placeholder="không giới hạn"
+                      placeholder={t('datasets.queryTable.rowLimitPlaceholder')}
                       min={1}
                       className="w-32 px-2 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                       disabled={isLoading}
@@ -745,9 +749,9 @@ export function QueryTableTab({
 
                 {/* Generated SQL preview */}
                 <div>
-                  <label className="block text-xs font-semibold text-text-secondary mb-1">SQL được tạo tự động</label>
+                  <label className="block text-xs font-semibold text-text-secondary mb-1">{t('datasets.queryTable.generatedSqlLabel')}</label>
                   <pre className="max-h-32 overflow-x-auto whitespace-pre-wrap rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-xs font-mono text-text-secondary">
-                    {generateSql() || '— Chưa đủ thông tin —'}
+                    {generateSql() || t('datasets.queryTable.notEnoughInfo')}
                   </pre>
                 </div>
               </>
@@ -784,15 +788,15 @@ export function QueryTableTab({
               <div className="mt-2 flex items-start gap-2 text-sm text-danger">
                 <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <span className="font-medium">Lỗi từ CSDL:</span>
+                  <span className="font-medium">{t('datasets.queryTable.dbErrorPrefix')}</span>
                   <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{serverError}</pre>
                 </div>
               </div>
             )}
             <div className="mt-2 flex items-center justify-between">
               <div className="space-y-0.5">
-                <p className="text-xs text-text-tertiary">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
-                <p className="text-xs text-text-tertiary">• Hỗ trợ comment SQL (-- và /* */), line numbers, auto-complete</p>
+                <p className="text-xs text-text-tertiary">{t('datasets.queryTable.hintSelectOnly')}</p>
+                <p className="text-xs text-text-tertiary">{t('datasets.queryTable.hintEditorFeatures')}</p>
               </div>
               <button
                 type="button"
@@ -801,7 +805,7 @@ export function QueryTableTab({
                 className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 {isValidating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                Kiểm tra SQL
+                {t('datasets.queryTable.validateSql')}
               </button>
             </div>
           </div>
@@ -814,7 +818,7 @@ export function QueryTableTab({
           <div className="flex-1 flex items-start gap-2 text-danger text-sm mr-4">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <span className="font-medium">Lỗi từ CSDL:</span>
+              <span className="font-medium">{t('datasets.queryTable.dbErrorPrefix')}</span>
               <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{saveError}</pre>
             </div>
           </div>
@@ -825,7 +829,7 @@ export function QueryTableTab({
           className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm shrink-0"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          {lockDatasource ? 'Lưu thay đổi' : 'Thêm bảng'}
+          {lockDatasource ? t('datasets.queryTable.saveChanges') : t('datasets.queryTable.addTable')}
         </button>
       </div>
     </div>

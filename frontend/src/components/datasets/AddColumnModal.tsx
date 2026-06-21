@@ -15,6 +15,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Loader2, AlertCircle, Play, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 import * as formulajs from 'formulajs';
 
@@ -280,6 +281,7 @@ export function AddColumnModal({
   editingStep,
   transformationType = 'js_formula',
 }: AddColumnModalProps) {
+  const { t } = useI18n();
   const isEditMode = !!editingStep;
 
   const [columnName, setColumnName] = useState('');
@@ -332,12 +334,12 @@ export function AddColumnModal({
 
   const handleSave = async () => {
     setSaveError(null);
-    if (!isEditMode && !columnName.trim()) { setSaveError('Vui lòng nhập tên cột'); return; }
-    if (!isEditMode && /\s/.test(columnName.trim())) { setSaveError('Tên cột không được chứa khoảng trắng'); return; }
-    if (!formula.trim()) { setSaveError('Vui lòng nhập công thức'); return; }
+    if (!isEditMode && !columnName.trim()) { setSaveError(t('datasets.addColumnModal.errColumnNameRequired')); return; }
+    if (!isEditMode && /\s/.test(columnName.trim())) { setSaveError(t('datasets.addColumnModal.errColumnNameNoSpaces')); return; }
+    if (!formula.trim()) { setSaveError(t('datasets.addColumnModal.errFormulaRequired')); return; }
     if (previewRows.length > 0) {
       const check = evalExcelFormula(formula, previewRows[0], buildFNS(lookupData));
-      if (!check.ok) { setSaveError(`Lỗi công thức: ${check.error}`); return; }
+      if (!check.ok) { setSaveError(t('datasets.addColumnModal.errFormula', { error: check.error })); return; }
     }
     setIsSaving(true);
     try {
@@ -373,7 +375,7 @@ export function AddColumnModal({
       }
       onClose();
     } catch (e: any) {
-      setSaveError('Lưu thất bại: ' + (e?.message ?? String(e)));
+      setSaveError(t('datasets.addColumnModal.errSaveFailed', { error: e?.message ?? String(e) }));
     } finally {
       setIsSaving(false);
     }
@@ -384,8 +386,8 @@ export function AddColumnModal({
   const resolvedGroups: ColumnGroup[] = useMemo(() => {
     if (columnGroups && columnGroups.length > 0) return columnGroups;
     if (allColumns.length === 0) return [];
-    return [{ sourceLabel: table.display_name || table.source_table_name || 'Cột', columns: allColumns }];
-  }, [columnGroups, allColumns, table.display_name, table.source_table_name]);
+    return [{ sourceLabel: table.display_name || table.source_table_name || t('datasets.addColumnModal.columnsFallbackLabel'), columns: allColumns }];
+  }, [columnGroups, allColumns, table.display_name, table.source_table_name, t]);
 
   if (!isOpen) return null;
 
@@ -400,10 +402,10 @@ export function AddColumnModal({
               </div>
               <div className="min-w-0">
                 <h2 className="text-small font-strong text-text-primary">
-                  {isEditMode ? `Sửa cột: ${editingStep?.params.newField}` : 'Thêm cột tính toán'}
+                  {isEditMode ? t('datasets.addColumnModal.titleEdit', { name: editingStep?.params.newField }) : t('datasets.addColumnModal.titleAdd')}
                 </h2>
                 <div className="mt-0.5 text-caption text-text-tertiary">
-                  {isEditMode ? 'Sửa công thức Excel hiện có, giữ nguyên tên cột.' : 'Dùng công thức Excel để tạo cột mới từ dữ liệu hiện có.'}
+                  {isEditMode ? t('datasets.addColumnModal.subtitleEdit') : t('datasets.addColumnModal.subtitleAdd')}
                 </div>
               </div>
             </div>
@@ -427,13 +429,13 @@ export function AddColumnModal({
             {!isEditMode && (
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-1">
-                  Tên cột mới <span className="text-danger">*</span>
+                  {t('datasets.addColumnModal.newColumnNameLabel')} <span className="text-danger">*</span>
                 </label>
                 <input
                   type="text"
                   value={columnName}
                   onChange={(e) => setColumnName(e.target.value)}
-                  placeholder="vd: THANH_TIEN  (không khoảng trắng)"
+                  placeholder={t('datasets.addColumnModal.newColumnNamePlaceholder')}
                   className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isSaving}
                 />
@@ -444,8 +446,8 @@ export function AddColumnModal({
             {resolvedGroups.length > 0 && (
               <div>
                 <p className="text-xs text-text-tertiary mb-1.5 font-medium flex items-center">
-                  Cột khả dụng
-                  <HelpTooltip text="Click vào tên cột để chèn vào công thức." />
+                  {t('datasets.addColumnModal.availableColumns')}
+                  <HelpTooltip text={t('datasets.addColumnModal.availableColumnsTip')} />
                 </p>
                 <div className="space-y-2 max-h-28 overflow-y-auto">
                   {resolvedGroups.map((group) => (
@@ -473,8 +475,8 @@ export function AddColumnModal({
             {/* Formula input */}
             <div>
               <label className="text-sm font-medium text-text-secondary flex items-center mb-1">
-                Công thức <span className="text-danger ml-0.5">*</span>
-                <HelpTooltip text="Dùng [TênCột] để tham chiếu cột · cú pháp y hệt Excel" />
+                {t('datasets.addColumnModal.formulaLabel')} <span className="text-danger ml-0.5">*</span>
+                <HelpTooltip text={t('datasets.addColumnModal.formulaTip')} />
               </label>
               <div className="relative overflow-hidden rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 focus-within:border-brand focus-within:ring-2 focus-within:ring-brand">
                 <textarea
@@ -504,17 +506,17 @@ export function AddColumnModal({
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
                   <Play className="w-3.5 h-3.5 text-text-tertiary" />
-                  <span className="text-xs font-medium text-text-secondary">Xem trước ({Math.min(5, previewRows.length)} hàng đầu)</span>
-                  {allPreviewOk && <span className="text-[10px] text-success font-medium">✓ Hợp lệ</span>}
-                  {hasPreviewError && <span className="text-[10px] text-danger font-medium">✗ Có lỗi</span>}
+                  <span className="text-xs font-medium text-text-secondary">{t('datasets.addColumnModal.previewHeading', { count: Math.min(5, previewRows.length) })}</span>
+                  {allPreviewOk && <span className="text-[10px] text-success font-medium">{t('datasets.addColumnModal.previewValid')}</span>}
+                  {hasPreviewError && <span className="text-[10px] text-danger font-medium">{t('datasets.addColumnModal.previewHasError')}</span>}
                 </div>
                 <div className="border border-[rgb(var(--border-line))] rounded-md overflow-hidden">
                   <table className="w-full text-xs">
                     <thead className="bg-surface-2 border-b border-[rgb(var(--border-line))]">
                       <tr>
                         <th className="px-3 py-1.5 text-left text-text-tertiary font-medium w-10">#</th>
-                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium">{columnName.trim() || '(tên cột)'}</th>
-                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium w-28">Trạng thái</th>
+                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium">{columnName.trim() || t('datasets.addColumnModal.columnNamePlaceholder')}</th>
+                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium w-28">{t('datasets.addColumnModal.statusHeader')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[rgb(var(--border-line))]">
@@ -528,7 +530,7 @@ export function AddColumnModal({
                           </td>
                           <td className="px-3 py-1.5">
                             {res.ok
-                              ? <span className="text-success">✓ OK</span>
+                              ? <span className="text-success">{t('datasets.addColumnModal.statusOk')}</span>
                               : <span className="text-danger break-all text-[10px]">{(res as any).error}</span>}
                           </td>
                         </tr>
@@ -552,14 +554,14 @@ export function AddColumnModal({
             <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
               <p className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
                 <Info className="w-3.5 h-3.5 text-brand" />
-                Hàm Excel khả dụng
+                {t('datasets.addColumnModal.availableFns')}
               </p>
             </div>
             <div className="flex-1 overflow-y-auto">
               {/* Lookup table list */}
               {lookupData && Object.keys(lookupData).length > 0 && (
                 <div className="px-3 py-2 border-b bg-warning/10">
-                  <p className="text-[10px] font-semibold text-warning mb-1.5">Bảng lookup khả dụng:</p>
+                  <p className="text-[10px] font-semibold text-warning mb-1.5">{t('datasets.addColumnModal.lookupTablesHeading')}</p>
                   <div className="space-y-1">
                     {lookupTables && lookupTables.length > 0 ? (
                       lookupTables.map((lookupTable) => (
@@ -571,7 +573,7 @@ export function AddColumnModal({
                         >
                           <span className="text-[10px] font-semibold text-warning block">{lookupTable.label}</span>
                           <span className="text-[9px] font-mono text-warning block">"{lookupTable.identifier}"</span>
-                          <span className="text-[9px] text-warning">{lookupTable.rowCount} rows cache · click chèn mẫu</span>
+                          <span className="text-[9px] text-warning">{t('datasets.addColumnModal.lookupRowCacheHint', { count: lookupTable.rowCount })}</span>
                         </button>
                       ))
                     ) : (
@@ -583,7 +585,7 @@ export function AddColumnModal({
                           className="w-full text-left px-2 py-1 bg-warning/15 hover:bg-warning/20 rounded border border-warning/30 transition-colors"
                         >
                           <span className="text-[10px] font-mono font-semibold text-warning block">"{tableKey}"</span>
-                          <span className="text-[9px] text-warning">{rows.length} rows cache · click chèn mẫu</span>
+                          <span className="text-[9px] text-warning">{t('datasets.addColumnModal.lookupRowCacheHint', { count: rows.length })}</span>
                         </button>
                       ))
                     )}
@@ -612,7 +614,7 @@ export function AddColumnModal({
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-mono font-semibold text-brand group-hover:text-brand">{fn.name}</span>
-                            <span className="text-[9px] text-text-quaternary">chèn</span>
+                            <span className="text-[9px] text-text-quaternary">{t('datasets.addColumnModal.insertHint')}</span>
                           </div>
                           <p className="text-[10px] text-text-tertiary mt-0.5">{fn.desc}</p>
                         </button>
@@ -626,14 +628,14 @@ export function AddColumnModal({
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
-          <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50">Huỷ</button>
+          <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50">{t('common.cancel')}</button>
           <button
             onClick={handleSave}
             disabled={isSaving || (!isEditMode && !columnName.trim()) || !formula.trim() || hasPreviewError}
             className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
           >
             {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-            {isEditMode ? 'Cập nhật cột' : 'Thêm cột'}
+            {isEditMode ? t('datasets.addColumnModal.btnUpdate') : t('datasets.addColumnModal.btnAdd')}
           </button>
         </div>
       </div>

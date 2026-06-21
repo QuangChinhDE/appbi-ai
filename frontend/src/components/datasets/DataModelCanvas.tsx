@@ -54,6 +54,7 @@ import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
 import { extractApiError } from '@/lib/api-errors';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ─── Measure folder grouping ──────────────────────────────────────────────────
 
@@ -292,6 +293,7 @@ function ViewCard({
   relationDraftTarget,
   onStartRelationshipDrag,
 }: ViewCardProps) {
+  const { t } = useI18n();
   const [dimsOpen, setDimsOpen] = useState(true);
   const [msrOpen,  setMsrOpen]  = useState(false);
   const emphasizedCols = useMemo(
@@ -332,7 +334,7 @@ function ViewCard({
                 ? 'bg-brand text-white hover:bg-brand'
                 : 'hover:bg-surface-1 text-text-quaternary hover:text-text-secondary'
             }`}
-            title={isSelected ? 'Editing this view' : 'Edit this view'}
+            title={isSelected ? t('datasets.dataModel.editingThisView') : t('datasets.dataModel.editThisView')}
           >
             <Pencil className="w-3 h-3" />
           </button>
@@ -346,7 +348,7 @@ function ViewCard({
           className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] font-semibold
             text-text-quaternary uppercase tracking-wider hover:bg-surface-2"
         >
-          <span>Dimensions ({vis.length})</span>
+          <span>{t('datasets.dataModel.dimensions')} ({vis.length})</span>
           {dimsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
         {dimsOpen && (
@@ -383,7 +385,7 @@ function ViewCard({
                     {d.label || d.name}
                   </span>
                   {d.hidden && !isRelationship && !isCalendarJoin && (
-                    <span className="ml-auto text-[9px] uppercase tracking-wide text-warning">hidden</span>
+                    <span className="ml-auto text-[9px] uppercase tracking-wide text-warning">{t('datasets.dataModel.hidden')}</span>
                   )}
                   {canCreateRelationship && (
                     <button
@@ -393,7 +395,7 @@ function ViewCard({
                       className={`ml-auto rounded p-0.5 text-brand transition-opacity hover:bg-brand/10 ${
                         isRelationship || isDropTarget ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                       }`}
-                      title={`Drag from ${d.name} to create a relationship`}
+                      title={t('datasets.dataModel.dragToCreateRelationship', { column: d.name })}
                     >
                       <Link2 className="h-2.5 w-2.5 shrink-0" />
                     </button>
@@ -401,7 +403,7 @@ function ViewCard({
                   {!isRelationship && isCalendarJoin && (
                     <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-success">
                       <Calendar className="h-2.5 w-2.5" />
-                      Date
+                      {t('datasets.dataModel.date')}
                     </span>
                   )}
                 </div>
@@ -410,7 +412,7 @@ function ViewCard({
             {hid.length > 0 && (
               <div className="px-2 py-0.5 text-[11px] text-text-quaternary flex items-center gap-1">
                 <EyeOff className="w-2.5 h-2.5" />
-                {hid.length} hidden
+                {t('datasets.dataModel.hiddenCount', { count: hid.length })}
               </div>
             )}
           </div>
@@ -424,7 +426,7 @@ function ViewCard({
           className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] font-semibold
             text-text-quaternary uppercase tracking-wider hover:bg-surface-2"
         >
-          <span>Measures ({visM.length})</span>
+          <span>{t('datasets.dataModel.measures')} ({visM.length})</span>
           {msrOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
         {msrOpen && (
@@ -688,6 +690,7 @@ function CalendarLayerBanner({
   showCalendarLayer,
   onToggleCalendarLayer,
 }: CalendarLayerBannerProps) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const groupedBindings = useMemo(() => {
     const grouped = new Map<string, { id: number; label: string; fields: string[] }>();
@@ -741,12 +744,14 @@ function CalendarLayerBanner({
             </div>
             <div className="min-w-0">
               <div className="text-sm font-medium text-success">
-                {getViewLabel(calendarView)} layer {showCalendarLayer ? 'is visible on the canvas' : 'is hidden from the canvas'}
+                {showCalendarLayer
+                  ? t('datasets.calendarBanner.layerVisible', { layer: getViewLabel(calendarView) })
+                  : t('datasets.calendarBanner.layerHidden', { layer: getViewLabel(calendarView) })}
               </div>
               <p className="mt-0.5 text-xs leading-5 text-success/90">
                 {bindingCount > 0
-                  ? `${bindingCount} temporal column${bindingCount !== 1 ? 's are' : ' is'} auto-linked across ${tableCount} table${tableCount !== 1 ? 's' : ''}. The semantic joins still work behind the scenes; the canvas stays cleaner by default.`
-                  : 'The standard date dimension is ready and can be shown on the canvas when you need to inspect it.'}
+                  ? t('datasets.calendarBanner.autoLinkedSummary', { columns: bindingCount, tables: tableCount })
+                  : t('datasets.calendarBanner.dateDimensionReady')}
               </p>
               {previewChips.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -760,7 +765,7 @@ function CalendarLayerBanner({
                   ))}
                   {bindingCount > previewChips.length && (
                     <span className="rounded-full border border-success/30 bg-surface-1 px-2 py-0.5 text-[11px] font-medium text-success">
-                      +{bindingCount - previewChips.length} more
+                      {t('datasets.calendarBanner.moreCount', { count: bindingCount - previewChips.length })}
                     </span>
                   )}
                 </div>
@@ -776,7 +781,7 @@ function CalendarLayerBanner({
               onClick={() => setExpanded((value) => !value)}
               className="rounded-md border border-success/30 bg-surface-1 px-3 py-1.5 text-xs font-medium text-success transition-colors hover:bg-success/10"
             >
-              {expanded ? 'Hide mappings' : 'View mappings'}
+              {expanded ? t('datasets.calendarBanner.hideMappings') : t('datasets.calendarBanner.viewMappings')}
             </button>
           )}
           <button
@@ -784,7 +789,7 @@ function CalendarLayerBanner({
             onClick={onToggleCalendarLayer}
             className="rounded-md border border-success/40 bg-success px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-success/90"
           >
-            {showCalendarLayer ? 'Hide date layer' : 'Show date layer'}
+            {showCalendarLayer ? t('datasets.calendarBanner.hideDateLayer') : t('datasets.calendarBanner.showDateLayer')}
           </button>
         </div>
       </div>
@@ -822,6 +827,7 @@ function ModelOverflowMenu({
   onResetModel: () => void;
   busy: boolean;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement | null>(null);
 
@@ -841,7 +847,7 @@ function ModelOverflowMenu({
         onClick={() => setOpen((v) => !v)}
         className="flex items-center justify-center w-8 h-8 rounded-md text-text-secondary
           border border-[rgb(var(--border-strong))] hover:bg-surface-2 transition-colors"
-        title="More actions"
+        title={t('datasets.dataModel.moreActions')}
       >
         {busy ? (
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -856,9 +862,7 @@ function ModelOverflowMenu({
             onClick={() => {
               setOpen(false);
               if (
-                window.confirm(
-                  'Reset model: xoá tất cả auto-detected relationships và tái sinh từ đầu. Relationships do bạn tạo tay vẫn được giữ. Tiếp tục?',
-                )
+                window.confirm(t('datasets.dataModel.resetModelConfirm'))
               ) {
                 onResetModel();
               }
@@ -867,9 +871,9 @@ function ModelOverflowMenu({
           >
             <RefreshCw className="mt-0.5 w-3.5 h-3.5 shrink-0 text-text-tertiary" />
             <div>
-              <div className="font-medium text-text-primary">Reset model</div>
+              <div className="font-medium text-text-primary">{t('datasets.dataModel.resetModel')}</div>
               <div className="text-[11px] text-text-tertiary">
-                Wipe auto joins, regenerate from scratch. Manual joins kept.
+                {t('datasets.dataModel.resetModelDesc')}
               </div>
             </div>
           </button>
@@ -887,6 +891,7 @@ export function DataModelCanvas({
   selectedViewId,
   onSelectView,
 }: DataModelCanvasProps) {
+  const { t } = useI18n();
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const generateModel = useGenerateModel();
   const addJoin       = useAddJoin();
@@ -1247,15 +1252,15 @@ export function DataModelCanvas({
   const handleGenerate = async (force = false) => {
     try {
       const r = await generateModel.mutateAsync({ datasetId, force });
-      toast.success(`Model generated: ${r.views_created} views, ${r.explores_created} explores`);
+      toast.success(t('datasets.dataModel.modelGenerated', { views: r.views_created, explores: r.explores_created }));
     } catch (e: unknown) {
-      toast.error(extractApiError(e, 'Failed to generate model'));
+      toast.error(extractApiError(e, t('datasets.dataModel.failedToGenerate')));
     }
   };
 
   const handleAddJoin = async (params: Omit<AddJoinParams, 'datasetId'>) => {
     await addJoin.mutateAsync({ datasetId, ...params });
-    toast.success('Relationship saved');
+    toast.success(t('datasets.dataModel.relationshipSaved'));
   };
 
   const handleDeleteRel = async () => {
@@ -1273,12 +1278,12 @@ export function DataModelCanvas({
         toColumns: relationship.toCols,
       });
       setSelectedRelKey(null);
-      toast.success(removingDateLink ? 'Date link removed' : 'Relationship removed');
+      toast.success(removingDateLink ? t('datasets.dataModel.dateLinkRemoved') : t('datasets.dataModel.relationshipRemoved'));
     } catch (e: unknown) {
       toast.error(
         extractApiError(
           e,
-          removingDateLink ? 'Failed to remove date link' : 'Failed to remove relationship',
+          removingDateLink ? t('datasets.dataModel.failedToRemoveDateLink') : t('datasets.dataModel.failedToRemoveRelationship'),
         ),
       );
     }
@@ -1471,8 +1476,8 @@ export function DataModelCanvas({
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3 text-danger">
-        <span>Failed to load model</span>
-        <button onClick={() => refetch()} className="text-sm underline text-brand">Retry</button>
+        <span>{t('datasets.dataModel.failedToLoad')}</span>
+        <button onClick={() => refetch()} className="text-sm underline text-brand">{t('datasets.dataModel.retry')}</button>
       </div>
     );
   }
@@ -1481,10 +1486,9 @@ export function DataModelCanvas({
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-center">
-          <h3 className="text-lg font-medium text-text-primary mb-1">No Data Model</h3>
+          <h3 className="text-lg font-medium text-text-primary mb-1">{t('datasets.dataModel.noDataModel')}</h3>
           <p className="text-sm text-text-tertiary max-w-md">
-            Auto-generate a semantic model from your dataset tables. This creates dimensions,
-            measures, and auto-detects relationships between tables.
+            {t('datasets.dataModel.noDataModelDesc')}
           </p>
         </div>
         {canEdit && (
@@ -1497,7 +1501,7 @@ export function DataModelCanvas({
             {generateModel.isPending
               ? <Loader2 className="w-4 h-4 animate-spin" />
               : <Sigma className="w-4 h-4" />}
-            Generate Model
+            {t('datasets.dataModel.generateModel')}
           </button>
         )}
       </div>
@@ -1514,11 +1518,11 @@ export function DataModelCanvas({
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <h3 className="text-sm font-medium text-text-primary shrink-0">Data Model</h3>
+          <h3 className="text-sm font-medium text-text-primary shrink-0">{t('datasets.dataModel.title')}</h3>
           <span className="text-xs text-text-quaternary shrink-0">
-            {visibleViews.length} table{visibleViews.length !== 1 ? 's' : ''} |{' '}
-            {totalRels} relationship{totalRels !== 1 ? 's' : ''}
-            {totalCalendarRels > 0 ? ` | ${totalCalendarRels} date link${totalCalendarRels !== 1 ? 's' : ''}` : ''}
+            {t('datasets.dataModel.tableCount', { count: visibleViews.length })} |{' '}
+            {t('datasets.dataModel.relationshipCount', { count: totalRels })}
+            {totalCalendarRels > 0 ? ` | ${t('datasets.dataModel.dateLinkCount', { count: totalCalendarRels })}` : ''}
           </span>
           {selectedRelationship && (
             <span className="text-xs text-brand truncate">
@@ -1534,9 +1538,9 @@ export function DataModelCanvas({
               {' · '}
               {selectedRelationship.joinType.toUpperCase()}
               {selectedRelationship.origin === 'auto_calendar'
-                ? ' | Auto date link'
+                ? ` | ${t('datasets.dataModel.autoDateLink')}`
                 : selectedRelationship.managed
-                  ? ' | Auto-generated'
+                  ? ` | ${t('datasets.dataModel.autoGenerated')}`
                   : ''}
             </span>
           )}
@@ -1567,10 +1571,10 @@ export function DataModelCanvas({
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
                 border border-brand/40 rounded-md hover:bg-brand/10 transition-colors"
-              title="Edit relationship — change cardinality, active status, cross-filter direction"
+              title={t('datasets.dataModel.editRelationshipTitle')}
             >
               <Pencil className="w-3.5 h-3.5" />
-              Edit
+              {t('datasets.dataModel.edit')}
             </button>
           )}
           {canDeleteSelectedRelationship && (
@@ -1583,7 +1587,7 @@ export function DataModelCanvas({
               {removeJoin.isPending
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 : <Trash2 className="w-3.5 h-3.5" />}
-              {selectedRelationship?.origin === 'auto_calendar' ? 'Remove date link' : 'Delete'}
+              {selectedRelationship?.origin === 'auto_calendar' ? t('datasets.dataModel.removeDateLink') : t('common.delete')}
             </button>
           )}
           <div className="flex items-center gap-1 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1 py-1">
@@ -1592,7 +1596,7 @@ export function DataModelCanvas({
               onClick={handleZoomOut}
               disabled={zoom <= ZOOM_MIN}
               className="rounded p-1 text-text-secondary hover:bg-surface-2 disabled:opacity-40"
-              title="Zoom out"
+              title={t('datasets.dataModel.zoomOut')}
             >
               <Minus className="h-3.5 w-3.5" />
             </button>
@@ -1600,7 +1604,7 @@ export function DataModelCanvas({
               type="button"
               onClick={handleResetZoom}
               className="min-w-[52px] rounded px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
-              title="Reset zoom"
+              title={t('datasets.dataModel.resetZoom')}
             >
               {Math.round(zoom * 100)}%
             </button>
@@ -1609,7 +1613,7 @@ export function DataModelCanvas({
               onClick={handleZoomIn}
               disabled={zoom >= ZOOM_MAX}
               className="rounded p-1 text-text-secondary hover:bg-surface-2 disabled:opacity-40"
-              title="Zoom in"
+              title={t('datasets.dataModel.zoomIn')}
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
@@ -1619,20 +1623,20 @@ export function DataModelCanvas({
             onClick={() => setDictModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
               border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 transition-colors"
-            title="View & edit dataset dictionary"
+            title={t('datasets.dataModel.dictionaryTitle')}
           >
             <BookOpen className="w-3.5 h-3.5" />
-            Dictionary
+            {t('datasets.dataModel.dictionary')}
           </button>
           {hasUserLayout && (
             <button
               onClick={handleResetLayout}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
                 border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 transition-colors"
-              title="Reset card positions to the auto layout"
+              title={t('datasets.dataModel.resetLayoutTitle')}
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              Reset layout
+              {t('datasets.dataModel.resetLayout')}
             </button>
           )}
           {canEdit && (
@@ -1646,7 +1650,7 @@ export function DataModelCanvas({
                 border border-brand/40 bg-brand/10 rounded-md hover:bg-brand/15 transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
-              Add Relationship
+              {t('datasets.dataModel.addRelationship')}
             </button>
           )}
           {canEdit && (
@@ -1654,10 +1658,10 @@ export function DataModelCanvas({
               onClick={() => setReviewOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white
                 bg-brand rounded-md hover:bg-brand-hover transition-colors"
-              title="Detect relationships from FK constraints and column names — you confirm what to apply"
+              title={t('datasets.dataModel.detectRelationshipsTitle')}
             >
               <Link2 className="w-3.5 h-3.5" />
-              Detect relationships
+              {t('datasets.dataModel.detectRelationships')}
             </button>
           )}
           {canEdit && (
@@ -1820,8 +1824,8 @@ export function DataModelCanvas({
       {dictModalOpen && (
         <AppModalShell
           onClose={() => setDictModalOpen(false)}
-          title={`${datasetName} Dictionary`}
-          description="Review and edit dictionary coverage across all dataset tables from one workspace."
+          title={t('datasets.dataModel.dictionaryModalTitle', { dataset: datasetName })}
+          description={t('datasets.dataModel.dictionaryModalDesc')}
           icon={<BookOpen className="h-5 w-5" />}
           maxWidthClass="max-w-6xl"
           panelClassName="h-[88vh] max-h-[88vh] rounded-[28px]"

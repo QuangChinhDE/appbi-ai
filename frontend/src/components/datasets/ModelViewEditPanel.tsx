@@ -61,6 +61,7 @@ import { AppModalShell } from '@/components/common/AppModalShell';
 import { MeasureExpressionEditor, type ExprSuggestion } from './MeasureExpressionEditor';
 import { toast } from '@/lib/toast';
 import { extractApiError } from '@/lib/api-errors';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   buildPayload,
   DataTypeBadge,
@@ -375,6 +376,7 @@ function ColumnCombobox({
   placeholder?: string;
   invalid?: boolean;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [focusIdx, setFocusIdx] = useState(0);
@@ -447,7 +449,7 @@ function ColumnCombobox({
           onKeyDown={handleKey}
           // Commit typed free text when leaving the field (e.g. tab away).
           onBlur={() => { if (query.trim() && query.trim() !== value) onChange(query.trim()); }}
-          placeholder={placeholder ?? `Chọn / gõ cột (${options.length} cột)…`}
+          placeholder={placeholder ?? t('datasets.columnCombobox.placeholderCount', { count: String(options.length) })}
           className="w-full bg-transparent text-xs font-mono focus:outline-none"
         />
         {value && !open && (
@@ -455,7 +457,7 @@ function ColumnCombobox({
             type="button"
             onClick={() => { onChange(''); inputRef.current?.focus(); }}
             className="text-text-quaternary hover:text-text-secondary shrink-0"
-            aria-label="Xoá"
+            aria-label={t('datasets.columnCombobox.clear')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -465,7 +467,7 @@ function ColumnCombobox({
         <div className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-md">
           {filtered.length === 0 ? (
             <p className="px-3 py-2 text-[11px] text-text-quaternary">
-              Không có cột khớp. Nhấn Enter để dùng "<span className="font-mono">{query.trim()}</span>" như SQL tự do.
+              {t('datasets.columnCombobox.noMatchPrefix')}"<span className="font-mono">{query.trim()}</span>"{t('datasets.columnCombobox.noMatchSuffix')}
             </p>
           ) : (
             filtered.map((opt, idx) => (
@@ -524,13 +526,14 @@ function ColumnMeaningDrawer({
   onChange: (updater: (cur: DatasetDictionaryColumnNote) => DatasetDictionaryColumnNote) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   if (!open || !note) return null;
 
   return (
     <AppModalShell
       onClose={onClose}
       title={note.column_name}
-      description={`${tableName} · column dictionary`}
+      description={`${tableName} · ${t('datasets.columnDrawer.dictionarySuffix')}`}
       icon={<Pencil className="h-5 w-5" />}
       maxWidthClass="max-w-lg"
       panelClassName="max-h-[75vh]"
@@ -542,40 +545,40 @@ function ColumnMeaningDrawer({
               onClick={onRemove}
               className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-danger/30 px-3 py-2 text-sm font-medium text-danger hover:bg-danger/10"
             >
-              <Trash2 className="h-3.5 w-3.5" /> Remove
+              <Trash2 className="h-3.5 w-3.5" /> {t('common.delete')}
             </button>
           )}
           <button type="button" onClick={onClose} className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2">
-            Close
+            {t('datasets.columnDrawer.close')}
           </button>
         </>
       }
     >
       <div className="space-y-5 p-5">
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">Business name</label>
+          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">{t('datasets.columnDrawer.businessName')}</label>
           <input
             value={note.business_name ?? ''}
             onChange={(e) => onChange((cur) => ({ ...cur, business_name: e.target.value }))}
             disabled={!canEdit}
-            placeholder="Friendly name for business users"
+            placeholder={t('datasets.columnDrawer.businessNamePlaceholder')}
             className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">Description</label>
+          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">{t('datasets.columnDrawer.description')}</label>
           <textarea
             rows={4}
             value={note.description ?? ''}
             onChange={(e) => onChange((cur) => ({ ...cur, description: e.target.value }))}
             disabled={!canEdit}
-            placeholder="What does this column mean? How should it be interpreted?"
+            placeholder={t('datasets.columnDrawer.descriptionPlaceholder')}
             className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2 resize-none"
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">Examples</label>
-          <TokenEditor values={note.examples ?? []} onChange={(values) => onChange((cur) => ({ ...cur, examples: values }))} placeholder="Add a sample value…" disabled={!canEdit} />
+          <label className="mb-1.5 block text-xs font-medium text-text-secondary uppercase tracking-wide">{t('datasets.columnDrawer.examples')}</label>
+          <TokenEditor values={note.examples ?? []} onChange={(values) => onChange((cur) => ({ ...cur, examples: values }))} placeholder={t('datasets.columnDrawer.examplesPlaceholder')} disabled={!canEdit} />
         </div>
       </div>
     </AppModalShell>
@@ -597,6 +600,7 @@ function DictionaryColumnGrid({
   isSaving: boolean;
   onPatchDictionary: (updater: (current: DatasetDictionary) => DatasetDictionary) => void;
 }) {
+  const { t } = useI18n();
   const [search, setSearch] = useState('');
   const [activeColumn, setActiveColumn] = useState<string | null>(null);
 
@@ -638,26 +642,26 @@ function DictionaryColumnGrid({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search columns…"
+            placeholder={t('datasets.dictionaryGrid.searchColumns')}
             className="w-full rounded-md border border-[rgb(var(--border-line))] py-1.5 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
-        <span className="text-[11px] text-text-quaternary shrink-0">{columnsMeta.length} cols</span>
+        <span className="text-[11px] text-text-quaternary shrink-0">{t('datasets.dictionaryGrid.colsCount', { count: String(columnsMeta.length) })}</span>
       </div>
 
       {/* Column list */}
       <div className="flex-1 overflow-y-auto">
         {columnsMeta.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-xs text-text-quaternary">Column metadata not available.</div>
+          <div className="flex h-full items-center justify-center p-8 text-xs text-text-quaternary">{t('datasets.dictionaryGrid.noMetadata')}</div>
         ) : visible.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-xs text-text-quaternary">No columns match this filter.</div>
+          <div className="flex h-full items-center justify-center p-8 text-xs text-text-quaternary">{t('datasets.dictionaryGrid.noColumnsMatch')}</div>
         ) : (
           <table className="min-w-full">
             <thead className="sticky top-0 z-10 border-b border-[rgb(var(--border-line))] bg-surface-2">
               <tr>
                 <th className="w-8 px-3 py-2" />
-                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Column</th>
-                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Description</th>
+                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">{t('datasets.dictionaryGrid.columnHeader')}</th>
+                <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">{t('datasets.dictionaryGrid.descriptionHeader')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -692,7 +696,7 @@ function DictionaryColumnGrid({
                           if (!checked && activeColumn === column) setActiveColumn(null);
                         }}
                         className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
-                        title={documented ? 'Remove from catalog' : 'Add to catalog'}
+                        title={documented ? t('datasets.dictionaryGrid.removeFromCatalog') : t('datasets.dictionaryGrid.addToCatalog')}
                       />
                     </td>
                     <td className="px-3 py-2 min-w-[140px]">
@@ -704,7 +708,7 @@ function DictionaryColumnGrid({
                         {hasBizName ? (
                           <div className="mt-0.5 text-[11px] text-text-quaternary truncate">{note!.business_name}</div>
                         ) : documented ? (
-                          <div className="mt-0.5 text-[11px] text-text-quaternary italic">+ add name</div>
+                          <div className="mt-0.5 text-[11px] text-text-quaternary italic">{t('datasets.dictionaryGrid.addName')}</div>
                         ) : null}
                       </button>
                     </td>
@@ -714,7 +718,7 @@ function DictionaryColumnGrid({
                           {hasDesc ? (
                             <p className="line-clamp-2 text-[11px] text-text-secondary leading-relaxed">{note!.description}</p>
                           ) : (
-                            <span className="text-[11px] text-warning italic">No description</span>
+                            <span className="text-[11px] text-warning italic">{t('datasets.dictionaryGrid.noDescription')}</span>
                           )}
                         </button>
                       ) : (
@@ -793,6 +797,7 @@ function DimensionRow({
   onChange: (updated: DimensionDefinition) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   const [isExpanded, setIsExpanded] = useState(false);
   const colsListId = `__dim_cols_${rowKey}`;
 
@@ -816,7 +821,7 @@ function DimensionRow({
             <button
               onClick={() => onChange({ ...dim, hidden: !dim.hidden })}
               className="p-0.5 hover:bg-surface-2 rounded shrink-0"
-              title={dim.hidden ? 'Show' : 'Hide'}
+              title={dim.hidden ? t('datasets.fields.show') : t('datasets.fields.hide')}
             >
               {dim.hidden
                 ? <EyeOff className="w-3.5 h-3.5 text-text-quaternary" />
@@ -835,26 +840,26 @@ function DimensionRow({
           </datalist>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Column</label>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">{t('datasets.dimensionRow.column')}</label>
               <input
                 list={colsListId}
                 value={dim.name}
                 onChange={(e) => updateColumn(e.target.value)}
                 className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="Pick a column"
-                title="Dimension trỏ đến 1 cột. Nếu cần tính toán, tạo Calculated Column ở bảng nguồn rồi chọn cột đó ở đây."
+                placeholder={t('datasets.dimensionRow.pickColumn')}
+                title={t('datasets.dimensionRow.columnHint')}
               />
             </div>
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Type</label>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">{t('datasets.dimensionRow.type')}</label>
               <select value={dim.type} onChange={(e) => onChange({ ...dim, type: e.target.value as DimensionDefinition['type'] })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand">
                 {DIM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
           </div>
           <div>
-            <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
-            <input value={dim.label || ''} onChange={(e) => onChange({ ...dim, label: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" placeholder="Display label" />
+            <label className="text-[10px] text-text-tertiary uppercase font-medium">{t('datasets.dimensionRow.label')}</label>
+            <input value={dim.label || ''} onChange={(e) => onChange({ ...dim, label: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" placeholder={t('datasets.dimensionRow.displayLabel')} />
           </div>
           {/* Phase-15.1: drill-down parent. Pure metadata — FE Explore uses
               it to surface a "↓ Drill into <child>" action when the chart
@@ -862,9 +867,9 @@ function DimensionRow({
               hierarchy cycles. Leave blank for a root-level dim. */}
           <div>
             <label className="text-[10px] text-text-tertiary uppercase font-medium flex items-center gap-1">
-              Parent (drill-down)
+              {t('datasets.dimensionRow.parentDrilldown')}
               <span className="font-normal normal-case text-[9px] text-text-quaternary">
-                — vd Month.parent = Year, Day.parent = Month
+                {t('datasets.dimensionRow.parentHint')}
               </span>
             </label>
             <select
@@ -872,14 +877,14 @@ function DimensionRow({
               onChange={(e) => onChange({ ...dim, parent: e.target.value || undefined })}
               className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
             >
-              <option value="">(không có — root dimension)</option>
+              <option value="">{t('datasets.dimensionRow.rootDimension')}</option>
               {siblingDimNames.map((n) => (
                 <option key={n} value={n}>{n}</option>
               ))}
             </select>
           </div>
           <p className="text-[10px] italic text-text-quaternary leading-4">
-            Dimension chỉ là mapping cột — không phải nơi tính toán. Để tạo cột tính toán mới, hãy dùng <span className="font-medium text-text-tertiary">Add Calculated Column</span> ở bảng nguồn.
+            {t('datasets.dimensionRow.mappingNotePrefix')} <span className="font-medium text-text-tertiary">{t('datasets.dimensionRow.addCalculatedColumn')}</span> {t('datasets.dimensionRow.mappingNoteSuffix')}
           </p>
         </div>
       )}
@@ -902,6 +907,7 @@ function MeasureFilterRow({
   onChange: (updated: MeasureFilter) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   const opSpec = FILTER_OPERATORS.find((o) => o.value === filter.operator) ?? FILTER_OPERATORS[0];
   const isMulti = opSpec.isList || opSpec.isRange;
   const valueAsString = (() => {
@@ -936,7 +942,7 @@ function MeasureFilterRow({
           value={filter.field}
           options={columnOptions}
           onChange={(v) => onChange({ ...filter, field: v })}
-          placeholder="Chọn / gõ cột"
+          placeholder={t('datasets.measureFilter.pickColumn')}
         />
       </div>
       <select
@@ -965,14 +971,14 @@ function MeasureFilterRow({
               onChange({ ...filter, value: raw });
             }
           }}
-          placeholder={opSpec.isList ? 'a, b, c' : opSpec.isRange ? 'low, high' : 'value'}
+          placeholder={opSpec.isList ? t('datasets.measureFilter.placeholderList') : opSpec.isRange ? t('datasets.measureFilter.placeholderRange') : t('datasets.measureFilter.placeholderValue')}
           className="flex-1 min-w-0 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
         />
       )}
       <button
         onClick={onRemove}
         className="p-0.5 hover:bg-danger/10 rounded text-text-quaternary hover:text-danger shrink-0"
-        title="Remove filter"
+        title={t('datasets.measureFilter.removeFilter')}
       >
         <Trash2 className="w-3.5 h-3.5" />
       </button>
@@ -1054,6 +1060,7 @@ function FilterContextModifiers({
   canEdit: boolean;
   onChange: (next: MeasureDefinition) => void;
 }) {
+  const { t } = useI18n();
   const modifiers = measure.context_modifiers ?? [];
   const preset = detectPreset(modifiers);
   const [showAdvanced, setShowAdvanced] = useState(preset === 'custom');
@@ -1150,16 +1157,16 @@ function FilterContextModifiers({
       <div className="flex items-center justify-between">
         <div
           className="text-[10px] font-medium uppercase tracking-wide text-text-tertiary"
-          title="PowerBI: filter context (CALCULATE / ALL / ALLEXCEPT). Cách measure phản ứng khi chart slice theo dim."
+          title={t('datasets.filterContext.headerTitle')}
         >
-          Ngữ cảnh lọc
+          {t('datasets.filterContext.header')}
         </div>
         {preset !== 'none' && (
           <span
             className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-emphasis uppercase text-purple-600 dark:text-purple-400"
-            title="Measure đang dùng ngữ cảnh lọc — engine emit SQL window aggregate (OVER PARTITION BY)"
+            title={t('datasets.filterContext.activeBadgeTitle')}
           >
-            {preset === 'custom' ? 'Tuỳ chỉnh' : 'Đang bật'}
+            {preset === 'custom' ? t('datasets.filterContext.custom') : t('datasets.filterContext.on')}
           </span>
         )}
       </div>
@@ -1178,18 +1185,18 @@ function FilterContextModifiers({
           else applyPreset(next);
         }}
         className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
-        title="Cách measure phản ứng khi chart slice theo dim."
+        title={t('datasets.filterContext.selectTitle')}
       >
-        <option value="none">Mặc định — aggregate theo từng nhóm chart</option>
-        <option value="grand_total">So với tổng toàn bộ (ALL) — bỏ mọi slice</option>
-        <option value="within_kept">So với tổng nhóm (ALLEXCEPT) — giữ 1 dim</option>
+        <option value="none">{t('datasets.filterContext.optNone')}</option>
+        <option value="grand_total">{t('datasets.filterContext.optGrandTotal')}</option>
+        <option value="within_kept">{t('datasets.filterContext.optWithinKept')}</option>
       </select>
 
       {/* Inline param for "within ..." preset — single-field common case. */}
       {preset === 'within_kept' && (
         <div className="rounded-md bg-surface-2 p-1.5 space-y-1">
           <label className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-            Giữ dim
+            {t('datasets.filterContext.keepDim')}
           </label>
           <input
             value={keptField}
@@ -1199,9 +1206,7 @@ function FilterContextModifiers({
             className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
           />
           <p className="text-[10px] text-text-quaternary leading-tight">
-            Tên dim sẽ ở trong PARTITION BY. Vd <code>region</code> → mỗi
-            region 1 baseline, slice khác (channel/product/...) bị bỏ.
-            Để thêm nhiều dim, mở Advanced bên dưới.
+            {t('datasets.filterContext.keepDimHint')}
           </p>
         </div>
       )}
@@ -3271,12 +3276,18 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     setActiveNewRowKey(rowKey);
   };
 
+  // Set true by the leave-modal's save/saveDraft/discardChanges so the
+  // flush-on-unmount safety net (below) doesn't re-persist a draft the user
+  // just resolved. Reset whenever a view (re)loads — a fresh editing context.
+  const leaveHandledRef = useRef(false);
+
   // Unified view-load + new-measure effect. Runs on view change OR when the
   // add sentinel toggles. ALWAYS rebuilds dimensions/measures from the view
   // first; THEN, if the page is in add-mode (focusMeasureName === '__new__'),
   // appends a blank measure and marks it active. One effect = no ordering bug.
   useEffect(() => {
     if (!view) return;
+    leaveHandledRef.current = false;
     const baseMeasures = view.measures.map((m) => ({ ...m }));
     const baseMeasureKeys = view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`);
 
@@ -3398,6 +3409,20 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [modelIsDirty, flushDraft]);
+
+  // Flush-on-unmount safety net. The leave-modal on the dataset page only
+  // intercepts in-page navigation (switch table/tab/breadcrumb). It CANNOT
+  // catch a client-side route change — e.g. clicking the left sidebar to
+  // another page — and `beforeunload` does NOT fire for Next.js soft
+  // navigation. Without this, editing a measure then navigating away via the
+  // app menu silently dropped the work (no draft, no prompt). On unmount we
+  // flush a draft if still dirty (recoverable via the restore banner), UNLESS
+  // the user already resolved the leave through the modal (Save/Draft/Discard).
+  const unmountFlushRef = useRef<() => void>(() => {});
+  unmountFlushRef.current = () => {
+    if (!leaveHandledRef.current) flushDraft();
+  };
+  useEffect(() => () => unmountFlushRef.current(), []);
 
   const handleSaveModel = async (): Promise<boolean> => {
     if (!view) return false;
@@ -3646,9 +3671,12 @@ export const ModelViewEditPanel = forwardRef<ModelViewEditPanelHandle, ModelView
   useImperativeHandle(ref, () => ({
     hasUnsavedChanges: () => modelIsDirty,
     canSave: () => !measuresHaveErrors,
-    save: () => handleSaveModel(),
-    saveDraft: () => flushDraft(),
-    discardChanges: () => discardChanges(),
+    // Each leave action marks the leave as "handled" so the flush-on-unmount
+    // net doesn't re-persist (or resurrect a discarded) draft when the panel
+    // then unmounts. Reset on the next view-load (a fresh editing context).
+    save: async () => { const ok = await handleSaveModel(); if (ok) leaveHandledRef.current = true; return ok; },
+    saveDraft: () => { leaveHandledRef.current = true; flushDraft(); },
+    discardChanges: () => { leaveHandledRef.current = true; discardChanges(); },
   }));
 
   const handleSave = () => {
