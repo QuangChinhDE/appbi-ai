@@ -564,12 +564,23 @@ function ChartTileBase({
   // in the tile layout; DashboardGrid/Canvas gate BOTH the click-source and the
   // highlight-target on this flag, so turning it off makes the chart fully
   // inert to highlighting (not clickable, doesn't dim when others are clicked).
-  const highlightEnabled = currentLayout?.highlightEnabled !== false;
+  //
+  // Optimistic flip: the old handler only persisted (updateLayout → invalidate
+  // → full dashboard refetch) and read the flag back from currentLayout, so the
+  // switch visually changed only AFTER the round-trip (the "click then wait a
+  // few seconds" delay DA reported). hlOverride flips the UI instantly; the
+  // effect drops it once the server value catches up so external changes still
+  // win.
+  const [hlOverride, setHlOverride] = useState<boolean | null>(null);
+  useEffect(() => { setHlOverride(null); }, [currentLayout?.highlightEnabled]);
+  const highlightEnabled = hlOverride ?? (currentLayout?.highlightEnabled !== false);
   const toggleHighlightEnabled = useCallback(() => {
     if (!canEdit) return;
+    const next = !highlightEnabled;
+    setHlOverride(next); // instant visual — no wait for the persist round-trip
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
-      layout: { ...currentLayout, highlightEnabled: !highlightEnabled },
+      layout: { ...currentLayout, highlightEnabled: next },
     }]).then(() => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
@@ -1157,14 +1168,29 @@ function ChartTileBase({
                     )}
                     {canEdit && (
                       <button
-                        onClick={() => { toggleHighlightEnabled(); setIsTileMenuOpen(false); }}
+                        type="button"
+                        role="switch"
+                        aria-checked={highlightEnabled}
+                        /* Toggle in place (do NOT close the menu) + flip the
+                           switch optimistically so the state change is visible
+                           instantly without reading text. */
+                        onClick={(e) => { e.stopPropagation(); toggleHighlightEnabled(); }}
                         className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                         title={t('dashboards.tile.highlightOnClickHint')}
                       >
                         <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                         <span className="flex-1 text-left">{t('dashboards.tile.highlightOnClick')}</span>
-                        <span className={`text-[11px] font-semibold ${highlightEnabled ? 'text-brand' : 'text-text-quaternary'}`}>
-                          {highlightEnabled ? t('dashboards.tile.toggleOn') : t('dashboards.tile.toggleOff')}
+                        {/* Visual on/off switch — read at a glance, no label needed. */}
+                        <span
+                          className={`relative inline-flex h-[16px] w-[28px] shrink-0 items-center rounded-full transition-colors duration-150 ${
+                            highlightEnabled ? 'bg-brand' : 'bg-[rgb(var(--border-strong))]'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-[12px] w-[12px] transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
+                              highlightEnabled ? 'translate-x-[14px]' : 'translate-x-[2px]'
+                            }`}
+                          />
                         </span>
                       </button>
                     )}

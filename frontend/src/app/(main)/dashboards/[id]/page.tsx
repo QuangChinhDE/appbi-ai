@@ -225,6 +225,12 @@ export default function DashboardDetailPage() {
     sourceChartId: number;
     filter: BaseFilter;
   } | null>(null);
+  // C4 anti-spam — timestamp of the last APPLIED cross-filter selection. Rapid
+  // re-clicks (accidental double-clicks, mashing) within this window are
+  // dropped so they don't thrash the dashboard or accidentally toggle-clear the
+  // selection mid-fetch. Clears are never debounced; deliberate re-targeting
+  // (>window) always lands so a slow BQ fetch never makes clicks feel "locked".
+  const lastCrossFilterAtRef = React.useRef(0);
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isPublicShareOpen, setIsPublicShareOpen] = useState(false);
@@ -1136,6 +1142,19 @@ export default function DashboardDetailPage() {
     // point clears it; a null emit (click on empty chart space) clears
     // unconditionally — reverting to the dashboard baseline. Slicer/page filters
     // are separate state, so this never touches them.
+    // C4 anti-spam — an accidental double-click on a mark fires twice ~130ms
+    // apart. The 1st click selects; the 2nd lands AFTER the source chart
+    // re-rendered (dimmed), so it misses the bar and the tile's empty-space
+    // handler emits a `null` CLEAR — which would wipe the just-made selection.
+    // So debounce BOTH: a rapid re-select AND a rapid clear within 300ms of the
+    // last selection are dropped. The explicit "Clear" button calls
+    // setCrossFilterState(null) directly (never here), and a deliberate
+    // empty-space clear or re-target is always >300ms later, so both still work.
+    {
+      const now = Date.now();
+      if (now - lastCrossFilterAtRef.current < 300) return;
+      if (filter) lastCrossFilterAtRef.current = now;
+    }
     setCrossFilterState((current) => {
       if (!filter) {
         return null;
@@ -2651,6 +2670,15 @@ export default function DashboardDetailPage() {
             <span className="truncate font-[400] text-text-secondary">
               {getFilterDisplayLabel(activeCrossFilter)} = {formatFilterValue(activeCrossFilter.value)}
             </span>
+            {/* C3 — while the other tiles refetch against the new selection, show a
+                single clear "đang lọc…" so the viewer knows the dashboard is
+                updating (per-tile spinners alone read as scattered/uncertain). */}
+            {chartsFetching > 0 && (
+              <span className="inline-flex items-center gap-1.5 font-[400] text-text-tertiary">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {t('dashboards.detail.crossFilterApplying')}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setCrossFilterState(null)}

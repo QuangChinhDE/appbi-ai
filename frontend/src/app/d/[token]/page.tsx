@@ -264,6 +264,9 @@ export default function PublicDashboardPage() {
     sourceChartId: number;
     filter: BaseFilter;
   } | null>(null);
+  // C4 anti-spam — see authed page. Drops accidental rapid re-clicks on a
+  // selection so they don't thrash the per-page chart fetch or toggle-clear it.
+  const lastCrossFilterAtRef = useRef(0);
   // Cross-highlight (PBI-parity) — opt-in per dashboard via theme_config. When
   // mode='highlight', a data-point click sets THIS (not crossFilterState), so
   // the baseline (viewer + link + page-scope filters) stays applied and the
@@ -585,6 +588,17 @@ export default function PublicDashboardPage() {
     // to the target queries). A null emit (click on empty chart space) clears
     // unconditionally → reverts to the viewer's baseline; the page/locked/slicer
     // filters (appliedViewerFilters) are separate and untouched.
+    // C4 anti-spam (see authed page for the full why) — an accidental
+    // double-click fires twice ~130ms apart; the 2nd lands after the source
+    // re-rendered and the empty-space handler emits a `null` CLEAR that would
+    // wipe the selection. Debounce BOTH a rapid re-select and a rapid clear
+    // within 300ms of the last selection. Explicit Clear + deliberate
+    // (>300ms) clears/re-targets are unaffected.
+    {
+      const now = Date.now();
+      if (now - lastCrossFilterAtRef.current < 300) return;
+      if (filter) lastCrossFilterAtRef.current = now;
+    }
     setCrossFilterState((current) => {
       if (!filter) {
         return null;
