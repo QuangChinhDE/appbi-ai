@@ -148,13 +148,15 @@ export function DashboardList({
                     >
                       {stateMeta.label}
                     </FilterTag>
-                    <FilterTag
-                      tone={accessMeta.tone}
-                      active={activeFilters?.access === accessMeta.value}
-                      onClick={() => onFilterClick?.('access', accessMeta.value)}
-                    >
-                      {accessMeta.label}
-                    </FilterTag>
+                    {accessMeta.value !== 'full' && (
+                      <FilterTag
+                        tone={accessMeta.tone}
+                        active={activeFilters?.access === accessMeta.value}
+                        onClick={() => onFilterClick?.('access', accessMeta.value)}
+                      >
+                        {accessMeta.label}
+                      </FilterTag>
+                    )}
                   </div>
                 </td>
                 <td className="app-list-cell">
@@ -191,7 +193,7 @@ export function DashboardList({
                         onClick={() => onDelete(dashboard.id)}
                         disabled={deletingId === dashboard.id}
                         title="Delete dashboard"
-                        className="text-danger hover:bg-danger/10"
+                        className="text-text-tertiary hover:text-danger hover:bg-danger/10"
                       >
                         {deletingId === dashboard.id ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />

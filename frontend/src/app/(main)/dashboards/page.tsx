@@ -11,11 +11,11 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
-import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -59,6 +59,7 @@ export default function DashboardsPage() {
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
@@ -164,8 +165,7 @@ export default function DashboardsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    const confirmed = window.confirm(`Delete ${selectedIds.size} dashboard(s)? This action cannot be undone.`);
-    if (!confirmed) return;
+    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -189,9 +189,7 @@ export default function DashboardsPage() {
         title={t('module.dashboards.title')}
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
         overview={(
-          <div className="space-y-4">
-            <GettingStartedGuide locale={locale} />
-            <ModuleOverview
+          <ModuleOverview
               icon={LayoutDashboard}
               title={t('overview.dashboards.title')}
               description={t('overview.dashboards.description')}
@@ -201,8 +199,7 @@ export default function DashboardsPage() {
                 { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
                 { label: t('overview.dashboards.updated'), value: dashboardsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
               ]}
-            />
-          </div>
+          />
         )}
         action={canEdit ? (
           <div className="flex items-center gap-2">
@@ -338,7 +335,7 @@ export default function DashboardsPage() {
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
                       {pageItems.map((dashboard) => {
                     const chartCount = dashboard.dashboard_charts?.length || 0;
-                    const createdAt = new Date(dashboard.created_at).toLocaleDateString(locale, {
+                    const updatedLabel = new Date(dashboard.updated_at).toLocaleDateString(locale, {
                       day: '2-digit',
                       month: '2-digit',
                       year: 'numeric',
@@ -351,8 +348,19 @@ export default function DashboardsPage() {
                       >
                         <div className="flex-1 p-4">
                           <div className="mb-3 flex items-start justify-between">
-                            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                              <LayoutDashboard className="h-4 w-4" />
+                            <div className="flex items-center gap-2">
+                              {canEdit && (
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Select ${dashboard.name}`}
+                                  checked={selectedIds.has(dashboard.id)}
+                                  onChange={() => toggleSelect(dashboard.id)}
+                                  className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
+                                />
+                              )}
+                              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+                                <LayoutDashboard className="h-4 w-4" />
+                              </div>
                             </div>
                             {getResourcePermissions(dashboard.user_permission).canDelete && (
                               <IconButton
@@ -375,7 +383,7 @@ export default function DashboardsPage() {
                             <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
-                              {createdAt}
+                              {updatedLabel}
                             </span>
                           </div>
                         </div>
@@ -439,11 +447,21 @@ export default function DashboardsPage() {
       {canEdit && (
         <BulkActionBar
           selectedCount={selectedIds.size}
-          onDelete={handleBulkDelete}
+          onDelete={() => setShowBulkConfirm(true)}
           onClear={() => setSelectedIds(new Set())}
           isDeleting={isBulkDeleting}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={showBulkConfirm}
+        onClose={() => setShowBulkConfirm(false)}
+        onConfirm={handleBulkDelete}
+        title={`Delete ${selectedIds.size} dashboard${selectedIds.size === 1 ? '' : 's'}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+      />
 
       <Modal
         isOpen={isCreating}

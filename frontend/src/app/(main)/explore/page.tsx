@@ -129,6 +129,12 @@ function buildChartSourceLabel(chart: Chart): string | null {
   return parts.length > 0 ? parts.join(' / ') : null;
 }
 
+// Strip the internal `dataset_table_<id>.` prefix from a field reference so the
+// list shows a human column name (e.g. `dataset_table_188.crm_name` → `crm_name`).
+function humanizeFieldRef(value: string | null | undefined): string {
+  return String(value ?? '').replace(/^dataset_table_\d+\./, '').trim();
+}
+
 const EXPLORE_STATIC_TAG_TONES = {
   neutral: 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
   brand: 'border-brand/20 bg-brand/10 text-brand',
@@ -524,7 +530,7 @@ export default function ExplorePage() {
                                   ) : activeRoleConfig?.dimension ? (
                                     <div className="app-list-text-sub mt-0.5 flex items-center gap-1 text-tiny text-text-tertiary">
                                       <Layers className="h-3 w-3 flex-shrink-0" />
-                                      {activeRoleConfig.dimension}
+                                      {humanizeFieldRef(activeRoleConfig.dimension)}
                                     </div>
                                   ) : null}
                                 </div>
@@ -615,8 +621,20 @@ export default function ExplorePage() {
                         onClick={() => router.push(`/explore/${chart.id}`)}
                       >
                         <div className="flex items-start justify-between gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                            <GridChartIcon className="h-4 w-4" />
+                          <div className="flex items-center gap-2">
+                            {canEdit && (
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${chart.name}`}
+                                checked={selectedIds.has(chart.id)}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={() => toggleSelect(chart.id)}
+                                className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
+                              />
+                            )}
+                            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
+                              <GridChartIcon className="h-4 w-4" />
+                            </div>
                           </div>
                           <div className="flex items-center gap-0.5 opacity-0 transition-all group-hover:opacity-100">
                             {itemPerms.canShare && (
@@ -659,7 +677,7 @@ export default function ExplorePage() {
                           ) : activeRoleConfig?.dimension ? (
                             <p className="mt-0.5 flex items-center gap-1 truncate text-tiny text-text-tertiary">
                               <Layers className="h-3 w-3 flex-shrink-0" />
-                              {activeRoleConfig.dimension}
+                              {humanizeFieldRef(activeRoleConfig.dimension)}
                             </p>
                           ) : null}
                         </div>

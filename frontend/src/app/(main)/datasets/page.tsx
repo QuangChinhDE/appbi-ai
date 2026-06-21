@@ -28,6 +28,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
@@ -90,6 +91,7 @@ export default function DatasetsPage() {
   const [shareDataset, setShareDataset] = useState<{ id: number; name: string } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
   const setListFilter = (key: keyof DatasetListFilters, value?: string) => {
@@ -168,8 +170,7 @@ export default function DatasetsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    const confirmed = window.confirm(`Delete ${selectedIds.size} dataset(s)? This action cannot be undone.`);
-    if (!confirmed) return;
+    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -405,7 +406,17 @@ export default function DatasetsPage() {
                         </div>
                       </div>
                     </button>
-                    <div className="flex items-center justify-end gap-1 border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2">
+                    <div className="flex items-center justify-between gap-1 border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2">
+                      {canEdit ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${dataset.name}`}
+                          checked={selectedIds.has(dataset.id)}
+                          onChange={() => toggleSelect(dataset.id)}
+                          className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
+                        />
+                      ) : <span />}
+                      <div className="flex items-center gap-1">
                       {getResourcePermissions(dataset.user_permission).canShare && (
                         <IconButton
                           aria-label="Share dataset"
@@ -436,6 +447,7 @@ export default function DatasetsPage() {
                           <Trash2 className="h-4 w-4" />
                         </IconButton>
                       )}
+                      </div>
                     </div>
                   </div>
                       ))}
@@ -518,19 +530,19 @@ export default function DatasetsPage() {
                             >
                               {docState === 'documented' ? 'Documented' : 'Needs notes'}
                             </FilterTag>
-                            <FilterTag
-                              tone={accessState === 'full' ? 'brand' : accessState === 'edit' ? 'info' : 'neutral'}
-                              active={listFilters.access === accessState}
-                              onClick={() => toggleListFilter('access', accessState)}
-                            >
-                              {accessState === 'full'
-                                ? 'Full access'
-                                : accessState === 'edit'
+                            {accessState !== 'full' && (
+                              <FilterTag
+                                tone={accessState === 'edit' ? 'info' : 'neutral'}
+                                active={listFilters.access === accessState}
+                                onClick={() => toggleListFilter('access', accessState)}
+                              >
+                                {accessState === 'edit'
                                   ? 'Editable'
                                   : accessState === 'view'
                                     ? 'View only'
                                     : 'Restricted'}
-                            </FilterTag>
+                              </FilterTag>
+                            )}
                           </div>
                         </td>
                         <td className="app-list-cell">
@@ -626,11 +638,21 @@ export default function DatasetsPage() {
       {canEdit && (
         <BulkActionBar
           selectedCount={selectedIds.size}
-          onDelete={handleBulkDelete}
+          onDelete={() => setShowBulkConfirm(true)}
           onClear={() => setSelectedIds(new Set())}
           isDeleting={isBulkDeleting}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={showBulkConfirm}
+        onClose={() => setShowBulkConfirm(false)}
+        onConfirm={handleBulkDelete}
+        title={`Delete ${selectedIds.size} dataset${selectedIds.size === 1 ? '' : 's'}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+      />
     </>
   );
 }

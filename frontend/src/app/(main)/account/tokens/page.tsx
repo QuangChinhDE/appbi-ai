@@ -12,6 +12,7 @@ import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input, Select } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { usePermissions, type ModuleKey, type PermissionLevel } from '@/hooks/use-permissions';
 
 const MODULE_LABELS: Record<ModuleKey, string> = {
@@ -96,6 +97,7 @@ export default function PersonalAccessTokensPage() {
   const [editForm, setEditForm] = useState<TokenFormState | null>(null);
   const [revealedTokenState, setRevealedTokenState] = useState<RevealedTokenState | null>(null);
   const [isRevealedTokenHidden, setIsRevealedTokenHidden] = useState(false);
+  const [tokenToDelete, setTokenToDelete] = useState<PersonalAccessTokenRecord | null>(null);
 
   const { data: tokens = [], isLoading } = useQuery<PersonalAccessTokenRecord[]>({
     queryKey: ['personal-access-tokens'],
@@ -252,11 +254,7 @@ export default function PersonalAccessTokensPage() {
   }
 
   function confirmPermanentDelete(token: PersonalAccessTokenRecord) {
-    const confirmed = window.confirm(
-      `Delete token "${token.name}" permanently? This removes it from the list and cannot be undone.`,
-    );
-    if (!confirmed) return;
-    deleteMutation.mutate(token.id);
+    setTokenToDelete(token);
   }
 
   return (
@@ -542,6 +540,18 @@ export default function PersonalAccessTokensPage() {
           )}
         </section>
       </div>
+
+      <ConfirmDialog
+        isOpen={!!tokenToDelete}
+        onClose={() => setTokenToDelete(null)}
+        onConfirm={() => {
+          if (tokenToDelete) deleteMutation.mutate(tokenToDelete.id);
+        }}
+        title={tokenToDelete ? `Delete "${tokenToDelete.name}" permanently?` : 'Delete token?'}
+        description="This removes it from the list and cannot be undone."
+        confirmLabel="Delete permanently"
+        variant="danger"
+      />
     </div>
   );
 }

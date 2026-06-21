@@ -168,16 +168,18 @@ export default function DataSourceList({
                     >
                       {typeMeta.label}
                     </FilterTag>
-                    <FilterTag
-                      tone={accessMeta.tone}
-                      active={activeFilters?.access === accessMeta.value}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onFilterClick?.('access', accessMeta.value);
-                      }}
-                    >
-                      {accessMeta.label}
-                    </FilterTag>
+                    {accessMeta.value !== 'full' && (
+                      <FilterTag
+                        tone={accessMeta.tone}
+                        active={activeFilters?.access === accessMeta.value}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onFilterClick?.('access', accessMeta.value);
+                        }}
+                      >
+                        {accessMeta.label}
+                      </FilterTag>
+                    )}
                   </div>
                 </td>
                 <td className="app-list-cell">
@@ -228,7 +230,7 @@ export default function DataSourceList({
                         size="xs"
                         onClick={() => onDelete(ds.id)}
                         disabled={isDeleting === ds.id}
-                        className="text-danger hover:bg-danger/10"
+                        className="text-text-tertiary hover:text-danger hover:bg-danger/10"
                         title="Delete"
                       >
                         {isDeleting === ds.id ? (

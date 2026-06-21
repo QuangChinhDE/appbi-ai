@@ -11,6 +11,8 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Input, Select, FieldGroup } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/common/Modal';
+import { PageListLayout } from '@/components/common/PageListLayout';
+import { ModuleOverview } from '@/components/common/ModuleOverview';
 
 type UserStatus = 'active' | 'deactivated';
 
@@ -47,77 +49,107 @@ export default function UsersPage() {
     },
   });
 
-  return (
-    <div className="w-full px-8 py-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-h1 text-text-primary font-emphasis">Users</h1>
-          <p className="text-caption text-text-tertiary mt-1">Manage team members and their access levels.</p>
-        </div>
-        <Button
-          variant="primary"
-          size="md"
-          leadingIcon={<Plus className="h-4 w-4" />}
-          onClick={() => setShowInviteModal(true)}
-        >
-          Add user
-        </Button>
-      </div>
+  const activeCount = users.filter((u) => u.status === 'active').length;
+  const passwordCount = users.filter((u) => u.auth_provider === 'password').length;
 
-      {/* List */}
-      <div className="space-y-2">
-        {isLoading ? (
-          <div className="p-12 text-center text-text-quaternary">Loading…</div>
-        ) : users.length === 0 ? (
-          <div className="p-12 text-center text-text-quaternary">No users found.</div>
-        ) : (
-          users.map((user) => (
-            <div
-              key={user.id}
-              className="bg-surface-1 border border-[rgb(var(--border-line))] rounded-lg p-3 flex items-center gap-3"
-            >
-              <div className="h-9 w-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
-                {(user.full_name || user.email).slice(0, 2).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-emphasis text-text-primary truncate">{user.full_name}</span>
-                  <Badge variant={user.status === 'active' ? 'success' : 'danger'} size="xs">
-                    {user.status}
-                  </Badge>
-                </div>
-                <span className="text-tiny text-text-quaternary truncate block">{user.email}</span>
-              </div>
-              <Badge variant="neutral" size="sm">
-                {getAuthMethodLabel(user.auth_provider, user.google_connected)}
-              </Badge>
-              <span className="text-caption text-text-tertiary hidden md:inline">
-                {user.last_login_at
-                  ? new Date(user.last_login_at).toLocaleDateString()
-                  : 'Never'}
-              </span>
-              <div className="flex items-center gap-1">
-                <IconButton aria-label="Edit role" variant="ghost" size="sm" onClick={() => setEditingUser(user)}>
-                  <Edit2 className="h-4 w-4" />
-                </IconButton>
-                {user.status === 'active' && (
-                  <IconButton
-                    aria-label="Deactivate user"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deactivateMutation.mutate(user.id)}
-                    disabled={deactivateMutation.isPending}
-                    className="hover:text-danger"
-                  >
-                    <UserX className="h-4 w-4" />
-                  </IconButton>
-                )}
-              </div>
-            </div>
-          ))
+  return (
+    <>
+      <PageListLayout
+        title="Users"
+        description={`${users.length} user${users.length === 1 ? '' : 's'} · manage team members and their access`}
+        overview={(
+          <ModuleOverview
+            stats={[
+              { label: 'Users', value: users.length, helper: 'Total team members' },
+              { label: 'Active', value: activeCount, helper: 'Currently active accounts' },
+              { label: 'Password', value: passwordCount, helper: 'Accounts that sign in with a password' },
+            ]}
+          />
         )}
-      </div>
+        action={(
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Plus className="h-4 w-4" />}
+            onClick={() => setShowInviteModal(true)}
+          >
+            Add user
+          </Button>
+        )}
+        isLoading={isLoading}
+        searchPlaceholder="Search users by name or email…"
+        viewToggle={false}
+      >
+        {({ filterText }) => {
+          const needle = filterText.trim().toLowerCase();
+          const filtered = users.filter(
+            (u) =>
+              needle.length === 0 ||
+              (u.full_name ?? '').toLowerCase().includes(needle) ||
+              (u.email ?? '').toLowerCase().includes(needle),
+          );
+
+          if (users.length === 0) {
+            return <div className="py-16 text-center text-caption text-text-quaternary">No users found.</div>;
+          }
+          if (filtered.length === 0) {
+            return (
+              <div className="py-16 text-center text-caption text-text-tertiary">
+                No users matching &ldquo;<strong className="text-text-secondary">{filterText}</strong>&rdquo;
+              </div>
+            );
+          }
+
+          return (
+            <div className="space-y-2">
+              {filtered.map((user) => (
+                <div
+                  key={user.id}
+                  className="bg-surface-1 border border-[rgb(var(--border-line))] rounded-lg p-3 flex items-center gap-3"
+                >
+                  <div className="h-9 w-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
+                    {(user.full_name || user.email).slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-emphasis text-text-primary truncate">{user.full_name}</span>
+                      <Badge variant={user.status === 'active' ? 'success' : 'danger'} size="xs">
+                        {user.status}
+                      </Badge>
+                    </div>
+                    <span className="text-tiny text-text-quaternary truncate block">{user.email}</span>
+                  </div>
+                  <Badge variant="neutral" size="sm">
+                    {getAuthMethodLabel(user.auth_provider, user.google_connected)}
+                  </Badge>
+                  <span className="text-caption text-text-tertiary hidden md:inline">
+                    {user.last_login_at
+                      ? new Date(user.last_login_at).toLocaleDateString()
+                      : 'Never'}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <IconButton aria-label="Edit role" variant="ghost" size="sm" onClick={() => setEditingUser(user)}>
+                      <Edit2 className="h-4 w-4" />
+                    </IconButton>
+                    {user.status === 'active' && (
+                      <IconButton
+                        aria-label="Deactivate user"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => deactivateMutation.mutate(user.id)}
+                        disabled={deactivateMutation.isPending}
+                        className="text-text-tertiary hover:text-danger hover:bg-danger/10"
+                      >
+                        <UserX className="h-4 w-4" />
+                      </IconButton>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        }}
+      </PageListLayout>
 
       {/* Invite Modal */}
       {showInviteModal && (
@@ -141,7 +173,7 @@ export default function UsersPage() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 

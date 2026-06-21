@@ -5,7 +5,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2 } from 'lucide-react';
+import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2, ChevronDown } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
@@ -288,20 +288,23 @@ export default function DataSourcesPage() {
         searchPlaceholder={t('common.search')}
         defaultView="list"
         toolbarExtra={(
-          <CrossModuleFilterControls
-            index={relationIndex}
-            configs={[
-              { key: 'dashboard', label: 'Dashboard', placeholder: 'All dashboards' },
-              { key: 'dataset', label: 'Dataset', placeholder: 'All datasets' },
-              { key: 'chart', label: 'Chart', placeholder: 'All charts' },
-            ]}
-            filters={{
-              dashboard: listFilters.dashboard,
-              dataset: listFilters.dataset,
-              chart: listFilters.chart,
-            }}
-            onChange={(key, value) => setListFilter(key as keyof DataSourceListFilters, value)}
-          />
+          <div className="relative">
+            <select
+              value={listFilters.type ?? ''}
+              onChange={(e) => setListFilter('type', e.target.value || undefined)}
+              className={`h-8 appearance-none rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 pl-2.5 pr-8 text-caption focus:outline-none focus:shadow-focus-brand ${listFilters.type ? 'text-text-primary' : 'text-text-tertiary'}`}
+            >
+              <option value="">All source types</option>
+              {Array.from(new Set(dataSources.map((s) => s.type)))
+                .sort()
+                .map((tp) => (
+                  <option key={tp} value={tp}>
+                    {DS_TYPE_LABEL[tp] ?? tp}
+                  </option>
+                ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+          </div>
         )}
         activeFilters={activeListFilterCount > 0 ? (
           <>

@@ -30,6 +30,7 @@ import {
 } from '@/hooks/use-workboards';
 import { useDatasets } from '@/hooks/use-datasets';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { Modal } from '@/components/common/Modal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -83,6 +84,7 @@ export default function WorkboardsPage() {
   const [listFilters, setListFilters] = useState<WorkboardListFilters>({});
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
   // After creating a workboard with default owner credentials we hold them
   // here and surface a blocking modal — the toast was too easy to miss and
   // the PIN cannot be recovered later.
@@ -212,13 +214,7 @@ export default function WorkboardsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    if (
-      !window.confirm(
-        `Delete ${selectedIds.size} workboard(s)? This action cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let ok = 0;
     let fail = 0;
@@ -269,20 +265,20 @@ export default function WorkboardsPage() {
   const filterDropdowns = (
     <div className="flex flex-wrap items-center gap-2">
       <FilterDropdown
-        label="Trạng thái"
+        label="Status"
         value={listFilters.state}
         options={[
-          { label: 'Tất cả', value: '' },
-          { label: 'Đã xuất bản', value: 'published' },
-          { label: 'Bản nháp', value: 'draft' },
+          { label: 'All', value: '' },
+          { label: 'Published', value: 'published' },
+          { label: 'Draft', value: 'draft' },
         ]}
         onChange={(v) => setListFilter('state', v)}
       />
       <FilterDropdown
-        label="Quyền"
+        label="Access"
         value={listFilters.access}
         options={[
-          { label: 'Tất cả', value: '' },
+          { label: 'All', value: '' },
           { label: 'Full access', value: 'full' },
           { label: 'Editable', value: 'edit' },
           { label: 'View only', value: 'view' },
@@ -293,17 +289,17 @@ export default function WorkboardsPage() {
         label="Dataset"
         value={listFilters.dataset}
         options={[
-          { label: 'Tất cả', value: '' },
+          { label: 'All', value: '' },
           ...datasets.map((d) => ({ label: d.name, value: String(d.id) })),
         ]}
         onChange={(v) => setListFilter('dataset', v)}
       />
       {owners.length > 0 && (
         <FilterDropdown
-          label="Người tạo"
+          label="Owner"
           value={listFilters.owner}
           options={[
-            { label: 'Tất cả', value: '' },
+            { label: 'All', value: '' },
             ...owners.map((o) => ({ label: o.split('@')[0], value: o })),
           ]}
           onChange={(v) => setListFilter('owner', v)}
@@ -446,6 +442,8 @@ export default function WorkboardsPage() {
                           onOpen={() => router.push(`/workboards/${wb.id}`)}
                           onShare={() => setShareTarget(wb)}
                           onDelete={() => setPendingDelete(wb)}
+                          selected={selectedIds.has(wb.id)}
+                          onToggleSelect={canEdit ? () => toggleSelect(wb.id) : undefined}
                         />
                       ))}
                     </div>
@@ -478,11 +476,21 @@ export default function WorkboardsPage() {
       {canEdit && (
         <BulkActionBar
           selectedCount={selectedIds.size}
-          onDelete={handleBulkDelete}
+          onDelete={() => setShowBulkConfirm(true)}
           onClear={() => setSelectedIds(new Set())}
           isDeleting={isBulkDeleting}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={showBulkConfirm}
+        onClose={() => setShowBulkConfirm(false)}
+        onConfirm={handleBulkDelete}
+        title={`Delete ${selectedIds.size} workboard${selectedIds.size === 1 ? '' : 's'}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+      />
 
       {/* Create modal */}
       {isCreateOpen && (
@@ -708,12 +716,16 @@ function WorkboardGridCard({
   onOpen,
   onShare,
   onDelete,
+  selected,
+  onToggleSelect,
 }: {
   workboard: Workboard;
   datasetName?: string;
   onOpen: () => void;
   onShare: () => void;
   onDelete: () => void;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   const perms = getResourcePermissions(workboard.user_permission ?? undefined);
   const created = new Date(workboard.updated_at).toLocaleDateString();
@@ -721,8 +733,19 @@ function WorkboardGridCard({
     <div className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear">
       <div className="flex-1 p-4">
         <div className="mb-3 flex items-start justify-between">
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-            <ClipboardList className="h-4 w-4" />
+          <div className="flex items-center gap-2">
+            {onToggleSelect && (
+              <input
+                type="checkbox"
+                aria-label={`Select ${workboard.name}`}
+                checked={!!selected}
+                onChange={onToggleSelect}
+                className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
+              />
+            )}
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+              <ClipboardList className="h-4 w-4" />
+            </div>
           </div>
           <div className="flex items-center gap-1">
             <WorkboardPublishToggle
