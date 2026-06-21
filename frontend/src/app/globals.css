@@ -517,7 +517,9 @@
   }
 
   .app-list-table-wrap {
-    overflow-x: hidden;
+    /* No clipping here: an overflow context on an ancestor would break the
+       sticky table header below (it must stick to the page-body scroller). */
+    overflow: visible;
   }
 
   .app-list-table {
@@ -533,6 +535,22 @@
     word-break: break-word;
     vertical-align: top;
     line-height: 1.15;
+    /* Pin the column header so it stays visible while the rows scroll. */
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: rgb(var(--surface-2));
+    /* Divider that travels with the sticky header (border-collapse:separate
+       would otherwise leave the header borderless once it detaches). */
+    box-shadow: inset 0 -1px 0 rgb(var(--border-line));
+  }
+
+  .app-list-table thead th:first-child {
+    border-top-left-radius: 12px;
+  }
+
+  .app-list-table thead th:last-child {
+    border-top-right-radius: 12px;
   }
 
   .app-list-table td {

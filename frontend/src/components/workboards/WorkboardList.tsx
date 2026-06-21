@@ -90,7 +90,7 @@ export function WorkboardList({
     selectable && workboards.some((w) => selectedIds?.has(w.id));
 
   return (
-    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
       <div className="app-list-table-wrap">
         <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
           <thead className="bg-surface-2">

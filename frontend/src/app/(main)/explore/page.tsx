@@ -3,10 +3,10 @@
  */
 'use client';
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Plus, Trash2, BarChart3, Clock, Layers, Search, Share2, X,
+  Plus, Trash2, BarChart3, Clock, Layers, Search, Share2,
   BarChart2, BarChart4, BarChartHorizontal, LineChart, AreaChart,
   Activity, TrendingUp, PieChart, Donut, Radar, CircleDot,
   ScatterChart, Flame, Boxes, GitBranch, Gauge, Table, Table2,
@@ -49,8 +49,6 @@ type ExploreListFilters = {
   dataset?: string;
   source?: string;
 };
-
-const BANNER_DISMISSED_KEY = 'appbi_explore_banner_dismissed_v1';
 
 const CHART_TYPE_ICONS: Record<string, React.ElementType> = {
   BAR: BarChart3,
@@ -166,18 +164,6 @@ export default function ExplorePage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
-  const [isBannerVisible, setIsBannerVisible] = useState(true);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setIsBannerVisible(localStorage.getItem(BANNER_DISMISSED_KEY) !== '1');
-    }
-  }, []);
-
-  const dismissBanner = () => {
-    setIsBannerVisible(false);
-    if (typeof window !== 'undefined') localStorage.setItem(BANNER_DISMISSED_KEY, '1');
-  };
 
   const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
   const { data: dashboards = [] } = useDashboards();
@@ -321,28 +307,19 @@ export default function ExplorePage() {
       <PageListLayout
         title={t('module.explore.title')}
         description={description}
-        overview={isBannerVisible ? (
-          <div className="relative">
-            <ModuleOverview
-              icon={BarChart3}
-              title={t('overview.explore.title')}
-              description={t('overview.explore.description')}
-              badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
-              stats={[
-                { label: t('overview.explore.saved'), value: allCharts.length, helper: t('overview.explore.savedHelper') },
-                { label: t('overview.explore.types'), value: chartTypesUsed, helper: t('overview.explore.typesHelper') },
-                { label: t('overview.explore.updated'), value: updatedThisWeek, helper: t('overview.explore.updatedHelper') },
-              ]}
-            />
-            <button
-              onClick={dismissBanner}
-              aria-label="Dismiss overview"
-              className="absolute right-2 top-2 rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : undefined}
+        overview={(
+          <ModuleOverview
+            icon={BarChart3}
+            title={t('overview.explore.title')}
+            description={t('overview.explore.description')}
+            badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
+            stats={[
+              { label: t('overview.explore.saved'), value: allCharts.length, helper: t('overview.explore.savedHelper') },
+              { label: t('overview.explore.types'), value: chartTypesUsed, helper: t('overview.explore.typesHelper') },
+              { label: t('overview.explore.updated'), value: updatedThisWeek, helper: t('overview.explore.updatedHelper') },
+            ]}
+          />
+        )}
         action={canEdit ? (
           <Button
             variant="primary"
@@ -452,7 +429,7 @@ export default function ExplorePage() {
                       <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
                     </div>
                   ) : viewMode === 'list' ? (
-                    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
                   <div className="app-list-table-wrap">
                   <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">
