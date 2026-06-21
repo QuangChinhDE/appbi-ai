@@ -32,6 +32,7 @@ import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemePr
 import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
 import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // Phase-15.83 — DA dropped the FE row cap; the chart renders every row
 // the BE returns. Constants removed (no longer referenced); if Recharts
@@ -1262,6 +1263,7 @@ function ExploreChartInner({
   viewerGrain,
   kpiLabelInHeader = false,
 }: ExploreChartProps) {
+  const { t } = useI18n();
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
   // During PDF export, turn OFF recharts enter-animations: html2canvas snapshots
   // the SVG ~immediately, so an animating chart (bars/lines growing from 0) gets
@@ -1576,8 +1578,8 @@ function ExploreChartInner({
     <div className="flex items-center justify-end gap-1 px-1 mb-1">
       {drillActive ? (
         <>
-          <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title="Drill thời gian — tạm gom biểu đồ theo cấp ngày, đè lên Granularity ở tab Style.">
-            Gom theo:
+          <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title={t('explore.dateDrill.activeHint')}>
+            {t('explore.dateDrill.groupByLabel')}
           </span>
           {DRILL_LEVELS.map((opt) => (
             <button
@@ -1594,9 +1596,9 @@ function ExploreChartInner({
             type="button"
             onClick={() => handleDrillChange('raw')}
             className="ml-0.5 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-quaternary hover:bg-surface-3"
-            title="Tắt drill — quay về Granularity ở tab Style"
+            title={t('explore.dateDrill.disableHint')}
           >
-            × Tắt
+            {t('explore.dateDrill.disable')}
           </button>
         </>
       ) : (
@@ -1611,9 +1613,9 @@ function ExploreChartInner({
             handleDrillChange(seed);
           }}
           className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-secondary"
-          title="Drill thời gian: tạm đổi cấp gom thời gian (Năm/Quý/Tháng/Tuần/Ngày) cho biểu đồ. Granularity ở tab Style là mặc định."
+          title={t('explore.dateDrill.enableHint')}
         >
-          <span aria-hidden>▾</span> Gom theo thời gian
+          <span aria-hidden>▾</span> {t('explore.dateDrill.groupByTime')}
         </button>
       )}
     </div>
@@ -1971,14 +1973,14 @@ function ExploreChartInner({
   // mid-hooks) so the hook count never changes between renders when a filter
   // empties the chart (was React #300, crashed the tile on cross-filter).
   if (!data || data.length === 0) {
-    return <EmptyState message="No data. Run the query first." />;
+    return <EmptyState message={t('explore.emptyState.noData')} />;
   }
   if (invalidMessage) {
     return <EmptyState message={invalidMessage} />;
   }
 
   if (type === 'KPI') {
-    if (!kpiMetric || kpiValue === undefined) return <EmptyState message="Select a value column to render this card." />;
+    if (!kpiMetric || kpiValue === undefined) return <EmptyState message={t('explore.emptyState.kpi')} />;
     const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric, labelMap);
     const benchmarkValue = kpiBenchmarkValue ?? (
       style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
@@ -2096,7 +2098,7 @@ function ExploreChartInner({
       || (metrics[0] ? metricKey(metrics[0]) : undefined)
       || (podiumRows[0] && Object.keys(podiumRows[0]).find((k) => typeof podiumRows[0][k] === 'number'));
     if (!nameField || !valueField) {
-      return <EmptyState message="Select a name dimension and a value metric to render the podium." />;
+      return <EmptyState message={t('explore.emptyState.podium')} />;
     }
     const top = Math.min(Math.max(style.podiumTop ?? 3, 1), 5);
     // Phase-15.86 — chartSortRules used to be ignored (hardcoded desc by
@@ -2115,7 +2117,13 @@ function ExploreChartInner({
       '#64748b',
       '#475569',
     ];
-    const labels = ['Winner', 'Runner-up', 'Rank 3', 'Rank 4', 'Rank 5'];
+    const labels = [
+      t('explore.podium.winner'),
+      t('explore.podium.runnerUp'),
+      t('explore.podium.rank', { n: 3 }),
+      t('explore.podium.rank', { n: 4 }),
+      t('explore.podium.rank', { n: 5 }),
+    ];
     const display = ranked.length >= 3 ? [ranked[1], ranked[0], ranked[2], ...ranked.slice(3)] : ranked;
     // Phase-15.86 — per-metric format precedence (override > seriesFormats >
     // global). Lets DA show podium values as currency on one chart and
@@ -2129,6 +2137,11 @@ function ExploreChartInner({
       ?? style.numberFormat;
     const podiumStyle = podiumFmt ? { ...style, numberFormat: podiumFmt } : style;
     const fmt = (v: any) => formatNumber(Number(v) || 0, podiumStyle, valueField);
+    // Cross-highlight (source): dim podium cards whose name isn't the selected
+    // one. Names come from the same categoricalData the cards render from.
+    const podiumHlNames = isHighlight
+      ? new Set((highlightModel?.categoricalData ?? []).map((r: any) => String(r?.[nameField] ?? '')))
+      : null;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -2141,20 +2154,23 @@ function ExploreChartInner({
             const name = String(e?.[nameField] ?? '');
             const color = style.seriesColors?.[name] ?? colors[rank] ?? colors[colors.length - 1];
             const isFirst = rank === 0;
+            const podiumDimmed = !!(podiumHlNames && !podiumHlNames.has(name));
             return (
               <div
                 key={i}
-                className="flex flex-col items-center rounded-2xl border p-4"
+                onClick={onSelectDataPoint ? () => emitSelection(nameField, name) : undefined}
+                className={`flex flex-col items-center rounded-2xl border p-4 transition-opacity ${onSelectDataPoint ? 'cursor-pointer' : ''}`}
                 style={{
                   borderColor: color,
                   borderWidth: isFirst ? 2 : 1,
                   minWidth: 140,
                   transform: isFirst ? 'scale(1.05)' : undefined,
                   background: `linear-gradient(180deg, ${color}10, transparent 70%)`,
+                  opacity: podiumDimmed ? HIGHLIGHT_DIM_OPACITY : 1,
                 }}
               >
                 <div className="text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color }}>
-                  {labels[rank] || `Rank ${rank + 1}`}
+                  {labels[rank] || t('explore.podium.rank', { n: rank + 1 })}
                 </div>
                 <div className="mt-2 text-sm font-semibold text-text-primary text-center break-words">
                   {String(e?.[nameField] ?? '--')}
@@ -2173,7 +2189,7 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PIE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'PIE') {
     const m = metrics[0];
-    if (!dimension || !m) return <EmptyState message="Select legend and value columns to render this chart." />;
+    if (!dimension || !m) return <EmptyState message={t('explore.emptyState.pie')} />;
     const sortedPieData = applyDataLimit(applySortRules(pieData, sortRules), dataLimit, dataLimitDir);
     // Phase-15.86 — PIE label fully honours DataLabelConfig (fontSize,
     // fontColor, background, template) via a custom <text>+<rect>
@@ -2315,7 +2331,7 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATTER ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'SCATTER') {
-    if (!scatterX || !scatterY) return <EmptyState message="Select X Axis and Y Axis columns to render this chart." />;
+    if (!scatterX || !scatterY) return <EmptyState message={t('explore.emptyState.scatter')} />;
     // Phase-15.86 — SCATTER bring-up to feature parity. Previously the
     // renderer ignored almost every Phase-15.82+ style field. Now:
     //   - per-point seriesColors[pointLabel] override via <Cell>
@@ -2493,8 +2509,8 @@ function ExploreChartInner({
   }
 
   // For remaining types: need xField + at least 1 metric
-  if (!xField) return <EmptyState message="Select an X Axis column to render this chart." />;
-  if (metrics.length === 0) return <EmptyState message="Select at least one value column to render this chart." />;
+  if (!xField) return <EmptyState message={t('explore.emptyState.xAxis')} />;
+  if (metrics.length === 0) return <EmptyState message={t('explore.emptyState.valueColumn')} />;
 
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ STACKED BAR ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -3023,6 +3039,22 @@ function ExploreChartInner({
     }
     const lineSeries = comboLineSeries[0];
     const displayData = sortedComboData;
+    // Cross-highlight (source): dim non-selected category columns / lines. The
+    // combo model populates `comboData` (NOT categoricalData), so build the
+    // selected-x lookup from there. `comboCells` dims bar columns per-category;
+    // lines/areas dim via strokeOpacity below. Labels hide while highlighting
+    // (matches BAR/LINE).
+    const hlComboKeys = isHighlight
+      ? new Set((highlightModel?.comboData ?? []).map((r: any) => String(r?.[xField ?? ''] ?? '')))
+      : null;
+    const comboCells = (keyPrefix: string) => (isHighlight && hlComboKeys
+      ? displayData.map((row: any, idx: number) => (
+          <Cell
+            key={`${keyPrefix}-hl-${idx}`}
+            fillOpacity={hlComboKeys.has(String(row?.[xField ?? ''] ?? '')) ? 1 : HIGHLIGHT_DIM_OPACITY}
+          />
+        ))
+      : null);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -3066,10 +3098,11 @@ function ExploreChartInner({
                           type="monotone"
                           stroke={color}
                           strokeWidth={lineWidth}
+                          strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                           dot={dotsForCount(displayData.length)}
                           strokeDasharray={lineDash}
                         >
-                          {showDataLabels && (
+                          {showDataLabels && !isHighlight && (
                             // Phase-15.84 bugfix — free-form mix Line
                             // branch was missing LabelList → DataLabels
                             // silently no-op for line-as-series in
@@ -3089,10 +3122,11 @@ function ExploreChartInner({
                           type="monotone"
                           stroke={color}
                           fill={color}
-                          fillOpacity={areaOpacity}
+                          fillOpacity={isHighlight ? areaOpacity * HIGHLIGHT_DIM_OPACITY : areaOpacity}
+                          strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                           strokeWidth={lineWidth}
                         >
-                          {showDataLabels && (
+                          {showDataLabels && !isHighlight && (
                             <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
                           )}
                         </Area>
@@ -3108,7 +3142,8 @@ function ExploreChartInner({
                         radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}
                       >
-                        {showDataLabels && (
+                        {comboCells(series.key)}
+                        {showDataLabels && !isHighlight && (
                           <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'vertical')} />
                         )}
                       </Bar>
@@ -3121,7 +3156,8 @@ function ExploreChartInner({
                         hide={hiddenSeries.has(series.key)}
                         fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}>
-                        {showDataLabels && (
+                        {comboCells(series.key)}
+                        {showDataLabels && !isHighlight && (
                           <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'vertical')} />
                         )}
                       </Bar>
@@ -3129,10 +3165,11 @@ function ExploreChartInner({
                     <Line isAnimationActive={animate} dataKey={lineSeries.key} name={lineSeries.label}
                       hide={hiddenSeries.has(lineSeries.key)}
                       type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
+                      strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                       dot={dotsForCount(displayData.length)}
                       strokeDasharray={lineDash}
                       yAxisId={dualYAxis ? 'right' : 0}>
-                      {showDataLabels && (
+                      {showDataLabels && !isHighlight && (
                         // Phase-15.84 bugfix — legacy BAR_LINE Line element
                         // was missing LabelList: DataLabels rendered on bars
                         // but not on the lineMetric. Now both follow the

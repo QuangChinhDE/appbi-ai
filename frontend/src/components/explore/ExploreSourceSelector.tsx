@@ -11,6 +11,7 @@ import React, { useEffect } from 'react';
 import { Database, Table as TableIcon } from 'lucide-react';
 import { useDatasets, useDataset } from '@/hooks/use-datasets';
 import { FieldGroup, Select } from '@/components/ui/Input';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface ExploreSourceSelectorProps {
   selectedDatasetId: number | null;

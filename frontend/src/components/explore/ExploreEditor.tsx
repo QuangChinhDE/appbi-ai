@@ -7,6 +7,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation';
 import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import { useI18n } from '@/providers/LanguageProvider';
 import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -80,6 +81,7 @@ function QueryInspector({
   state: ExploreQueryState;
   chartType: ChartType;
 }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   // Prefer BE-emitted SQL — it's the authoritative output (after time-
@@ -105,11 +107,11 @@ function QueryInspector({
   };
 
   const routingLabel = routing === 'semantic_engine'
-    ? 'Semantic engine (multi-hop JOIN)'
+    ? t('explore.queryInspector.routingSemantic')
     : routing === 'live_query'
-      ? 'Live query (single table)'
+      ? t('explore.queryInspector.routingLive')
       : routing === 'preview'
-        ? 'Frontend preview (backend has not run yet)'
+        ? t('explore.queryInspector.routingPreview')
         : routing;
   const routingBadgeClass = routing === 'semantic_engine'
     ? 'border-brand/40 bg-brand/10 text-brand'
@@ -126,37 +128,37 @@ function QueryInspector({
             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-emphasis ${routingBadgeClass}`}
             title={
               routing === 'semantic_engine'
-                ? 'Backend route: SemanticQueryEngine handles joins, time macros, and window aggregates.'
+                ? t('explore.queryInspector.routingSemanticTip')
                 : routing === 'live_query'
-                  ? 'Backend route: live_query builds SQL for a single table. It does not handle joins; use a qualified field such as "view.field" to route joined charts through the semantic engine.'
-                  : 'Route is not available yet; backend debug information was not returned.'
+                  ? t('explore.queryInspector.routingLiveTip')
+                  : t('explore.queryInspector.routingUnknownTip')
             }
           >
             {routingLabel}
           </span>
           <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
-            Dialect: <code className="font-mono">{dialect}</code>
+            {t('explore.queryInspector.dialect')}: <code className="font-mono">{dialect}</code>
           </span>
           {execMs != null && (
             <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
-              Exec: <code className="font-mono">{execMs.toFixed(1)} ms</code>
+              {t('explore.queryInspector.exec')}: <code className="font-mono">{execMs.toFixed(1)} ms</code>
             </span>
           )}
           <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
-            Rows: <code className="font-mono">{rowCount}</code>
+            {t('explore.queryInspector.rows')}: <code className="font-mono">{rowCount}</code>
           </span>
           <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
-            Chart: <code className="font-mono">{chartType}</code>
+            {t('explore.queryInspector.chart')}: <code className="font-mono">{chartType}</code>
           </span>
           <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-tertiary">
-            Pre-agg: <code className="font-mono">{String(state.chartPreAggregated)}</code>
+            {t('explore.queryInspector.preAgg')}: <code className="font-mono">{String(state.chartPreAggregated)}</code>
           </span>
         </div>
 
         {/* ── Warnings ──────────────────────────────────────────── */}
         {warnings.length > 0 && (
           <div className="rounded-md border border-warning/40 bg-warning/5 p-2 text-[11px] leading-snug text-warning">
-            <div className="mb-1 font-emphasis">Engine warnings ({warnings.length})</div>
+            <div className="mb-1 font-emphasis">{t('explore.queryInspector.engineWarnings', { count: warnings.length })}</div>
             {warnings.map((w, i) => (
               <div key={i}>⚠ {w}</div>
             ))}
@@ -171,8 +173,8 @@ function QueryInspector({
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-                SQL - per-measure isolation ({debug.sql_emitted_per_group.length} queries
-                {debug.merge_dimension ? `, merged on ${debug.merge_dimension}` : ''})
+                {t('explore.queryInspector.sqlPerMeasure', { count: debug.sql_emitted_per_group.length })}
+                {debug.merge_dimension ? t('explore.queryInspector.sqlMergedOn', { dimension: debug.merge_dimension }) : ''})
               </div>
             </div>
             {debug.sql_emitted_per_group.map((g, idx) => (

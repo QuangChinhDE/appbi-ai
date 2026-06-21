@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
+import { useI18n } from '@/providers/LanguageProvider';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
 import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
@@ -422,9 +423,10 @@ function DonutOrPolarChart({
   palette: string[];
   onSelect?: (name: string) => void;
 }) {
+  const { t } = useI18n();
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0);
   const max = Math.max(...items.map((item) => Math.max(item.value, 0)), 1);
-  if (total <= 0) return <EmptyAdvanced message="No positive values to render this chart." />;
+  if (total <= 0) return <EmptyAdvanced message={t('explore.advancedCharts.noPositiveValues')} />;
   return (
     <ResponsiveSvg>
       {(W, H) => {
@@ -501,9 +503,10 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
   style: ChartStyleConfig;
   preAggregated?: boolean;
 }) {
-  if (!field || metrics.length === 0) return <EmptyAdvanced message="Select an axis field and value columns." />;
+  const { t } = useI18n();
+  if (!field || metrics.length === 0) return <EmptyAdvanced message={t('explore.advancedCharts.selectAxisAndValues')} />;
   const labels = Array.from(new Set(rows.map((row) => String(row[field] ?? '(blank)')))).slice(0, 10);
-  if (labels.length < 3) return <EmptyAdvanced message="Radar needs at least three categories." />;
+  if (labels.length < 3) return <EmptyAdvanced message={t('explore.advancedCharts.radarNeedsThree')} />;
   const groupedRows = new Map(labels.map((label) => [label, rows.filter((row) => String(row[field] ?? '(blank)') === label)]));
   const series = metrics.slice(0, 4).map((metric) => ({
     metric,
@@ -574,7 +577,8 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
 }
 
 function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
-  if (!items.length) return <EmptyAdvanced message="No funnel stages to render." />;
+  const { t } = useI18n();
+  if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noFunnelStages')} />;
   const max = Math.max(...items.map((item) => item.value), 1);
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
@@ -642,6 +646,7 @@ function styleWithEffectiveNumberFormat(
 }
 
 function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
+  const { t } = useI18n();
   const arcColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
   const hasTarget = target > 0;
   const scaleMax = hasTarget ? target : Math.max(value * 2, 1);
@@ -672,7 +677,7 @@ function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: nu
             <line x1={cx} y1={cy} x2={needle.x} y2={needle.y} stroke="rgb(var(--text-primary))" strokeWidth={4} strokeLinecap="round" />
             <circle cx={cx} cy={cy} r={8} fill="rgb(var(--text-primary))" />
             <text x={cx} y={cy + r * 0.46} fontSize={valFont} fontWeight={700} textAnchor="middle" fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-            <text x={cx} y={cy + r * 0.46 + 22} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
+            <text x={cx} y={cy + r * 0.46 + 22} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? t('explore.advancedCharts.targetValue', { value: formatNumber(target, labelStyle) }) : t('explore.advancedCharts.noTargetSet')}</text>
           </>
         );
       }}
@@ -681,6 +686,7 @@ function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: nu
 }
 
 function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
+  const { t } = useI18n();
   const hasTarget = target > 0;
   const max = (hasTarget ? Math.max(value, target) : value * 1.25) || 1;
   const barColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
@@ -705,7 +711,7 @@ function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: n
             <text x={barX} y={barY + barH + 22} fontSize={13} fill="rgb(var(--text-tertiary))">0</text>
             <text x={barX + barW} y={barY + barH + 22} fontSize={13} textAnchor="end" fill="rgb(var(--text-tertiary))">{formatNumber(max, labelStyle)}</text>
             <text x={W / 2} y={barY - 22} fontSize={valFont} textAnchor="middle" fontWeight={700} fill="rgb(var(--text-primary))">{formatNumber(value, labelStyle)}</text>
-            <text x={W / 2} y={barY - 6} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? `Target ${formatNumber(target, labelStyle)}` : 'No target set'}</text>
+            <text x={W / 2} y={barY - 6} fontSize={12} textAnchor="middle" fill="rgb(var(--text-tertiary))">{hasTarget ? t('explore.advancedCharts.targetValue', { value: formatNumber(target, labelStyle) }) : t('explore.advancedCharts.noTargetSet')}</text>
           </>
         );
       }}
@@ -714,7 +720,8 @@ function BulletChartSvg({ value, target, style, palette, seriesKey }: { value: n
 }
 
 function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
-  if (!items.length) return <EmptyAdvanced message="No categories to render." />;
+  const { t } = useI18n();
+  if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCategories')} />;
   const total = items.reduce((sum, item) => sum + Math.max(item.value, 0), 0) || 1;
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? true;
@@ -776,7 +783,8 @@ function TreemapChart({ items, style, palette, onSelect }: { items: NameValue[];
 }
 
 function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
-  if (!items.length) return <EmptyAdvanced message="No categories to render." />;
+  const { t } = useI18n();
+  if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCategories')} />;
   const steps = items.slice(0, 24);
   let cumulative = 0;
   const bars = steps.map((item) => {
@@ -862,8 +870,9 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   onSelect?: (field: string, value: unknown) => void;
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
 }) {
+  const { t } = useI18n();
   const { scatterX, scatterY, dimension } = roleConfig;
-  if (!scatterX || !scatterY) return <EmptyAdvanced message="Select X and Y numeric columns." />;
+  if (!scatterX || !scatterY) return <EmptyAdvanced message={t('explore.advancedCharts.selectXY')} />;
   const points = rows
     .map((row) => ({
       x: Number(row[scatterX]),
@@ -873,7 +882,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
     }))
     .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
     .slice(0, 1000);
-  if (!points.length) return <EmptyAdvanced message="No valid coordinate rows to render." />;
+  if (!points.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCoordinateRows')} />;
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const rs = points.map((point) => point.r);
@@ -949,7 +958,8 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
 }
 
 function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
-  if (!pairs.length) return <EmptyAdvanced message="Select row, column, and value fields." />;
+  const { t } = useI18n();
+  if (!pairs.length) return <EmptyAdvanced message={t('explore.advancedCharts.selectRowColValue')} />;
   const sources = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 18);
   const targets = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 14);
   const max = Math.max(...pairs.map((pair) => Math.abs(pair.value)), 1);
@@ -1056,7 +1066,8 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
 }
 
 function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows: ChartRow[]; field?: string; metric?: MetricConfig; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
-  if (!field || !metric) return <EmptyAdvanced message="Select category and numeric value columns." />;
+  const { t } = useI18n();
+  if (!field || !metric) return <EmptyAdvanced message={t('explore.advancedCharts.selectCategoryValue')} />;
   const grouped = new Map<string, number[]>();
   for (const row of rows) {
     const key = String(row[field] ?? '(blank)');
@@ -1085,7 +1096,7 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
     const outliers = values.filter((v) => v < lowerFence || v > upperFence).slice(0, 50);
     return { name, q1, med, q3, whiskerLow, whiskerHigh, outliers };
   });
-  if (!stats.length) return <EmptyAdvanced message="No distribution rows to render." />;
+  if (!stats.length) return <EmptyAdvanced message={t('explore.advancedCharts.noDistributionRows')} />;
   // Default scale = the whisker range across all boxes so the boxes fill the
   // plot. Y Min/Y Max override when set (SVG `allowDataOverflow` equivalent:
   // values outside the range — incl. outlier dots — clamp to the plot edge).
@@ -1155,8 +1166,9 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
 }
 
 function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
+  const { t } = useI18n();
   const flows = applyLimit(pairs, style, 18);
-  if (!flows.length) return <EmptyAdvanced message="Select source, target, and value columns." />;
+  if (!flows.length) return <EmptyAdvanced message={t('explore.advancedCharts.selectSourceTargetValue')} />;
   const sources = Array.from(new Set(flows.map((flow) => flow.source)));
   const targets = Array.from(new Set(flows.map((flow) => flow.target)));
   const max = Math.max(...flows.map((flow) => flow.value), 1);
@@ -1227,7 +1239,8 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
 }
 
 function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
-  if (!pairs.length) return <EmptyAdvanced message="Select hierarchy fields and a value column." />;
+  const { t } = useI18n();
+  if (!pairs.length) return <EmptyAdvanced message={t('explore.advancedCharts.selectHierarchyValue')} />;
   const inner = applyLimit(
     Array.from(new Map(pairs.map((pair) => [pair.source, 0])).keys()).map((source) => ({
       name: source,
@@ -1322,6 +1335,7 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
 }
 
 function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; palette: string[]; style: ChartStyleConfig; onSelect?: (source: string) => void }) {
+  const { t } = useI18n();
   // RIBBON's X is the time field — the axis MUST be chronological. Sort by
   // parsed date (string fallback) BEFORE slicing so the rank-flow reads
   // left-to-right in time order.
@@ -1334,7 +1348,7 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
     })
     .slice(0, 20);
   const cats = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 8);
-  if (times.length < 2 || cats.length === 0) return <EmptyAdvanced message="Select time, series, and value fields." />;
+  if (times.length < 2 || cats.length === 0) return <EmptyAdvanced message={t('explore.advancedCharts.selectTimeSeriesValue')} />;
   const valueMap = new Map(pairs.map((pair) => [JSON.stringify([pair.source, pair.target]), pair.value]));
   const rankByTime = new Map<string, Map<string, number>>();
   for (const time of times) {
@@ -1397,14 +1411,15 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
   preAggregated?: boolean;
   onSelect?: (field: string, value: unknown) => void;
 }) {
+  const { t } = useI18n();
   const { timeField, dimension } = roleConfig;
-  if (!timeField || !dimension) return <EmptyAdvanced message="Select time and label fields." />;
+  if (!timeField || !dimension) return <EmptyAdvanced message={t('explore.advancedCharts.selectTimeAndLabel')} />;
   const events = rows
-    .map((row) => ({ label: String(row[dimension] ?? 'Event'), time: new Date(String(row[timeField] ?? '')).getTime(), value: metricValue(row, metric, preAggregated) }))
+    .map((row) => ({ label: String(row[dimension] ?? t('explore.advancedCharts.eventFallback')), time: new Date(String(row[timeField] ?? '')).getTime(), value: metricValue(row, metric, preAggregated) }))
     .filter((event) => Number.isFinite(event.time))
     .sort((a, b) => a.time - b.time)
     .slice(0, 80);
-  if (!events.length) return <EmptyAdvanced message="No valid timeline rows to render." />;
+  if (!events.length) return <EmptyAdvanced message={t('explore.advancedCharts.noTimelineRows')} />;
   const min = Math.min(...events.map((event) => event.time));
   const max = Math.max(...events.map((event) => event.time));
   const maxValue = Math.max(...events.map((event) => Math.abs(event.value)), 1);
@@ -1500,6 +1515,7 @@ export function AdvancedExploreChart({
   labelMap,
   formatMap,
 }: AdvancedExploreChartProps) {
+  const { t } = useI18n();
   const title = style.chartTitle?.trim() || undefined;
   const titleFontSize = Math.max(style.chartTitleFontSize ?? style.fontSize ?? 12, 14);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
@@ -1616,7 +1632,7 @@ export function AdvancedExploreChart({
       ) : type === 'WORD_CLOUD' ? (
         <WordCloudChart items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : (
-        <EmptyAdvanced message="Unsupported advanced chart type." />
+        <EmptyAdvanced message={t('explore.advancedCharts.unsupportedType')} />
       )}
     </ChartFrame>
   );
