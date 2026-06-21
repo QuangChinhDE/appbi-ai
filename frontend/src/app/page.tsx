@@ -1,5 +1,5 @@
 /**
- * Home page - redirect to dashboards
+ * Home page - redirect to the Overview module
  */
 'use client';
 
@@ -10,7 +10,7 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    router.push('/dashboards');
+    router.push('/overview');
   }, [router]);
 
   return (
