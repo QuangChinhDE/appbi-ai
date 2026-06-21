@@ -730,7 +730,7 @@ export function DashboardFilterBar({
           </div>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {/* Phase-B8 — slicer-cluster controls (Thu gọn + gear) now live here,
               on the right, grouped with Add Filter. */}
           {headerExtras}
@@ -1473,7 +1473,7 @@ function FilterCard({
         {configOpen && showScopeToggle && !lockSlots && onUpdateSlicerScope && slicerKey && (
           <div className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
             <div className="mb-1.5 text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">{t('dashboards.filterCard.scopeApplyTitle')}</div>
-            <div className="flex gap-1 text-[11px]">
+            <div className="flex gap-1 text-[10px]">
               {([
                 { sc: 'page' as const, label: t('dashboards.filterCard.scopeThisPage') },
                 { sc: 'all' as const, label: t('dashboards.filterCard.scopeAllPages') },
@@ -1482,6 +1482,7 @@ function FilterCard({
                 <button
                   key={sc}
                   type="button"
+                  title={label}
                   onClick={() => {
                     if (sc === 'custom') {
                       const seed: Record<string, { filter: boolean; visible: boolean }> = {};
@@ -1493,7 +1494,7 @@ function FilterCard({
                       onUpdateSlicerScope(slicerKey, sc);
                     }
                   }}
-                  className={`flex-1 rounded px-2 py-1 font-medium transition-colors ${
+                  className={`flex-1 truncate whitespace-nowrap rounded px-1.5 py-1 text-center font-medium transition-colors ${
                     slicerScope === sc ? 'bg-brand text-text-inverse' : 'text-text-tertiary hover:text-text-secondary'
                   }`}
                 >
