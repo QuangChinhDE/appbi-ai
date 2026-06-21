@@ -134,6 +134,13 @@ export interface FormScreenResponse {
   pages?: Array<Record<string, unknown>>;
   /** Section headings used to group fields inside a single page. */
   sections?: string[];
+  /** Photo-capture / OCR — runtime only learns whether it is enabled. */
+  ocr?: { enabled?: boolean } | null;
+}
+
+export interface OcrExtractResult {
+  values: Record<string, unknown>;
+  raw?: Record<string, unknown>;
 }
 
 export interface TableScreenResponse {
@@ -341,6 +348,18 @@ export const workspaceApi = {
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       { values },
+    );
+    return r.data;
+  },
+  async ocrExtract(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    image: string,
+  ): Promise<OcrExtractResult> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/ocr-extract`,
+      { image },
     );
     return r.data;
   },

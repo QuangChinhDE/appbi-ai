@@ -149,6 +149,7 @@ export default function ScreenEditor({
               onChange={onChange}
               focusFieldColumn={focusFieldColumn}
               onFocusFieldHandled={onFocusFieldHandled}
+              workboardId={workboardId}
             />
           )}
           {screen.kind === 'table' && (

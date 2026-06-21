@@ -19,6 +19,7 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   ArrowLeft,
+  Camera,
   CheckCircle2,
   ClipboardList,
   Download,
@@ -31,6 +32,7 @@ import {
   RefreshCw,
   Send,
   Trash2,
+  Upload,
   X,
   XCircle,
 } from 'lucide-react';
@@ -1106,6 +1108,51 @@ function FormScreen({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  // ── Chụp ảnh tự điền (OCR) ──
+  const ocrEnabled = !!(spec as unknown as { ocr?: { enabled?: boolean } }).ocr?.enabled;
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [ocrNote, setOcrNote] = useState<string | null>(null);
+  const [ocrDragging, setOcrDragging] = useState(false);
+  const [ocrFilled, setOcrFilled] = useState<Set<string>>(new Set());
+  const ocrInputRef = useRef<HTMLInputElement>(null);
+
+  const handleOcrFile = (file: File | null) => {
+    setOcrError(null);
+    setOcrNote(null);
+    if (!file) return;
+    if (file.size > 9 * 1024 * 1024) {
+      setOcrError('Ảnh quá lớn (tối đa ~9 MB). Hãy chụp lại với độ phân giải thấp hơn.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      if (typeof dataUrl !== 'string') return;
+      setOcrBusy(true);
+      try {
+        const res = await workspaceApi.ocrExtract(token, workboardId, spec.screen_id, dataUrl);
+        const got = res.values || {};
+        const keys = Object.keys(got);
+        if (keys.length === 0) {
+          setOcrNote(null);
+          setOcrError('Chưa đọc được trường nào từ ảnh. Hãy chụp rõ hơn hoặc nhập tay.');
+          return;
+        }
+        setValues((curr) => ({ ...curr, ...got }));
+        setOcrFilled(new Set(keys));
+        setOcrNote(`Đã điền ${keys.length} trường từ ảnh — vui lòng kiểm tra (ô vàng) trước khi lưu.`);
+      } catch (err: unknown) {
+        const detail =
+          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        setOcrError(typeof detail === 'string' ? detail : 'Không nhận diện được ảnh. Vui lòng thử lại.');
+      } finally {
+        setOcrBusy(false);
+      }
+    };
+    reader.onerror = () => setOcrError('Không đọc được tệp ảnh.');
+    reader.readAsDataURL(file);
+  };
 
   const formSpec = spec as FormScreenResponse & RuntimeFormSpecExtras;
   const pages = formSpec.pages ?? [];
@@ -1310,6 +1357,85 @@ function FormScreen({
         <p className="mb-4 text-sm text-slate-500">{spec.description}</p>
       )}
 
+      {ocrEnabled && (
+        <div className="mb-4">
+          {!ocrNote ? (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-disabled={ocrBusy}
+              onClick={() => {
+                if (!ocrBusy) ocrInputRef.current?.click();
+              }}
+              onKeyDown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && !ocrBusy) {
+                  e.preventDefault();
+                  ocrInputRef.current?.click();
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOcrDragging(true);
+              }}
+              onDragLeave={() => setOcrDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOcrDragging(false);
+                if (!ocrBusy) handleOcrFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+              className={`flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed p-4 text-center transition-colors select-none sm:flex-row sm:gap-3 sm:text-left ${
+                ocrDragging ? 'border-blue-400 bg-blue-100' : 'border-blue-200 bg-blue-50'
+              } ${ocrBusy ? 'opacity-60' : 'hover:bg-blue-100'}`}
+            >
+              <div
+                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl text-white"
+                style={{ backgroundColor: accent }}
+              >
+                {ocrBusy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-blue-900">
+                  {ocrBusy ? 'Đang đọc ảnh…' : 'Chụp ảnh phiếu để điền nhanh'}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Bấm để chụp ảnh hoặc chọn tệp ảnh — kéo-thả ảnh vào đây cũng được. Hệ thống tự điền, bạn kiểm tra rồi lưu.
+                </p>
+              </div>
+              <span
+                className="flex flex-shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white"
+                style={{ backgroundColor: accent }}
+              >
+                <Upload className="h-4 w-4" />
+                Chọn ảnh
+              </span>
+              {/* Explicit ref-click (not label-wrap) = bulletproof across browsers.
+                  No `capture` attr: mobile shows Camera + Thư viện + Tệp; desktop opens file picker. */}
+              <input
+                ref={ocrInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={ocrBusy}
+                onChange={(e) => {
+                  handleOcrFile(e.target.files?.[0] ?? null);
+                  e.target.value = ''; // allow re-selecting the same file
+                }}
+              />
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-600" />
+              <p className="text-xs font-medium text-emerald-800">{ocrNote}</p>
+            </div>
+          )}
+          {ocrError && (
+            <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {ocrError}
+            </p>
+          )}
+        </div>
+      )}
+
       {isMultiPage && (
         <PageProgressBar
           pages={pages}
@@ -1328,22 +1454,42 @@ function FormScreen({
                   {sec}
                 </h3>
               )}
-              {list.map((field) => (
-                <Field
-                  key={String(field.column || '')}
-                  field={field}
-                  lookups={spec.lookups}
-                  value={values[String(field.column || '')]}
-                  evalCtx={evalCtx}
-                  autoNumberSet={autoNumberSet}
-                  onChange={(v) =>
-                    setValues((curr) => ({
-                      ...curr,
-                      [String(field.column || '')]: v,
-                    }))
-                  }
-                />
-              ))}
+              {list.map((field) => {
+                const col = String(field.column || '');
+                const isOcr = ocrFilled.has(col);
+                return (
+                  <div
+                    key={col}
+                    className={
+                      isOcr
+                        ? 'relative rounded-lg bg-amber-50 p-2 ring-1 ring-amber-300'
+                        : undefined
+                    }
+                  >
+                    {isOcr && (
+                      <span className="absolute right-2 top-2 z-10 rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
+                        AI
+                      </span>
+                    )}
+                    <Field
+                      field={field}
+                      lookups={spec.lookups}
+                      value={values[col]}
+                      evalCtx={evalCtx}
+                      autoNumberSet={autoNumberSet}
+                      onChange={(v) => {
+                        setValues((curr) => ({ ...curr, [col]: v }));
+                        if (isOcr)
+                          setOcrFilled((prev) => {
+                            const n = new Set(prev);
+                            n.delete(col);
+                            return n;
+                          });
+                      }}
+                    />
+                  </div>
+                );
+              })}
             </div>
           );
         })}

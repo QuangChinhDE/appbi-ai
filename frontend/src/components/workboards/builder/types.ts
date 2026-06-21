@@ -74,6 +74,17 @@ export interface FormScreenSpecBuilt {
     show_if?: string | null;
   }>;
   sections?: string[];
+  ocr?: OcrConfigSpec | null;
+}
+
+export interface OcrConfigSpec {
+  enabled?: boolean;
+  provider?: 'anthropic' | 'openai' | 'gemini';
+  model?: string | null;
+  /** Write-only on save; blank keeps the stored key. GET returns '' + api_key_set. */
+  api_key?: string | null;
+  api_key_set?: boolean;
+  hint?: string | null;
 }
 
 export interface TableFilterSpec {

@@ -7,9 +7,12 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Camera,
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Eye,
+  EyeOff,
   FileInput,
   GripVertical,
   LayoutList,
@@ -41,6 +44,7 @@ import {
 } from './BuilderChrome';
 import type { FormFieldSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import { workboardApi } from '@/lib/api/workboards';
 
 interface DatasetTableInfo {
   id: number;
@@ -57,12 +61,15 @@ interface Props {
   onChange: (next: ScreenSpec) => void;
   focusFieldColumn?: string | null;
   onFocusFieldHandled?: () => void;
+  workboardId?: number;
 }
 
 type FormSpec = NonNullable<ScreenSpec['form']>;
 type FormPage = NonNullable<FormSpec['pages']>[number];
 type LookupRuntime = NonNullable<FormFieldSpec['lookup']>;
-type FormActiveItem = 'layout' | 'submit' | 'initial' | `field:${number}`;
+type FormActiveItem = 'layout' | 'submit' | 'initial' | 'ocr' | `field:${number}`;
+
+type OcrSpec = NonNullable<FormSpec['ocr']>;
 
 type RelationshipHop = {
   table_id?: number | null;
@@ -152,6 +159,7 @@ export default function FormScreenEditor({
   onChange,
   focusFieldColumn,
   onFocusFieldHandled,
+  workboardId,
 }: Props) {
   const form = screen.form || EMPTY_FORM;
   const fields = form.fields || [];
@@ -316,6 +324,23 @@ export default function FormScreenEditor({
       );
     }
 
+    if (activeItem === 'ocr') {
+      return (
+        <BuilderInspectorPanel
+          icon={<Camera className="h-4 w-4" />}
+          title="Chụp ảnh tự điền (OCR)"
+          subtitle="Cho phép người nhập chụp ảnh phiếu để hệ thống tự điền vào biểu mẫu."
+        >
+          <OcrInspector
+            ocr={(form.ocr || {}) as OcrSpec}
+            onChange={(next) => updateForm({ ocr: next })}
+            workboardId={workboardId}
+            screenId={screen.id}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
     if (activeField) {
       return (
         <BuilderInspectorPanel
@@ -404,6 +429,13 @@ export default function FormScreenEditor({
               subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
               active={activeItem === 'initial'}
               onClick={() => setActiveItem('initial')}
+            />
+            <BuilderNavigatorItem
+              icon={<Camera className="h-3.5 w-3.5" />}
+              label="Chụp ảnh tự điền"
+              subtitle={form.ocr?.enabled ? `Bật · ${form.ocr?.provider || 'anthropic'}` : 'Tắt'}
+              active={activeItem === 'ocr'}
+              onClick={() => setActiveItem('ocr')}
             />
           </BuilderNavigatorGroup>
 
@@ -716,6 +748,141 @@ function SubmitFlowInspector({
             />
           )}
         </Lbl>
+      )}
+    </div>
+  );
+}
+
+const OCR_PROVIDERS: { value: NonNullable<OcrSpec['provider']>; label: string; model: string }[] = [
+  { value: 'anthropic', label: 'Anthropic (Claude)', model: 'claude-3-5-sonnet-latest' },
+  { value: 'openai', label: 'OpenAI (GPT)', model: 'gpt-4o-mini' },
+  { value: 'gemini', label: 'Google (Gemini)', model: 'gemini-2.5-flash' },
+];
+
+function OcrInspector({
+  ocr,
+  onChange,
+  workboardId,
+  screenId,
+}: {
+  ocr: OcrSpec;
+  onChange: (next: OcrSpec) => void;
+  workboardId?: number;
+  screenId?: string;
+}) {
+  const provider = ocr.provider || 'anthropic';
+  const defModel = OCR_PROVIDERS.find((p) => p.value === provider)?.model || '';
+  const patch = (p: Partial<OcrSpec>) => onChange({ ...ocr, ...p });
+
+  const [showKey, setShowKey] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  // Whether the field currently holds a real token the user typed/revealed.
+  const hasTyped = !!(ocr.api_key && ocr.api_key.length > 0);
+
+  const toggleEye = async () => {
+    // If revealing a stored (but not-yet-loaded) key, fetch it once.
+    if (!showKey && !hasTyped && ocr.api_key_set && workboardId && screenId) {
+      setRevealing(true);
+      try {
+        const key = await workboardApi.revealOcrKey(workboardId, screenId);
+        if (key) patch({ api_key: key });
+      } catch {
+        /* ignore — keep masked */
+      } finally {
+        setRevealing(false);
+      }
+    }
+    setShowKey((s) => !s);
+  };
+
+  return (
+    <div className="space-y-4">
+      <label className="flex items-center gap-2.5 text-body text-text-primary">
+        <input
+          type="checkbox"
+          checked={!!ocr.enabled}
+          onChange={(e) => patch({ enabled: e.target.checked })}
+          className="h-4 w-4 rounded border-[rgb(var(--border-line))]"
+        />
+        <span>
+          Cho phép chụp ảnh để tự điền biểu mẫu
+          <span className="block text-caption text-text-tertiary">
+            Khi bật, người nhập có thể chụp ảnh phiếu; hệ thống đọc và điền sẵn vào các trường.
+          </span>
+        </span>
+      </label>
+
+      {ocr.enabled && (
+        <div className="space-y-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+          <div className={BUILDER_GRID_2}>
+            <Lbl label="Nhà cung cấp AI">
+              <select
+                value={provider}
+                onChange={(e) => patch({ provider: e.target.value as OcrSpec['provider'] })}
+                className={INPUT}
+              >
+                {OCR_PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            </Lbl>
+            <Lbl label="Model">
+              <input
+                value={ocr.model || ''}
+                onChange={(e) => patch({ model: e.target.value })}
+                className={INPUT}
+                placeholder={defModel}
+              />
+            </Lbl>
+          </div>
+          <Lbl label="Token (API key)">
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                autoComplete="new-password"
+                value={ocr.api_key || ''}
+                onChange={(e) => patch({ api_key: e.target.value })}
+                className={`${INPUT} pr-10`}
+                placeholder={
+                  ocr.api_key_set
+                    ? '•••••••••• đã lưu — bấm 👁 để xem, hoặc nhập khoá mới'
+                    : 'Dán token của nhà cung cấp'
+                }
+              />
+              {(ocr.api_key_set || hasTyped) && (
+                <button
+                  type="button"
+                  onClick={toggleEye}
+                  title={showKey ? 'Ẩn token' : 'Xem token'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
+                >
+                  {revealing ? (
+                    <span className="text-caption">…</span>
+                  ) : showKey ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              )}
+            </div>
+            <span className="mt-1 block text-caption text-text-tertiary">
+              Token được mã hoá khi lưu (không hiển thị mặc định). Để trống khi lưu = giữ khoá đã lưu.
+            </span>
+          </Lbl>
+          <Lbl label="Hướng dẫn cho AI (prompt — tuỳ chọn)">
+            <textarea
+              value={ocr.hint || ''}
+              onChange={(e) => patch({ hint: e.target.value })}
+              className={INPUT}
+              rows={3}
+              placeholder="Dạy thêm cho AI về bố cục phiếu. VD: Mã công tơ ở góc trên phải; chỉ số đầu/cuối kỳ ở bảng giữa; ngày dạng dd/mm/yyyy…"
+            />
+            <span className="mt-1 block text-caption text-text-tertiary">
+              Hệ thống tự gửi kèm danh sách cột của biểu mẫu cho AI; phần này để bổ sung ngữ cảnh phiếu.
+            </span>
+          </Lbl>
+        </div>
       )}
     </div>
   );

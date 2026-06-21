@@ -290,6 +290,14 @@ export const workboardApi = {
     return data;
   },
 
+  /** Reveal the decrypted OCR token for one form screen (owner/editor only). */
+  revealOcrKey: async (id: number, screenId: string): Promise<string> => {
+    const { data } = await apiClient.get(`/workboards/${id}/ocr-key`, {
+      params: { screen_id: screenId },
+    });
+    return (data?.api_key as string) || '';
+  },
+
   listPublicLinks: async (id: number): Promise<WorkboardPublicLink[]> => {
     const { data } = await apiClient.get(`/workboards/${id}/public-links`);
     return data;
