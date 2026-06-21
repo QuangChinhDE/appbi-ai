@@ -1560,7 +1560,7 @@ export default function PublicDashboardPage() {
              the chart grid pull to the TOP of the right column. This removes
              the full-width header band so nothing floats with dead space above
              the rail (user ask). The rail is sticky so filters stay in view. */
-          <div className="mx-auto flex min-h-0 w-full max-w-[1680px] flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
+          <div className="mx-auto flex min-h-0 w-full flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
             {/* Left column = brand+title (top, level with the page tabs) then
                 the filter rail. gap-4 = 2× the previous title↔filter spacing.
                 This column is a fixed flex sibling so it never scrolls away. */}
@@ -1599,7 +1599,7 @@ export default function PublicDashboardPage() {
             a hairline divider; tiles are the only cards. Removes one nesting
             level toward the PBI "flat canvas" feel. */}
         <section
-          className="mx-auto w-full max-w-[1680px] shrink-0 overflow-visible px-4 pt-2.5 pb-0.5 sm:px-5 sm:pt-3"
+          className="mx-auto w-full shrink-0 overflow-visible px-4 pt-2.5 pb-0.5 sm:px-5 sm:pt-3"
         >
           {/* Report masthead — row 1: brand mark + title + Export. Title is no
               longer clamped to 36%/cramped beside the tabs; tabs drop to their
@@ -1889,7 +1889,7 @@ export default function PublicDashboardPage() {
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-        <div className={`mx-auto w-full max-w-[1680px] ${slicerClusterPositionLeft ? 'flex flex-col gap-3 lg:flex-row lg:items-start' : ''}`}>
+        <div className={`mx-auto w-full ${slicerClusterPositionLeft ? 'flex flex-col gap-3 lg:flex-row lg:items-start' : ''}`}>
         {slicerClusterPositionLeft && showFilterControls && (
           <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
             {slicerClusterNode}

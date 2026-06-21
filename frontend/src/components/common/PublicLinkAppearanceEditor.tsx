@@ -1,13 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, ChevronDown, Eye, Image as ImageIcon, Palette, Sparkles, Type, Upload, X } from 'lucide-react';
+import { Bot, ChevronDown, Eye, Image as ImageIcon, Sparkles, Upload, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import {
-  PUBLIC_LINK_ACCENT_OPTIONS,
-  PUBLIC_LINK_PRESET_OPTIONS,
-  normalizePublicLinkAppearance,
-} from '@/lib/public-link-appearance';
+import { normalizePublicLinkAppearance } from '@/lib/public-link-appearance';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input, Textarea } from '@/components/ui/Input';
 
@@ -63,13 +59,6 @@ interface PublicLinkAppearanceEditorProps {
   onChange: (value: PublicLinkAppearanceConfig) => void;
 }
 
-interface ChoiceCardProps {
-  active: boolean;
-  label: string;
-  description: string;
-  onClick: () => void;
-}
-
 function clampAiCostCap(value: number): number {
   return Math.max(MIN_AI_COST_CAP_USD, Math.min(MAX_AI_COST_CAP_USD, value));
 }
@@ -94,26 +83,6 @@ function parseAiCostCapInput(raw: string): number | null {
     return null;
   }
   return clampAiCostCap(parsed);
-}
-
-function ChoiceCard({ active, label, description, onClick }: ChoiceCardProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-lg border px-4 py-3 text-left transition-colors',
-        active
-          ? 'border-brand bg-brand text-text-inverse shadow-linear-sm'
-          : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2',
-      )}
-    >
-      <p className="text-caption font-strong">{label}</p>
-      <p className={cn('mt-1 text-tiny leading-5', active ? 'text-text-inverse/80' : 'text-text-tertiary')}>
-        {description}
-      </p>
-    </button>
-  );
 }
 
 interface ToggleCardProps {
@@ -243,21 +212,6 @@ export function PublicLinkAppearanceEditor({
     });
   };
 
-  const updateHeadline = (nextValue: string) => {
-    onChange({
-      ...nextBaseAppearance(),
-      headline: nextValue,
-    });
-  };
-
-  const selectAccentPreset = (accentPreset: NonNullable<PublicLinkAppearanceConfig['accent_preset']>) => {
-    onChange({
-      ...nextBaseAppearance(),
-      accent_preset: accentPreset,
-      accent_color: null,
-    });
-  };
-
   useEffect(() => {
     setNormalCapInput(formatAiCostCap(value.ai_bot_normal_cost_cap_usd, DEFAULT_NORMAL_COST_CAP_USD));
   }, [value.ai_bot_normal_cost_cap_usd]);
@@ -315,115 +269,11 @@ export function PublicLinkAppearanceEditor({
         <SectionKicker
           icon={Sparkles}
           label="Viewer layout"
-          description="Public page and embed now use one compact report rail by default. Here you only set the visual tone, report title, and whether viewers can use tabs or filters."
+          description="The shared report inherits the dashboard's own theme (colors, fonts) automatically. Here you only set the logo and whether viewers can use page tabs or filters."
         />
         <div className="rounded-md border border-brand/20 bg-brand/10 px-4 py-3 text-caption leading-6 text-text-secondary">
-          Footer, summary, extra badges, and wide header variants are removed so the shared report stays focused on charts.
+          Colors and typography follow the published dashboard theme, so the shared report stays consistent with the original.
         </div>
-      </div>
-
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
-        <SectionKicker
-          icon={Palette}
-          label="Visual direction"
-          description="Choose the report mood first, then adjust the accent color if needed."
-        />
-
-        <div className="space-y-5">
-          <div>
-            <div className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
-              <Sparkles className="h-3.5 w-3.5" />
-              Preset
-            </div>
-            <div className="grid gap-2 md:grid-cols-3">
-              {PUBLIC_LINK_PRESET_OPTIONS.map((option) => (
-                <ChoiceCard
-                  key={option.value}
-                  active={appearance.preset === option.value}
-                  label={option.label}
-                  description={option.description}
-                  onClick={() => updateField('preset', option.value)}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),220px]">
-            <div>
-              <div className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
-                <Palette className="h-3.5 w-3.5" />
-                Accent
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {PUBLIC_LINK_ACCENT_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => selectAccentPreset(option.value)}
-                    className={cn(
-                      'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-caption transition-colors',
-                      appearance.accent_preset === option.value && !appearance.accent_color
-                        ? 'border-brand bg-brand text-text-inverse'
-                        : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2',
-                    )}
-                  >
-                    <span
-                      className="h-3 w-3 rounded-full border border-black/10"
-                      style={{ backgroundColor: option.color }}
-                    />
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
-                <Palette className="h-3.5 w-3.5" />
-                Custom color
-              </label>
-              <div className="flex items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
-                <input
-                  type="color"
-                  value={appearance.accent_color ?? '#0EA5E9'}
-                  onChange={(event) => updateField('accent_color', event.target.value)}
-                  className="h-9 w-11 cursor-pointer rounded-md border border-[rgb(var(--border-line))] bg-transparent"
-                />
-                <div className="min-w-0">
-                  <p className="text-caption font-emphasis text-text-secondary">
-                    {appearance.accent_color ? appearance.accent_color.toUpperCase() : 'Using preset tone'}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => updateField('accent_color', null)}
-                    className="text-tiny text-text-tertiary hover:text-text-secondary"
-                  >
-                    Reset custom color
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
-        <SectionKicker
-          icon={Type}
-          label="Report title"
-          description="This is the one main text viewers should see. Leave it blank to reuse the link name."
-        />
-
-        <label className="mb-1.5 flex items-center gap-2 text-label font-emphasis text-text-secondary">
-          <Type className="h-4 w-4 text-text-quaternary" />
-          Headline
-        </label>
-        <Input
-          type="text"
-          value={appearance.headline ?? ''}
-          onChange={(event) => updateHeadline(event.target.value)}
-          placeholder={dashboardName}
-        />
       </div>
 
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
