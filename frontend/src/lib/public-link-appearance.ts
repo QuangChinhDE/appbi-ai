@@ -16,6 +16,7 @@ export interface NormalizedPublicLinkAppearanceConfig {
   embed_header_mode: PublicLinkEmbedHeaderMode;
   hero_label: string | null;
   headline: string | null;
+  logo_url: string | null;
   summary: string | null;
   footer_note: string | null;
   show_summary: boolean;
@@ -156,6 +157,7 @@ const DEFAULT_APPEARANCE: NormalizedPublicLinkAppearanceConfig = {
   embed_header_mode: 'compact',
   hero_label: null,
   headline: null,
+  logo_url: null,
   summary: null,
   footer_note: null,
   show_summary: false,
@@ -252,6 +254,7 @@ export function normalizePublicLinkAppearance(
     embed_header_mode: DEFAULT_APPEARANCE.embed_header_mode,
     hero_label: DEFAULT_APPEARANCE.hero_label,
     headline: cleanText(source.headline),
+    logo_url: cleanText(source.logo_url),
     summary: DEFAULT_APPEARANCE.summary,
     footer_note: DEFAULT_APPEARANCE.footer_note,
     show_summary: DEFAULT_APPEARANCE.show_summary,

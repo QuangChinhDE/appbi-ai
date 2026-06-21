@@ -43,6 +43,10 @@ const TYPE_PILL: Record<FilterType, string> = {
   date:     'bg-teal-50 text-teal-600 ring-1 ring-teal-100',
   dropdown: 'bg-surface-2 text-text-tertiary ring-1 ring-[rgb(var(--border-line))]',
 };
+// Curated emoji presets for the per-slicer icon picker (build mode). The DA
+// can also type any emoji into the free-text box. Empty → auto icon by type.
+const SLICER_ICON_PRESETS = ['📅', '🏷️', '💰', '⭐', '👤', '📊', '📈', '🌍', '📦', '🏢', '🔢', '✅'];
+
 // ─── Phase-9: Looker-style "Add Filter" — pick interaction type first ───
 //
 // Replaces the legacy "pick column → auto-infer operator from column.type"
@@ -513,6 +517,15 @@ export function DashboardFilterBar({
       return { ...f, label: next || undefined };
     }));
 
+  // Per-slicer icon override (emoji). Empty clears it → the card falls back to
+  // an auto icon derived from the filter type.
+  const updateIcon = (filterId: string, icon: string | undefined) =>
+    onFiltersChange(filters.map(f => {
+      if (f.id !== filterId) return f;
+      const next = (icon ?? '').trim();
+      return { ...f, icon: next || undefined } as BaseFilter;
+    }));
+
   // Phase-G — per-slicer card width (collapsed-card mode). Persisted on
   // the slicer entry so the public link renders the same width the
   // author dragged. `undefined` → default card width.
@@ -663,6 +676,23 @@ export function DashboardFilterBar({
           </button>
         )}
 
+        {/* Public viewer (collapsedSlicers + lockSlots): the interactive toggle
+            above is hidden, which left the header row empty except a lone
+            right-floating "Collapse" button. Render a static "Filters" label
+            here so the header reads like a real filter toolbar (matches the
+            PowerBI/Looker reference) instead of looking broken. */}
+        {collapsedSlicers && lockSlots && (
+          <span className="flex items-center gap-1.5 text-sm font-medium text-text-secondary">
+            <Filter className="w-4 h-4 text-brand" />
+            <span>{t('dashboards.filterBar.filters')}</span>
+            {activeCount > 0 && (
+              <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold">
+                {activeCount}
+              </span>
+            )}
+          </span>
+        )}
+
         {/* Unapplied-changes pill — hidden in collapsedSlicers (the
             Apply button below already pulses when pending). */}
         {hasPendingChanges && !collapsedSlicers && (
@@ -739,6 +769,23 @@ export function DashboardFilterBar({
             <button
               onClick={() => onFiltersChange([])}
               className="text-xs text-text-quaternary hover:text-danger transition-colors"
+            >
+              {t('dashboards.filterBar.clearAll')}
+            </button>
+          )}
+
+          {/* Public viewer (lockSlots): a "Clear all" that resets every
+              slicer's VALUE (never removes the slot) so the viewer can reset
+              the whole bar in one click — matches the reference's "Clear all".
+              Only shown when at least one slicer carries a value. */}
+          {lockSlots && collapsedSlicers && activeCount > 0 && (
+            <button
+              onClick={() => onFiltersChange(filters.map((f) => {
+                if (f.operator === 'in' || f.operator === 'not_in') return { ...f, value: [] };
+                if (f.operator === 'between') return { ...f, value: ['', ''] };
+                return { ...f, value: '' };
+              }))}
+              className="text-xs text-text-tertiary hover:text-danger transition-colors"
             >
               {t('dashboards.filterBar.clearAll')}
             </button>
@@ -954,6 +1001,7 @@ export function DashboardFilterBar({
                 onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
                 onToggleLinkedField={col => toggleLinkedField(f.id, col)}
                 onUpdateLabel={l => updateLabel(f.id, l)}
+                onUpdateIcon={ic => updateIcon(f.id, ic)}
                 onSwitchDropdownMode={m => switchDropdownMode(f.id, m)}
                 onClear={() => clearFilter(f.id)}
                 onRemove={() => removeFilter(f.id)}
@@ -1030,6 +1078,8 @@ interface FilterCardProps {
   onToggleLinkedField: (columnName: string) => void;
   /** Phase-15.78: persist a user-friendly label override. */
   onUpdateLabel: (label: string) => void;
+  /** Persist a per-slicer icon override (emoji); '' / undefined clears it. */
+  onUpdateIcon?: (icon: string | undefined) => void;
   /** Phase-15.78: switch dropdown filters between multi (`in`) and single (`eq`). */
   onSwitchDropdownMode: (mode: 'multi' | 'single') => void;
   onClear: () => void;
@@ -1095,6 +1145,7 @@ function FilterCard({
   onUpdateDatePreset,
   onToggleLinkedField,
   onUpdateLabel,
+  onUpdateIcon,
   onSwitchDropdownMode,
   onClear,
   onRemove,
@@ -1144,7 +1195,8 @@ function FilterCard({
   // NOTE: keep this independent of `supportsDropdownModeToggle` (declared later)
   // to avoid a use-before-declaration TDZ — inline the type check instead.
   const hasConfig = !lockSlots && (
-    (showScopeToggle && !!onUpdateSlicerScope && !!slicerKey)
+    !!onUpdateIcon
+    || (showScopeToggle && !!onUpdateSlicerScope && !!slicerKey)
     || ((f.type === 'dropdown' || f.type === 'text')
         && (!f.interactionType || f.interactionType === 'dropdown' || f.interactionType === 'fixed_list'))
   );
@@ -1192,6 +1244,21 @@ function FilterCard({
   // text + dropdown-typed filters can toggle multi/single (number/date keep
   // their operator-driven UI). String fields are the common slicer case.
   const supportsDropdownModeToggle = f.type === 'dropdown' || f.type === 'text';
+
+  // Per-slicer icon (shown beside the label). An explicit `icon` (emoji)
+  // wins; otherwise fall back to an auto icon derived from the filter type
+  // so every slicer reads like a labelled control (PowerBI/Looker style).
+  const customSlicerIcon = (f as { icon?: string }).icon;
+  const TypeSlicerIcon = f.type === 'date'
+    ? Calendar
+    : f.type === 'number'
+      ? SlidersHorizontal
+      : f.type === 'text'
+        ? TextCursor
+        : List;
+  const slicerIconEl = customSlicerIcon
+    ? <span className="flex-shrink-0 text-[13px] leading-none" aria-hidden>{customSlicerIcon}</span>
+    : <TypeSlicerIcon className="h-3 w-3 flex-shrink-0 text-text-quaternary" aria-hidden />;
 
   // Columns of the same type that could be linked (not the primary, not used as separate filters)
   const linkableColumns = useMemo(
@@ -1357,6 +1424,47 @@ function FilterCard({
                 {linkedCount > 0 && <Link2 className="w-3 h-3" />}{filterCoverageLabel}
               </span>
             )}
+          </div>
+        )}
+        {/* Per-slicer icon picker (build only). Pick a preset emoji, type any
+            emoji, or clear to fall back to the auto icon derived from type. */}
+        {configOpen && !lockSlots && onUpdateIcon && (
+          <div className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">Icon</span>
+              <button
+                type="button"
+                onClick={() => onUpdateIcon(undefined)}
+                className={`text-[10px] font-medium ${f.icon ? 'text-text-tertiary hover:text-brand' : 'text-brand'}`}
+                title="Dùng icon tự động theo loại filter"
+              >
+                {f.icon ? 'Tự động' : '✓ Tự động'}
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              {SLICER_ICON_PRESETS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => onUpdateIcon(emoji)}
+                  className={`flex h-6 w-6 items-center justify-center rounded border text-[13px] leading-none transition-colors ${
+                    f.icon === emoji
+                      ? 'border-brand bg-brand/10'
+                      : 'border-[rgb(var(--border-line))] hover:bg-surface-2'
+                  }`}
+                >
+                  {emoji}
+                </button>
+              ))}
+              <input
+                type="text"
+                value={f.icon ?? ''}
+                onChange={(e) => onUpdateIcon(e.target.value.slice(0, 4) || undefined)}
+                placeholder="🙂"
+                className="h-6 w-12 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1 text-center text-[13px] outline-none focus:ring-1 focus:ring-brand"
+                title="Gõ/dán emoji bất kỳ"
+              />
+            </div>
           </div>
         )}
         {/* Phạm vi slicer (PBI "Sync slicers"): Chỉ trang này / Tất cả trang
@@ -1668,6 +1776,7 @@ function FilterCard({
               onDoubleClick={lockSlots ? undefined : () => { setLabelDraft(f.label ?? ''); setIsEditingLabel(true); }}
               title={lockSlots ? undefined : t('dashboards.filterCard.doubleClickToRename')}
             >
+              {slicerIconEl}
               <span className="truncate">{getFilterDisplayLabel(f)}</span>
               {!lockSlots && <Pencil className="h-2.5 w-2.5 flex-shrink-0 text-text-quaternary opacity-0 transition-opacity group-hover/lbl:opacity-100" />}
             </span>

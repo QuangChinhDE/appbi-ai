@@ -559,6 +559,9 @@ export interface PublicLinkAppearanceConfig {
   embed_header_mode?: 'full' | 'compact' | 'hidden';
   hero_label?: string | null;
   headline?: string | null;
+  /** Custom report logo shown in the public/embed header instead of the
+   *  auto-generated brand mark. A URL or a data: URI (uploaded image). */
+  logo_url?: string | null;
   summary?: string | null;
   footer_note?: string | null;
   show_summary?: boolean;

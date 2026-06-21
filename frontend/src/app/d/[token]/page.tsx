@@ -7,6 +7,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   AlertTriangle,
+  BarChart3,
   Download,
   Loader2,
   Lock,
@@ -74,6 +75,21 @@ function formatFilterValue(value: unknown): string {
     return value.map((item) => String(item)).join(', ');
   }
   return String(value ?? '');
+}
+
+// Parse a #rgb/#rrggbb hex into an rgba() string. Used so the header brand
+// mark + active page-tab chip can tint themselves from the REPORT's own
+// accent colour (dashboard.theme_config.accent) instead of a fixed blue —
+// the public surface then "ăn theo" whatever palette the author published.
+function hexToRgbaString(hex: string | null | undefined, alpha: number): string | null {
+  if (typeof hex !== 'string') return null;
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function PasswordGate({
@@ -987,6 +1003,19 @@ export default function PublicDashboardPage() {
     [dashboard?.public_link_appearance],
   );
   const appearance = publicTheme.appearance;
+  // Header/tab accent follows the REPORT's published theme first
+  // (theme_config.accent), then the public-link appearance accent, then a
+  // safe default — so the masthead "ăn theo" the dashboard's own palette
+  // instead of a hard-coded blue.
+  const reportAccentHex: string =
+    ((dashboard as any)?.theme_config?.accent as string | undefined)
+    ?? publicTheme.accentHex
+    ?? '#475569';
+  const activeTabStyle = {
+    backgroundColor: hexToRgbaString(reportAccentHex, 0.12) ?? undefined,
+    borderColor: hexToRgbaString(reportAccentHex, 0.38) ?? undefined,
+    color: reportAccentHex,
+  };
   const presentationTitle = appearance.headline
     ?? dashboard?.public_link_name
     ?? dashboard?.name
@@ -1143,6 +1172,371 @@ export default function PublicDashboardPage() {
     </div>
   ) : null;
 
+  // ── Shared masthead pieces (used by BOTH the TOP and LEFT layouts) ──
+  // Extracted so the LEFT app-shell can reuse them without divergence.
+  const exportButtonEl = (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => setIsExportDialogOpen(true)}
+      disabled={isExportingPdf || chartsLoading}
+      leadingIcon={
+        isExportingPdf
+          ? <Loader2 className="h-4 w-4 animate-spin" />
+          : <Download className="h-4 w-4" />
+      }
+      className="print:hidden"
+      title="Export this dashboard as PDF"
+      data-html2canvas-ignore
+    >
+      <span className="hidden sm:inline">
+        {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+      </span>
+    </Button>
+  );
+
+  // Custom header logo: a published report can replace the default generated
+  // brand mark with its own image. Source order: public-link appearance
+  // `logo_url` → dashboard `theme_config.logo` (both accept a URL or data: URI)
+  // → fall back to the auto-generated accent-tinted chart glyph.
+  const headerLogoSrc: string | null =
+    appearance.logo_url
+    ?? ((dashboard as any)?.theme_config?.logo as string | undefined)
+    ?? null;
+  const brandMarkEl = headerLogoSrc ? (
+    <img
+      src={headerLogoSrc}
+      alt={presentationTitle}
+      className="h-8 w-8 flex-shrink-0 rounded-lg object-contain"
+    />
+  ) : (
+    <span
+      className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-white"
+      style={{ backgroundColor: reportAccentHex }}
+      aria-hidden
+    >
+      <BarChart3 className="h-[18px] w-[18px]" />
+    </span>
+  );
+
+  // Title for the LEFT shell — wraps to multiple lines instead of truncating
+  // (the left column is narrow; user asked to let a long title wrap).
+  const titleEl = (
+    <h1
+      className="min-w-0 flex-1 break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
+      title={presentationTitle}
+    >
+      {presentationTitle}
+    </h1>
+  );
+
+  const pageTabsEl = showPageTabs ? (
+    <nav className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
+      {dashboardPages.map((page) => {
+        const isActive = page.id === activePageId;
+        const isPending = page.id === pendingPageId;
+        return (
+          <button
+            key={page.id}
+            type="button"
+            onClick={() => {
+              void handlePageSelect(page.id);
+            }}
+            className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1 text-small font-emphasis transition-all ${
+              isActive
+                ? 'shadow-sm'
+                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:-translate-y-px hover:border-text-tertiary/40 hover:bg-surface-2 hover:text-text-primary hover:shadow-sm'
+            }`}
+            style={isActive ? activeTabStyle : undefined}
+            disabled={isPending}
+          >
+            {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            {page.name}
+          </button>
+        );
+      })}
+    </nav>
+  ) : null;
+
+  const filterBannerEl = (lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) ? (
+    <div
+      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
+      style={publicTheme.neutralPillStyle}
+      data-public-locked-banner
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {lockedBannerEntries.length > 0 ? (
+          <>
+            <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
+            {lockedBannerEntries.map((entry, i) => (
+              <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
+                <span className="opacity-70">🔒</span>
+                <span className="font-medium">{entry.label ?? entry.field}</span>
+                <span className="text-text-quaternary">=</span>
+                <span className="font-mono">
+                  {Array.isArray(entry.value)
+                    ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
+                    : String(entry.value ?? '')}
+                </span>
+              </span>
+            ))}
+          </>
+        ) : (
+          <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setIsMiniPaneOpen((v) => !v)}
+          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+        >
+          {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
+        </button>
+      </div>
+      {isMiniPaneOpen && (
+        <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+          {lockedBannerEntries.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                Bộ lọc cố định (do người chia sẻ link cấu hình)
+              </div>
+              {lockedBannerEntries.map((entry, i) => (
+                <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                  <span>🔒</span>
+                  <span className="font-medium">{entry.label ?? entry.field}</span>
+                  <span className="text-text-quaternary">=</span>
+                  <span className="font-mono text-text-secondary">
+                    {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                  </span>
+                  <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {overridableFilterEntries.length > 0 && (
+            <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
+              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                Bộ lọc có thể chỉnh
+              </div>
+              {overridableFilterEntries.map((entry, i) => {
+                const currentDraft = draftViewerFilters.find(
+                  (f) => f.field === entry.field || f.semanticField === entry.semanticField,
+                );
+                const displayValue = currentDraft?.value ?? entry.value;
+                return (
+                  <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                    <span>👁</span>
+                    <span className="font-medium">{entry.label ?? entry.field}</span>
+                    <span className="text-text-quaternary">=</span>
+                    <input
+                      type="text"
+                      value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const nextValue = raw.includes(',')
+                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                          : raw;
+                        setDraftViewerFilters((prev) => {
+                          const others = prev.filter(
+                            (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
+                          );
+                          return [
+                            ...others,
+                            {
+                              ...(currentDraft ?? {}),
+                              id: currentDraft?.id ?? `override-${entry.field}`,
+                              field: entry.field,
+                              semanticField: entry.semanticField,
+                              type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
+                              operator: (currentDraft?.operator ?? 'in') as any,
+                              value: nextValue,
+                            } as any,
+                          ];
+                        });
+                      }}
+                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                      className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
+                    />
+                  </div>
+                );
+              })}
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApplyFilters()}
+                  disabled={!hasPendingFilterChanges}
+                  className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const filterLiveEl = showLiveState ? (
+    <div className="flex flex-col gap-3">
+      {pendingPageId && (
+        <div
+          className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+          style={publicTheme.neutralPillStyle}
+        >
+          <Loader2 className="h-3 w-3 animate-spin" /> Đang mở trang…
+        </div>
+      )}
+
+      {crossFilterState && (
+        <div
+          className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+          style={publicTheme.accentPillStyle}
+        >
+          <p className="font-emphasis">
+            Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+              ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+              ?? `Chart ${crossFilterState.sourceChartId}`}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="break-words text-text-secondary">
+              {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+            </span>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setCrossFilterState(null)}
+              style={publicTheme.neutralPillStyle}
+            >
+              Clear selection
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {highlightState && (
+        <div
+          className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+          style={publicTheme.accentPillStyle}
+        >
+          <p className="font-emphasis">
+            Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
+              ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
+              ?? `Chart ${highlightState.sourceChartId}`}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="break-words text-text-secondary">
+              {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
+            </span>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setHighlightState(null)}
+              style={publicTheme.neutralPillStyle}
+            >
+              Bỏ chọn
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {chartLoadError && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
+          {chartLoadError}
+        </div>
+      )}
+
+      {chartsLoading && !isApplyingFilters && (
+        <div
+          className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+          style={publicTheme.neutralPillStyle}
+        >
+          <Loader2 className="h-3 w-3 animate-spin" /> Đang tải biểu đồ…
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const gridSectionEl = (
+    <ExportModeContext.Provider value={isExportingPdf}>
+      <section
+        ref={gridSectionRef}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+      >
+        {visibleDashboardCharts.length === 0 ? (
+          <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
+            <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
+          </div>
+        ) : (
+          <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
+            <ResponsiveReportGrid
+              className="layout"
+              layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+              breakpoints={REPORT_BREAKPOINTS}
+              cols={REPORT_COLS}
+              rowHeight={80}
+              margin={getDashboardGridMargin(dashboard?.theme_config)}
+              isDraggable={false}
+              isResizable={false}
+              compactType={null}
+              preventCollision={true}
+            >
+              {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                const isWidget = Boolean(
+                  dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
+                );
+                if (isWidget) {
+                  return (
+                    <div key={dashboardChart.id.toString()} className="h-full">
+                      <DashboardWidget widget={dashboardChart} />
+                    </div>
+                  );
+                }
+
+                const chart = dashboardChart.chart;
+                const payload = chartData[dashboardChart.chart_id];
+                const chartError = chartErrors[dashboardChart.chart_id];
+                const title = dashboardChart.layout.custom_title ?? '';
+
+                return (
+                  <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                    <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+                      <ReadonlyChartTile
+                        chart={chart}
+                        chartData={payload}
+                        error={chartError}
+                        title={title}
+                        layout={dashboardChart.layout}
+                        compact={publicTheme.density.compact}
+                        showChartTypeLabel={false}
+                        onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
+                        isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                        highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+                        isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                        highlightData={null}
+                        forceVisible={forceVisibleAll}
+                        publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                        viewerGrain={chartGrains[dashboardChart.chart_id]}
+                        onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+                        onVisible={() => {
+                          setVisibleChartIds((current) => {
+                            if (current.has(dashboardChart.chart_id)) return current;
+                            const next = new Set(current);
+                            next.add(dashboardChart.chart_id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </ChartErrorBoundary>
+                  </div>
+                );
+              })}
+            </ResponsiveReportGrid>
+          </div>
+        )}
+      </section>
+    </ExportModeContext.Provider>
+  );
+
   return (
     <DashboardThemeProvider
       theme={dashboard?.theme_config}
@@ -1153,54 +1547,72 @@ export default function PublicDashboardPage() {
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
 
-      <main ref={publicContentRef} className={`flex-1 min-w-0 overflow-y-auto flex flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
+      {/* The masthead (header/tabs/filter) is PINNED: `main` itself no longer
+          scrolls (overflow-hidden) — only the chart region inside each layout
+          branch scrolls. So scrolling a long report never pushes the
+          header/tabs/filter out of view (user ask). */}
+      <main ref={publicContentRef} className={`flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5`}>
+        {slicerClusterPositionLeft ? (
+          /* ── LEFT app-shell ──────────────────────────────────────────────
+             When the author placed the slicer cluster on the LEFT, the report
+             becomes a 2-column shell: the brand mark + title sit ABOVE the
+             filter rail in the left column, while the page tabs, Export, and
+             the chart grid pull to the TOP of the right column. This removes
+             the full-width header band so nothing floats with dead space above
+             the rail (user ask). The rail is sticky so filters stay in view. */
+          <div className="mx-auto flex min-h-0 w-full max-w-[1680px] flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
+            {/* Left column = brand+title (top, level with the page tabs) then
+                the filter rail. gap-4 = 2× the previous title↔filter spacing.
+                This column is a fixed flex sibling so it never scrolls away. */}
+            <aside className="flex w-full flex-shrink-0 flex-col gap-4 lg:w-[280px]">
+              <div className="flex items-start gap-2.5 px-1">
+                {brandMarkEl}
+                {titleEl}
+              </div>
+              {showFilterControls && (
+                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm">
+                  {slicerClusterNode}
+                </div>
+              )}
+            </aside>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                {pageTabsEl}
+                <div className="ml-auto shrink-0">{exportButtonEl}</div>
+              </div>
+              {(filterBannerEl || filterLiveEl) && (
+                <div className="shrink-0 space-y-2">
+                  {filterBannerEl}
+                  {filterLiveEl}
+                </div>
+              )}
+              {/* Only the charts scroll. */}
+              <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+                {gridSectionEl}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
             gray page = "web widget" look). A report masthead is flat with just
             a hairline divider; tiles are the only cards. Removes one nesting
             level toward the PBI "flat canvas" feel. */}
         <section
-          className="mx-auto w-full max-w-[1680px] overflow-visible border-b border-[rgb(var(--border-line))] px-4 py-2.5 sm:px-5 sm:py-3"
+          className="mx-auto w-full max-w-[1680px] shrink-0 overflow-visible px-4 pt-2.5 pb-0.5 sm:px-5 sm:pt-3"
         >
-          {/* Phase-B1 — compact report toolbar: title + page tabs + export
-              live on ONE slim row (was a tall H1 row + a separate tabs row).
-              Reclaims vertical space so charts start higher, like a real BI
-              report toolbar. */}
-          <div className="flex items-center gap-3">
+          {/* Report masthead — row 1: brand mark + title + Export. Title is no
+              longer clamped to 36%/cramped beside the tabs; tabs drop to their
+              own underline row below (row 2), matching a real BI report header
+              (PowerBI/Looker) instead of the old one-line pill toolbar. */}
+          <div className="flex items-center gap-2.5">
+            {brandMarkEl}
             <h1
-              className="shrink-0 max-w-[36%] truncate text-base font-emphasis tracking-[-0.02em] text-text-primary sm:text-lg"
+              className="min-w-0 flex-1 truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
               title={presentationTitle}
             >
               {presentationTitle}
             </h1>
-            {showPageTabs && (
-              <nav className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
-                {dashboardPages.map((page) => {
-                  const isActive = page.id === activePageId;
-                  const isPending = page.id === pendingPageId;
-                  return (
-                    <button
-                      key={page.id}
-                      type="button"
-                      onClick={() => {
-                        void handlePageSelect(page.id);
-                      }}
-                      className={`inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-tiny font-emphasis transition-colors ${
-                        isActive
-                          ? 'border-transparent bg-text-primary text-text-inverse'
-                          : isPending
-                            ? 'border-brand/20 bg-brand/10 text-brand'
-                            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-                      }`}
-                      style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
-                      disabled={isPending}
-                    >
-                      {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                      {page.name}
-                    </button>
-                  );
-                })}
-              </nav>
-            )}
             <div className="ml-auto shrink-0">
               <Button
                 variant="secondary"
@@ -1223,8 +1635,46 @@ export default function PublicDashboardPage() {
             </div>
           </div>
 
-          {(showFilterControls || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
-            <div className="mt-2 space-y-2">
+          {/* Row 2 — page tabs (own row), rendered as a segmented set of
+              clickable chips so a viewer immediately reads them as pressable
+              tabs (user ask). The active page is a filled accent chip tinted
+              from the REPORT theme; inactive pages are outlined surface chips
+              with a clear hover lift + pointer cursor. */}
+          {showPageTabs && (
+            <nav className="mt-2 flex min-w-0 items-center gap-1.5 overflow-x-auto">
+              {dashboardPages.map((page) => {
+                const isActive = page.id === activePageId;
+                const isPending = page.id === pendingPageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => {
+                      void handlePageSelect(page.id);
+                    }}
+                    className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1 text-small font-emphasis transition-all ${
+                      isActive
+                        ? 'shadow-sm'
+                        : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:-translate-y-px hover:border-text-tertiary/40 hover:bg-surface-2 hover:text-text-primary hover:shadow-sm'
+                    }`}
+                    style={isActive ? activeTabStyle : undefined}
+                    disabled={isPending}
+                  >
+                    {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {page.name}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+
+          {/* In LEFT mode the slicer cluster moves out to the side rail, so the
+              header filter block must NOT render just because showFilterControls
+              is true — otherwise it draws an empty divider + padding. Only render
+              it for the top-mode slicers, live state, or the locked/override
+              banners. */}
+          {((showFilterControls && !slicerClusterPositionLeft) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+            <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
                   filters + [Xem chi tiết] toggle. Click opens mini-pane
@@ -1437,12 +1887,11 @@ export default function PublicDashboardPage() {
           )}
         </section>
 
-        {/* Phase-G — when the slicer cluster is on the Left, lay it as a
-            column beside the chart grid (flex-row). Top mode keeps the
-            cluster stacked above (rendered in the header section). */}
-        <div className={`mx-auto w-full max-w-[1680px] ${slicerClusterPositionLeft ? 'flex flex-row items-stretch gap-3' : ''}`}>
+        {/* Only the chart region scrolls; the header above stays pinned. */}
+        <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        <div className={`mx-auto w-full max-w-[1680px] ${slicerClusterPositionLeft ? 'flex flex-col gap-3 lg:flex-row lg:items-start' : ''}`}>
         {slicerClusterPositionLeft && showFilterControls && (
-          <div className="w-[300px] flex-shrink-0">
+          <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
             {slicerClusterNode}
           </div>
         )}
@@ -1452,14 +1901,14 @@ export default function PublicDashboardPage() {
         <ExportModeContext.Provider value={isExportingPdf}>
         <section
           ref={gridSectionRef}
-          className={`p-1 transition-opacity duration-200 sm:p-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
               <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
             </div>
           ) : (
-            <div className={publicTheme.density.canvasPaddingClass}>
+            <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
               <ResponsiveReportGrid
                 className="layout"
                 layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
@@ -1534,6 +1983,9 @@ export default function PublicDashboardPage() {
         </section>
         </ExportModeContext.Provider>
         </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
+        </div>{/* /scroll region */}
+          </>
+        )}
       </main>
 
       <ExportPdfDialog

@@ -118,6 +118,11 @@ export interface BaseFilter {
     | 'slider'
     | 'checkbox'
     | 'date_range';
+  // Optional per-slicer icon shown beside the label. A short string —
+  // typically an emoji (e.g. "📅", "🏷️", "📊"). When unset the slicer card
+  // falls back to an auto icon derived from the filter TYPE
+  // (date→calendar, number→slider, text→cursor, list→list).
+  icon?: string;
 }
 
 /**

@@ -355,7 +355,10 @@ export function SlicerCluster({
             ? '1px solid transparent'
             : '1.5px dashed rgb(var(--brand) / 0.55)',
     borderRadius: 8,
-    padding: 8,
+    // Public viewer: the cards carry their own borders and the cluster is
+    // transparent, so the 8px frame padding is pure dead whitespace above the
+    // charts. Drop it to a hair on the public link to pull the grid up.
+    padding: lockSlots ? 2 : 8,
     gap: effectiveLayout.gap ?? 8,
     // Phase-G2 fix — the browser resize handle is enabled ONLY in
     // 'free' mode. In 'top' the cluster is full-width (auto) and in
@@ -366,22 +369,27 @@ export function SlicerCluster({
     resize: (isFree && !lockSlots) ? 'both' : undefined,
     overflow: 'visible',
     minHeight: 80,
-    minWidth: 220,
+    // Public left rail: the parent wrapper already sizes the column (280px),
+    // so the cluster must fill it (auto width) — a hard 280px here would
+    // overflow the padded wrapper. minWidth 0 lets the cards shrink to fit.
+    minWidth: (effectiveLayout.position === 'left' && lockSlots) ? 0 : 220,
     // Width:
     //   free → explicit wPx (if set)
-    //   left → fixed column (wPx override or 280px default)
+    //   left → fixed column (wPx override or 280px default); public → fill wrapper
     //   top  → auto (full-width, responsive — ignore wPx)
     width: isFree
       ? (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : undefined)
       : effectiveLayout.position === 'left'
-        ? (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : '280px')
+        ? (lockSlots ? undefined : (effectiveLayout.wPx ? `${effectiveLayout.wPx}px` : '280px'))
         : undefined,
-    flex: effectiveLayout.position === 'left' ? '0 0 auto' : undefined,
-    // Height: in 'left' the cluster fills the column to the bottom of
-    // the report (parent flex uses items-stretch) so the frame runs the
-    // full dashboard length. Free honors hPx; top auto-fits content.
+    flex: (effectiveLayout.position === 'left' && !lockSlots) ? '0 0 auto' : undefined,
+    // Height: in 'left' the BUILDER cluster fills the column to the bottom of
+    // the report (dashed frame runs full length). On the PUBLIC link the rail
+    // is a sticky panel, so it must be its NATURAL height (auto) — forcing
+    // 100% there makes it span the whole scroll area and breaks `sticky`.
+    // Free honors hPx; top auto-fits content.
     height: effectiveLayout.position === 'left'
-      ? '100%'
+      ? (lockSlots ? undefined : '100%')
       : (isFree && effectiveLayout.hPx ? `${effectiveLayout.hPx}px` : undefined),
     maxWidth: isFree ? undefined : '100%',
     // Phase-G3 — free overlay positioning.
@@ -576,7 +584,7 @@ export function SlicerCluster({
   return (
     <div
       ref={containerRef}
-      className="slicer-cluster mb-3"
+      className={`slicer-cluster ${lockSlots ? 'mb-0.5' : 'mb-3'}`}
       data-slicer-cluster-position={effectiveLayout.position}
       data-slicer-cluster-direction={effectiveLayout.direction}
       style={isCollapsed ? undefined : containerStyle}
@@ -588,41 +596,45 @@ export function SlicerCluster({
           viewer can see at-a-glance whether filters are applied without
           opening it. */}
       {isCollapsed ? (
-        <div className="flex items-center justify-end">
+        // Collapsed toggle. PUBLIC viewer (lockSlots): a quiet, LEFT-aligned
+        // neutral pill that mirrors the expanded "⟁ Filters" toolbar label so
+        // closing the bar reads as the same control moving — not a loud brand
+        // pill jumping to the right edge (user OCD feedback). BUILDER keeps the
+        // Phase-17 brand chrome (legible over any themed canvas) but also
+        // left-aligned for consistency.
+        <div className="flex items-center justify-start">
           <button
             type="button"
             onClick={() => setIsCollapsed(false)}
-            // Phase-17 — chrome that survives any dashboard `theme_config`
-            // background. The DA can paint the canvas with arbitrary colors
-            // via DashboardThemeProvider; relying on theme tokens
-            // (`bg-surface-1`, `text-text-secondary`) blends the pill into
-            // the very background it's meant to float above. Use a strong
-            // brand accent fill + white icon/text + drop shadow so the
-            // toggle stays legible against light/dark/coloured backgrounds
-            // alike.
-            className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover"
+            className={
+              lockSlots
+                ? 'inline-flex max-w-full items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-tiny font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary'
+                : 'inline-flex max-w-full items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover'
+            }
             title={
               slicerNamesSummary
                 ? `${t('dashboards.slicerCluster.filtersLabel')}: ${slicerNamesSummary}${activeSlicerCount > 0 ? ` (${t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount })})` : ''} — ${t('dashboards.slicerCluster.clickToOpen')}`
                 : t('dashboards.slicerCluster.showFilters')
             }
           >
-            <span aria-hidden>⛃</span>
+            <Filter className={lockSlots ? 'h-3.5 w-3.5 text-brand' : 'h-3.5 w-3.5'} />
             <span className="shrink-0">{t('dashboards.slicerCluster.filtersLabel')}</span>
             {/* Phase-18 — show the actual filter names so a collapsed pill
                 doesn't read as "filters missing". Falls back to just the
                 label + count when there are no resolvable names. */}
             {slicerNamesSummary && (
-              <span className="hidden max-w-[22rem] truncate font-normal text-white/85 sm:inline">
+              <span className={`hidden max-w-[22rem] truncate font-normal sm:inline ${lockSlots ? 'text-text-quaternary' : 'text-white/85'}`}>
                 {slicerNamesSummary}
               </span>
             )}
             {slicerEntries.length > 0 && (
               <span
                 className={`inline-flex h-4 min-w-[1rem] shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
-                  activeSlicerCount > 0
-                    ? 'bg-white text-brand'
-                    : 'bg-white/25 text-white'
+                  lockSlots
+                    ? 'bg-brand/15 text-brand'
+                    : activeSlicerCount > 0
+                      ? 'bg-white text-brand'
+                      : 'bg-white/25 text-white'
                 }`}
                 title={activeSlicerCount > 0 ? t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount }) : t('dashboards.slicerCluster.filterCount', { count: slicerEntries.length })}
               >

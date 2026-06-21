@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, ChevronDown, Eye, Palette, Sparkles, Type } from 'lucide-react';
+import { Bot, ChevronDown, Eye, Image as ImageIcon, Palette, Sparkles, Type, Upload, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   PUBLIC_LINK_ACCENT_OPTIONS,
@@ -38,6 +38,19 @@ const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (cheap, fast)' },
   ],
 };
+
+// Logo upload guard — a data: URI is stored inline in the appearance config,
+// so cap the source image size to keep the config small. ~256 KB raw.
+const MAX_LOGO_BYTES = 256 * 1024;
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 
 const DEFAULT_NORMAL_COST_CAP_USD = 0.05;
 const DEFAULT_THINKING_COST_CAP_USD = 0.10;
@@ -177,6 +190,26 @@ export function PublicLinkAppearanceEditor({
   const [thinkingCapInput, setThinkingCapInput] = useState(() => (
     formatAiCostCap(value.ai_bot_thinking_cost_cap_usd, DEFAULT_THINKING_COST_CAP_USD)
   ));
+  const [logoError, setLogoError] = useState<string | null>(null);
+
+  const handleLogoFile = async (file: File | undefined) => {
+    setLogoError(null);
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setLogoError('Please choose an image file.');
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setLogoError(`Image is too large (${Math.round(file.size / 1024)} KB). Keep it under ${Math.round(MAX_LOGO_BYTES / 1024)} KB.`);
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateField('logo_url', dataUrl);
+    } catch {
+      setLogoError('Could not read that image. Try another file.');
+    }
+  };
 
   const nextBaseAppearance = (): PublicLinkAppearanceConfig => ({
     ...appearance,
@@ -391,6 +424,59 @@ export function PublicLinkAppearanceEditor({
           onChange={(event) => updateHeadline(event.target.value)}
           placeholder={dashboardName}
         />
+      </div>
+
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+        <SectionKicker
+          icon={ImageIcon}
+          label="Report logo"
+          description="Upload a logo to replace the default generated mark in the report header. Leave empty to use the auto-generated accent mark."
+        />
+
+        <div className="flex items-center gap-4">
+          <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+            {appearance.logo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={appearance.logo_url} alt="Logo preview" className="h-full w-full object-contain" />
+            ) : (
+              <ImageIcon className="h-6 w-6 text-text-quaternary" />
+            )}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-caption font-emphasis text-text-secondary transition-colors hover:border-[rgb(var(--border-strong))] hover:bg-surface-1">
+                <Upload className="h-3.5 w-3.5" />
+                {appearance.logo_url ? 'Replace logo' : 'Upload logo'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleLogoFile(event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+              {appearance.logo_url && (
+                <button
+                  type="button"
+                  onClick={() => { setLogoError(null); updateField('logo_url', null); }}
+                  className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-caption text-text-tertiary transition-colors hover:border-danger/40 hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Remove
+                </button>
+              )}
+            </div>
+            <p className="mt-1.5 text-tiny text-text-quaternary">
+              PNG, JPG, or SVG. Square works best. Max {Math.round(MAX_LOGO_BYTES / 1024)} KB.
+            </p>
+            {logoError && (
+              <p className="mt-1 text-tiny text-danger">{logoError}</p>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
