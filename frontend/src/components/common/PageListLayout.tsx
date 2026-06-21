@@ -73,8 +73,8 @@ export function PageListLayout({
   const showToolbar = searchable || viewToggle || Boolean(toolbarExtraContent) || Boolean(activeFiltersContent);
 
   return (
-    <div className="px-4 py-6 sm:px-6 xl:px-8">
-      <div className="mb-4">
+    <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
+      <div className="mb-4 shrink-0">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-h1 text-text-primary font-emphasis">{title}</h1>
@@ -88,10 +88,10 @@ export function PageListLayout({
         </div>
       </div>
 
-      {overview && <div className="mb-4">{overview}</div>}
+      {overview && <div className="mb-4 shrink-0">{overview}</div>}
 
       {showToolbar && (
-        <div className="relative z-20 mb-4">
+        <div className="relative z-20 mb-4 shrink-0">
           <div className="flex flex-col gap-2.5 xl:flex-row xl:items-center">
             <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:items-center">
               {searchable && (
@@ -166,7 +166,9 @@ export function PageListLayout({
         </div>
       )}
 
-      {typeof children === 'function' ? children(ctx) : children}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-6 [scrollbar-gutter:stable]">
+        {typeof children === 'function' ? children(ctx) : children}
+      </div>
     </div>
   );
 }
