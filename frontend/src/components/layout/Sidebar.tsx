@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Database,
   Plug,
+  Home,
   CheckCheck,
   CheckCircle2,
   ChevronLeft,
@@ -52,6 +53,7 @@ interface SidebarProps {
 }
 
 const ALL_NAV_ITEMS: NavItem[] = [
+  { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
   { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
   { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
   { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
@@ -71,6 +73,7 @@ function getInitials(name: string): string {
 
 export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -92,6 +95,23 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
       markAllNotificationsRead();
     }
   }, [markAllNotificationsRead, showNotifications, unreadCount]);
+
+  // Close the user menu (language / account popover) on outside click or Escape.
+  useEffect(() => {
+    if (!showUserMenu) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!userMenuRef.current?.contains(event.target as Node)) setShowUserMenu(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowUserMenu(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showUserMenu]);
 
   const perms = permData?.permissions;
   const visibleItems = ALL_NAV_ITEMS.filter((item) => {
@@ -181,7 +201,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
       {/* Bottom: user + collapse */}
       <div className="border-t border-[rgb(var(--border-line))]">
         {user && (
-          <div className="relative px-2 pt-2">
+          <div ref={userMenuRef} className="relative px-2 pt-2">
             <button
               onClick={() => setShowUserMenu((v) => !v)}
               className={cn(
