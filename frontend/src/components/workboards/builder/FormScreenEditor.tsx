@@ -8,6 +8,7 @@ import {
   ArrowDown,
   ArrowUp,
   Camera,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ClipboardList,
@@ -16,9 +17,11 @@ import {
   FileInput,
   GripVertical,
   LayoutList,
+  Loader2,
   Plus,
   Route,
   Trash2,
+  XCircle,
 } from 'lucide-react';
 
 import {
@@ -753,10 +756,15 @@ function SubmitFlowInspector({
   );
 }
 
-const OCR_PROVIDERS: { value: NonNullable<OcrSpec['provider']>; label: string; model: string }[] = [
-  { value: 'anthropic', label: 'Anthropic (Claude)', model: 'claude-3-5-sonnet-latest' },
-  { value: 'openai', label: 'OpenAI (GPT)', model: 'gpt-4o-mini' },
-  { value: 'gemini', label: 'Google (Gemini)', model: 'gemini-2.5-flash' },
+// Vision-capable models per provider. First entry = default for that provider.
+const OCR_PROVIDERS: {
+  value: NonNullable<OcrSpec['provider']>;
+  label: string;
+  models: string[];
+}[] = [
+  { value: 'openai', label: 'OpenAI (GPT)', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] },
+  { value: 'anthropic', label: 'Anthropic (Claude)', models: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-7-sonnet-latest'] },
+  { value: 'gemini', label: 'Google (Gemini)', models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'] },
 ];
 
 function OcrInspector({
@@ -771,13 +779,40 @@ function OcrInspector({
   screenId?: string;
 }) {
   const provider = ocr.provider || 'anthropic';
-  const defModel = OCR_PROVIDERS.find((p) => p.value === provider)?.model || '';
+  const modelOptions = OCR_PROVIDERS.find((p) => p.value === provider)?.models || [];
+  const defModel = modelOptions[0] || '';
   const patch = (p: Partial<OcrSpec>) => onChange({ ...ocr, ...p });
 
   const [showKey, setShowKey] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   // Whether the field currently holds a real token the user typed/revealed.
   const hasTyped = !!(ocr.api_key && ocr.api_key.length > 0);
+  const canTest = !!(workboardId && screenId && (hasTyped || ocr.api_key_set));
+
+  const runConnTest = async () => {
+    if (!workboardId || !screenId || testing) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await workboardApi.testOcrConnection(workboardId, screenId, {
+        provider,
+        model: ocr.model || defModel,
+        // send the typed key if any; empty → server falls back to the saved key
+        api_key: ocr.api_key || '',
+      });
+      setTestResult(
+        r.ok
+          ? { ok: true, msg: `Kết nối thành công${r.model ? ` · ${r.model}` : ''}` }
+          : { ok: false, msg: r.message || 'Kết nối thất bại.' },
+      );
+    } catch {
+      setTestResult({ ok: false, msg: 'Không gọi được máy chủ để kiểm tra.' });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const toggleEye = async () => {
     // If revealing a stored (but not-yet-loaded) key, fetch it once.
@@ -818,7 +853,13 @@ function OcrInspector({
             <Lbl label="Nhà cung cấp AI">
               <select
                 value={provider}
-                onChange={(e) => patch({ provider: e.target.value as OcrSpec['provider'] })}
+                onChange={(e) => {
+                  const np = e.target.value as OcrSpec['provider'];
+                  // switch the model to the new provider's default so we never
+                  // keep a model that belongs to a different provider.
+                  const nd = OCR_PROVIDERS.find((p) => p.value === np)?.models[0] || '';
+                  patch({ provider: np, model: nd });
+                }}
                 className={INPUT}
               >
                 {OCR_PROVIDERS.map((p) => (
@@ -827,12 +868,19 @@ function OcrInspector({
               </select>
             </Lbl>
             <Lbl label="Model">
-              <input
-                value={ocr.model || ''}
+              <select
+                value={ocr.model || defModel}
                 onChange={(e) => patch({ model: e.target.value })}
                 className={INPUT}
-                placeholder={defModel}
-              />
+              >
+                {/* keep a previously-saved custom model visible/selectable */}
+                {ocr.model && !modelOptions.includes(ocr.model) && (
+                  <option value={ocr.model}>{ocr.model} (tuỳ chỉnh)</option>
+                )}
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
             </Lbl>
           </div>
           <Lbl label="Token (API key)">
@@ -869,6 +917,32 @@ function OcrInspector({
             <span className="mt-1 block text-caption text-text-tertiary">
               Token được mã hoá khi lưu (không hiển thị mặc định). Để trống khi lưu = giữ khoá đã lưu.
             </span>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={runConnTest}
+                disabled={testing || !canTest}
+                title={
+                  canTest
+                    ? 'Gọi thử nhà cung cấp để xác nhận token + model hoạt động'
+                    : 'Hãy dán (hoặc đã lưu) token trước khi kiểm tra'
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2.5 py-1.5 text-caption font-medium text-text-primary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                {testing ? 'Đang kiểm tra…' : 'Kiểm tra kết nối'}
+              </button>
+              {testResult && (
+                <span
+                  className={`inline-flex items-center gap-1 text-caption font-medium ${
+                    testResult.ok ? 'text-emerald-600' : 'text-rose-600'
+                  }`}
+                >
+                  {testResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+                  {testResult.msg}
+                </span>
+              )}
+            </div>
           </Lbl>
           <Lbl label="Hướng dẫn cho AI (prompt — tuỳ chọn)">
             <textarea

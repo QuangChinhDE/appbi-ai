@@ -235,6 +235,41 @@ def reveal_workboard_ocr_key(
     return {"api_key": (cfg or {}).get("api_key") or ""}
 
 
+@router.post("/{workboard_id}/screens/{screen_id}/ocr-test")
+def test_workboard_ocr_connection(
+    workboard_id: int,
+    screen_id: str,
+    body: Dict[str, Any] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Verify an OCR provider/model/token actually connects.
+
+    Backs the builder "Kiểm tra kết nối" button so the configurer knows the
+    key works BEFORE relying on it. Uses the key typed in the request; if none
+    is sent, falls back to the stored (decrypted) key for this screen. Makes a
+    tiny text-only request — never returns model content. Always 200 (the
+    result is in ``ok``) unless the caller lacks edit access.
+    """
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    body = body or {}
+    from app.modules.workboards.services.ocr_secrets import get_screen_ocr_config
+    cfg = get_screen_ocr_config(wb.layout_json or {}, screen_id) or {}
+    provider = (body.get("provider") or "").strip().lower() or cfg.get("provider") or "anthropic"
+    model = (body.get("model") or "").strip() or cfg.get("model")
+    typed = (body.get("api_key") or "").strip()
+    api_key = typed or (cfg.get("api_key") or "")
+    from app.modules.workboards.services import form_ocr_service
+    if not api_key:
+        return {"ok": False, "message": "Chưa có token để kiểm tra. Hãy dán token rồi thử lại."}
+    try:
+        result = form_ocr_service.test_connection(provider=provider, api_key=api_key, model=model)
+        return {"ok": True, "provider": result["provider"], "model": result["model"]}
+    except form_ocr_service.OcrError as exc:
+        return {"ok": False, "message": str(exc)}
+
+
 @router.patch("/{workboard_id}", response_model=WorkboardResponse)
 def update_workboard(
     workboard_id: int,

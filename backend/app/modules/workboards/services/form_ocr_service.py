@@ -154,6 +154,65 @@ def _provider_err(name: str, r: httpx.Response) -> str:
 _CALLERS = {"anthropic": _call_anthropic, "openai": _call_openai, "gemini": _call_gemini}
 
 
+# ── connection test (no image — cheap "ping" to validate token + model) ──────
+def _test_anthropic(api_key, model) -> httpx.Response:
+    return httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"},
+        json={"model": model, "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]},
+        timeout=30.0,
+    )
+
+
+def _test_openai(api_key, model) -> httpx.Response:
+    return httpx.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "max_tokens": 1,
+              "messages": [{"role": "user", "content": "ping"}]},
+        timeout=30.0,
+    )
+
+
+def _test_gemini(api_key, model) -> httpx.Response:
+    return httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        params={"key": api_key},
+        headers={"Content-Type": "application/json"},
+        json={"contents": [{"parts": [{"text": "ping"}]}],
+              "generationConfig": {"maxOutputTokens": 1}},
+        timeout=30.0,
+    )
+
+
+_TESTERS = {"anthropic": _test_anthropic, "openai": _test_openai, "gemini": _test_gemini}
+
+
+def test_connection(*, provider: str, api_key: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Validate a provider/model/api_key with a tiny text-only request.
+
+    Returns ``{"ok": True, "provider": ..., "model": ...}`` on success;
+    raises :class:`OcrError` (with a friendly message) otherwise.
+    """
+    provider = (provider or "anthropic").strip().lower()
+    tester = _TESTERS.get(provider)
+    if tester is None:
+        raise OcrError(f"Nhà cung cấp không hợp lệ: {provider}")
+    if not api_key:
+        raise OcrError("Chưa nhập token để kiểm tra.", 400)
+    model = (model or "").strip() or _DEFAULT_MODEL[provider]
+    try:
+        r = tester(api_key, model)
+    except httpx.HTTPError as exc:
+        raise OcrError(f"Không kết nối được tới nhà cung cấp: {exc}", 502) from exc
+    if r.status_code != 200:
+        names = {"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini"}
+        raise OcrError(_provider_err(names.get(provider, provider), r), 502)
+    return {"ok": True, "provider": provider, "model": model}
+
+
 # ── JSON + type coercion ───────────────────────────────────────────────────
 def _parse_json(text: str) -> Dict[str, Any]:
     text = (text or "").strip()

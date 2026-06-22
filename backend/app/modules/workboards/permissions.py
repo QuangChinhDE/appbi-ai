@@ -11,10 +11,12 @@ from app.models.dataset import Dataset, DatasetTable
 from app.models.models import DataSource
 from app.models.user import User
 
-# TEMPORARY (2026-06): Workboards may only bind to Google Sheets sources.
-# This is the single chokepoint — relax by widening this set (or gating it on
-# a setting) when other write-capable sources are re-enabled for Workboards.
-WORKBOARD_ALLOWED_SOURCE_TYPES = {"google_sheets"}
+# Sources a Workboard screen may bind to. Must stay in sync with what the write
+# path (WorkboardWriteService._resolve_dialect) can actually INSERT/UPDATE into —
+# currently PostgreSQL, MySQL, and Google Sheets. An earlier build pinned this to
+# Sheets-only, which silently blocked editing Postgres/MySQL-backed workboards in
+# the builder (every layout save 400'd) even though the runtime writes to them.
+WORKBOARD_ALLOWED_SOURCE_TYPES = {"google_sheets", "postgresql", "mysql"}
 
 
 def require_dataset_binding_access(
@@ -72,7 +74,7 @@ def assert_workboard_dataset_supported(db: Session, dataset_id: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Workboards currently support only Google Sheets data sources. "
+                "Workboards support PostgreSQL, MySQL, or Google Sheets data sources. "
                 f"This dataset is backed by: {', '.join(sorted(types))}."
             ),
         )
@@ -93,7 +95,7 @@ def assert_workboard_tables_supported(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Workboard screens can only bind Google Sheets tables. "
+                "Workboard screens can bind PostgreSQL, MySQL, or Google Sheets tables. "
                 f"Found non-supported source(s): {', '.join(sorted(offenders))}."
             ),
         )

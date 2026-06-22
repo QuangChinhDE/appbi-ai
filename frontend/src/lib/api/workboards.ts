@@ -298,6 +298,18 @@ export const workboardApi = {
     return (data?.api_key as string) || '';
   },
 
+  testOcrConnection: async (
+    id: number,
+    screenId: string,
+    payload: { provider?: string; model?: string; api_key?: string },
+  ): Promise<{ ok: boolean; model?: string; message?: string }> => {
+    const { data } = await apiClient.post(
+      `/workboards/${id}/screens/${screenId}/ocr-test`,
+      payload,
+    );
+    return data;
+  },
+
   listPublicLinks: async (id: number): Promise<WorkboardPublicLink[]> => {
     const { data } = await apiClient.get(`/workboards/${id}/public-links`);
     return data;
