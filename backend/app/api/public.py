@@ -1937,9 +1937,11 @@ if settings.WORKBOARDS_ENABLED:
         values = body.get("values") if isinstance(body, dict) else None
         if not isinstance(values, dict):
             raise HTTPException(status_code=400, detail="values is required.")
+        client_op_id = body.get("client_op_id") if isinstance(body, dict) else None
         try:
             result = screen_runtime.insert_screen_row(
-                db, wb, screen, values, identity=identity
+                db, wb, screen, values, identity=identity,
+                client_op_id=client_op_id if isinstance(client_op_id, str) else None,
             )
         except WorkboardValidationError as exc:
             raise HTTPException(

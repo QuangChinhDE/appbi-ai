@@ -447,3 +447,22 @@ class WorkboardAppLoginAttempt(Base):
         nullable=False,
         index=True,
     )
+
+
+class WorkboardOpLog(Base):
+    """Idempotency log for client-submitted write operations.
+
+    Each offline form submit carries a client-generated ``op_id``. We INSERT
+    the op_id here BEFORE writing the data row; a replayed submit (e.g. the
+    response was lost after a successful insert) hits the primary-key conflict
+    and is treated as already-done — so a queued submit can never be inserted
+    twice on reconnect.
+    """
+
+    __tablename__ = "workboard_op_log"
+
+    op_id = Column(String(64), primary_key=True)
+    workboard_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

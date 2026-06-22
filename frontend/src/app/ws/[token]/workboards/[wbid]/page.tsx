@@ -54,6 +54,8 @@ import {
   savePublicSession,
 } from '@/lib/api/public';
 import { evaluateTruthy } from '@/lib/wb-expr';
+import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
+import { isNetworkError } from '@/lib/offline/sync';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
 // picker and the runtime can't drift. Anything not in the registry
@@ -173,6 +175,23 @@ export default function WorkspaceWorkboardPage() {
         const s = await workspaceApi.getAppShell(token, workboardId);
         if (!alive) return;
         setShell(s);
+        // Warm the offline cache: while online, fetch every screen once so the
+        // service worker caches each screen's GET. Field workers open the app,
+        // lose signal on-site, then fill MANY forms across several screens (and
+        // read reports) entirely offline — each entry is queued + synced on
+        // reconnect. Fire-and-forget; the SW (network-first → cache) stores them.
+        if (typeof navigator === 'undefined' || navigator.onLine) {
+          void (async () => {
+            for (const sc of s.screens) {
+              if (!alive) return;
+              try {
+                await workspaceApi.getScreen(token, workboardId, sc.id);
+              } catch {
+                /* offline / transient — the SW caches whatever succeeds */
+              }
+            }
+          })();
+        }
         // Find out if there are sibling mini-apps in this workspace, to
         // decide whether the "back to menu" button is meaningful.
         workspaceApi
@@ -924,9 +943,12 @@ function ScreenContainer({
     return <Loader2 className="mx-auto my-10 h-6 w-6 animate-spin text-slate-400" />;
   }
   if (!data) {
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine;
     return (
       <div className="rounded-xl bg-white p-6 text-center text-sm text-slate-500 shadow-sm">
-        Không tải được màn hình này.
+        {offline
+          ? 'Màn hình này chưa được tải để dùng offline. Hãy mở nó một lần khi có mạng, sau đó vẫn dùng được khi mất mạng.'
+          : 'Không tải được màn hình này.'}
       </div>
     );
   }
@@ -1241,6 +1263,12 @@ function FormScreen({
     setSubmitting(true);
     setSubmitError(null);
     setSuccess(null);
+    // Idempotency key — reused if this submit has to be queued offline + replayed,
+    // so the backend can never insert it twice.
+    const opId = newOpId();
+    // Hoisted so the catch block can tell a new-row insert (queueable offline)
+    // from an edit (needs the live row, not queueable).
+    let isEditing = false;
     try {
       // Strip placeholder strings (still wrapped in {{…}}); the backend RLS
       // engine forces these columns to the caller's identity anyway.
@@ -1285,7 +1313,7 @@ function FormScreen({
         }
       }
       const pk: Record<string, unknown> = {};
-      const isEditing =
+      isEditing =
         pkColumns.length > 0 &&
         pkColumns.every((col) => {
           const v = payload[col];
@@ -1297,7 +1325,7 @@ function FormScreen({
       if (isEditing) {
         await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
       } else {
-        await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload);
+        await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload, opId);
       }
       setSuccess(isEditing ? 'Đã cập nhật.' : 'Đã lưu.');
       const next = spec.after_submit?.go_to_screen || undefined;
@@ -1308,6 +1336,44 @@ function FormScreen({
       // Brief delay so user sees the success badge before navigating.
       setTimeout(() => onSaved(carry, next), 600);
     } catch (err: unknown) {
+      // Offline (no server reachable) + a NEW row → queue it locally and let the
+      // user keep working; it syncs automatically on reconnect. Editing offline
+      // is not queued (needs the live row), so it falls through to the error path.
+      if (!isEditing && isNetworkError(err)) {
+        try {
+          const payloadForQueue: Record<string, unknown> = {};
+          const fieldCols = new Set(allFields.map((f) => String(f.column || '')));
+          for (const k of fieldCols) {
+            const v = values[k];
+            if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
+            payloadForQueue[k] = v;
+          }
+          await enqueueSubmit({
+            opId,
+            token,
+            workboardId,
+            screenId: spec.screen_id,
+            screenTitle: spec.title,
+            values: payloadForQueue,
+            createdAt: Date.now(),
+            status: 'pending',
+          });
+          window.dispatchEvent(new Event('appbi-queue-changed'));
+          setSuccess('Đã lưu tạm khi ngoại tuyến — sẽ tự gửi khi có mạng.');
+          // Stay on the form: calling onSaved would navigate / re-fetch the
+          // screen over the (still-offline) network → "Không tải được màn hình".
+          // Instead reset locally for the next entry; the queued row syncs on
+          // reconnect (OfflineBar shows the pending count).
+          setValues(buildInitial());
+          setCurrentPage(1);
+          setOcrFilled(new Set());
+          setTimeout(() => setSuccess(null), 4000);
+          return;
+        } catch {
+          setSubmitError('Không lưu tạm được khi ngoại tuyến. Vui lòng thử lại khi có mạng.');
+          return;
+        }
+      }
       const detail = (err as ApiErrorLike)?.response?.data?.detail;
       if (typeof detail === 'string') setSubmitError(detail);
       else if (detail && typeof detail === 'object' && 'message' in detail) {

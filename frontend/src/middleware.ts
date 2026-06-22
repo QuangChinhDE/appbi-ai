@@ -43,6 +43,18 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // PWA mini-app surfaces (public): launcher `/m`, manifest, service worker,
+  // and the PWA icons must be reachable without an admin session.
+  if (
+    pathname === '/m' ||
+    pathname.startsWith('/m/') ||
+    pathname === '/manifest.webmanifest' ||
+    pathname === '/sw.js' ||
+    pathname.startsWith('/icon-')
+  ) {
+    return NextResponse.next();
+  }
+
   // Allow Next.js internals and other API routes (e.g. /api/auth/*) through
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon') || pathname.startsWith('/api/')) {
     return NextResponse.next();

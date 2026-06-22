@@ -344,10 +344,13 @@ export const workspaceApi = {
     workboardId: number,
     screenId: string,
     values: Record<string, unknown>,
+    opId?: string,
   ): Promise<Record<string, unknown>> {
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
-      { values },
+      // client_op_id = idempotency key so an offline submit replayed after
+      // reconnect can never be inserted twice (BE dedups on it).
+      opId ? { values, client_op_id: opId } : { values },
     );
     return r.data;
   },

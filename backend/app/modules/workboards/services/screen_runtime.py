@@ -29,12 +29,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.models.dataset import DatasetTable
 from app.models.models import DataSource
-from app.modules.workboards.models import Workboard
+from app.modules.workboards.models import Workboard, WorkboardOpLog
 from app.modules.workboards.roles import is_owner_role
 from app.modules.workboards.schemas import (
     DataTableBlock,
@@ -836,6 +837,7 @@ def insert_screen_row(
     values: Dict[str, Any],
     *,
     identity: CallerIdentity,
+    client_op_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Form and table screens are writable. Form runs field-level
     # conditional rules (show_if / required_if) first; table screens use
@@ -893,6 +895,17 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    # Idempotency: claim the op_id BEFORE the data write (same transaction). A
+    # replayed offline submit — or one whose success response was lost — hits
+    # the PK conflict here and is treated as already-done, so it can never be
+    # inserted twice on reconnect.
+    if client_op_id:
+        try:
+            db.add(WorkboardOpLog(op_id=str(client_op_id)[:64], workboard_id=workboard.id))
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            return {"action": "insert", "idempotent": True, "affected_rows": 0}
     # Hand off to the existing write service, but point it at the screen's
     # table by temporarily swapping ``primary_table_id`` on the workboard
     # instance — the service reads it lazily, so this is safe within the
