@@ -113,7 +113,7 @@ export function LineageExplorer({
   );
 
   const highlightKeys = useMemo(
-    () => (selected ? graph.connectedKeys(selected) : null),
+    () => (selected ? graph.relatedKeys(selected) : null),
     [graph, selected],
   );
 
@@ -463,7 +463,7 @@ function DrillDown({
   onOpen: (ref: LineageRef) => void;
   onClose: () => void;
 }) {
-  const chain = useMemo(() => graph.connectedKeys(node.key), [graph, node.key]);
+  const chain = useMemo(() => graph.relatedKeys(node.key), [graph, node.key]);
   const impact = useMemo(() => graph.impactOf(node.key), [graph, node.key]);
   const Icon = KIND_ICON[node.kind];
 

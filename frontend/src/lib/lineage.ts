@@ -58,8 +58,8 @@ export interface LineageGraph {
   edges: LineageEdge[];
   nodeByKey: Map<string, LineageNode>;
   counts: Record<LineageKind, number>;
-  /** Undirected connected component of a node (for highlight). */
-  connectedKeys: (key: string) => Set<string>;
+  /** Directed lineage path of a node: self + ancestors + descendants (no siblings). */
+  relatedKeys: (key: string) => Set<string>;
   /** Forward-reachable output counts from a node (impact analysis). */
   impactOf: (key: string) => { charts: number; dashboards: number; workboards: number };
 }
@@ -192,26 +192,25 @@ export function buildLineageGraph({
     if (datasetId != null) pushEdge(keyOf('dataset', datasetId), keyOf('workboard', w.id), 'dataset-workboard');
   }
 
-  // Adjacency (undirected for highlight, forward for impact).
-  const undirected = new Map<string, Set<string>>();
+  // Directed adjacency: forward (downstream) and backward (upstream).
   const forward = new Map<string, Set<string>>();
+  const backward = new Map<string, Set<string>>();
   const link = (map: Map<string, Set<string>>, a: string, b: string) => {
     const bucket = map.get(a);
     if (bucket) bucket.add(b);
     else map.set(a, new Set([b]));
   };
   for (const e of edges) {
-    link(undirected, e.from, e.to);
-    link(undirected, e.to, e.from);
     link(forward, e.from, e.to);
+    link(backward, e.to, e.from);
   }
 
-  const connectedKeys = (key: string): Set<string> => {
-    const seen = new Set<string>([key]);
-    const stack = [key];
+  const walk = (start: string, adj: Map<string, Set<string>>): Set<string> => {
+    const seen = new Set<string>([start]);
+    const stack = [start];
     while (stack.length) {
       const cur = stack.pop()!;
-      for (const next of undirected.get(cur) ?? []) {
+      for (const next of adj.get(cur) ?? []) {
         if (!seen.has(next)) {
           seen.add(next);
           stack.push(next);
@@ -219,6 +218,17 @@ export function buildLineageGraph({
       }
     }
     return seen;
+  };
+
+  // The lineage *path* through a node: the node itself + all of its ancestors
+  // (upstream) + all of its descendants (downstream). Crucially this does NOT
+  // include siblings — e.g. selecting one chart never pulls in the other charts
+  // that merely share its dataset, because those are neither ancestors nor
+  // descendants of the chart. Used for both click-highlight and filtering.
+  const relatedKeys = (key: string): Set<string> => {
+    const result = walk(key, backward); // self + ancestors
+    for (const k of walk(key, forward)) result.add(k); // + descendants
+    return result;
   };
 
   const impactOf = (key: string) => {
@@ -265,7 +275,7 @@ export function buildLineageGraph({
     workboard: columns.workboard.length,
   };
 
-  return { columns, edges, nodeByKey, counts, connectedKeys, impactOf };
+  return { columns, edges, nodeByKey, counts, relatedKeys, impactOf };
 }
 
 export interface LineageFilters {
@@ -279,8 +289,8 @@ export interface LineageFilters {
 /**
  * Which node keys are visible given entity filters + a name query. With no
  * filters everything is visible; each filter narrows to the intersection of
- * the selected nodes' connected components; the query keeps only nodes whose
- * name matches plus the rest of their connected chain.
+ * the selected nodes' lineage paths (ancestors + descendants, NOT siblings);
+ * the query keeps only nodes whose name matches plus the rest of their path.
  */
 export function resolveVisibleKeys(
   graph: LineageGraph,
@@ -289,7 +299,7 @@ export function resolveVisibleKeys(
 ): Set<string> | null {
   const chains: Set<string>[] = [];
   const pushChain = (kind: LineageKind, id?: number) => {
-    if (id) chains.push(graph.connectedKeys(keyOf(kind, id)));
+    if (id) chains.push(graph.relatedKeys(keyOf(kind, id)));
   };
   pushChain('source', filters.source);
   pushChain('dataset', filters.dataset);
@@ -313,7 +323,7 @@ export function resolveVisibleKeys(
   );
   const narrowed = new Set<string>();
   for (const node of matched) {
-    for (const key of graph.connectedKeys(node.key)) {
+    for (const key of graph.relatedKeys(node.key)) {
       if (inScope(key)) narrowed.add(key);
     }
   }
