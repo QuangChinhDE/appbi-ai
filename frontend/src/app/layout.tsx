@@ -1,6 +1,27 @@
 import './globals.css';
+import type { Metadata, Viewport } from 'next';
 import { DM_Sans, Inter, JetBrains_Mono, Roboto } from 'next/font/google';
 import { AppProviders } from './providers';
+
+// PWA / iOS home-screen support. iOS Safari ignores the web manifest's install
+// prompt entirely (no beforeinstallprompt) and needs these Apple-specific tags
+// to (a) use our icon as the home-screen icon and (b) launch full-screen
+// (standalone) when opened from the home screen.
+export const metadata: Metadata = {
+  applicationName: 'AppBI',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'AppBI',
+  },
+  icons: {
+    apple: [{ url: '/icon-192.png' }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0D3B7A',
+};
 
 const inter = Inter({
   subsets: ['latin', 'vietnamese'],

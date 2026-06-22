@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Download, Loader2, Plus, Trash2, Zap } from 'lucide-react';
+import { ArrowRight, Download, Loader2, Plus, Share, Trash2, Zap } from 'lucide-react';
 import { workspaceApi } from '@/lib/api/workspace';
 import PwaRegister from '@/components/pwa/PwaRegister';
 
@@ -48,6 +48,8 @@ export default function LauncherPage() {
   const [error, setError] = useState<string | null>(null);
   // PWA install prompt (Android/Chrome)
   const [installEvt, setInstallEvt] = useState<Event | null>(null);
+  // iOS Safari has no install prompt — show the manual "Add to Home Screen" hint.
+  const [iosHint, setIosHint] = useState(false);
 
   useEffect(() => {
     setList(loadList());
@@ -56,6 +58,17 @@ export default function LauncherPage() {
       setInstallEvt(e);
     };
     window.addEventListener('beforeinstallprompt', onBip);
+    // Detect iOS (incl. iPadOS, which reports as MacIntel + touch) and whether
+    // we're already running standalone (added to home screen) — only nudge when
+    // it's iOS and NOT yet installed.
+    const ua = window.navigator.userAgent.toLowerCase();
+    const isIOS =
+      /iphone|ipad|ipod/.test(ua) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    setIosHint(isIOS && !standalone);
     return () => window.removeEventListener('beforeinstallprompt', onBip);
   }, []);
 
@@ -127,6 +140,18 @@ export default function LauncherPage() {
           >
             <Download className="h-4 w-4" /> Cài ứng dụng về màn hình chính
           </button>
+        )}
+        {iosHint && !installEvt && (
+          <div className="mt-4 rounded-xl bg-white/15 px-4 py-3 ring-1 ring-white/25">
+            <p className="flex items-center gap-1.5 text-sm font-semibold">
+              <Share className="h-4 w-4" /> Cài lên iPhone/iPad
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-blue-100">
+              iPhone không có nút cài tự động. Mở trang này bằng <b>Safari</b>, bấm
+              nút <b>Chia sẻ</b> (ô vuông có mũi tên ↑ ở thanh dưới), rồi chọn{' '}
+              <b>“Thêm vào Màn hình chính”</b>.
+            </p>
+          </div>
         )}
       </header>
 
