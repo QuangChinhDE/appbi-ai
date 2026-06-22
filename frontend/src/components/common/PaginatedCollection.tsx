@@ -4,12 +4,16 @@ import React from 'react';
 import { ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
+import { cn } from '@/lib/utils';
 
 type PageToken = number | 'ellipsis';
 
 interface PaginationRenderProps<T> {
   pageItems: T[];
   pagination: React.ReactNode;
+  /** True when a pagination footer will render — let the list card drop its
+   *  bottom border/rounding so the footer reads as one continuous block. */
+  hasFooter: boolean;
   currentPage: number;
   totalPages: number;
   pageSize: number;
@@ -47,12 +51,14 @@ function PaginationControls({
   pageSize,
   totalItems,
   onPageChange,
+  viewMode,
 }: {
   currentPage: number;
   totalPages: number;
   pageSize: number;
   totalItems: number;
   onPageChange: (page: number) => void;
+  viewMode: 'grid' | 'list';
 }) {
   if (totalItems === 0 || totalPages <= 1) {
     return null;
@@ -63,7 +69,15 @@ function PaginationControls({
   const pageTokens = buildPageTokens(currentPage, totalPages);
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    // Pinned to the bottom of the scroll area. In list view it joins the table
+    // card (top divider only, bottom corners rounded); in grid view it's a
+    // standalone rounded bar.
+    <div
+      className={cn(
+        'sticky bottom-0 z-10 flex flex-col gap-3 border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between',
+        viewMode === 'list' ? 'rounded-b-xl' : 'rounded-xl',
+      )}
+    >
       <p className="text-caption text-text-tertiary">
         Showing <span className="font-emphasis text-text-primary">{startItem}-{endItem}</span> of{' '}
         <span className="font-emphasis text-text-primary">{totalItems}</span>
@@ -148,16 +162,16 @@ export function PaginatedCollection<T>({
   }, [items, currentPage, pageSize]);
 
   const pagination = (
-    <div className="sticky bottom-0 z-10 mt-3 pb-2 pt-1 bg-[rgb(var(--bg-page))]">
-      <PaginationControls
-        currentPage={currentPage}
-        totalPages={totalPages}
-        pageSize={pageSize}
-        totalItems={totalItems}
-        onPageChange={setCurrentPage}
-      />
-    </div>
+    <PaginationControls
+      currentPage={currentPage}
+      totalPages={totalPages}
+      pageSize={pageSize}
+      totalItems={totalItems}
+      onPageChange={setCurrentPage}
+      viewMode={viewMode}
+    />
   );
+  const hasFooter = totalItems > 0 && totalPages > 1;
 
-  return <>{children({ pageItems, pagination, currentPage, totalPages, pageSize, totalItems })}</>;
+  return <>{children({ pageItems, pagination, hasFooter, currentPage, totalPages, pageSize, totalItems })}</>;
 }

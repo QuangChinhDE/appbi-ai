@@ -29,6 +29,8 @@ interface WorkboardListProps {
   selectedIds?: Set<number>;
   onToggleSelect?: (id: number) => void;
   onToggleSelectAll?: (ids: number[]) => void;
+  /** Drop the card's bottom border/rounding so a pagination footer joins it. */
+  hasFooter?: boolean;
 }
 
 function getAccessMeta(permission?: string | null): {
@@ -68,6 +70,7 @@ export function WorkboardList({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
+  hasFooter,
 }: WorkboardListProps) {
   const router = useRouter();
 
@@ -90,7 +93,7 @@ export function WorkboardList({
     selectable && workboards.some((w) => selectedIds?.has(w.id));
 
   return (
-    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+    <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
       <div className="app-list-table-wrap">
         <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
           <thead className="bg-surface-2">

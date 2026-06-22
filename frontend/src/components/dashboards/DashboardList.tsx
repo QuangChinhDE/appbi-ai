@@ -20,6 +20,8 @@ interface DashboardListProps {
   selectedIds?: Set<number>;
   onToggleSelect?: (id: number) => void;
   onToggleSelectAll?: (ids: number[]) => void;
+  /** Drop the card's bottom border/rounding so a pagination footer joins it. */
+  hasFooter?: boolean;
 }
 
 export function DashboardList({
@@ -32,6 +34,7 @@ export function DashboardList({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
+  hasFooter,
 }: DashboardListProps) {
   const router = useRouter();
 
@@ -70,7 +73,7 @@ export function DashboardList({
   const someSelected = selectable && dashboards.some((d) => selectedIds?.has(d.id));
 
   return (
-    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+    <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
       <div className="app-list-table-wrap">
       <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">

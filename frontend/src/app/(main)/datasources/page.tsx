@@ -402,8 +402,8 @@ export default function DataSourcesPage() {
               viewMode={viewMode}
               resetKey={JSON.stringify({ filterText, viewMode, listFilters, currentView })}
             >
-              {({ pageItems, pagination }) => (
-                <div className="space-y-3">
+              {({ pageItems, pagination, hasFooter }) => (
+                <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
                   {viewMode === 'list' ? (
                     <DataSourceList
                       dataSources={pageItems}
@@ -417,6 +417,7 @@ export default function DataSourcesPage() {
                       selectedIds={canEdit ? selectedIds : undefined}
                       onToggleSelect={canEdit ? toggleSelect : undefined}
                       onToggleSelectAll={canEdit ? toggleSelectAll : undefined}
+                      hasFooter={hasFooter}
                     />
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

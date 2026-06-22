@@ -24,6 +24,8 @@ interface DataSourceListProps {
   selectedIds?: Set<number>;
   onToggleSelect?: (id: number) => void;
   onToggleSelectAll?: (ids: number[]) => void;
+  /** Drop the card's bottom border/rounding so a pagination footer joins it. */
+  hasFooter?: boolean;
 }
 
 export default function DataSourceList({
@@ -38,6 +40,7 @@ export default function DataSourceList({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
+  hasFooter,
 }: DataSourceListProps) {
   if (dataSources.length === 0) {
     return (
@@ -84,7 +87,7 @@ export default function DataSourceList({
   const someSelected = selectable && dataSources.some((ds) => selectedIds?.has(ds.id));
 
   return (
-    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+    <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
       <div className="app-list-table-wrap">
       <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">

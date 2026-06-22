@@ -320,8 +320,8 @@ export default function DashboardsPage() {
               viewMode={viewMode}
               resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
             >
-              {({ pageItems, pagination }) => (
-                <div className="space-y-3">
+              {({ pageItems, pagination, hasFooter }) => (
+                <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
                   {(!dashboards || dashboards.length === 0) ? (
                     <DashboardList dashboards={[]} onDelete={handleDelete} />
                   ) : filtered.length === 0 ? (
@@ -433,6 +433,7 @@ export default function DashboardsPage() {
                       selectedIds={canEdit ? selectedIds : undefined}
                       onToggleSelect={canEdit ? toggleSelect : undefined}
                       onToggleSelectAll={canEdit ? toggleSelectAll : undefined}
+                      hasFooter={hasFooter}
                     />
                   )}
 

@@ -421,15 +421,15 @@ export default function ExplorePage() {
               viewMode={viewMode}
               resetKey={JSON.stringify({ searchText, viewMode, listFilters })}
             >
-              {({ pageItems, pagination }) => (
-                <div className="space-y-6">
+              {({ pageItems, pagination, hasFooter }) => (
+                <div className={viewMode === 'list' ? undefined : 'space-y-6'}>
                   {filteredCharts.length === 0 ? (
                     <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 text-center">
                       <Search className="mb-2 h-7 w-7 text-text-quaternary" />
                       <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
                     </div>
                   ) : viewMode === 'list' ? (
-                    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                    <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
                   <div className="app-list-table-wrap">
                   <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">

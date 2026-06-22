@@ -166,7 +166,7 @@ export function PageListLayout({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto pb-6 [scrollbar-gutter:stable]">
+      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         {typeof children === 'function' ? children(ctx) : children}
       </div>
     </div>

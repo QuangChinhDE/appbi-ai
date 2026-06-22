@@ -420,8 +420,8 @@ export default function WorkboardsPage() {
               viewMode={viewMode}
               resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
             >
-              {({ pageItems, pagination }) => (
-                <div className="space-y-3">
+              {({ pageItems, pagination, hasFooter }) => (
+                <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
                   {items.length === 0 ? (
                     <WorkboardList workboards={[]} />
                   ) : filtered.length === 0 ? (
@@ -462,6 +462,7 @@ export default function WorkboardsPage() {
                       selectedIds={canEdit ? selectedIds : undefined}
                       onToggleSelect={canEdit ? toggleSelect : undefined}
                       onToggleSelectAll={canEdit ? toggleSelectAll : undefined}
+                      hasFooter={hasFooter}
                     />
                   )}
 

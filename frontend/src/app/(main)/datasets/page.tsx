@@ -371,8 +371,8 @@ export default function DatasetsPage() {
               viewMode={viewMode}
               resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
             >
-              {({ pageItems, pagination }) => (
-                <div className="space-y-3">
+              {({ pageItems, pagination, hasFooter }) => (
+                <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
                   {viewMode === 'grid' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                       {pageItems.map((dataset: any) => (
@@ -453,7 +453,7 @@ export default function DatasetsPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                    <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
                       <div className="app-list-table-wrap">
                       <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                         <thead className="bg-surface-2">
