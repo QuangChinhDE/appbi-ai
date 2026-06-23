@@ -52,7 +52,7 @@ type DetailPanelTab = 'appearance' | 'data';
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
 const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
 const TABLE_LIKE_CHART_TYPES = new Set(['TABLE', 'MATRIX']);
-const SCATTER_LIKE_CHART_TYPES = new Set(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const SCATTER_LIKE_CHART_TYPES = new Set(['SCATTER', 'BUBBLE', 'MAP_POINT', 'NINE_BOX']);
 const NO_DIMENSION_METRIC_CHART_TYPES = new Set(['KPI', 'GAUGE', 'BULLET']);
 const PIE_LIKE_CHART_TYPES = new Set(['PIE', 'DONUT', 'POLAR_AREA']);
 
@@ -210,6 +210,7 @@ function deriveAppearanceRoleConfig(columns: ColumnMetadata[], chartType: string
     case 'SCATTER':
     case 'BUBBLE':
     case 'MAP_POINT':
+    case 'NINE_BOX':
       return {
         metrics: chartType === 'BUBBLE' || chartType === 'MAP_POINT'
           ? (firstMetric ? [firstMetric] : [])

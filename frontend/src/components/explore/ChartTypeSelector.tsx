@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { ChartType } from '@/types/api';
-import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity, Trophy } from 'lucide-react';
+import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity, Trophy, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
 type ChartTypeMeta = {
@@ -50,6 +50,7 @@ const CHART_TYPE_META: Record<ChartType, ChartTypeMeta> = {
   [ChartType.WORD_CLOUD]: { label: 'Word Cloud', icon: BarChart3 },
   [ChartType.KPI]: { label: 'KPI', icon: Activity },
   [ChartType.PODIUM]: { label: 'Podium', icon: Trophy },
+  [ChartType.NINE_BOX]: { label: '9-Box Grid', icon: LayoutGrid },
 };
 
 // Build options list by iterating the enum directly — single source of

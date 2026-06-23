@@ -18,6 +18,7 @@ import {
   Flame,
   Gauge,
   GitBranch,
+  LayoutGrid,
   LineChart,
   Map as MapIcon,
   MapPin,
@@ -62,7 +63,7 @@ export type ExploreChartType =
   | 'SCATTER' | 'BUBBLE' | 'HEATMAP' | 'TREEMAP' | 'FUNNEL' | 'GAUGE'
   | 'WATERFALL' | 'MATRIX' | 'MAP_POINT' | 'MAP_REGION' | 'BOXPLOT'
   | 'BULLET' | 'SANKEY' | 'SUNBURST' | 'RIBBON' | 'TIMELINE' | 'WORD_CLOUD'
-  | 'KPI' | 'PODIUM';
+  | 'KPI' | 'PODIUM' | 'NINE_BOX';
 
 export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' | 'auto';
 export type TableLayoutMode = 'standard' | 'pivot';
@@ -609,7 +610,7 @@ export const TIME_GRAIN_OPTIONS: { value: TimeGrain; label: string }[] = [
 export const EMPTY_ROLE_CONFIG: ChartRoleConfig = { metrics: [] };
 
 const TABLE_LIKE_TYPES = new Set<string>(['TABLE', 'MATRIX']);
-const SCATTER_LIKE_TYPES = new Set<string>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const SCATTER_LIKE_TYPES = new Set<string>(['SCATTER', 'BUBBLE', 'MAP_POINT', 'NINE_BOX']);
 const NO_DIMENSION_METRIC_TYPES = new Set<string>(['KPI', 'GAUGE', 'BULLET']);
 const PIE_LIKE_TYPES = new Set<string>(['PIE', 'DONUT', 'POLAR_AREA']);
 const BREAKDOWN_CHART_TYPES = new Set<string>([
@@ -1184,6 +1185,7 @@ const CHART_TYPE_GRID: ChartTypeMeta[] = [
   { value: 'WORD_CLOUD',     label: 'Word Cloud',     group: 'composition', icon: Cloud },
   { value: 'SCATTER',        label: 'Scatter',        group: 'relationship', icon: ScatterChart },
   { value: 'BUBBLE',         label: 'Bubble',         group: 'relationship', icon: CircleDot },
+  { value: 'NINE_BOX',       label: '9-Box Grid',     group: 'relationship', icon: LayoutGrid },
   { value: 'HEATMAP',        label: 'Heatmap',        group: 'relationship', icon: Table2 },
   { value: 'BOXPLOT',        label: 'Boxplot',        group: 'relationship', icon: Box },
   { value: 'RADAR',          label: 'Radar',          group: 'relationship', icon: Radar },
@@ -3395,7 +3397,7 @@ export function ExploreChartConfig({
   const isTableLike = ['TABLE', 'MATRIX'].includes(chartType);
   const isNoDimensionMetric = ['KPI', 'GAUGE', 'BULLET'].includes(chartType);
   const isPieLike = ['PIE', 'DONUT', 'POLAR_AREA'].includes(chartType);
-  const isScatterLike = ['SCATTER', 'BUBBLE', 'MAP_POINT'].includes(chartType);
+  const isScatterLike = ['SCATTER', 'BUBBLE', 'MAP_POINT', 'NINE_BOX'].includes(chartType);
   const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE', 'WATERFALL'].includes(chartType);
   // Bars rendered via real Recharts <Bar> (honour barRadius/barSize). WATERFALL
   // is a hand-rolled SVG that ignores those props → exclude it so the Bar Shape
@@ -4877,28 +4879,28 @@ export function ExploreChartConfig({
           </>}
 
           {isScatterLike && <>
-            <SelectSlot label="X Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : 'numeric'} required value={sx} options={numOrAll}
+            <SelectSlot label="X Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : chartType === 'NINE_BOX' ? 'numeric → tertile, or 3-level category' : 'numeric'} required value={sx} options={chartType === 'NINE_BOX' ? allCols : numOrAll}
               placeholder="select X"
               onChange={v => upd({ scatterX: v || undefined })} />
             {chartType === 'BUBBLE' && sx && (
               <ScatterAxisAgg axis="X" value={(normalizedRoleConfig.scatterXAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterXAgg: v })} />
             )}
-            <SelectSlot label="Y Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : 'numeric'} required value={sy} options={numOrAll}
+            <SelectSlot label="Y Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : chartType === 'NINE_BOX' ? 'numeric → tertile, or 3-level category' : 'numeric'} required value={sy} options={chartType === 'NINE_BOX' ? allCols : numOrAll}
               placeholder="select Y"
               onChange={v => upd({ scatterY: v || undefined })} />
             {chartType === 'BUBBLE' && sy && (
               <ScatterAxisAgg axis="Y" value={(normalizedRoleConfig.scatterYAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterYAgg: v })} />
             )}
-            <SelectSlot label="Label" hint={chartType === 'BUBBLE' ? 'group into one bubble per value' : 'optional'} value={dim} options={dimOrAll}
+            <SelectSlot label="Label" hint={chartType === 'BUBBLE' ? 'group into one bubble per value' : chartType === 'NINE_BOX' ? 'item plotted in each cell' : 'optional'} value={dim} options={dimOrAll}
               placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />
             {chartType === 'BUBBLE' && (
               <MetricSlot label="Size" hint="bubble radius" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
                 onChange={v => upd({ metrics: v })} />
             )}
-            {chartType === 'MAP_POINT' && (
+            {(chartType === 'MAP_POINT' || chartType === 'NINE_BOX') && (
               <MetricSlot label="Size" hint="optional" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
                 onChange={v => upd({ metrics: v })} />
             )}

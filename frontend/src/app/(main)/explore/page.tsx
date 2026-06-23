@@ -11,7 +11,7 @@ import {
   Activity, TrendingUp, PieChart, Donut, Radar, CircleDot,
   ScatterChart, Flame, Boxes, GitBranch, Gauge, Table, Table2,
   MapPin, Map as MapIcon, Box, Rows3, Workflow, Network, Ribbon,
-  Timer, Cloud, Trophy,
+  Timer, Cloud, Trophy, LayoutGrid,
 } from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
@@ -83,6 +83,7 @@ const CHART_TYPE_ICONS: Record<string, React.ElementType> = {
   KPI: Trophy,
   PODIUM: Trophy,
   TABLE: Table,
+  NINE_BOX: LayoutGrid,
 };
 
 const CHART_TYPE_LABELS: Record<string, string> = {
@@ -118,6 +119,7 @@ const CHART_TYPE_LABELS: Record<string, string> = {
   KPI: 'KPI',
   PODIUM: 'Podium',
   TABLE: 'Table',
+  NINE_BOX: '9-Box Grid',
 };
 
 function buildChartSourceLabel(chart: Chart): string | null {

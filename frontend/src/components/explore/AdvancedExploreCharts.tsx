@@ -80,6 +80,7 @@ export const ADVANCED_EXPLORE_CHART_TYPES = new Set<string>([
   'RIBBON',
   'TIMELINE',
   'WORD_CLOUD',
+  'NINE_BOX',
 ]);
 
 interface AdvancedExploreChartProps {
@@ -964,6 +965,174 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   );
 }
 
+/**
+ * NINE_BOX — talent / BCG-style 3×3 grid. Each plotted item (one per row, or
+ * one per `dimension` label) is dropped into one of 9 cells by binning its two
+ * axis values:
+ *
+ *   • numeric axis  → tertiles (low / mid / high thirds of the value range);
+ *   • categorical   → the distinct category values used directly as the 3 bands
+ *                     (first 3 in sorted order; extras collapse into the top band).
+ *
+ * Per-axis mode is auto-detected from the data (all-finite-numeric ⇒ numeric),
+ * so the SAME chart type serves both the HR 9-box (Low/Med/High categories) and
+ * the BCG matrix (growth × share measures). Cells are shaded along the
+ * diagonal (red → amber → green); items within a cell are laid out in a small
+ * grid so they never fully overlap. Bubble radius reflects the optional Size
+ * metric. Click an item to cross-filter on its label.
+ */
+function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated, onSelect, labelMap }: {
+  rows: ChartRow[];
+  roleConfig: ExploreChartModel['roleConfig'];
+  metric?: MetricConfig;
+  style: ChartStyleConfig;
+  palette: string[];
+  preAggregated?: boolean;
+  onSelect?: (field: string, value: unknown) => void;
+  labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
+}) {
+  const { t } = useI18n();
+  const { scatterX, scatterY, dimension } = roleConfig;
+  if (!scatterX || !scatterY) return <EmptyAdvanced message={t('explore.advancedCharts.selectXY')} />;
+
+  // Per-axis binning: returns a band index (0/1/2) for each value + 3 tick
+  // labels. Numeric → tertiles (thresholds formatted into the labels so the
+  // reader sees the real cut points); categorical → distinct values as bands.
+  function buildAxis(field: string): { band: (v: unknown) => number; labels: [string, string, string] } {
+    const raw = rows.map((r) => r[field]);
+    const nums = raw.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+    const isNumeric = nums.length > 0 && nums.length >= raw.filter((v) => v !== null && v !== undefined && v !== '').length;
+    if (isNumeric) {
+      const sorted = [...nums].sort((a, b) => a - b);
+      const q = (p: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))))];
+      const q1 = q(1 / 3);
+      const q2 = q(2 / 3);
+      return {
+        band: (v) => {
+          const n = Number(v);
+          if (!Number.isFinite(n)) return 0;
+          return n <= q1 ? 0 : n <= q2 ? 1 : 2;
+        },
+        labels: [
+          `≤ ${formatNumber(q1, style)}`,
+          `${formatNumber(q1, style)}–${formatNumber(q2, style)}`,
+          `> ${formatNumber(q2, style)}`,
+        ],
+      };
+    }
+    // Categorical: distinct sorted values → first 3 are the bands; any beyond
+    // the third collapses into the top band (with a hint in its label).
+    const distinct = Array.from(new Set(raw.map((v) => String(v ?? '(blank)')))).sort();
+    const bands = distinct.slice(0, 3);
+    const idx = new Map(bands.map((b, i) => [b, i]));
+    return {
+      band: (v) => idx.get(String(v ?? '(blank)')) ?? 2,
+      labels: [
+        bands[0] ?? '—',
+        bands[1] ?? '—',
+        distinct.length > 3 ? `${bands[2] ?? '—'} +${distinct.length - 3}` : (bands[2] ?? '—'),
+      ],
+    };
+  }
+
+  const xAxis = buildAxis(scatterX);
+  const yAxis = buildAxis(scatterY);
+
+  type Item = { label: unknown; size: number; xb: number; yb: number };
+  const items: Item[] = rows.map((row) => ({
+    label: dimension ? row[dimension] : undefined,
+    size: metric ? Math.abs(metricValue(row, metric, preAggregated)) : 1,
+    xb: xAxis.band(row[scatterX]),
+    yb: yAxis.band(row[scatterY]),
+  })).slice(0, 2000);
+  if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCoordinateRows')} />;
+  const maxSize = Math.max(...items.map((it) => it.size), 1);
+
+  // Diagonal cell shading by score = xBand + yBand (0 worst … 4 best).
+  const cellFill = ['rgba(239,68,68,0.13)', 'rgba(249,115,22,0.11)', 'rgba(234,179,8,0.11)', 'rgba(132,204,22,0.11)', 'rgba(34,197,94,0.14)'];
+
+  const dlc = style.dataLabelConfig;
+  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+
+  return (
+    <ResponsiveSvg>
+      {(W, H) => {
+        const padL = 64, padR = 20, padT = 20, padB = 52;
+        const fx0 = padL, fy0 = padT;
+        const plotW = Math.max(30, W - padL - padR);
+        const plotH = Math.max(30, H - padT - padB);
+        const cellW = plotW / 3;
+        const cellH = plotH / 3;
+        // Group items per cell so we can lay them out in a non-overlapping mini-grid.
+        const byCell = new Map<string, Item[]>();
+        for (const it of items) {
+          const key = `${it.xb},${it.yb}`;
+          (byCell.get(key) ?? byCell.set(key, []).get(key)!).push(it);
+        }
+        const rMax = Math.max(5, Math.min(20, Math.min(cellW, cellH) * 0.16));
+        return (
+          <>
+            {/* 9 cells */}
+            {[0, 1, 2].map((xb) =>
+              [0, 1, 2].map((yb) => {
+                // yb 2 (high) at the top → invert row position.
+                const cx0 = fx0 + xb * cellW;
+                const cy0 = fy0 + (2 - yb) * cellH;
+                const cell = byCell.get(`${xb},${yb}`) ?? [];
+                return (
+                  <g key={`cell-${xb}-${yb}`}>
+                    <rect x={cx0} y={cy0} width={cellW} height={cellH} fill={cellFill[xb + yb]} stroke="rgb(var(--border-line))" />
+                    {cell.length > 0 && (
+                      <text x={cx0 + cellW - 6} y={cy0 + 14} fontSize={10} textAnchor="end" fill="rgb(var(--text-tertiary))">{cell.length}</text>
+                    )}
+                  </g>
+                );
+              })
+            )}
+            {/* X band ticks (bottom) */}
+            {xAxis.labels.map((lab, i) => (
+              <text key={`xl-${i}`} x={fx0 + (i + 0.5) * cellW} y={fy0 + plotH + 18} fontSize={10} textAnchor="middle" fill="rgb(var(--text-secondary))">{String(lab).slice(0, 18)}</text>
+            ))}
+            {/* Y band ticks (left) — band 2 at top */}
+            {yAxis.labels.map((lab, i) => (
+              <text key={`yl-${i}`} x={fx0 - 8} y={fy0 + (2 - i + 0.5) * cellH} fontSize={10} textAnchor="end" dominantBaseline="middle" fill="rgb(var(--text-secondary))">{String(lab).slice(0, 12)}</text>
+            ))}
+            {/* Axis field names */}
+            <text x={fx0 + plotW / 2} y={H - 8} fontSize={11} textAnchor="middle" fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
+            <text x={16} y={fy0 + plotH / 2} fontSize={11} textAnchor="middle" fill="rgb(var(--text-tertiary))" transform={`rotate(-90 16 ${fy0 + plotH / 2})`}>{fieldLabel(scatterY, labelMap)}</text>
+            {/* Items, laid out in a mini-grid inside each cell */}
+            {Array.from(byCell.entries()).flatMap(([key, cell]) => {
+              const [xb, yb] = key.split(',').map(Number);
+              const cx0 = fx0 + xb * cellW;
+              const cy0 = fy0 + (2 - yb) * cellH;
+              const cols = Math.ceil(Math.sqrt(cell.length));
+              const rowsN = Math.ceil(cell.length / cols);
+              return cell.map((it, i) => {
+                const col = i % cols;
+                const r = Math.floor(i / cols);
+                const px = cx0 + ((col + 0.5) / cols) * cellW;
+                const py = cy0 + ((r + 0.5) / rowsN) * cellH;
+                const pointKey = String(it.label ?? `${key}-${i}`);
+                const radius = metric ? 4 + safeSqrtShare(it.size, maxSize) * rMax : Math.min(7, rMax * 0.5);
+                const override = dlc?.overrides?.[pointKey];
+                return (
+                  <g key={`${key}-${i}`} onClick={() => dimension && onSelect?.(dimension, it.label)} className={dimension ? 'cursor-pointer' : undefined}>
+                    <circle cx={px} cy={py} r={radius} fill={resolveSliceColor(style, palette, pointKey, i)} opacity={0.78} stroke="rgb(var(--surface-1))" />
+                    {labelsEnabled && it.label !== undefined && (
+                      <text x={px} y={py - radius - 3} fontSize={override?.fontSize ?? dlc?.fontSize ?? 9} textAnchor="middle" fill={override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))'} style={{ pointerEvents: 'none' }}>{String(it.label).slice(0, 14)}</text>
+                    )}
+                    <title>{it.label !== undefined ? `${it.label}\n` : ''}{fieldLabel(scatterX, labelMap)}: {xAxis.labels[it.xb]}\n{fieldLabel(scatterY, labelMap)}: {yAxis.labels[it.yb]}{metric ? `\n${fieldLabel(metric.field, labelMap)}: ${formatNumber(it.size, style)}` : ''}</title>
+                  </g>
+                );
+              });
+            })}
+          </>
+        );
+      }}
+    </ResponsiveSvg>
+  );
+}
+
 function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
   const { t } = useI18n();
   if (!pairs.length) return <EmptyAdvanced message={t('explore.advancedCharts.selectRowColValue')} />;
@@ -1643,6 +1812,8 @@ export function AdvancedExploreChart({
         <TreemapChart items={items} style={style} palette={palette} onSelect={emitDimension} highlightNames={highlightNames} />
       ) : type === 'WATERFALL' ? (
         <WaterfallChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
+      ) : type === 'NINE_BOX' ? (
+        <NineBoxChart rows={data} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
         <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
       ) : type === 'HEATMAP' ? (

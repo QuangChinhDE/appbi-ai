@@ -141,6 +141,7 @@ export enum ChartType {
   WORD_CLOUD = 'WORD_CLOUD',
   KPI = 'KPI',
   PODIUM = 'PODIUM',
+  NINE_BOX = 'NINE_BOX',
 }
 
 export type DashboardLayoutMode = 'grid' | 'canvas';

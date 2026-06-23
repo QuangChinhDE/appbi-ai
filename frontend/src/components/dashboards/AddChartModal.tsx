@@ -72,6 +72,7 @@ const CHART_TYPE_OPTIONS: Array<{ value: ChartTypeFilter; label: string }> = [
   { value: ChartType.WORD_CLOUD, label: 'Word Cloud' },
   { value: ChartType.KPI, label: 'KPI' },
   { value: ChartType.PODIUM, label: 'Podium' },
+  { value: ChartType.NINE_BOX, label: '9-Box Grid' },
 ];
 
 function clampGridValue(rawValue: number, min: number, max: number, fallback: number): number {

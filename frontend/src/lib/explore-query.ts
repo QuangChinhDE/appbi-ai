@@ -42,7 +42,7 @@ interface CustomSqlRoleInference {
 
 const TRAILING_ROW_LIMIT_PATTERN = /(?:\blimit\s+\d+\s*(?:offset\s+\d+\s*)?|\boffset\s+\d+\s+limit\s+\d+\s*|\bfetch\s+first\s+\d+\s+rows?\s+only)\s*$/i;
 const TABLE_LIKE_CHART_TYPES = new Set<ExploreChartType>(['TABLE', 'MATRIX']);
-const SCATTER_LIKE_CHART_TYPES = new Set<ExploreChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const SCATTER_LIKE_CHART_TYPES = new Set<ExploreChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT', 'NINE_BOX']);
 const RAW_DISTRIBUTION_CHART_TYPES = new Set<ExploreChartType>(['BOXPLOT']);
 const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ExploreChartType>([
   'GROUPED_BAR',

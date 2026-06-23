@@ -705,7 +705,7 @@ export function buildExploreChartModel(args: {
     };
   }
 
-  if (type === 'SCATTER' || type === 'BUBBLE' || type === 'MAP_POINT') {
+  if (type === 'SCATTER' || type === 'BUBBLE' || type === 'MAP_POINT' || type === 'NINE_BOX') {
     return {
       ...emptyModel,
       scatterPoints: scatterX && scatterY

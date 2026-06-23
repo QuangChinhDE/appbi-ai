@@ -876,8 +876,8 @@ def build_live_agg_query(
         limit = resolve_limit(5000)
         return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
-    # SCATTER/BUBBLE/MAP_POINT: raw coordinates up to 5000 rows.
-    if ctype in {"SCATTER", "BUBBLE", "MAP_POINT"}:
+    # SCATTER/BUBBLE/MAP_POINT/NINE_BOX: raw coordinates up to 5000 rows.
+    if ctype in {"SCATTER", "BUBBLE", "MAP_POINT", "NINE_BOX"}:
         sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
         if sx and sy:
             return (
@@ -1534,7 +1534,7 @@ class LiveQueryService:
         normalized_role_config = normalize_chart_role_config(chart_type, role_config)
         normalized_chart_type = str(getattr(chart_type, "value", chart_type) or "").upper()
 
-        metric_optional_chart_types = {"TABLE", "MATRIX", "SCATTER", "MAP_POINT", "TIMELINE"}
+        metric_optional_chart_types = {"TABLE", "MATRIX", "SCATTER", "MAP_POINT", "TIMELINE", "NINE_BOX"}
         if normalized_chart_type not in metric_optional_chart_types and not (normalized_role_config.get("metrics") or []):
             raise ValueError(
                 "Choose at least one value column from your SQL output before previewing this chart."

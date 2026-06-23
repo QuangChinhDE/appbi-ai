@@ -55,6 +55,7 @@ class ChartTypeSchema(str, Enum):
     WORD_CLOUD = "WORD_CLOUD"
     KPI = "KPI"
     PODIUM = "PODIUM"
+    NINE_BOX = "NINE_BOX"
 
 
 # Data Source Schemas

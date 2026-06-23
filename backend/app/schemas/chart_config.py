@@ -46,6 +46,12 @@ CHART_REQUIRED_ROLE_KEYS: Dict[str, Dict[str, List[str]]] = {
     "SCATTER":        {"required": ["scatterX", "scatterY"],                                                                                    "optional": ["dimension"]},
     "BUBBLE":         {"required": ["scatterX", "scatterY", "metrics[0]"],                                                                      "optional": ["dimension"]},
     "MAP_POINT":      {"required": ["scatterX", "scatterY"],                                                                                    "optional": ["dimension", "metrics"]},
+    # NINE_BOX — talent / BCG 3×3 grid. X & Y are the two axis fields (numeric
+    # → auto-binned into tertiles, or a 3-level category used directly);
+    # `dimension` labels each plotted item; `metrics[0]` is the optional bubble
+    # size. Same scatter-family query semantics as SCATTER (each row a point;
+    # a declared-measure axis aggregates per item via the shared classifier).
+    "NINE_BOX":       {"required": ["scatterX", "scatterY"],                                                                                    "optional": ["dimension", "metrics"]},
     "MAP_REGION":     {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
     "HEATMAP":        {"required": ["dimension", "breakdown", "metrics[0]"],                                                                    "optional": []},
     "BOXPLOT":        {"required": ["dimension", "metrics[0]"],                                                                                 "optional": []},
