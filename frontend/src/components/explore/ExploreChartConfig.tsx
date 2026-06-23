@@ -68,6 +68,8 @@ export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' |
 export type TableLayoutMode = 'standard' | 'pivot';
 
 export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
+/** Power-BI-style value-axis "Display units". */
+export type AxisDisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 export const TABLE_PIVOT_COLUMN_LIMIT = 50;
 
@@ -237,6 +239,14 @@ export interface ChartStyleConfig {
   yAxisLabel?: string;
   yAxisMin?: number | '';
   yAxisMax?: number | '';
+  /**
+   * Power-BI "Display units" for the value axis tick labels. Controls how
+   * large numbers are abbreviated on the AXIS only (data labels / tooltips
+   * keep their own numberFormat). 'auto' (default) picks K/M/B per value;
+   * 'none' shows the full number; 'thousands'/'millions'/'billions' force a
+   * fixed unit.
+   */
+  axisDisplayUnits?: AxisDisplayUnits;
   // Legend
   legendPosition?: LegendPosition;
   // Grid
@@ -371,6 +381,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   yAxisLabel: '',
   yAxisMin: '',
   yAxisMax: '',
+  axisDisplayUnits: 'auto',
   legendPosition: 'bottom',
   showGrid: true,
   palette: 'default',
@@ -5781,6 +5792,21 @@ export function ExploreChartConfig({
                 onChange={e => updStyle({ yAxisMax: e.target.value === '' ? '' : Number(e.target.value) })}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
             </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Display units (axis)</label>
+            <select
+              value={styleConfig.axisDisplayUnits || 'auto'}
+              onChange={e => updStyle({ axisDisplayUnits: e.target.value as AxisDisplayUnits })}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+            >
+              <option value="auto">Auto (1.2K / 3.4M)</option>
+              <option value="none">None (full number)</option>
+              <option value="thousands">Thousands (K)</option>
+              <option value="millions">Millions (M)</option>
+              <option value="billions">Billions (B)</option>
+            </select>
+            <p className="mt-1 text-[10px] text-text-tertiary">Abbreviates the value-axis ticks only; data labels keep their own format.</p>
           </div>
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import {
   BarChart, Bar, LabelList,
@@ -107,7 +107,65 @@ const CHART_BASE_MARGIN = { top: 8, right: 12, left: 5, bottom: 14 } as const;
  * Return XAxis props that adapt angle and height to the number of data
  * points. Phase-15.22 pins interval=0 so EVERY tick label renders.
  */
-function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, maxLabelChars = 0) {
+/**
+ * Measure a DOM element's rendered pixel size via ResizeObserver. Returns a
+ * ref to attach plus the live {width,height}. Used to make the chart's chrome
+ * (font size, axis band, legend) RESPOND to the tile's actual w/h — the way
+ * Power BI / Tableau / Looker size their visuals — instead of hard-coding
+ * pixel values that crush the plot on a small dashboard tile.
+ */
+function useElementSize<T extends HTMLElement>(): [React.RefObject<T>, { width: number; height: number }] {
+  const ref = useRef<T>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0]?.contentRect;
+      if (!cr) return;
+      const w = Math.round(cr.width);
+      const h = Math.round(cr.height);
+      // Only commit on a real change (rounded) so the observer can't loop.
+      setSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, size];
+}
+
+/**
+ * Derive responsive chrome metrics from the chart area's measured size. The
+ * fixed-pixel model (12px font, 30–150px X-axis band, ~29px legend) is correct
+ * on a big tile but eats the whole plot on a small one. We scale the font to
+ * the smaller dimension, cap the X-axis band to a fraction of the height, and
+ * drop the legend / axis-label band entirely below practical thresholds —
+ * mirroring Power BI's "responsive visuals" progressive degradation.
+ *
+ * `height === 0` means "not yet measured" (first paint / SSR) → return the
+ * legacy desktop defaults so there is no flash of tiny text.
+ */
+function responsiveChartMetrics(width: number, height: number) {
+  const measured = width > 0 && height > 0;
+  if (!measured) {
+    return { measured, fontSize: 12, maxXBand: 150, showLegend: true, showAxisLabels: true };
+  }
+  // Font follows the SMALLER axis (a chart that is wide but short still needs
+  // small text). Clamp 9–13px.
+  const fontSize = Math.round(Math.max(9, Math.min(13, Math.min(width / 34, height / 20))));
+  // The X-axis label band may never consume more than ~32% of the chart area,
+  // and is hard-capped at 120px (down from 150) — a 150px rotated band on a
+  // 360px tile is half the plot gone.
+  const maxXBand = Math.round(Math.max(24, Math.min(120, height * 0.32)));
+  // Below ~150px tall there is no room for a separate legend row; below ~96px
+  // even the X-axis tick band is dropped (keep the marks only) — the tooltip
+  // still exposes every value on hover.
+  const showLegend = height >= 150;
+  const showAxisLabels = height >= 96;
+  return { measured, fontSize, maxXBand, showLegend, showAxisLabels };
+}
+
+function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, maxLabelChars = 0, maxBand = 150) {
   // #1 fix — rotation reacts to LABEL LENGTH, not just category count. Long
   // string labels (names, "Return/Adjustment") overlapped even at a low count
   // because the old logic only looked at `count`. Long labels rotate sooner
@@ -140,6 +198,10 @@ function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string, m
   // rendered long label keeps its truncate + <title> hover (CustomAxisTick).
   const MAX_TICKS = 40;
   const interval: number = count > MAX_TICKS ? Math.ceil(count / MAX_TICKS) - 1 : 0;
+  // Responsive cap — never let the label band exceed the caller's budget
+  // (a fraction of the chart-area height). Keeps rotated long labels from
+  // swallowing the plot on a short dashboard tile. min 24px stays legible.
+  height = Math.max(24, Math.min(height, maxBand));
   return { angle, height, textAnchor, interval, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
 }
 
@@ -436,16 +498,24 @@ function CustomLegend({
  * sufficient horizontal space so every bar/point has breathing room.
  */
 function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
+  // BUG-XAXIS-CLIP — the chart is wrapped in a `flex-1 min-h-0` div so that,
+  // inside the branch's flex-COLUMN container, it consumes only the height left
+  // AFTER the date-drill bar / truncation banner. Previously the chart was a
+  // bare `height:100%` ResponsiveContainer sized to the FULL parent height and
+  // then pushed down by the drill bar, overflowing the tile's `overflow-hidden`
+  // by ~25px and clipping the entire X-axis label band on dashboard tiles.
   if (count <= SCROLL_THRESHOLD) {
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        {el as React.ReactElement}
-      </ResponsiveContainer>
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          {el as React.ReactElement}
+        </ResponsiveContainer>
+      </div>
     );
   }
   const chartWidth = Math.max(count * MIN_ITEM_WIDTH, 700);
   return (
-    <div style={{ width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
+    <div className="flex-1 min-h-0" style={{ width: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
       <div style={{ width: chartWidth, height: '100%' }}>
         <ResponsiveContainer width="100%" height="100%">
           {el as React.ReactElement}
@@ -489,8 +559,57 @@ function formatNumber(value: any, style?: ChartStyleConfig, seriesKey?: string):
   }
 }
 
+/**
+ * Value-axis tick formatter — Power-BI "Display units: Auto". The axis ALWAYS
+ * abbreviates large numbers to K / M / B (so "500,000.0" → "500K" and never
+ * clips the axis gutter), independent of the chart's data-label numberFormat
+ * (data labels & tooltips keep their full/precise format via formatNumber).
+ * Currency symbol and percent semantics are preserved.
+ */
+function formatAxisValue(value: any, style?: ChartStyleConfig, seriesKey?: string): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return typeof value === 'string' ? value : '';
+  const perSeriesFmt = seriesKey ? style?.seriesFormats?.[seriesKey] : undefined;
+  const fmt = perSeriesFmt ?? style?.numberFormat ?? 'compact';
+  // Percent axes are already ratios — display units don't apply.
+  if (fmt === 'percent') return `${(n * 100).toFixed(0)}%`;
+  const prefix = fmt === 'currency' ? (style?.currencySymbol || '$') : '';
+  const dec = style?.decimalPlaces ?? 1;
+  const trim = (x: number) => {
+    const r = Math.round(x * 10) / 10;
+    return r % 1 === 0 ? r.toFixed(0) : r.toFixed(1);
+  };
+  // Power-BI "Display units" — user-configurable (default 'auto').
+  const unit = style?.axisDisplayUnits ?? 'auto';
+  let body: string;
+  switch (unit) {
+    case 'none':
+      // Full number with thousands separators (honours decimalPlaces).
+      body = n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: dec });
+      break;
+    case 'thousands':
+      body = n === 0 ? '0' : `${trim(n / 1_000)}K`;
+      break;
+    case 'millions':
+      body = n === 0 ? '0' : `${trim(n / 1_000_000)}M`;
+      break;
+    case 'billions':
+      body = n === 0 ? '0' : `${trim(n / 1_000_000_000)}B`;
+      break;
+    default: { // 'auto' — pick the unit per value
+      const abs = Math.abs(n);
+      if (abs >= 1_000_000_000) body = `${trim(n / 1_000_000_000)}B`;
+      else if (abs >= 1_000_000) body = `${trim(n / 1_000_000)}M`;
+      else if (abs >= 1_000) body = `${trim(n / 1_000)}K`;
+      else body = n % 1 !== 0 ? trim(n) : n.toLocaleString();
+    }
+  }
+  return prefix + body;
+}
+
 function yAxisTickFormatter(style?: ChartStyleConfig) {
-  return (value: any) => formatNumber(value, style);
+  return (value: any) => formatAxisValue(value, style);
 }
 
 function tooltipFormatter(series: ChartSeriesDef[], style?: ChartStyleConfig) {
@@ -1357,11 +1476,20 @@ function ExploreChartInner({
     },
     [style.seriesColors, PALETTE],
   );
-  const fontSize = style.fontSize || 12;
-  const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
+  // Responsive chrome — measure the chart area and scale font / axis band /
+  // legend to it (see responsiveChartMetrics). `rootRef` is attached to every
+  // cartesian chart root below; KPI / table branches ignore it harmlessly.
+  const [rootRef, rootSize] = useElementSize<HTMLDivElement>();
+  const responsive = useMemo(
+    () => responsiveChartMetrics(rootSize.width, rootSize.height),
+    [rootSize.width, rootSize.height],
+  );
   const hasExplicitFontSize = Boolean(
     _style && Object.prototype.hasOwnProperty.call(_style, 'fontSize') && style.fontSize !== 12,
   );
+  // Explicit user font size always wins; otherwise scale to the tile.
+  const fontSize = hasExplicitFontSize ? (style.fontSize as number) : responsive.fontSize;
+  const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
   const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
   // Phase-15.83 — showAllPoints flag retired; adapter renders every row.
@@ -1653,7 +1781,12 @@ function ExploreChartInner({
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shared rendering helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   const showGrid = style.showGrid ?? true;
   const legendPos = style.legendPosition || 'bottom';
-  const showLegend = legendPos !== 'none';
+  // Hide the legend on a tile too short to spare a legend row (responsive) —
+  // the colored marks + tooltip still convey the series. Side legends (left/
+  // right) consume width not height, so the short-height rule only applies to
+  // top/bottom legends.
+  const legendConsumesHeight = legendPos === 'top' || legendPos === 'bottom';
+  const showLegend = legendPos !== 'none' && (!legendConsumesHeight || responsive.showLegend);
   const barRadius = style.barRadius ?? 4;
   const barSize = typeof style.barSize === 'number' && style.barSize > 0 ? style.barSize : undefined;
   // Phase-15.84 — `showDataLabels` is now a derived signal: enabled when
@@ -1753,6 +1886,28 @@ function ExploreChartInner({
   const yAxisClamp = (style.yAxisMin !== '' && style.yAxisMin != null)
     || (style.yAxisMax !== '' && style.yAxisMax != null);
 
+  // Size the Y-axis gutter to fit the WIDEST formatted tick so labels never
+  // clip — regardless of the chosen Display units (a user picking "None" gets
+  // a wide enough gutter for "$10,500,000"; Auto/compact stays narrow). Power
+  // BI auto-sizes the value-axis area the same way. Estimated from the data
+  // max (Recharts rounds ticks to a similar magnitude) with padding.
+  const yAxisWidth = useMemo(() => {
+    const keys = metrics.map((m) => metricKey(m));
+    let maxAbs = 0;
+    for (const row of categoricalData) {
+      for (const k of keys) {
+        const v = Math.abs(Number(row?.[k]));
+        if (Number.isFinite(v) && v > maxAbs) maxAbs = v;
+      }
+    }
+    if (typeof style.yAxisMax === 'number') maxAbs = Math.max(maxAbs, Math.abs(style.yAxisMax));
+    if (typeof style.yAxisMin === 'number') maxAbs = Math.max(maxAbs, Math.abs(style.yAxisMin));
+    if (!(maxAbs > 0)) return undefined; // no data → Recharts default width
+    const sample = formatAxisValue(maxAbs, style, metrics.length === 1 ? metricKey(metrics[0]) : undefined);
+    const longest = Math.max(sample.length, 3) + 1; // +1 for a possible minus sign
+    return Math.min(150, Math.max(40, Math.ceil(longest * fontSize * 0.62) + 12));
+  }, [categoricalData, metrics, style, fontSize]);
+
   // BI-standard (Power BI / Tableau): a cartesian chart labels its axes by
   // default so you can see WHICH dimension it's grouped by — not blank axes.
   // Derive the dimension label (X for vertical, category-axis for HBAR) and
@@ -1806,7 +1961,12 @@ function ExploreChartInner({
       const s = dateLike ? formatDateAxisValue(v) : (v == null || v === '' ? '(blank)' : String(v));
       return Math.max(m, s.length);
     }, 0);
-    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars);
+    const { angle, height, textAnchor, interval } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars, responsive.maxXBand);
+    // On a very short tile drop the tick-label band entirely (keep a thin axis
+    // line) so the plot stays usable — values remain on hover. PBI-parity.
+    if (!responsive.showAxisLabels) {
+      return <XAxis dataKey={dataKey} tick={false} height={8} tickLine={false} interval={interval} />;
+    }
     return (
       <XAxis
         dataKey={dataKey}
@@ -1822,20 +1982,81 @@ function ExploreChartInner({
         ) as any}
         height={height}
         interval={interval}
-        label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset, fontSize } : undefined}
       />
     );
   };
+  // Right-edge fix — a HORIZONTAL x-axis (angle 0) centers its last tick label
+  // on the final data point, which sits at the plot's right edge, so half the
+  // label overflows past the fixed 12px right margin and gets clipped (e.g. the
+  // trailing date "2/5/2025"). Reserve ~half the widest label on the right when
+  // the axis is horizontal. Rotated labels anchor at 'end' (extend left/down),
+  // so they don't overflow right and keep the base margin.
+  const cartesianMargin = useMemo(() => {
+    if (!xField) return CHART_BASE_MARGIN;
+    const sample = (categoricalData.length ? categoricalData : data).slice(0, 80);
+    const maxChars = sample.reduce((m, r) => {
+      const v = r?.[xField];
+      const s = xAxisIsDateLike ? formatDateAxisValue(v) : (v == null || v === '' ? '(blank)' : String(v));
+      return Math.max(m, s.length);
+    }, 0);
+    const { angle } = buildXAxisProps(categoricalData.length, fontSize, xAxisLabel, maxChars, responsive.maxXBand);
+    if (angle !== 0) return CHART_BASE_MARGIN;
+    // CustomAxisTick caps horizontal labels at 12 chars; ~0.6em per char, half overflows.
+    const halfLabel = Math.ceil((Math.min(maxChars, 12) * fontSize * 0.6) / 2);
+    return { ...CHART_BASE_MARGIN, right: Math.max(CHART_BASE_MARGIN.right, halfLabel + 4) };
+  }, [categoricalData, data, xField, xAxisIsDateLike, fontSize, xAxisLabel, responsive.maxXBand]);
   const renderYAxis = () => {
     // Phase-16.x — when the chart plots a SINGLE metric, format the value axis
     // with THAT metric's resolved format (incl. the measure's % / currency via
     // the merged seriesFormats above) so the axis matches the data labels. With
     // multiple metrics the axis can't pick one format, so it keeps the global.
     const axisSeriesKey = metrics.length === 1 ? metricKey(metrics[0]) : undefined;
-    const axisTickFormatter = (value: any) => formatNumber(value, style, axisSeriesKey);
+    const axisTickFormatter = (value: any) => formatAxisValue(value, style, axisSeriesKey);
+    // Axis TITLE is rendered as a DOM label by `axisTitled` (not an SVG
+    // <Label>) so it stays readable, never collides with the legend, and never
+    // scrolls off-screen on a wide horizontally-scrolling chart.
     return (
-    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp}
-      label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
+    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={yAxisWidth} />
+    );
+  };
+  // Render the X/Y axis TITLES as DOM labels around the chart (instead of SVG
+  // <Label> inside the plot). This keeps them: (a) readable — a real
+  // vertically-centered gray label, not faint cramped SVG text; (b) collision-
+  // free — they live in the flex layout, never overlapping the legend; (c)
+  // always visible — a wide chart that scrolls horizontally no longer hides the
+  // X-axis title in the middle of a 10,000px SVG. Titles auto-hide on a tile
+  // too small to spare the room (responsive). Y title sits left of the plot,
+  // X title centered below it.
+  const axisTitled = (chart: React.ReactNode): React.ReactNode => {
+    const showY = Boolean(yAxisLabel) && rootSize.width >= 220;
+    const showX = Boolean(xAxisLabel) && rootSize.height >= 150;
+    if (!showY && !showX) return chart;
+    return (
+      <div className="flex-1 min-h-0 flex">
+        {showY && (
+          <div className="flex shrink-0 items-center justify-center" style={{ width: fontSize + 8 }}>
+            <span
+              className="overflow-hidden whitespace-nowrap text-text-tertiary"
+              style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontSize, maxHeight: '100%', textOverflow: 'ellipsis' }}
+              title={yAxisLabel}
+            >
+              {yAxisLabel}
+            </span>
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col min-h-0">
+          {chart}
+          {showX && (
+            <div
+              className="shrink-0 truncate pt-0.5 text-center text-text-tertiary"
+              style={{ fontSize }}
+              title={xAxisLabel}
+            >
+              {xAxisLabel}
+            </div>
+          )}
+        </div>
+      </div>
     );
   };
   // Phase-15.82 — per-series color override handlers. Writes to
@@ -2085,7 +2306,7 @@ function ExploreChartInner({
       ? formatNumber(kpiValue, style, kpiMetricKey)
       : null;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className={`flex-1 flex flex-col ${embedded ? 'items-stretch' : 'items-center justify-center'}`}>
           <div className={embedded ? 'w-full h-full' : 'w-full max-w-xl'}>
@@ -2183,7 +2404,7 @@ function ExploreChartInner({
       ? new Set((highlightModel?.categoricalData ?? []).map((r: any) => String(r?.[nameField] ?? '')))
       : null;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 flex items-end justify-center gap-4 px-4">
           {display.map((e: any, i: number) => {
@@ -2316,7 +2537,7 @@ function ExploreChartInner({
       metric: m,
     }];
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
@@ -2431,7 +2652,7 @@ function ExploreChartInner({
       : null;
     const renderScatterCells = isHighlight || hasPerPointColors;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
@@ -2488,7 +2709,7 @@ function ExploreChartInner({
       ? new Set((highlightModel?.tableData ?? []).map(tableRowDimKey))
       : null;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           <TableVisualization
@@ -2570,13 +2791,13 @@ function ExploreChartInner({
         label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
     ) : renderYAxis();
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           {DrillBar}
           {TruncationBanner}
-          {wrapScrollable(
-            <BarChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}
+          {axisTitled(wrapScrollable(
+            <BarChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, xAxisIsDateLike)}
@@ -2814,7 +3035,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </BarChart>,
             displayData.length,
-          )}
+          ))}
         </div>
       </div>
     );
@@ -2828,13 +3049,13 @@ function ExploreChartInner({
     // Cross-highlight: dim baseline area, overlay solid `__hl` area.
     const displayData = isHighlight ? buildHighlightSplitRows(baseAreaData, displaySeries) : baseAreaData;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           {DrillBar}
           {TruncationBanner}
-          {wrapScrollable(
-            <AreaChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+          {axisTitled(wrapScrollable(
+            <AreaChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
@@ -2887,7 +3108,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </AreaChart>,
             displayData.length,
-          )}
+          ))}
         </div>
       </div>
     );
@@ -2903,13 +3124,13 @@ function ExploreChartInner({
     // P-contribution (`<key>__hl`). Keeps full series context (PBI-parity).
     const displayData = isHighlight ? buildHighlightSplitRows(baseLineData, displaySeries) : baseLineData;
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           {DrillBar}
           {TruncationBanner}
-          {wrapScrollable(
-            <LineChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+          {axisTitled(wrapScrollable(
+            <LineChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
@@ -2953,7 +3174,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </LineChart>,
             displayData.length,
-          )}
+          ))}
         </div>
       </div>
     );
@@ -3040,24 +3261,28 @@ function ExploreChartInner({
       </BarChart>
     );
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           {DrillBar}
           {TruncationBanner}
-          {displayData.length > SCROLL_THRESHOLD ? (
-            <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
-              <div style={{ width: '100%', height: chartHeight }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  {innerChart}
-                </ResponsiveContainer>
+          {/* BUG-XAXIS-CLIP — chart in a `flex-1 min-h-0` row so it takes only
+              the height left after the drill bar (see wrapScrollable). */}
+          <div className="flex-1 min-h-0">
+            {displayData.length > SCROLL_THRESHOLD ? (
+              <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+                <div style={{ width: '100%', height: chartHeight }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    {innerChart}
+                  </ResponsiveContainer>
+                </div>
               </div>
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              {innerChart}
-            </ResponsiveContainer>
-          )}
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                {innerChart}
+              </ResponsiveContainer>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -3097,13 +3322,13 @@ function ExploreChartInner({
         ))
       : null);
     return (
-      <div className="h-full flex flex-col">
+      <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           {DrillBar}
           {TruncationBanner}
-          {wrapScrollable(
-            <ComposedChart data={displayData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+          {axisTitled(wrapScrollable(
+            <ComposedChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField!, displayData.length, xAxisIsDateLike)}
               {renderYAxis()}
@@ -3225,7 +3450,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </ComposedChart>,
             displayData.length,
-          )}
+          ))}
         </div>
       </div>
     );
@@ -3241,13 +3466,13 @@ function ExploreChartInner({
   // (solid highlighted base + dimmed remainder). Otherwise render unchanged.
   const barChartData = isHighlight ? buildHighlightSplitRows(displayBarData, displayBarSeries) : displayBarData;
   return (
-    <div className="h-full flex flex-col">
+    <div ref={rootRef} className="h-full flex flex-col">
       {ChartTitleEl}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 flex flex-col">
         {DrillBar}
         {TruncationBanner}
-        {wrapScrollable(
-          <BarChart data={barChartData} margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+        {axisTitled(wrapScrollable(
+          <BarChart data={barChartData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
             {renderXAxis(xField, barChartData.length, xAxisIsDateLike)}
             {renderYAxis()}
@@ -3297,7 +3522,7 @@ function ExploreChartInner({
             {renderAnnotations()}
           </BarChart>,
           barChartData.length,
-        )}
+        ))}
       </div>
     </div>
   );
