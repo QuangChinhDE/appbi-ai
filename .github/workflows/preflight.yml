@@ -1,0 +1,52 @@
+name: Preflight (commit integrity)
+
+# Cheap, fast gate on EVERY push/PR (no path filter) — proves the committed tree
+# can boot and build, independent of any dev's dirty working tree. Born from a
+# string of prod 502s where a provider was left uncommitted while its consumers
+# were pushed: a migration parent (alembic KeyError), an exported FE function
+# (next-build type error), a deleted module (ImportError). Each has a check here.
+#
+# Make this a REQUIRED status check in branch protection so a red run blocks the
+# merge/deploy — that is what turns it from advisory into a real gate.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 1. Alembic revision graph (no DB needed) ──────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Alembic chain (missing parent / multiple heads)
+        run: python scripts/ci/alembic_chain.py
+
+      # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend typecheck (tsc --noEmit)
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      # ── 3. Backend import smoke (deleted/renamed module) ──────────────────
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Backend import smoke (import app.main)
+        working-directory: backend
+        env:
+          DATABASE_URL: "sqlite:///./_preflight.db"
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: python -c "import app.main"

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Pre-push preflight gate.
+#
+# Checks the COMMITTED tree of the commit you're about to push — NOT your dirty
+# working tree — by checking it out into a throwaway git worktree. That's the
+# whole point: a provider you forgot to `git add` (a migration parent, an
+# exported function, a module) looks fine locally because the file is on disk,
+# but is absent from the commit and breaks prod. Building the worktree surfaces
+# it here instead of as a 502 after deploy. Your working tree is never touched.
+#
+# Enable once per clone:  bash scripts/setup-hooks.sh   (sets core.hooksPath)
+# Emergency bypass:        git push --no-verify   (or PREFLIGHT_SKIP=1 git push)
+set -uo pipefail
+
+[ -n "${PREFLIGHT_SKIP:-}" ] && { echo "preflight: skipped (PREFLIGHT_SKIP set)"; exit 0; }
+
+ZERO="0000000000000000000000000000000000000000"
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root" || exit 1
+
+# stdin: <local_ref> <local_sha> <remote_ref> <remote_sha> per pushed ref.
+# Check the tip commit being pushed; skip branch deletions.
+sha=""
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [ -z "${local_sha:-}" ] && continue
+  [ "$local_sha" = "$ZERO" ] && continue
+  sha="$local_sha"
+done
+[ -z "$sha" ] && exit 0   # delete-only push, nothing to check
+
+tmp="$(mktemp -d)"
+wt="$tmp/wt"
+cleanup() { git worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$tmp"; }
+trap cleanup EXIT
+
+echo "preflight: checking committed tree @ ${sha:0:9} …"
+if ! git worktree add --detach -q "$wt" "$sha"; then
+  echo "preflight: could not create worktree; aborting push. (bypass: --no-verify)"
+  exit 1
+fi
+
+if [ ! -f "$wt/scripts/ci/preflight.sh" ]; then
+  echo "preflight: no gate at this commit (predates scripts/ci) — skipping."
+  exit 0
+fi
+
+# Make the installed node_modules reachable from the worktree so tsc can resolve
+# types without a fresh `npm ci`. Junction on Windows (no admin), symlink else.
+# `< /dev/null` keeps cmd.exe from inheriting the hook's piped stdin (which made
+# the junction flaky); we then verify it actually resolved.
+if [ -d "$repo_root/frontend/node_modules" ] && [ ! -e "$wt/frontend/node_modules" ]; then
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      MSYS_NO_PATHCONV=1 cmd.exe /c mklink /J \
+        "$(cygpath -w "$wt/frontend/node_modules")" \
+        "$(cygpath -w "$repo_root/frontend/node_modules")" </dev/null >/dev/null 2>&1 || true
+      ;;
+    *)
+      ln -s "$repo_root/frontend/node_modules" "$wt/frontend/node_modules" 2>/dev/null || true
+      ;;
+  esac
+fi
+
+bash "$wt/scripts/ci/preflight.sh" "$wt"
+rc=$?
+exit $rc
