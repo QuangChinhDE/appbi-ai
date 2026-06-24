@@ -38,6 +38,13 @@ export interface PdfExportOptions {
   pages: PdfPageSource[];
   /** Progress reporter so the UI can show what's happening + how far along. */
   onProgress?: (p: PdfProgress) => void;
+  /**
+   * A tab the caller opened SYNCHRONOUSLY inside the export click (so it isn't
+   * popup-blocked). When given, the finished PDF is shown in this tab. Export
+   * runs for several seconds, by which time `window.open` from here would be
+   * blocked (transient user activation has lapsed) — hence the caller pre-opens.
+   */
+  previewWindow?: Window | null;
 }
 
 export interface PdfPageSource {
@@ -109,12 +116,16 @@ function extractTableModel(table: HTMLTableElement): TableModel {
   return { headers, rows, footer };
 }
 
-/** Title shown above a tile block (custom title / chart name). Prefers the
- *  explicit [data-pdf-tile-title] hook present on both the build (ChartTile)
- *  and public/embed (ReadonlyChartTile) tiles, falling back to any heading. */
+/** The tile's title element — the explicit [data-pdf-tile-title] hook present on
+ *  both the build (ChartTile) and public/embed (ReadonlyChartTile) tiles,
+ *  falling back to any heading. */
+function tileTitleEl(tile: HTMLElement): HTMLElement | null {
+  return tile.querySelector('[data-pdf-tile-title], h3, h2, .dashboard-tile-title') as HTMLElement | null;
+}
+
+/** Title shown above a tile block (custom title / chart name). */
 function tileTitle(tile: HTMLElement): string {
-  const h = tile.querySelector('[data-pdf-tile-title], h3, h2, .dashboard-tile-title') as HTMLElement | null;
-  return h?.innerText.trim() || '';
+  return tileTitleEl(tile)?.innerText.trim() || '';
 }
 
 // ── Drawing helpers ──────────────────────────────────────────────────────────
@@ -291,6 +302,15 @@ async function drawImageTile(
   const maxTileH = contentH * 0.42;
   const headH = title ? 7 : 0;
 
+  // The PDF draws `title` as its own heading above this image, so hide the
+  // tile's in-DOM title during capture — otherwise the title shows TWICE (once
+  // as the PDF heading, once baked into the captured image). The tile box has a
+  // fixed grid height, so hiding the inner title doesn't change the captured
+  // aspect ratio; the chart just fills the reclaimed band.
+  const titleEl = title ? tileTitleEl(tile) : null;
+  const prevDisplay = titleEl?.style.display ?? null;
+  if (titleEl) titleEl.style.display = 'none';
+
   // Resilient capture: a single chart that html2canvas can't render (e.g. a map
   // tile with a tainted cross-origin image) must NOT abort the whole export.
   let dataUrl: string | null = null;
@@ -304,6 +324,8 @@ async function drawImageTile(
     dataUrl = canvas.toDataURL('image/jpeg', 0.82);
   } catch {
     dataUrl = null;
+  } finally {
+    if (titleEl) titleEl.style.display = prevDisplay ?? '';
   }
 
   let drawW = g.usableW;
@@ -336,8 +358,8 @@ async function drawImageTile(
 
 // ── Main entry ───────────────────────────────────────────────────────────────
 
-export async function exportDashboardPdf(opts: PdfExportOptions): Promise<void> {
-  if (opts.pages.length === 0) return;
+export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opened' | 'saved'> {
+  if (opts.pages.length === 0) return 'saved';
   const report = opts.onProgress ?? (() => {});
   // compress: true → deflate content streams. Without it jsPDF writes the whole
   // document (every table cell's text operators) UNCOMPRESSED → a 16MB file that
@@ -399,53 +421,67 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<void> 
 
   report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
   stampFooters(pdf, opts.title);
-  await downloadPdf(pdf, opts.filename);
-  report({ phase: 'done', ratio: 1, message: 'Hoàn tất — đang tải xuống.' });
+  const result = downloadPdf(pdf, opts.filename, opts.previewWindow);
+  report({
+    phase: 'done',
+    ratio: 1,
+    message: result === 'opened' ? 'Hoàn tất — đã mở PDF ở tab mới + tải về máy.' : 'Hoàn tất — đã tải PDF về máy.',
+  });
+  return result;
 }
 
 /**
- * Trigger the download ourselves with a DATA: url (not blob:).
+ * Deliver the finished PDF: show it in a browser tab AND save a copy to disk.
  *
- * Why data: — a `blob:` download only carries a UUID in its URL, so anything
- * that intercepts the download and can't read the anchor's `download` attribute
- * (download-manager extensions like IDM/FDM, and some Chrome/Edge setups) names
- * the saved file after that UUID with NO `.pdf` extension → the user gets an
- * unopenable file like "6e4e0e0e-…" (exactly the bug reported). A `data:` URL
- * embeds the bytes inline, so the `download="<name>.pdf"` filename sticks across
- * browsers and isn't hijacked. The anchor is appended to <body> before click
- * (Edge/Firefox ignore `download` on a detached anchor). Falls back to blob:
- * only for unusually large files (data: URLs balloon ~33% in base64).
+ * Returns 'opened' when the PDF is showing in a tab, 'saved' when the tab was
+ * blocked and we only managed the download. Always also triggers the download so
+ * the user ends up with a real file on disk regardless.
+ *
+ * Why a `blob:` URL for both: it carries the bytes verbatim — the browser's PDF
+ * viewer renders it in the tab, and the anchor `download` saves the complete
+ * file with the right `.pdf` name. (A multi-MB `data:` URL silently fails or
+ * truncates in Chrome, which is what made big full-table dashboards download an
+ * unopenable file.) The tab is the caller's pre-opened `previewWindow` so the
+ * popup blocker — which fires once the export's seconds-long capture has spent
+ * the user activation — doesn't eat it.
  */
-async function downloadPdf(pdf: jsPDF, filename: string) {
+function downloadPdf(pdf: jsPDF, filename: string, previewWindow?: Window | null): 'opened' | 'saved' {
   const name = /\.pdf$/i.test(filename) ? filename : `${filename}.pdf`;
   const blob: Blob = pdf.output('blob');
+  const url = URL.createObjectURL(blob);
 
-  let href: string;
-  let isBlob = false;
-  if (blob.size > 12 * 1024 * 1024) {
-    // very large → a data: URL would be ~16MB+ string; use blob and hope the
-    // environment honors the download attr.
-    href = URL.createObjectURL(blob);
-    isBlob = true;
-  } else {
-    href = await new Promise<string>((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result)); // "data:application/pdf;base64,…"
-      fr.onerror = () => reject(fr.error);
-      fr.readAsDataURL(blob);
-    });
+  // 1) Show it immediately in a tab beside the dashboard.
+  let opened = false;
+  try {
+    if (previewWindow && !previewWindow.closed) {
+      previewWindow.location.href = url;
+      opened = true;
+    } else {
+      // No pre-opened tab (or it was blocked): a direct open here usually gets
+      // popup-blocked after the long export, but try anyway.
+      opened = !!window.open(url, '_blank');
+    }
+  } catch {
+    opened = false;
   }
 
+  // 2) Always save a copy to disk too, with the correct filename. The anchor is
+  //    appended to <body> before click (Edge/Firefox ignore `download` on a
+  //    detached anchor).
   try {
     const a = document.createElement('a');
-    a.href = href;
+    a.href = url;
     a.download = name;
     a.rel = 'noopener';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     a.remove();
-  } finally {
-    if (isBlob) setTimeout(() => URL.revokeObjectURL(href), 5000);
+  } catch {
+    /* download is best-effort; the tab above is the primary delivery */
   }
+
+  // Revoke late — the just-opened tab needs the URL to finish rendering.
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return opened ? 'opened' : 'saved';
 }
