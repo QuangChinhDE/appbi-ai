@@ -19,7 +19,8 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
-import { ExportModeContext } from '@/lib/export-mode';
+import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
+import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -618,6 +619,8 @@ export default function EmbedDashboardPage() {
   // image), driven by the pre-export dialog. Replaces the old raster path.
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    // Open the preview tab synchronously inside the click (see openPdfPreviewTab).
+    const previewWindow = openPdfPreviewTab();
     setIsExportingPdf(true);
     setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
     setForceVisibleAll(true);
@@ -653,16 +656,27 @@ export default function EmbedDashboardPage() {
       }));
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
-      await exportDashboardPdf({
+      const result = await exportDashboardPdf({
         filename: `${safeName}.pdf`,
         title: reportTitle,
         orientation: choices.orientation,
         format: choices.format,
         onProgress: setExportProgress,
         pages: pageSources,
+        previewWindow,
       });
+      if (result === 'saved') {
+        try { previewWindow?.close(); } catch { /* noop */ }
+        toast.info('Đã tải PDF về máy', {
+          description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',
+        });
+      }
     } catch (err) {
       console.error('PDF export failed', err);
+      try { previewWindow?.close(); } catch { /* noop */ }
+      toast.error('Xuất PDF thất bại', {
+        description: 'Không tạo được file PDF. Vui lòng thử lại; nếu vẫn lỗi, thử bớt số trang export.',
+      });
     } finally {
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);

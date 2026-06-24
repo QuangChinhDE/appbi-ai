@@ -50,7 +50,6 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 12
 RECON_MAX_CHARTS = 3
-DEFAULT_COST_CAP_USD = 0.05
 _DEFAULT_MODEL_BY_PROVIDER = {
     "anthropic": "claude-3-5-haiku-20241022",
     "openai": "gpt-4o-mini",
@@ -107,6 +106,15 @@ def _format_recon_for_prompt(recon: dict) -> str:
     lines = ["═══ RECON SNAPSHOT ═══"]
     manifest = recon.get("manifest") or {}
     charts = manifest.get("charts") or []
+    _pages = manifest.get("pages") or []
+    if _pages:
+        _name_by_id = {c.get("chart_id"): c.get("chart_name") for c in charts}
+        lines.append("Report flow (pages): " + " | ".join(
+            f"{p.get('name')}: " + ", ".join(
+                str(_name_by_id.get(cid) or cid) for cid in (p.get("chart_ids") or [])
+            )
+            for p in _pages
+        ))
     lines.append(f"Charts: {len(charts)}")
     for c in charts:
         lines.append(
@@ -141,7 +149,6 @@ async def run_agent_stream(
     model: str | None = None,
     enable_critique: bool = False,
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
-    cost_cap_usd: float = DEFAULT_COST_CAP_USD,
     report_context_note: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects."""
@@ -161,10 +168,8 @@ async def run_agent_stream(
         (provider or "").strip().lower(),
     )
 
-    meter = CostMeter(
-        model=selected_model or "",
-        cap_usd=max(0.0, float(cost_cap_usd or 0.0)) or DEFAULT_COST_CAP_USD,
-    )
+    # Telemetry only — no per-question ceiling (max_tool_calls bounds runaway).
+    meter = CostMeter(model=selected_model or "")
 
     base_system = build_agent_system_prompt(
         dashboard_name=ctx.dashboard.name or "Dashboard",
@@ -178,7 +183,8 @@ async def run_agent_stream(
     if report_context_note.strip():
         base_system = (
             base_system
-            + "\n═══ REPORT MINDSET NOTE (admin-configured) ═══\n"
+            + "\n═══ REPORT SYSTEM PROMPT (admin-configured — follow this to read "
+            "the report with the right flow & logic) ═══\n"
             + report_context_note.strip()
             + "\n"
         )
@@ -215,7 +221,6 @@ async def run_agent_stream(
     tool_log: list[dict] = []
     draft_answer_parts: list[str] = []
     tool_calls_made = 0
-    cost_cap_reached = False
 
     while True:
         yield AgentEvent(
@@ -261,32 +266,6 @@ async def run_agent_stream(
         round_text = "".join(round_text_parts).strip()
 
         if round_tool_calls:
-            if meter.over_cap():
-                cost_cap_reached = True
-                asst_entry: dict = {"role": "assistant"}
-                if round_text:
-                    asst_entry["content"] = round_text
-                asst_entry["tool_calls"] = [
-                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
-                    for tc in round_tool_calls
-                ]
-                running.append(asst_entry)
-                err = {
-                    "ok": False,
-                    "error": (
-                        "internal: cost cap reached. Wrap up with the data already "
-                        "gathered, do not mention this message to the user."
-                    ),
-                }
-                for tc in round_tool_calls:
-                    running.append({
-                        "role": "tool",
-                        "tool_call_id": tc.tool_call_id,
-                        "result": err,
-                    })
-                    tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
-                continue
-
             asst_entry: dict = {"role": "assistant"}
             if round_text:
                 asst_entry["content"] = round_text
@@ -347,7 +326,6 @@ async def run_agent_stream(
         break
 
     draft_answer = "".join(draft_answer_parts).strip()
-    cost_cap_reached = cost_cap_reached or meter.over_cap()
     if not draft_answer:
         yield AgentEvent(
             type="text",
@@ -361,7 +339,7 @@ async def run_agent_stream(
         return
 
     # ── Self-critique pass (opt-in) ─────────────────────────────────────────
-    run_critique = enable_critique and last_user_question and not cost_cap_reached
+    run_critique = enable_critique and last_user_question
     if run_critique:
         yield AgentEvent(
             type="status",

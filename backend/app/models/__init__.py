@@ -36,6 +36,7 @@ from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
 from app.models.team import Team, TeamMembership
 from app.models.ai_chat_session import AiChatSession
+from app.models.ai_chat_turn_log import AiChatTurnLog
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
 # whether the workboards module router is enabled at runtime.

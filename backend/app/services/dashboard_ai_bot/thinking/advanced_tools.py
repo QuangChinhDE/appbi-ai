@@ -11,13 +11,6 @@ operations a senior DA reaches for:
                             a dimension (e.g. same department, same week)
   - detect_anomaly        : per-row z-score / IQR for static charts; rolling
                             z-score / change-point detection for time-series
-  - get_chart_image       : produce a tiny ASCII-art or SVG sketch of a
-                            chart. Used by the multimodal path so the LLM
-                            can SEE the curve, not just numbers.
-    - get_dashboard_overview_image
-                                                    : render a single visual overview of the current
-                                                        dashboard/report surface for screenshot-style
-                                                        analysis without a user-visible export button.
 
 All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 ``_fetch_chart_data`` for filter-aware reads.
@@ -26,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import statistics
 from collections.abc import Sequence
 from typing import Any
@@ -64,6 +58,58 @@ _DATETIME_HINTS = ("date", "time", "month", "week", "year", "day", "ngay", "than
 def _looks_like_datetime(name: str) -> bool:
     n = (name or "").lower()
     return any(h in n for h in _DATETIME_HINTS)
+
+
+# A date/period VALUE: 2024, 2024-06, 2024-06-15, 2024/06, Q1 2024, etc.
+_PERIOD_VALUE_RX = re.compile(
+    r"^\s*(?:Q[1-4][\s\-/]?\d{4}|\d{4}(?:[\-/](?:0?[1-9]|1[0-2]))?(?:[\-/]\d{1,2})?|\d{4})\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_period_label(value: str) -> bool:
+    """True if a dimension VALUE looks like a calendar period label."""
+    return bool(_PERIOD_VALUE_RX.match(str(value or "")))
+
+
+def _trim_partial_edges(series: Sequence[tuple[str, float]], frac: float = 0.15):
+    """Drop contiguous leading/trailing buckets whose value is a severe low
+    outlier vs the median — they are almost always INCOMPLETE periods (launch
+    month, data cutoff) that would distort a trend/forecast. Returns
+    ``(core, excluded, partial_first, partial_last)``."""
+    ys = [y for _, y in series]
+    if len(ys) < 3:
+        return list(series), [], False, False
+    med = statistics.median([abs(y) for y in ys])
+    thresh = abs(med) * frac
+    lo, hi = 0, len(ys) - 1
+    excluded, pf, pl = [], False, False
+    while lo < hi and thresh > 0 and abs(ys[lo]) < thresh:
+        pf = True
+        excluded.append({"label": series[lo][0], "value": _round(series[lo][1]), "edge": "first"})
+        lo += 1
+    while hi > lo and thresh > 0 and abs(ys[hi]) < thresh:
+        pl = True
+        excluded.append({"label": series[hi][0], "value": _round(series[hi][1]), "edge": "last"})
+        hi -= 1
+    return list(series[lo:hi + 1]), excluded, pf, pl
+
+
+def _linreg(ys: Sequence[float]):
+    """Least-squares slope + R² of y indexed 0..n-1."""
+    n = len(ys)
+    if n < 2:
+        return 0.0, 0.0
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    if sxx == 0:
+        return 0.0, 0.0
+    slope = sxy / sxx
+    syy = sum((y - my) ** 2 for y in ys)
+    return slope, ((sxy * sxy) / (sxx * syy) if syy else 0.0)
 
 
 def _detect_measure_idx(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> int | None:
@@ -138,9 +184,28 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
     if not _looks_like_datetime(columns[dim_idx]) and mode != "custom":
+        # Peek at the actual dimension labels. If none look date-like, period
+        # comparison simply doesn't apply to this chart — say so definitively
+        # instead of pushing the model toward mode='custom', which sends it
+        # into a guess-the-period loop on a categorical axis (e.g. transaction_id).
+        sample_labels = []
+        for r in rows:
+            if dim_idx < len(r) and r[dim_idx] is not None:
+                sample_labels.append(str(r[dim_idx]))
+            if len(sample_labels) >= 8:
+                break
+        any_date_like = any(_looks_like_period_label(s) for s in sample_labels)
+        if not any_date_like:
+            return _err(
+                f"chart's dimension '{columns[dim_idx]}' is categorical "
+                f"(e.g. {', '.join(sample_labels[:5]) or 'n/a'}), not a time "
+                "axis — period-over-period comparison is not applicable to this "
+                "chart. Do not retry with custom periods."
+            )
         return _err(
             f"chart's dimension '{columns[dim_idx]}' does not look like a "
-            "time series; use mode='custom' with explicit period_a/period_b"
+            "time series; use mode='custom' with explicit period_a/period_b "
+            f"chosen from the available labels: {', '.join(sample_labels)}"
         )
 
     # Sort by dim ascending (assumes ISO-ish labels)
@@ -166,8 +231,14 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         a_val = next((y for x, y in points if x == period_a), None)
         b_val = next((y for x, y in points if x == period_b), None)
         if a_val is None or b_val is None:
+            available = [x for x, _ in points]
+            shown = available[:20]
+            more = f" (+{len(available) - len(shown)} more)" if len(available) > len(shown) else ""
             return _err(
-                f"period not found in chart: a={period_a!r}, b={period_b!r}"
+                f"period not found in chart: a={period_a!r}, b={period_b!r}. "
+                f"Available labels are: {', '.join(shown)}{more}. "
+                "Pick period_a/period_b from this exact list, or if none are "
+                "time periods this chart has no time axis — stop and tell the user."
             )
         return _ok(_compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx]))
 
@@ -396,9 +467,17 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
     cols_a = data_a["columns"]
     cols_b = data_b["columns"]
     if on not in cols_a or on not in cols_b:
+        shared = [c for c in cols_a if c in cols_b]
+        if not shared:
+            return _err(
+                f"these two charts share no common column to join on "
+                f"(chart_a cols={cols_a}, chart_b cols={cols_b}) — they are at "
+                "different grains, so a correlation between them is not "
+                "meaningful. Do not retry; tell the user instead."
+            )
         return _err(
-            f"column '{on}' missing in one of the charts. "
-            f"chart_a cols={cols_a}, chart_b cols={cols_b}"
+            f"column '{on}' is not shared by both charts. Use one of the "
+            f"actually-shared columns for 'on': {shared}."
         )
     dim_a = cols_a.index(on)
     dim_b = cols_b.index(on)
@@ -591,6 +670,7 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
                     "row": {col: row[i] if i < len(row) else None for i, col in enumerate(columns)},
                     "z_score": _round(z),
                     "value": _round(v),
+                    "boundary": "high" if z > 0 else "low",
                 })
     else:  # iqr
         sv = sorted(values)
@@ -610,6 +690,20 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
                 })
 
     flagged.sort(key=lambda d: -abs(d.get("z_score") or d.get("value") or 0))
+
+    # Data-quality lens (anomaly false-positive fix). A value that is an extreme
+    # LOW vs the median is usually a partial/junk row (e.g. a 1-order month), NOT
+    # a business anomaly — and z-score/IQR can't tell the two apart on magnitude
+    # alone. Surface them separately, and warn that a HIGH outlier is often just
+    # the legitimate top item (don't call the best category an "anomaly").
+    med = statistics.median(values) if values else 0.0
+    dq_thresh = abs(med) * 0.15
+    suspect_low = [
+        {"row_index": ri, "value": _round(v),
+         "row": {col: rows[ri][i] if i < len(rows[ri]) else None for i, col in enumerate(columns)}}
+        for ri, v in indexed if dq_thresh > 0 and abs(v) < dq_thresh
+    ]
+    n_high = sum(1 for f in flagged if f.get("boundary") == "high")
     return _ok({
         "chart_id": chart_id,
         "method": method,
@@ -617,6 +711,16 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
         "n_total": len(indexed),
         "n_anomalies": len(flagged),
         "anomalies": flagged[:10],
+        "data_quality": {
+            "median": _round(med),
+            "suspect_low": suspect_low[:10],
+            "n_high_value_outliers": n_high,
+        },
+        "note": (
+            "Phân biệt: outlier 'high' thường là hạng mục lớn HỢP LỆ (vd danh mục/đơn lớn nhất) — "
+            "đừng gọi là bất thường nếu không có lý do nghiệp vụ. 'suspect_low' (giá trị ≪ trung vị) "
+            "mới là nghi ngờ CHẤT LƯỢNG DỮ LIỆU: kỳ/dòng khuyết, giao dịch test, gần 0."
+        ),
     })
 
 
@@ -1117,14 +1221,221 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     })
 
 
-# ── Tool: get_chart_image ───────────────────────────────────────────────────
+# ── Tool: explain_change (contribution / driver decomposition) ───────────────
 #
-# Produces a tiny ASCII sketch of the chart so the LLM can "see" the shape
-# (rising / falling / spiking). For a real-image multimodal upgrade later we
-# can swap the implementation to render PNG via matplotlib + return base64.
+# Answers the #1 BI question — "why did the total change, and who drove it?".
+# Given a chart whose rows carry a BREAKDOWN dimension and a SPLIT column with
+# two states (two periods, or Actual vs Plan), sum the measure per breakdown
+# value for each state, then attribute each segment's delta as a share of the
+# total change. Deterministic — replaces a hand-built aggregate+compute chain.
+
+def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
+    chart_id = args.get("chart_id")
+    breakdown = args.get("breakdown")
+    split_column = args.get("split_column")
+    value_a = args.get("value_a")   # the "current"/after state
+    value_b = args.get("value_b")   # the "baseline"/before state
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    if not isinstance(breakdown, str) or not breakdown:
+        return _err("breakdown (column to attribute the change to) is required")
+    if not isinstance(split_column, str) or not split_column:
+        return _err("split_column (the column holding the two states) is required")
+    if value_a is None or value_b is None:
+        return _err("value_a (after) and value_b (before) are required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
+
+    columns: list[str] = data["columns"]
+    rows: list[list] = data["rows"]
+    if breakdown not in columns:
+        return _err(f"breakdown '{breakdown}' is not a column. Available: {columns}")
+    if split_column not in columns:
+        return _err(f"split_column '{split_column}' is not a column. Available: {columns}")
+    measure_idx = _detect_measure_idx(columns, rows)
+    if measure_idx is None:
+        return _err("no numeric measure column detected in this chart")
+    b_idx = columns.index(breakdown)
+    s_idx = columns.index(split_column)
+    sa, sb = str(value_a), str(value_b)
+
+    agg_a: dict[str, float] = {}
+    agg_b: dict[str, float] = {}
+    seen_splits: set[str] = set()
+    for r in rows:
+        if s_idx >= len(r) or b_idx >= len(r) or measure_idx >= len(r):
+            continue
+        sval = str(r[s_idx]) if r[s_idx] is not None else ""
+        seen_splits.add(sval)
+        y = _to_number(r[measure_idx])
+        if y is None:
+            continue
+        key = str(r[b_idx]) if r[b_idx] is not None else "(blank)"
+        if sval == sa:
+            agg_a[key] = agg_a.get(key, 0.0) + y
+        elif sval == sb:
+            agg_b[key] = agg_b.get(key, 0.0) + y
+    if not agg_a and not agg_b:
+        sample = sorted(seen_splits)[:10]
+        return _err(
+            f"no rows matched value_a={sa!r} or value_b={sb!r} in '{split_column}'. "
+            f"Available values: {sample}. Do not retry blindly — pick from this list "
+            "or tell the user the comparison isn't available."
+        )
+
+    keys = sorted(set(agg_a) | set(agg_b))
+    total_a = sum(agg_a.values())
+    total_b = sum(agg_b.values())
+    total_delta = total_a - total_b
+    contributors = []
+    for k in keys:
+        a = agg_a.get(k, 0.0)
+        b = agg_b.get(k, 0.0)
+        d = a - b
+        contributors.append({
+            "segment": k,
+            "after": _round(a),
+            "before": _round(b),
+            "delta": _round(d),
+            "contribution_pct": _round((d / total_delta * 100.0) if total_delta else None),
+        })
+    contributors.sort(key=lambda c: abs(c["delta"] or 0.0), reverse=True)
+    return _ok({
+        "chart_id": chart_id,
+        "measure": columns[measure_idx],
+        "breakdown": breakdown,
+        "split_column": split_column,
+        "after_label": sa,
+        "before_label": sb,
+        "total_after": _round(total_a),
+        "total_before": _round(total_b),
+        "total_delta": _round(total_delta),
+        "pct_change": _round((total_delta / abs(total_b) * 100.0) if total_b else None),
+        "top_contributors": contributors[:15],
+        "note": (
+            "contribution_pct = each segment's share of the TOTAL change. "
+            "Positive delta pushed the total up, negative pulled it down."
+        ),
+    })
 
 
-def tool_get_chart_image(ctx: ToolContext, args: dict) -> dict:
+# ── Tool: forecast_measure (simple trend projection) ─────────────────────────
+#
+# Linear least-squares or CAGR projection over a time-series chart. NOT a real
+# statistical forecast model — label it clearly as an indicative projection.
+
+def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
+    chart_id = args.get("chart_id")
+    horizon = args.get("horizon")
+    method = str(args.get("method") or "linear").lower()
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    if method not in ("linear", "cagr"):
+        return _err("method must be 'linear' or 'cagr'")
+    h = horizon if isinstance(horizon, int) and horizon > 0 else 3
+    h = min(h, 12)
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
+
+    columns: list[str] = data["columns"]
+    rows: list[list] = data["rows"]
+    measure_idx = _detect_measure_idx(columns, rows)
+    dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
+    if measure_idx is None or dim_idx is None:
+        return _err("need at least one dimension and one numeric column")
+    if not _looks_like_datetime(columns[dim_idx]):
+        labels = []
+        for r in rows:
+            if dim_idx < len(r) and r[dim_idx] is not None:
+                labels.append(str(r[dim_idx]))
+            if len(labels) >= 8:
+                break
+        if not any(_looks_like_period_label(s) for s in labels):
+            return _err(
+                f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+                f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
+                "time series. Do not retry; tell the user this chart can't be projected."
+            )
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: ("" if dim_idx >= len(r) or r[dim_idx] is None else str(r[dim_idx])),
+    )
+    series: list[tuple[str, float]] = []
+    for r in sorted_rows:
+        x = r[dim_idx] if dim_idx < len(r) else None
+        y = _to_number(r[measure_idx]) if measure_idx < len(r) else None
+        if x is None or y is None:
+            continue
+        series.append((str(x), y))
+    if len(series) < 3:
+        return _err("need at least 3 historical points to project a trend")
+
+    # Trim incomplete edge periods so a launch/cutoff month can't skew the fit.
+    series, excluded_periods, _pf, _pl = _trim_partial_edges(series)
+    if len(series) < 3:
+        return _err("not enough complete periods after trimming partial edges")
+
+    ys = [y for _, y in series]
+    n = len(ys)
+    projections: list[dict] = []
+    if method == "linear":
+        xs = list(range(n))
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        denom = sum((x - mean_x) ** 2 for x in xs)
+        slope = 0.0 if denom == 0 else sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n)) / denom
+        intercept = mean_y - slope * mean_x
+        for i in range(1, h + 1):
+            projections.append({"step": f"+{i}", "value": _round(intercept + slope * (n - 1 + i))})
+        trend = {"method": "linear", "slope_per_period": _round(slope)}
+    else:  # cagr
+        first, last = ys[0], ys[-1]
+        if first <= 0 or last <= 0:
+            return _err("CAGR needs strictly positive first and last values; try method='linear'")
+        rate = (last / first) ** (1.0 / (n - 1)) - 1.0
+        cur = last
+        for i in range(1, h + 1):
+            cur = cur * (1.0 + rate)
+            projections.append({"step": f"+{i}", "value": _round(cur)})
+        trend = {"method": "cagr", "growth_rate_pct": _round(rate * 100.0)}
+
+    return _ok({
+        "chart_id": chart_id,
+        "measure": columns[measure_idx],
+        "time_dimension": columns[dim_idx],
+        "history_points": n,
+        "last_actual": {"label": series[-1][0], "value": _round(series[-1][1])},
+        "excluded_periods": excluded_periods,
+        "trend": trend,
+        "projection": projections,
+        "caveat": (
+            "Đây là phép CHIẾU xu hướng đơn giản (linear/CAGR), KHÔNG phải mô hình dự "
+            "báo thống kê. Không tính mùa vụ, sự kiện hay thay đổi cấu trúc. Dùng để "
+            "tham khảo đà, không cam kết con số."
+        ),
+    })
+
+
+# ── Tool: analyze_trend (robust time-series read) ────────────────────────────
+#
+# Dedicated, trustworthy trend tool: trims partial edge periods, uses
+# least-squares slope (not endpoint ratio), and reports peak/trough/CAGR +
+# explicit caveats. Replaces naive first-vs-last reasoning for "is it growing".
+
+def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
         return _err("chart_id (int) is required")
@@ -1132,218 +1443,147 @@ def tool_get_chart_image(ctx: ToolContext, args: dict) -> dict:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
         return _err(str(exc))
-
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
-    columns = data["columns"]
-    rows = data["rows"]
-    if not rows:
-        return _err("chart has no data")
+    columns, rows = data["columns"], data["rows"]
+    measure_idx = _detect_measure_idx(columns, rows)
+    dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
+    if measure_idx is None or dim_idx is None:
+        return _err("need a numeric measure and a dimension")
+    labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:8]
+    if not _looks_like_datetime(columns[dim_idx]) and not any(_looks_like_period_label(s) for s in labels):
+        return _err(f"dimension '{columns[dim_idx]}' is not a time axis — trend analysis needs a time series.")
 
-    # Take a generous sample to keep PNG render fast but still representative.
-    rows_for_render = list(rows[:200])
+    srt = sorted(rows, key=lambda r: ("" if dim_idx >= len(r) or r[dim_idx] is None else str(r[dim_idx])))
+    series = [(str(r[dim_idx]), _to_number(r[measure_idx]))
+              for r in srt if dim_idx < len(r) and measure_idx < len(r)]
+    series = [(x, y) for x, y in series if y is not None]
+    if len(series) < 3:
+        return _err("need ≥3 time points")
 
-    measure_idx = _detect_measure_idx(columns, rows_for_render)
-    dim_idx = _detect_dim_idx(columns, rows_for_render, measure_idx, prefer_datetime=True)
-
-    # Always emit ASCII (cheap, useful even when PNG fails).
-    ascii_block = "(không đủ dữ liệu để vẽ)"
-    summary_line = ""
-    points: list[tuple[str, float]] = []
-    if measure_idx is not None and dim_idx is not None:
-        sorted_rows = sorted(
-            rows_for_render,
-            key=lambda r: str(r[dim_idx]) if dim_idx < len(r) and r[dim_idx] is not None else "",
-        )
-        points = [
-            (str(r[dim_idx]), _to_number(r[measure_idx]))
-            for r in sorted_rows if dim_idx < len(r) and measure_idx < len(r)
-        ]
-        points = [(x, y) for x, y in points if y is not None]
-        if points:
-            ascii_block = _ascii_sparkline(points)
-            summary_line = _shape_summary(points)
-
-    # Render real PNG in a separate try so a renderer failure doesn't lose ASCII.
-    png_payload: dict | None = None
-    try:
-        from app.services.dashboard_ai_bot.thinking.chart_renderer import render_chart_png
-        meta = ctx.chart_meta.get(chart_id, {})
-        chart_role = "kpi" if (meta.get("chart_type") or "").lower() in (
-            "kpi", "metric", "card", "number"
-        ) else ""
-        # Honour caller hint (caller often knows the role from the manifest)
-        chart_role = str(args.get("chart_role") or chart_role or "")
-        rendered = render_chart_png(
-            chart_id=chart_id,
-            chart_name=meta.get("name", f"Chart {chart_id}"),
-            chart_type=meta.get("chart_type", ""),
-            chart_role=chart_role,
-            columns=columns,
-            rows=rows_for_render,
-            dim_idx=dim_idx,
-            measure_idx=measure_idx,
-        )
-        if rendered.get("ok"):
-            png_payload = rendered
-    except Exception as exc:
-        logger.warning("chart_image png render failed chart_id=%s err=%s", chart_id, type(exc).__name__)
-
-    payload: dict = {
-        "chart_id": chart_id,
-        "kind": (png_payload or {}).get("kind", "ascii_sparkline"),
-        "dimension": columns[dim_idx] if dim_idx is not None else None,
-        "measure": columns[measure_idx] if measure_idx is not None else None,
-        "ascii": ascii_block,
-        "shape_summary": summary_line,
-        "n_points": len(points),
-    }
-    if png_payload:
-        # The agent loop strips this large payload before logging — see
-        # ``_strip_image_payload`` in agent.py — but the LLM still gets it via
-        # the multimodal block injection in the next round.
-        payload["png_base64"] = png_payload["png_base64"]
-        payload["png_kb"] = png_payload["approx_kb"]
-        payload["png_kind"] = png_payload["kind"]
-        payload["_multimodal"] = True  # marker for the agent loop
-    return _ok(payload)
-
-
-def tool_get_dashboard_overview_image(ctx: ToolContext, args: dict) -> dict:
-    max_charts_raw = args.get("max_charts", 12)
-    try:
-        max_charts = int(max_charts_raw)
-    except (TypeError, ValueError):
-        max_charts = 12
-    max_charts = max(1, min(max_charts, 20))
-
-    page_id = args.get("page_id")
-    if page_id is not None and not isinstance(page_id, str):
-        page_id = str(page_id)
-
-    chart_payloads: list[dict] = []
-    for chart_id in sorted(ctx.allowed_chart_ids):
-        meta = ctx.chart_meta.get(chart_id, {})
-        try:
-            data = _fetch_chart_data(ctx, chart_id)
-        except Exception:
-            logger.warning("dashboard overview: failed to load chart_id=%s", chart_id)
-            continue
-        columns = data.get("columns") or []
-        rows = list((data.get("rows") or [])[:200])
-        measure_idx = _detect_measure_idx(columns, rows)
-        dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
-        chart_payloads.append({
-            "chart_id": chart_id,
-            "chart_name": meta.get("name", f"Chart {chart_id}"),
-            "chart_type": meta.get("chart_type", ""),
-            "chart_role": _chart_role_from_meta(meta),
-            "columns": columns,
-            "rows": rows,
-            "dim_idx": dim_idx,
-            "measure_idx": measure_idx,
-            "layout": meta.get("layout") if isinstance(meta.get("layout"), dict) else {},
-        })
-        # Don't truncate here when page_id is set — the renderer filters by
-        # page first, so we need ALL candidate payloads available.
-        if page_id is None and len(chart_payloads) >= max_charts:
-            break
-
-    if not chart_payloads:
-        return _err("dashboard has no chart data to render")
-
-    try:
-        from app.services.dashboard_ai_bot.thinking.chart_renderer import render_dashboard_overview_png
-        rendered = render_dashboard_overview_png(
-            dashboard_name=getattr(ctx.dashboard, "name", None) or "Dashboard",
-            chart_payloads=chart_payloads,
-            max_charts=max_charts,
-            filters_applied=ctx.public_filters,
-            page_id=page_id,
-        )
-    except Exception as exc:
-        logger.warning("dashboard overview render failed err=%s", type(exc).__name__)
-        return _err("failed to render dashboard overview image")
-
-    if not rendered.get("ok") or not rendered.get("png_base64"):
-        return _err(str(rendered.get("reason") or "failed to render dashboard overview image"))
+    core, excluded, pf, pl = _trim_partial_edges(series)
+    ys = [y for _, y in core]
+    n = len(ys)
+    if n < 2:
+        return _err("not enough complete periods after trimming partial edges")
+    slope, r2 = _linreg(ys)
+    mean_y = statistics.fmean(ys) or 0.0
+    norm = (slope / abs(mean_y) * 100.0) if mean_y else 0.0
+    direction = "up" if norm > 1.0 else "down" if norm < -1.0 else "flat"
+    k = min(3, n)
+    base = statistics.fmean(ys[:k]); head = statistics.fmean(ys[-k:])
+    pct = None if base == 0 else (head - base) / abs(base) * 100.0
+    cagr = None
+    if ys[0] > 0 and ys[-1] > 0 and n > 1:
+        cagr = ((ys[-1] / ys[0]) ** (1.0 / (n - 1)) - 1.0) * 100.0
+    peak = max(core, key=lambda p: p[1]); trough = min(core, key=lambda p: p[1])
+    # plateau: low slope but high level (last third near the max)
+    last_third = ys[max(0, n - max(1, n // 3)):]
+    plateau = abs(norm) <= 1.0 and statistics.fmean(last_third) >= 0.7 * peak[1]
+    caveats = []
+    if pf: caveats.append("Kỳ đầu KHUYẾT — đã loại.")
+    if pl: caveats.append("Kỳ cuối KHUYẾT (có thể dữ liệu bị cắt) — đã loại.")
 
     return _ok({
-        "kind": rendered.get("kind", "dashboard_overview"),
-        "charts_rendered": rendered.get("charts_rendered", len(chart_payloads)),
-        "chart_ids": [payload["chart_id"] for payload in chart_payloads],
-        "filters_applied": list(ctx.public_filters or []),
-        "page_id": page_id,
-        "png_kb": rendered.get("approx_kb"),
-        "png_kind": rendered.get("kind", "dashboard_overview"),
-        "png_base64": rendered["png_base64"],
-        "_multimodal": True,
+        "chart_id": chart_id, "measure": columns[measure_idx], "time_dimension": columns[dim_idx],
+        "direction": direction, "pct_change_first3_vs_last3": _round(pct),
+        "slope_per_period": _round(slope), "r_squared": _round(r2), "cagr_pct": _round(cagr),
+        "points_total": len(series), "points_used": n,
+        "peak": {"label": peak[0], "value": _round(peak[1])},
+        "trough": {"label": trough[0], "value": _round(trough[1])},
+        "plateau": bool(plateau),
+        "excluded_periods": excluded, "partial_first": pf, "partial_last": pl,
+        "caveats": caveats,
+        "note": "Hướng lấy từ slope hồi quy trên chuỗi đã loại kỳ khuyết — KHÔNG dùng tỷ lệ điểm cuối/điểm đầu.",
     })
 
 
-def _chart_role_from_meta(meta: dict) -> str:
-    chart_type = str(meta.get("chart_type") or "").lower()
-    if any(hint in chart_type for hint in ("kpi", "metric", "card", "number", "stat")):
-        return "kpi"
-    if any(hint in chart_type for hint in ("line", "area", "time", "trend")):
-        return "trend"
-    if any(hint in chart_type for hint in ("pie", "donut", "treemap", "funnel")):
-        return "distribution"
-    return "breakdown"
+# ── Tool: segment_compare (segment vs the rest) ──────────────────────────────
+#
+# Answers "how does segment X compare to the others / overall" robustly. The
+# LLM repeatedly failed to isolate one segment (reported national figures as a
+# state's). Given a chart grouped by a dimension + a target value, returns the
+# segment's metric plus the full cross-segment distribution + rank/percentile.
 
+def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
+    chart_id = args.get("chart_id")
+    value = args.get("value")
+    dimension = args.get("dimension")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    if value is None:
+        return _err("value (the segment to isolate, e.g. 'SP') is required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
-_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+    columns, rows = data["columns"], data["rows"]
+    measure_idx = _detect_measure_idx(columns, rows)
+    if measure_idx is None:
+        return _err("no numeric measure detected in this chart")
+    if dimension and dimension in columns:
+        dim_idx = columns.index(dimension)
+    else:
+        dim_idx = _detect_dim_idx(columns, rows, measure_idx)
+    if dim_idx is None:
+        return _err("no dimension to compare segments on — use a chart grouped by the dimension")
 
+    pairs = []
+    for r in rows:
+        if dim_idx >= len(r) or measure_idx >= len(r):
+            continue
+        y = _to_number(r[measure_idx])
+        if y is None:
+            continue
+        pairs.append((str(r[dim_idx]) if r[dim_idx] is not None else "(blank)", y))
+    if not pairs:
+        return _err("no comparable rows")
 
-def _ascii_sparkline(points: list[tuple[str, float]]) -> str:
-    """Render up to 60 points as a 1-line unicode spark sequence + a 2-line
-    block-bar chart for richer shape feedback."""
-    sample = points
-    if len(points) > 60:
-        # Downsample by averaging buckets
-        step = len(points) / 60
-        sample = []
-        for i in range(60):
-            lo = int(round(i * step))
-            hi = int(round((i + 1) * step))
-            chunk = [y for _, y in points[lo:hi]] or [points[lo][1]]
-            sample.append((points[lo][0], statistics.fmean(chunk)))
-    ys = [y for _, y in sample]
-    lo, hi = min(ys), max(ys)
-    span = hi - lo or 1
-    spark = "".join(
-        _SPARK_BLOCKS[min(7, max(0, int((y - lo) / span * 7)))]
-        for y in ys
-    )
-    first_label = sample[0][0]
-    last_label = sample[-1][0]
-    legend = f"min={lo:g} max={hi:g}  ({first_label} → {last_label})"
-    return f"{spark}\n{legend}"
+    target = str(value)
+    seg = next((y for x, y in pairs if x == target), None)
+    if seg is None:
+        avail = [x for x, _ in pairs][:25]
+        return _err(f"segment {target!r} not found in '{columns[dim_idx]}'. Available: {avail}")
 
-
-def _shape_summary(points: list[tuple[str, float]]) -> str:
-    ys = [y for _, y in points]
-    n = len(ys)
-    if n < 2:
-        return "Chỉ có 1 điểm dữ liệu."
-    first, last = ys[0], ys[-1]
-    pct = None if first == 0 else (last - first) / abs(first) * 100
-    direction = "tăng" if pct and pct > 5 else "giảm" if pct and pct < -5 else "đi ngang"
-    # Volatility: count direction flips
-    flips = sum(1 for i in range(1, n - 1) if (ys[i] - ys[i - 1]) * (ys[i + 1] - ys[i]) < 0)
-    vol = "biến động mạnh" if flips > n / 3 else ("ổn định" if flips < n / 6 else "biến động vừa")
-    pct_str = f"{pct:+.1f}%" if pct is not None else "không đo được %"
-    return f"Hình dạng: {direction} ({pct_str}), {vol} với {flips} lần đảo chiều."
+    vals = sorted((y for _, y in pairs), reverse=True)
+    n = len(vals)
+    rank = vals.index(seg) + 1  # 1 = highest
+    below = sum(1 for v in vals if v < seg)
+    pctile = _round((below / (n - 1) * 100.0) if n > 1 else 100.0)
+    total = sum(y for _, y in pairs)
+    mean = statistics.fmean([y for _, y in pairs])
+    median = statistics.median([y for _, y in pairs])
+    diff_vs_mean = _round((seg - mean) / abs(mean) * 100.0) if mean else None
+    return _ok({
+        "chart_id": chart_id, "dimension": columns[dim_idx], "measure": columns[measure_idx],
+        "segment": {"value": target, "metric": _round(seg),
+                    "rank": rank, "of": n, "percentile": pctile,
+                    "share_of_total_pct": _round((seg / total * 100.0) if total else None)},
+        "across_segments": {"min": _round(min(vals)), "median": _round(median),
+                            "mean": _round(mean), "max": _round(vals[0]), "count": n},
+        "segment_vs_mean_pct": diff_vs_mean,
+        "note": (
+            f"{target} = {_round(seg)} cho '{columns[measure_idx]}'; xếp hạng {rank}/{n} "
+            f"(percentile {pctile}). So với TRUNG BÌNH các phân khúc lệch {diff_vs_mean}%. "
+            "Baseline là phân phối chéo các phân khúc — không phải tổng gộp toàn cục. "
+            "Với measure cộng được (sum/count), share_of_total_pct là tỷ trọng đóng góp."
+        ),
+    })
 
 
 # ── Phase 15.73 — Diagnostic & lookup tools ───────────────────────────────────
 #
-# These five tools give the bot the option-set the user asked for:
+# These tools give the bot the option-set the user asked for:
 # instead of patching "no data" with retries, the bot can ACTIVELY
-# inspect the situation. All five respect the dashboard's public_filters
+# inspect the situation. They respect the dashboard's public_filters
 # (no scope bypass) — they report what's in scope, not what's outside.
 
 
@@ -1376,184 +1616,6 @@ def tool_inspect_filters(ctx: ToolContext, args: dict) -> dict:
             "Every data tool you call uses this same set — what the "
             "dashboard renders on screen is what you can read."
         ),
-    })
-
-
-def tool_search_charts(ctx: ToolContext, args: dict) -> dict:
-    """Keyword search over chart names + descriptions in this dashboard.
-
-    Useful when the user asks about a topic (e.g. "doanh thu", "lợi
-    nhuận", "khách VIP") and you don't want to scan the manifest blindly.
-    Returns matching chart_ids ordered by a simple token-overlap score.
-    """
-    query = args.get("query")
-    if not isinstance(query, str) or not query.strip():
-        return _err("query (non-empty string) is required")
-    limit = args.get("limit")
-    if not isinstance(limit, int) or limit <= 0:
-        limit = 10
-    limit = min(limit, 30)
-
-    q_tokens = {tok for tok in query.lower().split() if tok}
-    if not q_tokens:
-        return _err("query has no searchable tokens")
-
-    matches: list[dict] = []
-    for chart_id, meta in ctx.chart_meta.items():
-        haystack = " ".join([
-            str(meta.get("name") or ""),
-            str(meta.get("description") or ""),
-            str(meta.get("chart_type") or ""),
-        ]).lower()
-        # Token overlap + substring credit
-        overlap = sum(1 for tok in q_tokens if tok in haystack)
-        if overlap == 0:
-            continue
-        score = overlap / max(len(q_tokens), 1)
-        matches.append({
-            "chart_id": chart_id,
-            "chart_name": meta.get("name"),
-            "description": meta.get("description") or "",
-            "chart_type": meta.get("chart_type") or "",
-            "score": round(score, 3),
-        })
-    matches.sort(key=lambda m: (-m["score"], m["chart_id"]))
-    matches = matches[:limit]
-
-    return _ok({
-        "query": query,
-        "match_count": len(matches),
-        "matches": matches,
-        "note": (
-            "Empty matches mean no chart in this dashboard mentions the "
-            "query terms in name or description. Try a different keyword."
-        ) if not matches else None,
-    })
-
-
-def tool_sample_chart_rows(ctx: ToolContext, args: dict) -> dict:
-    """Read N sample rows from a chart to get a feel for the shape.
-
-    Wraps the standard chart fetch with public_filters applied. Useful
-    when the chart's name / description / Insight Pack don't make the
-    column layout obvious — peek at 5-10 actual rows. Always respects
-    the link's public filters; sample_rows is just the first N rows
-    of the chart's filtered output.
-    """
-    chart_id = args.get("chart_id")
-    if not isinstance(chart_id, int):
-        return _err("chart_id (int) is required")
-    n = args.get("n")
-    if not isinstance(n, int) or n <= 0:
-        n = 5
-    n = min(n, 25)
-    try:
-        ctx.assert_chart_in_scope(chart_id)
-    except ToolError as exc:
-        return _err(str(exc))
-    try:
-        data = _fetch_chart_data(ctx, chart_id)
-    except Exception as exc:
-        logger.exception("dashboard_ai_bot sample_chart_rows failed chart_id=%s", chart_id)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
-
-    columns = list(data.get("columns") or [])
-    all_rows = data.get("rows") or []
-    sample = [
-        {col: row[i] if i < len(row) else None for i, col in enumerate(columns)}
-        for row in all_rows[:n]
-    ]
-    return _ok({
-        "chart_id": chart_id,
-        "columns": columns,
-        "total_rows": len(all_rows),
-        "sample_count": len(sample),
-        "sample_rows": sample,
-        "note": (
-            "0 rows means the chart returned nothing under the current "
-            "public filters — not that the chart is empty everywhere. "
-            "Use inspect_filters + probe_chart_data_range to diagnose."
-        ) if not sample else None,
-    })
-
-
-def tool_probe_chart_data_range(ctx: ToolContext, args: dict) -> dict:
-    """Report the data shape of one chart under current filters.
-
-    Returns per-column counts + min/max + distinct sample values, plus
-    a top-level row count and an `is_empty` flag. When the chart is
-    empty, the diagnostic field names the likely cause so the bot can
-    explain it instead of bailing with "không có dữ liệu".
-
-    Respects public_filters (no scope bypass).
-    """
-    chart_id = args.get("chart_id")
-    if not isinstance(chart_id, int):
-        return _err("chart_id (int) is required")
-    try:
-        ctx.assert_chart_in_scope(chart_id)
-    except ToolError as exc:
-        return _err(str(exc))
-    try:
-        data = _fetch_chart_data(ctx, chart_id)
-    except Exception as exc:
-        logger.exception("dashboard_ai_bot probe_chart_data_range failed chart_id=%s", chart_id)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
-
-    columns = list(data.get("columns") or [])
-    rows = data.get("rows") or []
-    meta = ctx.chart_meta.get(chart_id, {})
-
-    column_stats: list[dict] = []
-    for idx, col in enumerate(columns):
-        values = [row[idx] for row in rows if idx < len(row)]
-        non_null = [v for v in values if v is not None and v != ""]
-        numerics = [_to_number(v) for v in non_null]
-        numerics = [n for n in numerics if n is not None]
-        distinct = {v for v in non_null}
-        kind = "number" if (numerics and len(numerics) >= max(1, int(0.5 * len(non_null)))) else (
-            "datetime" if non_null and all(isinstance(v, str) and len(v) >= 8 and v[:4].isdigit() for v in non_null[:10])
-            else "string"
-        )
-        entry: dict = {
-            "name": col,
-            "kind": kind,
-            "non_null_count": len(non_null),
-            "null_count": len(values) - len(non_null),
-            "distinct_count": len(distinct),
-        }
-        if kind == "number" and numerics:
-            entry["min"] = min(numerics)
-            entry["max"] = max(numerics)
-            entry["total"] = sum(numerics)
-            entry["avg"] = statistics.fmean(numerics)
-        elif kind == "datetime" and non_null:
-            entry["min"] = min(str(v) for v in non_null)
-            entry["max"] = max(str(v) for v in non_null)
-        else:
-            sample_values = list(distinct)[:8]
-            entry["sample_values"] = [str(v) for v in sample_values]
-        column_stats.append(entry)
-
-    diagnostic = None
-    if not rows:
-        diagnostic = (
-            "Chart returned 0 rows under the current public filters. "
-            "Probable cause: the filter set (especially date range or "
-            "segment value) excludes all rows from this chart's data. "
-            "Use inspect_filters to see the active set and suggest a "
-            "specific filter to relax in your answer."
-        )
-
-    return _ok({
-        "chart_id": chart_id,
-        "chart_name": meta.get("name"),
-        "chart_type": meta.get("chart_type"),
-        "row_count": len(rows),
-        "is_empty": not rows,
-        "columns": column_stats,
-        "filters_applied": data.get("filters_applied") or [],
-        "diagnostic": diagnostic,
     })
 
 

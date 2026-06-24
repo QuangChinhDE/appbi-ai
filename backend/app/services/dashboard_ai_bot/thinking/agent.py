@@ -45,6 +45,7 @@ from app.services.dashboard_ai_bot.providers import (
     stream_openai,
 )
 from app.services.dashboard_ai_bot.thinking.tools import (
+    EXTERNAL_TOOL_DEFS,
     TOOL_DEFINITIONS,
     ToolContext,
     execute_tool,
@@ -63,7 +64,6 @@ MAX_TOOL_CALLS_PER_TURN = 16
 # give a feel for the dashboard's shape; the LLM can lazily fetch the
 # rest via get_chart_summary when it actually needs them.
 RECON_MAX_CHARTS = 3
-DEFAULT_COST_CAP_USD = 0.10
 _DEFAULT_MODEL_BY_PROVIDER = {
     "anthropic": "claude-3-5-haiku-20241022",
     "openai": "gpt-4o-mini",
@@ -81,10 +81,27 @@ _TOOL_STATUS_VI = {
     "describe_distribution": "Đang phân tích phân phối chart {chart_id}…",
     "correlate_charts": "Đang đối chiếu chart {chart_a} với chart {chart_b}…",
     "detect_anomaly": "Đang dò bất thường trong chart {chart_id}…",
-    "get_dashboard_overview_image": "Đang dựng ảnh tổng quan dashboard để đọc bằng AI…",
-    "get_chart_image": "Đang đọc dáng biểu đồ chart {chart_id}…",
     "smart_drilldown": "Đang lọc chart {chart_id} theo {column}={match}…",
+    "explain_change": "Đang phân rã nguyên nhân thay đổi theo {breakdown}…",
+    "forecast_measure": "Đang chiếu xu hướng cho chart {chart_id}…",
+    "web_search": "Đang tra cứu thông tin thị trường/ngành trên web…",
+    "fetch_url": "Đang đọc nội dung trang nguồn…",
+    "benchmark_compare": "Đang đối chiếu số liệu báo cáo với chuẩn ngoài ngành…",
 }
+
+
+_WEB_INTENT_RE = re.compile(
+    r"(nghiên cứu thị trường|nghien cuu thi truong|tra cứu|tra cuu|tìm hiểu thị trường|"
+    r"tim hieu thi truong|trên web|tren web|trên mạng|tren mang|benchmark|chuẩn ngành|"
+    r"chuan nganh|so với ngành|so voi nganh|toàn ngành|toan nganh|đối thủ|doi thu|"
+    r"thị trường|thi truong|industry|market|competitor)",
+    re.IGNORECASE,
+)
+
+
+def _has_web_intent(question: str) -> bool:
+    """Does the question clearly want EXTERNAL market/industry context?"""
+    return bool(_WEB_INTENT_RE.search(question or ""))
 
 
 def _status_text(tool_name: str, args: dict) -> str:
@@ -314,6 +331,22 @@ def _format_recon_for_prompt(recon: dict) -> str:
     )
     manifest = recon.get("manifest") or {}
     charts = manifest.get("charts") or []
+    # Report page flow (the DA's narrative). For an overview, walk pages in
+    # THIS order and cover every page — not just page 1.
+    _pages = manifest.get("pages") or []
+    if _pages:
+        _name_by_id = {c.get("chart_id"): c.get("chart_name") for c in charts}
+        lines.append("\n─── REPORT FLOW (pages, in order) ───")
+        for _i, _p in enumerate(_pages, 1):
+            _cnames = [
+                str(_name_by_id.get(cid) or f"chart {cid}")
+                for cid in (_p.get("chart_ids") or [])
+            ]
+            lines.append(f"  {_i}. {_p.get('name')}: " + (", ".join(_cnames) or "(no charts)"))
+        lines.append(
+            "For a full overview, present findings page by page in this order; "
+            "the same chart may recur across pages."
+        )
     packs_for_snapshot = recon.get("summaries") or []
     failures = recon.get("failures") or {}
     requested_ids = recon.get("requested_chart_ids") or []
@@ -424,7 +457,8 @@ async def run_agent_stream(
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
     briefing: Briefing | None = None,
     state: ConversationState | None = None,
-    cost_cap_usd: float = DEFAULT_COST_CAP_USD,
+    web_search_enabled: bool = False,
+    guide_mode: bool = False,
     report_context_note: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
@@ -450,12 +484,10 @@ async def run_agent_stream(
         (provider or "").strip().lower(),
     )
 
-    # Per-turn cost meter — tallied from provider usage events. The loop uses
-    # this to short-circuit further tool rounds once we cross the cap.
-    meter = CostMeter(
-        model=selected_model or "",
-        cap_usd=max(0.0, float(cost_cap_usd or 0.0)) or DEFAULT_COST_CAP_USD,
-    )
+    # Per-turn cost meter — tallied from provider usage events for server-side
+    # telemetry only. The per-question cost ceiling was removed (2026-06-23);
+    # max_tool_calls bounds runaway tool loops.
+    meter = CostMeter(model=selected_model or "")
 
     # Phase A + B: pour briefing + conversation state into the system prompt
     briefing_block = format_briefing_for_prompt(briefing) if briefing else ""
@@ -521,11 +553,29 @@ async def run_agent_stream(
         return
 
     # ── Tool-aware path: full loop ─────────────────────────────────────────
+    # Offer the web-search tool only when the admin enabled it for this link
+    # (domain know-how beyond the report's own data).
+    active_tools = (
+        [*TOOL_DEFINITIONS, *EXTERNAL_TOOL_DEFS] if web_search_enabled else TOOL_DEFINITIONS
+    )
+
     last_user_question = ""
     for msg in reversed(user_messages):
         if msg.get("role") == "user":
             last_user_question = str(msg.get("content") or "")
             break
+
+    # Market-research intent: the model (esp. gpt-4o-mini) is reluctant to call
+    # web_search even when asked — it answers from memory. If the question
+    # clearly wants external/market/industry context AND web_search is enabled,
+    # we REQUIRE a web_search before the final answer (nudge-and-loop, like the
+    # reading-plan gate) so it cites real sources instead of inventing them.
+    web_intent = web_search_enabled and _has_web_intent(last_user_question)
+    web_search_called = False
+    web_nudge_sent = False
+    # Guide mode: track which charts got summarized so we can deterministically
+    # append "related chart" chips (the model emits them unreliably).
+    summarized_chart_ids: list[int] = []
 
     # Internal running message log (we own the shape; provider adapters translate)
     running: list[dict] = list(user_messages)
@@ -547,16 +597,15 @@ async def run_agent_stream(
     # them 2-3 times in a row, which inflates input tokens drastically.
     per_tool_calls: dict[str, int] = {}
     PER_TOOL_LIMITS = {
-        "get_dashboard_overview_image": 1,  # ~80 KB PNG ≈ 27K input tokens
-        "get_chart_image": 4,  # individual charts allowed more often
         "render_dashboard_pdf": 1,
     }
-
-    # When cost cap is breached the loop forces the next round to be the
-    # final draft (no more tool calls) and tells the model — via an injected
-    # tool error — to wrap up immediately with whatever data it has.
-    cost_cap_reached = False
-    cost_warning_injected = False
+    # Repeated-failure circuit breaker. A tool that keeps returning ok=False
+    # (e.g. compare_periods on a categorical axis, where the LLM blindly
+    # guesses period strings) can otherwise burn the entire per-turn tool
+    # budget retrying. After MAX_TOOL_FAILURES failures of the SAME tool we
+    # refuse further calls to it and tell the model to use what it has.
+    per_tool_failures: dict[str, int] = {}
+    MAX_TOOL_FAILURES = 2
 
     while True:
         # Show a thinking indicator while the model decides what to do next
@@ -564,7 +613,10 @@ async def run_agent_stream(
         # what the user sees as a transient "Đang suy nghĩ…" bubble.
         yield AgentEvent(
             type="status",
-            text=("Đang suy nghĩ…" if tool_calls_made == 0 else "Đang phân tích kết quả…"),
+            text=(
+                "Đang đọc báo cáo & lập kế hoạch phân tích…" if tool_calls_made == 0
+                else "Đang phân tích kết quả…"
+            ),
             tool_name="_thinking",
         )
 
@@ -579,7 +631,7 @@ async def run_agent_stream(
                 api_key=api_key,
                 system_prompt=system_with_context,
                 messages=running,
-                tools=TOOL_DEFINITIONS,
+                tools=active_tools,
                 model=selected_model or None,
             )
             async for ev in gen:
@@ -615,48 +667,6 @@ async def run_agent_stream(
         round_text = "".join(round_text_parts).strip()
 
         if round_tool_calls:
-            # Cost-cap guard. If the prior round already pushed us over the
-            # per-question USD ceiling, refuse to execute any more tool calls
-            # and inject a synthetic tool result telling the model to wrap up
-            # with whatever it already has. The next loop round will be the
-            # model's final draft.
-            if meter.over_cap():
-                cost_cap_reached = True
-                # Append the assistant turn so we can attach matching tool
-                # results — providers reject tool_use without a response.
-                asst_entry: dict = {"role": "assistant"}
-                if round_text:
-                    asst_entry["content"] = round_text
-                asst_entry["tool_calls"] = [
-                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
-                    for tc in round_tool_calls
-                ]
-                running.append(asst_entry)
-                err = {
-                    "ok": False,
-                    "error": (
-                        "internal: per-question cost cap reached. STOP calling tools and "
-                        "produce the final answer NOW using only the data already gathered. "
-                        "Be concise: TL;DR + 2-3 bullets + at most 2 [FOLLOWUP] questions "
-                        "for narrower drill-downs the user can ask next. Do NOT mention this "
-                        "message, cost, tokens, or any internal limit to the user."
-                    ),
-                }
-                for tc in round_tool_calls:
-                    running.append({
-                        "role": "tool",
-                        "tool_call_id": tc.tool_call_id,
-                        "result": err,
-                    })
-                    tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
-                if not cost_warning_injected:
-                    # Intentionally NOT yielding a user-facing status here —
-                    # the cap is an internal cost control and must remain
-                    # invisible to the end user. The synthetic tool error
-                    # already instructs the model not to mention it.
-                    cost_warning_injected = True
-                continue
-
             # Phase 15.71c — if the LLM jumped straight to data tools on
             # its first round without calling emit_reading_plan, inject a
             # synthetic tool error on each call asking it to declare the
@@ -759,6 +769,29 @@ async def run_agent_stream(
                     tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
                     continue
 
+                # Repeated-failure circuit breaker. If this tool has already
+                # failed MAX_TOOL_FAILURES times this turn, stop letting the
+                # model retry it — it is almost certainly inapplicable to this
+                # data (e.g. period comparison on a categorical chart).
+                if per_tool_failures.get(tc.tool_name, 0) >= MAX_TOOL_FAILURES:
+                    err = {
+                        "ok": False,
+                        "error": (
+                            f"internal: tool '{tc.tool_name}' has already failed "
+                            f"{MAX_TOOL_FAILURES} times this turn — it does not apply to "
+                            "this chart/data. Stop calling it and answer with the data you "
+                            "already have, or tell the user this analysis isn't applicable "
+                            "here. Do not mention this message to the user."
+                        ),
+                    }
+                    running.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "result": err,
+                    })
+                    tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
+                    continue
+
                 # Status update to user
                 yield AgentEvent(
                     type="status",
@@ -795,6 +828,14 @@ async def run_agent_stream(
                 )
                 tool_calls_made += 1
                 per_tool_calls[tc.tool_name] = per_tool_calls.get(tc.tool_name, 0) + 1
+                if isinstance(result, dict) and result.get("ok") is False:
+                    per_tool_failures[tc.tool_name] = per_tool_failures.get(tc.tool_name, 0) + 1
+                if tc.tool_name == "web_search":
+                    web_search_called = True
+                if tc.tool_name == "get_chart_summary":
+                    _cid = tc.tool_args.get("chart_id")
+                    if isinstance(_cid, int) and _cid not in summarized_chart_ids:
+                        summarized_chart_ids.append(_cid)
 
                 if step_idx is not None and isinstance(result, dict) and result.get("ok"):
                     plan_step_status[step_idx] = "done"
@@ -807,29 +848,11 @@ async def run_agent_stream(
                         },
                     )
 
-                # Detach any multimodal image payload BEFORE we save the
-                # result onto the running message log — otherwise the same
-                # 50 KB PNG would be re-shipped to the model on every
-                # subsequent round as part of the tool turn JSON.
-                image_block = _pop_image_payload(result)
-
                 running.append({
                     "role": "tool",
                     "tool_call_id": tc.tool_call_id,
                     "result": result,
                 })
-                # Inject the image as a fresh user turn so the LLM sees it as
-                # multimodal context for the NEXT round only. Providers that
-                # don't support images simply skip the block (see translators).
-                if image_block:
-                    running.append({
-                        "role": "user",
-                        "content": (
-                            f"(Hình minh hoạ chart {tc.tool_args.get('chart_id')} "
-                            f"từ tool get_chart_image — kind={image_block['kind']})"
-                        ),
-                        "image_blocks": [image_block],
-                    })
 
                 # Sanitised copy for the tool log (no PNG, no fluff)
                 tool_log.append({
@@ -845,6 +868,22 @@ async def run_agent_stream(
                     tool_name=tc.tool_name,
                     tool_result=_scrub_for_log(result),
                 )
+
+                # Surface web-search SOURCES (title+url) so the FE can show the
+                # links the answer drew on — the user can open them to verify.
+                if (
+                    tc.tool_name == "web_search"
+                    and isinstance(result, dict)
+                    and result.get("ok")
+                    and isinstance(result.get("data"), dict)
+                ):
+                    srcs = [
+                        {"title": r.get("title") or r.get("url"), "url": r.get("url")}
+                        for r in (result["data"].get("results") or [])
+                        if isinstance(r, dict) and r.get("url")
+                    ][:6]
+                    if srcs:
+                        yield AgentEvent(type="sources", extra={"sources": srcs})
 
                 # Phase-15.71 — surface the reading plan to the FE as a
                 # first-class event so the UI can render an "AI đang đọc"
@@ -869,6 +908,37 @@ async def run_agent_stream(
                         )
 
             # Loop again so the LLM can react to the tool results
+            continue
+
+        # Market-research gate: the question wants external/industry context but
+        # the model is about to answer WITHOUT having searched. Force one
+        # web_search (don't let it invent benchmarks from memory), then re-loop.
+        if (
+            web_intent
+            and not web_search_called
+            and not web_nudge_sent
+            and tool_calls_made < max_tool_calls
+        ):
+            asst_entry = {"role": "assistant"}
+            if round_text:
+                asst_entry["content"] = round_text
+            running.append(asst_entry)
+            running.append({
+                "role": "user",
+                "content": (
+                    "internal: Câu hỏi này cần dữ liệu THỊ TRƯỜNG/NGÀNH thực tế. "
+                    "BẮT BUỘC gọi tool `web_search` với truy vấn phù hợp để lấy số "
+                    "liệu/nguồn thật, KHÔNG được bịa benchmark từ trí nhớ. Sau khi "
+                    "có kết quả web, trả lời và gắn nhãn [WEB] cho dữ kiện ngoài. "
+                    "Đừng nhắc tới tin nhắn nội bộ này."
+                ),
+            })
+            web_nudge_sent = True
+            yield AgentEvent(
+                type="status",
+                text="Đang tra cứu thông tin thị trường trên web…",
+                tool_name="_thinking",
+            )
             continue
 
         # No tool calls in this round → this is the model's draft final answer.
@@ -902,11 +972,30 @@ async def run_agent_stream(
                 },
             )
             reading_plan_emitted = True
+            # Register the synthetic steps so the end-of-turn completion loop
+            # marks them done (otherwise the badge stays stuck at "0/N").
+            reading_plan_items = synth_items
+            plan_step_status = ["pending"] * len(synth_items)
         draft_answer_parts.append(round_text)
         break
 
+    # The plan-step badge must not be left stranded at "0/N". Any step still
+    # pending/running once the answer is ready is marked done so the FE panel
+    # reads complete instead of looking stuck.
+    for _i, _st in enumerate(plan_step_status):
+        if _st != "done":
+            plan_step_status[_i] = "done"
+            yield AgentEvent(
+                type="plan_step",
+                extra={
+                    "step_index": _i,
+                    "chart_id": (reading_plan_items[_i] or {}).get("chart_id")
+                    if _i < len(reading_plan_items) else None,
+                    "status": "done",
+                },
+            )
+
     draft_answer = "".join(draft_answer_parts).strip()
-    cost_cap_reached = cost_cap_reached or meter.over_cap()
     if not draft_answer:
         # Phase 15.75 — back to a simple, non-prescriptive fallback.
         # The 15.73 retry-loop + filter-mismatch-blaming fallback put
@@ -925,11 +1014,28 @@ async def run_agent_stream(
         yield AgentEvent(type="done")
         return
 
+    # Guide mode: deterministically append "related chart" chips for the charts
+    # we summarized this turn (the model emits them unreliably). Rendered as
+    # clickable [FOLLOWUP] chips on the FE so the user jumps between linked
+    # charts without losing the thread.
+    guide_suffix = ""
+    if guide_mode and summarized_chart_ids:
+        from app.services.dashboard_ai_bot.tool_context import compute_related_charts
+        rel = compute_related_charts(ctx.chart_meta)
+        seen: set[str] = set()
+        lines: list[str] = []
+        for _cid in summarized_chart_ids:
+            for r in rel.get(_cid, []):
+                nm = str(r.get("chart_name") or "").strip()
+                if nm and nm not in seen and nm not in draft_answer:
+                    seen.add(nm)
+                    lines.append(f"[FOLLOWUP] Xem biểu đồ liên quan: {nm}")
+        if lines:
+            guide_suffix = "\n" + "\n".join(lines[:5])
+
     # ── Self-critique pass ──────────────────────────────────────────────────
     buffered_text = ""
-    # Skip the critique LLM call if we already blew through the cost cap —
-    # the draft itself is the user-visible answer in that mode.
-    run_critique = enable_critique and last_user_question and not cost_cap_reached
+    run_critique = enable_critique and last_user_question
     if run_critique:
         yield AgentEvent(
             type="status",
@@ -960,9 +1066,9 @@ async def run_agent_stream(
             yield ev
         cleaned = _sanitize_answer(buffered_text)
         if cleaned:
-            yield AgentEvent(type="text", text=cleaned)
+            yield AgentEvent(type="text", text=cleaned + guide_suffix)
     else:
-        yield AgentEvent(type="text", text=_sanitize_answer(draft_answer))
+        yield AgentEvent(type="text", text=_sanitize_answer(draft_answer) + guide_suffix)
 
     elapsed_ms = int((time.monotonic() - turn_started_at) * 1000)
     final_answer_text = (

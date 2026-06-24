@@ -35,6 +35,8 @@ from app.services.dashboard_ai_bot.tool_context import (
     _fetch_chart_data,
     _ok,
     _round,
+    fields_block as _fields_block,
+    resolve_field_label as _resolve_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,21 +62,22 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             total_rows = 0
             meta = {**meta, "error": str(exc)[:200]}
 
-        items.append(
-            build_chart_manifest(
-                chart_id=chart_id,
-                chart_name=meta.get("name", f"Chart {chart_id}"),
-                chart_type=meta.get("chart_type", ""),
-                description=meta.get("description", ""),
-                columns=columns,
-                total_rows=total_rows,
-                filters_applied=ctx.public_filters,
-            )
+        manifest = build_chart_manifest(
+            chart_id=chart_id,
+            chart_name=meta.get("name", f"Chart {chart_id}"),
+            chart_type=meta.get("chart_type", ""),
+            description=meta.get("description", ""),
+            columns=columns,
+            total_rows=total_rows,
+            filters_applied=ctx.public_filters,
         )
+        manifest["fields"] = _fields_block(meta)
+        items.append(manifest)
     return _ok({
         "dashboard_name": ctx.dashboard.name or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
         "filters_applied": ctx.public_filters,
+        "pages": ctx.pages,
         "charts": items,
     })
 
@@ -112,7 +115,17 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     except Exception as exc:
         logger.exception("normal build_insight_pack failed chart_id=%s", chart_id)
         return _err(f"failed to summarize chart {chart_id}: {type(exc).__name__}: {exc}")
-    return _ok(pack.to_dict())
+    pack_dict = pack.to_dict()
+    # On-screen vocabulary: name numbers by viewer-facing labels + aggregation.
+    pack_dict["fields"] = _fields_block(meta)
+    label_by_field = (meta.get("fields") or {}).get("label_by_field") or {}
+    pm_label = _resolve_label(pack_dict.get("primary_measure") or "", label_by_field)
+    pd_label = _resolve_label(pack_dict.get("primary_dimension") or "", label_by_field)
+    if pm_label:
+        pack_dict["primary_measure_label"] = pm_label
+    if pd_label:
+        pack_dict["primary_dimension_label"] = pd_label
+    return _ok(pack_dict)
 
 
 # Tool: get_chart_data ────────────────────────────────────────────────────────

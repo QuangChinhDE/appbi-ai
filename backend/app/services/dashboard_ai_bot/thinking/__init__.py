@@ -1,7 +1,7 @@
 """Thinking-mode AI bot — the full agentic stack.
 
 Includes reading_plan, multi-step recon, briefing wizard, conversation
-state, 14 tools (5 core + 4 diagnostic + 5 advanced analytics),
+state, 19 tools (core + diagnostic + advanced analytics + multimodal),
 self-critique, and cross-turn summary cache.
 
 Selected when the user picks the "Thinking" toggle in the chat UI

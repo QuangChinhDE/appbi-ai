@@ -183,10 +183,17 @@ def price_for(model: str) -> ModelPricing:
 
 @dataclass
 class CostMeter:
-    """Accumulates token usage across multiple LLM rounds in one chat turn."""
+    """Accumulates token usage across multiple LLM rounds in one chat turn.
+
+    ``cap_usd`` is optional. The per-question cost ceiling was removed
+    (2026-06-23) — the meter now exists purely for server-side telemetry
+    (logged spend per turn). ``max_tool_calls`` is the runaway bound. When
+    ``cap_usd`` is None, ``over_cap``/``near_cap`` are always False and the
+    cap fields are omitted from ``to_dict``.
+    """
 
     model: str = ""
-    cap_usd: float = 0.10
+    cap_usd: float | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     rounds: int = 0
@@ -295,23 +302,23 @@ class CostMeter:
         return float(self.billed_usd or 0.0) + float(self.extra_usd or 0.0)
 
     @property
-    def remaining_usd(self) -> float:
+    def remaining_usd(self) -> float | None:
+        if self.cap_usd is None:
+            return None
         return max(0.0, self.cap_usd - self.usd)
 
     def over_cap(self) -> bool:
-        return self.usd >= self.cap_usd
+        return self.cap_usd is not None and self.usd >= self.cap_usd
 
     def near_cap(self, ratio: float = 0.75) -> bool:
-        if self.cap_usd <= 0:
+        if not self.cap_usd or self.cap_usd <= 0:
             return False
         return self.usd >= self.cap_usd * ratio
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "model": self.model,
-            "cap_usd": round(self.cap_usd, 4),
             "usd": round(self.usd, 5),
-            "remaining_usd": round(self.remaining_usd, 5),
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cached_input_tokens": self.cached_input_tokens,
@@ -319,6 +326,10 @@ class CostMeter:
             "cache_write_input_tokens": self.cache_write_input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "rounds": self.rounds,
-            "over_cap": self.over_cap(),
-            "near_cap": self.near_cap(),
         }
+        if self.cap_usd is not None:
+            out["cap_usd"] = round(self.cap_usd, 4)
+            out["remaining_usd"] = round(self.remaining_usd or 0.0, 5)
+            out["over_cap"] = self.over_cap()
+            out["near_cap"] = self.near_cap()
+        return out

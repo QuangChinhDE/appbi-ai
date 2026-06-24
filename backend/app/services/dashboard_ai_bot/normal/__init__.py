@@ -9,7 +9,7 @@ user picks "Normal" in the chat UI (X-User-Ai-Mode header empty or
 "normal").
 
 Why a separate folder: the user's directive after the bot was
-over-engineered with reading_plan + diagnostic flow + 14 tools was to
+over-engineered with reading_plan + diagnostic flow + many tools was to
 keep the simple bot as a stable baseline. Putting it in its own
 folder means future "upgrade thinking" work doesn't accidentally
 touch this path.

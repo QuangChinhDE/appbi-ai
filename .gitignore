@@ -117,8 +117,12 @@ e2e/_*.png
 # ── Local QA / test artifacts (screenshots, debug dumps, harnesses) — never push ──
 # Playwright-MCP working dir (page snapshots + screenshots written during testing)
 .playwright-mcp/
-# Loose root-level test screenshots + API response dumps (moved to .artifacts/)
+# Loose root-level test screenshots + API response dumps (moved to .artifacts/test-screenshots/)
 /*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
 /req*_resp.json
 # Codegraph MCP — local SQLite knowledge-graph cache + generated overview doc (tool artifacts)
 .codegraph/
@@ -170,3 +174,4 @@ backend/scripts/regression_*.py
 # CI integration seed — REQUIRED by .github/workflows/backend-contract-tests.yml.
 # Tracked exception to the seed_*.py local-only convention (see scripts/README.md).
 !backend/scripts/seed_snowflake_ci_fixture.py
+.ai-bot-test/

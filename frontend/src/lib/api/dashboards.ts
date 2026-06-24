@@ -443,6 +443,25 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // Ask the AI to read the dashboard and draft a report-flow system prompt.
+  // `apiKey` is the key the DA is configuring (sent in header, not stored by
+  // this call); if blank, the server uses a key already stored on a link.
+  suggestAiSystemPrompt: async (
+    dashboardId: number,
+    opts: { provider?: string; model?: string; apiKey?: string },
+  ): Promise<string> => {
+    const headers: Record<string, string> = {};
+    if (opts.apiKey) headers['X-User-Ai-Key'] = opts.apiKey;
+    if (opts.provider) headers['X-User-Ai-Provider'] = opts.provider;
+    if (opts.model) headers['X-User-Ai-Model'] = opts.model;
+    const response = await apiClient.post(
+      `/dashboards/${dashboardId}/ai/suggest-system-prompt`,
+      { provider: opts.provider, model: opts.model },
+      { headers },
+    );
+    return response.data?.system_prompt ?? '';
+  },
+
   createPublicLink: async (
     dashboardId: number,
     data: {

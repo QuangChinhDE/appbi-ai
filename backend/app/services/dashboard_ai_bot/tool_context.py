@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +41,166 @@ logger = logging.getLogger(__name__)
 
 MAX_ROWS_FOR_PACK = 200  # internal sample for stats, not exposed to LLM
 MAX_TOP_N = 50
+
+
+# ── On-screen field semantics ──────────────────────────────────────────────
+#
+# The bot reads chart data as RAW SQL columns (e.g. ``dataset_table_47.sl_tm``)
+# and previously had to GUESS which column is the measure. But the viewer sees
+# friendly labels + an aggregation (e.g. "Tổng SL thương mại"). Without that
+# vocabulary the answers drift "generic" — citing raw column names and
+# un-framed numbers. We pull the chart's CONFIGURED roles (the same ones the
+# dashboard renders) so the agent speaks in the viewer's terms.
+
+_VIEW_PREFIX_RE = re.compile(r"^[A-Za-z0-9_]*dataset_table_\d+\.")
+
+
+def _humanize_field(field_ref: str) -> str:
+    """Best-effort friendly label for a raw field reference.
+
+    ``dataset_table_47.sl_tm`` → ``Sl tm``; ``report_date`` → ``Report date``.
+    Used only as a fallback when the chart config carries no explicit label.
+    """
+    if not field_ref:
+        return ""
+    name = str(field_ref).split(".")[-1].replace("_", " ").strip()
+    if not name:
+        return str(field_ref)
+    return name[:1].upper() + name[1:]
+
+
+def extract_chart_field_semantics(config: Any) -> dict[str, Any]:
+    """Derive the chart's on-screen measure/dimension vocabulary from its config.
+
+    Returns ``{"measures": [{field,label,agg}], "dimensions": [{field,label}],
+    "label_by_field": {field: label}}``. Pure config parsing, no DB. Uses the
+    canonical ``get_chart_active_role_config`` so it honors custom/generated
+    role modes, and prefers Explore-2.0 ``measure_configs``/``dimension_configs``
+    labels before falling back to a humanized field name.
+    """
+    empty = {"measures": [], "dimensions": [], "label_by_field": {}}
+    if not isinstance(config, dict):
+        return empty
+    try:
+        from app.services.chart_contracts import get_chart_active_role_config
+        role = get_chart_active_role_config(config) or {}
+    except Exception:
+        role = config.get("roleConfig") if isinstance(config.get("roleConfig"), dict) else {}
+
+    label_by_field: dict[str, str] = {}
+    for cfg in (config.get("measure_configs") or []):
+        if isinstance(cfg, dict) and cfg.get("field") and cfg.get("label"):
+            label_by_field[str(cfg["field"])] = str(cfg["label"])
+    for cfg in (config.get("dimension_configs") or []):
+        if isinstance(cfg, dict) and cfg.get("field") and cfg.get("label"):
+            label_by_field[str(cfg["field"])] = str(cfg["label"])
+
+    def _label(field_ref: Any, explicit: Any = None) -> str:
+        f = str(field_ref)
+        if explicit:
+            return str(explicit)
+        return label_by_field.get(f) or _humanize_field(f)
+
+    measures: list[dict[str, Any]] = []
+    for metric in (role.get("metrics") or []):
+        if not isinstance(metric, dict) or not metric.get("field"):
+            continue
+        field_ref = str(metric["field"])
+        agg = str(metric.get("agg") or metric.get("function") or "").strip().lower() or None
+        lbl = _label(field_ref, metric.get("label"))
+        label_by_field.setdefault(field_ref, lbl)
+        measures.append({"field": field_ref, "label": lbl, "agg": agg})
+
+    dim_refs: list[str] = []
+    primary_dim = role.get("dimension")
+    if isinstance(primary_dim, str) and primary_dim:
+        dim_refs.append(primary_dim)
+    for d in (role.get("dimensions") or []):
+        if isinstance(d, str) and d and d not in dim_refs:
+            dim_refs.append(d)
+    # Standard-table mode carries dimensions in selectedColumns, not metrics.
+    if not measures and not dim_refs:
+        for col in (role.get("selectedColumns") or []):
+            ref = col.get("field") if isinstance(col, dict) else col
+            if isinstance(ref, str) and ref and ref not in dim_refs:
+                dim_refs.append(ref)
+
+    dimensions: list[dict[str, Any]] = []
+    for field_ref in dim_refs:
+        lbl = _label(field_ref)
+        label_by_field.setdefault(field_ref, lbl)
+        dimensions.append({"field": field_ref, "label": lbl})
+
+    return {"measures": measures, "dimensions": dimensions, "label_by_field": label_by_field}
+
+
+def fields_block(meta: dict) -> dict:
+    """Compact, token-cheap on-screen vocabulary for a chart (for tool output)."""
+    fields = meta.get("fields") if isinstance(meta, dict) else None
+    if not isinstance(fields, dict):
+        return {"measures": [], "dimensions": []}
+    return {
+        "measures": [
+            {"label": m.get("label"), "agg": m.get("agg")}
+            for m in (fields.get("measures") or [])
+            if isinstance(m, dict)
+        ],
+        "dimensions": [
+            d.get("label")
+            for d in (fields.get("dimensions") or [])
+            if isinstance(d, dict) and d.get("label")
+        ],
+    }
+
+
+def compute_related_charts(chart_meta: dict) -> dict[int, list[dict]]:
+    """Map each chart → other charts that SHARE a measure field.
+
+    Used by the guide flow's chart-deep level to offer "related charts"
+    chips (same measure → keeps the analysis thread). Matches by the
+    field's last segment so aliased/qualified refs still link.
+    """
+    measures_by_chart: dict[int, dict[str, str]] = {}
+    for cid, meta in (chart_meta or {}).items():
+        segs: dict[str, str] = {}
+        for m in ((meta or {}).get("fields") or {}).get("measures") or []:
+            f = str((m or {}).get("field") or "")
+            if f:
+                segs[f.split(".")[-1]] = (m.get("label") or f)
+        measures_by_chart[cid] = segs
+
+    related: dict[int, list[dict]] = {}
+    for cid, segs in measures_by_chart.items():
+        rel: list[dict] = []
+        for ocid, osegs in measures_by_chart.items():
+            if ocid == cid or not segs:
+                continue
+            shared = set(segs) & set(osegs)
+            if shared:
+                rel.append({
+                    "chart_id": ocid,
+                    "chart_name": (chart_meta.get(ocid) or {}).get("name") or f"Chart {ocid}",
+                    "shared_measure": segs.get(next(iter(shared))),
+                })
+        related[cid] = rel[:6]
+    return related
+
+
+def resolve_field_label(column: str, label_by_field: dict) -> str | None:
+    """Map a raw result column to its on-screen label.
+
+    Result columns are SQL aliases; config field refs may be fully-qualified
+    (``dataset_table_47.sl_tm``). Try exact match, then match by last segment.
+    """
+    if not column or not isinstance(label_by_field, dict):
+        return None
+    if column in label_by_field:
+        return label_by_field[column]
+    tail = str(column).split(".")[-1]
+    for field_ref, label in label_by_field.items():
+        if str(field_ref).split(".")[-1] == tail:
+            return label
+    return None
 
 
 class ToolError(Exception):
@@ -58,6 +219,10 @@ class ToolContext:
     public_filters: list[dict]
     allowed_chart_ids: set[int] = field(default_factory=set)
     chart_meta: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # The report's PAGE flow (the narrative the DA designed): ordered list of
+    # {id, name, chart_ids}. Charts repeat across pages, so a flat chart list
+    # loses this structure — surface it so the bot reads/overviews by flow.
+    pages: list[dict[str, Any]] = field(default_factory=list)
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -66,24 +231,65 @@ class ToolContext:
     ) -> "ToolContext":
         allowed: set[int] = set()
         meta: dict[int, dict[str, Any]] = {}
+        # chart_id → ordered list of page ids it appears on (from tile layout).
+        page_charts: dict[str, list[int]] = {}
         for dc in dashboard.dashboard_charts or []:
             if not dc.chart_id or not dc.chart:
                 continue
             allowed.add(dc.chart_id)
             layout = dc.layout if isinstance(dc.layout, dict) else {}
+            _pid = layout.get("page") or layout.get("pageId")
+            if _pid:
+                page_charts.setdefault(str(_pid), [])
+                if dc.chart_id not in page_charts[str(_pid)]:
+                    page_charts[str(_pid)].append(dc.chart_id)
             custom_title = layout.get("custom_title") if isinstance(layout, dict) else None
+            try:
+                fields = extract_chart_field_semantics(getattr(dc.chart, "config", None))
+            except Exception:
+                logger.warning(
+                    "dashboard_ai_bot field-semantics extract failed chart_id=%s",
+                    dc.chart_id,
+                )
+                fields = {"measures": [], "dimensions": [], "label_by_field": {}}
             meta[dc.chart_id] = {
                 "name": (custom_title or getattr(dc.chart, "name", "") or f"Chart {dc.chart_id}"),
                 "chart_type": str(getattr(dc.chart, "chart_type", "") or ""),
                 "description": getattr(dc.chart, "description", None) or "",
                 "layout": layout,
+                "fields": fields,
             }
+        # Build ordered page flow from pages_config, attaching each page's
+        # charts (in tile order). Pages with no resolvable charts are kept
+        # (empty) so the flow/narrative names still surface.
+        pages: list[dict[str, Any]] = []
+        for p in (getattr(dashboard, "pages_config", None) or []):
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id") or "")
+            cids = page_charts.get(pid, [])
+            # Fallback: some configs list chart ids directly on the page.
+            if not cids:
+                for raw in (p.get("chartIds") or p.get("charts") or []):
+                    try:
+                        ci = int(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if ci in allowed and ci not in cids:
+                        cids.append(ci)
+            pages.append({
+                "id": pid,
+                "name": str(p.get("name") or p.get("title") or pid or "Trang"),
+                "chart_ids": cids,
+            })
+
         return cls(
             db=db,
             dashboard=dashboard,
             public_filters=[f for f in (public_filters or []) if isinstance(f, dict)],
             allowed_chart_ids=allowed,
             chart_meta=meta,
+            pages=pages,
         )
 
     def assert_chart_in_scope(self, chart_id: int) -> None:

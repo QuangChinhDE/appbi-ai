@@ -29,7 +29,7 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
-import { ExportModeContext } from '@/lib/export-mode';
+import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -2082,6 +2082,8 @@ export default function DashboardDetailPage() {
 
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    // Open the preview tab synchronously inside the click (see openPdfPreviewTab).
+    const previewWindow = openPdfPreviewTab();
     setIsExportingPdf(true);
     setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.detail.exportPreparing') });
     const originalPageId = activePageId;
@@ -2090,7 +2092,8 @@ export default function DashboardDetailPage() {
       const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
       const filtersSummary = summarizeAppliedFilters();
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
-      await exportDashboardPdf({
+      const result = await exportDashboardPdf({
+        previewWindow,
         filename: `${safeName}.pdf`,
         title: dashboard.name || 'Dashboard',
         orientation: choices.orientation,
@@ -2134,8 +2137,15 @@ export default function DashboardDetailPage() {
         })),
       });
       setIsExportDialogOpen(false);
+      if (result === 'saved') {
+        try { previewWindow?.close(); } catch { /* noop */ }
+        toast.info('Đã tải PDF về máy', {
+          description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',
+        });
+      }
     } catch (err) {
       console.error('PDF export failed', err);
+      try { previewWindow?.close(); } catch { /* noop */ }
       toast.error(t('dashboards.detail.exportFailed'));
     } finally {
       setCurrentPageId(originalPageId);

@@ -8,7 +8,7 @@ folders:
                     less prescription. Default when the chat UI's
                     Normal/Thinking toggle is on Normal (or no mode
                     header is sent).
-  - ``thinking/`` — full agentic stack: 14 tools, briefing wizard,
+  - ``thinking/`` — full agentic stack: 19 tools, briefing wizard,
                     conversation state, reading_plan + per-step
                     progress, cross-turn summary cache, opt-in
                     self-critique. Selected with X-User-Ai-Mode:
@@ -36,8 +36,34 @@ from app.services.dashboard_ai_bot.tool_context import ToolContext
 
 
 def _normalize_mode(mode: str | None) -> str:
+    """Coerce an explicit mode. Unknown/empty → "auto" (let the router decide)."""
     m = (mode or "").strip().lower()
-    return "thinking" if m == "thinking" else "normal"
+    if m in ("normal", "thinking", "auto"):
+        return m
+    return "auto"
+
+
+def _resolve_mode(mode: str | None, user_messages) -> tuple[str, dict | None]:
+    """Resolve the effective mode. For "auto" run the heuristic router.
+
+    Returns ``(resolved_mode, route_info | None)`` — route_info is the
+    router decision dict (for the `route` telemetry event) only when we
+    actually routed; None when the mode was explicitly forced.
+    """
+    requested = _normalize_mode(mode)
+    if requested in ("normal", "thinking"):
+        return requested, None
+    from app.services.dashboard_ai_bot.router import (
+        classify_question_mode,
+        last_user_text,
+    )
+    decision = classify_question_mode(
+        last_user_text(user_messages),
+        recent_messages=user_messages,
+    )
+    info = decision.to_dict()
+    info["auto"] = True
+    return decision.mode, info
 
 
 async def run_agent_stream(
@@ -48,8 +74,12 @@ async def run_agent_stream(
     """Dispatch to normal/agent or thinking/agent based on `mode`.
 
     `mode` semantics:
-        "thinking"   → full agentic stack (14 tools, briefing, etc.)
-        anything else (incl. None / "normal") → simple bot
+        "normal"     → simple bot (5 tools)
+        "thinking"   → full agentic stack (19 tools, briefing, etc.)
+        "auto" / None / unknown → heuristic router picks per question
+
+    When routing happens we first yield a ``route`` event so the FE can
+    show which depth was chosen (and why) without offering a toggle.
 
     All other kwargs are forwarded verbatim. Note that the two
     implementations accept SIMILAR but not identical kwargs — thinking
@@ -58,7 +88,9 @@ async def run_agent_stream(
     passing the right set; extras passed to normal are silently
     ignored at the call site (TypeError surfaces obvious mismatches).
     """
-    resolved = _normalize_mode(mode)
+    resolved, route_info = _resolve_mode(mode, kwargs.get("user_messages"))
+    if route_info is not None:
+        yield AgentEvent(type="route", extra={"route": route_info})
     if resolved == "thinking":
         from app.services.dashboard_ai_bot.thinking.agent import (
             run_agent_stream as _thinking_run,
@@ -68,7 +100,8 @@ async def run_agent_stream(
         return
     # Default: normal mode. Strip kwargs the normal implementation doesn't
     # accept so the FE doesn't have to special-case based on mode.
-    _NORMAL_DROP = ("briefing", "state")
+    # web_search is a Thinking-only (domain-research) capability.
+    _NORMAL_DROP = ("briefing", "state", "web_search_enabled", "guide_mode")
     normal_kwargs = {k: v for k, v in kwargs.items() if k not in _NORMAL_DROP}
     from app.services.dashboard_ai_bot.normal.agent import (
         run_agent_stream as _normal_run,

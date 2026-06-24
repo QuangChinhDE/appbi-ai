@@ -40,7 +40,14 @@ from app.services.dashboard_ai_bot.tool_context import (
     _hash_filters,
     _ok,
     _round,
+    compute_related_charts as _compute_related_charts,
+    fields_block as _fields_block,
+    resolve_field_label as _resolve_label,
 )
+
+
+# On-screen vocabulary helpers (_fields_block, _resolve_label) are imported
+# from tool_context so the normal/ variant shares one source of truth.
 
 
 # Tool: list_charts ───────────────────────────────────────────────────────────
@@ -77,21 +84,32 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
                 )
                 meta = {**meta, "error": str(exc)[:200]}
 
-        items.append(
-            build_chart_manifest(
-                chart_id=chart_id,
-                chart_name=meta.get("name", f"Chart {chart_id}"),
-                chart_type=meta.get("chart_type", ""),
-                description=meta.get("description", ""),
-                columns=columns,
-                total_rows=total_rows,
-                filters_applied=ctx.public_filters,
-            )
+        manifest = build_chart_manifest(
+            chart_id=chart_id,
+            chart_name=meta.get("name", f"Chart {chart_id}"),
+            chart_type=meta.get("chart_type", ""),
+            description=meta.get("description", ""),
+            columns=columns,
+            total_rows=total_rows,
+            filters_applied=ctx.public_filters,
         )
+        # On-screen vocabulary (configured measures + their aggregation, and
+        # dimension labels) so the agent triages and names charts the way the
+        # viewer sees them — not by raw column names.
+        manifest["fields"] = _fields_block(meta)
+        items.append(manifest)
+    # Related charts (sharing a measure) per chart — powers the guide flow's
+    # "biểu đồ liên quan" chips so users jump between linked charts.
+    related_map = _compute_related_charts(ctx.chart_meta)
+    for it in items:
+        it["related"] = related_map.get(it.get("chart_id"), [])
     return _ok({
         "dashboard_name": ctx.dashboard.name or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
         "filters_applied": ctx.public_filters,
+        # The report's page flow (DA's narrative). Read/overview FOLLOWING this
+        # order, page by page — not as a flat chart dump.
+        "pages": ctx.pages,
         "charts": items,
     })
 
@@ -116,6 +134,28 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         put_cached_pack,
     )
 
+    meta = ctx.chart_meta.get(chart_id, {})
+
+    def _enrich(pack: dict) -> dict:
+        """Attach the chart's on-screen vocabulary to the stats pack.
+
+        Kept OUT of the summary cache (which keys on SQL stats only) so label
+        changes take effect without a cache bust.
+        """
+        pack = dict(pack)
+        pack["fields"] = _fields_block(meta)
+        label_by_field = (meta.get("fields") or {}).get("label_by_field") or {}
+        pm_label = _resolve_label(pack.get("primary_measure") or "", label_by_field)
+        pd_label = _resolve_label(pack.get("primary_dimension") or "", label_by_field)
+        if pm_label:
+            pack["primary_measure_label"] = pm_label
+        if pd_label:
+            pack["primary_dimension_label"] = pd_label
+        # Related charts (sharing a measure) so the guide's chart-deep level can
+        # offer "biểu đồ liên quan" chips without a separate list_charts call.
+        pack["related"] = _compute_related_charts(ctx.chart_meta).get(chart_id, [])
+        return pack
+
     dashboard_id = getattr(ctx.dashboard, "id", None)
     if isinstance(dashboard_id, int):
         cached = get_cached_pack(dashboard_id, ctx.public_filters, chart_id)
@@ -124,7 +164,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
                 "dashboard_ai_bot summary cache HIT dashboard_id=%s chart_id=%s",
                 dashboard_id, chart_id,
             )
-            return _ok(dict(cached))
+            return _ok(_enrich(cached))
 
     try:
         data = _fetch_chart_data(ctx, chart_id)
@@ -132,7 +172,6 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         logger.exception("dashboard_ai_bot get_chart_summary failed chart_id=%s", chart_id)
         return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
 
-    meta = ctx.chart_meta.get(chart_id, {})
     try:
         pack = build_insight_pack(
             chart_id=chart_id,
@@ -149,8 +188,9 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         return _err(f"failed to summarize chart {chart_id}: {type(exc).__name__}: {exc}")
     pack_dict = pack.to_dict()
     if isinstance(dashboard_id, int):
+        # Cache the raw SQL-stats pack; vocabulary is layered on at read time.
         put_cached_pack(dashboard_id, ctx.public_filters, chart_id, pack_dict)
-    return _ok(pack_dict)
+    return _ok(_enrich(pack_dict))
 
 
 # Tool: get_chart_data ────────────────────────────────────────────────────────
@@ -464,6 +504,98 @@ def tool_emit_reading_plan(ctx: ToolContext, args: dict) -> dict:
 
 ToolFn = Callable[[ToolContext, dict], dict]
 
+def tool_web_search(ctx: ToolContext, args: dict) -> dict:
+    """Domain/market know-how lookup. External web context, NOT report data."""
+    from app.services.dashboard_ai_bot.web_search import search_web
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _err("query (str) is required")
+    max_results = args.get("max_results")
+    res = search_web(
+        query.strip(),
+        max_results=max_results if isinstance(max_results, int) else 5,
+    )
+    return _ok(res) if res.get("ok") else _err(res.get("error") or "web search failed")
+
+
+def tool_fetch_url(ctx: ToolContext, args: dict) -> dict:
+    """Read ONE specific external URL the DA/user trusts. External context."""
+    from app.services.dashboard_ai_bot.web_search import fetch_url
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return _err("url (str) is required")
+    res = fetch_url(url.strip())
+    return _ok(res) if res.get("ok") else _err(res.get("error") or "fetch failed")
+
+
+def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
+    """Anchor a report metric against an external benchmark in ONE call.
+
+    Deterministically computes the report's own headline number from the named
+    chart (so the comparison is anchored on real data, not the model's memory),
+    then runs a focused web search for the industry/market benchmark. Returns a
+    structured envelope that forces an explicit "ours vs outside" framing.
+    """
+    from app.services.dashboard_ai_bot.web_search import search_web
+    chart_id = args.get("chart_id")
+    metric = args.get("metric")
+    query = args.get("query")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required — the chart holding our own number")
+    if not isinstance(metric, str) or not metric.strip():
+        return _err("metric (what we're benchmarking, e.g. 'tỷ suất lợi nhuận gộp') is required")
+    if not isinstance(query, str) or not query.strip():
+        return _err("query (benchmark search terms, e.g. 'gross margin benchmark retail Vietnam 2025') is required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+
+    # Deterministic report-side anchor: total of the chart's primary measure.
+    report_value = None
+    report_measure = None
+    try:
+        from app.services.dashboard_ai_bot.thinking.advanced_tools import (
+            _detect_measure_idx,
+            _to_number,
+        )
+        data = _fetch_chart_data(ctx, chart_id)
+        cols, rows = data["columns"], data["rows"]
+        m_idx = _detect_measure_idx(cols, rows)
+        if m_idx is not None:
+            report_measure = cols[m_idx]
+            nums = [_to_number(r[m_idx]) for r in rows if m_idx < len(r)]
+            nums = [n for n in nums if n is not None]
+            if nums:
+                report_value = round(sum(nums), 4)
+    except Exception:  # noqa: BLE001 — report anchor is best-effort
+        pass
+
+    web = search_web(query.strip(), max_results=5)
+    if not web.get("ok"):
+        return _err(web.get("error") or "benchmark web search failed")
+    return _ok({
+        "metric": metric.strip(),
+        "report": {
+            "chart_id": chart_id,
+            "measure": report_measure,
+            "value": report_value,
+        },
+        "external": {
+            "provider": web.get("provider"),
+            "query": web.get("query"),
+            "answer": web.get("answer"),
+            "results": web.get("results"),
+        },
+        "instruction": (
+            "Compare report.value against the external benchmark figures. State "
+            "explicitly whether we are ABOVE / BELOW / IN-LINE, quantify the gap, "
+            "and cite each external source URL. External figures are indicative, "
+            "not authoritative — our report data is the source of truth."
+        ),
+    })
+
+
 TOOLS: dict[str, ToolFn] = {
     "emit_reading_plan": tool_emit_reading_plan,
     "list_charts": tool_list_charts,
@@ -471,6 +603,11 @@ TOOLS: dict[str, ToolFn] = {
     "get_chart_data": tool_get_chart_data,
     "compare_segments": tool_compare_segments,
     "compute": tool_compute,
+    # Always registered; only OFFERED to the LLM when the admin enables web
+    # research (see EXTERNAL_TOOL_DEFS + the thinking agent's per-turn list).
+    "web_search": tool_web_search,
+    "fetch_url": tool_fetch_url,
+    "benchmark_compare": tool_benchmark_compare,
 }
 
 
@@ -491,28 +628,26 @@ def _register_advanced_tools() -> None:
         tool_correlate_charts,
         tool_describe_distribution,
         tool_detect_anomaly,
-        tool_get_dashboard_overview_image,
-        tool_get_chart_image,
         tool_smart_drilldown,
+        tool_explain_change,
+        tool_forecast_measure,
+        tool_analyze_trend,
+        tool_segment_compare,
         # Phase 15.73 — diagnostic + lookup tools
         tool_inspect_filters,
-        tool_search_charts,
-        tool_sample_chart_rows,
-        tool_probe_chart_data_range,
         tool_get_chart_glossary,
     )
     TOOLS["compare_periods"] = tool_compare_periods
     TOOLS["describe_distribution"] = tool_describe_distribution
     TOOLS["correlate_charts"] = tool_correlate_charts
     TOOLS["detect_anomaly"] = tool_detect_anomaly
-    TOOLS["get_dashboard_overview_image"] = tool_get_dashboard_overview_image
-    TOOLS["get_chart_image"] = tool_get_chart_image
     TOOLS["smart_drilldown"] = tool_smart_drilldown
     TOOLS["aggregate_chart_data"] = tool_aggregate_chart_data
+    TOOLS["explain_change"] = tool_explain_change
+    TOOLS["forecast_measure"] = tool_forecast_measure
+    TOOLS["analyze_trend"] = tool_analyze_trend
+    TOOLS["segment_compare"] = tool_segment_compare
     TOOLS["inspect_filters"] = tool_inspect_filters
-    TOOLS["search_charts"] = tool_search_charts
-    TOOLS["sample_chart_rows"] = tool_sample_chart_rows
-    TOOLS["probe_chart_data_range"] = tool_probe_chart_data_range
     TOOLS["get_chart_glossary"] = tool_get_chart_glossary
 
 
@@ -845,48 +980,87 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["chart_id", "group_by", "aggregations"],
         },
     },
-    # ── Phase D: visual perception ───────────────────────────────────────
+    # ── Driver analysis & projection ─────────────────────────────────────
     {
-        "name": "get_dashboard_overview_image",
+        "name": "explain_change",
         "description": (
-            "Render one overview PNG of the whole dashboard/report surface "
-            "using the current public filters and chart layout/order. Active "
-            "filters are stamped on the image so you know what you're looking "
-            "at. Use this when the user asks to look at the report visually, "
-            "review the overall dashboard from a viewer/user perspective, or "
-            "asks for a screenshot-style analysis instead of only numbers. "
-            "ONE call per turn is enough — its output stays in the message "
-            "history; do not re-invoke."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "max_charts": {
-                    "type": "integer",
-                    "description": "Optional cap on charts included in the overview image; default 12.",
-                },
-                "page_id": {
-                    "type": "string",
-                    "description": "Optional dashboard page id. Use only when the user asks about a specific page of a multi-page dashboard.",
-                },
-            },
-        },
-    },
-    {
-        "name": "get_chart_image",
-        "description": (
-            "Render a tiny ASCII sparkline + shape summary for a chart so you "
-            "can REASON ABOUT THE SHAPE (not just numbers). Useful when the "
-            "user asks about trend shape: 'có flatten ở cuối không', 'có spike "
-            "đột biến không', 'biến động mạnh không'. Return includes a unicode "
-            "block sparkline and a one-line shape diagnosis."
+            "Explain WHY a total changed and WHO drove it — contribution / "
+            "driver decomposition. Needs a chart whose rows carry a BREAKDOWN "
+            "column (e.g. department, product) AND a SPLIT column with two "
+            "states (two periods, or 'Actual' vs 'Plan'). Returns each "
+            "segment's before/after/delta and its % share of the TOTAL change, "
+            "ranked by impact. Use for 'tại sao doanh thu giảm', 'nhóm nào kéo "
+            "tăng/giảm', 'thực tế vs kế hoạch chênh ở đâu'. One deterministic "
+            "call instead of aggregate+compute by hand."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "chart_id": {"type": "integer"},
+                "breakdown": {"type": "string", "description": "Column to attribute the change to (e.g. department)."},
+                "split_column": {"type": "string", "description": "Column holding the two states (e.g. month, scenario)."},
+                "value_a": {"description": "The AFTER / current state value in split_column."},
+                "value_b": {"description": "The BEFORE / baseline state value in split_column."},
+            },
+            "required": ["chart_id", "breakdown", "split_column", "value_a", "value_b"],
+        },
+    },
+    {
+        "name": "forecast_measure",
+        "description": (
+            "Project a time-series chart's measure forward N periods. "
+            "method='linear' (least-squares trend) or 'cagr' (compound growth). "
+            "Returns the projected points + trend rate + an explicit caveat. "
+            "Use for 'dự báo', 'đà này tới cuối năm ~bao nhiêu', 'xu hướng tiếp "
+            "theo'. NOT a real forecast model — always present as an indicative "
+            "projection. Requires a time axis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "horizon": {"type": "integer", "description": "Number of future periods to project (default 3, max 12)."},
+                "method": {"type": "string", "enum": ["linear", "cagr"]},
             },
             "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "analyze_trend",
+        "description": (
+            "Robust time-series trend read — USE THIS (not get_chart_summary's "
+            "raw trend) whenever the question is 'is it growing / declining / "
+            "seasonal'. Trims incomplete edge periods (launch month, data "
+            "cutoff), derives direction from least-squares SLOPE (never "
+            "endpoint ratio), and returns slope, R², CAGR, peak, trough, "
+            "plateau flag, excluded_periods and caveats. Prevents the "
+            "'partial last month → false decline' trap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"chart_id": {"type": "integer"}},
+            "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "segment_compare",
+        "description": (
+            "Compare ONE segment against the rest. Given a chart grouped by a "
+            "dimension and a target value (e.g. chart 'AOV by state' + value "
+            "'SP'), returns that segment's metric PLUS rank, percentile, "
+            "share-of-total, and the cross-segment distribution (min/median/"
+            "mean/max) + % vs the mean. Use for 'X so với toàn quốc / so với "
+            "các nhóm khác', or to split a metric by a condition. Prevents "
+            "reporting the overall number as if it were the segment's."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer", "description": "A chart grouped by the comparison dimension."},
+                "value": {"description": "The segment value to isolate (e.g. 'SP')."},
+                "dimension": {"type": "string", "description": "Optional explicit dimension column; defaults to the chart's primary dimension."},
+            },
+            "required": ["chart_id", "value"],
         },
     },
     # ── Phase 15.73 — Diagnostic & lookup tools ──────────────────────────
@@ -900,70 +1074,6 @@ TOOL_DEFINITIONS: list[dict] = [
             "instead of speaking vaguely. No data is read."
         ),
         "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "search_charts",
-        "description": (
-            "Keyword search over chart names + descriptions in this "
-            "dashboard. Use when the user asks about a topic ('doanh "
-            "thu', 'lợi nhuận', 'khách VIP') and you want the relevant "
-            "chart_ids without scanning the whole manifest. Returns "
-            "chart_ids ranked by token overlap."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search terms in the user's language.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max matches to return (default 10, max 30).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "sample_chart_rows",
-        "description": (
-            "Read N actual sample rows from a chart (default 5, max 25). "
-            "Use when the Insight Pack or chart description doesn't make "
-            "the row layout obvious and you need to see what real values "
-            "look like before reasoning. Respects public filters — sample "
-            "rows are the first N rows of the chart's filtered output."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "chart_id": {"type": "integer"},
-                "n": {
-                    "type": "integer",
-                    "description": "Number of sample rows (default 5).",
-                },
-            },
-            "required": ["chart_id"],
-        },
-    },
-    {
-        "name": "probe_chart_data_range",
-        "description": (
-            "Diagnose a chart's data shape under current filters: row "
-            "count, per-column min/max + distinct sample values, "
-            "is_empty flag, and a diagnostic note when 0 rows come back. "
-            "USE THIS when get_chart_summary returns empty or you "
-            "suspect a filter mismatch — it tells you exactly what's "
-            "(not) in scope so you can articulate the issue. Respects "
-            "public filters; never bypasses them."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "chart_id": {"type": "integer"},
-            },
-            "required": ["chart_id"],
-        },
     },
     {
         "name": "get_chart_glossary",
@@ -984,6 +1094,80 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["chart_id"],
         },
     },
+]
+
+
+# Offered to the LLM ONLY when the admin enabled web search for the link
+# (appended to the per-turn tool list by the thinking agent). Kept out of the
+# default TOOL_DEFINITIONS so it never appears when disabled / unconfigured.
+WEB_SEARCH_TOOL_DEF: dict = {
+    "name": "web_search",
+    "description": (
+        "Search the public web for DOMAIN / MARKET know-how about the topic "
+        "the user is asking about (industry benchmarks, definitions, typical "
+        "drivers, regulations). Use this to enrich analysis beyond the admin "
+        "system prompt — NOT for the report's own numbers (those always come "
+        "from the chart tools). Always attribute web facts as external and "
+        "keep the report's data as the source of truth. Call at most twice "
+        "per turn with focused queries."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Focused search query."},
+            "max_results": {"type": "integer", "description": "1-8 (default 5)."},
+        },
+        "required": ["query"],
+    },
+}
+
+FETCH_URL_TOOL_DEF: dict = {
+    "name": "fetch_url",
+    "description": (
+        "Read ONE specific web page the user/DA points to (an industry report, "
+        "a competitor page, a government statistics portal) and return its "
+        "cleaned text. Use when a trusted source URL is given or surfaced by "
+        "web_search and you need to read it deeply — NOT to discover pages "
+        "(use web_search for that). External context: attribute it, never treat "
+        "it as the report's own data."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Full http(s) URL to read."},
+        },
+        "required": ["url"],
+    },
+}
+
+BENCHMARK_COMPARE_TOOL_DEF: dict = {
+    "name": "benchmark_compare",
+    "description": (
+        "Compare ONE of the report's own metrics against an external market / "
+        "industry benchmark in a single structured call. Pass the chart that "
+        "holds our number, what the metric is, and a benchmark search query. "
+        "Returns our anchored value + external findings + a framing instruction "
+        "(above/below/in-line + cite sources). Use when the user wants 'so với "
+        "ngành / thị trường / đối thủ', 'mình đang đứng đâu so với bên ngoài'. "
+        "Our report data stays the source of truth; web figures are indicative."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "chart_id": {"type": "integer", "description": "Chart holding our own number."},
+            "metric": {"type": "string", "description": "What we're benchmarking, e.g. 'tỷ suất lợi nhuận gộp'."},
+            "query": {"type": "string", "description": "Benchmark search terms, e.g. 'gross margin benchmark retail Vietnam 2025'."},
+        },
+        "required": ["chart_id", "metric", "query"],
+    },
+}
+
+# Appended to the per-turn tool list ONLY when the admin enabled web research.
+# Kept out of the default TOOL_DEFINITIONS so they never appear when disabled.
+EXTERNAL_TOOL_DEFS: list[dict] = [
+    WEB_SEARCH_TOOL_DEF,
+    FETCH_URL_TOOL_DEF,
+    BENCHMARK_COMPARE_TOOL_DEF,
 ]
 
 

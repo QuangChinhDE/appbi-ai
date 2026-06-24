@@ -169,41 +169,9 @@ export function publicSessionRemainingSeconds(linkToken: string): number {
 
 export type AiProvider = 'anthropic' | 'openai' | 'gemini';
 
-export interface AiChartContext {
-  id: number;
-  name: string;
-  chart_type: string;
-  columns: string[];
-  rows: unknown[][];
-  description?: string;
-}
-
-export interface AiDashboardContext {
-  dashboard_name: string;
-  dashboard_description?: string;
-  charts: AiChartContext[];
-  chart_count: number;
-}
-
 export interface AiChatMessage {
   role: 'user' | 'assistant';
   content: string;
-}
-
-// ── AI Bot API calls ──────────────────────────────────────────────────────────
-
-/**
- * Fetch the dashboard context for the AI bot. Context includes chart data
- * (capped at 50 rows/chart, 10 charts max). Cached client-side for the session.
- */
-export async function fetchAiContext(
-  token: string,
-  sessionToken?: string,
-): Promise<AiDashboardContext> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  const res = await publicClient.get(`/public/dashboards/${token}/ai/context`, { headers });
-  return res.data as AiDashboardContext;
 }
 
 // ── Agentic AI Bot v2 ──────────────────────────────────────────────────────────
@@ -265,6 +233,8 @@ export type AiPlanStepStatus = 'pending' | 'running' | 'done';
 
 export type AiAgentEvent =
   | { type: 'text'; text: string }
+  | { type: 'route'; mode: 'normal' | 'thinking'; auto: boolean; reasons: string[] }
+  | { type: 'sources'; sources: { title?: string | null; url?: string | null }[] }
   | { type: 'status'; text: string; tool: string }
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
   | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
@@ -567,9 +537,11 @@ export async function* streamAiAgentChat(
   sessionToken?: string,
   briefing?: AiBriefing | null,
   state?: AiConversationState | null,
-  costCapUsd?: number,
-  mode?: 'normal' | 'thinking',
+  mode?: 'auto' | 'normal' | 'thinking',
   viewerFilters?: unknown[],
+  signal?: AbortSignal,
+  sessionKey?: string,
+  intent?: 'guide',
 ): AsyncGenerator<AiAgentEvent, void, unknown> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -580,12 +552,11 @@ export async function* streamAiAgentChat(
   if (trimmedModel) {
     headers['X-User-Ai-Model'] = trimmedModel;
   }
-  if (typeof costCapUsd === 'number' && Number.isFinite(costCapUsd)) {
-    const capped = Math.max(0.01, Math.min(5.0, costCapUsd));
-    headers['X-User-Ai-Cost-Cap-Usd'] = capped.toFixed(3);
-  }
-  if (mode === 'normal' || mode === 'thinking') {
+  if (mode === 'auto' || mode === 'normal' || mode === 'thinking') {
     headers['X-User-Ai-Mode'] = mode;
+  }
+  if (intent === 'guide') {
+    headers['X-User-Ai-Intent'] = intent;
   }
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
 
@@ -595,11 +566,13 @@ export async function* streamAiAgentChat(
   if (Array.isArray(viewerFilters) && viewerFilters.length > 0) {
     body.viewer_filters = viewerFilters;
   }
+  if (sessionKey) body.session_key = sessionKey;
 
   const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/chat`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {
@@ -640,67 +613,6 @@ export async function* streamAiAgentChat(
       } catch {
         // Ignore malformed lines
       }
-    }
-  }
-}
-
-/**
- * Stream a chat response from the LLM using the user's BYOK API key.
- * Returns an async generator that yields text chunks as they arrive (SSE).
- *
- * The user's API key is sent in `X-User-Ai-Key` and is NEVER stored.
- */
-export async function* streamAiChat(
-  token: string,
-  messages: AiChatMessage[],
-  contextSnapshot: AiDashboardContext,
-  userAiKey: string,
-  provider: AiProvider,
-  sessionToken?: string,
-): AsyncGenerator<string, void, unknown> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-User-Ai-Key': userAiKey,
-    'X-User-Ai-Provider': provider,
-  };
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/chat`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ messages, context_snapshot: contextSnapshot }),
-  });
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const json = await response.json();
-      detail = json?.detail ?? detail;
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      // Unescape newlines encoded by the backend
-      yield payload.replace(/\\n/g, '\n');
     }
   }
 }

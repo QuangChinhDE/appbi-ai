@@ -80,6 +80,10 @@ class InsightPack:
     #   - "single_segment"       : distinct primary_dimension == 1
     #   - "zero_value"           : KPI chart with total == 0 (possible data issue)
     health_signals: list[str] = field(default_factory=list)
+    # Data-quality caveats the LLM MUST honour before stating conclusions —
+    # e.g. partial/incomplete edge periods excluded from the trend. Surfaced
+    # at top level so a skim doesn't miss them.
+    caveats: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +121,7 @@ class InsightPack:
             "top_share_pct": _round(self.top_share_pct),
             "chart_role": self.chart_role,
             "health_signals": list(self.health_signals),
+            "caveats": list(self.caveats),
         }
 
 
@@ -316,29 +321,104 @@ def _detect_trend(
     except Exception:
         return None
 
-    first_y = points[0][1]
-    last_y = points[-1][1]
-    if first_y == 0:
-        pct = None
-    else:
-        pct = (last_y - first_y) / abs(first_y) * 100.0
+    ys_all = [y for _, y in points]
+    xs_all = [str(x) for x, _ in points]
+    n_all = len(ys_all)
 
-    if pct is None:
-        direction = "flat"
-    elif pct > 5:
+    # ── Partial-period guard (Olist trend-bug fix). An edge bucket whose value
+    # is a severe low outlier vs the median is almost certainly INCOMPLETE — a
+    # launch month with 3 orders, or a data-cutoff month with 1 order. Two such
+    # edge points fed to a naive last/first ratio invert the whole story
+    # (Olist read as "-53%" when it actually grew). Trim contiguous partial
+    # buckets off each end BEFORE judging direction/magnitude.
+    try:
+        med = statistics.median([abs(y) for y in ys_all])
+    except statistics.StatisticsError:
+        med = 0.0
+    thresh = abs(med) * 0.15
+    lo, hi = 0, n_all - 1
+    partial_first = partial_last = False
+    excluded: list[dict[str, Any]] = []
+    while lo < hi and thresh > 0 and abs(ys_all[lo]) < thresh:
+        partial_first = True
+        excluded.append({"x": xs_all[lo], "y": _round(ys_all[lo]), "edge": "first"})
+        lo += 1
+    while hi > lo and thresh > 0 and abs(ys_all[hi]) < thresh:
+        partial_last = True
+        excluded.append({"x": xs_all[hi], "y": _round(ys_all[hi]), "edge": "last"})
+        hi -= 1
+    core = points[lo:hi + 1]
+    ys = [y for _, y in core]
+    n = len(ys)
+
+    caveats: list[str] = []
+    if partial_first:
+        caveats.append("Kỳ đầu KHUYẾT (giá trị quá nhỏ so với trung vị) — đã loại khỏi tính xu hướng.")
+    if partial_last:
+        caveats.append("Kỳ cuối KHUYẾT (có thể dữ liệu bị cắt) — đã loại khỏi tính xu hướng.")
+
+    if n < 2:
+        return {
+            "direction": "flat", "pct_change": None, "method": "insufficient_after_trim",
+            "first": {"x": xs_all[0], "y": _round(ys_all[0])},
+            "last": {"x": xs_all[-1], "y": _round(ys_all[-1])},
+            "points": n_all, "points_used": n,
+            "partial_first": partial_first, "partial_last": partial_last,
+            "excluded_periods": excluded, "caveats": caveats,
+        }
+
+    # ── Direction from least-squares slope over the trimmed core (robust to a
+    # single noisy point), not the raw endpoints.
+    slope, r2 = _linreg(ys)
+    mean_y = statistics.fmean(ys) or 0.0
+    norm = (slope / abs(mean_y) * 100.0) if mean_y else 0.0  # %/period of the mean
+    if norm > 1.0:
         direction = "up"
-    elif pct < -5:
+    elif norm < -1.0:
         direction = "down"
     else:
         direction = "flat"
 
+    # ── Magnitude from avg(first 3) vs avg(last 3) of the trimmed core, not
+    # single endpoints.
+    k = min(3, n)
+    base = statistics.fmean(ys[:k])
+    head = statistics.fmean(ys[-k:])
+    pct = None if base == 0 else (head - base) / abs(base) * 100.0
+
     return {
         "direction": direction,
         "pct_change": _round(pct),
-        "first": {"x": str(points[0][0]), "y": _round(first_y)},
-        "last": {"x": str(points[-1][0]), "y": _round(last_y)},
-        "points": len(points),
+        "method": "linreg+trim",
+        "slope_per_period": _round(slope),
+        "r_squared": _round(r2),
+        "first": {"x": str(core[0][0]), "y": _round(core[0][1])},
+        "last": {"x": str(core[-1][0]), "y": _round(core[-1][1])},
+        "points": n_all,
+        "points_used": n,
+        "partial_first": partial_first,
+        "partial_last": partial_last,
+        "excluded_periods": excluded,
+        "caveats": caveats,
     }
+
+
+def _linreg(ys: Sequence[float]) -> tuple[float, float]:
+    """Least-squares slope + R² of y indexed 0..n-1."""
+    n = len(ys)
+    if n < 2:
+        return 0.0, 0.0
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    if sxx == 0:
+        return 0.0, 0.0
+    slope = sxy / sxx
+    syy = sum((y - my) ** 2 for y in ys)
+    r2 = (sxy * sxy) / (sxx * syy) if syy else 0.0
+    return slope, r2
 
 
 def _detect_outliers(
@@ -559,6 +639,8 @@ def build_insight_pack(
         health_signals.append("outliers_present")
     if dim_idx is not None and col_summaries[dim_idx].distinct == 1 and total > 1:
         health_signals.append("single_segment")
+    if trend and (trend.get("partial_first") or trend.get("partial_last")):
+        health_signals.append("partial_period")
 
     return InsightPack(
         chart_id=chart_id,
@@ -580,6 +662,7 @@ def build_insight_pack(
         top_share_pct=top_share_pct,
         chart_role=chart_role,
         health_signals=health_signals,
+        caveats=list(trend.get("caveats", [])) if isinstance(trend, dict) else [],
     )
 
 

@@ -28,10 +28,11 @@ from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
 from app.services.dashboard_ai_bot.public_link_config import (
-    resolve_public_ai_cost_cap,
     resolve_public_ai_credentials,
     resolve_public_ai_critique_enabled,
+    resolve_public_ai_mode,
     sanitize_report_context_note,
+    web_search_enabled,
 )
 from app.services.filter_layered_merge import (
     link_entry_has_value,
@@ -2426,207 +2427,14 @@ def get_public_chart_data(
         )
 
 
-# â”€â”€ Dashboard AI Bot endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#
-# These endpoints power the BYOK AI chat widget on public dashboard pages.
-# The user's API key is passed in X-User-Ai-Key and is NEVER stored or logged.
-# Context (chart data) is fetched fresh per session and sent to the LLM.
-
-class _AiChatBody(BaseModel):
-    messages: list[dict]
-    context_snapshot: dict | None = None
-    # Viewer-applied slicer filters (currently set on the dashboard UI).
-    # When present, merged with the link's DA-defined public filters so the
-    # bot sees exactly what the dashboard is showing.
-    viewer_filters: list[dict] | None = None
-
-
-@router.get("/dashboards/{token}/ai/context")
-@_limiter.limit("20/minute")
-def get_dashboard_ai_context(
-    token: str,
-    request: Request,
-    filters: str | None = Query(
-        default=None,
-        description="JSON-encoded list of viewer-applied slicer filter objects.",
-    ),
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-):
-    """Return chart data context for the AI bot.
-
-    The AI bot fetches this once on first open, caches it client-side for
-    the session, and sends a snapshot with each chat turn. ``filters``
-    carries the viewer's current slicer state so the snapshot reflects the
-    same data the dashboard is rendering.
-    """
-    from app.services import dashboard_ai_service  # local import â€” optional feature
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token,
-        db,
-        session_token=x_public_session,
-        track_access=False,
-    )
-
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-
-    viewer_filters: list[dict] = []
-    if filters:
-        try:
-            parsed = json.loads(filters)
-            if not isinstance(parsed, list):
-                raise ValueError("filters must be a JSON array")
-            viewer_filters = [item for item in parsed if isinstance(item, dict)]
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid filters parameter: {exc}",
-            ) from exc
-
-    combined_filters = _build_public_chart_filters(
-        dash,
-        public_filters,
-        viewer_filters,
-        context_for_log=f"ai_bot:{token}",
-    )
-
-    try:
-        context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
-    except Exception as exc:
-        logger.exception("AI context build error for token=%s", token)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to build AI context.",
-        )
-
-    from fastapi.responses import JSONResponse
-    return JSONResponse(content=context, headers={"Cache-Control": "no-store"})
-
-
-@router.post("/dashboards/{token}/ai/chat")
-@_limiter.limit("20/minute")
-async def chat_dashboard_ai(
-    token: str,
-    body: _AiChatBody,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-):
-    """Stream an LLM response for a chat turn using the user's own API key (BYOK).
-
-    The key is forwarded to the provider and NEVER persisted or logged.
-    Returns a text/event-stream (SSE) response.
-    """
-    from fastapi.responses import StreamingResponse
-    from app.services import dashboard_ai_service  # local import â€” optional feature
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token,
-        db,
-        session_token=x_public_session,
-        track_access=False,
-    )
-
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-
-    if not x_user_ai_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Key header is required for AI chat.",
-        )
-
-    provider = (x_user_ai_provider or "gemini").strip().lower()
-    if provider not in ("anthropic", "openai", "gemini"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
-        )
-
-    messages = body.messages or []
-    if not messages:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="messages is required.")
-
-    # Use snapshot context if provided; otherwise build fresh (more expensive)
-    context_snapshot = body.context_snapshot
-    if context_snapshot and isinstance(context_snapshot, dict):
-        # Validate: chart_ids in snapshot must belong to this dashboard
-        dash_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
-        for chart in context_snapshot.get("charts") or []:
-            cid = chart.get("id")
-            if cid is not None and cid not in dash_chart_ids:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Chart {cid} does not belong to this dashboard.",
-                )
-        context = context_snapshot
-    else:
-        # Merge viewer slicer filters with link-level public filters so the
-        # context the LLM sees matches what the dashboard is rendering.
-        # Phase-B (PBI-parity rework) — routed through the shared
-        # layered-merge helper so this site stays aligned with the
-        # chart-data endpoint precedence (memory `dashboard_ai_bot_filters`).
-        viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-        combined_filters = _build_public_chart_filters(
-            dash,
-            public_filters,
-            [item for item in viewer_filters_body if isinstance(item, dict)],
-            context_for_log=f"ai_bot_chat:{token}",
-        )
-        try:
-            context = dashboard_ai_service.build_ai_context(db, dash, combined_filters)
-        except Exception:
-            logger.exception("AI context build error (chat fallback) for token=%s", token)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to build AI context.",
-            )
-
-    system_prompt = dashboard_ai_service.build_system_prompt(context)
-
-    # Capture key before yielding into async generator (keep off stack after entry)
-    captured_key = x_user_ai_key
-
-    async def sse_stream():
-        async for chunk in dashboard_ai_service.stream_llm_byok(
-            messages=messages,
-            user_key=captured_key,
-            provider=provider,
-            system_prompt=system_prompt,
-        ):
-            if chunk:
-                # SSE format: "data: <payload>\n\n"
-                safe = chunk.replace("\n", "\\n")
-                yield f"data: {safe}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        sse_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
 
 # â”€â”€ Agentic AI Bot endpoints (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
-# These endpoints back the new agentic flow built in
-# ``app.services.dashboard_ai_bot``. They coexist with the legacy
-# ``/ai/context`` + ``/ai/chat`` endpoints above (which power any old client
-# binaries still in the wild). New frontend code should prefer ``/ai/recon``
-# + ``/ai/agent/chat``.
+# These endpoints back the agentic flow built in
+# ``app.services.dashboard_ai_bot``. The frontend uses ``/ai/recon`` +
+# ``/ai/agent/chat`` (plus the briefing + session endpoints). The earlier
+# non-agentic ``/ai/context`` + ``/ai/chat`` pair (service
+# ``dashboard_ai_service``) was removed — no client referenced it.
 #
 # SSE wire format (NEW): every line is a JSON envelope so the client can
 # distinguish text deltas from tool status updates from errors.
@@ -2709,6 +2517,9 @@ class _AiAgentChatBody(BaseModel):
     # bot is blind to live slicer changes â€” it would answer with un-filtered
     # numbers while the user is looking at a filtered view.
     viewer_filters: list[dict] | None = None
+    # Browser-tab session id (localStorage UUID) so per-turn telemetry rows
+    # can be tied back to a conversation for later cost/UX analysis.
+    session_key: str | None = None
 
 
 
@@ -3138,8 +2949,8 @@ async def chat_dashboard_ai_agent(
     x_user_ai_key: str | None = Header(default=None),
     x_user_ai_provider: str | None = Header(default=None),
     x_user_ai_model: str | None = Header(default=None),
-    x_user_ai_cost_cap_usd: str | None = Header(default=None, alias="X-User-Ai-Cost-Cap-Usd"),
     x_user_ai_mode: str | None = Header(default=None, alias="X-User-Ai-Mode"),
+    x_user_ai_intent: str | None = Header(default=None, alias="X-User-Ai-Intent"),
 ):
     """Run an agentic chat turn. Streams typed SSE events.
 
@@ -3167,12 +2978,41 @@ async def chat_dashboard_ai_agent(
         x_user_ai_model=x_user_ai_model,
         missing_key_detail="X-User-Ai-Key header is required for AI chat.",
     )
-    cost_cap_val = resolve_public_ai_cost_cap(
-        appearance_config,
-        x_user_ai_cost_cap_usd=x_user_ai_cost_cap_usd,
-        x_user_ai_mode=x_user_ai_mode,
-    )
     critique_enabled_flag = resolve_public_ai_critique_enabled(appearance_config)
+    effective_mode = resolve_public_ai_mode(appearance_config, x_user_ai_mode=x_user_ai_mode)
+    web_search_flag = web_search_enabled(appearance_config)
+
+    # Guide mode ("Hướng dẫn xem báo cáo") — teach a NEW viewer how to READ this
+    # report, step by step, in plain language. Appended to the report system
+    # prompt only for this intent so the bot acts like a patient instructor.
+    report_note = sanitize_report_context_note(
+        (appearance_config or {}).get("ai_bot_report_context_note"),
+    )
+    if (x_user_ai_intent or "").strip().lower() == "guide":
+        report_note = (
+            report_note
+            + "\n\n═══ CHẾ ĐỘ HƯỚNG DẪN (dạy người MỚI đọc báo cáo, theo 3 CẤP) ═══\n"
+            + "Bạn là người hướng dẫn kiên nhẫn. Đi theo 3 cấp, MỖI LƯỢT chỉ làm MỘT cấp, "
+            + "giọng đơn giản dễ hiểu. Luôn gọi `list_charts` để lấy đúng tên trang/biểu đồ + "
+            + "trường `pages` (flow) và `related` (biểu đồ dùng chung measure). KHÔNG bịa tên.\n\n"
+            + "• CẤP 1 — BẢN ĐỒ TỔNG QUAN (lượt ĐẦU TIÊN): vẽ bức tranh TOÀN báo cáo — liệt kê "
+            + "TẤT CẢ các trang theo thứ tự, mỗi trang 1-2 câu (trang đó gồm biểu đồ gì, cho biết "
+            + "điều gì). CHƯA đào số liệu. Kết thúc, mời chọn và phát MỖI TRANG một dòng:\n"
+            + "    [FOLLOWUP] Đi sâu trang: <tên trang>\n"
+            + "  (Người xem có thể bấm chip, hoặc tự gõ tên trang/biểu đồ — đều nhận.)\n\n"
+            + "• CẤP 2 — MỘT TRANG: khi người xem chọn/gõ một trang, giới thiệu NGẮN các biểu đồ "
+            + "trên trang đó (mỗi cái cho biết gì, chưa đào số). Kết thúc, phát MỖI BIỂU ĐỒ một dòng:\n"
+            + "    [FOLLOWUP] Giải thích chi tiết: <tên biểu đồ>\n\n"
+            + "• CẤP 3 — MỘT BIỂU ĐỒ (đào sâu): gọi `get_chart_summary` (và `get_chart_glossary` nếu cần) rồi:\n"
+            + "    1) Giải thích CÁCH RA CON SỐ: đo lường nào, phép tính gì (tổng/trung bình/đếm…), "
+            + "gom theo chiều nào, lọc gì — đơn giản, KÈM VÍ DỤ SỐ cụ thể từ chính báo cáo "
+            + "(vd: 'Doanh thu Core = tổng cột amount của các dòng tier=Core = 10,389,059').\n"
+            + "    2) Cuối cùng, phát các BIỂU ĐỒ LIÊN QUAN lấy từ trường `related` trong KẾT QUẢ "
+            + "`get_chart_summary` của biểu đồ đó (dùng chung measure) — nếu danh sách `related` rỗng "
+            + "thì bỏ qua, đừng bịa. Mỗi cái một dòng để người xem xem nhanh, không đứt mạch:\n"
+            + "    [FOLLOWUP] Xem biểu đồ liên quan: <tên biểu đồ>\n\n"
+            + "Mỗi lượt vẫn kết bằng một câu mời tiếp tục thân thiện."
+        ).strip()
 
     messages = body.messages or []
     if not messages:
@@ -3231,8 +3071,17 @@ async def chat_dashboard_ai_agent(
     # silently strips kwargs the normal variant doesn't accept
     # (briefing, state).
     async def sse_stream():
-        async for ev in run_agent_stream(
-            mode=x_user_ai_mode,
+        import asyncio
+        # Watchdog: a turn must never strand the UI on "Thinking…". If no event
+        # arrives for IDLE_TIMEOUT (a tool/LLM/proxy stall) or the whole turn
+        # exceeds HARD_TIMEOUT, emit a terminal error+done so the client can
+        # recover (show Retry) instead of hanging forever.
+        IDLE_TIMEOUT = 60.0
+        HARD_TIMEOUT = 240.0
+        loop = asyncio.get_event_loop()
+        started = loop.time()
+        agen = run_agent_stream(
+            mode=effective_mode,
             ctx=ctx,
             user_messages=safe_messages,
             api_key=captured_key,
@@ -3240,16 +3089,107 @@ async def chat_dashboard_ai_agent(
             model=model,
             briefing=briefing_obj,
             state=state_obj,
-            cost_cap_usd=cost_cap_val,
             enable_critique=critique_enabled_flag,
-            report_context_note=sanitize_report_context_note(
-                (appearance_config or {}).get("ai_bot_report_context_note"),
-            ),
-        ):
-            envelope = _event_to_envelope(ev)
-            if envelope is None:
-                continue
-            yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+            web_search_enabled=web_search_flag,
+            guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
+            report_context_note=report_note,
+        ).__aiter__()
+        timed_out = False
+        # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
+        m_tools: list[str] = []
+        m_web = False
+        m_mode = effective_mode
+        m_prompt = m_completion = m_rounds = 0
+        m_usd: float | None = None
+        m_answer = False
+        m_error = False
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(agen.__anext__(), timeout=IDLE_TIMEOUT)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
+                # Tally telemetry from the raw event.
+                _et = getattr(ev, "type", None)
+                if _et == "route":
+                    m_mode = ((ev.extra or {}).get("route") or {}).get("mode") or m_mode
+                elif _et == "tool_result":
+                    tn = getattr(ev, "tool_name", None)
+                    if tn:
+                        m_tools.append(tn)
+                        if tn == "web_search":
+                            m_web = True
+                elif _et == "cost":
+                    c = (ev.extra or {}).get("cost") or {}
+                    m_prompt = int(c.get("prompt_tokens") or m_prompt)
+                    m_completion = int(c.get("completion_tokens") or m_completion)
+                    m_rounds = int(c.get("rounds") or m_rounds)
+                    m_usd = c.get("usd", m_usd)
+                elif _et == "text" and getattr(ev, "text", ""):
+                    m_answer = True
+                elif _et == "error":
+                    m_error = True
+                envelope = _event_to_envelope(ev)
+                if envelope is not None:
+                    yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+                if envelope is not None and envelope.get("type") == "done":
+                    return
+                if loop.time() - started > HARD_TIMEOUT:
+                    timed_out = True
+                    break
+        finally:
+            try:
+                await agen.aclose()
+            except Exception:
+                pass
+            # Write per-turn telemetry (best-effort, never breaks the stream).
+            try:
+                from app.core.database import SessionLocal as _SL
+                from app.models.ai_chat_turn_log import AiChatTurnLog
+                _q = ""
+                for _m in reversed(safe_messages):
+                    if _m.get("role") == "user":
+                        _q = str(_m.get("content") or "")[:1000]
+                        break
+                _log_db = _SL()
+                try:
+                    _log_db.add(AiChatTurnLog(
+                        token=token,
+                        session_key=(body.session_key or None),
+                        mode=m_mode,
+                        routed=("auto" if (x_user_ai_mode or "").strip().lower() in ("", "auto") else "manual"),
+                        provider=provider,
+                        model=model,
+                        question=_q,
+                        prompt_tokens=m_prompt,
+                        completion_tokens=m_completion,
+                        rounds=m_rounds,
+                        usd=(round(float(m_usd), 6) if m_usd is not None else None),
+                        tools_used=m_tools or None,
+                        web_searched=m_web,
+                        had_answer=m_answer,
+                        errored=(m_error or timed_out),
+                        latency_ms=int((loop.time() - started) * 1000),
+                    ))
+                    _log_db.commit()
+                finally:
+                    _log_db.close()
+            except Exception:
+                logger.debug("ai_bot turn-log write failed", exc_info=True)
+        if timed_out:
+            logger.warning("ai_bot turn watchdog fired token=%s mode=%s", token, effective_mode)
+            yield (
+                "data: "
+                + _json.dumps({
+                    "type": "error",
+                    "text": "Truy vấn mất quá nhiều thời gian và đã bị dừng. Bạn thử hỏi lại hoặc thu hẹp câu hỏi nhé.",
+                }, ensure_ascii=False)
+                + "\n\n"
+            )
+            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
 
     return StreamingResponse(
         sse_stream(),
@@ -3269,6 +3209,19 @@ def _event_to_envelope(ev) -> dict | None:
     et = ev.type
     if et == "text":
         return {"type": "text", "text": ev.text}
+    if et == "sources":
+        # Web-search sources the answer drew on (title+url) → FE shows links.
+        return {"type": "sources", "sources": (ev.extra or {}).get("sources") or []}
+    if et == "route":
+        # Auto-router decision (which depth was chosen + why). Lets the FE
+        # show a read-only "đã chọn chế độ" chip instead of a toggle.
+        info = (ev.extra or {}).get("route") or {}
+        return {
+            "type": "route",
+            "mode": info.get("mode"),
+            "auto": bool(info.get("auto")),
+            "reasons": info.get("reasons") or [],
+        }
     if et == "status":
         return {"type": "status", "text": ev.text, "tool": ev.tool_name}
     if et == "tool_result":

@@ -21,7 +21,8 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
-import { ExportModeContext } from '@/lib/export-mode';
+import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
+import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
@@ -901,6 +902,10 @@ export default function PublicDashboardPage() {
   // image), driven by the pre-export dialog. Replaces the old raster path.
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
+    // Open the preview tab NOW, synchronously inside the export click, so the
+    // popup blocker (which fires once the seconds-long capture has spent the
+    // user activation) doesn't eat it. We fill it with the PDF when ready.
+    const previewWindow = openPdfPreviewTab();
     setIsExportingPdf(true);
     setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
     // Disable lazy gating during export so every tile renders, including
@@ -940,16 +945,28 @@ export default function PublicDashboardPage() {
       }));
 
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
-      await exportDashboardPdf({
+      const result = await exportDashboardPdf({
         filename: `${safeName}.pdf`,
         title: reportTitle,
         orientation: choices.orientation,
         format: choices.format,
         onProgress: setExportProgress,
         pages: pageSources,
+        previewWindow,
       });
+      if (result === 'saved') {
+        // The preview tab was blocked → at least tell them the file downloaded.
+        try { previewWindow?.close(); } catch { /* noop */ }
+        toast.info('Đã tải PDF về máy', {
+          description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',
+        });
+      }
     } catch (err) {
       console.error('PDF export failed', err);
+      try { previewWindow?.close(); } catch { /* noop */ }
+      toast.error('Xuất PDF thất bại', {
+        description: 'Không tạo được file PDF. Vui lòng thử lại; nếu vẫn lỗi, thử bớt số trang export.',
+      });
     } finally {
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
@@ -2002,8 +2019,6 @@ export default function PublicDashboardPage() {
           token={token}
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
-          normalCostCapUsd={dashboard.public_link_appearance?.ai_bot_normal_cost_cap_usd}
-          thinkingCostCapUsd={dashboard.public_link_appearance?.ai_bot_thinking_cost_cap_usd}
           keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
           viewerFilters={appliedViewerFilters}
         />

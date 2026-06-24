@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
+import { Bot, X, Send, Square, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
@@ -181,27 +181,19 @@ function decryptKey(encoded: string): string {
   } catch { return ''; }
 }
 
-// ── Thinking mode ─────────────────────────────────────────────────────────────
-const DEFAULT_NORMAL_COST_CAP_USD = 0.05;
-const DEFAULT_THINKING_COST_CAP_USD = 0.10;
-const MIN_COST_CAP_USD = 0.01;
-const MAX_COST_CAP_USD = 5.0;
-
-function clampCostCapUsd(value: number): number {
-  return Math.max(MIN_COST_CAP_USD, Math.min(MAX_COST_CAP_USD, value));
+// ── Analysis depth preference ───────────────────────────────────────────────
+// Default 'auto' — the server router picks Normal (lookup) vs Thinking
+// (analysis) per question, so viewers don't have to choose. 'normal'/'thinking'
+// are manual overrides for users who want to force a depth.
+type ModePref = 'auto' | 'normal' | 'thinking';
+function getStoredModePref(token: string): ModePref {
+  try {
+    const v = sessionStorage.getItem(`dash_ai_mode_${token}`);
+    return v === 'normal' || v === 'thinking' ? v : 'auto';
+  } catch { return 'auto'; }
 }
-
-function resolveCostCapUsd(value: number | null | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? clampCostCapUsd(value)
-    : fallback;
-}
-
-function getStoredThinkingMode(token: string): boolean {
-  try { return sessionStorage.getItem(`dash_ai_thinking_${token}`) === '1'; } catch { return false; }
-}
-function setStoredThinkingMode(token: string, v: boolean): void {
-  try { sessionStorage.setItem(`dash_ai_thinking_${token}`, v ? '1' : '0'); } catch { /* ignore */ }
+function setStoredModePref(token: string, v: ModePref): void {
+  try { sessionStorage.setItem(`dash_ai_mode_${token}`, v); } catch { /* ignore */ }
 }
 
 // Session key — a client-generated UUID stored in localStorage (survives F5/tab close).
@@ -238,14 +230,31 @@ interface ChatMessage extends AiChatMessage {
     overallGoal?: string | null;
     stepStatuses?: ('pending' | 'running' | 'done')[];
   };
+  /** Web-search sources the answer drew on (shown as clickable links). */
+  sources?: { title?: string | null; url?: string | null }[];
+  /** Greeting message: renders the 3 choices (Tổng quan / Hướng dẫn / Chi tiết)
+   *  instead of pre-computed (and possibly stale) highlight numbers. */
+  isWelcome?: boolean;
+  /** When set, this assistant message asks the user (mid-guide) whether to
+   *  switch to the overview or keep the guided tour. Holds the user's pending
+   *  message to resend if they choose "continue". */
+  pivotPending?: string;
 }
+
+// The single question the "Xem tổng quan" choice sends to the AI — phrased so
+// the router sends it to Thinking (full, fresh walkthrough following the flow).
+const OVERVIEW_QUESTION = 'Phân tích tổng quan toàn bộ báo cáo theo đúng flow, nêu điểm chính và những điểm bất thường';
+// Starter message for the guided tour — asks for the full-flow MAP first
+// (all pages, big picture), then the user drills into a page/chart.
+const GUIDE_START = 'Hãy cho tôi bản đồ tổng quan toàn bộ báo cáo: có những trang nào, mỗi trang gồm biểu đồ gì và cho biết điều gì. Rồi để tôi chọn trang/biểu đồ muốn tìm hiểu sâu.';
+// Mid-guide, a message matching this means the user is drifting toward wanting
+// the whole-report overview → we offer a re-choice instead of silently sending.
+const OVERVIEW_DRIFT_RE = /\b(tổng quan|tong quan|tóm lại|tom lai|tổng kết|tong ket|tóm tắt|tom tat|tổng thể|tong the|toàn bộ báo cáo|xem nhanh|kết luận chung|ket luan chung|overview|summary|summarize)\b/i;
 
 interface Props {
   token: string;
   sessionToken?: string | null;
   dashboardName: string;
-  normalCostCapUsd?: number | null;
-  thinkingCostCapUsd?: number | null;
   /** True when the admin has pre-configured an API key for this link.
    *  When set, skip the key-entry view and send no key header (backend uses stored key). */
   keyConfigured?: boolean;
@@ -284,43 +293,20 @@ function BotIcon() {
 // ── Welcome message builder ───────────────────────────────────────────────────
 
 function buildWelcomeMessage(recon: AiRecon, dashboardName: string): string {
+  // Deliberately NO pre-computed numbers/highlights here. Those would go stale
+  // when the report's data changes (and gave a false "overview"). The greeting
+  // just orients the user; the two choices (rendered as buttons) decide what
+  // happens next — overview is computed FRESH from live data when chosen.
   const charts = recon.manifest.charts || [];
-  const summaries = recon.summaries || [];
+  const pages = (recon.manifest as { pages?: unknown[] }).pages || [];
   if (charts.length === 0) {
-    return `Xin chào! Tôi là AI Analyst của dashboard **${dashboardName}**. Hiện chưa có biểu đồ nào để phân tích.`;
+    return `Xin chào! Tôi là trợ lý phân tích cho báo cáo **${dashboardName}**. Hiện chưa có biểu đồ nào để phân tích.`;
   }
-
-  const lines: string[] = [];
-  lines.push(`Xin chào! Tôi đã xem qua dashboard **${dashboardName}** (${charts.length} biểu đồ).`);
-
-  const notable = summaries
-    .map((pack) => {
-      if (pack.trend && pack.trend.direction !== 'flat' && pack.trend.pct_change !== null) {
-        const arrow = pack.trend.direction === 'up' ? '↑' : '↓';
-        const pct = Math.abs(pack.trend.pct_change).toFixed(1);
-        return `- ${arrow} **${pack.chart_name}**: ${pack.primary_measure ?? 'số liệu'} ${arrow === '↑' ? 'tăng' : 'giảm'} ${pct}% (${pack.trend.first.x} → ${pack.trend.last.x}) [chart:${pack.chart_id}]`;
-      }
-      if (pack.outliers && pack.outliers.length > 0) {
-        return `- ⚠️ **${pack.chart_name}**: phát hiện ${pack.outliers.length} điểm bất thường [chart:${pack.chart_id}]`;
-      }
-      if (pack.top_5 && pack.top_5.length > 0 && pack.primary_measure && pack.primary_dimension) {
-        const top = pack.top_5[0];
-        const dimVal = top[pack.primary_dimension];
-        return `- **${pack.chart_name}**: ${pack.primary_dimension} dẫn đầu là *${dimVal}* [chart:${pack.chart_id}]`;
-      }
-      return null;
-    })
-    .filter((s): s is string => !!s);
-
-  if (notable.length > 0) {
-    lines.push('');
-    lines.push('**Một vài điểm đáng chú ý:**');
-    lines.push(...notable.slice(0, 3));
-  }
-
-  lines.push('');
-  lines.push('Bạn có thể hỏi tôi sâu hơn về bất kỳ biểu đồ nào.');
-  return lines.join('\n');
+  const pageNote = pages.length > 1 ? `, ${pages.length} trang` : '';
+  return (
+    `Xin chào! Tôi là trợ lý phân tích cho báo cáo **${dashboardName}** `
+    + `(${charts.length} biểu đồ${pageNote}).\n\nBạn muốn bắt đầu thế nào?`
+  );
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -329,8 +315,6 @@ export function DashboardAiBot({
   token,
   sessionToken,
   dashboardName,
-  normalCostCapUsd,
-  thinkingCostCapUsd,
   keyConfigured,
   viewerFilters,
 }: Props) {
@@ -364,7 +348,15 @@ export function DashboardAiBot({
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeStatus, setActiveStatus] = useState<string>('');
-  const [thinkingMode, setThinkingMode] = useState<boolean>(() => getStoredThinkingMode(token));
+  const [modePref, setModePref] = useState<ModePref>(() => getStoredModePref(token));
+  // When modePref==='auto', the server tells us which depth it picked (route
+  // event) so we can show a read-only chip — no toggle needed.
+  const [routeMode, setRouteMode] = useState<'normal' | 'thinking' | null>(null);
+  // Conversation intent: 'guide' = the step-by-step teaching tour ("Hướng dẫn
+  // xem báo cáo"); 'normal' = overview/detail/free Q&A. Reset on clear.
+  const [chatMode, setChatMode] = useState<'normal' | 'guide'>('normal');
+  const chatModeRef = useRef<'normal' | 'guide'>('normal');
+  chatModeRef.current = chatMode;
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Session key is a UUID stored in localStorage that identifies this browser
@@ -378,16 +370,9 @@ export function DashboardAiBot({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [idleNudge, setIdleNudge] = useState<string | null>(null);
   const idleTimerRef = useRef<number | null>(null);
-  const resolvedNormalCostCapUsd = useMemo(
-    () => resolveCostCapUsd(normalCostCapUsd, DEFAULT_NORMAL_COST_CAP_USD),
-    [normalCostCapUsd],
-  );
-  const resolvedThinkingCostCapUsd = useMemo(
-    () => resolveCostCapUsd(thinkingCostCapUsd, DEFAULT_THINKING_COST_CAP_USD),
-    [thinkingCostCapUsd],
-  );
 
   // ── Recon load ───────────────────────────────────────────────────────────
 
@@ -398,22 +383,31 @@ export function DashboardAiBot({
     try {
       const r = await fetchAiRecon(token, sessionToken ?? undefined);
       setRecon(r);
-      // The briefing wizard / brief-skip path is responsible for seeding
-      // the welcome message. We only set it here as a backup if the user
-      // somehow lands in the chat view with no messages yet.
+      // Chat-first: seed the welcome (highlights + starter questions) only
+      // when the chat is still empty, so it doesn't clobber a restored
+      // session or a briefing-wizard intro.
+      setMessages((prev) => (
+        prev.length === 0
+          ? [{ role: 'assistant', content: buildWelcomeMessage(r, dashboardName), isWelcome: true }]
+          : prev
+      ));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : t('dashboards.aiBot.reconLoadError');
       setReconError(msg);
     } finally {
       setReconLoading(false);
     }
-  }, [recon, sessionToken, t, token]);
+  }, [recon, sessionToken, t, token, dashboardName]);
 
   const handleOpen = useCallback(async () => {
     setIsOpen(true);
     const storedProvider = getStoredProvider(token);
     setProvider(storedProvider);
     setModelId(getStoredModel(token, storedProvider));
+    // Always load the recon manifest on open so citation chips can resolve
+    // chart_id → chart NAME (chartNamesMap) and the chat-first welcome has
+    // starter questions — regardless of key/briefing path.
+    void loadRecon();
 
     // Try to restore a previous chat session from the server first.
     // We do this before deciding which view to show so we can jump straight
@@ -443,14 +437,11 @@ export function DashboardAiBot({
       // Session load failed (network error etc.) — proceed normally
     }
 
-    // When keyConfigured=true the admin key lives server-side; no key view needed.
+    // When keyConfigured=true the admin key lives server-side; no key view
+    // needed. Chat-first: go straight to chat (no briefing wizard gate). The
+    // recon welcome + starter questions seed the empty chat.
     if (keyConfigured) {
-      const currentBriefing = restoredBriefing ?? briefing;
-      if (currentBriefing) {
-        setView('chat');
-      } else {
-        setView('briefing');
-      }
+      setView('chat');
       return;
     }
     // If a key was persisted in this tab's sessionStorage, jump straight to
@@ -458,15 +449,9 @@ export function DashboardAiBot({
     const storedKey = getStoredApiKey(token);
     const effectiveKey = apiKey || storedKey;
     if (storedKey && !apiKey) setApiKey(storedKey);
-    const currentBriefing = restoredBriefing ?? briefing;
-    if (!effectiveKey) {
-      setView('key');
-    } else if (currentBriefing) {
-      setView('chat');
-    } else {
-      setView('briefing');
-    }
-  }, [apiKey, briefing, keyConfigured, sessionKey, sessionToken, token]);
+    // Chat-first: with a key present, skip the briefing wizard and land in chat.
+    setView(effectiveKey ? 'chat' : 'key');
+  }, [apiKey, keyConfigured, loadRecon, sessionKey, sessionToken, token]);
 
   useEffect(() => {
     if (isOpen) {
@@ -543,7 +528,8 @@ export function DashboardAiBot({
       }]);
       setView('chat');
     } else {
-      setView('briefing');
+      // Chat-first: no briefing-wizard gate. loadRecon() seeds the welcome.
+      setView('chat');
     }
   }, [apiKey, loadRecon, modelId, persistKey, provider, t, token]);
 
@@ -591,6 +577,7 @@ export function DashboardAiBot({
       setMessages([{
         role: 'assistant',
         content: buildWelcomeMessage(recon, dashboardName),
+        isWelcome: true,
       }]);
     } else {
       setMessages([]);
@@ -611,9 +598,25 @@ export function DashboardAiBot({
 
   // ── Send a chat turn ──────────────────────────────────────────────────────
 
-  const handleSend = useCallback(async (override?: string) => {
+  const handleSend = useCallback(async (override?: string, opts?: { skipPivot?: boolean }) => {
     const text = (override ?? inputText).trim();
     if (!text || isStreaming) return;
+
+    // Guide→overview pivot: if the user is in the guided tour and asks for an
+    // overview/summary, don't silently send — offer a re-choice (overview vs
+    // continue the tour). Per the desired flow.
+    if (!opts?.skipPivot && chatModeRef.current === 'guide' && OVERVIEW_DRIFT_RE.test(text)) {
+      setInputText('');
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: 'Bạn đang trong phần **hướng dẫn xem báo cáo**. Bạn muốn tôi chuyển sang **xem tổng quan** toàn báo cáo luôn, hay **tiếp tục hướng dẫn** từng bước?',
+          pivotPending: text,
+        },
+      ]);
+      return;
+    }
 
     const userMsg: ChatMessage = { role: 'user', content: text };
     // Build wire history: only role+content (no statusLog)
@@ -622,8 +625,14 @@ export function DashboardAiBot({
       content: m.content,
     }));
 
+    // Sending consumes any pending choice — strip the welcome/pivot buttons
+    // from prior messages so they can't be re-clicked (which also avoids
+    // firing them with a stale chatMode).
+    const priorMessages = messages.map((m) => (
+      m.isWelcome || m.pivotPending ? { ...m, isWelcome: false, pivotPending: undefined } : m
+    ));
     // Track the latest messages snapshot for session persistence after streaming
-    let latestMessages: ChatMessage[] = [...messages, userMsg, { role: 'assistant', content: '', statusLog: [] }];
+    let latestMessages: ChatMessage[] = [...priorMessages, userMsg, { role: 'assistant', content: '', statusLog: [] }];
     let latestConvState = convState;
     const turnCount = Math.floor(messages.filter((m) => m.role === 'user').length / 1) + 1;
 
@@ -631,7 +640,10 @@ export function DashboardAiBot({
     setInputText('');
     setIsStreaming(true);
     setActiveStatus('');
+    setRouteMode(null);
     abortRef.current = false;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       let answerSoFar = '';
@@ -647,9 +659,11 @@ export function DashboardAiBot({
         sessionToken ?? undefined,
         briefing,
         convState,
-        thinkingMode ? resolvedThinkingCostCapUsd : resolvedNormalCostCapUsd,
-        thinkingMode ? 'thinking' : 'normal',
+        modePref,
         viewerFilters,
+        controller.signal,
+        sessionKey,
+        chatModeRef.current === 'guide' ? 'guide' : undefined,
       );
       for await (const ev of gen) {
         if (abortRef.current) break;
@@ -720,19 +734,41 @@ export function DashboardAiBot({
             }
           },
           updateState: (s) => { setConvState(s); latestConvState = s; },
+          onRoute: (mode) => setRouteMode(mode),
+          setSources: (sources) => {
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+              const prev = latestMessages[lastIdx].sources ?? [];
+              const merged = [...prev];
+              for (const s of sources) {
+                if (s.url && !merged.some((m) => m.url === s.url)) merged.push(s);
+              }
+              latestMessages = [
+                ...latestMessages.slice(0, lastIdx),
+                { ...latestMessages[lastIdx], sources: merged },
+              ];
+              setMessages(latestMessages);
+            }
+          },
         });
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
-      const lastIdx = latestMessages.length - 1;
-      if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
-        latestMessages = [
-          ...latestMessages.slice(0, lastIdx),
-          { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }) },
-        ];
+      // User-initiated stop (AbortController) is not an error — leave whatever
+      // partial answer streamed in place.
+      const aborted = abortRef.current || (err instanceof DOMException && err.name === 'AbortError');
+      if (!aborted) {
+        const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
+        const lastIdx = latestMessages.length - 1;
+        if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+          latestMessages = [
+            ...latestMessages.slice(0, lastIdx),
+            { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }) },
+          ];
+        }
+        setMessages(latestMessages);
       }
-      setMessages(latestMessages);
     } finally {
+      abortControllerRef.current = null;
       setIsStreaming(false);
       setActiveStatus('');
       // Persist the session to DB so history survives F5
@@ -763,14 +799,19 @@ export function DashboardAiBot({
     messages,
     modelId,
     provider,
-    resolvedNormalCostCapUsd,
-    resolvedThinkingCostCapUsd,
+    modePref,
     sessionKey,
     sessionToken,
     t,
-    thinkingMode,
     token,
   ]);
+
+  const handleStop = useCallback(() => {
+    abortRef.current = true;
+    abortControllerRef.current?.abort();
+    setIsStreaming(false);
+    setActiveStatus('');
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -781,7 +822,62 @@ export function DashboardAiBot({
 
   const handlePickSuggestion = useCallback((q: string) => {
     if (isStreaming) return;
-    handleSend(q);
+    // Clicking a suggested/navigation chip is explicit intent — bypass the
+    // guide→overview drift pivot (e.g. a "Đi sâu trang: Tổng quan" nav chip
+    // must navigate, not trigger the overview re-choice).
+    handleSend(q, { skipPivot: true });
+  }, [handleSend, isStreaming]);
+
+  // Greeting choice (3 options).
+  //  overview → AI analyses the whole report (fresh).
+  //  guide    → step-by-step guided tour teaching how to read the report.
+  //  detail   → AI opens up and invites a specific question (no AI call).
+  const handleWelcomeAction = useCallback((kind: 'overview' | 'guide' | 'detail') => {
+    if (isStreaming) return;
+    if (kind === 'overview') {
+      setChatMode('normal');
+      chatModeRef.current = 'normal';  // sync so the send isn't seen as guide
+      handleSend(OVERVIEW_QUESTION, { skipPivot: true });
+      return;
+    }
+    if (kind === 'guide') {
+      setChatMode('guide');
+      chatModeRef.current = 'guide';  // ensure the immediate send carries guide intent
+      handleSend(GUIDE_START, { skipPivot: true });
+      return;
+    }
+    setChatMode('normal');
+    chatModeRef.current = 'normal';
+    // Detail path doesn't go through handleSend, so strip the welcome buttons here.
+    setMessages((prev) => [
+      ...prev.map((m) => (m.isWelcome ? { ...m, isWelcome: false } : m)),
+      {
+        role: 'assistant',
+        content: (
+          'Bạn muốn tìm hiểu điều gì trong báo cáo? Cứ đặt câu hỏi cụ thể — '
+          + 'tôi sẽ phân tích theo đúng flow báo cáo và dẫn nguồn số liệu. Ví dụ:\n'
+          + '[FOLLOWUP] Chỉ số nào đang bất thường, cần lưu ý?\n'
+          + '[FOLLOWUP] Nhóm/danh mục nào đóng góp lớn nhất và vì sao?\n'
+          + '[FOLLOWUP] So sánh kết quả giữa các nhóm chính trong báo cáo?'
+        ),
+      },
+    ]);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, [handleSend, isStreaming]);
+
+  // Mid-guide pivot re-choice. Overview → leave the tour and analyse the whole
+  // report. Continue → keep the guided flow (move to the next step), ignoring
+  // the overview-ish message that triggered the prompt ("cứ đi theo flow").
+  const handlePivotAction = useCallback((kind: 'overview' | 'continue', _pending: string) => {
+    if (isStreaming) return;
+    if (kind === 'overview') {
+      setChatMode('normal');
+      chatModeRef.current = 'normal';
+      handleSend(OVERVIEW_QUESTION, { skipPivot: true });
+    } else {
+      chatModeRef.current = 'guide';
+      handleSend('Tiếp tục hướng dẫn sang phần tiếp theo theo đúng flow báo cáo.', { skipPivot: true });
+    }
   }, [handleSend, isStreaming]);
 
   const handleChangeKey = useCallback(() => {
@@ -816,11 +912,15 @@ export function DashboardAiBot({
     setView('briefing');
   }, [sessionKey, sessionToken, token]);
 
-  const handleToggleThinking = useCallback(() => {
-    const next = !thinkingMode;
-    setThinkingMode(next);
-    setStoredThinkingMode(token, next);
-  }, [thinkingMode, token]);
+  // Cycle the depth preference: Auto → Normal → Thinking → Auto. Default is
+  // Auto (server router decides) so users normally never touch this.
+  const handleCycleMode = useCallback(() => {
+    setModePref((prev) => {
+      const next: ModePref = prev === 'auto' ? 'normal' : prev === 'normal' ? 'thinking' : 'auto';
+      setStoredModePref(token, next);
+      return next;
+    });
+  }, [token]);
 
   const handleRateMessage = useCallback((msgIndex: number, rating: 'up' | 'down') => {
     setMessages((prev) => {
@@ -897,24 +997,27 @@ export function DashboardAiBot({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {view === 'chat' && (
-            <button
-              onClick={handleToggleThinking}
-              className={`flex items-center gap-1 rounded px-2 py-1 text-micro transition-colors ${
-                thinkingMode
-                  ? 'bg-brand/10 text-brand hover:bg-brand/20'
-                  : 'text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
-              }`}
-              title={
-                thinkingMode
-                  ? t('dashboards.aiBot.thinkingModeTitle', { cap: resolvedThinkingCostCapUsd.toFixed(2) })
-                  : t('dashboards.aiBot.normalModeTitle', { cap: resolvedNormalCostCapUsd.toFixed(2) })
-              }
-            >
-              {thinkingMode ? <Brain className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
-              <span>{thinkingMode ? t('dashboards.aiBot.thinkingLabel') : t('dashboards.aiBot.normalLabel')}</span>
-            </button>
-          )}
+          {view === 'chat' && (() => {
+            const effectiveThinking = modePref === 'thinking' || (modePref === 'auto' && routeMode === 'thinking');
+            const ModeIcon = effectiveThinking ? Brain : Zap;
+            const label = modePref === 'auto'
+              ? (routeMode ? `Tự động · ${routeMode === 'thinking' ? 'Sâu' : 'Nhanh'}` : 'Tự động')
+              : (modePref === 'thinking' ? t('dashboards.aiBot.thinkingLabel') : t('dashboards.aiBot.normalLabel'));
+            return (
+              <button
+                onClick={handleCycleMode}
+                className={`flex items-center gap-1 rounded px-2 py-1 text-micro transition-colors ${
+                  effectiveThinking
+                    ? 'bg-brand/10 text-brand hover:bg-brand/20'
+                    : 'text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
+                }`}
+                title="Độ phân tích — bấm để đổi: Tự động → Nhanh (Normal) → Sâu (Thinking). Mặc định Tự động, hệ thống tự chọn theo câu hỏi."
+              >
+                <ModeIcon className="h-3 w-3" />
+                <span>{label}</span>
+              </button>
+            );
+          })()}
           {view === 'chat' && !keyConfigured && (
             <button
               onClick={handleChangeKey}
@@ -995,7 +1098,10 @@ export function DashboardAiBot({
             onInputChange={setInputText}
             onKeyDown={handleKeyDown}
             onSend={handleSend}
+            onStop={handleStop}
             onPickSuggestion={handlePickSuggestion}
+            onWelcomeAction={handleWelcomeAction}
+            onPivotAction={handlePivotAction}
             briefing={briefing}
             convState={convState}
             onResetBriefing={handleResetBriefing}
@@ -1018,8 +1124,16 @@ export function DashboardAiBot({
           setBriefing(null);
           setStoredBriefing(token, null);
           setConvState(null);
-          setMessages([]);
-          setView('briefing');
+          setChatMode('normal');
+          chatModeRef.current = 'normal';
+          // Chat-first: stay in chat and reseed the recon welcome + starter
+          // questions (no briefing-wizard gate on clear).
+          if (recon) {
+            setMessages([{ role: 'assistant', content: buildWelcomeMessage(recon, dashboardName), isWelcome: true }]);
+          } else {
+            setMessages([]);
+          }
+          setView('chat');
         }}
         title={t('dashboards.aiBot.clearConfirmTitle')}
         description={t('dashboards.aiBot.clearConfirmDescription')}
@@ -1046,10 +1160,20 @@ function applyEvent(
     ) => void;
     updatePlanStep: (stepIndex: number, status: 'pending' | 'running' | 'done') => void;
     updateState: (s: AiConversationState) => void;
+    onRoute: (mode: 'normal' | 'thinking') => void;
+    setSources: (sources: { title?: string | null; url?: string | null }[]) => void;
   },
 ) {
   if (ev.type === 'text') {
     ops.appendText(ev.text);
+    return;
+  }
+  if (ev.type === 'route') {
+    ops.onRoute(ev.mode);
+    return;
+  }
+  if (ev.type === 'sources') {
+    ops.setSources(ev.sources || []);
     return;
   }
   if (ev.type === 'status') {
@@ -1223,7 +1347,10 @@ function ChatView({
   onInputChange,
   onKeyDown,
   onSend,
+  onStop,
   onPickSuggestion,
+  onWelcomeAction,
+  onPivotAction,
   briefing,
   convState,
   onResetBriefing,
@@ -1243,7 +1370,10 @@ function ChatView({
   onInputChange: (v: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
+  onStop: () => void;
   onPickSuggestion: (q: string) => void;
+  onWelcomeAction: (kind: 'overview' | 'guide' | 'detail') => void;
+  onPivotAction: (kind: 'overview' | 'continue', pending: string) => void;
   briefing: AiBriefing | null;
   convState: AiConversationState | null;
   onResetBriefing: () => void;
@@ -1281,11 +1411,18 @@ function ChatView({
                   streaming={showThinking}
                   disabled={isStreaming}
                   onPickSuggestion={onPickSuggestion}
+                  onWelcomeAction={onWelcomeAction}
+                  onPivotAction={onPivotAction}
                   onRate={onRateMessage}
+                  disableActions={isStreaming}
                 />
               )}
               {showThinking && (
-                <ThinkingBubble status={activeStatus} log={msg.statusLog ?? []} />
+                <ThinkingBubble
+                  status={activeStatus}
+                  log={msg.statusLog ?? []}
+                  readingPlan={msg.readingPlan}
+                />
               )}
             </React.Fragment>
           );
@@ -1325,14 +1462,25 @@ function ChatView({
             style={{ maxHeight: 120 }}
             disabled={!!reconError}
           />
-          <button
-            onClick={onSend}
-            disabled={!inputText.trim() || isStreaming || !!reconError}
-            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
-            aria-label={t('dashboards.aiBot.sendAria')}
-          >
-            {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-          </button>
+          {isStreaming ? (
+            <button
+              onClick={onStop}
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-danger/90 text-white shadow-sm transition-all hover:bg-danger"
+              aria-label={t('dashboards.aiBot.stopTitle')}
+              title={t('dashboards.aiBot.stopTitle')}
+            >
+              <Square className="h-3 w-3 fill-current" />
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={!inputText.trim() || !!reconError}
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+              aria-label={t('dashboards.aiBot.sendAria')}
+            >
+              <Send className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
         <p className="mt-1.5 px-1 text-micro text-text-quaternary">{t('dashboards.aiBot.sendHint')}</p>
       </div>
@@ -1404,14 +1552,20 @@ function MessageBubble({
   messageIndex,
   streaming = false,
   disabled = false,
+  disableActions = false,
   onPickSuggestion,
+  onWelcomeAction,
+  onPivotAction,
   onRate,
 }: {
   message: ChatMessage;
   messageIndex: number;
   streaming?: boolean;
   disabled?: boolean;
+  disableActions?: boolean;
   onPickSuggestion?: (q: string) => void;
+  onWelcomeAction?: (kind: 'overview' | 'guide' | 'detail') => void;
+  onPivotAction?: (kind: 'overview' | 'continue', pending: string) => void;
   onRate?: (index: number, rating: 'up' | 'down') => void;
 }) {
   const { t } = useI18n();
@@ -1444,6 +1598,76 @@ function MessageBubble({
           <StatusLog log={message.statusLog} collapsed={!streaming} />
         )}
         <RichMarkdown text={body} />
+        {!isUser && message.isWelcome && onWelcomeAction && (
+          <div className="mt-2 flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => onWelcomeAction('overview')}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-brand/40 bg-brand/10 px-3 py-2 text-caption font-emphasis text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <BarChart3 className="h-3.5 w-3.5" /> Xem tổng quan báo cáo
+            </button>
+            <button
+              type="button"
+              onClick={() => onWelcomeAction('guide')}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-brand/30 bg-surface-1 px-3 py-2 text-caption font-emphasis text-text-primary transition-colors hover:border-brand/50 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ListChecks className="h-3.5 w-3.5 text-brand" /> Hướng dẫn tôi cách xem báo cáo
+            </button>
+            <button
+              type="button"
+              onClick={() => onWelcomeAction('detail')}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-secondary transition-colors hover:border-[rgb(var(--border-strong))] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Search className="h-3.5 w-3.5" /> Tôi muốn hỏi chi tiết
+            </button>
+          </div>
+        )}
+        {!isUser && message.pivotPending && onPivotAction && (
+          <div className="mt-2 flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => onPivotAction('overview', message.pivotPending as string)}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-brand/40 bg-brand/10 px-3 py-2 text-caption font-emphasis text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <BarChart3 className="h-3.5 w-3.5" /> Xem tổng quan luôn
+            </button>
+            <button
+              type="button"
+              onClick={() => onPivotAction('continue', message.pivotPending as string)}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-secondary transition-colors hover:border-[rgb(var(--border-strong))] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ListChecks className="h-3.5 w-3.5" /> Tiếp tục hướng dẫn
+            </button>
+          </div>
+        )}
+        {!isUser && message.sources && message.sources.length > 0 && (
+          <div className="mt-2 border-t border-[rgb(var(--border-line))]/40 pt-2">
+            <p className="mb-1 text-micro font-emphasis text-text-tertiary">
+              {t('dashboards.aiBot.webSourcesLabel')}
+            </p>
+            <div className="flex flex-col gap-1">
+              {message.sources.filter((s) => s.url).map((s, i) => (
+                <a
+                  key={i}
+                  href={s.url || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-start gap-1 text-tiny text-brand hover:underline"
+                  title={s.url || ''}
+                >
+                  <span aria-hidden>🔗</span>
+                  <span className="truncate">{s.title || s.url}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
         {!isUser && suggestions.length > 0 && onPickSuggestion && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-[rgb(var(--border-line))]/40 pt-2">
             {suggestions.map((q, i) => (
@@ -1503,7 +1727,10 @@ function extractFollowups(text: string): { body: string; suggestions: string[] }
   const suggestions: string[] = [];
   const bodyLines: string[] = [];
   for (const line of text.split('\n')) {
-    const m = /^\s*\[FOLLOWUP\]\s*(.+?)\s*$/i.exec(line);
+    // Tolerate leading markdown list markers ("- ", "* ", "1. ", "•") the
+    // model sometimes prepends to [FOLLOWUP] lines — else the chips leak as
+    // raw text instead of rendering as clickable suggestions.
+    const m = /^[\s>*•.)\-\d]*\[FOLLOWUP\]\s*(.+?)\s*$/i.exec(line);
     if (m && m[1]) {
       const q = m[1].trim();
       if (q && suggestions.length < 5) suggestions.push(q);
@@ -1769,9 +1996,11 @@ function toolIcon(tool: string | undefined): React.ReactNode {
 function ThinkingBubble({
   status,
   log,
+  readingPlan,
 }: {
   status: string;
   log: NonNullable<ChatMessage['statusLog']>;
+  readingPlan?: ChatMessage['readingPlan'];
 }) {
   const { t } = useI18n();
   const liveText = (status && status.trim()) || t('dashboards.aiBot.thinkingFallback');
@@ -1783,6 +2012,18 @@ function ThinkingBubble({
           <Sparkles className="h-3.5 w-3.5 animate-pulse" />
           <span>{t('dashboards.aiBot.analyzing')}</span>
         </div>
+        {/* The AI's intended steps, shown live so the user sees the plan +
+            which step is running — not just a generic "Thinking…". */}
+        {readingPlan && readingPlan.items.length > 0 && (
+          <div className="mb-1.5">
+            <ReadingPlanPanel
+              items={readingPlan.items}
+              overallGoal={readingPlan.overallGoal}
+              stepStatuses={readingPlan.stepStatuses}
+              collapsed={false}
+            />
+          </div>
+        )}
         {visible.length > 0 && (
           <div className="mb-1.5 flex flex-col gap-1 border-y border-brand/15 py-1.5 text-tiny text-text-secondary">
             {visible.map((entry, i) => {

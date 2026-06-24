@@ -15,6 +15,7 @@ import {
   normalizePublicLinkAppearance,
 } from '@/lib/public-link-appearance';
 import { PublicLinkAppearanceEditor } from '@/components/common/PublicLinkAppearanceEditor';
+import { PublicLinkAiBotEditor } from '@/components/common/PublicLinkAiBotEditor';
 import {
   getFilterDisplayLabel,
   inferColumnTypeFromData,
@@ -156,7 +157,7 @@ export function PublicLinksManager({
   // Create/Edit form is split into 3 intent-based tabs so the modal isn't
   // one long scroll: appearance (look/behaviour), data (link filters),
   // security (password + share URLs). The preview panel stays on the right.
-  const [formTab, setFormTab] = useState<'appearance' | 'data' | 'security'>('appearance');
+  const [formTab, setFormTab] = useState<'appearance' | 'data' | 'security' | 'aibot'>('appearance');
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const [copiedId, setCopiedId] = useState<number | null>(null);
@@ -526,8 +527,8 @@ export function PublicLinksManager({
       ai_bot_enabled: link.appearance_config?.ai_bot_enabled,
       ai_bot_provider: link.appearance_config?.ai_bot_provider,
       ai_bot_model: link.appearance_config?.ai_bot_model,
-      ai_bot_normal_cost_cap_usd: link.appearance_config?.ai_bot_normal_cost_cap_usd,
-      ai_bot_thinking_cost_cap_usd: link.appearance_config?.ai_bot_thinking_cost_cap_usd,
+      ai_bot_default_mode: link.appearance_config?.ai_bot_default_mode,
+      ai_bot_web_search_enabled: link.appearance_config?.ai_bot_web_search_enabled,
       ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
       // ai_bot_key is stripped by backend response (security). Use
       // ai_bot_key_configured to show "key is set" indicator in the editor.
@@ -1226,6 +1227,7 @@ export function PublicLinksManager({
                   {([
                     { id: 'appearance', label: 'Giao diện' },
                     { id: 'data', label: 'Dữ liệu (Filter)' },
+                    { id: 'aibot', label: 'AI Bot' },
                     { id: 'security', label: 'Bảo mật & Chia sẻ' },
                   ] as const).map((t) => (
                     <button
@@ -1249,6 +1251,14 @@ export function PublicLinksManager({
                     value={formAppearance}
                     dashboardName={dashboardName}
                     onChange={setFormAppearance}
+                  />
+                )}
+
+                {formTab === 'aibot' && (
+                  <PublicLinkAiBotEditor
+                    value={formAppearance}
+                    onChange={setFormAppearance}
+                    dashboardId={dashboardId}
                   />
                 )}
 

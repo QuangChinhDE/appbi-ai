@@ -4,7 +4,7 @@ API router for dashboard endpoints.
 import json
 import secrets
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
@@ -2256,6 +2256,155 @@ def list_ai_chat_sessions(
             for r in rows
         ],
     }
+
+
+class _SuggestSystemPromptBody(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+
+
+@router.post("/{dashboard_id}/ai/suggest-system-prompt")
+async def suggest_ai_system_prompt(
+    dashboard_id: int,
+    body: _SuggestSystemPromptBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+    x_user_ai_model: str | None = Header(default=None),
+):
+    """Let the AI read the dashboard and draft a report-flow SYSTEM PROMPT
+    for the DA to review/edit. Reads the chart manifest + a few insight packs
+    (recon) and asks the LLM to write, in Vietnamese, how the AI should read
+    THIS report (domain, reading flow, key metrics, what to prioritise).
+
+    Uses the key the DA is configuring (X-User-Ai-Key) or, if absent, a key
+    already stored on one of this dashboard's public links.
+    """
+    from app.models.models import DashboardPublicLink
+    from app.services.dashboard_ai_bot.public_link_config import _infer_provider_from_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.providers import (
+        stream_anthropic, stream_gemini_singleshot, stream_openai,
+    )
+
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+
+    # Resolve key: typed key wins; else any stored link key for this dashboard.
+    key = (x_user_ai_key or "").strip()
+    stored_provider = ""
+    if not key:
+        for link in db.query(DashboardPublicLink).filter(
+            DashboardPublicLink.dashboard_id == dashboard_id
+        ).all():
+            ac = link.appearance_config or {}
+            if ac.get("ai_bot_key"):
+                key = str(ac["ai_bot_key"]).strip()
+                stored_provider = str(ac.get("ai_bot_provider") or "").strip().lower()
+                break
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Cần API key (nhập key vào ô API key trước, hoặc lưu key cho link).",
+        )
+
+    provider = (
+        (body.provider or x_user_ai_provider or "").strip().lower()
+        or stored_provider or _infer_provider_from_key(key) or "openai"
+    )
+    if provider not in ("anthropic", "openai", "gemini"):
+        raise HTTPException(status_code=400, detail="Nhà cung cấp không hợp lệ.")
+    # A concrete model is required (passing None makes some providers 400).
+    _DEFAULT_MODEL = {
+        "anthropic": "claude-haiku-4-5-20251001",
+        "openai": "gpt-4o-mini",
+        "gemini": "gemini-2.0-flash",
+    }
+    model = (body.model or x_user_ai_model or "").strip() or _DEFAULT_MODEL[provider]
+
+    # Build recon (chart manifest + a few insight packs).
+    try:
+        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=[])
+        recon = build_proactive_recon(ctx)
+    except Exception:
+        logger.exception("suggest_system_prompt recon failed dashboard=%s", dashboard_id)
+        raise HTTPException(status_code=500, detail="Không đọc được dashboard.")
+
+    manifest = (recon or {}).get("manifest") or {}
+    charts = manifest.get("charts") or []
+    chart_lines = []
+    for c in charts[:40]:
+        flds = c.get("fields") or {}
+        measures = ", ".join(
+            f"{m.get('label')}({m.get('agg')})" for m in (flds.get("measures") or []) if m.get("label")
+        )
+        dims = ", ".join(d for d in (flds.get("dimensions") or []) if d)
+        chart_lines.append(
+            f"- [{c.get('role_hint')}] {c.get('chart_name')} ({c.get('chart_type')})"
+            + (f" | đo: {measures}" if measures else "")
+            + (f" | chiều: {dims}" if dims else "")
+        )
+    manifest_text = "\n".join(chart_lines) or "(không có biểu đồ)"
+
+    # The report's PAGE flow (the DA's intended reading narrative).
+    _name_by_id = {c.get("chart_id"): c.get("chart_name") for c in charts}
+    page_lines = []
+    for i, p in enumerate(getattr(ctx, "pages", None) or [], 1):
+        cnames = ", ".join(str(_name_by_id.get(cid) or cid) for cid in (p.get("chart_ids") or []))
+        page_lines.append(f"  {i}. {p.get('name')}: {cnames or '(trống)'}")
+    pages_text = "\n".join(page_lines) or "(báo cáo 1 trang)"
+
+    system_prompt = (
+        "Bạn là chuyên gia BI giúp một Data Analyst cấu hình trợ lý AI cho MỘT báo cáo. "
+        "Dựa trên danh sách biểu đồ dưới đây, hãy VIẾT một SYSTEM PROMPT (bằng tiếng Việt) "
+        "hướng dẫn AI cách đọc báo cáo này: (1) lĩnh vực/bối cảnh; (2) FLOW đọc tự nhiên — "
+        "đọc chart nào trước, thứ tự kể chuyện; (3) các chỉ số chính & ý nghĩa; (4) cần ưu tiên/cảnh báo điều gì; "
+        "(5) khi nào nên tra cứu thêm trên web để có bối cảnh thị trường. "
+        "Viết ngắn gọn, dạng gạch đầu dòng, dùng đúng thuật ngữ trong báo cáo. "
+        "CHỈ trả về nội dung system prompt, không thêm lời dẫn."
+    )
+    user_prompt = (
+        f"Tên báo cáo: {dash.name or '(chưa đặt tên)'}\n"
+        f"Mô tả: {getattr(dash, 'description', '') or '(không có)'}\n\n"
+        f"CẤU TRÚC TRANG (flow tự nhiên người xem đi qua):\n{pages_text}\n\n"
+        f"Các biểu đồ ({len(charts)} duy nhất):\n{manifest_text}\n\n"
+        "Hãy viết system prompt điều hướng AI đọc báo cáo này, FLOW bám theo "
+        "thứ tự các trang ở trên (mỗi trang là một bước trong câu chuyện)."
+    )
+
+    streamer = (
+        stream_anthropic if provider == "anthropic"
+        else stream_openai if provider == "openai"
+        else stream_gemini_singleshot
+    )
+    parts: list[str] = []
+    try:
+        async for ev in streamer(
+            api_key=key,
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            tools=None,
+            model=model,
+            max_tokens=1200,
+        ):
+            if getattr(ev, "type", None) == "text" and getattr(ev, "text", ""):
+                parts.append(ev.text)
+            elif getattr(ev, "type", None) == "error":
+                raise HTTPException(status_code=502, detail=ev.text or "AI provider error")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("suggest_system_prompt LLM failed dashboard=%s", dashboard_id)
+        raise HTTPException(status_code=502, detail="Gọi AI thất bại.")
+
+    text = "".join(parts).strip()
+    if not text:
+        raise HTTPException(status_code=502, detail="AI không trả về nội dung.")
+    return {"system_prompt": text[:4000]}
 
 
 # ============ Dashboard Filters ============
