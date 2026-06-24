@@ -29,21 +29,20 @@ if [ -d backend/alembic/versions ]; then
   fi
 fi
 
-# 2) Frontend typecheck — tsc --noEmit (tsconfig already sets noEmit). Resolve
-# tsc via the local install; distinguish "tsc not installed here" (skip — CI's
-# `npm ci` always has it) from a genuine type error (fail).
+# 2) Frontend typecheck — tsc --noEmit. Call the compiler binary directly (no
+# npx resolution quirks) and force `--incremental false` so a stale .tsbuildinfo
+# can't report a green pass after files changed. Skip cleanly if typescript
+# isn't installed locally — CI's `npm ci` always has it.
 if [ -f frontend/package.json ]; then
   section "Frontend typecheck (tsc --noEmit)"
-  if [ -d frontend/node_modules ]; then
-    out=$( cd frontend && npx --no-install tsc --noEmit 2>&1 ); rc=$?
-    if [ $rc -eq 0 ]; then
+  if [ -f frontend/node_modules/typescript/bin/tsc ]; then
+    if ( cd frontend && node node_modules/typescript/bin/tsc --noEmit --incremental false ); then
       echo "✓ no type errors"
-    elif echo "$out" | grep -qiE "not the tsc command|could not determine|command not found|installed locally"; then
-      echo "· skipped (typescript not installed in node_modules here — CI checks fully)"
     else
-      echo "$out"
       fail=1
     fi
+  elif [ -d frontend/node_modules ]; then
+    echo "· skipped (typescript not installed in node_modules here — CI checks fully)"
   else
     echo "· skipped (frontend/node_modules missing — run 'npm ci' in frontend/)"
   fi

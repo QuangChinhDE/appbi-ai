@@ -11,11 +11,13 @@ on is left uncommitted (so it builds on your machine but not from the commit):
 
 ## The key idea
 
-All checks run against the **committed tree**, not your working tree — that's
-why the local hook checks out the pushed commit into a throwaway `git worktree`
-(your working tree is never touched). A plain `npm run build` on your machine
+All checks run against the **committed tree**, not your working tree. The local
+hook does this by stashing your local source changes (tracked + untracked) so
+the tree momentarily matches `HEAD`, running the gate against the real installed
+deps, then restoring your changes. A plain `npm run build` on your machine
 passes because the forgotten file is still on disk; the gate removes that blind
-spot.
+spot. (`node_modules` is git-ignored, so the stash never touches it; a brief
+stash/pop means a running `next dev` may recompile once.)
 
 ## Two layers
 

@@ -38,7 +38,7 @@ jobs:
         run: npm ci
       - name: Frontend typecheck (tsc --noEmit)
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npx tsc --noEmit --incremental false
 
       # ── 3. Backend import smoke (deleted/renamed module) ──────────────────
       - name: Install backend deps
