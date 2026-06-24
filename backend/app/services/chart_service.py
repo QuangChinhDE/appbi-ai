@@ -2007,30 +2007,43 @@ def _execute_semantic_chart_runtime(
         agg_overrides = {}
         effective_limit = min(effective_limit, 5000)
 
-    # BUBBLE — aggregate X / Y / Size by the Label dimension (PowerBI parity).
-    # The shared classifier leaves the scatter axes as raw GROUP BY dims, which
-    # is correct for SCATTER (every row is a point) but wrong for BUBBLE: the
-    # user binds a Label (≈ PowerBI "Details") and expects ONE aggregated bubble
-    # per label, with X / Y / Size summed (or averaged). Left as dims, the axes
-    # enter GROUP BY and each distinct (x, y) row becomes its own bubble — DA
-    # report: "Bubble không tự SUM theo Label khi chọn khoảng thời gian dài".
-    # Move the axes out of dimension_refs into measure_refs so only the Label
-    # stays in GROUP BY. A declared-measure axis keeps its own aggregation; a
-    # raw numeric axis defaults to SUM, overridable per-axis via scatterXAgg /
-    # scatterYAgg. Gated on a bound Label — without one, BUBBLE keeps the raw
-    # SCATTER behaviour. SCATTER / MAP_POINT are never touched here.
+    # BUBBLE / NINE_BOX — aggregate X / Y / Size by the Label dimension (PowerBI
+    # parity). The shared classifier leaves the scatter axes as raw GROUP BY
+    # dims, which is correct for SCATTER (every row is a point) but wrong for
+    # BUBBLE and the 9-box grid: the user binds a Label (≈ PowerBI "Details")
+    # and expects ONE aggregated mark per label, with X / Y / Size summed (or
+    # averaged). Left as dims, the axes enter GROUP BY and each distinct (x, y)
+    # row becomes its own mark — DA report (BUG-016): "Bubble không tự SUM theo
+    # Label khi chọn khoảng thời gian dài"; the SAME defect surfaced on NINE_BOX
+    # (raw price/freight axes produced N rows per category instead of one
+    # binned point). Move the axes out of dimension_refs into measure_refs so
+    # only the Label stays in GROUP BY. A declared-measure axis keeps its own
+    # aggregation; a raw numeric axis defaults to SUM, overridable per-axis via
+    # scatterXAgg / scatterYAgg. Gated on a bound Label — without one the chart
+    # keeps the raw SCATTER behaviour. SCATTER / MAP_POINT are never touched.
     _VALID_BUBBLE_AGG = {"sum", "avg", "count", "min", "max", "count_distinct"}
-    if _normalized_ct == "BUBBLE":
+    if _normalized_ct in ("BUBBLE", "NINE_BOX"):
         _bubble_label = qualify(role_config.get("dimension"))
+        # Keep the RAW (un-defaulted) per-axis agg — for NINE_BOX its presence is
+        # the "this axis is numeric" signal (the FE sets scatter*Agg only when the
+        # bound axis is a numeric column). BUBBLE axes are always numeric.
         _bubble_axes = [
-            (qualify(role_config.get("scatterX")), str(role_config.get("scatterXAgg") or "sum").strip().lower()),
-            (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "sum").strip().lower()),
+            (qualify(role_config.get("scatterX")), str(role_config.get("scatterXAgg") or "").strip().lower()),
+            (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "").strip().lower()),
         ]
         if _bubble_label and any(ref for ref, _ in _bubble_axes):
             for _axis_ref, _axis_agg in _bubble_axes:
                 if not _axis_ref:
                     continue
                 _was_dim = _axis_ref in dimension_refs
+                # NINE_BOX also accepts a CATEGORICAL axis (3-level binning) that
+                # MUST stay a GROUP BY dimension — summing a string column would
+                # error. Only aggregate a raw NINE_BOX axis when an explicit
+                # numeric aggregation is set (FE sets it only for numeric axes).
+                # A declared-measure axis is numeric by definition (not _was_dim)
+                # so it always aggregates. BUBBLE keeps the default-SUM behaviour.
+                if _normalized_ct == "NINE_BOX" and _was_dim and _axis_agg not in _VALID_BUBBLE_AGG:
+                    continue
                 if _was_dim:
                     dimension_refs.remove(_axis_ref)
                 if _axis_ref not in measure_refs:

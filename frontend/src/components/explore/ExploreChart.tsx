@@ -2438,7 +2438,7 @@ function ExploreChartInner({
     return (
       <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 flex items-end justify-center gap-4 px-4">
+        <div className="flex-1 flex items-center justify-center gap-4 px-4">
           {display.map((e: any, i: number) => {
             const rank = ranked.indexOf(e);
             // Phase-15.86 — allow per-name seriesColors override to beat

@@ -3466,6 +3466,26 @@ export function ExploreChartConfig({
     setActiveChartTypeGroup(currentChartTypeMeta.group);
   }, [currentChartTypeMeta.group]);
 
+  // NINE_BOX parity with BUBBLE: a NUMERIC axis must aggregate per Label, so we
+  // persist scatter*Agg='sum' by default. This is the signal the BE reads to
+  // SUM/AVG the axis and GROUP BY the Label (else each raw value becomes its own
+  // dot — the BUG-016 defect). An effect is required because auto-bound fields
+  // (set when the user picks the chart type) never pass through the axis
+  // onChange that would otherwise seed the agg. A CATEGORICAL axis clears the
+  // agg so the BE keeps it as a 3-level GROUP BY dimension (no SUM-of-string).
+  useEffect(() => {
+    if (chartType !== 'NINE_BOX') return;
+    const xNum = !!sx && numCols.some((c) => c.name === sx);
+    const yNum = !!sy && numCols.some((c) => c.name === sy);
+    const patch: Partial<ChartRoleConfig> = {};
+    if (xNum && !roleConfig.scatterXAgg) patch.scatterXAgg = 'sum';
+    if (!xNum && roleConfig.scatterXAgg) patch.scatterXAgg = undefined;
+    if (yNum && !roleConfig.scatterYAgg) patch.scatterYAgg = 'sum';
+    if (!yNum && roleConfig.scatterYAgg) patch.scatterYAgg = undefined;
+    if (Object.keys(patch).length > 0) upd(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartType, sx, sy, roleConfig.scatterXAgg, roleConfig.scatterYAgg]);
+
   useEffect(() => {
     if (chartSortRules.length === 0 || sortLimitCols.length === 0) {
       return;
@@ -4883,17 +4903,31 @@ export function ExploreChartConfig({
           </>}
 
           {isScatterLike && <>
+            {/* NINE_BOX accepts numeric (→ tertile) OR categorical (→ 3-level)
+                axes. When the picked axis is NUMERIC it should aggregate per
+                Label exactly like BUBBLE, so we expose the X/Y AGGREGATION
+                dropdown and auto-set scatter*Agg='sum' (the BE reads that as the
+                "numeric axis → aggregate" signal). A categorical pick clears the
+                agg so the BE keeps it as a GROUP BY dimension. */}
             <SelectSlot label="X Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : chartType === 'NINE_BOX' ? 'numeric → tertile, or 3-level category' : 'numeric'} required value={sx} options={chartType === 'NINE_BOX' ? allCols : numOrAll}
               placeholder="select X"
-              onChange={v => upd({ scatterX: v || undefined })} />
-            {chartType === 'BUBBLE' && sx && (
+              onChange={v => upd(
+                chartType === 'NINE_BOX'
+                  ? { scatterX: v || undefined, scatterXAgg: (v && numCols.some(c => c.name === v)) ? (normalizedRoleConfig.scatterXAgg || 'sum') : undefined }
+                  : { scatterX: v || undefined }
+              )} />
+            {(chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sx && numCols.some(c => c.name === sx))) && sx && (
               <ScatterAxisAgg axis="X" value={(normalizedRoleConfig.scatterXAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterXAgg: v })} />
             )}
             <SelectSlot label="Y Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : chartType === 'NINE_BOX' ? 'numeric → tertile, or 3-level category' : 'numeric'} required value={sy} options={chartType === 'NINE_BOX' ? allCols : numOrAll}
               placeholder="select Y"
-              onChange={v => upd({ scatterY: v || undefined })} />
-            {chartType === 'BUBBLE' && sy && (
+              onChange={v => upd(
+                chartType === 'NINE_BOX'
+                  ? { scatterY: v || undefined, scatterYAgg: (v && numCols.some(c => c.name === v)) ? (normalizedRoleConfig.scatterYAgg || 'sum') : undefined }
+                  : { scatterY: v || undefined }
+              )} />
+            {(chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sy && numCols.some(c => c.name === sy))) && sy && (
               <ScatterAxisAgg axis="Y" value={(normalizedRoleConfig.scatterYAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterYAgg: v })} />
             )}
