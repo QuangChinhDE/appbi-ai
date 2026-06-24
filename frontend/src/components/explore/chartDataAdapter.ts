@@ -297,6 +297,25 @@ function resolveMetricValueField(
  * emitted (qualified ref, bare, `agg__field`, …) so the rewrite is
  * defensive against future changes to the engine's alias scheme.
  */
+/**
+ * Coerce a raw metric value to a finite number, or null when it isn't one.
+ *
+ * The semantic engine serialises NUMERIC / DECIMAL columns as JSON STRINGS
+ * ("354.75", "1179143.77") — BigQuery NUMERIC and Postgres numeric both do
+ * this. Recharts then receives string Y-values and computes its 'auto' axis
+ * domain by string comparison, producing a garbage range (e.g. a GMV series
+ * spanning 19 → 1.18M collapsed to a 985K–999K band, with the line clipping
+ * into near-vertical spikes). Numbers must reach Recharts as numbers.
+ *
+ * Empty/null/non-numeric → null so the point is SKIPPED (not plotted as 0),
+ * matching the prior null-preserving semantics.
+ */
+function toFiniteNumberOrNull(raw: any): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 function rewriteRowsForRecharts(
   rows: Record<string, any>[],
   metrics: MetricConfig[],
@@ -305,27 +324,24 @@ function rewriteRowsForRecharts(
   if (!preAggregated || rows.length === 0 || metrics.length === 0) return rows;
   // Pre-compute the value source field per metric — this is the column
   // recharts actually needs to read from. Map<canonicalMetricKey, sourceField>.
+  // We record EVERY metric (even when sourceField === targetKey) because the
+  // rewrite now also coerces string-encoded numerics to real numbers, which is
+  // required regardless of whether the key needed remapping.
   const sourceByMetricKey = new Map<string, string>();
   for (const metric of metrics) {
-    const sourceField = resolveMetricValueField(rows, metric, true);
-    const targetKey = metricKey(metric);
-    if (sourceField !== targetKey) {
-      sourceByMetricKey.set(targetKey, sourceField);
-    }
+    sourceByMetricKey.set(metricKey(metric), resolveMetricValueField(rows, metric, true));
   }
-  // No remap needed — every metric already keyed correctly. Return rows
-  // unchanged so we don't allocate a new array (hot path on dashboards
-  // with many tiles).
-  if (sourceByMetricKey.size === 0) return rows;
 
   return rows.map((row) => {
     const next: Record<string, any> = { ...row };
     for (const [targetKey, sourceField] of sourceByMetricKey) {
       // Only write the target key when the source actually has a value
       // on this row; preserves null/undefined semantics so recharts
-      // skips missing points instead of plotting 0.
+      // skips missing points instead of plotting 0. Coerce string-encoded
+      // numerics (BigQuery/Postgres NUMERIC → JSON string) to real numbers so
+      // Recharts' value-axis domain isn't computed from strings.
       if (sourceField in row) {
-        next[targetKey] = row[sourceField];
+        next[targetKey] = toFiniteNumberOrNull(row[sourceField]);
       }
     }
     return next;

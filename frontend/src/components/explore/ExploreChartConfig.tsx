@@ -626,6 +626,10 @@ const BREAKDOWN_SUPPORTED_CHART_TYPES = new Set<string>([
   'LINE',
   'AREA',
   'TIME_SERIES',
+  // MAP_POINT uses a breakdown to draw a per-region DONUT marker (category
+  // segments) on the basemap; without this the breakdown is stripped on
+  // normalize and the map falls back to plain points.
+  'MAP_POINT',
 ]);
 const RAW_DISTRIBUTION_TYPES = new Set<string>(['BOXPLOT']);
 

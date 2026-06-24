@@ -1875,9 +1875,41 @@ function ExploreChartInner({
   const benchmarkDash = style.benchmarkLineStyle === 'solid' ? undefined : '6 4';
   const benchmarkLabel = style.benchmarkLabel?.trim() || undefined;
 
+  // PBI parity: a BAR/COLUMN chart's value axis ALWAYS includes 0 as the
+  // baseline. Recharts' default 'auto' domain zooms to [dataMin, dataMax],
+  // which floats positive bars off a non-zero floor (revenue 980K–1M instead of
+  // 0–1M) or, for all-negative data, off the top (delivery lead -10.1 → -9.8) —
+  // so tiny differences look enormous and bars overflow the plot. Anchor the
+  // domain to 0 on the data's side; keep the far side 'auto' for headroom.
+  // LINE / AREA keep full 'auto' (PBI also auto-ranges those — they aren't read
+  // as proportional lengths the way bars are).
+  const BAR_FAMILY_TYPES = ['BAR', 'GROUPED_BAR', 'STACKED_BAR', 'HORIZONTAL_BAR', 'BAR_LINE'];
+  const isBarFamily = BAR_FAMILY_TYPES.includes(type);
+  const barValueExtent = useMemo(() => {
+    if (!isBarFamily) return null;
+    const rows = type === 'BAR_LINE' ? comboData : categoricalData;
+    const keys = type === 'BAR_LINE'
+      ? comboBarSeries.map((s) => s.key)
+      : metrics.map((m) => metricKey(m));
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const row of rows) {
+      for (const k of keys) {
+        const v = Number(row?.[k]);
+        if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+      }
+    }
+    return lo === Infinity ? null : { lo, hi };
+  }, [isBarFamily, type, comboData, categoricalData, comboBarSeries, metrics]);
+  // Default value-axis bounds: anchor to 0 on the data side for bar charts,
+  // 'auto' otherwise. Mixed-sign data (lo < 0 < hi) already straddles 0, so
+  // 'auto'/'auto' is correct there too.
+  const autoYMin = (isBarFamily && barValueExtent && barValueExtent.lo >= 0) ? 0 : 'auto';
+  const autoYMax = (isBarFamily && barValueExtent && barValueExtent.hi <= 0) ? 0 : 'auto';
+
   const yDomain: [any, any] = [
-    style.yAxisMin !== '' && style.yAxisMin != null ? Number(style.yAxisMin) : 'auto',
-    style.yAxisMax !== '' && style.yAxisMax != null ? Number(style.yAxisMax) : 'auto',
+    style.yAxisMin !== '' && style.yAxisMin != null ? Number(style.yAxisMin) : autoYMin,
+    style.yAxisMax !== '' && style.yAxisMax != null ? Number(style.yAxisMax) : autoYMax,
   ];
   // When the DA sets an explicit Y min/max, Recharts needs allowDataOverflow
   // to HARD-clamp the band (otherwise a Y Max below the data is silently

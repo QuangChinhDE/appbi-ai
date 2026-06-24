@@ -8,6 +8,7 @@ import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
 import { buildExploreChartModel } from './chartDataAdapter';
+import { lookupCentroid } from './regionCentroids';
 
 type ChartRow = Record<string, unknown>;
 
@@ -477,7 +478,14 @@ function DonutOrPolarChart({
               }
               cursor += angle;
               const sliceColor = resolveSliceColor(style, palette, item.name, index);
-              const showLabelForSlice = labelsEnabled ? sharePct >= 0.03 && index < 10 : index < 10;
+              // Always apply a minimum-share floor so tiny adjacent slices don't
+              // pile their labels into an unreadable "soup" at the ring edge
+              // (PBI never labels a sub-3% slice on the ring — the legend still
+              // lists every category). This floor applies in BOTH the
+              // labels-enabled and the default identifier-label cases; before,
+              // the default case labelled the first 10 slices regardless of
+              // size, so a 0.6%-share slice still got a ring label.
+              const showLabelForSlice = sharePct >= 0.03 && index < 10;
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
                   <path d={path} fill={sliceColor} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
@@ -880,6 +888,26 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
 }) {
   const { t } = useI18n();
   const { scatterX, scatterY, dimension } = roleConfig;
+  // MAP_POINT geographic mode — X/Y are longitude/latitude (detected by field
+  // name). We draw a REAL vector basemap (world country outlines) behind the
+  // points and place each at its true position, so it reads like a map instead
+  // of dots on a blank box. Name-based only so a non-geo MAP_POINT is never
+  // mis-projected; BUBBLE always uses the plain data scale.
+  const isGeoMap = type === 'MAP_POINT'
+    && /\b(lon|lng|long|longitude)\b/i.test(scatterX || '')
+    && /\b(lat|latitude)\b/i.test(scatterY || '');
+  // Lazy-load the ~150KB world outline ONLY for a geo map (dynamic import →
+  // code-split, so it never weighs on any other chart). Points render
+  // immediately; the basemap fades in once the chunk resolves.
+  const [worldRings, setWorldRings] = useState<ReadonlyArray<ReadonlyArray<readonly [number, number]>> | null>(null);
+  useEffect(() => {
+    if (!isGeoMap) return;
+    let alive = true;
+    import('./worldLand').then((m) => { if (alive) setWorldRings(m.WORLD_RINGS); }).catch(() => {});
+    return () => { alive = false; };
+  }, [isGeoMap]);
+  const clipId = React.useId();
+
   if (!scatterX || !scatterY) return <EmptyAdvanced message={t('explore.advancedCharts.selectXY')} />;
   const points = rows
     .map((row) => ({
@@ -894,20 +922,34 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const rs = points.map((point) => point.r);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
   const maxR = Math.max(...rs, 1);
-  // MAP_POINT geographic projection: when the X/Y fields are longitude/latitude
-  // (by name), place points at their TRUE position via an equirectangular
-  // projection (fixed -180..180 / -90..90) instead of stretching the data
-  // min/max to fill the box — so a point at (lng=105, lat=21) lands where
-  // Hanoi actually is. Name-based only (no value-range guess) so a non-geo
-  // MAP_POINT never gets silently mis-projected. BUBBLE always uses data scale.
-  const isGeoProjected = type === 'MAP_POINT'
-    && /\b(lon|lng|long|longitude)\b/i.test(scatterX)
-    && /\b(lat|latitude)\b/i.test(scatterY);
+  // A geo point map's metrics ARE its lng/lat axes, so metrics[0] is not a
+  // meaningful "size" — treat it as no-size (uniform small dots) rather than
+  // scaling bubbles by longitude. Only a metric distinct from both axes sizes.
+  const hasSize = Boolean(metric) && metric!.field !== scatterX && metric!.field !== scatterY;
+
+  // Bounds. BUBBLE stretches the data min/max to fill the tile. MAP_POINT fits
+  // a ROBUST bbox (2nd–98th percentile) so a few junk coordinates can't zoom
+  // the whole world out, padded + clamped to valid lng/lat. The basemap is
+  // drawn in the SAME bbox so points sit on the right countries.
+  const quantile = (arr: number[], q: number) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))))];
+  };
+  let bxMin: number, bxMax: number, byMin: number, byMax: number;
+  if (isGeoMap) {
+    bxMin = quantile(xs, 0.02); bxMax = quantile(xs, 0.98);
+    byMin = quantile(ys, 0.02); byMax = quantile(ys, 0.98);
+    const px = (bxMax - bxMin) * 0.15 || 2;
+    const py = (byMax - byMin) * 0.15 || 2;
+    bxMin = Math.max(-180, bxMin - px); bxMax = Math.min(180, bxMax + px);
+    byMin = Math.max(-85, byMin - py); byMax = Math.min(85, byMax + py);
+    if (bxMax - bxMin < 0.5) { bxMin -= 1; bxMax += 1; }
+    if (byMax - byMin < 0.5) { byMin -= 1; byMax += 1; }
+  } else {
+    bxMin = Math.min(...xs); bxMax = Math.max(...xs);
+    byMin = Math.min(...ys); byMax = Math.max(...ys);
+  }
   // Phase-15.86 — BUBBLE/MAP_POINT DataLabels. Master switch shows the
   // dimension label next to each point. fontSize/fontColor per-point
   // override (keyed by label).
@@ -923,45 +965,231 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
         const plotW = Math.max(10, W - padL - padR);
         const plotH = Math.max(10, H - padT - padB);
         const fy1 = fy0 + plotH;
-        const sx = isGeoProjected
-          ? (value: number) => fx0 + ((value + 180) / 360) * plotW
-          : (value: number) => fx0 + ((value - minX) / Math.max(maxX - minX, 1)) * plotW;
-        const sy = isGeoProjected
-          ? (value: number) => fy1 - ((value + 90) / 180) * plotH
-          : (value: number) => fy1 - ((value - minY) / Math.max(maxY - minY, 1)) * plotH;
+        // Projection. Geo preserves aspect (equal degrees/pixel, centred) so the
+        // landmass isn't stretched — like a real map. Non-geo fills the box.
+        let sx: (v: number) => number;
+        let sy: (v: number) => number;
+        if (isGeoMap) {
+          const spanX = Math.max(bxMax - bxMin, 1e-6);
+          const spanY = Math.max(byMax - byMin, 1e-6);
+          const scale = Math.min(plotW / spanX, plotH / spanY);
+          const drawW = spanX * scale, drawH = spanY * scale;
+          const ox = fx0 + (plotW - drawW) / 2, oy = fy0 + (plotH - drawH) / 2;
+          sx = (v: number) => ox + (v - bxMin) * scale;
+          sy = (v: number) => oy + drawH - (v - byMin) * scale; // invert latitude
+        } else {
+          sx = (v: number) => fx0 + ((v - bxMin) / Math.max(bxMax - bxMin, 1)) * plotW;
+          sy = (v: number) => fy1 - ((v - byMin) / Math.max(byMax - byMin, 1)) * plotH;
+        }
         // Bubble radius scales with the plot so big tiles get bigger bubbles.
         const rMax = Math.max(8, Math.min(34, Math.min(plotW, plotH) * 0.14));
-        const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * rMax : 5;
+        const sr = (value: number) => {
+          if (type === 'BUBBLE') return 4 + safeSqrtShare(value, maxR) * rMax;
+          if (type === 'MAP_POINT') return hasSize ? 3 + safeSqrtShare(value, maxR) * rMax * 0.7 : 4;
+          return 5;
+        };
+        // Project the basemap rings into the same bbox; skip rings fully outside
+        // the view (cheap reject) and clip the rest to the plot rect.
+        const landPaths: string[] = [];
+        if (isGeoMap && worldRings) {
+          for (const ring of worldRings) {
+            let anyIn = false;
+            for (const [lng, lat] of ring) {
+              if (lng >= bxMin && lng <= bxMax && lat >= byMin && lat <= byMax) { anyIn = true; break; }
+            }
+            if (!anyIn) continue;
+            let d = '';
+            for (let i = 0; i < ring.length; i++) {
+              d += (i === 0 ? 'M' : 'L') + sx(ring[i][0]).toFixed(1) + ' ' + sy(ring[i][1]).toFixed(1);
+            }
+            landPaths.push(d + 'Z');
+          }
+        }
         return (
           <>
-            <rect x={fx0} y={fy0} width={plotW} height={plotH} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
-            <text x={fx0 + 6} y={H - 14} fontSize={11} fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
-            <text x={18} y={fy0 + 18} fontSize={11} fill="rgb(var(--text-tertiary))" transform={`rotate(-90 18 ${fy0 + 18})`}>{fieldLabel(scatterY, labelMap)}</text>
-            {points.map((point, index) => {
-              const pointKey = String(point.label ?? index);
-              const override = dlc?.overrides?.[pointKey];
-              const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
-              const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
-              return (
-                <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
-                  <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, pointKey, index)} opacity={0.68} stroke="rgb(var(--surface-1))" />
-                  {labelsEnabled && point.label !== undefined && (
-                    <text x={sx(point.x)} y={sy(point.y) - sr(point.r) - 4}
-                      fontSize={labelFontSize}
-                      textAnchor="middle"
-                      fill={labelFontColor}
-                      style={{ pointerEvents: 'none' }}>
-                      {String(point.label).slice(0, 16)}
-                    </text>
-                  )}
-                  <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
-                </g>
-              );
-            })}
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={fx0} y={fy0} width={plotW} height={plotH} rx={10} />
+              </clipPath>
+            </defs>
+            <rect
+              x={fx0} y={fy0} width={plotW} height={plotH} rx={10}
+              stroke="rgb(var(--border-line))"
+              fill={isGeoMap ? '#cfe6f5' : (type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent')}
+            />
+            {isGeoMap && (
+              <g clipPath={`url(#${clipId})`}>
+                {landPaths.map((d, i) => (
+                  <path key={i} d={d} fill="#eaf0e3" stroke="#a7b6ab" strokeWidth={0.6} />
+                ))}
+              </g>
+            )}
+            {!isGeoMap && (
+              <>
+                <text x={fx0 + 6} y={H - 14} fontSize={11} fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
+                <text x={18} y={fy0 + 18} fontSize={11} fill="rgb(var(--text-tertiary))" transform={`rotate(-90 18 ${fy0 + 18})`}>{fieldLabel(scatterY, labelMap)}</text>
+              </>
+            )}
+            <g clipPath={`url(#${clipId})`}>
+              {points.map((point, index) => {
+                const pointKey = String(point.label ?? index);
+                const override = dlc?.overrides?.[pointKey];
+                const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
+                const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
+                return (
+                  <g key={`${point.x}-${point.y}-${index}`} onClick={() => dimension && onSelect?.(dimension, point.label)} className="cursor-pointer">
+                    <circle cx={sx(point.x)} cy={sy(point.y)} r={sr(point.r)} fill={resolveSliceColor(style, palette, pointKey, index)} opacity={isGeoMap ? 0.82 : 0.68} stroke="rgb(var(--surface-1))" strokeWidth={isGeoMap ? 0.6 : 1} />
+                    {labelsEnabled && point.label !== undefined && (
+                      <text x={sx(point.x)} y={sy(point.y) - sr(point.r) - 4}
+                        fontSize={labelFontSize}
+                        textAnchor="middle"
+                        fill={labelFontColor}
+                        style={{ pointerEvents: 'none' }}>
+                        {String(point.label).slice(0, 16)}
+                      </text>
+                    )}
+                    <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
+                  </g>
+                );
+              })}
+            </g>
           </>
         );
       }}
     </ResponsiveSvg>
+  );
+}
+
+// Compact numeric label for donut centres ("1.5M", "374K", "920").
+function compactNum(n: number): string {
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (a >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(Math.round(n));
+}
+
+/**
+ * GeoTileDonutMap — MAP_POINT in "donut markers on a real basemap" mode (the
+ * Power BI / Tableau look). One donut per region (source dimension), segmented
+ * by the breakdown category, sized by total. The region is geocoded to a
+ * centroid via REGION_CENTROIDS (state codes), projected with Web-Mercator onto
+ * raster tiles (CARTO light). If the tiles fail to load (offline / blocked /
+ * strict CSP) we drop to a plain water-tone background — markers still render,
+ * so the chart degrades gracefully instead of going blank.
+ */
+function GeoTileDonutMap({ pairs, style, palette, onSelect }: {
+  pairs: { source: string; target: string; value: number }[];
+  style: ChartStyleConfig;
+  palette: string[];
+  onSelect?: (value: string) => void;
+}) {
+  const { t } = useI18n();
+  const { ref, width, height } = useElementSize<HTMLDivElement>();
+  const [tilesFailed, setTilesFailed] = useState(false);
+
+  const regions = useMemo(() => {
+    const by = new Map<string, { name: string; segs: { name: string; value: number }[]; total: number; c: readonly [number, number] }>();
+    for (const p of pairs) {
+      const c = lookupCentroid(p.source);
+      if (!c) continue;
+      let r = by.get(p.source);
+      if (!r) { r = { name: p.source, segs: [], total: 0, c }; by.set(p.source, r); }
+      const v = Math.max(0, Number(p.value) || 0);
+      r.segs.push({ name: p.target, value: v });
+      r.total += v;
+    }
+    return Array.from(by.values()).filter((r) => r.total > 0);
+  }, [pairs]);
+
+  const categories = useMemo(() => {
+    const seen: string[] = [];
+    for (const p of pairs) { if (!seen.includes(p.target)) seen.push(p.target); }
+    return seen;
+  }, [pairs]);
+  const catColor = (name: string) => resolveSliceColor(style, palette, name, Math.max(0, categories.indexOf(name)));
+
+  if (!regions.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCoordinateRows')} />;
+
+  const W = Math.max(1, Math.round(width));
+  const H = Math.max(1, Math.round(height));
+  const merc = (lng: number, lat: number) => {
+    const x = (lng + 180) / 360;
+    const s = Math.max(-0.9999, Math.min(0.9999, Math.sin((lat * Math.PI) / 180)));
+    const y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+    return { x, y };
+  };
+  const ms = regions.map((r) => merc(r.c[0], r.c[1]));
+  const wxmin = Math.min(...ms.map((m) => m.x)), wxmax = Math.max(...ms.map((m) => m.x));
+  const wymin = Math.min(...ms.map((m) => m.y)), wymax = Math.max(...ms.map((m) => m.y));
+  const spanX = Math.max(wxmax - wxmin, 1e-6), spanY = Math.max(wymax - wymin, 1e-6);
+  const fitScale = Math.min((W * 0.66) / spanX, (H * 0.66) / spanY);
+  let z = Math.floor(Math.log2(Math.max(1, fitScale) / 256));
+  z = Math.max(2, Math.min(7, z));
+  const worldPx = 256 * Math.pow(2, z);
+  const cx = (wxmin + wxmax) / 2, cy = (wymin + wymax) / 2;
+  const offX = cx * worldPx - W / 2, offY = cy * worldPx - H / 2;
+  const proj = (lng: number, lat: number) => {
+    const m = merc(lng, lat);
+    return { px: m.x * worldPx - offX, py: m.y * worldPx - offY };
+  };
+  const nT = Math.pow(2, z);
+  const tiles: { left: number; top: number; src: string; key: string }[] = [];
+  const tx0 = Math.floor(offX / 256), tx1 = Math.floor((offX + W) / 256);
+  const ty0 = Math.floor(offY / 256), ty1 = Math.floor((offY + H) / 256);
+  for (let tx = tx0; tx <= tx1; tx++) {
+    for (let ty = ty0; ty <= ty1; ty++) {
+      if (ty < 0 || ty >= nT) continue;
+      const wx = ((tx % nT) + nT) % nT;
+      tiles.push({ left: tx * 256 - offX, top: ty * 256 - offY, src: `https://basemaps.cartocdn.com/light_all/${z}/${wx}/${ty}.png`, key: `${z}-${tx}-${ty}` });
+    }
+  }
+  const maxTotal = Math.max(...regions.map((r) => r.total), 1);
+  const rOf = (total: number) => 8 + Math.sqrt(Math.max(0, total) / maxTotal) * Math.max(14, Math.min(46, Math.min(W, H) * 0.09));
+
+  return (
+    <div ref={ref} className="relative h-full w-full overflow-hidden rounded-md" style={{ background: '#dfe8ee' }}>
+      {!tilesFailed && (
+        <div className="absolute inset-0" aria-hidden>
+          {tiles.map((tl) => (
+            <img key={tl.key} src={tl.src} alt="" draggable={false} onError={() => setTilesFailed(true)}
+              style={{ position: 'absolute', left: tl.left, top: tl.top, width: 256, height: 256 }} />
+          ))}
+        </div>
+      )}
+      <svg className="absolute inset-0" width={W} height={H} style={{ pointerEvents: 'none' }}>
+        {regions.map((r) => {
+          const { px, py } = proj(r.c[0], r.c[1]);
+          if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+          const outer = rOf(r.total);
+          const inner = outer * 0.55;
+          let cursor = 0;
+          const segs = [...r.segs].sort((a, b) => b.value - a.value);
+          return (
+            <g key={r.name} style={{ pointerEvents: 'auto', cursor: 'pointer' }} onClick={() => onSelect?.(r.name)}>
+              {segs.map((s, i) => {
+                const ang = (s.value / r.total) * 360;
+                const d = ringSegment(px, py, outer, inner, cursor, cursor + ang);
+                cursor += ang;
+                return <path key={i} d={d} fill={catColor(s.name)} stroke="#fff" strokeWidth={1} opacity={0.92} />;
+              })}
+              <circle cx={px} cy={py} r={inner} fill="rgba(255,255,255,0.82)" />
+              <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={Math.max(9, outer * 0.32)} fontWeight={600} fill="#33414d">{compactNum(r.total)}</text>
+              <title>{r.name}: {formatNumber(r.total, style)}</title>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="absolute right-2 top-2 rounded bg-white/85 px-2 py-1 text-[10px] leading-tight shadow-sm" style={{ maxHeight: '62%', overflowY: 'auto' }}>
+        {categories.slice(0, 12).map((c) => (
+          <div key={c} className="flex items-center gap-1">
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: catColor(c), display: 'inline-block', flexShrink: 0 }} />
+            <span className="whitespace-nowrap" style={{ color: '#33414d' }}>{String(c) || '(blank)'}</span>
+          </div>
+        ))}
+      </div>
+      <div className="absolute bottom-1 left-2 text-[9px]" style={{ color: '#6b7785' }}>© OpenStreetMap, © CARTO</div>
+    </div>
   );
 }
 
@@ -1814,6 +2042,8 @@ export function AdvancedExploreChart({
         <WaterfallChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'NINE_BOX' ? (
         <NineBoxChart rows={data} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
+      ) : type === 'MAP_POINT' && breakdown ? (
+        <GeoTileDonutMap pairs={pairs} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
         <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
       ) : type === 'HEATMAP' ? (

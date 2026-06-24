@@ -36,7 +36,21 @@ export function getDashboardChartStyleOverride(layout: LayoutLike): Partial<Char
 
 export function getBaseChartStyleConfig(chart: Pick<Chart, 'config'> | null | undefined): ChartStyleConfig {
   const config = getChartConfig(chart);
-  return normalizeChartStyleConfig(config.styleConfig, config.conditional_formatting);
+  // Schema bridge — some charts (created via the AI blueprint / older paths)
+  // store the Top-N row limit as a top-level `config.limit` instead of
+  // `styleConfig.dataLimit`, which is the field the renderer actually reads.
+  // Without this the limit is silently dead: a chart titled "(top)" with
+  // `limit: 15` renders all 70+ categories. Fold it into styleConfig when the
+  // style hasn't set its own dataLimit (an explicit styleConfig value wins).
+  const styleConfig = isPlainObject(config.styleConfig) ? config.styleConfig : undefined;
+  const topLevelLimit = Number((config as Record<string, any>).limit);
+  const hasOwnDataLimit = styleConfig != null
+    && styleConfig.dataLimit != null
+    && styleConfig.dataLimit !== '';
+  const bridged = Number.isFinite(topLevelLimit) && topLevelLimit > 0 && !hasOwnDataLimit
+    ? { ...(styleConfig ?? {}), dataLimit: topLevelLimit }
+    : config.styleConfig;
+  return normalizeChartStyleConfig(bridged, config.conditional_formatting);
 }
 
 export function getEffectiveDashboardChartStyleConfig(
