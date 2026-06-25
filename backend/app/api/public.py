@@ -2490,10 +2490,16 @@ def get_dashboard_ai_recon(
 
     import json
     from datetime import date, datetime
+    from decimal import Decimal
 
     def _default(obj):
         if isinstance(obj, (date, datetime)):
             return obj.isoformat()
+        # Postgres NUMERIC / aggregated measure values come back as Decimal,
+        # which the stdlib JSON encoder can't serialize — coerce to float so the
+        # proactive-recon Insight Packs render instead of 500-ing the bot open.
+        if isinstance(obj, Decimal):
+            return float(obj)
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
     from fastapi.responses import Response
