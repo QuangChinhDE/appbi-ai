@@ -2032,6 +2032,22 @@ def _execute_semantic_chart_runtime(
             (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "").strip().lower()),
         ]
         if _bubble_label and any(ref for ref, _ in _bubble_axes):
+            # Hướng A (BUG-016 regression guard): only fold a RAW axis into a
+            # measure when it lives on the SAME fact as the measures already
+            # present (declared-measure axes + Size). A raw axis on a DIFFERENT
+            # fact would make the chart span ≥2 measure-fact grains → the
+            # engine's multi-fact guard rejects it. Before BUG-016 the raw axis
+            # stayed a GROUP BY dimension and a cross-fact chart still rendered;
+            # folding it into a measure regressed those charts to an error. So
+            # for a cross-fact raw axis we KEEP it as a dimension (legacy
+            # behaviour). View prefix (``view.field`` → ``view``) is the fact
+            # signal; a declared-measure axis is already in measure_refs so its
+            # view seeds the comparison. Same-fact bubbles/9-boxes still
+            # aggregate exactly as BUG-016 intended.
+            def _ref_view(_r: str) -> str:
+                return str(_r or "").rpartition(".")[0]
+
+            _measure_views = {v for v in (_ref_view(m) for m in measure_refs) if v}
             for _axis_ref, _axis_agg in _bubble_axes:
                 if not _axis_ref:
                     continue
@@ -2044,10 +2060,21 @@ def _execute_semantic_chart_runtime(
                 # so it always aggregates. BUBBLE keeps the default-SUM behaviour.
                 if _normalized_ct == "NINE_BOX" and _was_dim and _axis_agg not in _VALID_BUBBLE_AGG:
                     continue
+                # Cross-fact raw axis → leave as a GROUP BY dimension (see above).
+                _axis_view = _ref_view(_axis_ref)
+                if (
+                    _was_dim
+                    and _axis_view
+                    and _measure_views
+                    and _axis_view not in _measure_views
+                ):
+                    continue
                 if _was_dim:
                     dimension_refs.remove(_axis_ref)
                 if _axis_ref not in measure_refs:
                     measure_refs.append(_axis_ref)
+                if _axis_view:
+                    _measure_views.add(_axis_view)
                 # A raw numeric axis (classifier kept it as a dim) needs an
                 # explicit agg; a declared-measure axis is already in
                 # measure_refs with its own stored aggregation — leave it.
