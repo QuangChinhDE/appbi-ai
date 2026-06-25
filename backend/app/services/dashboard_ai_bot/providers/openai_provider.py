@@ -111,11 +111,16 @@ async def stream_openai(
         or model_lc.startswith("o4")
     )
     tokens_field = "max_completion_tokens" if uses_new_tokens_field else "max_tokens"
+    # Reasoning models (gpt-5 / o-series) spend the completion budget on hidden
+    # reasoning tokens BEFORE any visible output. A 2048 cap is consumed by
+    # reasoning, so the model emits nothing and the turn ends with no answer.
+    # Give the new family generous headroom so it can both think AND finalise.
+    effective_max_tokens = max(max_tokens, 16000) if uses_new_tokens_field else max_tokens
     payload: dict[str, Any] = {
         "model": model,
         "messages": _to_openai_messages(system_prompt, messages),
         "stream": True,
-        tokens_field: max_tokens,
+        tokens_field: effective_max_tokens,
         # Ask OpenAI to emit a final chunk carrying token usage so the agent
         # loop can tally cost against the per-turn cap.
         "stream_options": {"include_usage": True},
