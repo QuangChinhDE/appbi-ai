@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Link2, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useI18n } from '@/providers/LanguageProvider';
 import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-datasets';
@@ -2987,31 +2987,37 @@ export function ExploreEditor({
                 table charts ("Base: Meetings") and grows to show JOIN count
                 or joinable potential when relationships exist. */}
             {selectedSemanticView && (() => {
+              // Data-source chip (Phase-15.10 redesign): DAs found "Base: X ·
+              // 🔌 +N joinable" confusing — "base view" + the actual/potential
+              // (joined vs joinable) distinction is semantic-layer jargon. Show
+              // only what they recognise: a table icon + the table name. The
+              // "+N" appears ONLY when the chart ACTUALLY combines other tables
+              // (a meaningful, actionable state) — join *potential* moves to the
+              // tooltip so it stops cluttering. Icons replace the emojis to
+              // match the lucide system; the face is language-agnostic.
               const baseLabel = getSemanticViewDisplayName(selectedSemanticView);
               const crossUsed = activeRelationshipSummary.crossTableInUse;
               const joinedCount = activeRelationshipSummary.crossTableViews?.length ?? 0;
               const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
               const hasJoined = crossUsed && joinedCount > 0;
               const hasJoinable = !crossUsed && joinableCount > 0;
+              const Icon = hasJoined ? Link2 : Database;
               const tone = hasJoined
                 ? 'border-success/40 bg-success/10 text-success'
                 : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
-              const suffix = hasJoined
-                ? ` · 🔗 +${joinedCount} joined`
-                : hasJoinable
-                  ? ` · 🔌 +${joinableCount} joinable`
-                  : '';
               const tip = hasJoined
-                ? `Base view: ${baseLabel}. This chart joins ${joinedCount} related view${joinedCount === 1 ? '' : 's'} through relationships: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
+                ? `This chart combines ${joinedCount} related table${joinedCount === 1 ? '' : 's'}: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
                 : hasJoinable
-                  ? `Base view: ${baseLabel}. ${joinableCount} related view${joinableCount === 1 ? '' : 's'} can be joined through relationships. Pick a field from one of them to join it.`
-                  : `Base view: ${baseLabel}. The base view is derived from the first field you pick. Clear all fields and pick again to change it.`;
+                  ? `Data: ${baseLabel}. You can pull fields from ${joinableCount} related table${joinableCount === 1 ? '' : 's'} — just pick one in the field list below.`
+                  : `Data: ${baseLabel}.`;
               return (
                 <span
                   className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
                   title={tip}
                 >
-                  Base: {baseLabel}{suffix}
+                  <Icon className="h-3 w-3 shrink-0" />
+                  <span className="max-w-[160px] truncate">{baseLabel}</span>
+                  {hasJoined && <span className="opacity-70">+{joinedCount}</span>}
                 </span>
               );
             })()}

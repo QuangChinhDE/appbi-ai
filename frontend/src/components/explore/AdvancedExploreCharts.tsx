@@ -1,6 +1,11 @@
 'use client';
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
+import {
+  ScatterChart, Scatter, XAxis as RcXAxis, YAxis as RcYAxis, ZAxis as RcZAxis,
+  ReferenceArea, Tooltip as RcTooltip, ResponsiveContainer as RcResponsiveContainer,
+  Cell as RcCell, LabelList as RcLabelList,
+} from 'recharts';
 import { useI18n } from '@/providers/LanguageProvider';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
@@ -1266,98 +1271,113 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
   const xAxis = buildAxis(scatterX);
   const yAxis = buildAxis(scatterY);
 
-  type Item = { label: unknown; size: number; xb: number; yb: number };
-  const items: Item[] = rows.map((row) => ({
+  // ── Bin each item into its 3×3 cell, then lay the cell's items out in a
+  // deterministic mini-grid so marks never overlap. Coordinates live in
+  // band-space [0,3] — Recharts scales them to the plot and owns the axes,
+  // ticks, tooltip and responsiveness (no hand-rolled SVG geometry). band 2
+  // (high) sits at the TOP automatically: Recharts' numeric Y increases upward.
+  type Meta = { label: unknown; size: number; xb: number; yb: number };
+  const metas: Meta[] = rows.slice(0, 2000).map((row) => ({
     label: dimension ? row[dimension] : undefined,
     size: metric ? Math.abs(metricValue(row, metric, preAggregated)) : 1,
     xb: xAxis.band(row[scatterX]),
     yb: yAxis.band(row[scatterY]),
-  })).slice(0, 2000);
-  if (!items.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCoordinateRows')} />;
-  const maxSize = Math.max(...items.map((it) => it.size), 1);
+  }));
+  if (!metas.length) return <EmptyAdvanced message={t('explore.advancedCharts.noCoordinateRows')} />;
+
+  const cellGroups = new Map<string, Meta[]>();
+  for (const m of metas) {
+    const k = `${m.xb},${m.yb}`;
+    if (!cellGroups.has(k)) cellGroups.set(k, []);
+    cellGroups.get(k)!.push(m);
+  }
+  type Pt = { x: number; y: number; z: number; label: string; xb: number; yb: number; size: number; key: string };
+  const points: Pt[] = [];
+  const cellCount = new Map<string, number>();
+  for (const [k, group] of cellGroups) {
+    cellCount.set(k, group.length);
+    const cols = Math.ceil(Math.sqrt(group.length));
+    const rowsN = Math.ceil(group.length / cols);
+    group.forEach((m, i) => {
+      const col = i % cols;
+      const r = Math.floor(i / cols);
+      points.push({
+        x: m.xb + (col + 0.5) / cols,
+        y: m.yb + (r + 0.5) / rowsN,
+        z: m.size,
+        label: m.label !== undefined && m.label !== null ? String(m.label) : '',
+        xb: m.xb, yb: m.yb, size: m.size,
+        key: String(m.label ?? `${k}-${i}`),
+      });
+    });
+  }
 
   // Diagonal cell shading by score = xBand + yBand (0 worst … 4 best).
   const cellFill = ['rgba(239,68,68,0.13)', 'rgba(249,115,22,0.11)', 'rgba(234,179,8,0.11)', 'rgba(132,204,22,0.11)', 'rgba(34,197,94,0.14)'];
-
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const fieldNameX = fieldLabel(scatterX, labelMap);
+  const fieldNameY = fieldLabel(scatterY, labelMap);
+  const sizeName = metric ? fieldLabel(metric.field, labelMap) : '';
 
   return (
-    <ResponsiveSvg>
-      {(W, H) => {
-        const padL = 64, padR = 20, padT = 20, padB = 52;
-        const fx0 = padL, fy0 = padT;
-        const plotW = Math.max(30, W - padL - padR);
-        const plotH = Math.max(30, H - padT - padB);
-        const cellW = plotW / 3;
-        const cellH = plotH / 3;
-        // Group items per cell so we can lay them out in a non-overlapping mini-grid.
-        const byCell = new Map<string, Item[]>();
-        for (const it of items) {
-          const key = `${it.xb},${it.yb}`;
-          (byCell.get(key) ?? byCell.set(key, []).get(key)!).push(it);
-        }
-        const rMax = Math.max(5, Math.min(20, Math.min(cellW, cellH) * 0.16));
-        return (
-          <>
-            {/* 9 cells */}
-            {[0, 1, 2].map((xb) =>
-              [0, 1, 2].map((yb) => {
-                // yb 2 (high) at the top → invert row position.
-                const cx0 = fx0 + xb * cellW;
-                const cy0 = fy0 + (2 - yb) * cellH;
-                const cell = byCell.get(`${xb},${yb}`) ?? [];
-                return (
-                  <g key={`cell-${xb}-${yb}`}>
-                    <rect x={cx0} y={cy0} width={cellW} height={cellH} fill={cellFill[xb + yb]} stroke="rgb(var(--border-line))" />
-                    {cell.length > 0 && (
-                      <text x={cx0 + cellW - 6} y={cy0 + 14} fontSize={10} textAnchor="end" fill="rgb(var(--text-tertiary))">{cell.length}</text>
-                    )}
-                  </g>
-                );
-              })
-            )}
-            {/* X band ticks (bottom) */}
-            {xAxis.labels.map((lab, i) => (
-              <text key={`xl-${i}`} x={fx0 + (i + 0.5) * cellW} y={fy0 + plotH + 18} fontSize={10} textAnchor="middle" fill="rgb(var(--text-secondary))">{String(lab).slice(0, 18)}</text>
-            ))}
-            {/* Y band ticks (left) — band 2 at top */}
-            {yAxis.labels.map((lab, i) => (
-              <text key={`yl-${i}`} x={fx0 - 8} y={fy0 + (2 - i + 0.5) * cellH} fontSize={10} textAnchor="end" dominantBaseline="middle" fill="rgb(var(--text-secondary))">{String(lab).slice(0, 12)}</text>
-            ))}
-            {/* Axis field names */}
-            <text x={fx0 + plotW / 2} y={H - 8} fontSize={11} textAnchor="middle" fill="rgb(var(--text-tertiary))">{fieldLabel(scatterX, labelMap)}</text>
-            <text x={16} y={fy0 + plotH / 2} fontSize={11} textAnchor="middle" fill="rgb(var(--text-tertiary))" transform={`rotate(-90 16 ${fy0 + plotH / 2})`}>{fieldLabel(scatterY, labelMap)}</text>
-            {/* Items, laid out in a mini-grid inside each cell */}
-            {Array.from(byCell.entries()).flatMap(([key, cell]) => {
-              const [xb, yb] = key.split(',').map(Number);
-              const cx0 = fx0 + xb * cellW;
-              const cy0 = fy0 + (2 - yb) * cellH;
-              const cols = Math.ceil(Math.sqrt(cell.length));
-              const rowsN = Math.ceil(cell.length / cols);
-              return cell.map((it, i) => {
-                const col = i % cols;
-                const r = Math.floor(i / cols);
-                const px = cx0 + ((col + 0.5) / cols) * cellW;
-                const py = cy0 + ((r + 0.5) / rowsN) * cellH;
-                const pointKey = String(it.label ?? `${key}-${i}`);
-                const radius = metric ? 4 + safeSqrtShare(it.size, maxSize) * rMax : Math.min(7, rMax * 0.5);
-                const override = dlc?.overrides?.[pointKey];
-                return (
-                  <g key={`${key}-${i}`} onClick={() => dimension && onSelect?.(dimension, it.label)} className={dimension ? 'cursor-pointer' : undefined}>
-                    <circle cx={px} cy={py} r={radius} fill={resolveSliceColor(style, palette, pointKey, i)} opacity={0.78} stroke="rgb(var(--surface-1))" />
-                    {labelsEnabled && it.label !== undefined && (
-                      <text x={px} y={py - radius - 3} fontSize={override?.fontSize ?? dlc?.fontSize ?? 9} textAnchor="middle" fill={override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))'} style={{ pointerEvents: 'none' }}>{String(it.label).slice(0, 14)}</text>
-                    )}
-                    <title>{it.label !== undefined ? `${it.label}\n` : ''}{fieldLabel(scatterX, labelMap)}: {xAxis.labels[it.xb]}\n{fieldLabel(scatterY, labelMap)}: {yAxis.labels[it.yb]}{metric ? `\n${fieldLabel(metric.field, labelMap)}: ${formatNumber(it.size, style)}` : ''}</title>
-                  </g>
-                );
-              });
-            })}
-          </>
-        );
-      }}
-    </ResponsiveSvg>
+    <RcResponsiveContainer width="100%" height="100%">
+      <ScatterChart margin={{ top: 16, right: 20, bottom: 28, left: 12 }}>
+        {[0, 1, 2].flatMap((xb) =>
+          [0, 1, 2].map((yb) => (
+            <ReferenceArea
+              key={`cell-${xb}-${yb}`}
+              x1={xb} x2={xb + 1} y1={yb} y2={yb + 1}
+              fill={cellFill[xb + yb]} fillOpacity={1}
+              stroke="rgb(var(--border-line))" strokeOpacity={0.6}
+              ifOverflow="visible"
+              label={{ value: cellCount.get(`${xb},${yb}`) ?? '', position: 'insideTopRight', fontSize: 10, fill: 'rgb(var(--text-tertiary))' }}
+            />
+          ))
+        )}
+        <RcXAxis
+          type="number" dataKey="x" domain={[0, 3]} ticks={[0.5, 1.5, 2.5]} interval={0}
+          tickFormatter={(v: number) => String(xAxis.labels[Math.floor(v)] ?? '').slice(0, 18)}
+          tickLine={false} fontSize={10} stroke="rgb(var(--text-tertiary))"
+          label={{ value: fieldNameX, position: 'insideBottom', offset: -14, fontSize: 11, fill: 'rgb(var(--text-tertiary))' }}
+        />
+        <RcYAxis
+          type="number" dataKey="y" domain={[0, 3]} ticks={[0.5, 1.5, 2.5]} interval={0}
+          tickFormatter={(v: number) => String(yAxis.labels[Math.floor(v)] ?? '').slice(0, 12)}
+          tickLine={false} fontSize={10} width={84} stroke="rgb(var(--text-tertiary))"
+          label={{ value: fieldNameY, angle: -90, position: 'insideLeft', fontSize: 11, fill: 'rgb(var(--text-tertiary))', style: { textAnchor: 'middle' } }}
+        />
+        <RcZAxis type="number" dataKey="z" range={metric ? [64, 640] : [56, 56]} />
+        <RcTooltip
+          cursor={{ strokeDasharray: '3 3' }}
+          content={({ active, payload }: any) => {
+            if (!active || !payload || !payload.length) return null;
+            const p = payload[0].payload as Pt;
+            return (
+              <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1.5 text-xs shadow-md">
+                {p.label && <div className="font-semibold text-text-primary mb-0.5">{p.label}</div>}
+                <div className="text-text-secondary">{fieldNameX}: <span className="font-medium text-text-primary">{xAxis.labels[p.xb]}</span></div>
+                <div className="text-text-secondary">{fieldNameY}: <span className="font-medium text-text-primary">{yAxis.labels[p.yb]}</span></div>
+                {metric && <div className="text-text-secondary">{sizeName}: <span className="font-medium text-text-primary">{formatNumber(p.size, style)}</span></div>}
+              </div>
+            );
+          }}
+        />
+        <Scatter
+          data={points}
+          isAnimationActive={false}
+          onClick={(p: any) => { if (dimension && p) onSelect?.(dimension, p.label); }}
+          className={dimension ? 'cursor-pointer' : undefined}
+        >
+          {points.map((p, i) => (
+            <RcCell key={p.key + i} fill={resolveSliceColor(style, palette, p.key, i)} fillOpacity={0.78} stroke="rgb(var(--surface-1))" />
+          ))}
+          {labelsEnabled && (
+            <RcLabelList dataKey="label" position="top" style={{ fontSize: dlc?.fontSize ?? 9, fill: dlc?.fontColor ?? 'rgb(var(--text-secondary))', pointerEvents: 'none' }} />
+          )}
+        </Scatter>
+      </ScatterChart>
+    </RcResponsiveContainer>
   );
 }
 

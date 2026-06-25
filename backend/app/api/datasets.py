@@ -4548,6 +4548,40 @@ def update_dataset_view(
         ]
         _validate_field_references(table, final_dims, validatable_measures)
 
+        # ── Gốc-A guard: a MEASURE must not share its name with a VISIBLE
+        # dimension in the same view. Such a collision makes the ref
+        # `view.<name>` ambiguous — the engine's measure-first lookup resolves
+        # it to the measure, so a user who picked the COLUMN and asked for SUM
+        # silently gets the measure's own aggregation instead (the dat_goal →
+        # COUNT(DISTINCT) bug). The auto-generated SUM-pair is EXEMPT: there the
+        # twin dimension is HIDDEN and the measure IS sum(col), so the ref is
+        # unambiguous in result. Only NEW/edited measures are checked, so a
+        # pre-existing collision never locks the user out of unrelated edits.
+        _changed_measure_names = {
+            str((m or {}).get("name") or "").strip()
+            for m in (kept_for_validation if isinstance(incoming_measures, list) else [])
+            if isinstance(m, dict) and str((m or {}).get("name") or "").strip()
+        }
+        if _changed_measure_names:
+            _visible_dim_names = {
+                str((d or {}).get("name") or "").strip()
+                for d in (final_dims or [])
+                if isinstance(d, dict) and not d.get("hidden")
+                and str((d or {}).get("name") or "").strip()
+            }
+            _name_collisions = sorted(_changed_measure_names & _visible_dim_names)
+            if _name_collisions:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Measure trùng tên với cột (dimension) hiển thị trong view: "
+                        f"{_name_collisions}. Ref `view.<tên>` sẽ nhập nhằng — engine "
+                        f"ưu tiên measure nên SUM cột bị thay bằng định nghĩa measure "
+                        f"(vd dat_goal → COUNT(DISTINCT) thay vì SUM). Hãy đổi TÊN nội bộ "
+                        f"của measure cho khác tên cột (nhãn hiển thị có thể giữ nguyên)."
+                    ),
+                )
+
     # Phase-6: optional rename_map carried alongside the measures patch.
     # Format: {"old_name": "new_name"}. When present, the cascade guard
     # excludes the listed old_names (they're not really dropped — they're
