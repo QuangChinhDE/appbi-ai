@@ -2728,6 +2728,25 @@ function ScatterAxisAgg({
 }
 
 /**
+ * Shown in place of {@link ScatterAxisAgg} when the bound axis is a declared
+ * MEASURE. Power BI / Looker / Tableau never let you re-aggregate a measure
+ * inline — it carries the aggregation defined in the model. We surface a Σ
+ * marker + read-only note so DA coming from Power BI sees the same contract
+ * (instead of a SUM/AVG dropdown that the BE would silently ignore — BUG-016).
+ */
+function AxisMeasureAggHint({ axis }: { axis: 'X' | 'Y' }) {
+  return (
+    <div
+      className="-mt-1.5 flex items-center gap-1.5 pl-0.5"
+      title="Trục này là Measure — gộp theo aggregation đã định nghĩa trong Data Model, không re-aggregate tại đây (giống Power BI / Looker)."
+    >
+      <span className="text-[11px] font-bold text-warning leading-none">Σ</span>
+      <span className="text-[10px] text-text-tertiary">{axis}: aggregation theo Data Model (measure)</span>
+    </div>
+  );
+}
+
+/**
  * Phase-15.1: drill-down action. When the chart's current dimension has
  * children declared via DimensionDefinition.parent (Phase-13.1 hierarchy
  * metadata), render compact buttons "↓ <child label>". Click swaps the
@@ -3360,6 +3379,13 @@ export function ExploreChartConfig({
   );
   const sx  = normalizedRoleConfig.scatterX  || '';
   const sy  = normalizedRoleConfig.scatterY  || '';
+  // PBI/Tableau parity: a declared MEASURE carries its own aggregation (defined
+  // in the Data Model) and is never re-aggregated inline. So for a measure axis
+  // we HIDE the X/Y aggregation dropdown (it would be silently ignored by the
+  // BE — the BUG-016 sibling) and surface a read-only "Σ Measure" hint instead.
+  // Only a raw numeric column gets the SUM/AVG picker.
+  const sxIsMeasure = !!sx && allCols.some(c => c.name === sx && isMeasureField(c));
+  const syIsMeasure = !!sy && allCols.some(c => c.name === sy && isMeasureField(c));
   const lineMetric = normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : [];
   const benchmarkMetric = normalizedRoleConfig.benchmarkMetric ? [normalizedRoleConfig.benchmarkMetric] : [];
   const tableMode = normalizedRoleConfig.tableMode ?? 'standard';
@@ -3475,8 +3501,11 @@ export function ExploreChartConfig({
   // agg so the BE keeps it as a 3-level GROUP BY dimension (no SUM-of-string).
   useEffect(() => {
     if (chartType !== 'NINE_BOX') return;
-    const xNum = !!sx && numCols.some((c) => c.name === sx);
-    const yNum = !!sy && numCols.some((c) => c.name === sy);
+    // A raw numeric column → seed scatter*Agg='sum' (BE aggregates per Label).
+    // A declared MEASURE → leave it to its Data-Model aggregation (clear any
+    // stale scatter*Agg); a CATEGORICAL axis → also cleared (stays a band dim).
+    const xNum = !!sx && numCols.some((c) => c.name === sx) && !sxIsMeasure;
+    const yNum = !!sy && numCols.some((c) => c.name === sy) && !syIsMeasure;
     const patch: Partial<ChartRoleConfig> = {};
     if (xNum && !roleConfig.scatterXAgg) patch.scatterXAgg = 'sum';
     if (!xNum && roleConfig.scatterXAgg) patch.scatterXAgg = undefined;
@@ -4916,10 +4945,12 @@ export function ExploreChartConfig({
                   ? { scatterX: v || undefined, scatterXAgg: (v && numCols.some(c => c.name === v)) ? (normalizedRoleConfig.scatterXAgg || 'sum') : undefined }
                   : { scatterX: v || undefined }
               )} />
-            {(chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sx && numCols.some(c => c.name === sx))) && sx && (
+            {sx && sxIsMeasure ? (
+              <AxisMeasureAggHint axis="X" />
+            ) : (chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sx && numCols.some(c => c.name === sx))) && sx ? (
               <ScatterAxisAgg axis="X" value={(normalizedRoleConfig.scatterXAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterXAgg: v })} />
-            )}
+            ) : null}
             <SelectSlot label="Y Axis" hint={chartType === 'BUBBLE' ? 'numeric — aggregated per Label' : chartType === 'NINE_BOX' ? 'numeric → tertile, or 3-level category' : 'numeric'} required value={sy} options={chartType === 'NINE_BOX' ? allCols : numOrAll}
               placeholder="select Y"
               onChange={v => upd(
@@ -4927,10 +4958,12 @@ export function ExploreChartConfig({
                   ? { scatterY: v || undefined, scatterYAgg: (v && numCols.some(c => c.name === v)) ? (normalizedRoleConfig.scatterYAgg || 'sum') : undefined }
                   : { scatterY: v || undefined }
               )} />
-            {(chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sy && numCols.some(c => c.name === sy))) && sy && (
+            {sy && syIsMeasure ? (
+              <AxisMeasureAggHint axis="Y" />
+            ) : (chartType === 'BUBBLE' || (chartType === 'NINE_BOX' && !!sy && numCols.some(c => c.name === sy))) && sy ? (
               <ScatterAxisAgg axis="Y" value={(normalizedRoleConfig.scatterYAgg as AggFn) || 'sum'}
                 onChange={v => upd({ scatterYAgg: v })} />
-            )}
+            ) : null}
             <SelectSlot label="Label" hint={chartType === 'BUBBLE' ? 'group into one bubble per value' : chartType === 'NINE_BOX' ? 'item plotted in each cell' : 'optional'} value={dim} options={dimOrAll}
               placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />

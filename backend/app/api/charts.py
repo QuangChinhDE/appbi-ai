@@ -575,6 +575,9 @@ _FE_ROLE_CONFIG_KEYS: set[str] = {
     "dimension", "metrics", "breakdown", "lineMetric", "benchmarkMetric",
     "timeField", "scatterX", "scatterY", "tableMode", "tableRowDimension",
     "tableColumnDimension", "tablePivotMetric", "selectedColumns",
+    # BUBBLE / NINE_BOX — per-axis aggregation chosen in the editor
+    # (scatter*Agg). Recognised so dry-run doesn't false-positive flag them.
+    "scatterXAgg", "scatterYAgg",
     # Phase-15.12: time_grains forwarded to SemanticQueryEngine from role_config.
     # Without this entry the dry-run reports false-positive "fe_unrecognised_keys".
     "timeGrains",
