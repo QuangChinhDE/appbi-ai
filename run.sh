@@ -130,6 +130,23 @@ fi
 echo "· OM → $PGUSER@$PGHOST:$PGPORT/$PGDB (schema open_metadata)"
 
 # ── 5. OM + opensearch up (first pull is several GB) ────────────────────────
+# opensearch (OM's hard dependency) refuses to start unless the HOST has
+# vm.max_map_count >= 262144. Raise it if we can (root); persist best-effort.
+if [ -r /proc/sys/vm/max_map_count ]; then
+  _mmc="$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo 0)"
+  if [ "${_mmc:-0}" -lt 262144 ] 2>/dev/null; then
+    if sysctl -w vm.max_map_count=262144 >/dev/null 2>&1; then
+      echo "· raised vm.max_map_count → 262144 (opensearch requirement)"
+      grep -qs '^vm.max_map_count' /etc/sysctl.conf 2>/dev/null \
+        || echo 'vm.max_map_count=262144' >> /etc/sysctl.conf 2>/dev/null || true
+    else
+      echo "✗ vm.max_map_count=$_mmc too low for opensearch and can't raise it."
+      echo "  Run as root:  sudo sysctl -w vm.max_map_count=262144   then re-run."
+      exit 1
+    fi
+  fi
+fi
+
 step "OM stack up"
 docker compose -f "$OM_DIR/docker-compose.openmetadata.yml" --env-file "$OM_DIR/.env" up -d
 
