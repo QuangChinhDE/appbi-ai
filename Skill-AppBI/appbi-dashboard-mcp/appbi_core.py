@@ -95,84 +95,113 @@ logger = logging.getLogger("appbi_orchestrator_mcp")
 
 
 _MCP_INSTRUCTIONS = """
-You are the AppBI Orchestrator: raw data source → shareable AppBI dashboard.
-Dashboards MUST be visible from every entry point (Dashboard, Explore,
-Dataset model, chart list). Charts that render but vanish from Explore is
-a recurring defect — the workflow below is designed to prevent it.
+You are the AppBI report materialiser. This MCP has TWO jobs only:
+  1. DISCOVERY — tell you what data exists (connected sources, their tables
+     & columns, sample rows, the dataset's semantic model) so YOU can design.
+  2. MATERIALIZE — when the user has approved YOUR design, write the final
+     report (dataset → model → measures → charts → filters → dashboard) to
+     AppBI so they don't build it by hand in the UI.
 
-## Canonical workflow — 2 confirmations, design once
+YOU (Claude) do the thinking, NOT this MCP: explore & understand the data,
+draw your OWN report mock-up (an HTML artifact you render yourself), tune
+measures, and confirm with the user. Do NOT ask the MCP to "design" or
+"preview" — that wastes tokens. Only call a write tool once the user has
+said yes.
 
-  Pre-Phase 1 (read-only): list_data_sources, inspect_source_schema/table,
-    list_datasets, get_dataset, get_table_profile (once per table).
+## The flow
 
-  Confirm 1 — commit_dataset_workspace(plan, user_confirmed=true)
-    plan = dataset (or existing_dataset_id) + tables + semantic (full
-    views/measures/joins) + relationships + planned_charts + dashboard_meta.
-    Atomic: writes dataset + tables + semantic, LOGS planned_charts to
-    logs/dataset_<id>/charts_design.json. Charts NOT created yet.
+  A. DISCOVER (read-only, cheap):
+     - list_data_sources / get_data_source — which sources are connected.
+     - inspect_source_schema(id) + inspect_source_table(id, schema, table)
+       — tables & columns (Google Sheets: list_gsheet_tabs / read_gsheet_rows).
+     - run_source_query / execute_semantic_query / preview_chart_data /
+       get_distinct_field_values — pull REAL sample/aggregated numbers so YOU
+       can draw an accurate mock-up artifact for the user.
+     - For an existing dataset: get_dataset + get_dataset_model (if it has no
+       model yet, generate_dataset_model bootstraps a starter one).
 
-  Confirm 2 — build_dashboard_from_design(user_confirmed=true)
-    Reads the design log, materialises charts + dashboard. First call
-    (user_confirmed=false) writes an HTML preview the DA opens to verify
-    layout before the second call commits.
+  B. DESIGN (you, outside the MCP): understand the data, draw the report
+     mock-up as your own artifact, iterate with the user until they approve.
 
-  Polish: add_dashboard_filter / create_public_link / update_chart_description.
-
-For ad-hoc edits on existing artifacts use the granular tools (create_chart,
-add_*_chart library, commit_semantic_model, etc.) — do NOT re-design.
+  C. MATERIALIZE (one confirmed write): create_report(spec, user_confirmed)
+     — spec = dataset|existing_dataset_id (+ tables/semantic/relationships if
+     new) + planned_charts + planned_filters + dashboard_meta. First call
+     returns a summary plan; second call (user_confirmed=true) builds
+     everything. For small edits use the granular create_*/update_* tools.
 
 ## Mandatory rules
 
-1. **Workflow.** "Build a dashboard" → 2-confirm flow above. `create_chart`
-   and `add_*_chart` library are for incremental edits ("add this KPI to
-   dashboard 7"), not loops in a fresh build.
+1. **MCP ≠ designer.** Never use the MCP to generate the design/blueprint or
+   a data preview for the user. Draw the mock-up yourself; call write tools
+   only after explicit user approval.
 
-2. **Semantic-bound charts.** Every metric must resolve to a measure on
-   the chart's bound SemanticView. dry-run-create blocks ad-hoc metrics;
-   don't pass `bypass_semantic_check=True` unless the user accepts the
-   chart will be invisible in Explore.
-   Saved chart configs run as bare column names at render time — avoid
-   joined-view refs (`other_view.field`) on the stored chart even if the
-   explore can reach them.
+2. **Semantic-bound charts.** Every metric must resolve to a measure on the
+   chart's bound SemanticView. dry-run-create blocks ad-hoc metrics; don't
+   pass `bypass_semantic_check=True` unless the user accepts the chart will
+   be invisible in Explore. Saved chart configs run as bare column names at
+   render time — avoid joined-view refs (`other_view.field`) on the stored
+   chart even if the explore can reach them.
 
 3. **Claude is the only LLM.** No backend `ai_*` / `regenerate_*` calls.
-   You write descriptions, pick chart types, design semantic models.
 
-4. **Preview-then-confirm on every write.** Mutating tools default to
-   `user_confirmed=false` and return a plan. Show the plan, wait for an
-   explicit "OK / duyệt", then re-call with `user_confirmed=true`.
+4. **Confirm before every write.** Mutating tools default to
+   `user_confirmed=false` and return a plan. The user already approved your
+   mock-up; this is the final go/no-go. Re-call with `user_confirmed=true`.
 
-5. **Logs.** Successful commits auto-log to
-   `<MCP_DIR>/logs/dataset_<id>/{dataset,charts,report}.md`. Call
-   `get_mcp_logs_dir()` to find the path. Profiling: `get_table_profile`
-   once per table (~10-15K tokens for 30 cols — never re-call); use
-   `get_column_summary` for drill-downs.
+5. **Discovery first.** Start from list_data_sources / list_datasets; reuse
+   existing artifacts when intent matches. get_table_profile once per table
+   (~10-15K tokens — never re-call).
 
-6. **Discovery first.** Start with `list_datasets` + `list_data_sources`;
-   reuse existing artifacts when intent matches. Layout: omit and the
-   commit stacks full-width safely (see get_design_recommendations for
-   specific sizes).
+6. **Filters land as DRAFT.** create_report stages filters into the draft;
+   they appear on a public link only after publish_dashboard_draft, which
+   you call ONLY when the user explicitly asks to publish.
 
-7. **Audit legacy.** If "dashboard exists, Explore empty" — run
-   `audit_chart_semantic_health` then `repair_chart_semantic_binding`.
+7. AI Chat, AI Agent reports, Workboards are NOT in this MCP — say so.
 
-8. AI Chat, AI Agent reports, Workboards are NOT in this MCP — say so.
+8. **Need more tools?** Optional design helpers (chart/measure/dashboard
+   wrappers, blueprint propose/commit, quality, sharing) are OFF by default
+   to save tokens. They are available if the host sets
+   APPBI_MCP_PROFILE=design / admin / all.
+
+## Correctness gotchas (so the materialised report is right without source access)
+
+- Qualified `view.field` refs by DEFAULT in role_config (bare refs lock
+  the chart to single-table & break cross-table / cause "ambiguous").
+- Every metric must resolve to a measure on the chart's bound
+  SemanticView; dry-run-create blocks ad-hoc metrics.
+- KPI renders chromeless; tile title = custom_title FIRST then Explore
+  title/name (don't drop the name fallback).
+- Filters have 4 distinct concepts (canvas slicer / filter pane /
+  public-link locked / public slicer). Date-bucket cross-filters use a
+  RANGE not equality. Page-scope filters are a HARD bound.
+- A chart's metrics/dims must come from its OWN bound dataset_table_id's
+  view (or a joined view via a relationship) or outer-join semantics diverge.
 """.strip()
 
 
-_VALID_PROFILES = {"report", "dataset", "explore", "all"}
+_VALID_PROFILES = {"core", "report", "dataset", "explore", "design", "admin", "all"}
+
+# Tags that mark a tool as NOT part of the lean default surface. The MCP's
+# job is Discovery (read sources/tables/data so Claude can design) +
+# Materialization (write the final user-confirmed report). Tools that exist
+# only to HELP Claude design (chart/measure/dashboard wrappers, blueprint
+# propose/commit, design cheatsheet) are tagged `design`; auxiliary admin
+# tools (quality, sharing) are tagged `admin`. The default `core` profile
+# registers everything EXCEPT these — so non-technical Claude Desktop
+# sessions don't pay schema-token cost for ~80 design/admin tools they
+# never need. Power users opt in via APPBI_MCP_PROFILE=design / admin / all.
+_NON_CORE_TAGS = {"design", "admin"}
 
 
-# Profile tags are kept for power users who want a smaller surface area,
-# but the default is "all" so non-technical end users don't have to touch
-# env vars to make the MCP work. Token cost is kept down at the
-# *per-tool* level — see the slim docstrings on each @tool decorator.
+# Default profile is `core` (lean) so non-technical end users don't have to
+# touch env vars AND don't pay for the full surface. Set APPBI_MCP_PROFILE
+# to widen it (e.g. `all`, `design`, `core,design`).
 
 
 def _active_profiles() -> set[str]:
-    raw = os.getenv("APPBI_MCP_PROFILE", "all").strip().lower()
+    raw = os.getenv("APPBI_MCP_PROFILE", "core").strip().lower()
     if not raw:
-        return {"all"}
+        return {"core"}
     parts = {p.strip() for p in raw.split(",") if p.strip()}
     unknown = parts - _VALID_PROFILES
     if unknown:
@@ -180,7 +209,23 @@ def _active_profiles() -> set[str]:
             f"APPBI_MCP_PROFILE has unknown values: {sorted(unknown)}. "
             f"Valid: {sorted(_VALID_PROFILES)}."
         )
-    return parts or {"all"}
+    return parts or {"core"}
+
+
+def _should_register(tag_set: set[str]) -> bool:
+    """Decide whether a tool with `tag_set` registers under the active profile.
+
+    - `all`  → register everything (debug / power).
+    - `core` → register everything EXCEPT design/admin helpers (opt-out, so
+      the lean default needs no per-tool `core` tagging).
+    - specific profiles (report/dataset/explore/design/admin) → legacy
+      intersection: register if the tool's tags overlap the active set.
+    """
+    if "all" in ACTIVE_PROFILES:
+        return True
+    if "core" in ACTIVE_PROFILES and not (tag_set & _NON_CORE_TAGS):
+        return True
+    return bool(tag_set & ACTIVE_PROFILES)
 
 
 ACTIVE_PROFILES = _active_profiles()
@@ -204,9 +249,11 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
     Tools tagged with a profile not present in APPBI_MCP_PROFILE are skipped
     at import time — they remain importable Python functions but FastMCP never
     sees them, so they do not consume tool-schema tokens in Claude's context.
+    (That importable-but-unregistered behaviour is load-bearing: the lean
+    `core` materializer reuses helper functions from `design`-tagged modules.)
 
-    Profile `all` (default when env unset) registers everything — equivalent
-    to legacy `@mcp.tool()` behavior.
+    Tag a tool `design` or `admin` to keep it OUT of the default `core`
+    surface (see `_should_register`). `all` registers everything.
     """
     import functools
 
@@ -216,7 +263,7 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
         tag_set = set(profiles)
 
     def decorator(fn):
-        if not ("all" in ACTIVE_PROFILES or tag_set & ACTIVE_PROFILES):
+        if not _should_register(tag_set):
             return fn
 
         @functools.wraps(fn)
@@ -958,10 +1005,29 @@ in the tool response (no file needed):
 
 **Incremental** — for adding/editing a single chart or measure on an
 existing dashboard: use the individual `add_*` tools above.
+
+## Recommended path (default `core` surface)
+
+Claude designs; the MCP only discovers + materialises:
+
+  1. DISCOVER: list_data_sources / inspect_source_schema+table (or
+     list_gsheet_tabs/read_gsheet_rows); for an existing dataset
+     get_dataset + get_dataset_model (generate_dataset_model if none).
+     Pull real numbers with run_source_query / execute_semantic_query /
+     preview_chart_data so your mock-up is accurate.
+  2. DESIGN (outside MCP): draw your own HTML report mock-up artifact,
+     iterate with the user until approved.
+  3. MATERIALIZE: `create_report(spec, user_confirmed=true)` — one call
+     builds dataset?/model?/measures/charts/filters/dashboard. Filters
+     land as DRAFT; publish only when the user asks.
+
+The `propose_*` / `commit_*` / `build_dashboard_from_design` blueprint
+tools below are the legacy multi-step path — only available under the
+`design` profile. Prefer `create_report`.
 """.strip()
 
 
-@tool({"report", "dataset", "explore"})
+@tool({"report", "dataset", "explore", "design"})
 async def get_design_recommendations(ctx: Context | None = None) -> dict[str, Any]:
     """Return the measure / chart pattern → tool routing cheatsheet.
 

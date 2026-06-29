@@ -3,14 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-PROFILE="${1:-${APPBI_MCP_PROFILE:-all}}"
-case "${PROFILE}" in
-    all|report|dataset|explore) ;;
-    *)
-        echo "Invalid profile '${PROFILE}'. Use one of: all, report, dataset, explore." >&2
-        exit 2
-        ;;
-esac
+PROFILE="${1:-${APPBI_MCP_PROFILE:-core}}"
+# Comma-combinable; each part must be valid.
+IFS=',' read -ra _PARTS <<< "${PROFILE}"
+for _p in "${_PARTS[@]}"; do
+    case "${_p}" in
+        core|all|design|admin|report|dataset|explore) ;;
+        *)
+            echo "Invalid profile '${_p}'. Use: core, design, admin, all (or legacy report/dataset/explore)." >&2
+            exit 2
+            ;;
+    esac
+done
 export APPBI_MCP_PROFILE="${PROFILE}"
 
 if [[ ! -f .env ]]; then

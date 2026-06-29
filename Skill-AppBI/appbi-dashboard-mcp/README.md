@@ -1,12 +1,22 @@
 # AppBI Orchestrator MCP
 
-A Model Context Protocol server that lets Claude drive AppBI end-to-end: connect a
-data source, model a dataset, design semantic views and explores, build charts,
-and publish dashboards. Successor to `appbi-import-source-mcp`.
+A Model Context Protocol server with **two jobs**:
 
-> Heads-up: this MCP ships with a **profile system** that lets you trim the tool
-> surface Claude sees per session, so it is faster and picks the right tool more
-> reliably. See [Profiles](#profiles) below.
+1. **Discovery** — tell Claude what data exists (connected sources, their
+   tables & columns, sample rows, a dataset's semantic model) so Claude can
+   design a report itself.
+2. **Materialization** — when the user has approved Claude's design, write the
+   final report (dataset → model → measures → charts → filters → dashboard)
+   to AppBI instead of building it by hand in the UI.
+
+> **Design lives in Claude, not in the MCP.** Claude explores the data, draws
+> its own report mock-up (an HTML artifact it renders), tunes measures, and
+> confirms with the user. The MCP is only called to discover data and to
+> create the final, approved report — typically one `create_report(spec)`
+> call. This keeps token cost low and avoids paying for ~70 "design helper"
+> tool schemas every turn.
+
+Successor to `appbi-import-source-mcp`.
 
 ---
 
@@ -18,10 +28,7 @@ and publish dashboards. Successor to `appbi-import-source-mcp`.
 Set-Location D:\Appv2\appbi-ai\Skill-AppBI\appbi-dashboard-mcp
 Copy-Item .env.example .env
 # Edit .env: set APPBI_BASE_URL and APPBI_PAT
-.\run-mcp.ps1                 # default = full tool surface (profile=all)
-.\run-mcp-report.ps1          # only report-creation tools
-.\run-mcp-dataset.ps1         # only dataset create/edit tools
-.\run-mcp-explore.ps1         # only semantic/explore create/edit tools
+.\run-mcp.ps1                 # default = lean `core` surface (discovery + materialize)
 ```
 
 ### macOS / Linux
@@ -30,10 +37,7 @@ Copy-Item .env.example .env
 cd /path/to/appbi-ai/Skill-AppBI/appbi-dashboard-mcp
 cp .env.example .env
 chmod +x run-mcp*.sh
-./run-mcp.sh                  # default = full tool surface
-./run-mcp-report.sh
-./run-mcp-dataset.sh
-./run-mcp-explore.sh
+./run-mcp.sh                  # default = lean `core` surface
 ```
 
 The first run creates `.venv` and installs dependencies. Subsequent runs reuse it.
@@ -48,54 +52,50 @@ Generate at AppBI: **Settings → Personal Access Tokens**.
 
 ---
 
-## Profiles
+## The flow
 
-A naive MCP exposes every tool every session — that costs tokens (each tool
-schema lands in the request) and confuses model tool-selection. This server
-instead lets you pick a **profile** that registers only the tools relevant to
-the workflow you're starting.
-
-Set the profile via env var `APPBI_MCP_PROFILE`, or use the matching wrapper
-script.
-
-| Profile | When to use | Tool count |
-|---|---|---|
-| `all` | Default. Everything is registered. Use for debugging or one-off tasks that mix flows. | ~95 |
-| `report` | Creating a **new** dashboard/report end-to-end (Source → Dataset → Semantic → Charts → Dashboard → public link). Includes the 2-confirm workspace flow + the measure library (7) + chart library (32). | ~75 |
-| `dataset` | Creating or editing a Dataset: import physical/SQL/calculated tables, enable date table, write descriptions, run auto-generate model. | ~25 |
-| `explore` | Creating or editing semantic models / views / explores (Stage 3 design work). | ~30 |
-
-Profiles can be combined with a comma, e.g. `APPBI_MCP_PROFILE=dataset,explore`.
-
-### Wiring multiple profiles into Claude Desktop
-
-Add one entry per profile so you can toggle them like normal MCPs:
-
-```json
-{
-  "mcpServers": {
-    "appbi-report": {
-      "command": "powershell",
-      "args": ["-File", "D:\\Appv2\\appbi-ai\\Skill-AppBI\\appbi-dashboard-mcp\\run-mcp-report.ps1"]
-    },
-    "appbi-dataset": {
-      "command": "powershell",
-      "args": ["-File", "D:\\Appv2\\appbi-ai\\Skill-AppBI\\appbi-dashboard-mcp\\run-mcp-dataset.ps1"]
-    },
-    "appbi-explore": {
-      "command": "powershell",
-      "args": ["-File", "D:\\Appv2\\appbi-ai\\Skill-AppBI\\appbi-dashboard-mcp\\run-mcp-explore.ps1"]
-    }
-  }
-}
-```
-
-mac/Linux: replace `command` with `/bin/bash` and the `.ps1` paths with the
-matching `.sh`.
+1. **Discover** (read-only): `list_data_sources` → `inspect_source_schema` →
+   `inspect_source_table` (Sheets: `list_gsheet_tabs` / `read_gsheet_rows`).
+   For an existing dataset: `get_dataset` + `get_dataset_model`
+   (`generate_dataset_model` if it has no model). Pull real numbers with
+   `run_source_query` / `execute_semantic_query` / `preview_chart_data` /
+   `get_distinct_field_values` so Claude's mock-up is accurate.
+2. **Design** (Claude, outside the MCP): draw the report mock-up artifact,
+   iterate with the user until approved.
+3. **Materialize**: `create_report(spec, user_confirmed=true)` — one call
+   builds dataset?/model?/measures/charts/filters/dashboard. For small edits
+   use the granular `create_*` / `update_*` tools. Filters land as DRAFT —
+   `publish_dashboard_draft` only when the user asks.
 
 ---
 
-## Tool ↔ profile matrix
+## Profiles
+
+Each registered tool's schema costs tokens every turn. The **default `core`**
+profile registers only Discovery + Materialization, so non-technical Claude
+Desktop sessions stay cheap. Optional helpers are opt-in via the
+`APPBI_MCP_PROFILE` env var (comma-combinable, e.g. `core,design`).
+
+| Profile | What it adds | ~Tools |
+|---|---|---|
+| `core` | **Default.** Discovery (sources/tables/data/model reads) + Materialization (`create_report` + granular `create_*`/`update_*`/`delete_*`). | ~91 |
+| `design` | Legacy design helpers: 32 chart wrappers, 8 measure wrappers, 6 dashboard presets, `propose_*`/`commit_*`/`build_dashboard_from_design` blueprint flow, `get_design_recommendations`. Claude normally designs these itself. | +59 |
+| `admin` | Data-quality rules + cross-resource sharing. | +13 |
+| `all` | Everything (debugging). | ~163 |
+
+The legacy `report` / `dataset` / `explore` profiles still work (intersection
+matching) for anyone who wired them previously.
+
+---
+
+## Tool ↔ profile matrix (legacy reference)
+
+> This matrix documents the older `report`/`dataset`/`explore` tagging and is
+> kept for reference. Under the current model, the **default `core`** profile
+> registers every tool below EXCEPT those tagged `design` (chart/measure/
+> dashboard wrappers, `propose_*`/`commit_*`/`build_dashboard_from_design`,
+> `get_design_recommendations`) or `admin` (quality, sharing). The new
+> `create_report` tool (in `core`) is the recommended one-call materialiser.
 
 `✓` = registered for that profile.
 `✓¹` = registered, with a note in the footer.

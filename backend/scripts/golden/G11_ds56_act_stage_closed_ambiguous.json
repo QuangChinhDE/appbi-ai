@@ -1,0 +1,38 @@
+{
+  "case_id": "G11_ds56_act_stage_closed_ambiguous",
+  "description": "Activity ← stage.process=closed (AMBIGUOUS multi-path, current resolver picks first)",
+  "chart_name": "[snow] activity duration total",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:22.729333+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "ambiguous_path",
+    "phase_2_will_change"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_192.duration": "135"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM `bcfix`.`bc_activity`) AS dataset_table_192 WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_date`) AS dataset_table_187 INNER JOIN (SELECT * FROM `bcfix`.`bc_deal`) AS dataset_table_190 ON dataset_table_187.date = dataset_table_190.som_deal_add_time INNER JOIN (SELECT * FROM `bcfix`.`bc_dim_stage`) AS dataset_table_189 ON dataset_table_190.stage_id = dataset_table_189.migrate_stage_id WHERE dataset_table_192.som_due_datetime = dataset_table_187.date AND dataset_table_189.process = 'closed') LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

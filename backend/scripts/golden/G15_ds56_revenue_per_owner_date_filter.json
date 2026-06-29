@@ -1,0 +1,43 @@
+{
+  "case_id": "G15_ds56_revenue_per_owner_date_filter",
+  "description": "Same chart filtered by date.year=2025",
+  "chart_name": "[snow] M revenue per owner (cross-table measure)",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:23.175722+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "cross_table_measure",
+    "date"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_188.crm_name": "An",
+        "dataset_table_193.total_revenue": "1200"
+      },
+      {
+        "dataset_table_188.crm_name": "Cuong",
+        "dataset_table_193.total_revenue": "900"
+      }
+    ],
+    "row_count": 2,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 LEFT JOIN (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 ON dataset_table_188.bc_key = dataset_table_193.bc_key WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 INNER JOIN (SELECT * FROM `bcfix`.`bc_date`) AS dataset_table_187 ON dataset_table_193.payment_month = dataset_table_187.date WHERE dataset_table_188.bc_key = dataset_table_193.bc_key AND dataset_table_187.year = 2025) GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

@@ -141,7 +141,6 @@ _APPEARANCE_EXTRA_KEYS = {
     "accent_preset", "accent_color", "hero_label", "headline", "summary",
     "footer_note", "allow_viewer_filters", "show_chart_type_label",
     "ai_bot_enabled", "ai_bot_provider", "ai_bot_model",
-    "ai_bot_normal_cost_cap_usd", "ai_bot_thinking_cost_cap_usd",
     "ai_bot_report_context_note",
 }
 
@@ -167,6 +166,60 @@ def _apply_whitelist(
             continue
         merged[k] = v
     return merged
+
+
+def _build_filter_slot(
+    kind: Literal["date", "dropdown"],
+    name: str,
+    field: str,
+    *,
+    date_preset: str | None = None,
+    default_values: list[str] | None = None,
+    multi_select: bool = True,
+    linked_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build ONE dashboard filter slot dict — the single source of truth
+    for the BaseFilter wire shape.
+
+    Shared by `add_date_filter_recipe` / `add_dropdown_filter_recipe` AND
+    the materialiser (`build_dashboard_from_design` / `create_report`
+    turning `planned_filters` into slots) so every path emits a
+    byte-identical slot. One source of truth = no drift.
+
+    `field` is the qualified `view.column` form (e.g. `orders.status`).
+    The bare column goes in `field`; the qualified form is preserved in
+    `fieldKey` + `semanticField` so the BE engine routes through JOINs
+    instead of falling back to base-view bare-name matching (Phase-15.81 v9).
+    """
+    semantic_field = field if "." in field else None
+    bare = field.split(".", 1)[-1] if "." in field else field
+    if kind == "date":
+        return _drop_none({
+            "id": f"df-{date_preset}-{field.replace('.', '_')}",
+            "field": bare,
+            "fieldKey": semantic_field,
+            "semanticField": semantic_field,
+            "type": "date",
+            "operator": "between",
+            "datePreset": date_preset,
+            "linkedFields": linked_fields,
+            "label": name,
+        })
+    operator = "in" if multi_select else "eq"
+    value: Any = list(default_values or []) if multi_select else (
+        default_values[0] if default_values else ""
+    )
+    return _drop_none({
+        "id": f"df-dd-{field.replace('.', '_')}",
+        "field": bare,
+        "fieldKey": semantic_field,
+        "semanticField": semantic_field,
+        "type": "dropdown",
+        "operator": operator,
+        "value": value,
+        "linkedFields": linked_fields,
+        "label": name,
+    })
 
 
 async def _patch_dashboard(
@@ -211,7 +264,7 @@ async def _patch_dashboard(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def list_dashboard_presets(
     category: Literal["all", "theme", "date_filter", "public_link", "accent"] = "all",
     ctx: Context | None = None,
@@ -251,7 +304,7 @@ async def list_dashboard_presets(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def apply_theme_preset(
     dashboard_id: int,
     preset: Literal[
@@ -296,7 +349,7 @@ async def apply_theme_preset(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_date_filter_recipe(
     dashboard_id: int,
     name: str,
@@ -339,21 +392,13 @@ async def add_date_filter_recipe(
             "`custom` would require explicit start/end — use the generic "
             "`add_dashboard_filter` tool for that."
         )
-    # Phase-15.81 — derive semanticField + datasetId from a qualified
-    # `view.col` so the BE engine can route the filter through joins
-    # instead of falling back to base-view bare-name matching.
-    semantic_field = field if "." in field else None
-    new_filter = _drop_none({
-        "id": f"df-{date_preset}-{field.replace('.', '_')}",
-        "field": field.split(".", 1)[-1] if "." in field else field,
-        "fieldKey": semantic_field,
-        "semanticField": semantic_field,
-        "type": "date",
-        "operator": "between",
-        "datePreset": date_preset,
-        "linkedFields": linked_fields,
-        "label": name,
-    })
+    # Phase-15.81 — derive semanticField from a qualified `view.col` so the
+    # BE engine can route the filter through joins instead of falling back
+    # to base-view bare-name matching. Built via the shared `_build_filter_slot`
+    # so the slot matches the one the blueprint commit materialises.
+    new_filter = _build_filter_slot(
+        "date", name, field, date_preset=date_preset, linked_fields=linked_fields
+    )
     if target == "filters":
         # Phase-15.81 v12 — route through the draft pipeline. Reading
         # the current overlay so we append rather than replace.
@@ -409,7 +454,7 @@ async def add_date_filter_recipe(
     )
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_dropdown_filter_recipe(
     dashboard_id: int,
     name: str,
@@ -439,22 +484,12 @@ async def add_dropdown_filter_recipe(
     `target='public_filters'` (legacy): writes to
        `public_filters_config` live (DA-baked, viewer can't change).
     """
-    operator = "in" if multi_select else "eq"
-    value: Any = list(default_values or []) if multi_select else (
-        default_values[0] if default_values else ""
+    new_filter = _build_filter_slot(
+        "dropdown", name, field,
+        default_values=default_values,
+        multi_select=multi_select,
+        linked_fields=linked_fields,
     )
-    semantic_field = field if "." in field else None
-    new_filter = _drop_none({
-        "id": f"df-dd-{field.replace('.', '_')}",
-        "field": field.split(".", 1)[-1] if "." in field else field,
-        "fieldKey": semantic_field,
-        "semanticField": semantic_field,
-        "type": "dropdown",
-        "operator": operator,
-        "value": value,
-        "linkedFields": linked_fields,
-        "label": name,
-    })
     if target == "filters":
         dash = await _request("GET", f"/dashboards/{int(dashboard_id)}")
         existing = list((dash.get("filters_config") or []))
@@ -515,7 +550,7 @@ async def add_dropdown_filter_recipe(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def set_public_link_appearance(
     dashboard_id: int,
     preset: Literal["briefing", "editorial", "minimal"] = "briefing",
@@ -580,7 +615,7 @@ async def set_public_link_appearance(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def set_dashboard_pages(
     dashboard_id: int,
     page_names: list[str],

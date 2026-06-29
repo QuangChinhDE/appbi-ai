@@ -42,7 +42,7 @@ def _normalize_resource_type(resource_type: str) -> str:
     return norm
 
 
-@tool("all")
+@tool({"all", "admin"})
 async def list_resource_shares(
     resource_type: str,
     resource_id: str,
@@ -59,7 +59,7 @@ async def list_resource_shares(
     return {"items": items}
 
 
-@tool("all")
+@tool({"all", "admin"})
 async def share_resource(
     resource_type: str,
     resource_id: str,
@@ -109,7 +109,7 @@ async def share_resource(
     )
 
 
-@tool("all")
+@tool({"all", "admin"})
 async def update_share_entry(
     resource_type: str,
     resource_id: str,
@@ -137,7 +137,7 @@ async def update_share_entry(
     )
 
 
-@tool("all")
+@tool({"all", "admin"})
 async def revoke_share_entry(
     resource_type: str,
     resource_id: str,

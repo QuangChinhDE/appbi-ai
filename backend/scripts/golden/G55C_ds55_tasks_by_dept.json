@@ -1,0 +1,86 @@
+{
+  "case_id": "G55C_ds55_tasks_by_dept",
+  "description": "ds55 — TREEMAP tasks by dept",
+  "chart_name": "[Audit] TREEMAP tasks by dept",
+  "dataset_id": 55,
+  "captured_at": "2026-05-29T02:35:34.748464+00:00",
+  "captured_at_commit": "unknown",
+  "expect_status": "ok",
+  "tags": [
+    "bigquery",
+    "ds55",
+    "joined_dim"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "dataset_table_184",
+    "GROUP BY"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_184.name": null,
+        "dataset_table_182.task_count": "569"
+      },
+      {
+        "dataset_table_184.name": "Department Chi tạo",
+        "dataset_table_182.task_count": "69"
+      },
+      {
+        "dataset_table_184.name": "Thuong Nguyen",
+        "dataset_table_182.task_count": "22"
+      },
+      {
+        "dataset_table_184.name": "A. Permission mới",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_184.name": "Phòng Kế hoạch",
+        "dataset_table_182.task_count": "49"
+      },
+      {
+        "dataset_table_184.name": "Phòng triển khai",
+        "dataset_table_182.task_count": "40"
+      },
+      {
+        "dataset_table_184.name": "Phòng Data",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_184.name": "aaaaaaaaaaaa",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_184.name": "QA",
+        "dataset_table_182.task_count": "25"
+      },
+      {
+        "dataset_table_184.name": "Mai check xoá",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_184.name": "Mai",
+        "dataset_table_182.task_count": "10"
+      },
+      {
+        "dataset_table_184.name": "Operation Project Management",
+        "dataset_table_182.task_count": "17"
+      }
+    ],
+    "row_count": 12,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_184.name AS dataset_table_184_name, COUNT(*) AS dataset_table_182_task_count FROM (SELECT * FROM `base-testlab-01.base_wework.test_task`) AS dataset_table_182 LEFT JOIN (SELECT * FROM `base-testlab-01.base_wework.test_project`) AS dataset_table_183 ON dataset_table_182.project_id = dataset_table_183.id LEFT JOIN (SELECT * FROM `base-testlab-01.base_wework.test_dept`) AS dataset_table_184 ON dataset_table_183.dept_id = dataset_table_184.id GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

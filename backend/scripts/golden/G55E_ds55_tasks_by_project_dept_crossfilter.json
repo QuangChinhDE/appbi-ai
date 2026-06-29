@@ -1,0 +1,34 @@
+{
+  "case_id": "G55E_ds55_tasks_by_project_dept_crossfilter",
+  "description": "ds55 — BAR tasks by project, filter on dept (cross-dim via tasks)",
+  "chart_name": "[Audit] BAR tasks by project",
+  "dataset_id": 55,
+  "captured_at": "2026-05-29T02:35:45.113702+00:00",
+  "captured_at_commit": "unknown",
+  "expect_status": "ok",
+  "tags": [
+    "bigquery",
+    "ds55",
+    "cross_dim_filter"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [],
+  "result": {
+    "status": "ok",
+    "data_repr": [],
+    "row_count": 0,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_183.name AS dataset_table_183_name, COUNT(*) AS dataset_table_182_task_count FROM (SELECT * FROM `base-testlab-01.base_wework.test_task`) AS dataset_table_182 LEFT JOIN (SELECT * FROM `base-testlab-01.base_wework.test_project`) AS dataset_table_183 ON dataset_table_182.project_id = dataset_table_183.id WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `base-testlab-01.base_wework.test_project`) AS dataset_table_183 INNER JOIN (SELECT * FROM `base-testlab-01.base_wework.test_dept`) AS dataset_table_184 ON dataset_table_183.dept_id = dataset_table_184.id WHERE dataset_table_182.project_id = dataset_table_183.id AND dataset_table_184.name IN ('Engineering')) GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

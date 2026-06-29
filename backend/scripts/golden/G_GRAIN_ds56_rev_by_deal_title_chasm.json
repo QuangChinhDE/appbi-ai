@@ -1,0 +1,31 @@
+{
+  "case_id": "G_GRAIN_ds56_rev_by_deal_title_chasm",
+  "description": "GRAIN: revenue by deal.title (chasm) — FAILS LOUD ✅ (grain validator; no silent fan-out)",
+  "chart_name": "[snow] grain rev by deal-title (chasm)",
+  "dataset_id": 56,
+  "captured_at": "2026-06-03T08:32:55.662815+00:00",
+  "captured_at_commit": "unknown",
+  "expect_status": "error",
+  "tags": [
+    "snowflake",
+    "grain",
+    "grain_validator"
+  ],
+  "comparison_keys": [
+    "row_count"
+  ],
+  "sql_comparison": "none",
+  "sql_patterns": [],
+  "result": {
+    "status": "error",
+    "data_repr": [],
+    "row_count": 0,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": null,
+    "sql_normalized": "",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": "ValueError: Measure trên bảng 'dataset_table_193' không thể nhóm/pivot theo dimension ['dataset_table_190'] (không có đường M:1 — JOIN sẽ fan-out, ra số sai). Các chiều này thuộc bảng fact khác / chỉ nối qua shared dim (chasm). Đổi chiều, thêm quan hệ M:1 trong Data Model, hoặc bỏ measure khỏi chart."
+  }
+}

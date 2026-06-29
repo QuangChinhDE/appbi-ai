@@ -1,0 +1,50 @@
+{
+  "case_id": "G12_ds56_rev_by_owner_crmname",
+  "description": "Revenue by owner.crm_name (joined dim grouped — JOIN path, no fan-out)",
+  "chart_name": "[snow] revenue by owner",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:22.840353+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "group_by"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "GROUP BY",
+    "dataset_table_188.crm_name",
+    "JOIN"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_188.crm_name": "An",
+        "dataset_table_193.amount": "1200"
+      },
+      {
+        "dataset_table_188.crm_name": "Dung",
+        "dataset_table_193.amount": "300"
+      },
+      {
+        "dataset_table_188.crm_name": "Cuong",
+        "dataset_table_193.amount": "900"
+      }
+    ],
+    "row_count": 3,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 LEFT JOIN (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

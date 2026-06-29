@@ -1,0 +1,41 @@
+{
+  "case_id": "G55A_ds55_tasks_kpi_baseline",
+  "description": "ds55 baseline — KPI tasks count, no filter",
+  "chart_name": "[Audit] KPI total tasks",
+  "dataset_id": 55,
+  "captured_at": "2026-05-29T02:35:25.360552+00:00",
+  "captured_at_commit": "unknown",
+  "expect_status": "ok",
+  "tags": [
+    "bigquery",
+    "ds55",
+    "baseline"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "dataset_table_182",
+    "COUNT"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_182.task_count": "824"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT COUNT(*) AS dataset_table_182_task_count FROM (SELECT * FROM `base-testlab-01.base_wework.test_task`) AS dataset_table_182 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}
