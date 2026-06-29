@@ -27,6 +27,16 @@ OM_DIR="open-metadata"
 DB_CONTAINER="${APPBI_DB_CONTAINER:-appbi-ai-db-1}"
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$1"; }
 
+# Idempotent upsert of KEY=VAL into an env file. Uses printf (NOT sed) so values
+# with &, !, |, / etc. (e.g. JDBC params, passwords) are written verbatim.
+envset() {
+  local f="$1" k="$2" v="$3" tmp
+  tmp="$(mktemp)"
+  [ -f "$f" ] && grep -v "^$k=" "$f" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$k" "$v" >> "$tmp"
+  mv "$tmp" "$f"
+}
+
 # This script does NOT touch git — pull the code yourself first, then run it.
 
 # Local-db profile unless an external DATABASE_URL is configured.
@@ -52,6 +62,13 @@ if [ -f "$OM_DIR/secrets/jwt/private_key.der" ] && [ -f "$OM_DIR/.env" ]; then
 else
   bash "$OM_DIR/gen-secrets.sh"
 fi
+# Be robust: the compose hard-requires OM_JWT_KEY_ID; ensure it (and the domain)
+# are present even if a prior gen-secrets/.env.example didn't fill them.
+grep -qE '^OM_JWT_KEY_ID=.+' "$OM_DIR/.env" 2>/dev/null || {
+  envset "$OM_DIR/.env" OM_JWT_KEY_ID \
+    "$(openssl rand -hex 4)-$(openssl rand -hex 2)-$(openssl rand -hex 2)-$(openssl rand -hex 2)-$(openssl rand -hex 6)"
+  echo "· generated missing OM_JWT_KEY_ID"; }
+grep -qE '^OM_PRINCIPAL_DOMAIN=.+' "$OM_DIR/.env" 2>/dev/null || envset "$OM_DIR/.env" OM_PRINCIPAL_DOMAIN "appbi.local"
 
 # ── 3. Image tag — auto-default if unset (override: OPENMETADATA_VERSION env) ─
 step "OM image tag"
@@ -102,13 +119,13 @@ fi
 echo "· schema open_metadata ready in $PGDB @ $PGHOST"
 
 # Point OM at the same DB/user, in that schema, matching SSL (never touches public).
-omset() { if grep -q "^$1=" "$OM_DIR/.env"; then sed -i.bak "s|^$1=.*|$1=$2|" "$OM_DIR/.env" && rm -f "$OM_DIR/.env.bak"; else echo "$1=$2" >> "$OM_DIR/.env"; fi; }
-omset OM_DB_HOST "$PGHOST"; omset OM_DB_PORT "$PGPORT"; omset OM_DB_NAME "$PGDB"
-omset OM_DB_USER "$PGUSER"; omset OM_DB_PASSWORD "$PGPW"
+envset "$OM_DIR/.env" OM_DB_HOST "$PGHOST"; envset "$OM_DIR/.env" OM_DB_PORT "$PGPORT"
+envset "$OM_DIR/.env" OM_DB_NAME "$PGDB"; envset "$OM_DIR/.env" OM_DB_USER "$PGUSER"
+envset "$OM_DIR/.env" OM_DB_PASSWORD "$PGPW"
 if [ -n "$PGSSL" ]; then
-  omset OM_DB_PARAMS "ssl=true&sslmode=require&currentSchema=open_metadata"
+  envset "$OM_DIR/.env" OM_DB_PARAMS "ssl=true&sslmode=require&currentSchema=open_metadata"
 else
-  omset OM_DB_PARAMS "currentSchema=open_metadata&useSSL=false"
+  envset "$OM_DIR/.env" OM_DB_PARAMS "currentSchema=open_metadata&useSSL=false"
 fi
 echo "· OM → $PGUSER@$PGHOST:$PGPORT/$PGDB (schema open_metadata)"
 
@@ -155,15 +172,10 @@ PY
   docker exec "$BACKEND_CID" rm -f /tmp/_om_priv.der >/dev/null 2>&1 || true
 fi
 
-set_env() {  # idempotent upsert into repo-root .env
-  if grep -q "^$1=" .env 2>/dev/null; then sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
-  else echo "$1=$2" >> .env; fi
-}
-
 if [ -n "$TOKEN" ]; then
-  set_env METADATA_CATALOG_ENABLED true
-  set_env OPENMETADATA_API_URL "http://openmetadata-server:8585/api"
-  set_env OPENMETADATA_BOT_TOKEN "$TOKEN"
+  envset .env METADATA_CATALOG_ENABLED true
+  envset .env OPENMETADATA_API_URL "http://openmetadata-server:8585/api"
+  envset .env OPENMETADATA_BOT_TOKEN "$TOKEN"
   echo "✓ ingestion-bot token minted + written to .env — restarting backend…"
   docker compose "${CORE_PROFILE[@]}" up -d --build backend
   echo
