@@ -42,7 +42,7 @@ x-om-env: &om-env
   # ── Database → appbi-db / openmetadata_db (separate database) ──
   DB_DRIVER_CLASS: org.postgresql.Driver
   DB_SCHEME: postgresql
-  DB_PARAMS: "useSSL=false&serverTimezone=UTC"
+  DB_PARAMS: "${OM_DB_PARAMS:-useSSL=false&serverTimezone=UTC}"
   DB_HOST: ${OM_DB_HOST:-appbi-db}
   DB_PORT: ${OM_DB_PORT:-5432}
   OM_DATABASE: ${OM_DB_NAME:-openmetadata_db}

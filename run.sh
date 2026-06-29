@@ -67,23 +67,50 @@ else
   echo "· defaulted OPENMETADATA_VERSION=$VER (override: OPENMETADATA_VERSION=1.x.y bash run.sh, or edit $OM_DIR/.env)"
 fi
 
-# ── 4. openmetadata_db + least-priv role inside appbi-db (additive) ─────────
-step "OM database + role (in $DB_CONTAINER)"
-if ! docker ps --format '{{.Names}}' | grep -qx "$DB_CONTAINER"; then
-  echo "✗ Postgres container '$DB_CONTAINER' not running."
-  echo "  Managed PG: run $OM_DIR/init-db/*.sql yourself or set APPBI_DB_CONTAINER, then re-run."
-  exit 1
+# ── 4. OM lives in the SAME AppBI Postgres + database, in its OWN schema ────
+#    `open_metadata` (never the `public` schema). Works for the external/managed
+#    AppBI DB (DATABASE_URL) or a local appbi-db container. Reads the connection
+#    from .env — the password is NEVER written to a tracked file.
+step "OM schema (open_metadata) in the AppBI database"
+
+# Parse the AppBI DB connection from .env (DATABASE_URL preferred, else DB_*).
+PGHOST=""; PGPORT=""; PGUSER=""; PGPW=""; PGDB=""; PGSSL=""
+_url="$(grep '^DATABASE_URL=' .env 2>/dev/null | cut -d= -f2-)"
+if [ -n "$_url" ]; then
+  _rest="${_url#*://}"; _creds="${_rest%%@*}"; _hpd="${_rest#*@}"
+  PGUSER="${_creds%%:*}"; PGPW="${_creds#*:}"
+  _hp="${_hpd%%/*}"; PGHOST="${_hp%%:*}"; PGPORT="${_hp#*:}"; [ "$PGPORT" = "$_hp" ] && PGPORT=5432
+  _db="${_hpd#*/}"; PGDB="${_db%%\?*}"
+  case "$_url" in *sslmode=require*|*ssl=true*) PGSSL=1;; esac
+else
+  PGHOST="$(grep '^DB_HOST=' .env|cut -d= -f2-)"; PGPORT="$(grep '^DB_PORT=' .env|cut -d= -f2-)"
+  PGUSER="$(grep '^DB_USER=' .env|cut -d= -f2-)"; PGPW="$(grep '^DB_PASSWORD=' .env|cut -d= -f2-)"
+  PGDB="$(grep '^DB_NAME=' .env|cut -d= -f2-)"; PGPORT="${PGPORT:-5432}"
 fi
-OM_PW="$(grep '^OM_DB_PASSWORD=' "$OM_DIR/.env" | cut -d= -f2-)"
-[ -n "$OM_PW" ] || { echo "✗ OM_DB_PASSWORD empty — re-run $OM_DIR/gen-secrets.sh"; exit 1; }
-docker exec -i "$DB_CONTAINER" psql -U appbi -d postgres \
-  -v om_user="openmetadata_user" -v om_password="$OM_PW" \
-  < "$OM_DIR/init-db/01-create-openmetadata-db.sql"
-if [ "${SKIP_DB_HARDEN:-0}" != "1" ]; then
-  docker exec -i "$DB_CONTAINER" psql -U appbi -d postgres \
-    -v appbi_db="appbi" -v appbi_owner="appbi" \
-    < "$OM_DIR/init-db/02-harden-appbi-isolation.sql"
+[ -n "$PGHOST" ] && [ -n "$PGDB" ] && [ -n "$PGUSER" ] || { echo "✗ Can't read DB connection from .env"; exit 1; }
+
+# Create the schema against the AppBI DB — via the local container if present,
+# else a one-off psql container connecting over the network (SSL if required).
+SCHEMA_SQL='CREATE SCHEMA IF NOT EXISTS open_metadata AUTHORIZATION "'"$PGUSER"'";'
+if docker ps --format '{{.Names}}' | grep -qx "$DB_CONTAINER"; then
+  echo "$SCHEMA_SQL" | docker exec -i "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -f -
+else
+  echo "$SCHEMA_SQL" | docker run --rm -i --network appbi-net \
+    -e PGPASSWORD="$PGPW" ${PGSSL:+-e PGSSLMODE=require} postgres:16 \
+    psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -f -
 fi
+echo "· schema open_metadata ready in $PGDB @ $PGHOST"
+
+# Point OM at the same DB/user, in that schema, matching SSL (never touches public).
+omset() { if grep -q "^$1=" "$OM_DIR/.env"; then sed -i.bak "s|^$1=.*|$1=$2|" "$OM_DIR/.env" && rm -f "$OM_DIR/.env.bak"; else echo "$1=$2" >> "$OM_DIR/.env"; fi; }
+omset OM_DB_HOST "$PGHOST"; omset OM_DB_PORT "$PGPORT"; omset OM_DB_NAME "$PGDB"
+omset OM_DB_USER "$PGUSER"; omset OM_DB_PASSWORD "$PGPW"
+if [ -n "$PGSSL" ]; then
+  omset OM_DB_PARAMS "ssl=true&sslmode=require&currentSchema=open_metadata"
+else
+  omset OM_DB_PARAMS "currentSchema=open_metadata&useSSL=false"
+fi
+echo "· OM → $PGUSER@$PGHOST:$PGPORT/$PGDB (schema open_metadata)"
 
 # ── 5. OM + opensearch up (first pull is several GB) ────────────────────────
 step "OM stack up"
