@@ -99,6 +99,7 @@ services:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
     mem_limit: ${OS_MEM_LIMIT:-1500m}
+    cpus: ${OS_CPUS:-0.75}   # cap so opensearch can't starve the AppBI core on a small VM
     volumes:
       - om_opensearch_data:/usr/share/opensearch/data
     healthcheck:
@@ -132,6 +133,7 @@ services:
     environment:
       <<: *om-env
     mem_limit: ${OM_MEM_LIMIT:-2g}
+    cpus: ${OM_CPUS:-1.0}   # cap the OM JVM so the AppBI core stays responsive
     volumes:
       - ./secrets/jwt:/run/om-keys:ro
     expose:
