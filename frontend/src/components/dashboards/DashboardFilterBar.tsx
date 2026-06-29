@@ -247,18 +247,30 @@ export function DashboardFilterBar({
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
   const addFilterSearchRef = useRef<HTMLInputElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number } | null>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
 
   // Compute fixed position when dropdown opens so it escapes overflow-hidden parents
   useEffect(() => {
     if (addingField && addButtonRef.current) {
       const rect = addButtonRef.current.getBoundingClientRect();
+      if (stackVertical) {
+        const viewportGap = 8;
+        const flyoutGap = 8;
+        const maxPanelWidth = Math.min(416, window.innerWidth - viewportGap * 2);
+        const desiredLeft = rect.right + flyoutGap;
+        const maxLeft = window.innerWidth - maxPanelWidth - viewportGap;
+        setDropdownPos({
+          top: rect.bottom + 4,
+          left: Math.max(viewportGap, Math.min(desiredLeft, maxLeft)),
+        });
+        return;
+      }
       setDropdownPos({
         top: rect.bottom + 4,
         right: window.innerWidth - rect.right,
       });
     }
-  }, [addingField]);
+  }, [addingField, stackVertical]);
 
   // Auto-focus search input whenever the dropdown opens
   useEffect(() => {
@@ -831,7 +843,13 @@ export function DashboardFilterBar({
                 }} />
                 <div
                   className="fixed z-[9999] max-h-[min(34rem,75vh)] w-[26rem] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
-                  style={dropdownPos ? { top: dropdownPos.top, right: dropdownPos.right } : { top: 0, right: 0 }}
+                  style={
+                    dropdownPos
+                      ? dropdownPos.left != null
+                        ? { top: dropdownPos.top, left: dropdownPos.left }
+                        : { top: dropdownPos.top, right: dropdownPos.right ?? 0 }
+                      : { top: 0, right: 0 }
+                  }
                 >
                   {pickedType === null ? (
                     // ── Step 1: pick interaction type ────────────────

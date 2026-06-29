@@ -15,6 +15,14 @@ export const GRID_COLS = 12;
 export const GRID_ROW_HEIGHT = 80;
 export const GRID_MARGIN = 16;
 
+export type CanvasLayoutPatch = {
+  xPx: number;
+  yPx: number;
+  wPx: number;
+  hPx: number;
+  z?: number;
+};
+
 /** Convert a grid-mode layout to canvas pixel coords. */
 export function gridToCanvas(
   layout: DashboardChartLayout,
@@ -26,6 +34,53 @@ export function gridToCanvas(
   const wPx = (layout.w ?? 4) * colWidth + ((layout.w ?? 4) - 1) * GRID_MARGIN;
   const hPx = (layout.h ?? 4) * GRID_ROW_HEIGHT + ((layout.h ?? 4) - 1) * GRID_MARGIN;
   return { ...layout, xPx, yPx, wPx, hPx };
+}
+
+export function hasCanvasCoords(layout: Partial<DashboardChartLayout> | null | undefined): boolean {
+  return (
+    typeof layout?.xPx === 'number'
+    && typeof layout?.yPx === 'number'
+    && typeof layout?.wPx === 'number'
+    && typeof layout?.hPx === 'number'
+  );
+}
+
+export function ensureCanvasLayout(
+  layout: DashboardChartLayout,
+  canvasWidth: number,
+  fallbackZ = 1,
+): DashboardChartLayout {
+  if (hasCanvasCoords(layout)) {
+    return { ...layout, z: layout.z ?? fallbackZ };
+  }
+  return { ...gridToCanvas(layout, canvasWidth), z: layout.z ?? fallbackZ };
+}
+
+export function mergeGridLayout(
+  base: DashboardChartLayout,
+  patch: { x: number; y: number; w: number; h: number },
+): DashboardChartLayout {
+  return {
+    ...base,
+    x: patch.x,
+    y: patch.y,
+    w: patch.w,
+    h: patch.h,
+  };
+}
+
+export function mergeCanvasLayout(
+  base: DashboardChartLayout,
+  patch: CanvasLayoutPatch,
+): DashboardChartLayout {
+  return {
+    ...base,
+    xPx: patch.xPx,
+    yPx: patch.yPx,
+    wPx: patch.wPx,
+    hPx: patch.hPx,
+    ...(patch.z !== undefined ? { z: patch.z } : {}),
+  };
 }
 
 /** Convert a canvas-mode layout back to grid coords (snap + clamp). */
@@ -82,15 +137,10 @@ export function ensureCanvasCoords<T extends { layout: DashboardChartLayout }>(
   canvasWidth: number,
 ): T[] {
   return items.map((it, i) => {
-    const l = it.layout;
-    if (
-      typeof l.xPx === 'number' &&
-      typeof l.yPx === 'number' &&
-      typeof l.wPx === 'number' &&
-      typeof l.hPx === 'number'
-    ) {
-      return it;
+    if (hasCanvasCoords(it.layout)) {
+      if (it.layout.z !== undefined) return it;
+      return { ...it, layout: { ...it.layout, z: i + 1 } };
     }
-    return { ...it, layout: { ...gridToCanvas(l, canvasWidth), z: l.z ?? i + 1 } };
+    return { ...it, layout: ensureCanvasLayout(it.layout, canvasWidth, i + 1) };
   });
 }

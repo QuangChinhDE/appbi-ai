@@ -665,6 +665,75 @@ def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
     return [by_key[key] for key in order]
 
 
+def _strip_link_managed_filter_fields(
+    dash: Dashboard,
+    link_filters_config: list[dict] | None,
+) -> None:
+    """Remove fields this public link enforces or kills from viewer controls."""
+    hidden_link_keys = link_managed_field_keys(link_filters_config)
+    if not hidden_link_keys:
+        return
+
+    def _is_link_managed_field(entry: dict) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        return (
+            (entry.get("semanticField") or entry.get("field") or "")
+            .strip()
+            .lower()
+        ) in hidden_link_keys
+
+    dash.slicers_config = [
+        s for s in (getattr(dash, "slicers_config", None) or [])
+        if not _is_link_managed_field(s)
+    ]
+    dash.filters_config = [
+        f for f in (dash.filters_config or [])
+        if not _is_link_managed_field(f)
+    ]
+
+    stripped_pages = []
+    for page in (dash.pages_config or []):
+        if isinstance(page, dict):
+            page = {**page}
+            if page.get("slicers"):
+                page["slicers"] = [
+                    s for s in page["slicers"]
+                    if not _is_link_managed_field(s)
+                ]
+            if page.get("filters"):
+                page["filters"] = [
+                    f for f in page["filters"]
+                    if not _is_link_managed_field(f)
+                ]
+        stripped_pages.append(page)
+    dash.pages_config = stripped_pages
+
+
+def _public_viewer_filter_inventory(dash: Dashboard) -> list[dict]:
+    """Fields the public viewer can actually see/control on this dashboard."""
+    top_bar_filters = list(dash.filters_config or [])
+    top_bar_slicers = list(getattr(dash, "slicers_config", None) or [])
+    pages_filters_flat: list[dict] = []
+    pages_slicers_flat: list[dict] = []
+    for page in dash.pages_config or []:
+        if not isinstance(page, dict):
+            continue
+        for f in page.get("filters") or []:
+            if isinstance(f, dict):
+                pages_filters_flat.append(f)
+        for s in page.get("slicers") or []:
+            if isinstance(s, dict):
+                pages_slicers_flat.append(s)
+
+    return _dedupe_filters_by_field([
+        *pages_filters_flat,
+        *pages_slicers_flat,
+        *top_bar_filters,
+        *top_bar_slicers,
+    ])
+
+
 def _create_public_session(link_token: str) -> str:
     payload = {
         "sub": link_token,
@@ -811,24 +880,7 @@ def get_public_dashboard(
     # hasn't picked a value yet keeps the page-scope filter + slicer instead of
     # silently leaking MORE data than the page is scoped to (repro 2026-06-18 on
     # dashboard 53: empty Product lock leaked 303K → 11M / 2 → 8 products).
-    _hidden_link_keys = link_managed_field_keys(link_hidden_filters)
-    if _hidden_link_keys:
-        def _is_hidden_link_field(entry: dict) -> bool:
-            if not isinstance(entry, dict):
-                return False
-            return ((entry.get("semanticField") or entry.get("field") or "").strip().lower()) in _hidden_link_keys
-        dash.slicers_config = [s for s in (getattr(dash, "slicers_config", None) or []) if not _is_hidden_link_field(s)]
-        dash.filters_config = [f for f in (dash.filters_config or []) if not _is_hidden_link_field(f)]
-        _stripped_pages = []
-        for _pg in (dash.pages_config or []):
-            if isinstance(_pg, dict):
-                _pg = {**_pg}
-                if _pg.get("slicers"):
-                    _pg["slicers"] = [s for s in _pg["slicers"] if not _is_hidden_link_field(s)]
-                if _pg.get("filters"):
-                    _pg["filters"] = [f for f in _pg["filters"] if not _is_hidden_link_field(f)]
-            _stripped_pages.append(_pg)
-        dash.pages_config = _stripped_pages
+    _strip_link_managed_filter_fields(dash, link_hidden_filters)
 
     # Phase-15.81 — TWO filter mechanisms surface differently:
     #
@@ -863,24 +915,7 @@ def get_public_dashboard(
     # publicMode is 'visible' (the default). Locked / hidden ones
     # stay in `filters_config` for BE chart-data merging but do NOT
     # show up as pickable fields.
-    top_bar_slicers = list(getattr(dash, "slicers_config", None) or [])
-    pages_filters_flat: list[dict] = []
-    pages_slicers_flat: list[dict] = []
-    for page in dash.pages_config or []:
-        if not isinstance(page, dict):
-            continue
-        for f in page.get("filters") or []:
-            if isinstance(f, dict):
-                pages_filters_flat.append(f)
-        for s in page.get("slicers") or []:
-            if isinstance(s, dict):
-                pages_slicers_flat.append(s)
-    field_inventory = _dedupe_filters_by_field([
-        *pages_filters_flat,
-        *pages_slicers_flat,
-        *top_bar_filters,
-        *top_bar_slicers,
-    ])
+    field_inventory = _public_viewer_filter_inventory(dash)
     # public_filters_config still mirrors only the all-pages set; per-
     # page filters reach the viewer via dash.pages_config (FE seed
     # effect handles activation by page). available_filter_fields,
@@ -2263,7 +2298,16 @@ def get_public_filter_distinct_values(
         track_access=False,
     )
 
-    public_filter_fields = _build_public_filter_fields(db, dash, public_filters)
+    # Match the allow-list exposed by GET /public/dashboards/{token}. For a
+    # multi-link token, `public_filters` is the link's hidden/locked constraint
+    # set; it must constrain the data query below, not replace the viewer-facing
+    # filter inventory.
+    _strip_link_managed_filter_fields(dash, public_filters)
+    public_filter_fields = _build_public_filter_fields(
+        db,
+        dash,
+        _public_viewer_filter_inventory(dash),
+    )
     allowed_field = next(
         (
             item for item in public_filter_fields

@@ -33,7 +33,6 @@ import {
   type SlicerClusterLayout,
   type SlicerImageEntry,
   isSlicerImageEntry,
-  getFilterDisplayLabel,
 } from '@/lib/filters';
 
 interface SlicerClusterProps {
@@ -143,18 +142,9 @@ export function SlicerCluster({
   // Phase-G — config menu (gear) state. Holds position toggle + Add
   // Image so the header stays uncluttered.
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
-  // Phase-18 — filters are a PRIMARY interaction on a dashboard, so show the
-  // slicer bar EXPANDED by default (BI filter-UX research: dashboards should
-  // surface filters, not hide them behind a drawer). The Phase-13 collapse
-  // was over-eager — DAs opened the public link and thought the filters had
-  // disappeared. We still auto-collapse when there are MANY slicers (>6, where
-  // an inline bar would crowd — research says >6-8 filters belong in a
-  // sidebar/drawer) or none. A manual toggle always wins once the user clicks,
-  // and reacts to slicers loading in (the public page seeds them async).
-  const [collapseOverride, setCollapseOverride] = useState<boolean | null>(null);
-  const autoCollapsed = slicerEntries.length === 0 || slicerEntries.length > 6;
-  const isCollapsed = collapseOverride ?? autoCollapsed;
-  const setIsCollapsed = (v: boolean) => setCollapseOverride(v);
+  // Filters are a primary dashboard interaction, so the slicer area now stays
+  // expanded in both builder and public views. Individual slicer popovers still
+  // handle their own open/close state inside DashboardFilterBar.
   const configMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!configMenuOpen) return;
@@ -419,20 +409,7 @@ export function SlicerCluster({
   // Phase-G — cluster controls injected into DashboardFilterBar's single
   // header (badge + position toggle + Add Image), so the slicer zone has
   // ONE header row instead of two. Editor only (hidden when lockSlots).
-  const clusterControls = lockSlots ? (
-    /* Phase-B20 — PUBLIC viewer: render "Thu gọn" IN the header row (via
-       headerExtras) so it flows beside Apply/Reset. The old absolute top-right
-       pill overlapped the Apply button once there were pending changes. */
-    <button
-      type="button"
-      onClick={() => setIsCollapsed(true)}
-      title={t('dashboards.slicerCluster.collapseFilters')}
-      className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
-    >
-      <X className="h-3.5 w-3.5" />
-      <span className="hidden sm:inline">{t('dashboards.slicerCluster.collapse')}</span>
-    </button>
-  ) : (
+  const clusterControls = lockSlots ? null : (
     <>
       {/* "Bản đồ filter" — at-a-glance overview of every filter source, surfaced
           here (where the DA manages slicers) instead of being buried in the
@@ -448,17 +425,6 @@ export function SlicerCluster({
           <span className="hidden sm:inline">{t('dashboards.slicerCluster.filterMap')}</span>
         </button>
       )}
-      {/* Phase-B8 — "Thu gọn" lives IN the header row here (builder) so it no
-          longer overlaps the "Add filter" button (both used to sit top-right). */}
-      <button
-        type="button"
-        onClick={() => setIsCollapsed(true)}
-        title={t('dashboards.slicerCluster.collapseFilters')}
-        className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
-      >
-        <X className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">{t('dashboards.slicerCluster.collapse')}</span>
-      </button>
       {/* Config gear — holds the rarely-used setup controls (position +
           add image) so the header stays clean. (Phase-B8: the "SLICER" chip
           was removed — redundant; the dashed zone already signals the area.) */}
@@ -556,142 +522,53 @@ export function SlicerCluster({
     </>
   );
 
-  // Phase-13 — count of slicers that currently carry a non-empty value
-  // (so the toggle button can show a "3" badge like Linear / GitHub UI).
-  const activeSlicerCount = useMemo(() => {
-    let n = 0;
-    for (const s of slicerEntries) {
-      const v = (s as any)?.value;
-      if (Array.isArray(v) ? v.length > 0 : (v != null && String(v).trim() !== '')) n += 1;
-    }
-    return n;
-  }, [slicerEntries]);
-
-  // Phase-18 — the collapsed pill used to read just "Filters (N)", which DAs
-  // mistook for "filters disappeared on the public link" (they saw inline
-  // slicers while building). Surface the actual field names on the pill so the
-  // applied filters are legible without opening it. Truncate to keep the pill
-  // compact: show up to 2 names then "+K".
-  const slicerNamesSummary = useMemo(() => {
-    const names = slicerEntries
-      .map((s) => getFilterDisplayLabel(s))
-      .filter((label): label is string => Boolean(label && label.trim()));
-    if (names.length === 0) return '';
-    if (names.length <= 2) return names.join(', ');
-    return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
-  }, [slicerEntries]);
-
   return (
     <div
       ref={containerRef}
       className={`slicer-cluster ${lockSlots ? 'mb-0.5' : 'mb-3'}`}
       data-slicer-cluster-position={effectiveLayout.position}
       data-slicer-cluster-direction={effectiveLayout.direction}
-      style={isCollapsed ? undefined : containerStyle}
+      style={containerStyle}
     >
-      {/* Phase-13 — collapsed-by-default toggle. The slicer bar used to
-          always render expanded which crowded the dashboard on first
-          load; PowerBI / Looker hide their filter pane by default. The
-          toggle shows the field count + active filter count so the
-          viewer can see at-a-glance whether filters are applied without
-          opening it. */}
-      {isCollapsed ? (
-        // Collapsed toggle. PUBLIC viewer (lockSlots): a quiet, LEFT-aligned
-        // neutral pill that mirrors the expanded "⟁ Filters" toolbar label so
-        // closing the bar reads as the same control moving — not a loud brand
-        // pill jumping to the right edge (user OCD feedback). BUILDER keeps the
-        // Phase-17 brand chrome (legible over any themed canvas) but also
-        // left-aligned for consistency.
-        <div className="flex items-center justify-start">
-          <button
-            type="button"
-            onClick={() => setIsCollapsed(false)}
-            className={
-              lockSlots
-                ? 'inline-flex max-w-full items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-tiny font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary'
-                : 'inline-flex max-w-full items-center gap-1.5 rounded-md border border-brand/60 bg-brand px-2.5 py-1 text-tiny font-medium text-white shadow-md ring-1 ring-black/5 backdrop-blur-sm transition-colors hover:bg-brand-hover'
-            }
-            title={
-              slicerNamesSummary
-                ? `${t('dashboards.slicerCluster.filtersLabel')}: ${slicerNamesSummary}${activeSlicerCount > 0 ? ` (${t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount })})` : ''} — ${t('dashboards.slicerCluster.clickToOpen')}`
-                : t('dashboards.slicerCluster.showFilters')
-            }
-          >
-            <Filter className={lockSlots ? 'h-3.5 w-3.5 text-brand' : 'h-3.5 w-3.5'} />
-            <span className="shrink-0">{t('dashboards.slicerCluster.filtersLabel')}</span>
-            {/* Phase-18 — show the actual filter names so a collapsed pill
-                doesn't read as "filters missing". Falls back to just the
-                label + count when there are no resolvable names. */}
-            {slicerNamesSummary && (
-              <span className={`hidden max-w-[22rem] truncate font-normal sm:inline ${lockSlots ? 'text-text-quaternary' : 'text-white/85'}`}>
-                {slicerNamesSummary}
-              </span>
-            )}
-            {slicerEntries.length > 0 && (
-              <span
-                className={`inline-flex h-4 min-w-[1rem] shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
-                  lockSlots
-                    ? 'bg-brand/15 text-brand'
-                    : activeSlicerCount > 0
-                      ? 'bg-white text-brand'
-                      : 'bg-white/25 text-white'
-                }`}
-                title={activeSlicerCount > 0 ? t('dashboards.slicerCluster.activeCount', { count: activeSlicerCount }) : t('dashboards.slicerCluster.filterCount', { count: slicerEntries.length })}
-              >
-                {activeSlicerCount > 0 ? activeSlicerCount : slicerEntries.length}
-              </span>
-            )}
-          </button>
+      <div className="relative" style={innerLayout}>
+        <div
+          className="min-w-0"
+          style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
+        >
+          <DashboardFilterBar
+            columns={columns}
+            columnChartCount={columnChartCount}
+            distinctValues={distinctValues}
+            distinctStatus={distinctStatus}
+            distributeChildren={effectiveLayout.distribute === 'auto'}
+            filters={slicerEntries}
+            onFiltersChange={handleSlicersChange}
+            hasPendingChanges={hasPendingChanges}
+            onApply={onApply}
+            onReset={onReset}
+            isApplying={isApplying}
+            initialExpanded
+            embedded
+            lockSlots={lockSlots}
+            showScopeToggle={showScopeToggle}
+            dashboardPages={dashboardPages}
+            activePageId={activePageId}
+            onUpdateSlicerScope={onUpdateSlicerScope}
+            stackVertical={isLeft}
+            collapsedSlicers
+            headerExtras={clusterControls}
+          />
         </div>
-      ) : (
-        // Children rendered with direction-aware layout. Slicers go
-        // through DashboardFilterBar (collapsed-popover buttons); the
-        // cluster controls (badge + position + Add Image) ride in that
-        // bar's SINGLE header via headerExtras. Images render as inline
-        // cells after the bar. Right-edge "X" collapses the cluster.
-        <div className="relative" style={innerLayout}>
-          {/* Phase-B20 — the public "Thu gọn" now rides inside the header row via
-              `clusterControls` (headerExtras), beside Apply/Reset. The previous
-              absolute top-right pill overlapped the Apply button on pending. */}
-          <div
-            className="min-w-0"
-            style={isLeft ? { width: '100%' } : { flex: 1, minWidth: 0 }}
-          >
-            <DashboardFilterBar
-              columns={columns}
-              columnChartCount={columnChartCount}
-              distinctValues={distinctValues}
-              distinctStatus={distinctStatus}
-              distributeChildren={effectiveLayout.distribute === 'auto'}
-              filters={slicerEntries}
-              onFiltersChange={handleSlicersChange}
-              hasPendingChanges={hasPendingChanges}
-              onApply={onApply}
-              onReset={onReset}
-              isApplying={isApplying}
-              initialExpanded
-              embedded
-              lockSlots={lockSlots}
-              showScopeToggle={showScopeToggle}
-              dashboardPages={dashboardPages}
-              activePageId={activePageId}
-              onUpdateSlicerScope={onUpdateSlicerScope}
-              stackVertical={isLeft}
-              collapsedSlicers
-              headerExtras={clusterControls}
-            />
-          </div>
-          {imageEntries.map((img) => (
-            <ImageCell
-              key={img.id}
-              img={img}
-              editable={!lockSlots}
-              onUpdate={(patch) => handleUpdateImage(img.id, patch)}
-              onRemove={() => handleRemoveImage(img.id)}
-            />
-          ))}
-        </div>
-      )}
+        {imageEntries.map((img) => (
+          <ImageCell
+            key={img.id}
+            img={img}
+            editable={!lockSlots}
+            onUpdate={(patch) => handleUpdateImage(img.id, patch)}
+            onRemove={() => handleRemoveImage(img.id)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
