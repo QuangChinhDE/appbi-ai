@@ -147,6 +147,11 @@ class SemanticQueryEngine:
         # (Looker MD5 trick) because a SYMMETRIC-mode filter introduced a 1:N
         # join fan-out at SELECT time. Populated by _build_where_clause.
         self._symmetric_aggregate_views: Set[str] = set()
+        # BUG-018 redux — per-table {column: physical_type} maps, lazily built
+        # from DatasetTable.columns_cache so the type-aware filter/aggregate
+        # paths can recover a column's real type even when it was never
+        # modeled as a declared dimension. Keyed by dataset_table_id.
+        self._phys_coltype_cache: Dict[Any, Dict[str, str]] = {}
     
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
@@ -205,6 +210,7 @@ class SemanticQueryEngine:
         self._model = None
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
+        self._phys_coltype_cache = {}
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -1233,18 +1239,23 @@ class SemanticQueryEngine:
         # cross-view reference we must not blindly cast.
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col):
             return False
-        dim = next(
-            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
-            None,
-        )
-        if not dim:
-            return False
         # Physical string-family storage types across supported warehouses
         # (BigQuery STRING, Postgres text/varchar/char, MySQL char/varchar/…).
         _STRING_PHYSICAL = {
             "string", "text", "varchar", "char", "nvarchar", "nchar",
             "character varying", "character", "bpchar", "clob", "str", "utf8",
         }
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if not dim:
+            # Not a declared dimension — fall back to the physical type from
+            # columns_cache so SUM/AVG over a numeric-looking STRING column that
+            # was never modeled still gets SAFE_CAST (else SUM(STRING) → 400).
+            # No physical type / a genuine numeric → False (no cast), unchanged.
+            phys = (self._physical_source_type(view, col) or "").strip().lower()
+            return bool(phys) and phys in _STRING_PHYSICAL
         source_type = str(dim.get("source_type") or "").strip().lower()
         if source_type:
             return source_type in _STRING_PHYSICAL
@@ -1302,6 +1313,54 @@ class SemanticQueryEngine:
         _DATE_TYPES = {"date", "datetime", "timestamp", "timestamptz", "time"}
         return str(dim.get("type") or "").strip().lower() in _DATE_TYPES
 
+    def _physical_source_type(self, view, col: str) -> Optional[str]:
+        """Resolve a column's PHYSICAL warehouse type from the view's underlying
+        ``DatasetTable.columns_cache`` — for columns that are NOT declared
+        dimensions.
+
+        Model generation turns most columns into dimensions (carrying
+        ``source_type``), but a DA can (a) delete a dimension, (b) reference a
+        column added to the source AFTER generation, or (c) pick — via the
+        measure-filter / aggregation column combobox, which lists EVERY physical
+        column — a numeric column that was never modeled as a dimension. The
+        dimension-only type lookups then saw nothing and the caller fell back to
+        "quote as a string", which slipped ``INT64_col = '1'`` to BigQuery → 400
+        "No matching signature for operator = INT64, STRING" (BUG-018 only fixed
+        the declared-dimension case). This recovers the real type so the value
+        renders with a matching SQL literal.
+
+        Returns a lowercased type string (physical ``source_type`` preferred,
+        value-sampled ``type`` as fallback) or None when unresolvable (→ caller
+        keeps the legacy quote, byte-identical to before).
+        """
+        table_id = getattr(view, "dataset_table_id", None)
+        cache_key = table_id if table_id is not None else id(view)
+        cached = self._phys_coltype_cache.get(cache_key)
+        if cached is None:
+            cached = {}
+            try:
+                table = getattr(view, "dataset_table", None)
+                cc = getattr(table, "columns_cache", None) if table is not None else None
+                if isinstance(cc, dict):
+                    cols = cc.get("columns", []) or []
+                elif isinstance(cc, list):
+                    cols = cc
+                else:
+                    cols = []
+                for c in cols:
+                    if not isinstance(c, dict):
+                        continue
+                    name = str(c.get("name") or "").strip()
+                    if not name:
+                        continue
+                    t = str(c.get("source_type") or c.get("type") or "").strip().lower()
+                    if t:
+                        cached[name] = t
+            except Exception:  # noqa: BLE001 — best-effort; never block SQL-gen
+                cached = {}
+            self._phys_coltype_cache[cache_key] = cached
+        return cached.get(col)
+
     def _filter_type_family(self, field: str, default_view: str) -> Optional[str]:
         """Resolve a filter column's INTENT type → 'number'|'bool'|'date'|
         'datetime'|'string'|None. Drives type-aware literal rendering so a
@@ -1313,7 +1372,11 @@ class SemanticQueryEngine:
         signal (``number`` means the analyst wants a numeric comparison even if
         the column is physically STRING — Airbyte/Sheets — in which case the
         caller SAFE_CASTs), with physical ``source_type`` confirming bool/date.
-        Returns None for non-dimension columns → caller keeps the legacy quote.
+        For columns that are NOT declared dimensions, falls back to the physical
+        type from ``columns_cache`` (``_physical_source_type``) so a filter on a
+        never-modeled numeric column still coerces instead of emitting
+        ``INT64 = STRING``. Returns None only when the column is wholly
+        unresolvable → caller keeps the legacy quote.
         """
         if "." in field:
             try:
@@ -1329,10 +1392,17 @@ class SemanticQueryEngine:
             (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
             None,
         )
-        if not dim:
-            return None
-        st = str(dim.get("source_type") or "").strip().lower()
-        sem = str(dim.get("type") or "").strip().lower()
+        if dim:
+            st = str(dim.get("source_type") or "").strip().lower()
+            sem = str(dim.get("type") or "").strip().lower()
+        else:
+            # Not a declared dimension — recover the column's physical type so
+            # the value still renders with a matching literal (else a numeric
+            # column the DA never modeled slips ``INT64_col = '1'`` to BigQuery).
+            st = (self._physical_source_type(view, col) or "").strip().lower()
+            sem = ""
+            if not st:
+                return None
         _NUM = {
             "int", "integer", "int64", "bigint", "smallint", "tinyint",
             "float", "float64", "double", "double precision", "real",

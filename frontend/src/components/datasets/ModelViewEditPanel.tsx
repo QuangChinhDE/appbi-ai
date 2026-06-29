@@ -2517,30 +2517,55 @@ function MeasureRow({
             </div>
           </div>
 
-          {/* Column to aggregate — Low-code mode only. COUNT counts rows
-              (= COUNT(*)) so column is N/A; use filters or count_distinct
-              for column-specific counting. In SQL mode the SQL expression
-              field replaces this — column picker is hidden to keep one
-              source of truth. */}
-          {mode === 'lowcode' && measure.type !== 'count' && (
-            <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Cột để tính</label>
-              {/* C1: combobox — chọn cột từ danh sách (tránh sai tên) nhưng
-                  vẫn cho gõ tự do nếu cần. */}
-              <div className="mt-0.5">
-                <ColumnCombobox
-                  value={measure.sql || ''}
-                  options={columnOptions}
-                  onChange={(v) => onChange({ ...measure, sql: v || undefined })}
-                  placeholder="Chọn / gõ cột (vd. num_calls)"
-                  invalid={Boolean(errors.column)}
-                />
+          {/* Column to aggregate — Low-code mode (every aggregation incl.
+              COUNT). For SUM/AVG/MIN/MAX/COUNT DISTINCT it is the value being
+              aggregated. For COUNT it is OPTIONAL: leave blank to count rows
+              (COUNT(*)), or pick a column to count its non-null values
+              (COUNT(column)) — the engine emits COUNT(<col>) directly, so
+              hiding this field had been silently forcing COUNT(*). In SQL mode
+              the SQL expression field replaces this (one source of truth). */}
+          {mode === 'lowcode' && (() => {
+            const isCount = measure.type === 'count';
+            // The COUNT(*) template seeds sql='*'; surface that as "blank" so
+            // the combobox reads as "all rows", not a literal asterisk.
+            const colValue = isCount && (measure.sql || '*') === '*' ? '' : (measure.sql || '');
+            const hasCountCol = isCount && (measure.sql || '*') !== '*';
+            return (
+              <div>
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                  {isCount ? 'Cột để đếm (để trống = đếm mọi dòng)' : 'Cột để tính'}
+                </label>
+                {/* C1: combobox — chọn cột từ danh sách (tránh sai tên) nhưng
+                    vẫn cho gõ tự do nếu cần. */}
+                <div className="mt-0.5">
+                  <ColumnCombobox
+                    value={colValue}
+                    options={columnOptions}
+                    onChange={(v) => onChange({
+                      ...measure,
+                      // COUNT keeps a canonical '*' when cleared (→ COUNT(*));
+                      // a picked column → COUNT(column). Other aggregations keep
+                      // the prior undefined-when-empty behaviour.
+                      sql: isCount ? (v.trim() || '*') : (v || undefined),
+                    })}
+                    placeholder={isCount
+                      ? 'Mọi dòng (COUNT *) — hoặc chọn cột để đếm giá trị non-null'
+                      : 'Chọn / gõ cột (vd. num_calls)'}
+                    invalid={Boolean(errors.column)}
+                  />
+                </div>
+                {hasCountCol && (
+                  <p className="mt-0.5 text-[10px] text-text-quaternary">
+                    Đếm số dòng có giá trị (non-null) ở cột{' '}
+                    <code className="font-mono">{measure.sql}</code>.
+                  </p>
+                )}
+                {errors.column && (
+                  <p className="mt-0.5 text-[10px] text-danger">{errors.column}</p>
+                )}
               </div>
-              {errors.column && (
-                <p className="mt-0.5 text-[10px] text-danger">{errors.column}</p>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* Filter builder */}
           <div>
@@ -2937,7 +2962,10 @@ function MeasureRow({
               count_distinct: 'COUNT DISTINCT', percent_of_total: 'SUM',
             } as Record<MeasureDefinition['type'], string>)[measure.type];
             const valueExpr = mode === 'lowcode'
-              ? (measure.type === 'count' ? '*' : (measure.sql || '<chọn cột>'))
+              ? (measure.type === 'count'
+                  // COUNT(*) when blank/'*'; COUNT(<col>) when a column is set.
+                  ? ((measure.sql || '*') === '*' ? '*' : measure.sql!)
+                  : (measure.sql || '<chọn cột>'))
               // friendly view names in the preview too (match the box)
               : (rewriteExprViewTokens(measure.expression || '', techToDisplay) || '<biểu thức>');
             const whereParts: string[] = [];

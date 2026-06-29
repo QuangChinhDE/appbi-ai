@@ -18,6 +18,8 @@ import { usePermissions, type ModuleKey, type PermissionLevel } from '@/hooks/us
 const MODULE_LABELS: Record<ModuleKey, string> = {
   data_sources: 'Data sources',
   datasets: 'Datasets',
+  govern: 'Govern',
+  observability: 'Observability',
   explore_charts: 'Explore + charts',
   dashboards: 'Dashboards',
   workboards: 'Workboards',
