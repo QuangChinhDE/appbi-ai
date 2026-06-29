@@ -88,6 +88,15 @@ class Settings(BaseSettings):
     # Workboard mini-app builder module — bundled with the core stack.
     WORKBOARDS_ENABLED: bool = True
 
+    # ── Metadata Catalog (hidden OpenMetadata backend) ──────────────────
+    # Default OFF — the metadata_catalog module is fully INERT until enabled
+    # (it is not even imported while off; see app/api/__init__.py). When True,
+    # AppBI proxies a hidden OM server for catalog/glossary/lineage under
+    # /api/v1/catalog/*. Deployment lives in the repo's open-metadata/ folder.
+    METADATA_CATALOG_ENABLED: bool = False
+    OPENMETADATA_API_URL: str = "http://openmetadata-server:8585/api"
+    OPENMETADATA_BOT_TOKEN: str = ""
+
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
     # callers begin opting-in once golden-harness + production smoke-tests pass.

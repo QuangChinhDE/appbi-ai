@@ -39,6 +39,12 @@ if settings.WORKBOARDS_ENABLED:
 
 api_router.include_router(semantic.router)
 
+# Metadata Catalog — hidden OpenMetadata backend (proxied under /catalog).
+# Imported ONLY when enabled so the core app is unaffected while OFF.
+if settings.METADATA_CATALOG_ENABLED:
+    from app.modules.metadata_catalog.api import router as metadata_catalog_router
+    api_router.include_router(metadata_catalog_router)
+
 # Phase 4: Proactive Intelligence
 api_router.include_router(anomaly.router)
 
