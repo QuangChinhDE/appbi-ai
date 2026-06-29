@@ -2566,6 +2566,29 @@ def get_distinct_field_values(
     )
     from app.services.chart_contracts import normalize_filter_conditions, normalize_filter_operator
     from app.services.dataset_relation_service import resolve_dataset_table_relation
+    from app.services.semantic_query_engine import SemanticQueryEngine
+    from app.services.type_override_service import build_safe_cast_sql
+
+    # Reuse the engine's EXACT type-family classifier so the dropdown-cascade
+    # path coerces filter literals identically to the chart WHERE-builder and
+    # the measure-filter path (convergence — see `dashboard_filter_dual_path`).
+    # Without this a numeric column compared against a STRING slicer value
+    # (dropdown/'in' values arrive as strings) emitted e.g.
+    # ``year BETWEEN '2023' AND '2024'`` → BigQuery 400 "No matching signature
+    # for operator BETWEEN ... INT64, STRING, STRING". views_cache is seeded
+    # per-call below so no extra DB round-trip is needed.
+    _family_engine = SemanticQueryEngine(db)
+
+    def _resolve_field_family(view_obj, field_name: str) -> str | None:
+        """Type family of a declared field via the engine's classifier
+        (number/bool/date/datetime/string/None). None → legacy quoted literal."""
+        if view_obj is None:
+            return None
+        try:
+            _family_engine.views_cache[view_obj.name] = view_obj
+            return _family_engine._filter_type_family(field_name, view_obj.name)
+        except Exception:  # noqa: BLE001 — family detection is best-effort
+            return None
 
     cache_payload = {
         "field": field_name,
@@ -2639,43 +2662,75 @@ def get_distinct_field_values(
                 add_ref(linked_field)
         return refs
 
-    def _render_filter_condition(field_expression: str, filter_condition: dict) -> str | None:
+    def _render_filter_condition(
+        field_expression: str,
+        filter_condition: dict,
+        *,
+        field_family: str | None = None,
+        dialect: str = "postgresql",
+    ) -> str | None:
         op = normalize_filter_operator(filter_condition.get("operator"))
-        value = filter_condition.get("value")
+        raw_value = filter_condition.get("value")
 
         def value_present(candidate) -> bool:
             return candidate is not None and not (isinstance(candidate, str) and not candidate.strip())
 
+        # Type-aware literal rendering — parity with the chart WHERE-builder and
+        # the measure-filter path. Coerce the (string-from-FE) value to the
+        # column's family so numbers/bools render UNQUOTED, and SAFE_CAST the
+        # column when comparing against a number (no-op on genuine numerics,
+        # parses STRING-stored numerics). `field_family=None` → no coercion →
+        # legacy quoted literal, byte-identical to before. LIKE/pattern ops keep
+        # the raw (uncoerced) value — they are string-only by definition.
+        value = SemanticQueryEngine._coerce_typed_filter_value(raw_value, field_family)
+        _d = (dialect or "").lower()
+
+        def _lit(v) -> str:
+            if isinstance(v, bool):
+                return "TRUE" if v else "FALSE"
+            if isinstance(v, (int, float)):
+                return str(v)
+            return _sql_literal(v)
+
+        def _numcast(col_sql: str, *vals) -> str:
+            present = [v for v in vals if value_present(v)]
+            if present and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+            ):
+                return build_safe_cast_sql(col_sql, "float", _d)
+            return col_sql
+
         if op == "eq":
-            return f"{field_expression} = {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} = {_lit(value)}"
         if op in ("neq", "ne"):
-            return f"{field_expression} != {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} != {_lit(value)}"
         if op == "gt":
-            return f"{field_expression} > {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} > {_lit(value)}"
         if op == "gte":
-            return f"{field_expression} >= {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} >= {_lit(value)}"
         if op == "lt":
-            return f"{field_expression} < {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} < {_lit(value)}"
         if op == "lte":
-            return f"{field_expression} <= {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} <= {_lit(value)}"
         if op == "between" and isinstance(value, list):
             lo = value[0] if len(value) > 0 else None
             hi = value[1] if len(value) > 1 else None
             if value_present(lo) and value_present(hi):
-                return f"{field_expression} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}"
+                return f"{_numcast(field_expression, lo, hi)} BETWEEN {_lit(lo)} AND {_lit(hi)}"
             if value_present(lo):
-                return f"{field_expression} >= {_sql_literal(lo)}"
+                return f"{_numcast(field_expression, lo)} >= {_lit(lo)}"
             if value_present(hi):
-                return f"{field_expression} <= {_sql_literal(hi)}"
+                return f"{_numcast(field_expression, hi)} <= {_lit(hi)}"
             return None
         if op in {"in", "not_in"} and isinstance(value, list):
-            vals = ", ".join(_sql_literal(item) for item in value if value_present(item))
-            if not vals:
+            present_vals = [item for item in value if value_present(item)]
+            if not present_vals:
                 return None
+            vals = ", ".join(_lit(item) for item in present_vals)
             keyword = "IN" if op == "in" else "NOT IN"
-            return f"{field_expression} {keyword} ({vals})"
-        if op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            return f"{_numcast(field_expression, *present_vals)} {keyword} ({vals})"
+        if op in {"like", "contains", "not_contains", "starts_with"} and raw_value is not None:
+            esc = str(raw_value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
             if op == "not_contains":
                 return f"{field_expression} NOT LIKE '%{esc}%' ESCAPE '\\'"
             if op == "starts_with":
@@ -2911,7 +2966,12 @@ def get_distinct_field_values(
             if not _semantic_view_has_field(leaf_view, name):
                 return None, "field_not_on_view"
             leaf_expr = f"{leaf_alias}.{_quote_identifier(name, dialect)}"
-            predicate = _render_filter_condition(leaf_expr, filter_condition)
+            predicate = _render_filter_condition(
+                leaf_expr,
+                filter_condition,
+                field_family=_resolve_field_family(leaf_view, name),
+                dialect=dialect,
+            )
             if not predicate:
                 return None, "no_join_path"
 
@@ -2994,7 +3054,12 @@ def get_distinct_field_values(
                         last_view = node
                         continue
                     field_expr = f"{base_alias}.{_quote_identifier(name, dialect)}"
-                    predicate = _render_filter_condition(field_expr, filter_condition)
+                    predicate = _render_filter_condition(
+                        field_expr,
+                        filter_condition,
+                        field_family=_resolve_field_family(view_obj, name),
+                        dialect=dialect,
+                    )
                     if predicate:
                         base_predicates.append(predicate)
                         handled = True

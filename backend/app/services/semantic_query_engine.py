@@ -2110,7 +2110,19 @@ class SemanticQueryEngine:
                     measures=fact_measures,
                     filters=rebound,
                     sorts=[],
-                    limit=limit,
+                    # Per-fact CTEs must cover EVERY dimension group, so the row
+                    # limit must NOT be pushed down here: each `_mf` is aggregated
+                    # independently and stitched onto `_skel` by the conformed
+                    # dims, and the limit is re-applied to the FINAL stitched
+                    # result below. Propagating the outer limit truncated each
+                    # fact to an arbitrary (un-ordered, possibly mismatched) N
+                    # rows BEFORE the stitch → a dim value kept in one fact but
+                    # dropped in another surfaced as a spurious NULL measure (and
+                    # nondeterministic rows). No-op for the common sentinel limit
+                    # (every fact already covered all groups); fixes explicit
+                    # small-limit cross-fact charts. The outer `LIMIT {limit}`
+                    # (below) still bounds the returned rows.
+                    limit=10_000_000,
                     time_grains=time_grains,
                     measure_agg_overrides=measure_agg_overrides,
                     model_id=model_id,
