@@ -175,3 +175,31 @@ backend/scripts/regression_*.py
 # Tracked exception to the seed_*.py local-only convention (see scripts/README.md).
 !backend/scripts/seed_snowflake_ci_fixture.py
 .ai-bot-test/
+
+# ── Local tidy (2026-06-25): hide scattered LOCAL-ONLY test/seed/demo/scratch so
+# `git status` shows only project runtime. Files stay on disk — delete anytime.
+# NOTE: the CI suite is intentionally NOT hidden (backend/tests/, golden/,
+# regression_filter_matrix.py, _normalize_sql.py, test_snowflake_*.py,
+# test_explore_dashboard_parity.py, seed_snowflake_ci|manual_fixture.py) — it's
+# meant to be COMMITTED for CI, so it stays visible. Only true throwaway here. ──
+*.stackdump
+overview-snap.yml
+DA-Test/
+mobile/
+e2e/
+# Quarantined local screenshots/debug images moved out of repo root — rm anytime
+_local-shots/
+# OpenMetadata upstream clone (~382MB) — reference only; the OM stack pulls the
+# published image, so this is NOT needed to run. Deploy files (compose, init-db,
+# gen-secrets) ARE tracked; secrets/ stays ignored (open-metadata/.gitignore).
+open-metadata/openmetadata-source/
+# backend/scripts — local demo/seed/repro one-offs (CI-tracked ones excluded above)
+backend/scripts/da10_*.py
+backend/scripts/seed_dataset47_*.py
+backend/scripts/seed_pbi_*.py
+backend/scripts/seed_pvpcm_*.py
+backend/scripts/seed_snowflake_demo_*.py
+backend/scripts/seed_phase16_*.sql
+backend/scripts/finalize_demo_*.py
+backend/scripts/verify_demo_*.py
+backend/scripts/update_workboard10_*.py

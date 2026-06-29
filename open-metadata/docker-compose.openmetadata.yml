@@ -1,0 +1,162 @@
+# ============================================================
+# OpenMetadata — HARDENED, HIDDEN backend for AppBI's Catalog/Glossary/Lineage
+#
+# Security/stability posture (internal prod):
+#   • OM server has NO host port  → reachable only by AppBI backend on appbi-net.
+#   • opensearch is on an INTERNAL-only network → no route to/from anywhere but OM.
+#   • NO ingestion/Airflow container → OM never holds any source credentials.
+#   • Fresh JWT RSA keys mounted (NOT the image's public default keys).
+#   • Strong secrets via open-metadata/.env (gitignored) — none committed.
+#   • Memory caps so OM/opensearch can never starve the core stack.
+#   • no-new-privileges on every container.
+#   • OM uses appbi-db Postgres but its OWN database `openmetadata_db`.
+#
+# Env var names verified against the cloned official compose:
+#   open-metadata/openmetadata-source/docker/docker-compose-quickstart/docker-compose-postgres.yml
+#
+# Bring up:
+#   docker compose -f open-metadata/docker-compose.openmetadata.yml --env-file open-metadata/.env up -d
+# Tear down (never touches the `appbi` database):
+#   docker compose -f open-metadata/docker-compose.openmetadata.yml down
+# ============================================================
+
+x-om-common: &om-common
+  # Pinned, overridable. IMPORTANT: pin a STABLE release tag (the cloned source is
+  # 2.0.0-SNAPSHOT/dev — do NOT run SNAPSHOT in prod). Verify the tag on
+  # https://github.com/open-metadata/OpenMetadata/releases and ideally pin by digest.
+  image: docker.getcollate.io/openmetadata/server:${OPENMETADATA_VERSION:?set OPENMETADATA_VERSION in .env}
+  env_file:
+    - .env
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - appbi-net      # to reach appbi-db + be reached by AppBI backend
+    - om-internal    # to reach opensearch
+
+x-om-env: &om-env
+  OPENMETADATA_CLUSTER_NAME: appbi-om
+  SERVER_PORT: "8585"
+  SERVER_ADMIN_PORT: "8586"
+  LOG_LEVEL: ${OM_LOG_LEVEL:-INFO}
+
+  # ── Database → appbi-db / openmetadata_db (separate database) ──
+  DB_DRIVER_CLASS: org.postgresql.Driver
+  DB_SCHEME: postgresql
+  DB_PARAMS: "useSSL=false&serverTimezone=UTC"
+  DB_HOST: ${OM_DB_HOST:-appbi-db}
+  DB_PORT: ${OM_DB_PORT:-5432}
+  OM_DATABASE: ${OM_DB_NAME:-openmetadata_db}
+  DB_USER: ${OM_DB_USER:-openmetadata_user}
+  DB_USER_PASSWORD: ${OM_DB_PASSWORD:?set OM_DB_PASSWORD in .env}
+
+  # ── Search → opensearch (internal-only) ──
+  SEARCH_TYPE: opensearch
+  ELASTICSEARCH_HOST: opensearch
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_SCHEME: http
+  ELASTICSEARCH_USER: ""
+  ELASTICSEARCH_PASSWORD: ""
+  ELASTICSEARCH_INDEX_MAPPING_LANG: EN
+
+  # ── No ingestion/Airflow — disable the pipeline client so OM doesn't expect it ──
+  PIPELINE_SERVICE_CLIENT_ENABLED: "false"
+
+  # ── Auth: basic + JWT, self-signup OFF (hidden internal service, bot-only) ──
+  AUTHENTICATION_PROVIDER: basic
+  AUTHENTICATION_ENABLE_SELF_SIGNUP: "false"
+  AUTHORIZER_CLASS_NAME: org.openmetadata.service.security.DefaultAuthorizer
+  AUTHORIZER_REQUEST_FILTER: org.openmetadata.service.security.JwtFilter
+  AUTHORIZER_ADMIN_PRINCIPALS: ${OM_ADMIN_PRINCIPALS:-[admin]}
+  AUTHORIZER_PRINCIPAL_DOMAIN: ${OM_PRINCIPAL_DOMAIN:-appbi.local}
+  AUTHORIZER_INGESTION_PRINCIPALS: "[ingestion-bot]"
+  AUTHENTICATION_PUBLIC_KEYS: "[http://openmetadata-server:8585/api/v1/system/config/jwks]"
+  AUTHENTICATION_AUTHORITY: ${OM_PRINCIPAL_DOMAIN:-appbi.local}
+
+  # ── Fresh JWT keys (mounted read-only; NOT the image defaults) ──
+  RSA_PUBLIC_KEY_FILE_PATH: /run/om-keys/public_key.der
+  RSA_PRIVATE_KEY_FILE_PATH: /run/om-keys/private_key.der
+  JWT_ISSUER: ${OM_PRINCIPAL_DOMAIN:-appbi.local}
+  JWT_KEY_ID: ${OM_JWT_KEY_ID:?set OM_JWT_KEY_ID in .env}
+
+  SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+  OPENMETADATA_HEAP_OPTS: ${OM_HEAP_OPTS:--Xmx1G -Xms1G}
+
+services:
+  # ── Search engine (OM hard requirement) — INTERNAL ONLY, no host port ────
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.11.1}
+    container_name: appbi-om-opensearch
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms${OS_HEAP:-1g} -Xmx${OS_HEAP:-1g}"
+      - DISABLE_SECURITY_PLUGIN=true        # safe: container is on an internal-only network, no host port
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    mem_limit: ${OS_MEM_LIMIT:-1500m}
+    volumes:
+      - om_opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\"' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    networks:
+      - om-internal    # ONLY the internal network — no appbi-net, no host port
+
+  # ── One-shot schema migration into openmetadata_db ───────────────────────
+  openmetadata-migrate:
+    <<: *om-common
+    container_name: appbi-om-migrate
+    restart: "no"
+    command: ["./bootstrap/openmetadata-ops.sh", "migrate"]
+    environment:
+      <<: *om-env
+    volumes:
+      - ./secrets/jwt:/run/om-keys:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  # ── OM application server (HIDDEN — no host port) ────────────────────────
+  openmetadata-server:
+    <<: *om-common
+    container_name: appbi-om-server
+    restart: unless-stopped
+    environment:
+      <<: *om-env
+    mem_limit: ${OM_MEM_LIMIT:-2g}
+    volumes:
+      - ./secrets/jwt:/run/om-keys:ro
+    expose:
+      - "8585"   # visible to appbi-net peers (AppBI backend) only; NOT published to host
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8586/healthcheck"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
+    depends_on:
+      openmetadata-migrate:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  om_opensearch_data:
+
+networks:
+  # Existing core network — lets the AppBI backend reach OM.
+  appbi-net:
+    external: true
+    name: appbi-net
+  # Internal-only — opensearch is isolated here; `internal: true` = no external connectivity.
+  om-internal:
+    driver: bridge
+    internal: true

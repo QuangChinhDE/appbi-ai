@@ -1,0 +1,10 @@
+# Secrets — NEVER commit
+.env
+secrets/
+
+# Vendored OM source (382MB) — clone on demand, don't bloat the app repo.
+# Remove this line if your team decides to vendor it deliberately.
+openmetadata-source/
+
+# OM runtime data
+docker-volume/
