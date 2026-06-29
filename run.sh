@@ -5,15 +5,20 @@
 #    ./run.sh                 → AppBI core + OpenMetadata catalog (token auto-set)
 #    CORE_ONLY=1 ./run.sh     → AppBI core only (catalog stays inert)
 #
-#  Idempotent: run on a fresh host OR an existing VM — it rebuilds to the latest
-#  code and (re)bootstraps only what's missing. The OpenMetadata ingestion-bot
-#  token is minted offline from the OM RSA key and written into .env — NO
-#  hand-copy. It only orchestrates the hardened open-metadata/ pieces
-#  (gen-secrets.sh, init-db/*.sql, docker-compose.openmetadata.yml).
+#  Each run: SYNC code (git fetch + reset --hard origin/<branch>) → rebuild →
+#  (re)bootstrap only what's missing. So on the VM you just `bash run.sh` after a
+#  push and it pulls + ships everything. Idempotent (fresh host or existing VM).
+#  AUTO-handled: OM secrets (gen-secrets if absent), openmetadata_db + role,
+#  the ingestion-bot token (minted offline from the OM RSA key → written to .env,
+#  NO hand-copy), backend restart.
 #
-#  Prereqs: docker + openssl on PATH; for catalog, set OPENMETADATA_VERSION in
-#  open-metadata/.env (a verified stable tag). Managed Postgres: set DATABASE_URL
-#  in .env (the local-db container is skipped automatically).
+#  ONE-TIME per host (cannot be auto-picked safely): set OPENMETADATA_VERSION in
+#  open-metadata/.env to a verified stable tag (e.g. 1.7.6). After that, never again.
+#  NOT auto-fixed: a genuinely broken OM (bad image / OOM / crash) — run.sh waits
+#  for health and, if it fails, prints the log command instead of hiding it.
+#
+#  Prereqs: docker + openssl on PATH. Managed Postgres: set DATABASE_URL in .env
+#  (the local-db container is skipped automatically). Skip the git sync: SKIP_PULL=1.
 # ============================================================================
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || dirname "$0")"
@@ -21,6 +26,15 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || dirname "$0")"
 OM_DIR="open-metadata"
 DB_CONTAINER="${APPBI_DB_CONTAINER:-appbi-ai-db-1}"
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$1"; }
+
+# ── 0. Sync to the latest pushed code on THIS branch (skip: SKIP_PULL=1) ─────
+# Hard-resets tracked files to origin so a force-push / drift is handled cleanly.
+# Untracked files (.env, open-metadata/secrets, data volumes) are NOT touched.
+if [ "${SKIP_PULL:-0}" != "1" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+  BR="$(git rev-parse --abbrev-ref HEAD)"
+  step "Sync code → origin/$BR"
+  git fetch origin "$BR" --quiet && git reset --hard "origin/$BR"
+fi
 
 # Local-db profile unless an external DATABASE_URL is configured.
 CORE_PROFILE=()
