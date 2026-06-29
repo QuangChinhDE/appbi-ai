@@ -5,20 +5,20 @@
 #    ./run.sh                 → AppBI core + OpenMetadata catalog (token auto-set)
 #    CORE_ONLY=1 ./run.sh     → AppBI core only (catalog stays inert)
 #
-#  Each run: SYNC code (git fetch + reset --hard origin/<branch>) → rebuild →
-#  (re)bootstrap only what's missing. So on the VM you just `bash run.sh` after a
-#  push and it pulls + ships everything. Idempotent (fresh host or existing VM).
-#  AUTO-handled: OM secrets (gen-secrets if absent), openmetadata_db + role,
-#  the ingestion-bot token (minted offline from the OM RSA key → written to .env,
-#  NO hand-copy), backend restart.
+#  Pull the latest code yourself first (this script does NOT run git), then one
+#  `bash run.sh` stands the whole system up — no going elsewhere to export tokens
+#  or set vars. Idempotent (fresh host or existing VM); rebuilds + (re)bootstraps
+#  only what's missing. AUTO-handled, no manual step: OM secrets (gen-secrets if
+#  absent), OPENMETADATA_VERSION (defaulted if unset), openmetadata_db + role, the
+#  ingestion-bot token (minted offline from the OM RSA key → written to .env, NO
+#  hand-copy), backend restart.
 #
-#  ONE-TIME per host (cannot be auto-picked safely): set OPENMETADATA_VERSION in
-#  open-metadata/.env to a verified stable tag (e.g. 1.7.6). After that, never again.
 #  NOT auto-fixed: a genuinely broken OM (bad image / OOM / crash) — run.sh waits
 #  for health and, if it fails, prints the log command instead of hiding it.
 #
 #  Prereqs: docker + openssl on PATH. Managed Postgres: set DATABASE_URL in .env
-#  (the local-db container is skipped automatically). Skip the git sync: SKIP_PULL=1.
+#  (the local-db container is skipped automatically). Override the OM version:
+#  OPENMETADATA_VERSION=1.x.y bash run.sh   (else it defaults the first time).
 # ============================================================================
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || dirname "$0")"
@@ -27,14 +27,7 @@ OM_DIR="open-metadata"
 DB_CONTAINER="${APPBI_DB_CONTAINER:-appbi-ai-db-1}"
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$1"; }
 
-# ── 0. Sync to the latest pushed code on THIS branch (skip: SKIP_PULL=1) ─────
-# Hard-resets tracked files to origin so a force-push / drift is handled cleanly.
-# Untracked files (.env, open-metadata/secrets, data volumes) are NOT touched.
-if [ "${SKIP_PULL:-0}" != "1" ] && git rev-parse --git-dir >/dev/null 2>&1; then
-  BR="$(git rev-parse --abbrev-ref HEAD)"
-  step "Sync code → origin/$BR"
-  git fetch origin "$BR" --quiet && git reset --hard "origin/$BR"
-fi
+# This script does NOT touch git — pull the code yourself first, then run it.
 
 # Local-db profile unless an external DATABASE_URL is configured.
 CORE_PROFILE=()
@@ -60,12 +53,19 @@ else
   bash "$OM_DIR/gen-secrets.sh"
 fi
 
-# ── 3. Stable image tag required by the OM compose ──────────────────────────
+# ── 3. Image tag — auto-default if unset (override: OPENMETADATA_VERSION env) ─
 step "OM image tag"
-grep -qE '^OPENMETADATA_VERSION=.+' "$OM_DIR/.env" || {
-  echo "✗ Set a verified STABLE tag in $OM_DIR/.env, e.g. OPENMETADATA_VERSION=1.7.6"
-  exit 1; }
-echo "· $(grep -E '^OPENMETADATA_VERSION=' "$OM_DIR/.env")"
+if grep -qE '^OPENMETADATA_VERSION=.+' "$OM_DIR/.env"; then
+  echo "· $(grep -E '^OPENMETADATA_VERSION=' "$OM_DIR/.env")"
+else
+  VER="${OPENMETADATA_VERSION:-1.7.6}"
+  if grep -qE '^OPENMETADATA_VERSION=' "$OM_DIR/.env"; then
+    sed -i.bak "s|^OPENMETADATA_VERSION=.*|OPENMETADATA_VERSION=$VER|" "$OM_DIR/.env" && rm -f "$OM_DIR/.env.bak"
+  else
+    echo "OPENMETADATA_VERSION=$VER" >> "$OM_DIR/.env"
+  fi
+  echo "· defaulted OPENMETADATA_VERSION=$VER (override: OPENMETADATA_VERSION=1.x.y bash run.sh, or edit $OM_DIR/.env)"
+fi
 
 # ── 4. openmetadata_db + least-priv role inside appbi-db (additive) ─────────
 step "OM database + role (in $DB_CONTAINER)"
