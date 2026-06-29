@@ -806,6 +806,18 @@ def build_live_agg_query(
             if isinstance(metric, dict)
         ])
 
+    valid_agg = {"SUM", "AVG", "COUNT", "MIN", "MAX", "COUNT_DISTINCT"}
+
+    def aggregate_expr(field: str, agg: str | None, alias_name: str) -> str:
+        agg_norm = str(agg or "sum").strip().upper().replace(" ", "_")
+        qf = qi(field, dialect)
+        alias = qi(alias_name, dialect)
+        if agg_norm == "COUNT_DISTINCT":
+            return f"COUNT(DISTINCT {qf}) AS {alias}"
+        if agg_norm in ("COUNT", "AVG", "MIN", "MAX", "SUM"):
+            return f"{agg_norm}({qf}) AS {alias}"
+        return f"SUM({qf}) AS {alias}"
+
     def raw_select(fields: list[Any], default_limit: int = 10_000_000) -> str:
         cols = dedupe_fields(fields)
         select_cols = ", ".join(qi(col, dialect) for col in cols) if cols else "*"
@@ -876,7 +888,71 @@ def build_live_agg_query(
         limit = resolve_limit(5000)
         return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
-    # SCATTER/BUBBLE/MAP_POINT/NINE_BOX: raw coordinates up to 5000 rows.
+    # BUBBLE/NINE_BOX with a Label field aggregate numeric marks at Label grain.
+    # SCATTER/MAP_POINT stay raw rows; Bubble/9-box without Label also keep the
+    # legacy raw behavior because there is no group key to collapse on.
+    if ctype in {"BUBBLE", "NINE_BOX"} and dimension:
+        sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
+        if sx and sy:
+            group_fields = [dimension]
+            aggregate_specs: list[tuple[str, str | None, str]] = []
+            for axis_field, axis_agg in (
+                (sx, role_config.get("scatterXAgg")),
+                (sy, role_config.get("scatterYAgg")),
+            ):
+                if not axis_field:
+                    continue
+                axis_agg_norm = str(axis_agg or "").strip().upper().replace(" ", "_")
+                # 9-box supports categorical axes. Without an explicit numeric
+                # aggregation signal, keep that axis as a GROUP BY dimension.
+                if ctype == "NINE_BOX" and axis_agg_norm not in valid_agg:
+                    if axis_field not in group_fields:
+                        group_fields.append(axis_field)
+                    continue
+                aggregate_specs.append((axis_field, axis_agg or "sum", axis_field))
+
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    continue
+                field = str(metric.get("field") or "").strip()
+                if not field:
+                    continue
+                agg = str(metric.get("agg") or "sum").strip().lower()
+                aggregate_specs.append((field, agg, f"{agg}__{field}"))
+
+            if aggregate_specs:
+                group_by_parts = [qi(field, dialect) for field in dedupe_fields(group_fields)]
+                output_columns = list(group_by_parts)
+                select_parts = list(group_by_parts)
+                seen_aliases: set[str] = set(output_columns)
+                for field, agg, alias_name in aggregate_specs:
+                    quoted_alias = qi(alias_name, dialect)
+                    if quoted_alias in seen_aliases:
+                        continue
+                    seen_aliases.add(quoted_alias)
+                    output_columns.append(quoted_alias)
+                    select_parts.append(aggregate_expr(field, agg, alias_name))
+
+                source_table = (
+                    f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} "
+                    f"FROM {base_table}) AS _appbi_ordered"
+                )
+                inner_sql = (
+                    f"SELECT {', '.join(select_parts)}, "
+                    f"MIN({quoted_row_order_alias}) AS {quoted_group_order_alias} "
+                    f"FROM {source_table}{where_sql} "
+                    f"GROUP BY {', '.join(group_by_parts)}"
+                )
+                limit = resolve_limit(10_000_000)
+                return (
+                    f"SELECT {', '.join(output_columns)} "
+                    f"FROM ({inner_sql}) AS _appbi_bubble "
+                    f"ORDER BY {quoted_group_order_alias} ASC "
+                    f"LIMIT {int(limit)}",
+                    True,
+                )
+
+    # SCATTER/MAP_POINT and no-label BUBBLE/NINE_BOX: raw coordinates.
     if ctype in {"SCATTER", "BUBBLE", "MAP_POINT", "NINE_BOX"}:
         sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
         if sx and sy:
@@ -927,19 +1003,13 @@ def build_live_agg_query(
         agg = (m.get("agg") or "sum").upper().replace(" ", "_")
         if not field:
             continue
-        qf = qi(field, dialect)
         alias_name = f"{agg.lower()}__{field}"
         if alias_name in seen_metric_aliases:
             continue
         seen_metric_aliases.add(alias_name)
         alias = qi(alias_name, dialect)
         output_columns.append(alias)
-        if agg == "COUNT_DISTINCT":
-            select_parts.append(f"COUNT(DISTINCT {qf}) AS {alias}")
-        elif agg in ("COUNT", "AVG", "MIN", "MAX", "SUM"):
-            select_parts.append(f"{agg}({qf}) AS {alias}")
-        else:
-            select_parts.append(f"SUM({qf}) AS {alias}")
+        select_parts.append(aggregate_expr(field, agg, alias_name))
 
     if not select_parts:
         raise ValueError("No valid metrics specified for aggregation.")

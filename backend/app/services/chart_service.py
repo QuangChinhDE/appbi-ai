@@ -65,6 +65,7 @@ logger = get_logger(__name__)
 
 
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_VALID_BUBBLE_AGG = {"sum", "avg", "count", "min", "max", "count_distinct"}
 
 
 # ── Semantic chart routing ─────────────────────────────────────────────────
@@ -125,6 +126,71 @@ def _collect_role_config_field_refs(role_config: dict) -> list[str]:
     for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
         push_metric(role_config.get(key))
     return refs
+
+
+def _apply_bubble_label_aggregation(
+    *,
+    chart_type: str,
+    role_config: dict[str, Any],
+    dimension_refs: list[str],
+    measure_refs: list[str],
+    agg_overrides: dict[str, str],
+    qualify,
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Force Bubble/NINE_BOX to aggregate numeric marks at Label grain.
+
+    Scatter-like role classification initially treats X/Y axes as dimensions so
+    SCATTER can render one raw row per point. Bubble and 9-box use the optional
+    `dimension` role as PowerBI "Details"/Label: when present, numeric X/Y/Size
+    should collapse to one mark per label. A stale `timeField` from a prior
+    chart type must not remain in GROUP BY, otherwise a >1 month date filter
+    returns one row per (label, period) instead of one summed row per label.
+    """
+    normalized_chart_type = str(chart_type or "").upper()
+    if normalized_chart_type not in ("BUBBLE", "NINE_BOX"):
+        return dimension_refs, measure_refs, agg_overrides
+
+    bubble_label = qualify(role_config.get("dimension"))
+    axes = [
+        (qualify(role_config.get("scatterX")), str(role_config.get("scatterXAgg") or "").strip().lower()),
+        (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "").strip().lower()),
+    ]
+    if not bubble_label or not any(ref for ref, _ in axes):
+        return dimension_refs, measure_refs, agg_overrides
+
+    next_dimensions = list(dimension_refs)
+    next_measures = list(measure_refs)
+    next_aggs = dict(agg_overrides)
+
+    for axis_ref, axis_agg in axes:
+        if not axis_ref:
+            continue
+        was_dim = axis_ref in next_dimensions
+        # NINE_BOX also accepts a categorical axis that must stay a GROUP BY
+        # dimension. FE sets scatter*Agg only for numeric axes.
+        if normalized_chart_type == "NINE_BOX" and was_dim and axis_agg not in _VALID_BUBBLE_AGG:
+            continue
+        if was_dim:
+            next_dimensions.remove(axis_ref)
+        if axis_ref not in next_measures:
+            next_measures.append(axis_ref)
+        if was_dim:
+            next_aggs.setdefault(
+                axis_ref,
+                axis_agg if axis_agg in _VALID_BUBBLE_AGG else "sum",
+            )
+
+    # When a chart was switched from time-series/line into Bubble/9-box, the
+    # saved role_config can still carry timeField/timeGrains. For these chart
+    # types the date range is filter context, not output grain. Keep it only if
+    # it is also the actual label or an explicit categorical 9-box axis.
+    time_ref = qualify(role_config.get("timeField"))
+    axis_refs = {ref for ref, _ in axes if ref}
+    if time_ref and time_ref != bubble_label and time_ref not in axis_refs:
+        while time_ref in next_dimensions:
+            next_dimensions.remove(time_ref)
+
+    return next_dimensions, next_measures, next_aggs
 
 
 def _binding_semantic_fields(binding: dict[str, Any]) -> set[str]:
@@ -2019,50 +2085,18 @@ def _execute_semantic_chart_runtime(
     # binned point). Move the axes out of dimension_refs into measure_refs so
     # only the Label stays in GROUP BY. A declared-measure axis keeps its own
     # aggregation; a raw numeric axis defaults to SUM, overridable per-axis via
-    # scatterXAgg / scatterYAgg. Gated on a bound Label — without one the chart
-    # keeps the raw SCATTER behaviour. SCATTER / MAP_POINT are never touched.
-    _VALID_BUBBLE_AGG = {"sum", "avg", "count", "min", "max", "count_distinct"}
-    if _normalized_ct in ("BUBBLE", "NINE_BOX"):
-        _bubble_label = qualify(role_config.get("dimension"))
-        # Keep the RAW (un-defaulted) per-axis agg — for NINE_BOX its presence is
-        # the "this axis is numeric" signal (the FE sets scatter*Agg only when the
-        # bound axis is a numeric column). BUBBLE axes are always numeric.
-        _bubble_axes = [
-            (qualify(role_config.get("scatterX")), str(role_config.get("scatterXAgg") or "").strip().lower()),
-            (qualify(role_config.get("scatterY")), str(role_config.get("scatterYAgg") or "").strip().lower()),
-        ]
-        if _bubble_label and any(ref for ref, _ in _bubble_axes):
-            for _axis_ref, _axis_agg in _bubble_axes:
-                if not _axis_ref:
-                    continue
-                _was_dim = _axis_ref in dimension_refs
-                # NINE_BOX also accepts a CATEGORICAL axis (3-level binning) that
-                # MUST stay a GROUP BY dimension — summing a string column would
-                # error. Only aggregate a raw NINE_BOX axis when an explicit
-                # numeric aggregation is set (FE sets it only for numeric axes).
-                # A declared-measure axis is numeric by definition (not _was_dim)
-                # so it always aggregates. BUBBLE keeps the default-SUM behaviour.
-                if _normalized_ct == "NINE_BOX" and _was_dim and _axis_agg not in _VALID_BUBBLE_AGG:
-                    continue
-                # A raw numeric axis is folded into a measure per Label — even
-                # cross-fact. The multi-fact STITCH (_build_dimensioned_multifact_sql)
-                # then aggregates each fact at its own grain and joins on the Label
-                # (PowerBI galaxy semantics), provided every fact has an M:1 path
-                # to the shared dim. (We do NOT keep a cross-fact raw axis as a
-                # GROUP-BY dim: that produced a chasm fan-out / group-grain error
-                # and a non-aggregated scatter instead of the intended binned mark.)
-                if _was_dim:
-                    dimension_refs.remove(_axis_ref)
-                if _axis_ref not in measure_refs:
-                    measure_refs.append(_axis_ref)
-                # A raw numeric axis (classifier kept it as a dim) needs an
-                # explicit agg; a declared-measure axis is already in
-                # measure_refs with its own stored aggregation — leave it.
-                if _was_dim:
-                    agg_overrides.setdefault(
-                        _axis_ref,
-                        _axis_agg if _axis_agg in _VALID_BUBBLE_AGG else "sum",
-                    )
+    # scatterXAgg / scatterYAgg. A stale timeField from a previous time-based
+    # chart is also removed from GROUP BY so long date filters do not split the
+    # Label into per-month/per-day rows. Gated on a bound Label — without one the
+    # chart keeps the raw SCATTER behaviour. SCATTER / MAP_POINT are never touched.
+    dimension_refs, measure_refs, agg_overrides = _apply_bubble_label_aggregation(
+        chart_type=_normalized_ct,
+        role_config=role_config,
+        dimension_refs=dimension_refs,
+        measure_refs=measure_refs,
+        agg_overrides=agg_overrides,
+        qualify=qualify,
+    )
 
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
