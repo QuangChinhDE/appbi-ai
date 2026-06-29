@@ -35,7 +35,9 @@ from app.services.dashboard_ai_bot.public_link_config import (
     web_search_enabled,
 )
 from app.services.filter_layered_merge import (
+    apply_link_scope_bounds,
     link_entry_has_value,
+    link_entry_is_scope,
     link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
@@ -589,9 +591,14 @@ def _build_public_chart_filters(
     `dashboard_ai_bot_filters` calls out the previous drift between
     those sites; this helper closes it.
     """
-    locked_link, hidden_link = split_link_filters_locked_vs_hidden(
-        item for item in (link_filters_config or []) if isinstance(item, dict)
-    )
+    raw_link = [item for item in (link_filters_config or []) if isinstance(item, dict)]
+    # Peel off 'limit' (allow-list scope) entries BEFORE the lock/hide split:
+    # they must NOT land in the authoritative locked layer (which would override
+    # the viewer's choice). Instead they BOUND the viewer's pick via
+    # apply_link_scope_bounds AFTER the merge, keeping the slicer interactive.
+    scope_link = [e for e in raw_link if link_entry_is_scope(e)]
+    non_scope_link = [e for e in raw_link if not link_entry_is_scope(e)]
+    locked_link, hidden_link = split_link_filters_locked_vs_hidden(non_scope_link)
     # PBI-parity "Hide filter": a hidden link entry that carries a VALUE still
     # ENFORCES that value (the data IS filtered) — only its banner/control is
     # suppressed for the viewer. So route value-bearing hidden entries into the
@@ -626,6 +633,10 @@ def _build_public_chart_filters(
         ),
         diagnostics=merge_diagnostics,
     )
+    # Per-link 'limit' allow-lists bound the viewer's effective selection
+    # (intersect) without removing the interactive slicer — enforced
+    # server-side so a crafted request can't escape the allow-list.
+    merged = apply_link_scope_bounds(merged, scope_link)
     if merge_diagnostics:
         logger.info(
             "filter_merge context=%s dropped=%s",
@@ -633,6 +644,39 @@ def _build_public_chart_filters(
             [d.get("reason") for d in merge_diagnostics],
         )
     return merged
+
+
+def _link_scope_allowlist_for_field(
+    link_filters_config: list[dict] | None,
+    dataset_id: int,
+    field: str,
+) -> list[str] | None:
+    """Return the 'limit' allow-list for ``(dataset_id, field)`` if this link
+    bounds that field, else None.
+
+    Used by the public distinct-values endpoint to cap a limited slicer's
+    dropdown to its allowed subset. Matches on qualified semanticField first,
+    then bare field, mirroring the rest of the public filter plumbing.
+    """
+    for entry in link_filters_config or []:
+        if not isinstance(entry, dict) or not link_entry_is_scope(entry):
+            continue
+        if entry.get("datasetId") not in (None, dataset_id):
+            continue
+        refs = _public_filter_semantic_refs(entry)
+        candidates = {str(r) for r in refs}
+        if entry.get("field"):
+            candidates.add(str(entry.get("field")))
+        if entry.get("semanticField"):
+            candidates.add(str(entry.get("semanticField")))
+        if field in candidates:
+            value = entry.get("value")
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in value if v not in (None, "")]
+            if value not in (None, ""):
+                return [str(value)]
+            return None
+    return None
 
 
 def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
@@ -2355,9 +2399,19 @@ def get_public_filter_distinct_values(
             limit=limit,
             filters=combined_filters,
         )
+        values = result.get("values", [])
+        # If this field is under a per-link 'limit' allow-list, the slicer
+        # stays interactive but its dropdown must offer ONLY the allowed
+        # subset. get_distinct_field_values self-strips the dropdown's own
+        # filter (so the cascade can't pin it), which also drops the scope —
+        # so bound the returned values to the allow-list here.
+        scope_allow = _link_scope_allowlist_for_field(public_filters, dataset_id, field)
+        if scope_allow is not None:
+            allow_set = {str(v) for v in scope_allow}
+            values = [v for v in values if str(v) in allow_set]
         return {
             "field": field,
-            "values": result.get("values", []),
+            "values": values,
             "dropped_filters": result.get("dropped_filters", []),
         }
     except ValueError as exc:

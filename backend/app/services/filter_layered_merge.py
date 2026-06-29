@@ -348,6 +348,90 @@ def link_entry_has_value(entry: Dict[str, Any]) -> bool:
     return v not in (None, "")
 
 
+def link_entry_is_scope(entry: Dict[str, Any]) -> bool:
+    """True when a link entry is a 'limit' (allow-list scope), not a lock/hide.
+
+    A scope entry keeps the field's slicer INTERACTIVE on the public link but
+    bounds the viewer's selectable values + the chart data to an allow-list
+    (intersect) — the per-link equivalent of a page-scope hard bound. The
+    author picks e.g. RC01/RC02/RC03 of the 5 RCs; the viewer can still toggle
+    among those three but never reaches RC04/RC05.
+
+    Distinguished on the wire by ``limit=True`` and NOT ``hidden`` (a hidden
+    entry always kills/enforces and takes precedence). A scope entry is only
+    meaningful when it carries values — an empty allow-list bounds nothing.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return bool(entry.get("limit")) and not bool(entry.get("hidden"))
+
+
+def apply_link_scope_bounds(
+    merged: List[Dict[str, Any]],
+    scope_entries: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Bound merged viewer filters by per-link 'limit' allow-lists.
+
+    Runs AFTER ``merge_layered_filters``. For each scope (limit) entry the
+    field stays an interactive slicer, but the viewer's effective selection is
+    intersected with the allow-list:
+
+      - viewer picked value(s) inside the list → kept (narrowed),
+      - viewer picked outside the list, or picked nothing → falls back to the
+        full allow-list.
+
+    Mirrors the FE ``applyScopeBound`` and the page-scope hard bound, but is
+    enforced SERVER-SIDE so a crafted request can never escape the allow-list.
+    """
+    scopes = [
+        e for e in (scope_entries or [])
+        if link_entry_is_scope(e) and link_entry_has_value(e)
+    ]
+    if not scopes:
+        return list(merged)
+
+    def _to_list(value: Any) -> List[str]:
+        if isinstance(value, (list, tuple)):
+            return [str(x) for x in value if x not in (None, "")]
+        return [str(value)] if value not in (None, "") else []
+
+    out: List[Dict[str, Any]] = list(merged)
+    out_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for entry in out:
+        out_by_key.setdefault(_filter_dedupe_key(entry), entry)
+
+    for scope in scopes:
+        allow = _to_list(scope.get("value"))
+        if not allow:
+            continue
+        key = _filter_dedupe_key(scope)
+        existing = out_by_key.get(key)
+        if existing is None:
+            # Viewer + dashboard picked nothing on this field → apply the
+            # allow-list itself as the bound.
+            bounded = {
+                **scope,
+                "operator": "in",
+                "value": allow,
+                "_layer_source": "link_scope",
+            }
+            out.append(bounded)
+            out_by_key[key] = bounded
+            continue
+        op = str(existing.get("operator") or "").lower()
+        if op == "in":
+            selected = _to_list(existing.get("value"))
+            intersection = [x for x in selected if x in allow]
+            existing["value"] = intersection if intersection else allow
+        else:
+            # A non-list selection on a limited field can't be intersected
+            # meaningfully — replace it with the allow-list bound.
+            existing["operator"] = "in"
+            existing["value"] = allow
+        existing["_layer_source"] = "link_scope"
+    return out
+
+
 def link_managed_field_keys(
     link_filters_config: Optional[Sequence[Dict[str, Any]]],
 ) -> set[str]:
@@ -367,12 +451,18 @@ def link_managed_field_keys(
     NOT managed: the field keeps its page-scope filter + interactive slicer
     (an empty lock behaves like no lock — the safe no-op).
 
+    A 'limit' (allow-list scope) entry is ALSO deliberately NOT managed: the
+    whole point is that the slicer stays interactive (bounded, not removed).
+    ``apply_link_scope_bounds`` enforces the allow-list on the data instead.
+
     Keys are normalized to ``(semanticField or field).strip().lower()`` to
     match the strip sites in the public dashboard serializer.
     """
     keys: set[str] = set()
     for entry in link_filters_config or []:
         if not isinstance(entry, dict):
+            continue
+        if link_entry_is_scope(entry):
             continue
         raw_key = entry.get("semanticField") or entry.get("field") or ""
         key = str(raw_key).strip().lower()

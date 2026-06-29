@@ -515,6 +515,11 @@ function CalendarDimensionModal({
   );
 }
 
+// Data quality is now managed centrally in Observability (OM-standard), so the
+// per-dataset Quality tab chip is hidden. The panel still renders via the
+// ?tab=quality deep-link that Observability uses to drill into a dataset.
+const SHOW_DATASET_QUALITY_TAB = false;
+
 export default function DatasetDetailPage() {
   const { t } = useI18n();
   const params = useParams();
@@ -1327,17 +1332,19 @@ export default function DatasetDetailPage() {
             <Database className="h-3.5 w-3.5" />
             {t('datasets.detail.tabTables')}
           </button>
-          <button
-            onClick={() => requestLeaveMeasures(() => setActiveTab('quality'))}
-            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-              activeTab === 'quality'
-                ? 'bg-surface-1 text-brand shadow-linear-sm'
-                : 'text-text-tertiary hover:bg-surface-1'
-            }`}
-          >
-            <ShieldCheck className="h-3.5 w-3.5" />
-            {t('datasets.detail.tabQuality')}
-          </button>
+          {SHOW_DATASET_QUALITY_TAB && (
+            <button
+              onClick={() => requestLeaveMeasures(() => setActiveTab('quality'))}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                activeTab === 'quality'
+                  ? 'bg-surface-1 text-brand shadow-linear-sm'
+                  : 'text-text-tertiary hover:bg-surface-1'
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {t('datasets.detail.tabQuality')}
+            </button>
+          )}
           <button
             onClick={() => requestLeaveMeasures(() => setActiveTab('model'))}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
