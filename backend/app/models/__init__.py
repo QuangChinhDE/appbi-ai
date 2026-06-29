@@ -35,6 +35,7 @@ from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
 from app.models.team import Team, TeamMembership
+from app.models.governance import Glossary, GlossaryTerm, Classification, ClassificationTag
 from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
 # Workboard models live under app.modules.workboards but are re-exported here
@@ -83,6 +84,10 @@ __all__ = [
     "AuditSeverity",
     "Team",
     "TeamMembership",
+    "Glossary",
+    "GlossaryTerm",
+    "Classification",
+    "ClassificationTag",
     "Workboard",
     "WorkboardSubmission",
     "WorkboardWorkspace",

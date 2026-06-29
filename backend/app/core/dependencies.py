@@ -43,6 +43,8 @@ TOKEN_PERMISSION_CAPS_ATTR = "_permission_caps"
 MODULE_KEYS = (
     "data_sources",
     "datasets",
+    "govern",
+    "observability",
     "explore_charts",
     "dashboards",
     "workboards",

@@ -299,7 +299,7 @@ function AlertsPanel() {
   }, []);
   return (
     <>
-      <PageHeader title="Alerts" description="Quy tắc cảnh báo & thông báo (kênh sự kiện OpenMetadata) — bật khi cần được báo lúc dữ liệu thay đổi/sự cố." />
+      <PageHeader title="Alerts" description="Cảnh báo chất lượng tự động — sinh ra khi một kiểm tra thất bại hoặc điểm chất lượng của dataset giảm dưới ngưỡng." />
       <DataTable
         loading={loading}
         rows={rows as unknown as Record<string, unknown>[]}
@@ -309,7 +309,7 @@ function AlertsPanel() {
           { key: 'alertType', label: 'Type' },
           { key: 'enabled', label: 'Enabled', render: (r) => (r.enabled ? 'Bật' : 'Tắt') },
         ]}
-        empty={<EmptyState title="Chưa có cảnh báo nào" hint="Kênh thông báo sự kiện (OpenMetadata). Tạo alert để được báo khi kiểm tra thất bại hoặc dữ liệu thay đổi." />}
+        empty={<EmptyState title="Không có cảnh báo nào" hint="Mọi dataset đang đạt chất lượng. Cảnh báo tự xuất hiện khi một kiểm tra thất bại hoặc điểm giảm dưới 70." />}
       />
     </>
   );

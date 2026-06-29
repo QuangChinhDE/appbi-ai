@@ -1154,7 +1154,7 @@ function ClassificationDetail({ cls, onBack, onChanged, onDeleted }: { cls: Clas
         )}
       </div>
 
-      {system && <p className="text-tiny text-text-quaternary">Phân loại hệ thống của OpenMetadata — chỉ đọc. Tạo phân loại riêng để tự quản lý.</p>}
+      {system && <p className="text-tiny text-text-quaternary">Phân loại hệ thống (chuẩn sẵn) — chỉ đọc. Tạo phân loại riêng để tự quản lý.</p>}
 
       {addTag && <TagFormModal classification={c.machine_name} onClose={() => setAddTag(false)} onSaved={async () => { setAddTag(false); await reloadTags(); await onChanged(); }} />}
       {confirmDelClass && <ConfirmModal title="Xoá phân loại?" message={<>Xoá <strong>{c.name}</strong> cùng toàn bộ {c.termCount} tag bên trong. Không thể hoàn tác.</>} onConfirm={delClass} onClose={() => setConfirmDelClass(false)} loading={saving} />}

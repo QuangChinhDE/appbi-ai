@@ -35,7 +35,6 @@ import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
 import { extractApiError } from '@/lib/api-errors';
-import { getCatalogStatus } from '@/lib/catalog';
 import { useNotifications, type AppNotification, type AppNotificationLevel } from '@/lib/notifications';
 import { useI18n } from '@/providers/LanguageProvider';
 import { useUserLanguage } from '@/hooks/use-user-language';
@@ -48,10 +47,6 @@ interface NavItem {
   href: string;
   icon: React.ReactNode;
   module?: string;
-  /** Gated by a backend feature flag (probed at runtime), not by user permission.
-   *  'catalog' = the Metadata Catalog (Govern/Observability) — only shown when
-   *  METADATA_CATALOG_ENABLED is on (i.e. /catalog/status is reachable). */
-  feature?: 'catalog';
 }
 
 interface SidebarProps {
@@ -63,8 +58,8 @@ const ALL_NAV_ITEMS: NavItem[] = [
   { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
   { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
   { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
-  { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, feature: 'catalog' },
-  { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, feature: 'catalog' },
+  { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
+  { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
   { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
   { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
   { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
@@ -92,17 +87,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const { language, setLanguage, t } = useUserLanguage();
   const { data: user } = useCurrentUser();
   const { data: permData } = usePermissions();
-  // Metadata Catalog nav (Govern/Observability) is gated by the BACKEND flag, not
-  // user permission: probe /catalog/status (only registered when METADATA_CATALOG_ENABLED).
-  // Reachable → show; 404/error → hide, so the nav never points at a disabled API.
-  const [catalogEnabled, setCatalogEnabled] = useState(false);
-  useEffect(() => {
-    let on = true;
-    getCatalogStatus()
-      .then((s) => { if (on) setCatalogEnabled(!!s.enabled); })
-      .catch(() => { if (on) setCatalogEnabled(false); });
-    return () => { on = false; };
-  }, []);
   const {
     notifications,
     unreadCount,
@@ -135,7 +119,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
 
   const perms = permData?.permissions;
   const visibleItems = ALL_NAV_ITEMS.filter((item) => {
-    if (item.feature === 'catalog' && !catalogEnabled) return false;
     if (item.module) return hasPermission(perms, item.module, 'view');
     return true;
   });

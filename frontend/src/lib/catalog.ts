@@ -1,6 +1,6 @@
 /**
  * Catalog client — talks ONLY to AppBI's /api/v1/catalog/* proxy.
- * No OpenMetadata URL ever reaches the browser; AppBI proxies the hidden OM.
+ * Native AppBI backend (its own Postgres) — no third-party catalog server.
  * Powers the Govern + Observability modules.
  */
 import { apiClient } from './api-client';
