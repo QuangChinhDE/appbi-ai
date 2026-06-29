@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Link2, Copy, Check, Trash2, Globe, Filter, Plus, X,
   Eye, EyeOff, Clock, Loader2, ArrowLeft, Lock, Code2, Sparkles,
+  Search, ChevronDown,
 } from 'lucide-react';
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
@@ -97,6 +98,259 @@ function LinkValueChips({
       <datalist id={listId}>
         {suggestions.slice(0, 50).map((v) => <option key={v} value={v} />)}
       </datalist>
+    </div>
+  );
+}
+
+type FieldTypeFilter = ColumnInfo['type'] | 'all';
+
+function getColumnLabel(column: ColumnInfo): string {
+  return column.label || column.name;
+}
+
+function getColumnSource(column: ColumnInfo): string {
+  if (column.tableLabel) return column.tableLabel;
+  if (column.datasetName) return column.datasetName;
+  if (column.semanticField?.includes('.')) {
+    return column.semanticField.split('.').slice(0, -1).join('.');
+  }
+  return 'Field khác';
+}
+
+function getColumnTechnicalName(column: ColumnInfo): string {
+  if (column.semanticField && column.semanticField !== column.name) return column.semanticField;
+  return column.name;
+}
+
+function getColumnTypeLabel(type: ColumnInfo['type']): string {
+  switch (type) {
+    case 'date':
+      return 'Date';
+    case 'number':
+      return 'Number';
+    case 'dropdown':
+      return 'List';
+    default:
+      return 'Text';
+  }
+}
+
+function getColumnCoverage(column: ColumnInfo, chartCount: Map<string, number>): number {
+  return column.chartCoverage ?? chartCount.get(column.name) ?? 0;
+}
+
+function PublicLinkFieldPicker({
+  columns,
+  chartCount,
+  loading,
+  entryKey,
+  onAdd,
+}: {
+  columns: ColumnInfo[];
+  chartCount: Map<string, number>;
+  loading: boolean;
+  entryKey: (entry: { field: string; semanticField?: string; datasetId?: number }) => string;
+  onAdd: (column: ColumnInfo) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<FieldTypeFilter>('all');
+  const uniqueColumns = useMemo(() => {
+    const seen = new Set<string>();
+    const result: ColumnInfo[] = [];
+    for (const column of columns) {
+      const key = entryKey({
+        field: column.name,
+        semanticField: column.semanticField,
+        datasetId: column.datasetId,
+      });
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(column);
+    }
+    return result;
+  }, [columns, entryKey]);
+  const disabled = loading || uniqueColumns.length === 0;
+  const typeFilters: Array<{ value: FieldTypeFilter; label: string }> = [
+    { value: 'all', label: 'Tất cả' },
+    { value: 'dropdown', label: 'List' },
+    { value: 'text', label: 'Text' },
+    { value: 'number', label: 'Number' },
+    { value: 'date', label: 'Date' },
+  ];
+
+  const groups = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const buckets = new Map<string, { source: string; maxCoverage: number; items: ColumnInfo[] }>();
+
+    for (const column of uniqueColumns) {
+      if (typeFilter !== 'all' && column.type !== typeFilter) continue;
+      const label = getColumnLabel(column);
+      const source = getColumnSource(column);
+      const technicalName = getColumnTechnicalName(column);
+      const searchable = [
+        label,
+        source,
+        technicalName,
+        column.name,
+        column.datasetName,
+        column.tableLabel,
+        column.type,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (needle && !searchable.includes(needle)) continue;
+
+      const coverage = getColumnCoverage(column, chartCount);
+      const bucket = buckets.get(source) ?? { source, maxCoverage: 0, items: [] };
+      bucket.maxCoverage = Math.max(bucket.maxCoverage, coverage);
+      bucket.items.push(column);
+      buckets.set(source, bucket);
+    }
+
+    for (const bucket of buckets.values()) {
+      bucket.items.sort((a, b) => {
+        const coverageDiff = getColumnCoverage(b, chartCount) - getColumnCoverage(a, chartCount);
+        if (coverageDiff !== 0) return coverageDiff;
+        return getColumnLabel(a).localeCompare(getColumnLabel(b));
+      });
+    }
+
+    return Array.from(buckets.values()).sort((a, b) => {
+      if (b.maxCoverage !== a.maxCoverage) return b.maxCoverage - a.maxCoverage;
+      return a.source.localeCompare(b.source);
+    });
+  }, [chartCount, query, typeFilter, uniqueColumns]);
+
+  const resultCount = groups.reduce((sum, group) => sum + group.items.length, 0);
+
+  const addColumn = (column: ColumnInfo) => {
+    onAdd(column);
+    setOpen(false);
+    setQuery('');
+    setTypeFilter('all');
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-expanded={open}
+        onClick={() => {
+          if (!disabled) setOpen((value) => !value);
+        }}
+        className={cn(
+          'flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+          open ? 'bg-surface-1' : 'hover:bg-surface-1',
+        )}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          {loading ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-text-quaternary" />
+          ) : (
+            <Plus className="h-4 w-4 shrink-0 text-brand" />
+          )}
+          <span className="min-w-0">
+            <span className="block truncate text-caption font-emphasis text-text-primary">
+              {loading ? 'Đang tải field...' : uniqueColumns.length > 0 ? 'Thêm field khác' : 'Không còn field để thêm'}
+            </span>
+            <span className="block truncate text-tiny text-text-quaternary">
+              {uniqueColumns.length > 0 ? `${uniqueColumns.length} field khả dụng` : 'Các field hiện có đã nằm trong cấu hình link'}
+            </span>
+          </span>
+        </span>
+        <ChevronDown className={cn('h-4 w-4 shrink-0 text-text-quaternary transition-transform', open && 'rotate-180')} />
+      </button>
+
+      {open && (
+        <div className="border-t border-[rgb(var(--border-line))] p-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-2">
+              <Search className="h-4 w-4 shrink-0 text-text-quaternary" />
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Tìm theo tên cột, bảng, dataset..."
+                className="min-w-0 flex-1 bg-transparent text-caption text-text-secondary outline-none placeholder:text-text-quaternary"
+              />
+              <span className="shrink-0 text-tiny text-text-quaternary">{resultCount}</span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {typeFilters.map((item) => {
+                const active = typeFilter === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setTypeFilter(item.value)}
+                    className={cn(
+                      'rounded-md border px-2 py-1 text-tiny font-medium transition-colors',
+                      active
+                        ? 'border-brand/40 bg-brand/15 text-brand'
+                        : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:text-text-secondary',
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-3 max-h-80 overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
+            {groups.length === 0 ? (
+              <div className="px-3 py-6 text-center text-caption text-text-quaternary">
+                Không tìm thấy field phù hợp.
+              </div>
+            ) : (
+              groups.map((group) => (
+                <div key={group.source} className="border-b border-[rgb(var(--border-line))] last:border-b-0">
+                  <div className="sticky top-0 z-10 flex items-center justify-between gap-3 bg-surface-2 px-3 py-1.5 text-tiny font-emphasis text-text-tertiary">
+                    <span className="truncate">{group.source}</span>
+                    <span className="shrink-0 text-text-quaternary">{group.items.length}</span>
+                  </div>
+                  {group.items.map((column, index) => {
+                    const coverage = getColumnCoverage(column, chartCount);
+                    const columnKey = entryKey({
+                      field: column.name,
+                      semanticField: column.semanticField,
+                      datasetId: column.datasetId,
+                    });
+                    return (
+                      <button
+                        key={`${columnKey}-${index}`}
+                        type="button"
+                        title={getColumnTechnicalName(column)}
+                        onClick={() => addColumn(column)}
+                        className="group flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-surface-2"
+                      >
+                        <span className="min-w-0">
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="truncate text-caption font-emphasis text-text-primary">
+                              {getColumnLabel(column)}
+                            </span>
+                            <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-quaternary">
+                              {getColumnTypeLabel(column.type)}
+                            </span>
+                          </span>
+                          <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-tiny text-text-quaternary">
+                            <span className="truncate">{getColumnTechnicalName(column)}</span>
+                            {coverage > 0 && <span className="shrink-0">{coverage} chart</span>}
+                            {column.sharedAcrossDataset && <span className="shrink-0">toàn dataset</span>}
+                          </span>
+                        </span>
+                        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-1 text-text-quaternary transition-colors group-hover:border-brand/40 group-hover:text-brand">
+                          <Plus className="h-3.5 w-3.5" />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -365,6 +619,33 @@ export function PublicLinksManager({
       field: c.name, semanticField: c.semanticField, datasetId: c.datasetId,
     })));
   }, [activeColumns, unifiedRows, entryKey]);
+
+  const addExtraField = useCallback((column: ColumnInfo) => {
+    const newRow = {
+      id: `link-extra-${entryKey({
+        field: column.name,
+        semanticField: column.semanticField,
+        datasetId: column.datasetId,
+      })}`,
+      field: column.name,
+      fieldKey: column.key,
+      semanticField: column.semanticField,
+      datasetId: column.datasetId,
+      linkedFields: column.defaultLinkedFields,
+      label: column.label || column.name,
+      type: column.type,
+      operator: 'in',
+      value: [],
+    } as BaseFilter;
+    const key = entryKey(newRow);
+    setExtraRows((prev) => (
+      prev.some((row) => entryKey(row) === key) ? prev : [...prev, newRow]
+    ));
+    setLinkActions((prev) => ({
+      ...prev,
+      [key]: prev[key] ?? { action: 'lock', value: undefined },
+    }));
+  }, [entryKey]);
 
   const requiresPasswordValue = passwordEnabled && (
     view === 'create'
@@ -1384,41 +1665,14 @@ export function PublicLinksManager({
                     )}
                   </div>
 
-                  {/* Add a field that isn't an inherited slicer/filter — the
-                      old "Access filters" escape-hatch power, folded in. */}
-                  {addableColumns.length > 0 && (
-                    <div className="mt-3">
-                      <label className="block text-tiny text-text-tertiary">+ Thêm field khác để khoá / ẩn:</label>
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          const name = e.target.value;
-                          if (!name) return;
-                          const col = addableColumns.find((c) => c.name === name);
-                          if (!col) return;
-                          const newRow = {
-                            field: col.name,
-                            semanticField: col.semanticField,
-                            datasetId: col.datasetId,
-                            label: col.label || col.name,
-                            type: col.type,
-                            operator: 'in',
-                            value: [],
-                          } as unknown as BaseFilter;
-                          const k = entryKey(newRow as any);
-                          setExtraRows((prev) => [...prev, newRow]);
-                          setLinkActions((prev) => ({ ...prev, [k]: { action: 'lock', value: undefined } }));
-                        }}
-                        className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-caption outline-none focus:ring-1 focus:ring-brand"
-                      >
-                        <option value="">— chọn field —</option>
-                        {addableColumns.map((c) => (
-                          <option key={c.name} value={c.name}>
-                            {c.label || c.name}{c.datasetName ? ` · ${c.datasetName}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                  {(activeColumns.length > 0 || columnsLoading) && (
+                    <PublicLinkFieldPicker
+                      columns={addableColumns}
+                      chartCount={chartCount}
+                      loading={columnsLoading}
+                      entryKey={entryKey}
+                      onAdd={addExtraField}
+                    />
                   )}
                 </div>
                 )}

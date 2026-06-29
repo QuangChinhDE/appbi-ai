@@ -289,6 +289,7 @@ export function ChartPreview({
     }
     return palette.colors[index % palette.colors.length];
   };
+  const getSeriesLabel = (field: string): string => style.seriesLabels?.[field]?.trim() || field;
 
   const showLegend = config.showLegend !== false && (style.legendPosition ?? 'bottom') !== 'none';
   const showGrid = config.showGrid !== false && (style.showGrid ?? true);
@@ -432,7 +433,7 @@ export function ChartPreview({
               <Tooltip formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {usesDimensionColoring && config.yFields.length === 1 ? (
-                <Bar dataKey={config.yFields[0]} radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
+                <Bar dataKey={config.yFields[0]} name={getSeriesLabel(config.yFields[0])} radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
                   {sortedData.map((entry, index) => {
                     const key = String(entry[config.color_by_dimension!]);
                     const fill = dimensionColorMap?.[key] ?? palette.colors[index % palette.colors.length];
@@ -442,7 +443,7 @@ export function ChartPreview({
                 </Bar>
               ) : (
                 config.yFields.map((field, index) => (
-                  <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+                  <Bar key={field} dataKey={field} name={getSeriesLabel(field)} fill={getSeriesColor(field, index)}
                     radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
                     {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                   </Bar>
@@ -472,7 +473,7 @@ export function ChartPreview({
               <Tooltip formatter={(v: any) => formatNumber(v, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {config.yFields.map((field, index) => (
-                <Line key={field} type="monotone" dataKey={field}
+                <Line key={field} type="monotone" dataKey={field} name={getSeriesLabel(field)}
                   stroke={getSeriesColor(field, index)}
                   strokeWidth={lineWidth}
                   dot={showDots}
@@ -506,7 +507,7 @@ export function ChartPreview({
               <Tooltip formatter={(v: any) => formatNumber(v, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {config.yFields.map((field, index) => (
-                <Area key={field} type="monotone" dataKey={field}
+                <Area key={field} type="monotone" dataKey={field} name={getSeriesLabel(field)}
                   stroke={getSeriesColor(field, index)}
                   fill={getSeriesColor(field, index)}
                   fillOpacity={areaOpacity}
@@ -541,7 +542,7 @@ export function ChartPreview({
               <Tooltip formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {usesDimensionColoring && config.yFields.length === 1 ? (
-                <Bar dataKey={config.yFields[0]} radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
+                <Bar dataKey={config.yFields[0]} name={getSeriesLabel(config.yFields[0])} radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
                   {sortedData.map((entry, index) => {
                     const key = String(entry[config.color_by_dimension!]);
                     const fill = dimensionColorMap?.[key] ?? palette.colors[index % palette.colors.length];
@@ -551,7 +552,7 @@ export function ChartPreview({
                 </Bar>
               ) : (
                 config.yFields.map((field, index) => (
-                  <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+                  <Bar key={field} dataKey={field} name={getSeriesLabel(field)} fill={getSeriesColor(field, index)}
                     radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
                     {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                   </Bar>
@@ -592,7 +593,7 @@ export function ChartPreview({
               {config.yFields.map((field, index) => {
                 const isTopOfStack = index === config.yFields!.length - 1;
                 return (
-                  <Bar key={field} dataKey={field} stackId="stack"
+                  <Bar key={field} dataKey={field} name={getSeriesLabel(field)} stackId="stack"
                     fill={getSeriesColor(field, index)} barSize={barSize}
                     radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
                     {showDataLabels && isPercent && (
@@ -670,7 +671,7 @@ export function ChartPreview({
               <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {usesDimensionColoring ? (
-                <Scatter name={config.yFields[0]} data={sortedData} fillOpacity={0.8}>
+                <Scatter name={getSeriesLabel(config.yFields[0])} data={sortedData} fillOpacity={0.8}>
                   {sortedData.map((entry, idx) => {
                     const key = String(entry[config.color_by_dimension!]);
                     const fill = dimensionColorMap[key] ?? palette.colors[idx % palette.colors.length];
@@ -679,7 +680,7 @@ export function ChartPreview({
                   {scatterLabelField && <LabelList dataKey={scatterLabelField} position="top" style={{ fontSize: fontSize - 1 }} />}
                 </Scatter>
               ) : (
-                <Scatter name={config.yFields[0]} data={sortedData} fill={getSeriesColor(config.yFields[0], 0)}>
+                <Scatter name={getSeriesLabel(config.yFields[0])} data={sortedData} fill={getSeriesColor(config.yFields[0], 0)}>
                   {scatterLabelField && <LabelList dataKey={scatterLabelField} position="top" style={{ fontSize: fontSize - 1 }} />}
                 </Scatter>
               )}
@@ -693,6 +694,12 @@ export function ChartPreview({
   // Render Pie Chart
   if (chartType === ChartType.PIE && config.labelField && config.valueField) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension;
+    const pieNameField = usesDimensionColoring ? config.color_by_dimension! : config.labelField;
+    const pieDisplayNameField = '__displayName';
+    const pieData: Record<string, any>[] = sortedData.map((row) => ({
+      ...row,
+      [pieDisplayNameField]: getSeriesLabel(String(row?.[pieNameField] ?? '')),
+    }));
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -700,15 +707,15 @@ export function ChartPreview({
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
-                data={sortedData}
+                data={pieData}
                 dataKey={config.valueField}
-                nameKey={usesDimensionColoring ? config.color_by_dimension : config.labelField}
+                nameKey={pieDisplayNameField}
                 cx="50%" cy="45%" outerRadius="60%"
                 innerRadius={pieInnerRadius > 0 ? `${pieInnerRadius}%` : undefined}
                 onClick={handlePieClick}
                 label={showDataLabels ? ({ name, value }: any) => `${name}: ${formatNumber(value, style)}` : true}
               >
-                {sortedData.map((entry, index) => {
+                {pieData.map((entry, index) => {
                   let fill: string;
                   if (usesDimensionColoring) {
                     const key = String(entry[config.color_by_dimension!]);
@@ -751,7 +758,7 @@ export function ChartPreview({
                 formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {tsValueFields.map((field, index) => (
-                <Line key={field} type="monotone" dataKey={field}
+                <Line key={field} type="monotone" dataKey={field} name={getSeriesLabel(field)}
                   stroke={config.color || getSeriesColor(field, index)}
                   strokeWidth={lineWidth} dot={showDots} strokeDasharray={lineDash}>
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
@@ -781,7 +788,7 @@ export function ChartPreview({
         <Tooltip formatter={(v: any) => formatNumber(v, style)} />
         {showLegend && legendProps && <Legend {...legendProps} />}
         {config.yFields.map((field, index) => (
-          <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+          <Bar key={field} dataKey={field} name={getSeriesLabel(field)} fill={getSeriesColor(field, index)}
             barSize={barSize} radius={[0, barRadius, barRadius, 0]}>
             {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
           </Bar>
@@ -829,12 +836,12 @@ export function ChartPreview({
               <Tooltip formatter={(v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {barFields.map((field, index) => (
-                <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+                <Bar key={field} dataKey={field} name={getSeriesLabel(field)} fill={getSeriesColor(field, index)}
                   radius={[barRadius, barRadius, 0, 0]} barSize={barSize}>
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Bar>
               ))}
-              <Line type="monotone" dataKey={lineField} stroke={getSeriesColor(lineField, barFields.length)}
+              <Line type="monotone" dataKey={lineField} name={getSeriesLabel(lineField)} stroke={getSeriesColor(lineField, barFields.length)}
                 strokeWidth={lineWidth} dot={showDots} strokeDasharray={lineDash}
                 yAxisId={dualYAxis ? 'right' : 0} />
               {renderBenchmarkLine('y')}
@@ -871,6 +878,7 @@ export function ChartPreview({
             numberFormat={tableNumberFormat}
             decimalPlaces={style.decimalPlaces}
             currencySymbol={style.currencySymbol}
+            columnLabels={style.tableColumnLabels}
           />
         </div>
       </div>

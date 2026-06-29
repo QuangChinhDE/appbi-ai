@@ -20,6 +20,7 @@ import type {
   DataLabelStyle,
   MetricConfig,
   NumberFormat,
+  SemanticLabelMap,
 } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig, normalizeRoleConfig } from './ExploreChartConfig';
 import type { ChartSortRule, TimeGranularity } from '@/types/api';
@@ -1344,6 +1345,35 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
+function displaySeriesLabel(style: ChartStyleConfig | undefined, key: string, fallback?: string): string {
+  const override = style?.seriesLabels?.[key]?.trim();
+  return override || fallback || key;
+}
+
+function mergeColumnLabels(
+  base: SemanticLabelMap | undefined,
+  overrides: Record<string, string> | undefined,
+): SemanticLabelMap | undefined {
+  if (!base && !overrides) return undefined;
+  const merged = new Map<string, string>();
+  if (base instanceof globalThis.Map) {
+    for (const [key, label] of base.entries()) {
+      if (key && label) merged.set(key, label);
+    }
+  } else if (base) {
+    for (const [key, label] of Object.entries(base)) {
+      if (key && label) merged.set(key, label);
+    }
+  }
+  if (overrides) {
+    for (const [key, label] of Object.entries(overrides)) {
+      const clean = label.trim();
+      if (key.trim() && clean) merged.set(key, clean);
+    }
+  }
+  return merged.size > 0 ? merged : undefined;
+}
+
 export interface ExploreChartProps {
   type: string;
   data: Record<string, any>[];
@@ -1504,17 +1534,53 @@ function ExploreChartInner({
     tableData,
     tableColumns,
     categoricalData,
-    categoricalSeries,
+    categoricalSeries: rawCategoricalSeries,
     comboData,
-    comboBarSeries,
-    comboLineSeries,
-    pieData,
+    comboBarSeries: rawComboBarSeries,
+    comboLineSeries: rawComboLineSeries,
+    pieData: rawPieData,
     kpiMetric,
     kpiValue,
     kpiBenchmarkValue,
     scatterPoints,
   } = model;
   const { dimension, metrics, scatterX, scatterY } = normalizedRoleConfig;
+
+  const resolveSeriesLabel = useCallback(
+    (key: string, fallback?: string) => displaySeriesLabel(style, key, fallback),
+    [style.seriesLabels],
+  );
+  const categoricalSeries = useMemo(
+    () => rawCategoricalSeries.map((series) => ({
+      ...series,
+      label: resolveSeriesLabel(series.key, series.label),
+    })),
+    [rawCategoricalSeries, resolveSeriesLabel],
+  );
+  const comboBarSeries = useMemo(
+    () => rawComboBarSeries.map((series) => ({
+      ...series,
+      label: resolveSeriesLabel(series.key, series.label),
+    })),
+    [rawComboBarSeries, resolveSeriesLabel],
+  );
+  const comboLineSeries = useMemo(
+    () => rawComboLineSeries.map((series) => ({
+      ...series,
+      label: resolveSeriesLabel(series.key, series.label),
+    })),
+    [rawComboLineSeries, resolveSeriesLabel],
+  );
+  const pieData = useMemo(
+    () => rawPieData.map((row: any) => {
+      const rawName = String(row?.name ?? '');
+      return {
+        ...row,
+        displayName: resolveSeriesLabel(rawName, rawName),
+      };
+    }),
+    [rawPieData, resolveSeriesLabel],
+  );
 
   // Phase-15.78 — click a legend entry to hide that series. Recharts'
   // `<Bar/Line/Area hide={true}>` props are respected without re-laying
@@ -1580,8 +1646,11 @@ function ExploreChartInner({
   // Phase-15.82 — series list extended with calculated fields so they
   // render as additional lines/bars in cartesian charts.
   const calculatedSeries: ChartSeriesDef[] = useMemo(
-    () => (style.calculatedFields ?? []).map((f) => ({ key: f.id, label: f.label || f.id })),
-    [style.calculatedFields],
+    () => (style.calculatedFields ?? []).map((f) => ({
+      key: f.id,
+      label: resolveSeriesLabel(f.id, f.label || f.id),
+    })),
+    [style.calculatedFields, resolveSeriesLabel],
   );
   const categoricalSeriesWithCalc = useMemo(
     () => [...categoricalSeries, ...calculatedSeries],
@@ -1971,6 +2040,11 @@ function ExploreChartInner({
     return merged.size > 0 ? merged : undefined;
   }, [formatMap, style.tableColumnFormats]);
 
+  const effectiveColumnLabels = useMemo(
+    () => mergeColumnLabels(labelMap, style.tableColumnLabels),
+    [labelMap, style.tableColumnLabels],
+  );
+
   const ChartTitleEl = chartTitle ? (
     <div className="text-center font-semibold text-text-secondary mb-1" style={{ fontSize: chartTitleFontSize }}>{chartTitle}</div>
   ) : null;
@@ -2255,7 +2329,7 @@ function ExploreChartInner({
     emitSelection(xField, value);
   };
   const handlePieClick = (entry: any) => {
-    emitSelection(dimension, entry?.name);
+    emitSelection(dimension, entry?.payload?.name ?? entry?.name);
   };
   const handleScatterClick = (event: any) => {
     const payload = event?.payload ?? event?.activePayload?.[0]?.payload;
@@ -2491,12 +2565,14 @@ function ExploreChartInner({
     // stay N/A for radial layout (Pie picks the angle).
     const renderPieLabel = (entry: any) => {
       const { name, value, percent, x, y, cx, cy, midAngle } = entry;
+      const rawName = String(entry?.payload?.name ?? name ?? '');
+      const displayName = String(entry?.payload?.displayName ?? name ?? rawName);
       // Skip slices below 3% — match Recharts default to keep small
       // slice labels from overlapping near the centre.
       if (percent === undefined || percent <= 0.03) return null;
       // Phase-B3 — guard non-finite anchors (degenerate slice geometry).
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-      const sliceKey = String(name);
+      const sliceKey = rawName;
       const resolved = resolveDataLabelStyle(style, sliceKey);
       // When master switch is off we still surface a compact "Name (X%)"
       // string so the legend retention behaviour matches the rest of the
@@ -2511,7 +2587,7 @@ function ExploreChartInner({
             textAnchor={x > cx ? 'start' : 'end'}
             dominantBaseline="central"
           >
-            {`${name} (${(percent * 100).toFixed(0)}%)`}
+            {`${displayName} (${(percent * 100).toFixed(0)}%)`}
           </text>
         );
       }
@@ -2526,12 +2602,12 @@ function ExploreChartInner({
             template: style.dataLabelTemplate,
             value,
             seriesKey: sliceKey,
-            seriesLabel: sliceKey,
+            seriesLabel: displayName,
             dimensionValue: sliceKey,
             percent,
             style: styleForLabel,
           })
-        : `${name}: ${formatNumber(value, styleForLabel, sliceKey)} (${(percent * 100).toFixed(0)}%)`;
+        : `${displayName}: ${formatNumber(value, styleForLabel, sliceKey)} (${(percent * 100).toFixed(0)}%)`;
       const approxWidth = text.length * resolved.fontSize * 0.6;
       const approxHeight = resolved.fontSize + 4;
       const anchor: 'start' | 'end' = x > cx ? 'start' : 'end';
@@ -2574,7 +2650,7 @@ function ExploreChartInner({
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie isAnimationActive={animate} data={sortedPieData} dataKey="value" nameKey="name"
+              <Pie isAnimationActive={animate} data={sortedPieData} dataKey="value" nameKey="displayName"
                 cx="50%" cy="45%" outerRadius="60%"
                 // Hole % is relative to the 60% outer radius — NOT the
                 // container — so it can never exceed the outer radius and blank
@@ -2762,7 +2838,7 @@ function ExploreChartInner({
             numberFormat={tableNumberFormat}
             decimalPlaces={style.decimalPlaces}
             currencySymbol={style.currencySymbol}
-            columnLabels={labelMap}
+            columnLabels={effectiveColumnLabels}
             columnFormats={effectiveColumnFormats}
           />
         </div>

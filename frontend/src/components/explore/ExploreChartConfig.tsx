@@ -257,6 +257,8 @@ export interface ChartStyleConfig {
   // Per-series color overrides (priority: seriesColors[key] > palette[i]).
   // Key matches the series key shown in the legend (metric key or breakdown value).
   seriesColors?: Record<string, string>;
+  // Display-only legend/series aliases. Keys stay identical to seriesColors keys.
+  seriesLabels?: Record<string, string>;
   // Font
   fontSize?: number;
   chartTitleFontSize?: number;
@@ -312,6 +314,8 @@ export interface ChartStyleConfig {
    *  inherit (measure format → table-wide format). Lets DA format a % or money
    *  column at chart-build time without editing the dataset measure. */
   tableColumnFormats?: Record<string, NumberFormat>;
+  // Display-only table header aliases. Raw column keys/data rows are unchanged.
+  tableColumnLabels?: Record<string, string>;
   tableHyperlinkRules?: TableHyperlinkRule[];
   // Chart title (shown above the chart)
   chartTitle?: string;
@@ -441,6 +445,14 @@ function normalizePixelSize(value: unknown, fallback?: number, min = 8, max = 72
   return Math.min(Math.max(Math.round(parsed), min), max);
 }
 
+function normalizeLabelOverrideMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, label]) => [key.trim(), typeof label === 'string' ? label.trim() : ''] as const)
+    .filter(([key, label]) => key.length > 0 && label.length > 0);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 export function normalizeChartStyleConfig(
   styleConfig: ChartStyleConfig | null | undefined,
   legacyConditionalFormatting?: ConditionalFormatRule[] | null,
@@ -494,6 +506,9 @@ export function normalizeChartStyleConfig(
       ));
     normalized.tableColumnAlignments = validAlignments.length > 0 ? Object.fromEntries(validAlignments) : undefined;
   }
+
+  normalized.seriesLabels = normalizeLabelOverrideMap(normalized.seriesLabels);
+  normalized.tableColumnLabels = normalizeLabelOverrideMap(normalized.tableColumnLabels);
 
   if (Array.isArray(normalized.tableHyperlinkRules)) {
     const validRules = normalized.tableHyperlinkRules
@@ -1682,23 +1697,101 @@ function SeriesColorsEditor({
 }
 
 /**
- * Phase-15.84 — Data Labels editor.
- *
- * Three sub-sections matching the DA spec:
- *
- *  (i) Apply to — choose "All series" or a specific seriesKey. The
- *      editor then writes into either the top-level DataLabelConfig
- *      or into `overrides[seriesKey]`.
- *
- *  (ii) Position — top / bottom / inside variants + rotation chip +
- *       auto-hide overlap toggle (best effort runtime collision check).
- *
- *  (iii) Font / color / background — fontSize, fontColor, optional
- *        background chip with its own colour.
- *
- * Backward compat: writing `enabled=true` here also sets the legacy
- * `showDataLabels=true` so charts on older renderers keep working.
+ * Display-only legend label editor. Raw series keys remain unchanged.
  */
+function SeriesLabelsEditor({
+  availableSeriesKeys,
+  seriesLabels,
+  onChange,
+}: {
+  availableSeriesKeys: { key: string; label: string }[];
+  seriesLabels?: Record<string, string>;
+  onChange: (next: Record<string, string> | undefined) => void;
+}) {
+  const VISIBLE_CAP = 12;
+  const [expanded, setExpanded] = useState(false);
+
+  const uniqueSeries = useMemo(() => {
+    const seen = new Set<string>();
+    return availableSeriesKeys.filter(({ key }) => {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [availableSeriesKeys]);
+
+  const visible = expanded ? uniqueSeries : uniqueSeries.slice(0, VISIBLE_CAP);
+  const hiddenCount = uniqueSeries.length - visible.length;
+
+  const setLabel = (key: string, value: string) => {
+    const next = { ...(seriesLabels ?? {}) };
+    const trimmed = value.trim();
+    if (trimmed) next[key] = trimmed;
+    else delete next[key];
+    onChange(Object.keys(next).length > 0 ? next : undefined);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-xs font-semibold text-text-secondary">
+          Legend labels
+          <span className="ml-1 text-[10px] font-normal text-text-quaternary">
+            ({uniqueSeries.length})
+          </span>
+        </label>
+      </div>
+      <div className="space-y-1.5">
+        {visible.map(({ key, label }) => {
+          const current = seriesLabels?.[key] ?? '';
+          return (
+            <div key={`series-label-${key}`} className="grid grid-cols-[minmax(0,1fr)_minmax(120px,1fr)_24px] items-center gap-2">
+              <span className="min-w-0 truncate text-xs text-text-secondary" title={label}>
+                {label}
+              </span>
+              <input
+                type="text"
+                value={current}
+                onChange={(event) => setLabel(key, event.target.value)}
+                placeholder={label}
+                className="min-w-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => setLabel(key, '')}
+                disabled={!current}
+                className="h-7 w-6 rounded-md border border-[rgb(var(--border-line))] text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Reset legend label"
+              >
+                <X className="mx-auto h-3 w-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1.5 w-full rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-2"
+        >
+          Show {hiddenCount} more...
+        </button>
+      )}
+      {expanded && uniqueSeries.length > VISIBLE_CAP && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1.5 w-full px-2 py-1 text-[11px] text-text-quaternary hover:text-text-tertiary"
+        >
+          Collapse
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Data-label editor: writes top-level DataLabelConfig or per-series overrides.
 type ApplyTarget = '__all__' | string;
 function DataLabelsEditor({
   styleConfig,
@@ -3412,6 +3505,7 @@ export function ExploreChartConfig({
   const tableSummaryRows = normalizedStyleConfig.tableSummaryRows ?? [];
   const tableColumnWidths = normalizedStyleConfig.tableColumnWidths ?? {};
   const tableColumnAlignments = normalizedStyleConfig.tableColumnAlignments ?? {};
+  const tableColumnLabels = normalizedStyleConfig.tableColumnLabels ?? {};
   const tableHyperlinkRules = normalizedStyleConfig.tableHyperlinkRules ?? [];
   const isPivotEnabled = tableMode === 'pivot';
   const isSummaryRowEnabled = normalizedStyleConfig.tableShowSummaryRow ?? false;
@@ -3696,6 +3790,14 @@ export function ExploreChartConfig({
     if (!format) delete next[columnName];
     else next[columnName] = format;
     updStyle({ tableColumnFormats: Object.keys(next).length > 0 ? next : undefined });
+  };
+
+  const updateTableColumnLabel = (columnName: string, label: string) => {
+    const next = { ...tableColumnLabels };
+    const trimmed = label.trim();
+    if (trimmed) next[columnName] = trimmed;
+    else delete next[columnName];
+    updStyle({ tableColumnLabels: Object.keys(next).length > 0 ? next : undefined });
   };
 
   const updateTableHyperlinkRule = (index: number, patch: Partial<TableHyperlinkRule>) => {
@@ -4136,7 +4238,7 @@ export function ExploreChartConfig({
       {isTableLike && tableFormattingColumns.length > 0 && (
         <Disclosure
           title="Column Layout"
-          hint="Resize columns directly from the table preview by dragging the header edge. Use these controls to set value alignment and clear saved widths."
+          hint="Rename table headers for this chart, set value alignment, and clear saved widths. Raw column keys and queries stay unchanged."
           defaultOpen
         >
           <div className="flex items-center justify-between rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
@@ -4154,7 +4256,7 @@ export function ExploreChartConfig({
             </button>
           </div>
 
-          <div className="flex items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
+          <div className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
             <span className="min-w-0 flex-1">Column</span>
             <span className="w-[84px] text-center">Align</span>
             <span className="w-[112px]">Format</span>
@@ -4170,13 +4272,23 @@ export function ExploreChartConfig({
                 // column, which made a many-column table's config scroll forever).
                 <div
                   key={`table-column-layout-${column.name}`}
-                  className="flex items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5"
+                  className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5"
                 >
                   <div
-                    className="min-w-0 flex-1 truncate text-xs font-medium text-text-secondary"
+                    className="min-w-0 space-y-1"
                     title={`${column.name} · ${column.type || 'column'}${currentWidth ? ` · ${Math.round(currentWidth)}px` : ' · auto width'}`}
                   >
-                    {colLabel(column)}
+                    <span className="block truncate text-xs font-medium text-text-secondary">
+                      {colLabel(column)}
+                    </span>
+                    <input
+                      type="text"
+                      value={tableColumnLabels[column.name] ?? ''}
+                      onChange={(event) => updateTableColumnLabel(column.name, event.target.value)}
+                      placeholder={colLabel(column)}
+                      className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-[11px]"
+                      title="Custom table header for this chart"
+                    />
                   </div>
                   <div className="inline-flex w-[84px] shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
                     {TABLE_COLUMN_ALIGNMENT_OPTIONS.map((option) => {
@@ -5079,13 +5191,14 @@ export function ExploreChartConfig({
         <FormatGroup
           title="Visual"
           defaultOpen
-          matchesSearch={matchesFormatSearch(['visual', 'chart title', 'color palette', 'series colors', 'number format', 'legend', 'data labels', 'donut', 'stack mode'])}
+          matchesSearch={matchesFormatSearch(['visual', 'chart title', 'color palette', 'series colors', 'legend labels', 'rename', 'label', 'number format', 'legend', 'data labels', 'font', 'font size', 'donut', 'stack mode'])}
           searchActive={formatSearchActive}
           hasCustomization={Boolean(
-            styleConfig.chartTitle || styleConfig.palette || styleConfig.seriesColors ||
+            styleConfig.chartTitle || styleConfig.palette || styleConfig.seriesColors || styleConfig.seriesLabels ||
             styleConfig.numberFormat || styleConfig.legendPosition ||
-            styleConfig.dataLabelConfig?.enabled || styleConfig.showDataLabels ||
-            styleConfig.pieInnerRadius || styleConfig.stackMode === 'percent'
+            styleConfig.dataLabelConfig?.enabled || styleConfig.dataLabelConfig?.format || styleConfig.showDataLabels ||
+            styleConfig.pieInnerRadius || styleConfig.stackMode === 'percent' ||
+            (chartType === 'HEATMAP' && (styleConfig.fontSize ?? DEFAULT_STYLE_CONFIG.fontSize) !== DEFAULT_STYLE_CONFIG.fontSize)
           )}
         >
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
@@ -5176,6 +5289,33 @@ export function ExploreChartConfig({
                 3. Heads-up hint when a row label looks like a raw timestamp
                    (DA picked a datetime column as the legend dimension by
                    accident). */}
+          {chartType === 'GAUGE' && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Data Label Format</label>
+              <select
+                value={styleConfig.dataLabelConfig?.format ?? ''}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  const dlc = styleConfig.dataLabelConfig ?? {};
+                  updStyle({
+                    dataLabelConfig: {
+                      ...dlc,
+                      format: next === '' ? undefined : (next as NumberFormat),
+                    },
+                  });
+                }}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+              >
+                <option value="">Inherit Number Format</option>
+                <option value="auto">Auto (raw)</option>
+                <option value="compact">Compact (1.2K, 3.4M)</option>
+                <option value="number">Full Number (1,234)</option>
+                <option value="percent">Percent (%)</option>
+                <option value="currency">Currency ($)</option>
+              </select>
+            </div>
+          )}
+
           {!isTableLike && availableSeriesKeys.length > 0 && (
             <SeriesColorsEditor
               availableSeriesKeys={availableSeriesKeys}
@@ -5185,9 +5325,32 @@ export function ExploreChartConfig({
             />
           )}
 
+          {!isTableLike && availableSeriesKeys.length > 0 && (
+            <SeriesLabelsEditor
+              availableSeriesKeys={availableSeriesKeys}
+              seriesLabels={styleConfig.seriesLabels}
+              onChange={(next) => updStyle({ seriesLabels: next })}
+            />
+          )}
+
           {/* Phase-15.92 — Number Format moved up from end of panel so
               the basic display unit setting sits next to other common
               controls instead of below the Advanced cluster. */}
+          {chartType === 'HEATMAP' && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
+              <input
+                type="range"
+                min={8}
+                max={22}
+                step={1}
+                value={styleConfig.fontSize || 12}
+                onChange={e => updStyle({ fontSize: Number(e.target.value) })}
+                className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer"
+              />
+            </div>
+          )}
+
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
             <select value={styleConfig.numberFormat || 'compact'}
@@ -5749,7 +5912,7 @@ export function ExploreChartConfig({
             // formatted value; they just don't have per-point series labels.
             // Surface JUST the Value format select so DA can pick %/currency/compact
             // for the displayed number without enabling the full per-series editor.
-            const showCompactFormat = noLabelTypes.has(chartType);
+            const showCompactFormat = noLabelTypes.has(chartType) && chartType !== 'GAUGE';
             if (showCompactFormat) {
               const dlc = styleConfig.dataLabelConfig ?? {};
               const currentFormat = dlc.format ?? '';

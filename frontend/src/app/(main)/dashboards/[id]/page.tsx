@@ -64,6 +64,12 @@ import {
   normalizeDashboardPages,
   tidyPageLayout,
 } from '@/lib/dashboard-pages';
+import {
+  ensureCanvasLayout,
+  hasCanvasCoords,
+  mergeCanvasLayout,
+  mergeGridLayout,
+} from '@/lib/dashboard-layout-convert';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -367,6 +373,22 @@ export default function DashboardDetailPage() {
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [dashboard?.dashboard_charts, activePageId],
   );
+  const resolveDashboardChartLayout = useCallback((
+    dashboardChartId: number,
+    localSnapshot: Record<number, Record<string, any>> = localLayoutOverrides,
+  ): DashboardChartLayout => {
+    const existing = serverDashboard?.dashboard_charts?.find((dc) => dc.id === dashboardChartId);
+    const draftKey = String(dashboardChartId);
+    const draftLayout = serverDashboard?.draft_layouts
+      ? ((serverDashboard.draft_layouts as any)[dashboardChartId] ?? (serverDashboard.draft_layouts as any)[draftKey])
+      : null;
+    return {
+      ...({ x: 0, y: 0, w: 4, h: 4 } as DashboardChartLayout),
+      ...(existing?.layout ?? {}),
+      ...(draftLayout ?? {}),
+      ...(localSnapshot[dashboardChartId] ?? {}),
+    } as DashboardChartLayout;
+  }, [serverDashboard, localLayoutOverrides]);
 
   // Charts for each page (used for hidden pre-warm grids and multi-page export)
   const chartsPerPage = React.useMemo(
@@ -806,12 +828,7 @@ export default function DashboardDetailPage() {
       const id = Number(item.i);
       const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
       if (!existing) continue;
-      // Baseline = server draft if present, else live layout.
-      const draftKey = String(id);
-      const baseline = {
-        ...(existing.layout ?? {}),
-        ...((serverDashboard.draft_layouts?.[id] ?? serverDashboard.draft_layouts?.[draftKey as any]) ?? {}),
-      };
+      const baseline = resolveDashboardChartLayout(id, {});
       if (
         baseline.x === item.x
         && baseline.y === item.y
@@ -820,17 +837,10 @@ export default function DashboardDetailPage() {
       ) {
         continue;
       }
-      next[id] = {
-        ...(existing.layout ?? {}),
-        x: item.x,
-        y: item.y,
-        w: item.w,
-        h: item.h,
-      };
+      next[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
     }
     if (Object.keys(next).length === 0) {
-      // No real change — clear local diff if any.
-      setLocalLayoutOverrides({});
+      // No real grid change. Keep unrelated canvas local edits intact.
       return;
     }
     setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
@@ -854,12 +864,11 @@ export default function DashboardDetailPage() {
     const tidied = tidyPageLayout(tiles);
     const next: Record<number, Record<string, any>> = {};
     for (const t of tidied) {
-      const existing = pageCharts.find((dc) => dc.id === t.id);
-      next[t.id] = { ...(existing?.layout ?? {}), x: t.x, y: t.y, w: t.w, h: t.h };
+      next[t.id] = mergeGridLayout(resolveDashboardChartLayout(t.id), t);
     }
     setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
     toast.success(t('dashboards.detail.tidyDone'));
-  }, [dashboard, activePageId]);
+  }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
 
   // Canvas-mode layout updates: same pattern — local state only.
   const handleCanvasLayoutChange = useCallback(
@@ -870,22 +879,12 @@ export default function DashboardDetailPage() {
       setLocalLayoutOverrides((prev) => {
         const next = { ...prev };
         for (const u of updates) {
-          const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === u.id)?.layout ?? {
-            x: 0, y: 0, w: 4, h: 4,
-          };
-          next[u.id] = {
-            ...existing,
-            xPx: u.xPx,
-            yPx: u.yPx,
-            wPx: u.wPx,
-            hPx: u.hPx,
-            z: u.z,
-          };
+          next[u.id] = mergeCanvasLayout(resolveDashboardChartLayout(u.id, prev), u);
         }
         return next;
       });
     },
-    [serverDashboard],
+    [serverDashboard, resolveDashboardChartLayout],
   );
 
   // Flush helpers — used by Save draft / Save & Publish buttons.
@@ -1124,6 +1123,19 @@ export default function DashboardDetailPage() {
   const handleToggleLayoutMode = useCallback(async () => {
     if (!dashboard) return;
     const next = (dashboard.layout_mode ?? 'grid') === 'grid' ? 'canvas' : 'grid';
+    if (next === 'canvas') {
+      const canvasWidth = Number((dashboard.canvas_config as any)?.width ?? 1440);
+      setLocalLayoutOverrides((prev) => {
+        const bootstrapped: Record<number, Record<string, any>> = {};
+        for (const [index, dc] of (dashboard.dashboard_charts ?? []).entries()) {
+          const baseline = resolveDashboardChartLayout(dc.id, prev);
+          if (!hasCanvasCoords(baseline)) {
+            bootstrapped[dc.id] = ensureCanvasLayout(baseline, canvasWidth, Number(baseline.z ?? index + 1));
+          }
+        }
+        return Object.keys(bootstrapped).length > 0 ? { ...prev, ...bootstrapped } : prev;
+      });
+    }
     try {
       await dashboardApi.update(dashboardId, { layout_mode: next });
       await updateDashboardMutation.mutateAsync({
@@ -1133,7 +1145,7 @@ export default function DashboardDetailPage() {
     } catch (err) {
       console.error('Failed to toggle layout mode:', err);
     }
-  }, [dashboard, dashboardId, updateDashboardMutation]);
+  }, [dashboard, dashboardId, resolveDashboardChartLayout, updateDashboardMutation]);
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
     // One selection drives the whole dashboard (PBI parity): the SOURCE chart

@@ -9,7 +9,7 @@ import {
 import { useI18n } from '@/providers/LanguageProvider';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
-import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
+import type { ChartStyleConfig, MetricConfig, SemanticLabelMap } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
 import { buildExploreChartModel } from './chartDataAdapter';
@@ -41,6 +41,34 @@ export function resolveSliceColor(
   const override = style?.seriesColors?.[name];
   if (override) return override;
   return palette[index % palette.length];
+}
+
+function displaySeriesName(style: ChartStyleConfig | undefined, name: string): string {
+  return style?.seriesLabels?.[name]?.trim() || name;
+}
+
+function mergeColumnLabels(
+  base: SemanticLabelMap | undefined,
+  overrides: Record<string, string> | undefined,
+): SemanticLabelMap | undefined {
+  if (!base && !overrides) return undefined;
+  const merged = new Map<string, string>();
+  if (base instanceof globalThis.Map) {
+    for (const [key, label] of base.entries()) {
+      if (key && label) merged.set(key, label);
+    }
+  } else if (base) {
+    for (const [key, label] of Object.entries(base)) {
+      if (key && label) merged.set(key, label);
+    }
+  }
+  if (overrides) {
+    for (const [key, label] of Object.entries(overrides)) {
+      const clean = label.trim();
+      if (key.trim() && clean) merged.set(key, clean);
+    }
+  }
+  return merged.size > 0 ? merged : undefined;
 }
 
 /**
@@ -471,15 +499,16 @@ function DonutOrPolarChart({
               const effectiveFormat = sliceOverride?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
               const styleForLabel = effectiveFormat ? { ...style, numberFormat: effectiveFormat } : style;
               const sharePct = item.value / Math.max(total, 1);
+              const displayName = displaySeriesName(style, item.name);
               let labelText: string;
               if (labelsEnabled) {
                 if (style.dataLabelTemplate) {
-                  labelText = expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: sharePct });
+                  labelText = expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: displayName, percent: sharePct });
                 } else {
-                  labelText = `${item.name.slice(0, 12)} ${formatNumber(item.value, styleForLabel)} (${formatPercent(item.value, total)})`;
+                  labelText = `${displayName.slice(0, 12)} ${formatNumber(item.value, styleForLabel)} (${formatPercent(item.value, total)})`;
                 }
               } else {
-                labelText = item.name.slice(0, 16);
+                labelText = displayName.slice(0, 16);
               }
               cursor += angle;
               const sliceColor = resolveSliceColor(style, palette, item.name, index);
@@ -497,17 +526,20 @@ function DonutOrPolarChart({
                   {showLabelForSlice && (
                     <text x={labelPoint.x} y={labelPoint.y} fontSize={sliceFontSize} textAnchor="middle" fill={sliceFontColor}>{labelText}</text>
                   )}
-                  <title>{item.name}: {formatNumber(item.value, style)}</title>
+                  <title>{displayName}: {formatNumber(item.value, style)}</title>
                 </g>
               );
             })}
             <g transform={`translate(${areaW + 8} ${legendY})`}>
-              {items.slice(0, 12).map((item, index) => (
-                <g key={item.name} transform={`translate(0 ${index * 22})`}>
-                  <rect width={10} height={10} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
-                  <text x={18} y={9} fontSize={11} fill="rgb(var(--text-secondary))">{item.name.slice(0, 24)}</text>
-                </g>
-              ))}
+              {items.slice(0, 12).map((item, index) => {
+                const displayName = displaySeriesName(style, item.name);
+                return (
+                  <g key={item.name} transform={`translate(0 ${index * 22})`}>
+                    <rect width={10} height={10} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
+                    <text x={18} y={9} fontSize={11} fill="rgb(var(--text-secondary))">{displayName.slice(0, 24)}</text>
+                  </g>
+                );
+              })}
             </g>
           </>
         );
@@ -556,7 +588,7 @@ function RadarChartSvg({ rows, metrics, field, palette, style, preAggregated }: 
               return (
                 <g key={labels[index]}>
                   <line x1={cx} y1={cy} x2={axis.x} y2={axis.y} stroke="rgb(var(--border-line))" />
-                  <text x={p.x} y={p.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">{labels[index].slice(0, 16)}</text>
+                  <text x={p.x} y={p.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">{displaySeriesName(style, labels[index]).slice(0, 16)}</text>
                 </g>
               );
             })}
@@ -628,16 +660,17 @@ function FunnelChartSvg({ items, style, palette, onSelect, highlightNames }: { i
               const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
               const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
               const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              const displayName = displaySeriesName(style, item.name);
               const labelText = labelsEnabled
                 ? (style.dataLabelTemplate
-                    ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: item.value / max })
-                    : `${item.name.slice(0, 28)} - ${formatNumber(item.value, styleForLabel)}`)
-                : item.name.slice(0, 28);
+                    ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: displayName, percent: item.value / max })
+                    : `${displayName.slice(0, 28)} - ${formatNumber(item.value, styleForLabel)}`)
+                : displayName.slice(0, 28);
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
                   <path d={`M ${x1} ${y} L ${x2} ${y} L ${x3} ${y + h} L ${x4} ${y + h} Z`} fill={resolveSliceColor(style, palette, item.name, index)} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.9} />
                   <text x={cx} y={y + h / 2 + 4} fontSize={fontSize} textAnchor="middle" fill={fontColor}>{labelText}</text>
-                  <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                  <title>{displayName}: {formatNumber(item.value, styleForLabel)}</title>
                 </g>
               );
             })}
@@ -668,7 +701,7 @@ function styleWithEffectiveNumberFormat(
 
 function GaugeChartSvg({ value, target, style, palette, seriesKey }: { value: number; target: number; style: ChartStyleConfig; palette: string[]; seriesKey?: string }) {
   const { t } = useI18n();
-  const arcColor = (seriesKey && style.seriesColors?.[seriesKey]) ?? palette[0];
+  const arcColor = palette[0] ?? '#3b82f6';
   const hasTarget = target > 0;
   const scaleMax = hasTarget ? target : Math.max(value * 2, 1);
   const pct = Math.max(0, Math.min(value / scaleMax, 1));
@@ -782,17 +815,18 @@ function TreemapChart({ items, style, palette, onSelect, highlightNames }: { ite
               const fontColor = override?.fontColor ?? dlc?.fontColor ?? '#fff';
               const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
               const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              const displayName = displaySeriesName(style, item.name);
               const valueLabel = style.dataLabelTemplate
-                ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: item.value / total })
+                ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: displayName, percent: item.value / total })
                 : formatNumber(item.value, styleForLabel);
               const showName = w >= 44 && h >= 22;
               const showVal = labelsEnabled && w >= 50 && h >= 38;
               return (
                 <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
                   <rect x={x} y={y} width={w} height={h} rx={6} fill={resolveSliceColor(style, palette, item.name, index)} opacity={highlightNames ? (highlightNames.has(item.name) ? 1 : 0.25) : 0.88} />
-                  {showName && <text x={x + 8} y={y + 18} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{item.name.slice(0, 22)}</text>}
+                  {showName && <text x={x + 8} y={y + 18} fontSize={nameFontSize} fontWeight={600} fill={fontColor}>{displayName.slice(0, 22)}</text>}
                   {showVal && <text x={x + 8} y={y + 34} fontSize={valueFontSize} fill={fontColor}>{valueLabel}</text>}
-                  <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                  <title>{displayName}: {formatNumber(item.value, styleForLabel)}</title>
                 </g>
               );
             })}
@@ -853,11 +887,12 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
         const labelColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-secondary))';
         const fmt = override?.format ?? style.seriesFormats?.[bar.name] ?? dlc?.format ?? style.numberFormat;
         const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const displayName = displaySeriesName(style, bar.name);
         const labelText = style.dataLabelTemplate
           ? expandLabelTemplate({
               template: style.dataLabelTemplate,
               formatted: formatNumber(bar.value, styleForLabel),
-              rawName: bar.name,
+              rawName: displayName,
             })
           : formatNumber(bar.value, styleForLabel);
         return (
@@ -868,8 +903,8 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
                 {labelText}
               </text>
             )}
-            <text x={x + barW / 2} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} ${labelY})`} fill="rgb(var(--text-tertiary))">{bar.name.slice(0, 12)}</text>
-            <title>{bar.name}: {formatNumber(bar.value, styleForLabel)}</title>
+            <text x={x + barW / 2} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} ${labelY})`} fill="rgb(var(--text-tertiary))">{displayName.slice(0, 12)}</text>
+            <title>{displayName}: {formatNumber(bar.value, styleForLabel)}</title>
           </g>
         );
             })}
@@ -1038,6 +1073,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
             <g clipPath={`url(#${clipId})`}>
               {points.map((point, index) => {
                 const pointKey = String(point.label ?? index);
+                const displayName = displaySeriesName(style, pointKey);
                 const override = dlc?.overrides?.[pointKey];
                 const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
                 const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
@@ -1050,10 +1086,10 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
                         textAnchor="middle"
                         fill={labelFontColor}
                         style={{ pointerEvents: 'none' }}>
-                        {String(point.label).slice(0, 16)}
+                        {displayName.slice(0, 16)}
                       </text>
                     )}
-                    <title>{point.label ? `${point.label}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
+                    <title>{point.label ? `${displayName}: ` : ''}{scatterX} {formatNumber(point.x, style)}, {scatterY} {formatNumber(point.y, style)}</title>
                   </g>
                 );
               })}
@@ -1168,6 +1204,7 @@ function GeoTileDonutMap({ pairs, style, palette, onSelect }: {
           if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
           const outer = rOf(r.total);
           const inner = outer * 0.55;
+          const displayName = displaySeriesName(style, r.name);
           let cursor = 0;
           const segs = [...r.segs].sort((a, b) => b.value - a.value);
           return (
@@ -1180,7 +1217,7 @@ function GeoTileDonutMap({ pairs, style, palette, onSelect }: {
               })}
               <circle cx={px} cy={py} r={inner} fill="rgba(255,255,255,0.82)" />
               <text x={px} y={py} textAnchor="middle" dominantBaseline="central" fontSize={Math.max(9, outer * 0.32)} fontWeight={600} fill="#33414d">{compactNum(r.total)}</text>
-              <title>{r.name}: {formatNumber(r.total, style)}</title>
+              <title>{displayName}: {formatNumber(r.total, style)}</title>
             </g>
           );
         })}
@@ -1189,7 +1226,7 @@ function GeoTileDonutMap({ pairs, style, palette, onSelect }: {
         {categories.slice(0, 12).map((c) => (
           <div key={c} className="flex items-center gap-1">
             <span style={{ width: 9, height: 9, borderRadius: 2, background: catColor(c), display: 'inline-block', flexShrink: 0 }} />
-            <span className="whitespace-nowrap" style={{ color: '#33414d' }}>{String(c) || '(blank)'}</span>
+            <span className="whitespace-nowrap" style={{ color: '#33414d' }}>{displaySeriesName(style, String(c)) || '(blank)'}</span>
           </div>
         ))}
       </div>
@@ -1291,7 +1328,7 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
     if (!cellGroups.has(k)) cellGroups.set(k, []);
     cellGroups.get(k)!.push(m);
   }
-  type Pt = { x: number; y: number; z: number; label: string; xb: number; yb: number; size: number; key: string };
+  type Pt = { x: number; y: number; z: number; label: string; displayLabel: string; xb: number; yb: number; size: number; key: string };
   const points: Pt[] = [];
   const cellCount = new Map<string, number>();
   for (const [k, group] of cellGroups) {
@@ -1301,11 +1338,13 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
     group.forEach((m, i) => {
       const col = i % cols;
       const r = Math.floor(i / cols);
+      const label = m.label !== undefined && m.label !== null ? String(m.label) : '';
       points.push({
         x: m.xb + (col + 0.5) / cols,
         y: m.yb + (r + 0.5) / rowsN,
         z: m.size,
-        label: m.label !== undefined && m.label !== null ? String(m.label) : '',
+        label,
+        displayLabel: label ? displaySeriesName(style, label) : '',
         xb: m.xb, yb: m.yb, size: m.size,
         key: String(m.label ?? `${k}-${i}`),
       });
@@ -1355,7 +1394,7 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
             const p = payload[0].payload as Pt;
             return (
               <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1.5 text-xs shadow-md">
-                {p.label && <div className="font-semibold text-text-primary mb-0.5">{p.label}</div>}
+                {p.displayLabel && <div className="font-semibold text-text-primary mb-0.5">{p.displayLabel}</div>}
                 <div className="text-text-secondary">{fieldNameX}: <span className="font-medium text-text-primary">{xAxis.labels[p.xb]}</span></div>
                 <div className="text-text-secondary">{fieldNameY}: <span className="font-medium text-text-primary">{yAxis.labels[p.yb]}</span></div>
                 {metric && <div className="text-text-secondary">{sizeName}: <span className="font-medium text-text-primary">{formatNumber(p.size, style)}</span></div>}
@@ -1373,7 +1412,7 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
             <RcCell key={p.key + i} fill={resolveSliceColor(style, palette, p.key, i)} fillOpacity={0.78} stroke="rgb(var(--surface-1))" />
           ))}
           {labelsEnabled && (
-            <RcLabelList dataKey="label" position="top" style={{ fontSize: dlc?.fontSize ?? 9, fill: dlc?.fontColor ?? 'rgb(var(--text-secondary))', pointerEvents: 'none' }} />
+            <RcLabelList dataKey="displayLabel" position="top" style={{ fontSize: dlc?.fontSize ?? 9, fill: dlc?.fontColor ?? 'rgb(var(--text-secondary))', pointerEvents: 'none' }} />
           )}
         </Scatter>
       </ScatterChart>
@@ -1381,18 +1420,21 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
   );
 }
 
-function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
+function HeatmapChart({ pairs, metric, style, palette, onSelect }: { pairs: PairValue[]; metric?: MetricConfig; style: ChartStyleConfig; palette: string[]; onSelect?: (source: string) => void }) {
   const { t } = useI18n();
   if (!pairs.length) return <EmptyAdvanced message={t('explore.advancedCharts.selectRowColValue')} />;
   const sources = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 18);
   const targets = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 14);
   const max = Math.max(...pairs.map((pair) => Math.abs(pair.value)), 1);
-  const gradientBase = style.seriesColors?.['__heatmap__']
+  const metricColorKey = metric ? metricKey(metric) : undefined;
+  const gradientBase = (metricColorKey && style.seriesColors?.[metricColorKey])
+    ?? style.seriesColors?.['__heatmap__']
     ?? (targets[0] && style.seriesColors?.[targets[0]])
     ?? palette[0];
+  const heatmapFontSize = Math.min(Math.max(Number(style.fontSize ?? 10) || 10, 8), 24);
   const dlc = style.dataLabelConfig;
   const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
-  const dlFontSize = dlc?.fontSize ?? 10;
+  const dlFontSize = dlc?.fontSize ?? heatmapFontSize;
   const dlFontColor = dlc?.fontColor ?? 'rgb(var(--text-primary))';
   const dlFormat = dlc?.format ?? style.numberFormat;
   const styleForLabel = dlFormat ? { ...style, numberFormat: dlFormat } : style;
@@ -1412,25 +1454,27 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
         return (
           <>
             {sources.map((source, row) => (
-              <text key={source} x={gx - 8} y={gy + row * cellH + cellH / 2 + 3} textAnchor="end" fontSize={10} fill="rgb(var(--text-tertiary))">{source.slice(0, 18)}</text>
+              <text key={source} x={gx - 8} y={gy + row * cellH + cellH / 2 + heatmapFontSize * 0.32} textAnchor="end" fontSize={heatmapFontSize} fill="rgb(var(--text-tertiary))">{displaySeriesName(style, source).slice(0, 18)}</text>
             ))}
             {targets.map((target, col) => (
-              <text key={target} x={gx + col * cellW + cellW / 2} y={gy - 10} textAnchor="middle" fontSize={10} fill="rgb(var(--text-tertiary))">{target.slice(0, 10)}</text>
+              <text key={target} x={gx + col * cellW + cellW / 2} y={gy - Math.max(8, heatmapFontSize * 0.85)} textAnchor="middle" fontSize={heatmapFontSize} fill="rgb(var(--text-tertiary))">{displaySeriesName(style, target).slice(0, 10)}</text>
             ))}
             {sources.map((source, row) => targets.map((target, col) => {
               const value = valueMap.get(JSON.stringify([source, target])) ?? 0;
               const opacity = value !== 0 ? 0.12 + (Math.abs(value) / max) * 0.84 : 0.05;
+              const displaySource = displaySeriesName(style, source);
+              const displayTarget = displaySeriesName(style, target);
               return (
                 <g key={`${source}-${target}`} onClick={() => onSelect?.(source)} className="cursor-pointer">
                   <rect x={gx + col * cellW} y={gy + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={gradientBase} opacity={opacity} />
                   {labelsEnabled && cellW >= 42 && cellH >= 20 && value !== 0 && (
-                    <text x={gx + col * cellW + cellW / 2} y={gy + row * cellH + cellH / 2 + 4} textAnchor="middle" fontSize={dlFontSize} fill={dlFontColor}>
+                    <text x={gx + col * cellW + cellW / 2} y={gy + row * cellH + cellH / 2 + dlFontSize * 0.32} textAnchor="middle" fontSize={dlFontSize} fill={dlFontColor}>
                       {style.dataLabelTemplate
-                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(value, styleForLabel), rawName: `${source}/${target}` })
+                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(value, styleForLabel), rawName: `${displaySource}/${displayTarget}` })
                         : formatNumber(value, styleForLabel)}
                     </text>
                   )}
-                  <title>{source} / {target}: {formatNumber(value, styleForLabel)}</title>
+                  <title>{displaySource} / {displayTarget}: {formatNumber(value, styleForLabel)}</title>
                 </g>
               );
             }))}
@@ -1455,11 +1499,12 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
           const override = dlc?.overrides?.[item.name];
           const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
           const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+          const displayName = displaySeriesName(style, item.name);
           return (
             <button key={item.name} onClick={() => onSelect?.(item.name)}
               className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left hover:bg-surface-2">
               <div className="flex items-center justify-between gap-3">
-                <span className="truncate text-sm font-medium text-text-secondary">{item.name}</span>
+                <span className="truncate text-sm font-medium text-text-secondary">{displayName}</span>
                 {labelsEnabled && (
                   <span className="text-sm font-semibold text-text-primary"
                     style={override?.fontColor ? { color: override.fontColor } : undefined}>
@@ -1558,6 +1603,7 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
         const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-primary))';
         const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
         const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const displayName = displaySeriesName(style, item.name);
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             {/* Tukey whisker (within 1.5·IQR) with end caps */}
@@ -1577,8 +1623,8 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
                 {formatNumber(item.med, styleForLabel)}
               </text>
             )}
-            <text x={x} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} ${labelY})`} fill="rgb(var(--text-tertiary))">{item.name.slice(0, 12)}</text>
-            <title>{item.name}: median {formatNumber(item.med, styleForLabel)}</title>
+            <text x={x} y={labelY} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x} ${labelY})`} fill="rgb(var(--text-tertiary))">{displayName.slice(0, 12)}</text>
+            <title>{displayName}: median {formatNumber(item.med, styleForLabel)}</title>
           </g>
         );
             })}
@@ -1709,16 +1755,17 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
               const fontSize = override?.fontSize ?? dlFontSize;
               const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
               const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+              const displayName = displaySeriesName(style, item.name);
               return (
                 <g key={item.name}>
                   <path d={ringSegment(cx, cy, r1out, r1in, start, end)} fill={resolveSliceColor(style, palette, item.name, index)} opacity={0.86}
                     onClick={() => onSelect?.(item.name)} className="cursor-pointer">
-                    <title>{item.name}: {formatNumber(item.value, styleForLabel)}</title>
+                    <title>{displayName}: {formatNumber(item.value, styleForLabel)}</title>
                   </path>
                   {labelsEnabled && sharePct >= 0.05 && (
                     <text x={labelPos.x} y={labelPos.y} textAnchor="middle" fontSize={fontSize} fill={fontColor} style={{ pointerEvents: 'none' }}>
                       {style.dataLabelTemplate
-                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: item.name, percent: sharePct })
+                        ? expandLabelTemplate({ template: style.dataLabelTemplate, formatted: formatNumber(item.value, styleForLabel), rawName: displayName, percent: sharePct })
                         : formatNumber(item.value, styleForLabel)}
                     </text>
                   )}
@@ -1735,13 +1782,14 @@ function SunburstChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]
               const end = start + ((pair.value / siblingTotal) * (range.end - range.start));
               return (
                 <path key={`${pair.source}-${pair.target}-${index}`} d={ringSegment(cx, cy, r2out, r2in, start, end)} fill={resolveSliceColor(style, palette, pair.target, index)} opacity={0.62}>
-                  <title>{pair.source} / {pair.target}: {formatNumber(pair.value, style)}</title>
+                  <title>{displaySeriesName(style, pair.source)} / {displaySeriesName(style, pair.target)}: {formatNumber(pair.value, style)}</title>
                 </path>
               );
             })}
             {inner.map((item, index) => {
               const sharePct = item.value / total;
-              const label = item.name === '' || item.name == null ? '(blank)' : String(item.name).slice(0, 16);
+              const displayName = displaySeriesName(style, item.name);
+              const label = displayName === '' || displayName == null ? '(blank)' : displayName.slice(0, 16);
               return (
                 <g key={`sb-legend-${item.name}`} transform={`translate(${areaW + 8} ${16 + index * 20})`} className="cursor-pointer" onClick={() => onSelect?.(item.name)}>
                   <rect width={11} height={11} rx={2} fill={resolveSliceColor(style, palette, item.name, index)} />
@@ -1797,6 +1845,7 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
             {cats.map((cat, catIndex) => {
               const d = times.map((time, timeIndex) => `${timeIndex === 0 ? 'M' : 'L'} ${x(timeIndex)} ${y(rankByTime.get(time)?.get(cat) ?? cats.length - 1)}`).join(' ');
               const catColor = resolveSliceColor(style, palette, cat, catIndex);
+              const displayName = displaySeriesName(style, cat);
               const override = dlc?.overrides?.[cat];
               const labelFontSize = override?.fontSize ?? dlc?.fontSize ?? 10;
               const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? catColor;
@@ -1806,11 +1855,11 @@ function RibbonChart({ pairs, palette, style, onSelect }: { pairs: PairValue[]; 
                 <g key={cat}>
                   <path d={d} fill="none" stroke={catColor} strokeWidth={ribbonW} strokeLinecap="round" strokeLinejoin="round" opacity={0.72}
                     onClick={() => onSelect?.(cat)} className="cursor-pointer">
-                    <title>{cat}</title>
+                    <title>{displayName}</title>
                   </path>
                   {labelsEnabled && (
                     <text x={x(times.length - 1) + 8} y={y(lastRank) + 4} fontSize={labelFontSize} fill={labelFontColor} style={{ pointerEvents: 'none' }}>
-                      {cat.slice(0, 18)}
+                      {displayName.slice(0, 18)}
                     </text>
                   )}
                 </g>
@@ -1873,16 +1922,17 @@ function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated
         const labelFontColor = override?.fontColor ?? dlc?.fontColor ?? 'rgb(var(--text-tertiary))';
         const fmt = override?.format ?? style.seriesFormats?.[event.label] ?? dlc?.format ?? style.numberFormat;
         const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+        const displayName = displaySeriesName(style, event.label);
         return (
           <g key={`${event.label}-${event.time}-${index}`} onClick={() => onSelect?.(dimension, event.label)} className="cursor-pointer">
             <line x1={x(event.time)} y1={axisY} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
             <circle cx={x(event.time)} cy={yy} r={r} fill={resolveSliceColor(style, palette, event.label, index)} opacity={0.82} />
             {labelsEnabled && index < 18 && (
               <text x={x(event.time)} y={yy + (yy < axisY ? -14 : 24)} fontSize={labelFontSize} textAnchor="middle" fill={labelFontColor}>
-                {event.label.slice(0, 14)}
+                {displayName.slice(0, 14)}
               </text>
             )}
-            <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, styleForLabel)}` : ''}</title>
+            <title>{displayName}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, styleForLabel)}` : ''}</title>
           </g>
         );
             })}
@@ -1909,6 +1959,7 @@ function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[
           const fontColor = override?.fontColor ?? resolveSliceColor(style, palette, item.name, index);
           const fmt = override?.format ?? style.seriesFormats?.[item.name] ?? dlc?.format ?? style.numberFormat;
           const styleForLabel = fmt ? { ...style, numberFormat: fmt } : style;
+          const displayName = displaySeriesName(style, item.name);
           return (
             <button key={item.name} onClick={() => onSelect?.(item.name)}
               className="font-semibold leading-none hover:opacity-80"
@@ -1916,8 +1967,8 @@ function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[
                 color: fontColor,
                 fontSize: typeof fontSize === 'number' ? `${fontSize}px` : fontSize,
               }}
-              title={`${item.name}: ${formatNumber(item.value, styleForLabel)}`}>
-              {item.name}
+              title={`${displayName}: ${formatNumber(item.value, styleForLabel)}`}>
+              {displayName}
             </button>
           );
         })}
@@ -1944,6 +1995,10 @@ export function AdvancedExploreChart({
   const title = style.chartTitle?.trim() || undefined;
   const titleFontSize = Math.max(style.chartTitleFontSize ?? style.fontSize ?? 12, 14);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
+  const effectiveColumnLabels = useMemo(
+    () => mergeColumnLabels(labelMap, style.tableColumnLabels),
+    [labelMap, style.tableColumnLabels],
+  );
   const roleConfig = model.roleConfig;
   const primaryMetric = roleConfig.metrics[0];
   const benchmarkMetric = roleConfig.benchmarkMetric;
@@ -2033,7 +2088,7 @@ export function AdvancedExploreChart({
           numberFormat={tableNumberFormat}
           decimalPlaces={style.decimalPlaces}
           currencySymbol={style.currencySymbol}
-          columnLabels={labelMap}
+          columnLabels={effectiveColumnLabels}
           columnFormats={formatMap}
           highlightRowKeys={matrixHighlightKeys}
           rowDimKey={matrixRowDimKey}
@@ -2067,7 +2122,7 @@ export function AdvancedExploreChart({
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
         <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} labelMap={labelMap} />
       ) : type === 'HEATMAP' ? (
-        <HeatmapChart pairs={pairs} style={style} palette={palette} onSelect={(source) => xField && emitField(xField, source)} />
+        <HeatmapChart pairs={pairs} metric={primaryMetric} style={style} palette={palette} onSelect={(source) => xField && emitField(xField, source)} />
       ) : type === 'MAP_REGION' ? (
         <RegionChart items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'BOXPLOT' ? (
