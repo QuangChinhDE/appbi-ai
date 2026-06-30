@@ -1936,7 +1936,34 @@ export default function DashboardDetailPage() {
 
     for (const filter of combinedFilters) {
       const key = getFilterKey(filter);
-      const column = columnsByKey.get(key);
+      // Prefer the chart-binding-derived column (accurate semantic type/label).
+      // Fall back to a column synthesized from the slicer/filter itself when the
+      // field isn't reachable from any chart binding — this guarantees a canvas
+      // slicer ALWAYS resolves a queryable column. Notably CALENDAR ROLE-PLAY
+      // fields (e.g. `…__order_date__date_dim.year`) live in a SYNTHETIC view
+      // that is NOT part of `model.views`, so they never entered
+      // `semanticColumnsResult.columns` → this lookup failed → the slicer's
+      // distinct query never fired → the dropdown hung on "Loading values…".
+      // Public links don't hit this because the BE guarantees slicer fields via
+      // `_augment_with_slicer_fields` + `_build_public_calendar_filter_fields`.
+      let column = columnsByKey.get(key);
+      if (
+        (!column?.datasetId || !column.semanticField)
+        && filter.datasetId
+        && (filter.semanticField || filter.fieldKey)
+      ) {
+        column = {
+          key,
+          name: filter.field,
+          label: filter.label ?? filter.field,
+          type: filter.type,
+          datasetId: filter.datasetId,
+          semanticField: filter.semanticField ?? filter.fieldKey,
+          chartCoverage: 0,
+          datasetChartCount: 0,
+          sharedAcrossDataset: false,
+        };
+      }
       if (!column?.datasetId || !column.semanticField) continue;
       // Fetch distinct values for categorical columns (dropdown/text) AND
       // for numeric/date columns used as a multi-select slicer
