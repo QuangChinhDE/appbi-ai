@@ -6271,7 +6271,9 @@ def get_table_profile(
     payload: Dict[str, Any] = {
         "table": {
             "id": db_table.id,
-            "name": db_table.name,
+            # DatasetTable has no `name` column — use the source/physical name,
+            # falling back to display_name (never null) so profiling never 500s.
+            "name": db_table.source_table_name or db_table.display_name,
             "display_name": db_table.display_name,
             "description": db_table.auto_description,
             "description_source": db_table.description_source,
@@ -6296,7 +6298,7 @@ def get_table_profile(
             except Exception as exc:
                 logger.warning(
                     "Column stats failed for %s.%s: %s",
-                    db_table.name, col["name"], exc,
+                    db_table.display_name, col["name"], exc,
                 )
                 stats[col["name"]] = {"error": str(exc)}
         payload["stats"] = stats
