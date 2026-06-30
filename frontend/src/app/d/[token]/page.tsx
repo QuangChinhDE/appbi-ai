@@ -1000,7 +1000,7 @@ export default function PublicDashboardPage() {
     ),
     [availableFilterColumns, dashboard?.available_filter_fields, filterRuntime.columnChartCount],
   );
-  const resolvedDistinctValues = usePublicFilterDistinctValues(
+  const { values: resolvedDistinctValues, status: resolvedDistinctStatus } = usePublicFilterDistinctValues(
     token,
     activeSessionToken,
     availableFilterColumns,
@@ -1180,6 +1180,7 @@ export default function PublicDashboardPage() {
         columns={availableFilterColumns}
         columnChartCount={availableFilterChartCount}
         distinctValues={resolvedDistinctValues}
+        distinctStatus={resolvedDistinctStatus}
         hasPendingChanges={hasPendingFilterChanges}
         onApply={handleApplyFilters}
         onReset={handleResetFilters}
