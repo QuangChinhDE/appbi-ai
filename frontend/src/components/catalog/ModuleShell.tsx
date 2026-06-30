@@ -25,28 +25,33 @@ export function ModuleShell({
   connected,
   children,
 }: {
-  /** kept for call-site compatibility; the active module is shown in the main sidebar */
   title?: string;
   icon?: React.ReactNode;
-  items: SubNavItem[];
-  active: string;
-  onSelect: (key: string) => void;
-  connected: boolean | null;
+  /** Optional sub-tabs. Omit for a single-console module (no tab bar). */
+  items?: SubNavItem[];
+  active?: string;
+  onSelect?: (key: string) => void;
+  connected?: boolean | null;
   children: React.ReactNode;
 }) {
+  const showTabs = !!items && items.length > 0;
   return (
     <div className="flex h-full flex-col px-4 pt-5 sm:px-6 xl:px-8">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Tabs
-          items={items.map((i) => ({ key: i.key, label: i.label, icon: i.icon }))}
-          value={active}
-          onChange={onSelect}
-          size="sm"
-        />
-        {connected === false && (
-          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">Catalog offline</span>
-        )}
-      </div>
+      {(showTabs || connected === false) && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {showTabs && (
+            <Tabs
+              items={items!.map((i) => ({ key: i.key, label: i.label, icon: i.icon }))}
+              value={active ?? items![0].key}
+              onChange={onSelect ?? (() => {})}
+              size="sm"
+            />
+          )}
+          {connected === false && (
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">Catalog offline</span>
+          )}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">{children}</div>
     </div>
   );
