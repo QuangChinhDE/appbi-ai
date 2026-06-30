@@ -79,7 +79,7 @@ async def _upsert_app_users(
     }
 
 
-@tool({"design", "delivery"})
+@tool({"discover", "deliver"})
 async def list_workboard_app_users(
     workboard_id: int,
     ctx: Context | None = None,
@@ -90,7 +90,7 @@ async def list_workboard_app_users(
     }
 
 
-@tool("delivery")
+@tool("deliver")
 async def upsert_workboard_app_users(
     workboard_id: int,
     users: list[dict[str, Any]],
@@ -121,7 +121,7 @@ async def upsert_workboard_app_users(
     return await _upsert_app_users(int(workboard_id), users)
 
 
-@tool("all")
+@tool("deliver")
 async def delete_workboard_app_user(
     workboard_id: int,
     app_user_id: int,

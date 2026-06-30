@@ -1,7 +1,10 @@
 """Bundle-first Workboard design, validation and apply tools."""
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-_]*$")
 
 from appbi_wb_core import Context, _drop_none, _request, _requires_confirmation, tool
 from appbi_wb_users import _upsert_app_users
@@ -191,6 +194,26 @@ def _validate_screen_columns(
         errors.append(f"screen '{screen_id}': table_id must point to the selected dataset.")
         return
     columns = _columns(tables[table_id])
+
+    # Per-screen RLS rules: a non-placeholder filter_column must exist on the
+    # screen's bound table (placeholders like {{app_user.x}} are values, not columns).
+    rls_rules = list(screen.get("rls") or [])
+    if isinstance(screen.get("rls_default"), dict):
+        rls_rules.append(screen["rls_default"])
+    for rule in rls_rules:
+        if not isinstance(rule, dict) or rule.get("unrestricted"):
+            continue
+        filter_column = rule.get("filter_column")
+        if isinstance(filter_column, str) and filter_column.strip():
+            _add_column_issues(
+                refs=[filter_column],
+                columns=columns,
+                allowed=set(),
+                location=f"screen '{screen_id}' rls[role={rule.get('role')}].filter_column",
+                errors=errors,
+                warnings=warnings,
+            )
+
     if kind == "form":
         spec = screen.get("form") if isinstance(screen.get("form"), dict) else {}
         for index, field in enumerate(spec.get("fields") or []):
@@ -395,6 +418,27 @@ async def _validate_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     elif nav_items is not None:
         errors.append("mini_app_nav.items must be a list of screen ids.")
 
+    for index, group in enumerate(layout.get("screen_groups") or []):
+        if not isinstance(group, dict):
+            errors.append(f"layout_json.screen_groups[{index}] must be an object.")
+            continue
+        if not str(group.get("id") or "").strip() or not str(group.get("label") or "").strip():
+            errors.append(f"layout_json.screen_groups[{index}] needs id and label.")
+        missing_group = [str(sid) for sid in group.get("screen_ids") or [] if str(sid) not in ids]
+        if missing_group:
+            errors.append(
+                f"screen_groups[{index}] '{group.get('id')}' references missing screen ids {missing_group}."
+            )
+
+    for index, auto in enumerate(layout.get("auto_number_columns") or []):
+        if not isinstance(auto, dict):
+            errors.append(f"layout_json.auto_number_columns[{index}] must be an object.")
+            continue
+        if not str(auto.get("column") or "").strip() or not str(auto.get("pattern") or "").strip():
+            errors.append(
+                f"auto_number_columns[{index}] needs both column and pattern (e.g. 'PO-{{YYYY}}{{MM}}-{{N:4}}')."
+            )
+
     placeholder_paths = _placeholder_paths(bundle)
     if placeholder_paths:
         errors.append(f"Replace template placeholders before apply: {placeholder_paths[:12]}.")
@@ -417,6 +461,35 @@ async def _validate_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
             warnings.append(
                 f"bundle.app_users[{index}] omits pin; this only works when username already exists."
             )
+
+    slug = str(workboard.get("slug") or "").strip()
+    if slug and not _SLUG_RE.match(slug):
+        errors.append(
+            "bundle.workboard.slug must match ^[a-z0-9][a-z0-9-_]*$ (lowercase letters, digits, - and _)."
+        )
+
+    publish_requested = bool(workboard.get("publish")) or isinstance(bundle.get("workspace"), dict)
+    owner_users = [
+        u for u in bundle.get("app_users") or []
+        if isinstance(u, dict) and str(u.get("role") or "").lower() == "owner"
+    ]
+    default_pin_owners = [u.get("username") for u in owner_users if str(u.get("pin") or "") == "123456"]
+    if publish_requested:
+        if not str(workboard.get("owner_pin") or "").strip():
+            warnings.append(
+                "publish/workspace requested but bundle.workboard.owner_pin is unset — the auto-created "
+                "owner account keeps the default PIN and publish will be skipped. Set a non-default owner_pin."
+            )
+        if default_pin_owners:
+            warnings.append(
+                f"owner-role app_users still on the default PIN '123456': {default_pin_owners}. "
+                "Give them a non-default pin or publish/share will be blocked."
+            )
+    if isinstance(bundle.get("workspace"), dict) and not slug:
+        warnings.append(
+            "Workspace delivery needs bundle.workboard.slug — the workspace menu keys by slug, "
+            "and apply will fail to link the workboard without it."
+        )
 
     return {
         "ok": not errors,
@@ -494,6 +567,42 @@ async def _merge_settings(
     return updated if isinstance(updated, dict) else workboard
 
 
+async def _ensure_owner_pin_rotated(
+    workboard_id: int, owner_pin: str | None
+) -> dict[str, Any]:
+    """Rotate any owner-role app user still on the factory-default PIN.
+
+    The backend blocks publish / share while an owner uses the default PIN.
+    When owner_pin is given, patch each default-PIN owner to it; report any
+    that remain (e.g. owner_pin omitted) so apply can skip publish cleanly.
+    """
+    users = await _request("GET", f"/workboards/{int(workboard_id)}/app-users")
+    rows = [u for u in users if isinstance(u, dict)] if isinstance(users, list) else []
+    default_owners = [
+        u for u in rows
+        if str(u.get("role") or "").lower() == "owner" and u.get("using_default_pin")
+    ]
+    rotated: list[str] = []
+    if owner_pin and default_owners:
+        for user in default_owners:
+            await _request(
+                "PATCH",
+                f"/workboards/{int(workboard_id)}/app-users/{int(user['id'])}",
+                json_body={"pin": str(owner_pin)},
+            )
+            rotated.append(str(user.get("username")))
+        users = await _request("GET", f"/workboards/{int(workboard_id)}/app-users")
+        rows = [u for u in users if isinstance(u, dict)] if isinstance(users, list) else []
+        default_owners = [
+            u for u in rows
+            if str(u.get("role") or "").lower() == "owner" and u.get("using_default_pin")
+        ]
+    return {
+        "rotated": rotated,
+        "still_default": [str(u.get("username")) for u in default_owners],
+    }
+
+
 def _bundle_preview(bundle: dict[str, Any], workboard_id: int | None) -> dict[str, Any]:
     wb = bundle["workboard"]
     screens = bundle.get("layout_json", {}).get("screens") or []
@@ -506,6 +615,7 @@ def _bundle_preview(bundle: dict[str, Any], workboard_id: int | None) -> dict[st
             "dataset_id": wb.get("dataset_id"),
             "primary_table_id": wb.get("primary_table_id"),
             "publish": bool(wb.get("publish")),
+            "owner_pin_set": bool(str(wb.get("owner_pin") or "").strip()),
         },
         "screens": [
             {"id": row.get("id"), "kind": row.get("kind"), "title": row.get("title")}
@@ -522,41 +632,145 @@ def _bundle_preview(bundle: dict[str, Any], workboard_id: int | None) -> dict[st
     }
 
 
-@tool("design")
+_SCREEN_SCHEMA_REFERENCE = {
+    "screen_common": {
+        "id": "stable unique string (<=64 chars)",
+        "kind": "form | table | doc | dashboard",
+        "title": "required, <=120 chars",
+        "icon": "optional",
+        "table_id": "required for form/table/doc (attached dataset table id); omit for dashboard",
+        "primary_key_columns": "e.g. ['id'] — needed for update/delete",
+        "visible_for_roles": "[] = all; else subset of app-user roles",
+        "show_in_nav": "default true",
+        "column_labels": "{db_column: friendly_label} for table/doc headers",
+        "rls": "[ScreenRlsRule] per-role row security (see rls_rule)",
+        "rls_default": "optional fallback ScreenRlsRule for roles not listed",
+        "<kind>": "the matching spec object (form/table/doc/dashboard)",
+    },
+    "form_spec": {
+        "fields": "[FormField]",
+        "submit_label": "optional button text",
+        "after_submit": "ScreenAction — auto-advance + carry columns after save",
+        "initial_values": "{column: default}; supports {{app_user.x}} / {{today}}",
+        "pages": "[{id>=1, title, description?, show_if?}] for multi-step forms; FormField.page places a field",
+        "sections": "[str] section headings within a page",
+        "ocr": "{enabled, provider, model, hint} photo-to-fields (BYOK api_key)",
+    },
+    "form_field": {
+        "column": "required db column",
+        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image",
+        "required/readonly/default/help_text/placeholder/label": "presentation",
+        "lookup": "LookupConfig when widget=lookup/select",
+        "show_if/required_if/readonly_if": "expressions over [other_column]",
+        "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message",
+        "max_file_kb": "widget=file/image only; hard BE ceiling 1024 KB (base64 into JSONB)",
+    },
+    "lookup_config": {
+        "kind": "static | dataset_table",
+        "values": "static: [{label, value}]",
+        "table_id/value_column/label_column": "dataset_table: read options from a related table",
+        "relationship_path": "[{table_id?, value_column, label_column?}] nested hops (order.cust_id -> customer.city_id -> city.name)",
+    },
+    "table_spec": {
+        "columns": "display order; may include computed/lookup column names",
+        "editable_columns": "SINGLE source of inline editability; subset of columns; never a computed/lookup name; [] = read-only grid",
+        "allow_add_row": "needs >=1 editable column",
+        "allow_delete_row": "independent toggle",
+        "filters": "[{column, kind: text|select|date_range|number_range, label?}]",
+        "page_size/default_sort_column/default_sort_direction": "paging + sort",
+        "computed_columns": "[{name, label?, formula (JS body), format?}] — JS sandbox; test with test_screen_js",
+        "lookup_columns": "[{name, from_table_id, match_column_local, match_column_remote, return_column, format?}] relational VLOOKUP",
+        "totals": "{column: sum|avg|min|max|count} footer aggregates",
+        "group_by": "[col] merge repeated cells (must NOT be in editable_columns)",
+        "column_groups": "multi-level header spanning contiguous columns",
+        "row_actions": "[ScreenAction] per-row navigate+carry",
+        "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
+        "required_columns/default_values/column_metadata/empty_state_message": "extras",
+    },
+    "doc_spec": {
+        "page": "{size: A4|A3|Letter, orientation, margin_mm}",
+        "blocks": "ordered: header | kv_grid | data_table | text | spacer | signature | footer",
+        "data_table_block": {
+            "type": "data_table",
+            "source": "'primary' or 'lookup:<table_id>'",
+            "columns": "[col]",
+            "allow_export_excel": "Excel export button",
+            "pivot/unpivot/column_groups/totals": "report-table shaping",
+            "sync_triggers": "[{id, label, webhook_ids:[bundle webhook id], run_mode, visible_for_roles}]",
+        },
+    },
+    "dashboard_spec": {
+        "managed": "dashboard_id (+ role_filter_mapping[{datasetId, semanticField, operator}] + static_filters) -> per-role public links auto-provisioned",
+        "manual": "share_token of an existing dashboard public/embed link",
+        "options": "height_px, password",
+    },
+    "rls_rule": {
+        "role": "owner|admin|user (owner bypasses RLS)",
+        "unrestricted": "true = role sees all rows",
+        "filter_column / filter_value": "row filter; value supports {{app_user.username}} / {{app_user.<col>}}",
+        "can_create/can_update/can_delete": "per-role write gates",
+        "writable_columns/readonly_columns": "restrict editable fields per role",
+    },
+    "layout_top_level": {
+        "screens": "[Screen]",
+        "mini_app_nav": "{desktop_kind: sidebar|top_tabs, mobile_kind: bottom_nav|drawer, items: [screen_id]}",
+        "branding": "{app_name, theme, ...}",
+        "audit": "AuditConfig (created/updated tracking columns)",
+        "auto_number_columns": "[{column, pattern 'PO-{YYYY}{MM}{DD}-{N:4}', reset, padding, start_at}]",
+        "screen_groups": "[{id, label, icon?, screen_ids:[id], visible_for_roles}] nav grouping (UI: Workspace)",
+    },
+    "screen_action": {
+        "id/label": "required",
+        "style": "primary|secondary|ghost|danger",
+        "go_to_screen": "destination screen id",
+        "carry": "[col] copied into next screen's shared_context (prefills matching fields)",
+        "confirm_message/visible_for_roles": "optional",
+    },
+}
+
+
+@tool("build")
 async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, Any]:
-    """Return the compact bundle contract and demo-oriented screen patterns."""
+    """Return the full Workboard bundle contract + current screen schema reference."""
     return {
         "workflow": [
-            "inspect_dataset_for_workboard(dataset_id) and use dataset table ids/columns",
-            "author one bundle with layout_json, app_users, webhooks and optional workspace",
-            "validate_workboard_bundle(bundle)",
-            "apply_workboard_bundle(bundle) once after user confirmation",
-            "audit_workboard and run_workboard_runtime_smoke_test",
+            "Stage 0-2 first if no dataset: create/inspect source -> create dataset + tables -> get_table_profile -> generate_dataset_model + relationships",
+            "inspect_dataset_for_workboard(dataset_id): use the table ids + columns it returns (never source-table ids)",
+            "author ONE bundle: workboard + layout_json (screens) + app_users + webhooks + optional workspace",
+            "test_screen_js for any computed column formula",
+            "validate_workboard_bundle(bundle) and fix every error",
+            "apply_workboard_bundle(bundle, user_confirmed=true)",
+            "audit_workboard, then create_workboard_public_link and/or workspace, then run_workboard_runtime_smoke_test",
         ],
         "bundle_contract": {
             "workboard": {
                 "name": "Required",
-                "slug": "Recommended for workspace delivery",
+                "slug": "lowercase [a-z0-9-_]; REQUIRED when delivering via a workspace (menus key by slug)",
                 "dataset_id": "Required existing AppBI dataset id",
-                "primary_table_id": "Recommended anchor table id from dataset",
-                "primary_key_columns": "Create-time hint such as ['id']",
-                "optimistic_lock_column": "Optional update lock column",
-                "publish": "true when demo/runtime should be visible",
-                "settings": "Optional non-webhook Workboard settings merge",
+                "primary_table_id": "Anchor table id; auto-picked from first physical table if omitted",
+                "primary_key_columns": "e.g. ['id']",
+                "optimistic_lock_column": "Optional concurrent-edit lock column",
+                "publish": "true so the runtime is visible",
+                "owner_pin": "REQUIRED when publish=true — a non-default PIN; apply rotates the auto-created owner_<id> account off the factory default so publish/share is allowed",
+                "settings": "Optional non-webhook settings merge",
             },
-            "layout_json": "Backend LayoutJson: screens, mini_app_nav, branding, audit, auto_number_columns",
-            "app_users": "Optional upsert list. New users need username+pin. Include role/context/active.",
-            "webhooks": "Optional full webhook set with stable ids for doc sync triggers.",
-            "workspace": "Optional create or update config with id/workspace_id or name+slug and menu_item.",
+            "layout_json": "Backend LayoutJson — see screen_schema_reference for every field.",
+            "app_users": "Upsert list. New users need username+pin. roles: owner/admin/user. active=false for a disabled demo user.",
+            "webhooks": "[{id, name, url, screen_id (a doc screen), is_active}] — doc sync_triggers reference these ids.",
+            "workspace": "Optional: {id|workspace_id} to update, or {name, slug, access_mode, menu_item:{label}} to create.",
         },
         "screen_rules": [
-            "Use current kinds only: form, table, doc, dashboard.",
-            "A non-dashboard screen binds table_id to an attached dataset table.",
-            "Table screens combine readonly and editable behavior via editable_columns.",
-            "Doc data_table sync_triggers reference top-level webhook ids and webhooks bind screen_id to that doc.",
-            "For a demo excluding Dashboard, cover form entry, transaction table, doc/report sync, and master tables.",
-            "Use owner/admin/user roles plus an inactive user when app-user behavior must be demoed.",
+            "A Workboard's dataset must be backed by PostgreSQL, MySQL, or Google Sheets (mini-apps write back). Manual/file sources work for datasets/dashboards but are rejected as a workboard source.",
+            "publish=true (or a workspace) needs workboard.owner_pin set to a non-default PIN, and no owner-role app_user may keep PIN '123456'.",
+            "Kinds: form, table, doc, dashboard. A table screen's spec key is `table` (legacy list/grid auto-heal but never author them).",
+            "Bind table_id to an ATTACHED dataset table id; dashboard screens have no table_id.",
+            "Schemas are strict (extra keys 422). Use only the fields in screen_schema_reference.",
+            "editable_columns is the only inline-edit switch; never list a computed/lookup column there.",
+            "Doc data_table sync_triggers[].webhook_ids must match bundle.webhooks ids; webhooks bind to a doc screen_id.",
+            "RLS/visible_for_roles roles must match app_user roles; owner bypasses RLS but keep user/admin explicit.",
+            "Validate computed-column JS with test_screen_js before apply.",
         ],
+        "screen_schema_reference": _SCREEN_SCHEMA_REFERENCE,
         "starter_bundle": {
             "workboard": {
                 "name": "Inventory Demo",
@@ -565,6 +779,7 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
                 "primary_table_id": 101,
                 "primary_key_columns": ["id"],
                 "publish": True,
+                "owner_pin": "246810",
             },
             "layout_json": {
                 "branding": {"app_name": "Inventory Demo", "theme": "light"},
@@ -633,7 +848,7 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
                 ],
             },
             "app_users": [
-                {"username": "demo_owner", "pin": "123456", "role": "owner", "active": True},
+                {"username": "demo_owner", "pin": "246810", "role": "owner", "active": True},
                 {"username": "demo_admin", "pin": "123456", "role": "admin", "active": True},
                 {"username": "demo_user", "pin": "123456", "role": "user", "active": True},
                 {"username": "demo_disabled", "pin": "123456", "role": "user", "active": False},
@@ -653,7 +868,7 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
     }
 
 
-@tool("design")
+@tool("build")
 async def validate_workboard_bundle(
     bundle: dict[str, Any],
     ctx: Context | None = None,
@@ -662,7 +877,7 @@ async def validate_workboard_bundle(
     return await _validate_bundle(bundle)
 
 
-@tool({"design", "delivery"})
+@tool({"build", "deliver"})
 async def apply_workboard_bundle(
     bundle: dict[str, Any],
     workboard_id: int | None = None,
@@ -697,25 +912,47 @@ async def apply_workboard_bundle(
     if not isinstance(workboard, dict):
         raise RuntimeError("Workboard API returned a non-object response.")
 
+    wb_id = int(workboard["id"])
     with_settings = await _merge_settings(workboard, bundle)
     if with_settings is not None:
         workboard = with_settings
-    if bool(bundle["workboard"].get("publish")):
-        workboard = await _request("POST", f"/workboards/{int(workboard['id'])}/publish")
 
+    # Upsert app users BEFORE publish — a publishable/shareable workboard may
+    # not leave any owner-role account on the factory-default PIN.
     user_result = None
     if bundle.get("app_users"):
-        user_result = await _upsert_app_users(int(workboard["id"]), bundle["app_users"])
+        user_result = await _upsert_app_users(wb_id, bundle["app_users"])
+
+    # The backend auto-creates an `owner_<id>` account with the default PIN.
+    # Rotate every still-default owner to workboard.owner_pin so publish /
+    # workspace / public-link gates pass.
+    owner_pin = bundle["workboard"].get("owner_pin")
+    owner_pin_state = await _ensure_owner_pin_rotated(wb_id, owner_pin)
+
+    publish_requested = bool(bundle["workboard"].get("publish"))
+    publish_blocked = None
+    if publish_requested:
+        if owner_pin_state["still_default"]:
+            publish_blocked = (
+                "Publish skipped: owner account(s) "
+                f"{owner_pin_state['still_default']} still use the default PIN. "
+                "Set bundle.workboard.owner_pin (a non-default PIN) and re-apply, "
+                "or rotate the owner PIN, then publish."
+            )
+        else:
+            workboard = await _request("POST", f"/workboards/{wb_id}/publish")
 
     workspace_result = None
-    if isinstance(bundle.get("workspace"), dict):
+    if isinstance(bundle.get("workspace"), dict) and not publish_blocked:
         workspace_result = await _deliver_workspace(workboard, bundle["workspace"])
 
-    audit = await _request("GET", f"/workboards/{int(workboard['id'])}/audit")
+    audit = await _request("GET", f"/workboards/{wb_id}/audit")
     return {
         "status": operation,
         "workboard": workboard,
         "app_users": user_result,
+        "owner_pin": owner_pin_state,
+        "publish_blocked": publish_blocked,
         "workspace": workspace_result,
         "audit": audit,
         "validation_warnings": validation["warnings"],

@@ -7,7 +7,6 @@ from appbi_wb_core import (
     BackendError,
     Context,
     _clamp_int,
-    _query_path,
     _request,
     tool,
 )
@@ -111,38 +110,7 @@ async def _profile_table(
         )
 
 
-@tool("design")
-async def list_datasets(
-    skip: int = 0,
-    limit: int = 50,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """List datasets visible to the PAT before choosing a Workboard source."""
-    rows = _as_items(
-        await _request(
-            "GET",
-            _query_path("/datasets/", {"skip": skip, "limit": limit}),
-        ),
-        "items",
-        "datasets",
-    )
-    return {
-        "items": [
-            {
-                "id": row.get("id"),
-                "name": row.get("name"),
-                "description": row.get("description"),
-                "table_count": len(row.get("tables") or []),
-                "updated_at": row.get("updated_at"),
-            }
-            for row in rows
-        ],
-        "skip": skip,
-        "limit": limit,
-    }
-
-
-@tool("design")
+@tool({"discover", "build"})
 async def inspect_dataset_for_workboard(
     dataset_id: int,
     table_ids: list[int] | None = None,
@@ -191,13 +159,13 @@ async def inspect_dataset_for_workboard(
     }
 
 
-@tool({"design", "delivery"})
+@tool("discover")
 async def list_workboards(ctx: Context | None = None) -> dict[str, Any]:
     """List Workboards visible to the PAT so a builder can reuse or update."""
     return {"items": await _request("GET", "/workboards/")}
 
 
-@tool({"design", "delivery"})
+@tool("discover")
 async def get_workboard(
     workboard_id: int,
     ctx: Context | None = None,
@@ -206,7 +174,7 @@ async def get_workboard(
     return await _request("GET", f"/workboards/{int(workboard_id)}")
 
 
-@tool({"design", "delivery"})
+@tool("discover")
 async def audit_workboard(
     workboard_id: int,
     ctx: Context | None = None,
@@ -215,13 +183,13 @@ async def audit_workboard(
     return await _request("GET", f"/workboards/{int(workboard_id)}/audit")
 
 
-@tool({"design", "delivery"})
+@tool("discover")
 async def list_workspaces(ctx: Context | None = None) -> dict[str, Any]:
     """List public Workboard workspaces available to this PAT."""
     return {"items": await _request("GET", "/workspaces/")}
 
 
-@tool({"design", "delivery"})
+@tool("discover")
 async def get_workspace(
     workspace_id: int,
     ctx: Context | None = None,

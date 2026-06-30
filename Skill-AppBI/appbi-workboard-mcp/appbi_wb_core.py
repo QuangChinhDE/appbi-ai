@@ -64,44 +64,78 @@ logger = logging.getLogger("appbi_workboard_mcp")
 
 
 _MCP_INSTRUCTIONS = """
-You are the AppBI Workboard Builder. Build a real mini-app from an existing
-AppBI dataset. A production-grade result is one coherent Workboard bundle:
-layout_json screens + app users + doc webhooks + optional public workspace.
+You are the AppBI Workboard Builder. You take a user from raw data all the way
+to a working, shareable mini-app — the full journey, in one tool:
+
+    Source  ->  Dataset  ->  Data Model  ->  Workboard  ->  Share
+
+A production-grade result is one coherent Workboard bundle (layout_json screens
++ app users + doc webhooks + optional public workspace), built on a clean
+dataset and a sane relationship model.
 
 ## Canonical workflow
 
-1. Read first:
-   list_datasets -> inspect_dataset_for_workboard(dataset_id)
-   list_workboards -> list_workspaces when reuse is possible.
-2. Design once:
-   get_workboard_design_guide() for the current bundle contract and screen
-   examples. Build a bundle with only the screens the user asked for.
-3. Dry-run:
-   validate_workboard_bundle(bundle). Fix every error and consider warnings.
-4. Confirm once:
-   apply_workboard_bundle(bundle, user_confirmed=true). This can create or
-   update a workboard, publish it, upsert app users, store webhook configs,
-   and link/create a workspace.
-5. Verify:
-   audit_workboard and run_workboard_runtime_smoke_test as a real app user.
+STAGE 0 — Source (only if no dataset exists yet)
+   list_data_sources -> reuse a connected source if one fits.
+   To inspect: inspect_source_schema / list_gsheet_tabs + read_gsheet_rows.
+   To create: get_source_setup_guide(); for Google Sheets run
+   check_google_data_access() first, then create_google_sheets_source; for a
+   spreadsheet/CSV on disk use create_manual_source_from_file; for pasted data
+   use create_manual_source.
+
+STAGE 1 — Dataset
+   create_dataset -> add_table_to_dataset for each table you need ->
+   get_table_profile(dataset_id, table_id) on every new table (this also
+   populates columns_cache, which downstream tools rely on). Add a date table
+   via update_dataset settings.calendar_dimension, never add_table_to_dataset.
+   Optionally write update_table_description / update_dataset_dictionary.
+
+STAGE 2 — Data Model (relationships)
+   generate_dataset_model for a heuristic starter, then refine with
+   suggest_dataset_model_join -> add_dataset_model_join. For mini-app lookups
+   across tables, suggest_workboard_relationships gives the exact join hints a
+   form/table lookup needs. A clean model powers lookups, RLS, and any embedded
+   dashboard screen.
+
+STAGE 3 — Workboard
+   get_workboard_design_guide() for the full current screen contract. Author
+   ONE bundle with only the screens the user asked for. Validate JS computed
+   columns up front with test_screen_js. validate_workboard_bundle(bundle) and
+   fix every error. apply_workboard_bundle(bundle, user_confirmed=true) creates
+   /updates the workboard, publishes, upserts app users, stores webhooks, and
+   links a workspace — all in one confirmation.
+
+STAGE 4 — Share & verify
+   audit_workboard for broken references. For a public form/view, use
+   create_workboard_public_link. For a full app behind app-user login, deliver
+   a workspace. Then run_workboard_runtime_smoke_test as a real app user.
 
 ## Non-negotiable rules
 
-- Start from dataset tables already attached to AppBI. Source ingestion and
-  dashboard authoring stay in the dashboard MCP or AppBI UI.
-- Use the table ids from inspect_dataset_for_workboard, not source table ids.
-- Use current screen kinds only: form, table, doc, dashboard. For a table
-  screen the spec key is `table`, never legacy `list` or `grid`.
+- Bind every non-dashboard screen's table_id to an ATTACHED dataset table id
+  (from inspect_dataset_for_workboard / list_dataset_tables), never a source
+  table id.
+- Google Sheets source_table_name is the SHEET/TAB name only (e.g.
+  "DM_SanPham"), never "<spreadsheet_id>.DM_SanPham".
+- Use current screen kinds only: form, table, doc, dashboard. A table screen's
+  spec key is `table`, never legacy `list` or `grid`.
 - Row actions and form after_submit are ScreenAction objects, never strings.
-- Doc webhook sync buttons reference webhook ids declared in bundle.webhooks.
-  Webhooks belong to doc screens; dashboard screens do not host sync triggers.
-- role strings in visible_for_roles and RLS must match app user roles. Owner
-  bypass exists, but user/admin rules should still be explicit.
-- Every write tool previews a plan until user_confirmed=true.
+- Doc data_table sync_triggers reference webhook ids declared in
+  bundle.webhooks; webhooks bind to a doc screen_id. Dashboard screens never
+  host sync triggers.
+- visible_for_roles and RLS roles must match app-user roles (owner/admin/user).
+  Owner bypasses RLS, but user/admin rules should still be explicit.
+- Pass workboard.slug explicitly when a workspace will deliver the app — the
+  backend does not auto-generate one and workspace menus key by slug.
+- Every mutating tool previews a plan and makes NO change until
+  user_confirmed=true. Show the plan, get approval, then re-call confirmed.
 """.strip()
 
 
-_VALID_PROFILES = {"design", "delivery", "all"}
+# Stage profiles let a power user shrink the tool surface; the default is
+# "all" so a tester needs zero configuration. `discover` is read-only.
+_ALL_STAGES = ("discover", "source", "dataset", "model", "build", "deliver")
+_VALID_PROFILES = {*_ALL_STAGES, "all"}
 
 
 def _active_profiles() -> set[str]:
@@ -234,6 +268,53 @@ async def _request(
         return response.text
 
 
+async def _multipart_request(
+    method: str,
+    path: str,
+    *,
+    files: dict[str, Any],
+    data: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
+) -> Any:
+    """Call the AppBI API with a multipart/form-data body (file upload).
+
+    `files` maps a field name to either a file-like/bytes payload or an
+    httpx tuple (filename, content, content_type). Used by the manual
+    file-import source path.
+    """
+    timeout = float(timeout_seconds or APPBI_TIMEOUT_SECONDS)
+    headers = {
+        "Authorization": f"Bearer {APPBI_PAT}",
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        verify=APPBI_VERIFY_TLS,
+        follow_redirects=True,
+    ) as client:
+        response = await client.request(
+            method.upper(),
+            f"{APPBI_API_BASE_URL}{path}",
+            headers=headers,
+            files=files,
+            data=data or None,
+        )
+    if response.status_code >= 400:
+        detail: Any = response.text
+        try:
+            payload = response.json()
+            detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
+        except ValueError:
+            pass
+        raise BackendError(method, path, response.status_code, detail)
+    if not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
+
+
 def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -269,7 +350,7 @@ def _confirmation_required_for_destructive(
     )
 
 
-@tool({"design", "delivery"})
+@tool(_ALL_STAGES)
 async def health_check(ctx: Context | None = None) -> dict[str, Any]:
     """Verify the MCP can reach AppBI with the configured PAT."""
     return {
@@ -287,10 +368,12 @@ __all__ = [
     "APPBI_VERIFY_TLS",
     "BackendError",
     "Context",
+    "_ALL_STAGES",
     "_backend_error_envelope",
     "_clamp_int",
     "_confirmation_required_for_destructive",
     "_drop_none",
+    "_multipart_request",
     "_query_path",
     "_request",
     "_requires_confirmation",
