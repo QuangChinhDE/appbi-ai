@@ -2491,8 +2491,15 @@ def get_distinct_field_values(
     field: str,
     limit: int = 200,
     filters: list[dict] | None = None,
+    explain: bool = False,
 ) -> dict:
     """Return distinct values + dropped-filter diagnostics.
+
+    When ``explain`` is set (admin debug only), the response also carries a
+    ``debug_sql`` list with every SQL string generated for this request —
+    captured before execution so it is present even when the warehouse
+    rejects the query. This is the objective way to see what the cascade
+    actually emitted (e.g. whether a subquery ended up correlated).
 
     Shape: ``{"values": [...], "dropped_filters": [{...}]}``. Returning a
     dict (instead of just ``list[str]``) is the Phase-15.94 fix for the
@@ -2596,7 +2603,14 @@ def get_distinct_field_values(
         "filters": normalize_filter_conditions(filters or []),
     }
 
+    # When explain=True (admin debug) collect every generated distinct SQL so
+    # the caller can inspect exactly what was sent to the warehouse. Captured
+    # before execution, so it survives a warehouse rejection.
+    captured_sqls: list[str] = []
+
     def execute_distinct_sql(datasource_obj, table_identifier: str, sql: str) -> list[str]:
+        if explain:
+            captured_sqls.append(sql)
         ds_type = datasource_obj.type if isinstance(datasource_obj.type, str) else datasource_obj.type.value
         cached = query_cache.get_cached(
             datasource_obj.id,
@@ -3229,7 +3243,7 @@ def get_distinct_field_values(
         source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
         table_identifier = f"semantic_view:{view_name}:{source_hash}"
         values = _safe_execute("semantic_view", lambda: execute_distinct_sql(datasource_for_view, table_identifier, sql))
-        return {"values": values, "dropped_filters": dropped}
+        return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
     db_table = db.query(DatasetTable).filter(
         DatasetTable.id == view.dataset_table_id,
@@ -3261,7 +3275,7 @@ def get_distinct_field_values(
         sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped)
         table_identifier = f"calendar_view:{dataset_id}:{view_name}"
         values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_datasource, table_identifier, sql))
-        return {"values": values, "dropped_filters": dropped}
+        return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
     live_table = db_table
     datasource = (
@@ -3291,7 +3305,7 @@ def get_distinct_field_values(
     if datasource is None:
         raise ValueError("Data source not found")
     values = _safe_execute("live_table", fetch_live_values)
-    return {"values": values, "dropped_filters": dropped}
+    return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
 
 # ===========================================================================

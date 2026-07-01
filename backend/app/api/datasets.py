@@ -4291,6 +4291,10 @@ def get_dataset_model_distinct_values(
         default=None,
         description="JSON-encoded list of dashboard filter objects used to cascade distinct values.",
     ),
+    explain: bool = Query(
+        default=False,
+        description="Debug: also return the generated SQL string(s) as debug_sql (view access required, same as the rest of the response).",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -4314,12 +4318,17 @@ def get_dataset_model_distinct_values(
             raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
 
     try:
-        result = get_distinct_field_values(db, dataset_id, field, limit=limit, filters=filter_context)
-        return {
+        result = get_distinct_field_values(
+            db, dataset_id, field, limit=limit, filters=filter_context, explain=explain
+        )
+        payload = {
             "field": field,
             "values": result.get("values", []),
             "dropped_filters": result.get("dropped_filters", []),
         }
+        if explain and "debug_sql" in result:
+            payload["debug_sql"] = result["debug_sql"]
+        return payload
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
