@@ -30,6 +30,12 @@ from app.models.anomaly import (
     MonitoredMetric,
     AnomalyAlert,
 )
+from app.models.observability import (
+    ObservabilityMonitor,
+    ObservabilityCheck,
+    ObservabilityIncident,
+    ObservabilityAlertChannel,
+)
 from app.models.ai_feedback import AIFeedback
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
@@ -76,6 +82,10 @@ __all__ = [
     "SyncJob",
     "MonitoredMetric",
     "AnomalyAlert",
+    "ObservabilityMonitor",
+    "ObservabilityCheck",
+    "ObservabilityIncident",
+    "ObservabilityAlertChannel",
     "AIFeedback",
     "PersonalAccessToken",
     "RevokedToken",
