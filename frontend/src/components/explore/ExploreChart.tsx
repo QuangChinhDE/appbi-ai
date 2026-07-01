@@ -2782,7 +2782,10 @@ function ExploreChartInner({
                     fillOpacity={hlScatterLabels ? (hlScatterLabels.has(String(point?.label)) ? 1 : HIGHLIGHT_DIM_OPACITY) : 1}
                   />
                 ))}
-                {scatterLabelField && (() => {
+                {scatterLabelField && sortedScatterPoints.length <= 16 && (() => {
+                  // Declutter: a per-point label on every mark overlaps into an
+                  // unreadable blob once the scatter is dense — suppress past a
+                  // small count and rely on the hover tooltip (Power BI parity).
                   // Phase-15.86 — when DataLabels enabled, route through
                   // the shared dataLabelContent renderer so font/colour/bg
                   // / position / rotation work the same as BAR/LINE.
