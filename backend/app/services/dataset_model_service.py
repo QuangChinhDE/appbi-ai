@@ -2975,6 +2975,37 @@ def get_distinct_field_values(
             if not predicate:
                 return None, "no_join_path"
 
+            # De-correlate the first-hop correlation into a NON-correlated IN
+            # subquery. The correlated form
+            #   EXISTS (SELECT 1 FROM <body> WHERE base.x = d0.y AND <leaf>)
+            # is REJECTED by BigQuery ("Correlated subqueries that reference
+            # other tables are not supported unless they can be de-correlated …
+            # into an efficient JOIN") whenever the inner body references another
+            # table — exactly the cross-entity cascade a slicer dropdown builds
+            # (e.g. an owner-dim slicer cascaded by a date filter that lives on
+            # the Date view, reached via a fact). Postgres ACCEPTS the correlated
+            # form, which is why this only ever surfaced on BigQuery datasets and
+            # local PG fixtures never caught it. Rewriting it as
+            #   base.x IN (SELECT d0.y FROM <body> WHERE <leaf> AND d0.y IS NOT NULL)
+            # drops the outer correlation (BQ-valid) and is an identical semi-join
+            # on every dialect. Only the clean single-equality first hop is
+            # de-correlated; a composite / non-splittable correlation falls back
+            # to the correlated EXISTS (rare; still fine on PG/MySQL).
+            corr = correlation_predicates[0] if len(correlation_predicates) == 1 else None
+            if corr and corr.count(" = ") == 1:
+                lhs, rhs = (s.strip() for s in corr.split(" = ", 1))
+                base_pref = f"{base_alias}."
+                if (base_pref in lhs) != (base_pref in rhs):
+                    outer_expr = lhs if base_pref in lhs else rhs
+                    inner_expr = rhs if base_pref in lhs else lhs
+                    if base_pref not in inner_expr:
+                        in_body = [
+                            f"SELECT {inner_expr}",
+                            *sql_pieces,
+                            f"WHERE {predicate} AND {inner_expr} IS NOT NULL",
+                        ]
+                        return f"{outer_expr} IN (" + " ".join(in_body) + ")", None
+
             where_parts_inner = [*correlation_predicates, predicate]
             body_parts = [
                 "SELECT 1",

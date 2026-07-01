@@ -565,7 +565,6 @@ def _build_public_chart_filters(
     viewer_filters: list[dict] | None,
     *,
     context_for_log: str = "public_chart",
-    security_only: bool = False,
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
     public endpoint that fetches chart data.
@@ -621,20 +620,13 @@ def _build_public_chart_filters(
     visible_filters, authoritative_filters = split_dashboard_filters_by_public_mode(
         list(getattr(dash, "filters_config", None) or [])
     )
-    # `security_only` (slicer-dropdown no-trap fallback) — keep ONLY the
-    # authoritative/locked layers (author-locked dashboard filters, link
-    # locked/hidden-with-value) and drop the SOFT layers (visible page
-    # filters + dashboard/viewer slicers). A slicer is an interactive
-    # control: soft filters must never cascade it into an empty,
-    # unrecoverable dropdown, but locked/security constraints MUST still
-    # bound it so it can't leak values outside the viewer's allowed scope.
     merge_diagnostics: list[dict] = []
     merged = merge_layered_filters(
         make_public_layers(
-            dashboard_filters=[] if security_only else visible_filters,
+            dashboard_filters=visible_filters,
             dashboard_filters_locked=authoritative_filters,
-            dashboard_slicers=[] if security_only else list(getattr(dash, "slicers_config", None) or []),
-            viewer_slicers=[] if security_only else list(viewer_filters or []),
+            dashboard_slicers=list(getattr(dash, "slicers_config", None) or []),
+            viewer_slicers=list(viewer_filters or []),
             viewer_filters=[],  # mini-pane overrides — wired in Phase F
             link_locked=locked_link,
             link_hidden=hidden_link,
@@ -2408,37 +2400,14 @@ def get_public_filter_distinct_values(
             filters=combined_filters,
         )
         values = result.get("values", [])
-        # No-trap fallback: a slicer is an interactive control and must always
-        # offer its selectable domain. The public path injects the dashboard's
-        # soft page-filters + sibling slicers into the cascade (the builder
-        # does not) — so a date range / sibling pick with no overlapping data
-        # would empty the dropdown and strand the viewer (the exact "Public
-        # Link filter shows no values" report). When the full cascade comes
-        # back empty, retry with ONLY the authoritative/locked (security)
-        # filters: the control stays usable and matches the builder, while a
-        # link/author lock can still legitimately bound it (no value leak).
-        if not values:
-            security_filters = _build_public_chart_filters(
-                dash,
-                public_filters,
-                [],
-                context_for_log=f"distinct_values_fallback:{token}:{dataset_id}:{field}",
-                security_only=True,
-            )
-            if len(security_filters) < len(combined_filters):
-                try:
-                    fallback = get_distinct_field_values(
-                        db,
-                        dataset_id,
-                        field,
-                        limit=limit,
-                        filters=security_filters,
-                    )
-                    if fallback.get("values"):
-                        result = fallback
-                        values = fallback.get("values", [])
-                except Exception:  # noqa: BLE001 — fallback is best-effort
-                    pass
+        # PBI-parity (core): a slicer's dropdown cascades STRICTLY by the other
+        # active filters (page-filters + sibling slicers), same as the builder.
+        # When the cascade legitimately yields no rows we return the EMPTY list
+        # and let the FE surface a clear "No values match the active filter"
+        # message (via distinctStatus) — we do NOT relax the cascade and show
+        # the full domain. Showing "all" on an empty cascade violates the core
+        # filter contract (`applyScopeBound`: "never escape, never show 'all'")
+        # and reads to the DA as "the slicer isn't limited by my other filters".
         # If this field is under a per-link 'limit' allow-list, the slicer
         # stays interactive but its dropdown must offer ONLY the allowed
         # subset. get_distinct_field_values self-strips the dropdown's own
