@@ -2869,7 +2869,7 @@ def get_distinct_field_values(
             next_exists_index[0] += 1
             return alias
 
-        def _emit_exists_for_single_path(path, name: str) -> tuple[str | None, str | None]:
+        def _emit_exists_for_single_path(path, name: str) -> tuple[tuple | None, str | None]:
             """Build ONE ``EXISTS (SELECT 1 FROM ...)`` for a single resolved
             join path: the inner JOIN chain mirrors the path and the first hop
             correlates back to the outer base_alias.
@@ -3018,7 +3018,12 @@ def get_distinct_field_values(
                             *sql_pieces,
                             f"WHERE {predicate} AND {inner_expr} IS NOT NULL",
                         ]
-                        return f"{outer_expr} IN (" + " ".join(in_body) + ")", None
+                        # Return STRUCTURED (tag, expr, inner-select) rather
+                        # than a finished string so the multi-path combiner
+                        # can UNION same-key subqueries into ONE top-level IN.
+                        # An IN nested inside OR is rejected by BigQuery
+                        # ("… into an efficient JOIN"); see _build_exists_for_path.
+                        return ("in", outer_expr, " ".join(in_body)), None
 
             where_parts_inner = [*correlation_predicates, predicate]
             body_parts = [
@@ -3026,7 +3031,10 @@ def get_distinct_field_values(
                 *sql_pieces,
                 f"WHERE {' AND '.join(where_parts_inner)}",
             ]
-            return "EXISTS (" + " ".join(body_parts) + ")", None
+            # Composite / non-splittable correlation — keep the correlated
+            # EXISTS (fine on PG/MySQL; rare on BQ). Tagged "raw" so the
+            # combiner OR-joins it verbatim.
+            return ("raw", "EXISTS (" + " ".join(body_parts) + ")"), None
 
         def _build_exists_for_path(node: str, name: str) -> tuple[str | None, str | None]:
             """Cascade a filter on ``node.name`` into the dropdown's base view.
@@ -3059,7 +3067,7 @@ def get_distinct_field_values(
             if not candidate_paths:
                 return None, "no_join_path"
 
-            clauses: list[str] = []
+            clauses: list[tuple] = []
             last_reason: str | None = None
             for cand in candidate_paths:
                 clause, reason = _emit_exists_for_single_path(cand, name)
@@ -3069,9 +3077,43 @@ def get_distinct_field_values(
                     last_reason = reason
             if not clauses:
                 return None, last_reason or "no_join_path"
-            if len(clauses) == 1:
-                return clauses[0], None
-            return "(" + " OR ".join(clauses) + ")", None
+
+            # Combine the per-path clauses. CRITICAL for BigQuery: an
+            # ``x IN (SELECT …)`` subquery is only de-correlated (turned into an
+            # efficient semi-JOIN) when it is a TOP-LEVEL conjunct. Nesting it
+            # inside an OR — ``(x IN (s1) OR x IN (s2))`` — makes BigQuery reject
+            # the whole query: "Correlated subqueries that reference other
+            # tables are not supported unless they can be de-correlated … into
+            # an efficient JOIN". Every de-correlated path here is a semi-join
+            # on the SAME base key, so ``x IN (s1) OR x IN (s2)`` is exactly
+            # ``x IN (s1 UNION DISTINCT s2)`` — a single top-level IN that BQ
+            # de-correlates cleanly. Merge same-key IN subqueries via UNION
+            # DISTINCT; only the residual mixed clauses (different key exprs, or
+            # a fallback correlated EXISTS) are OR-joined, which is rare and was
+            # already the prior behaviour. Single path → ``x IN (s1)`` verbatim,
+            # byte-identical to before → no change for the common case.
+            in_selects_by_expr: dict[str, list[str]] = {}
+            in_expr_order: list[str] = []
+            raw_clauses: list[str] = []
+            for clause in clauses:
+                if clause[0] == "in":
+                    _, expr, select_sql = clause
+                    if expr not in in_selects_by_expr:
+                        in_selects_by_expr[expr] = []
+                        in_expr_order.append(expr)
+                    in_selects_by_expr[expr].append(select_sql)
+                else:
+                    raw_clauses.append(clause[1])
+
+            rendered: list[str] = [
+                f"{expr} IN (" + " UNION DISTINCT ".join(in_selects_by_expr[expr]) + ")"
+                for expr in in_expr_order
+            ]
+            rendered.extend(raw_clauses)
+
+            if len(rendered) == 1:
+                return rendered[0], None
+            return "(" + " OR ".join(rendered) + ")", None
 
         exists_clauses: list[str] = []
         base_predicates: list[str] = []
