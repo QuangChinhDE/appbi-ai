@@ -3595,16 +3595,32 @@ export function ExploreChartConfig({
   // agg so the BE keeps it as a 3-level GROUP BY dimension (no SUM-of-string).
   useEffect(() => {
     if (chartType !== 'NINE_BOX') return;
-    // A raw numeric column → seed scatter*Agg='sum' (BE aggregates per Label).
-    // A declared MEASURE → leave it to its Data-Model aggregation (clear any
-    // stale scatter*Agg); a CATEGORICAL axis → also cleared (stays a band dim).
-    const xNum = !!sx && numCols.some((c) => c.name === sx) && !sxIsMeasure;
-    const yNum = !!sy && numCols.some((c) => c.name === sy) && !syIsMeasure;
+    // Decide per axis whether it should carry a numeric aggregation.
+    //   • declared MEASURE  → no scatter*Agg (uses its Data-Model aggregation)
+    //   • CONFIRMED categorical (present in the column list AND non-numeric)
+    //                        → no scatter*Agg (stays a 3-level GROUP BY band)
+    //   • everything else (a local numeric column, OR an axis we cannot see in
+    //     the local column list — typically a CROSS-FACT / joined column that
+    //     `configColumns` doesn't include) → wants SUM.
+    // CRITICAL: "absent from numCols" must NOT be read as "categorical". A
+    // cross-fact numeric axis (e.g. a joined fact's `performance_point`) is
+    // absent from the base view's `configColumns`, so the old
+    // `!numCols.has(sx)` test wrongly stripped its saved scatterXAgg on load —
+    // the BE then regrouped it as a dimension and a multi-fact chart failed
+    // loudly with "không thể tính measure từ nhiều bảng fact" (report-demo
+    // NINE_BOX bug: saved config had scatterXAgg=sum, editor preview dropped
+    // it → 400). Only a CONFIRMED categorical/measure clears the agg now.
+    const sxCol = sx ? allCols.find((c) => c.name === sx) : undefined;
+    const syCol = sy ? allCols.find((c) => c.name === sy) : undefined;
+    const xCatConfirmed = !!sxCol && !isNumeric(sxCol) && !isMeasureField(sxCol);
+    const yCatConfirmed = !!syCol && !isNumeric(syCol) && !isMeasureField(syCol);
+    const xWantsAgg = !!sx && !sxIsMeasure && !xCatConfirmed;
+    const yWantsAgg = !!sy && !syIsMeasure && !yCatConfirmed;
     const patch: Partial<ChartRoleConfig> = {};
-    if (xNum && !roleConfig.scatterXAgg) patch.scatterXAgg = 'sum';
-    if (!xNum && roleConfig.scatterXAgg) patch.scatterXAgg = undefined;
-    if (yNum && !roleConfig.scatterYAgg) patch.scatterYAgg = 'sum';
-    if (!yNum && roleConfig.scatterYAgg) patch.scatterYAgg = undefined;
+    if (xWantsAgg && !roleConfig.scatterXAgg) patch.scatterXAgg = 'sum';
+    if (!xWantsAgg && roleConfig.scatterXAgg) patch.scatterXAgg = undefined;
+    if (yWantsAgg && !roleConfig.scatterYAgg) patch.scatterYAgg = 'sum';
+    if (!yWantsAgg && roleConfig.scatterYAgg) patch.scatterYAgg = undefined;
     if (Object.keys(patch).length > 0) upd(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartType, sx, sy, roleConfig.scatterXAgg, roleConfig.scatterYAgg]);
