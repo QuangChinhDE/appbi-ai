@@ -272,12 +272,16 @@ export function KpiCard({
   // untouched — boxH stays 0 and all original classes/styles apply.
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [boxH, setBoxH] = useState(0);
+  const [boxW, setBoxW] = useState(0);
   useEffect(() => {
     if (!embedded) return;
     const el = rootRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setBoxH(Math.round(entry.contentRect.height));
+      for (const entry of entries) {
+        setBoxH(Math.round(entry.contentRect.height));
+        setBoxW(Math.round(entry.contentRect.width));
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -296,8 +300,19 @@ export function KpiCard({
   // or 56; floor = 18 so it stays legible. Reserve more height for the value
   // when panels share the card.
   const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 56;
+  // Height budget — the original behaviour.
+  const heightFont = boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36);
+  // Width budget — the fix. A long full-format number (e.g. "3,907,698,730",
+  // 13 chars) at a height-derived 56px is far WIDER than a narrow tile, so the
+  // old height-only auto-fit let it wrap mid-number ("3,907,698,73" / "0").
+  // Clamp the font so the whole headline fits on ONE line: with tabular-nums
+  // semibold, a glyph is ≈0.62em wide, so maxFont ≈ usableWidth / (chars·0.62).
+  // Subtract the tile padding and, when a status pill shares the row, its width.
+  const valueCharCount = Math.max((formattedValue ?? '').length, 1);
+  const usableW = Math.max(0, boxW - 16 - (statusLabel ? 84 : 0));
+  const widthFont = usableW > 0 ? usableW / (valueCharCount * 0.62) : Infinity;
   const autoValueFont = autoFit
-    ? Math.round(Math.min(fontCeil, Math.max(18, boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36))))
+    ? Math.round(Math.min(fontCeil, Math.max(16, Math.min(heightFont, widthFont))))
     : undefined;
 
   // Inside a dashboard tile the surrounding tile already draws the card frame.
@@ -354,7 +369,7 @@ export function KpiCard({
             )}
 
             <div
-              className={`break-words font-semibold tracking-tight text-text-primary tabular-nums ${compact ? 'mt-1' : 'mt-3'} ${autoFit ? '' : 'text-4xl sm:text-5xl'}`}
+              className={`font-semibold tracking-tight text-text-primary tabular-nums ${autoFit ? 'overflow-hidden whitespace-nowrap' : 'break-words text-4xl sm:text-5xl'} ${compact ? 'mt-1' : 'mt-3'}`}
               style={{
                 color: valueColor || FALLBACK_VALUE_COLOR,
                 ...(autoValueFont

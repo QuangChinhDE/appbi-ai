@@ -1874,7 +1874,23 @@ function ExploreChartInner({
    * `content=` renderer respecting position / rotation / font / bg.
    * Falls back to plain text if labels are disabled for this series.
    */
+  // Density declutter — parity with the scatter-family fix (SCATTER/BUBBLE/
+  // NINE_BOX) and with `dotsForCount`. A printed data label on EVERY mark turns
+  // a dense line/bar/area into an unreadable blob (report-demo: a ~30-point
+  // trend line labelled every point). Power BI / Tableau suppress printed
+  // labels past a density threshold and rely on the hover tooltip. Point marks
+  // (line/area) collide sooner than bar-anchored labels, so they get a tighter
+  // limit. The tooltip always keeps the exact value — nothing is lost.
+  const LABEL_DENSITY_POINT = 20;
+  const LABEL_DENSITY_BAR = 30;
+  // Every cartesian branch (BAR/AREA/LINE/HBAR/ComposedChart) plots
+  // `displayData = sortedCategoricalData`, so its length is the true count of
+  // marks that would each receive a printed label.
+  const cartesianPointCount = sortedCategoricalData.length;
   const dataLabelContent = (seriesKey: string, seriesLabel: string, orientation: 'vertical' | 'horizontal' | 'point') => {
+    const densityLimit = orientation === 'point' ? LABEL_DENSITY_POINT : LABEL_DENSITY_BAR;
+    // Dense chart → render no printed label (tooltip still carries the value).
+    if (cartesianPointCount > densityLimit) return () => null;
     const resolved = resolveDataLabelStyle(style, seriesKey);
     return buildDataLabelContent({
       resolved,

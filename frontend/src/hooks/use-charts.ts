@@ -63,6 +63,19 @@ export const useChartData = (
     placeholderData: options?.keepPrevious ? keepPreviousData : undefined,
     staleTime: 5 * 60 * 1000,   // 5 min — avoid refetching unchanged chart data
     gcTime: 30 * 60 * 1000,     // 30 min — keep inactive entries longer
+    // Retry policy — the tile stays in its LOADING spinner (isLoading) until the
+    // query stops retrying, so react-query's default 3× retry meant a failing
+    // chart spun "forever": a heavy BQ query that 400s on the 60s timeout was
+    // re-attempted 3 more times (~3 min) before the tile's error-state + Retry
+    // button could appear. A 4xx (bad/expensive filter, timeout surfaced as
+    // 400, missing column) is DETERMINISTIC — retrying can't fix it, only delays
+    // the actionable error. So: never retry 4xx; give 5xx/network ONE quick
+    // retry then surface the error immediately.
+    retry: (failureCount, error) => {
+      const status = (error as { response?: { status?: number } } | null)?.response?.status;
+      if (typeof status === 'number' && status >= 400 && status < 500) return false;
+      return failureCount < 1;
+    },
   });
 };
 
