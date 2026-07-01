@@ -272,6 +272,12 @@ export default function DashboardDetailPage() {
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
   // Refs for filter seeding
   const filtersSeededRef = React.useRef(false);
+  // Gate the tiles' data fetch until BOTH the filter + slicer seeds (below)
+  // have run. Without it the tiles fetch UNFILTERED on first render (before the
+  // seed effects populate the applied filters), flashing wrong (unfiltered)
+  // numbers and wasting a warehouse scan per chart. The public page already
+  // gates its fetch this way (`filtersSeeded`); the Builder didn't.
+  const [filtersReady, setFiltersReady] = React.useState(false);
   const filtersSnapshotRef = React.useRef<string>('[]');
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
@@ -451,6 +457,11 @@ export default function DashboardDetailPage() {
     const layoutSeed = (dashboard as any).slicer_cluster_layout || null;
     setDraftSlicerClusterLayout(layoutSeed);
     setAppliedSlicerClusterLayout(layoutSeed);
+    // Both seeds have now run (the filter seed above shares the same
+    // [dashboard] dep and, being defined earlier, runs first) → release the
+    // tile-fetch gate so tiles fetch ONCE, already filtered. Set even when the
+    // seed is empty (no filters/slicers) so a filter-less dashboard still loads.
+    setFiltersReady(true);
   }, [dashboard]);
 
   // Phase-G — auto-stage the cluster layout (position/direction/size)
@@ -2809,6 +2820,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
+            filtersReady={filtersReady}
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
@@ -2834,6 +2846,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
+            filtersReady={filtersReady}
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}

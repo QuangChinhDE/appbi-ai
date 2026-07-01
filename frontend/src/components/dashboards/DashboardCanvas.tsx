@@ -37,6 +37,10 @@ interface DashboardCanvasProps {
   onEditWidget?: (dashboardChartId: number) => void;
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
+  /** Forwarded to ChartTile — gate the tile data fetch until the page has
+   *  seeded filters/slicers (avoids the unfiltered flash + wasted scan).
+   *  See ChartTileProps.filtersReady. */
+  filtersReady?: boolean;
   globalFilters?: BaseFilter[];
   crossFilters?: BaseFilter[];
   crossFilterSourceChartId?: number | null;
@@ -67,6 +71,7 @@ export function DashboardCanvas({
   onEditWidget,
   removingChartId,
   dashboardFilters = [],
+  filtersReady = true,
   globalFilters = [],
   crossFilters = [],
   crossFilterSourceChartId = null,
@@ -337,6 +342,7 @@ export function DashboardCanvas({
                   onRemove={onRemoveChart}
                   isRemoving={removingChartId === dc.id}
                   dashboardFilters={dashboardFilters}
+                  filtersReady={filtersReady}
                   globalFilters={globalFilters}
                   /* Source dims, targets filter, per-chart opt-out — see DashboardGrid. */
                   crossFilters={crossFilterSourceChartId === dc.chart_id || dc.layout?.highlightEnabled === false ? [] : crossFilters}
