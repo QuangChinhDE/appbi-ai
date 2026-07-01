@@ -3014,15 +3014,15 @@ def get_distinct_field_values(
                     inner_expr = rhs if base_pref in lhs else lhs
                     if base_pref not in inner_expr:
                         in_body = [
-                            f"SELECT {inner_expr}",
+                            f"SELECT {inner_expr} AS _appbi_semi_key",
                             *sql_pieces,
                             f"WHERE {predicate} AND {inner_expr} IS NOT NULL",
                         ]
-                        # Return STRUCTURED (tag, expr, inner-select) rather
-                        # than a finished string so the multi-path combiner
-                        # can UNION same-key subqueries into ONE top-level IN.
-                        # An IN nested inside OR is rejected by BigQuery
-                        # ("… into an efficient JOIN"); see _build_exists_for_path.
+                        # Return STRUCTURED (tag, base-key expr, key-set SELECT)
+                        # so the combiner can UNION DISTINCT same-key paths and
+                        # emit ONE INNER JOIN semi-join (BigQuery won't flatten an
+                        # IN over an aggregated/windowed subquery). The key is
+                        # projected AS _appbi_semi_key for a stable UNION/JOIN col.
                         return ("in", outer_expr, " ".join(in_body)), None
 
             where_parts_inner = [*correlation_predicates, predicate]
@@ -3078,20 +3078,23 @@ def get_distinct_field_values(
             if not clauses:
                 return None, last_reason or "no_join_path"
 
-            # Combine the per-path clauses. CRITICAL for BigQuery: an
-            # ``x IN (SELECT …)`` subquery is only de-correlated (turned into an
-            # efficient semi-JOIN) when it is a TOP-LEVEL conjunct. Nesting it
-            # inside an OR — ``(x IN (s1) OR x IN (s2))`` — makes BigQuery reject
-            # the whole query: "Correlated subqueries that reference other
-            # tables are not supported unless they can be de-correlated … into
-            # an efficient JOIN". Every de-correlated path here is a semi-join
-            # on the SAME base key, so ``x IN (s1) OR x IN (s2)`` is exactly
-            # ``x IN (s1 UNION DISTINCT s2)`` — a single top-level IN that BQ
-            # de-correlates cleanly. Merge same-key IN subqueries via UNION
-            # DISTINCT; only the residual mixed clauses (different key exprs, or
-            # a fallback correlated EXISTS) are OR-joined, which is rare and was
-            # already the prior behaviour. Single path → ``x IN (s1)`` verbatim,
-            # byte-identical to before → no change for the common case.
+            # Combine the per-path clauses. A slicer dim reaches the filter's
+            # view via one semi-join per equal-shortest path (owner→revenue→date,
+            # owner→activity→date, …), all keyed on the SAME base column.
+            #
+            # BigQuery will NOT flatten an ``x IN (SELECT …)`` whose subquery
+            # aggregates / windows / UNIONs into a semi-join, nor one nested in
+            # OR — it rejects the query: "Correlated subqueries that reference
+            # other tables are not supported unless they can be de-correlated …
+            # into an efficient JOIN". report-demo's fact views are exactly that
+            # (CTEs with GROUP BY / COUNT(DISTINCT) / SUM() OVER). So when every
+            # path is a same-key semi-join, emit it as the explicit INNER JOIN
+            # BigQuery asks for (see _build_distinct_sql) rather than an IN:
+            # the per-path key SELECTs are UNION DISTINCT-ed into one key-set
+            # (making the key unique so the join can't fan out the base), and
+            # membership becomes ``base INNER JOIN (keyset) ON base.k = keyset.k``
+            # — which BQ handles even when the key-set is a complex derived
+            # table. Postgres/MySQL run it identically.
             in_selects_by_expr: dict[str, list[str]] = {}
             in_expr_order: list[str] = []
             raw_clauses: list[str] = []
@@ -3105,15 +3108,24 @@ def get_distinct_field_values(
                 else:
                     raw_clauses.append(clause[1])
 
+            # Clean, common case: every path is a semi-join on ONE base key →
+            # emit an INNER JOIN semi-join (BQ-friendly, see _build_distinct_sql).
+            if not raw_clauses and len(in_expr_order) == 1:
+                expr = in_expr_order[0]
+                keyset = " UNION DISTINCT ".join(in_selects_by_expr[expr])
+                return {"kind": "join", "on_expr": expr, "select": keyset}, None
+
+            # Residual (rare): different key exprs, or a fallback correlated
+            # EXISTS. Keep the WHERE form, still merging same-key INs via UNION
+            # DISTINCT to minimise OR. May be rejected by BQ for the same reason,
+            # but this path was already the prior (rare) behaviour.
             rendered: list[str] = [
                 f"{expr} IN (" + " UNION DISTINCT ".join(in_selects_by_expr[expr]) + ")"
                 for expr in in_expr_order
             ]
             rendered.extend(raw_clauses)
-
-            if len(rendered) == 1:
-                return rendered[0], None
-            return "(" + " OR ".join(rendered) + ")", None
+            where_sql = rendered[0] if len(rendered) == 1 else "(" + " OR ".join(rendered) + ")"
+            return {"kind": "where", "sql": where_sql}, None
 
         exists_clauses: list[str] = []
         base_predicates: list[str] = []
@@ -3191,10 +3203,31 @@ def get_distinct_field_values(
                     detail_by_reason.get(reason, reason),
                 )
 
-        where_parts = [f"{target_expr} IS NOT NULL", *base_predicates, *exists_clauses]
+        # exists_clauses entries are dicts. {"kind":"join", on_expr, select} →
+        # an INNER JOIN semi-join in the FROM — the form BigQuery asks for and
+        # the only one that works when the key-set aggregates/windows/UNIONs.
+        # {"kind":"where", sql} → a WHERE predicate (rare mixed/EXISTS fallback).
+        # A semi-join drops base rows with no match (correct cascade semantics),
+        # and the outer SELECT DISTINCT collapses any duplicate values.
+        where_parts = [f"{target_expr} IS NOT NULL", *base_predicates]
+        join_parts: list[str] = []
+        for idx, clause in enumerate(exists_clauses):
+            if isinstance(clause, dict) and clause.get("kind") == "join":
+                alias = f"_appbi_semi_{idx}"
+                join_parts.append(
+                    f"INNER JOIN ({clause['select']}) AS {alias} "
+                    f"ON {clause['on_expr']} = {alias}._appbi_semi_key"
+                )
+            elif isinstance(clause, dict):
+                where_parts.append(clause["sql"])
+            else:  # legacy string form (defensive)
+                where_parts.append(clause)
+        from_sql = f"({base_sql}) AS {base_alias}"
+        if join_parts:
+            from_sql = from_sql + " " + " ".join(join_parts)
         return (
             f"SELECT DISTINCT {target_expr} AS value "
-            f"FROM ({base_sql}) AS {base_alias} "
+            f"FROM {from_sql} "
             f"WHERE {' AND '.join(where_parts)} "
             f"ORDER BY 1 "
             f"LIMIT {limit}"
