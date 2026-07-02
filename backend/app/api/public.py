@@ -2320,6 +2320,26 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "delete", **result}
 
 
+def _resolve_public_snapshot_ttl(appearance_config: dict | None) -> int | None:
+    """Public per-link snapshot freshness (Stage 2), from
+    ``appearance_config['cache_ttl_minutes']``:
+      • absent/None → default (settings.MATERIALIZATION_DEFAULT_TTL_MINUTES)
+      • 0  → Realtime (bypass snapshots → live)
+      • -1 → Manual (serve the current snapshot forever, never auto-rebuild) → None
+      • N  → serve-stale, async-rebuild once older than N minutes
+    Returned value is what ChartService.get_chart_data / get_distinct_field_values
+    expect: None = current-no-rebuild, 0 = live, N>0 = lazy TTL."""
+    raw = (appearance_config or {}).get("cache_ttl_minutes")
+    if raw is None:
+        from app.core.config import settings
+        return int(getattr(settings, "MATERIALIZATION_DEFAULT_TTL_MINUTES", 30) or 30)
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if v == -1 else v
+
+
 @router.get("/dashboards/{token}/filters/distinct-values")
 @_limiter.limit("30/minute")
 def get_public_filter_distinct_values(
@@ -2335,7 +2355,7 @@ def get_public_filter_distinct_values(
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
-    dash, public_filters, _, _ = _get_dashboard_by_token(
+    dash, public_filters, _, _distinct_appearance = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,
@@ -2398,6 +2418,7 @@ def get_public_filter_distinct_values(
             field,
             limit=limit,
             filters=combined_filters,
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_distinct_appearance),
         )
         values = result.get("values", [])
         # PBI-parity (core): a slicer's dropdown cascades STRICTLY by the other
@@ -2460,7 +2481,7 @@ def get_public_chart_data(
     cannot be used to access arbitrary charts.
     Password-protected links require X-Public-Session header from /auth.
     """
-    dash, public_filters, _, _ = _get_dashboard_by_token(
+    dash, public_filters, _, _chart_appearance = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,
@@ -2514,6 +2535,7 @@ def get_public_chart_data(
             extra_filters=combined_filters or None,
             filter_context="dashboard",
             granularity_override=granularity_override,
+            snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_chart_appearance),
         )
     except ValueError as exc:
         # Phase-12.7: previously this swallowed the engine's Vietnamese

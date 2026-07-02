@@ -489,6 +489,9 @@ class ChartDebugInfo(BaseModel):
     # time used (ISO string) for the builder "Số tính đến HH:MM" label.
     data_source_mode: Optional[str] = None
     snapshot_as_of: Optional[str] = None
+    # Public per-link TTL (Stage 2): served snapshot is older than the link TTL
+    # and a background rebuild was kicked off — FE shows a "refreshing…" hint.
+    snapshot_stale: Optional[bool] = None
 
 
 class ChartDataResponse(BaseModel):

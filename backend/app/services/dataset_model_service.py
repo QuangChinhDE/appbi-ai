@@ -2485,7 +2485,7 @@ def _distinct_filter_targets_self(
     return False
 
 
-def _distinct_snapshot_context(db: Session, dataset_id: int):
+def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | None = None):
     """Dashboard perf #5 for the SLICER cascade (not just charts).
 
     Slicer dropdowns call the distinct cascade, which re-scans the heavy
@@ -2511,18 +2511,27 @@ def _distinct_snapshot_context(db: Session, dataset_id: int):
         datasource = db.query(DataSource).filter(DataSource.id == next(iter(ds_ids))).first()
         if datasource is None or not snapshot_service.is_enabled(datasource):
             return {}, None
+        if ttl_minutes == 0:  # Realtime → live
+            return {}, None
         snap_map: Dict[int, str] = {}
         for t in tables:
             if is_generated_calendar_table(t):
                 continue
             if not snapshot_service.should_materialize(t):
                 return {}, None  # physical/derived → SA can't read source → live
-            ref = snapshot_service.resolve_current_ref(db, t.id)
+            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)  # any age (serve-stale)
             if not ref:
-                return {}, None  # a gap → all-or-nothing → live
+                # Eligible but unbuilt → live now; warm for next time if public TTL.
+                if ttl_minutes:
+                    snapshot_service.trigger_async_refresh(dataset_id)
+                return {}, None
             snap_map[t.id] = ref
         if not snap_map:
             return {}, None
+        # Public per-link TTL: serve the stale snapshot but kick off a background
+        # rebuild so the slicer cascade stays consistent with the charts.
+        if snapshot_service.is_stale(snapshot_service.as_of(db, list(snap_map.keys())), ttl_minutes):
+            snapshot_service.trigger_async_refresh(dataset_id)
         sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
         exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
         return snap_map, exec_ds
@@ -2538,6 +2547,7 @@ def get_distinct_field_values(
     limit: int = 200,
     filters: list[dict] | None = None,
     explain: bool = False,
+    snapshot_ttl_minutes: int | None = None,
 ) -> dict:
     """Return distinct values + dropped-filter diagnostics.
 
@@ -2609,8 +2619,9 @@ def get_distinct_field_values(
         raise ValueError(f"View '{view_name}' not found")
 
     # Perf #5 — serve the slicer cascade from snapshots (all-or-nothing). Empty
-    # map → live path byte-identical to before.
-    _snap_map, _snap_exec_ds = _distinct_snapshot_context(db, dataset_id)
+    # map → live path byte-identical to before. Public per-link TTL threads in
+    # via snapshot_ttl_minutes (serve-stale-then-async past the TTL).
+    _snap_map, _snap_exec_ds = _distinct_snapshot_context(db, dataset_id, snapshot_ttl_minutes)
 
     from app.core.crypto import decrypt_config
     from app.services.datasource_service import DataSourceConnectionService

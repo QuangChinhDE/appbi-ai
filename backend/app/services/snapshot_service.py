@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -299,3 +300,52 @@ def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
     if oldest.tzinfo is None:
         oldest = oldest.replace(tzinfo=timezone.utc)
     return oldest
+
+
+def is_stale(as_of_ts: Optional[datetime], ttl_minutes: Optional[int]) -> bool:
+    """True when a snapshot built at `as_of_ts` is older than `ttl_minutes`.
+    ttl None / <= 0 → never stale (no age-out; freshness is manual/realtime is
+    handled upstream). Used by the public path to decide a lazy async rebuild."""
+    if not ttl_minutes or ttl_minutes <= 0 or as_of_ts is None:
+        return False
+    now = datetime.now(timezone.utc)
+    ref = as_of_ts if as_of_ts.tzinfo else as_of_ts.replace(tzinfo=timezone.utc)
+    return (now - ref).total_seconds() / 60.0 > ttl_minutes
+
+
+# ── lazy async rebuild (public per-link TTL, Stage 2) ────────────────────────
+# When a public viewer opens a link whose snapshot has aged past its TTL, we
+# serve the STALE snapshot instantly and rebuild in the BACKGROUND (stale-then-
+# async) so no viewer ever waits ~1-2 min for an extract-load. A per-dataset
+# in-process guard collapses the ~38 concurrent tile triggers of one open into a
+# single rebuild; the table-level single_flight in build_table_snapshot dedupes
+# further. Once the rebuild finishes, built_at is fresh → not stale → no more
+# triggers until the next TTL expiry (no polling / scheduler).
+_async_refresh_inflight: Dict[int, float] = {}
+_async_refresh_lock = threading.Lock()
+
+
+def trigger_async_refresh(dataset_id: int) -> None:
+    """Fire-and-forget rebuild of one dataset's snapshots. Idempotent: a dataset
+    already rebuilding is skipped. NEVER raises (background best-effort)."""
+    if not dataset_id:
+        return
+    with _async_refresh_lock:
+        if dataset_id in _async_refresh_inflight:
+            return
+        _async_refresh_inflight[dataset_id] = time.time()
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            refresh_all_for_dataset(db, dataset_id, force=True)
+            logger.info("[snapshot] async TTL rebuild done dataset=%s", dataset_id)
+        except Exception:  # noqa: BLE001 — background must never crash a request
+            logger.warning("[snapshot] async TTL rebuild failed dataset=%s", dataset_id, exc_info=True)
+        finally:
+            db.close()
+            with _async_refresh_lock:
+                _async_refresh_inflight.pop(dataset_id, None)
+
+    threading.Thread(target=_run, name=f"snap-refresh-{dataset_id}", daemon=True).start()
