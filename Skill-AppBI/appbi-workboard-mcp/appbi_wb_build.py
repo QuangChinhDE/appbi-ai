@@ -119,7 +119,14 @@ def _validate_lookup(
         return
     remote = _columns(tables[table_id])
     if remote:
-        expected = [lookup.get("value_column"), lookup.get("label_column")]
+        expected = [
+            lookup.get("value_column"),
+            lookup.get("label_column"),
+            # map widget geometry projection columns (only present for widget=map)
+            lookup.get("geometry_column"),
+            lookup.get("lat_column"),
+            lookup.get("lng_column"),
+        ]
         missing = [
             str(column) for column in expected
             if isinstance(column, str) and column and column not in remote
@@ -277,6 +284,30 @@ def _validate_screen_columns(
         errors=errors,
         warnings=warnings,
     )
+
+    # Gallery display mode: the BE requires a gallery_config whose named
+    # columns are all listed in `columns` (else the runtime can't return the
+    # image/label values). Mirror that here so validate catches it pre-apply.
+    if spec.get("display_mode") == "gallery":
+        gallery = spec.get("gallery_config")
+        if not isinstance(gallery, dict):
+            errors.append(
+                f"screen '{screen_id}' table: display_mode='gallery' requires gallery_config."
+            )
+        else:
+            image_column = gallery.get("image_column")
+            if not (isinstance(image_column, str) and image_column.strip()):
+                errors.append(
+                    f"screen '{screen_id}' table.gallery_config.image_column is required."
+                )
+            declared = set(str(c) for c in (spec.get("columns") or []))
+            for key in ("image_column", "title_column", "subtitle_column", "group_by_column"):
+                col = gallery.get(key)
+                if isinstance(col, str) and col and col not in declared:
+                    errors.append(
+                        f"screen '{screen_id}' table.gallery_config.{key} '{col}' "
+                        f"must be listed in table.columns."
+                    )
     for index, lookup in enumerate(spec.get("lookup_columns") or []):
         if not isinstance(lookup, dict):
             errors.append(f"screen '{screen_id}' table.lookup_columns[{index}] must be an object.")
@@ -658,9 +689,10 @@ _SCREEN_SCHEMA_REFERENCE = {
     },
     "form_field": {
         "column": "required db column",
-        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image",
+        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map",
         "required/readonly/default/help_text/placeholder/label": "presentation",
-        "lookup": "LookupConfig when widget=lookup/select",
+        "lookup": "LookupConfig when widget=lookup/select/map",
+        "map_widget": "widget=map: tap a polygon/point on a satellite basemap to pick a value. Options + geometry come from a dataset_table lookup (set lookup.geometry_column). Selected value is a plain string (the value_column) — behaves like select for required/valid_if/carry.",
         "show_if/required_if/readonly_if": "expressions over [other_column]",
         "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message",
         "max_file_kb": "widget=file/image only; hard BE ceiling 1024 KB (base64 into JSONB)",
@@ -670,6 +702,9 @@ _SCREEN_SCHEMA_REFERENCE = {
         "values": "static: [{label, value}]",
         "table_id/value_column/label_column": "dataset_table: read options from a related table",
         "relationship_path": "[{table_id?, value_column, label_column?}] nested hops (order.cust_id -> customer.city_id -> city.name)",
+        "geometry_column": "widget=map only: column holding a GeoJSON Polygon/MultiPolygon string per row (drawn on the map)",
+        "lat_column/lng_column": "widget=map only: optional centroid columns; used as a marker fallback when a row has no geometry",
+        "basemap": "widget=map only: satellite (default) | streets | light",
     },
     "table_spec": {
         "columns": "display order; may include computed/lookup column names",
@@ -685,6 +720,8 @@ _SCREEN_SCHEMA_REFERENCE = {
         "column_groups": "multi-level header spanning contiguous columns",
         "row_actions": "[ScreenAction] per-row navigate+carry",
         "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
+        "display_mode": "table (default) | gallery — gallery renders rows as image cards instead of a grid (same query/RLS/filters/detail_panel)",
+        "gallery_config": "required when display_mode=gallery: {image_column (data:image column, REQUIRED + must be in columns), title_column?, subtitle_column?, group_by_column? (section per value, e.g. a date), columns_per_row? 1-6}. All named columns must be listed in `columns`.",
         "required_columns/default_values/column_metadata/empty_state_message": "extras",
     },
     "doc_spec": {
@@ -766,6 +803,8 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "Bind table_id to an ATTACHED dataset table id; dashboard screens have no table_id.",
             "Schemas are strict (extra keys 422). Use only the fields in screen_schema_reference.",
             "editable_columns is the only inline-edit switch; never list a computed/lookup column there.",
+            "Map picker: widget='map' on a form field + lookup.kind=dataset_table with geometry_column (GeoJSON per row). The picked value is the value_column string; add it to after_submit.carry to feed the next screen. Geometry table needs a GeoJSON column (Polygon/MultiPolygon).",
+            "Gallery: a table screen with display_mode='gallery' + gallery_config. image_column (a data:image column) and every other gallery column MUST also be in table.columns. group_by_column buckets cards into sections (e.g. a capture-date column). Great as the 'view saved photos' screen after an image-upload form.",
             "Doc data_table sync_triggers[].webhook_ids must match bundle.webhooks ids; webhooks bind to a doc screen_id.",
             "RLS/visible_for_roles roles must match app_user roles; owner bypasses RLS but keep user/admin explicit.",
             "Validate computed-column JS with test_screen_js before apply.",

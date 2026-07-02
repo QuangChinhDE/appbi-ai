@@ -8,10 +8,11 @@ Source  ->  Dataset  ->  Data Model  ->  Workboard  ->  Share
 ```
 
 Connect or pick a data source, create a dataset and its tables, lay down a
-relationship model, then author the mini-app (forms, editable tables, printable
-docs, embedded dashboards) with app users, doc webhooks, public links and a
-delivery workspace. Every mutating tool previews a plan and changes nothing
-until you confirm.
+relationship model, then author the mini-app (forms — incl. photo/OCR capture
+and a satellite **map picker**; editable tables that can render as a photo
+**gallery**; printable docs; embedded dashboards) with app users, doc webhooks,
+public links and a delivery workspace. Every mutating tool previews a plan and
+changes nothing until you confirm.
 
 > Charts, full BI semantic measures/explores, and DB-credential source
 > connections stay in the AppBI UI / dashboard MCP. This server owns the
