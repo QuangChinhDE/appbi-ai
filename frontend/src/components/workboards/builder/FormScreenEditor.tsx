@@ -93,6 +93,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'checkbox', label: 'On / off' },
   { value: 'file', label: 'File upload (base64, ≤1MB)' },
   { value: 'image', label: 'Image upload (base64, ≤1MB)' },
+  { value: 'map', label: 'Bản đồ (chọn vùng trên map)' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -1217,8 +1218,8 @@ function FieldInspector({
         </Lbl>
       </CollapsibleGroup>
 
-      {(field.widget === 'select' || field.widget === 'lookup') && (
-        <CollapsibleGroup title="Options">
+      {(field.widget === 'select' || field.widget === 'lookup' || field.widget === 'map') && (
+        <CollapsibleGroup title={field.widget === 'map' ? 'Bản đồ / vùng' : 'Options'}>
           <LookupEditor field={field} tables={tables} onChange={onChange} />
         </CollapsibleGroup>
       )}
@@ -1367,6 +1368,53 @@ function LookupEditor({
                 value={lookup.label_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, label_column: next || '' } })}
                 placeholder="Default = value column"
+              />
+            </Lbl>
+          </>
+        )}
+
+        {lookup.kind === 'dataset_table' && field.widget === 'map' && (
+          <>
+            <Lbl label="Cột geometry (GeoJSON Polygon)">
+              <SingleColumnPicker
+                sourceColumns={lookupCols.map((column) => column.name)}
+                value={lookup.geometry_column || null}
+                onChange={(next) => onChange({ lookup: { ...lookup, geometry_column: next || '' } })}
+                placeholder="-- cột chứa GeoJSON --"
+              />
+            </Lbl>
+            <Lbl label="Kiểu bản đồ nền">
+              <select
+                value={lookup.basemap || 'satellite'}
+                onChange={(event) =>
+                  onChange({
+                    lookup: {
+                      ...lookup,
+                      basemap: event.target.value as NonNullable<LookupRuntime['basemap']>,
+                    },
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="satellite">Vệ tinh</option>
+                <option value="streets">Đường phố</option>
+                <option value="light">Nền sáng</option>
+              </select>
+            </Lbl>
+            <Lbl label="Cột vĩ độ (lat) — tùy chọn, fallback marker">
+              <SingleColumnPicker
+                sourceColumns={lookupCols.map((column) => column.name)}
+                value={lookup.lat_column || null}
+                onChange={(next) => onChange({ lookup: { ...lookup, lat_column: next || '' } })}
+                placeholder="-- không bắt buộc --"
+              />
+            </Lbl>
+            <Lbl label="Cột kinh độ (lng) — tùy chọn, fallback marker">
+              <SingleColumnPicker
+                sourceColumns={lookupCols.map((column) => column.name)}
+                value={lookup.lng_column || null}
+                onChange={(next) => onChange({ lookup: { ...lookup, lng_column: next || '' } })}
+                placeholder="-- không bắt buộc --"
               />
             </Lbl>
           </>

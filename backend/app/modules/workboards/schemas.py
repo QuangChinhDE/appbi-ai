@@ -41,7 +41,7 @@ class LookupHop(BaseModel):
 
 
 class LookupConfig(BaseModel):
-    """Lookup data source for select / lookup form widgets."""
+    """Lookup data source for select / lookup / map form widgets."""
 
     kind: Literal["static", "dataset_table"] = "static"
     values: Optional[List[Dict[str, Any]]] = Field(
@@ -54,6 +54,24 @@ class LookupConfig(BaseModel):
     value_column: Optional[str] = None
     label_column: Optional[str] = None
     relationship_path: Optional[List[LookupHop]] = None
+
+    # ── Map widget (widget='map') — additive geometry projection ─────────────
+    # These are consumed ONLY by the map widget. select/lookup ignore them.
+    # When set, `_resolve_lookup_options` projects the extra column(s) into
+    # each option dict so the FE can draw one polygon/marker per row.
+    geometry_column: Optional[str] = Field(
+        default=None,
+        description="Column holding a GeoJSON Polygon/MultiPolygon string per row (map widget).",
+    )
+    lat_column: Optional[str] = Field(
+        default=None, description="Centroid latitude column — marker fallback when geometry is absent."
+    )
+    lng_column: Optional[str] = Field(
+        default=None, description="Centroid longitude column — marker fallback when geometry is absent."
+    )
+    basemap: Optional[Literal["satellite", "streets", "light"]] = Field(
+        default="satellite", description="Basemap tile style for the map widget."
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -71,6 +89,7 @@ class FormField(BaseModel):
         "lookup",
         "file",
         "image",
+        "map",
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -638,6 +657,30 @@ class TableDetailPanel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class GalleryConfig(BaseModel):
+    """Card/photo layout for a Table screen when ``display_mode='gallery'``.
+
+    Same query, RLS, filters and detail-panel as the table grid — only the
+    render changes: rows become image cards, optionally bucketed into
+    sections by ``group_by_column`` (e.g. one section per capture date,
+    header shows the value + count "16/05/2025 (3)").
+    """
+
+    image_column: str = Field(
+        ..., min_length=1,
+        description="Column holding a data:image base64 string, shown as the card image.",
+    )
+    title_column: Optional[str] = Field(default=None, description="Card title caption.")
+    subtitle_column: Optional[str] = Field(default=None, description="Card subtitle caption.")
+    group_by_column: Optional[str] = Field(
+        default=None,
+        description="Bucket cards into sections by this column's value (distinct from TableScreenSpec.group_by, which is cell-merge only).",
+    )
+    columns_per_row: int = Field(default=3, ge=1, le=6)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -730,6 +773,15 @@ class TableScreenSpec(BaseModel):
 
     empty_state_message: Optional[str] = None
 
+    display_mode: Literal["table", "gallery"] = Field(
+        default="table",
+        description="'table' = spreadsheet grid (default). 'gallery' = image cards, requires gallery_config.",
+    )
+    gallery_config: Optional[GalleryConfig] = Field(
+        default=None,
+        description="Card layout config; required (and its image_column must be in `columns`) when display_mode='gallery'.",
+    )
+
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
@@ -806,6 +858,28 @@ class TableScreenSpec(BaseModel):
                     f"Column '{col}' is in 'group_by' AND 'editable_columns'. "
                     f"Merge + inline edit conflict — pick one."
                 )
+
+        # Gallery display mode requires a config whose image_column is a real,
+        # surfaced column — otherwise the runtime would not return the image
+        # value in the row payload and every card would be blank.
+        if self.display_mode == "gallery":
+            if self.gallery_config is None:
+                raise ValueError(
+                    "display_mode='gallery' requires gallery_config."
+                )
+            gc = self.gallery_config
+            visible = set(self.columns or [])
+            for label, col in (
+                ("image_column", gc.image_column),
+                ("title_column", gc.title_column),
+                ("subtitle_column", gc.subtitle_column),
+                ("group_by_column", gc.group_by_column),
+            ):
+                if col and col not in visible:
+                    raise ValueError(
+                        f"gallery_config.{label} '{col}' must be listed in "
+                        f"'columns' so the runtime returns its value."
+                    )
 
         return self
 
