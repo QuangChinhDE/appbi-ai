@@ -52,6 +52,7 @@ import {
   getFilterKey,
   inferColumnTypeFromData,
   isSemanticDimensionFilterableForDashboard,
+  resolveEffectiveFilterSet,
   toBaseFilter,
 } from '@/lib/filters';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
@@ -719,66 +720,23 @@ export default function DashboardDetailPage() {
   // must win over a slicer on the same field, so it's applied LAST.
   // (No link layer in the editor preview.) Without this split the editor
   // preview diverged from the public link, which is what users hit.
-  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(() => {
-    const isAuthoritative = (f: BaseFilter) =>
-      f.publicMode === 'locked' || f.publicMode === 'hidden';
-    // Phase-H — dedupe key MUST match the BE `_filter_dedupe_key`
-    // (semanticField/fieldKey, field, datasetId — operator-agnostic) so
-    // the editor preview collapses the same set the public merge does.
-    // The old getFilterKey (fieldKey ?? semanticField ?? field, no
-    // datasetId) could group/split differently → editor ≠ public.
-    const dedupeKey = (f: BaseFilter) => {
-      const sem = String(f.semanticField ?? f.fieldKey ?? '').trim().toLowerCase();
-      const field = String(f.field ?? '').trim().toLowerCase();
-      const ds = f.datasetId ?? '';
-      return `${sem}|${field}|${ds}`;
-    };
-    // A later entry must NOT clobber an earlier VALUED one on the same field
-    // just because it is empty. An unselected ("All") slicer that shares a
-    // field with a valued default used to overwrite it here, silently dropping
-    // it — the "Filters on this page stopped working" regression. Keep
-    // whichever carries an active value.
-    const isActiveVal = (f: BaseFilter): boolean => {
-      const v = (f as any)?.value;
-      if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
-      return v != null && String(v).trim() !== '';
-    };
-    const byKey = new Map<string, BaseFilter>();
-    const setKeyed = (f: BaseFilter) => {
-      const k = dedupeKey(f);
-      const ex = byKey.get(k);
-      if (!ex || isActiveVal(f) || !isActiveVal(ex)) byKey.set(k, f);
-    };
-    // SELECTIONS = overridable visible dashboard defaults + viewer slicers (an
-    // active slicer overrides a same-field visible default; an empty one does
-    // not). Page filters are deliberately NOT here — they are hard bounds.
-    for (const f of appliedGlobalFiltersLegacy) if (!isAuthoritative(f)) setKeyed(f);
-    for (const f of appliedGlobalSlicers) {
-      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      // scope 'custom' slicers only filter pages where pageScope.filter is set.
-      if (!slicerFiltersPage(f, activePageId)) continue;
-      setKeyed(f as BaseFilter);
-    }
-    for (const f of activePageSlicers) {
-      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      setKeyed(f as BaseFilter);
-    }
-    const selections = Array.from(byKey.values());
-    // PAGE SCOPE ("Filters on this page") = HARD BOUND: a same-field selection
-    // may only narrow WITHIN it, never escape (applyScopeBound intersects them).
-    // Previously a page filter was treated as a plain default that an active
-    // slicer could override → the viewer/preview could escape the page scope
-    // (e.g. pick a product the page excluded). Mirrors the public viewer fix.
-    const pageScopes = activePageFilters.filter((f) => !isAuthoritative(f));
-    const bounded = applyScopeBound(selections, pageScopes);
-    // AUTHORITATIVE (locked/hidden) — applied last so they always win.
-    const result = new Map<string, BaseFilter>();
-    for (const f of bounded) result.set(dedupeKey(f), f);
-    for (const f of [...appliedGlobalFiltersLegacy, ...activePageFilters]) {
-      if (isAuthoritative(f)) result.set(dedupeKey(f), f);
-    }
-    return Array.from(result.values());
-  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage]);
+  // Phase-H — resolution extracted to `resolveEffectiveFilterSet` (lib/filters)
+  // so the distinct-value cascade collapses the SAME set (chart↔dropdown
+  // parity — see `dashboard_filter_dual_path`). Behaviour here is unchanged:
+  // SELECTIONS (visible defaults + page-scoped slicers, active-valued wins) →
+  // applyScopeBound(page hard bounds) → authoritative (locked/hidden) last.
+  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(
+    () =>
+      resolveEffectiveFilterSet({
+        globalFilters: appliedGlobalFiltersLegacy,
+        pageFilters: activePageFilters,
+        globalSlicers: appliedGlobalSlicers,
+        pageSlicers: activePageSlicers,
+        activePageId,
+        slicerFiltersPage,
+      }),
+    [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage],
+  );
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -1929,6 +1887,9 @@ export default function DashboardDetailPage() {
     const legacyDraftAll = draftGlobalFilters
       .map((f) => toBaseFilter(f, { allowInactive: true }))
       .filter((b): b is BaseFilter => b !== null);
+    // COLUMN DISCOVERY set — the raw union (incl. inactive slots via
+    // allowInactive) decides WHICH fields get a distinct dropdown. Never dedupe
+    // here or a just-dragged-in slot could lose its dropdown.
     const combinedFilters: BaseFilter[] = [
       ...legacyDraftAll,
       ...draftPageFilters,
@@ -1939,6 +1900,24 @@ export default function DashboardDetailPage() {
     if (semanticColumnsResult.columns.length === 0 || combinedFilters.length === 0) {
       return [];
     }
+
+    // CASCADE CONTEXT set — resolve same-field EXACTLY like the chart-data path
+    // (effectivePageScopeFilters) so each dropdown cascades on the value the
+    // CHARTS actually use. Without this a same-field visible default + slicer
+    // (e.g. Trung_tam=RC02 default + Trung_tam=PKD4.1 slicer) were both passed
+    // as context → the BE ANDs them → `WHERE Trung_tam=RC02 AND Trung_tam=PKD4.1`
+    // → impossible → every OTHER dropdown came back EMPTY, while the charts show
+    // the slicer's value. Chart↔dropdown parity (`dashboard_filter_dual_path`).
+    // applyScopeBound is preserved inside, so locked/page-scope hard bounds are
+    // never escaped by the dropdown cascade either.
+    const resolvedContextFilters = resolveEffectiveFilterSet({
+      globalFilters: legacyDraftAll,
+      pageFilters: draftPageFilters,
+      globalSlicers: draftGlobalSlicers as BaseFilter[],
+      pageSlicers: draftPageSlicers as BaseFilter[],
+      activePageId,
+      slicerFiltersPage,
+    });
 
     const columnsByKey = new Map(
       semanticColumnsResult.columns.map((column) => [getColumnKey(column), column]),
@@ -1990,14 +1969,14 @@ export default function DashboardDetailPage() {
     }
 
     return Array.from(activeColumns.values()).map((column) => {
-      const filterContext = getDistinctValueFilterContext(combinedFilters, column);
+      const filterContext = getDistinctValueFilterContext(resolvedContextFilters, column);
       return {
         column,
         filterContext,
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, semanticColumnsResult.columns, activePageId, slicerFiltersPage]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({

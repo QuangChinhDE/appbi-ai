@@ -1173,6 +1173,90 @@ export function applyScopeBound(
 }
 
 /**
+ * Resolve the EFFECTIVE filter set exactly the way the dashboard chart-data
+ * path does, so any consumer that asks "what filters actually apply on this
+ * page" collapses the SAME set. Keeping the chart fetch AND the distinct-value
+ * cascade on this one function is what makes the Builder's dropdown cascade
+ * AGREE with the charts: a same-field visible default + slicer resolve to ONE
+ * value (the active slicer wins), never ANDed into an impossible pair (e.g.
+ * `Trung_tam = RC02 AND Trung_tam = PKD4.1`) that silently empties every
+ * cascading dropdown while the charts happily show the slicer's value. This is
+ * the `dashboard_filter_dual_path` divergence — fix it in ONE place.
+ *
+ * Resolution (identical to the former inline `effectivePageScopeFilters`):
+ *  1. SELECTIONS = non-authoritative visible defaults + page-scoped global
+ *     slicers + page slicers, deduped by (semanticField|field|datasetId)
+ *     keeping whichever carries an active value (a later active entry overrides
+ *     an earlier one; an empty "All" slicer never clobbers a valued default).
+ *  2. PAGE SCOPE (non-authoritative page filters) = HARD BOUND via
+ *     `applyScopeBound` — a same-field selection may only narrow within it,
+ *     never escape it.
+ *  3. AUTHORITATIVE (publicMode locked/hidden, from globals + page) applied
+ *     LAST so they always win.
+ */
+export function resolveEffectiveFilterSet(args: {
+  globalFilters: BaseFilter[];
+  pageFilters: BaseFilter[];
+  globalSlicers: BaseFilter[];
+  pageSlicers: BaseFilter[];
+  activePageId: string | undefined;
+  slicerFiltersPage: (s: any, pageId: string | undefined) => boolean;
+}): BaseFilter[] {
+  const { globalFilters, pageFilters, globalSlicers, pageSlicers, activePageId, slicerFiltersPage } = args;
+  const isAuthoritative = (f: BaseFilter) =>
+    f.publicMode === 'locked' || f.publicMode === 'hidden';
+  // Phase-H — dedupe key MUST match the BE `_filter_dedupe_key`
+  // (semanticField/fieldKey, field, datasetId — operator-agnostic) so the
+  // editor preview collapses the same set the public merge does.
+  const dedupeKey = (f: BaseFilter) => {
+    const sem = String(f.semanticField ?? f.fieldKey ?? '').trim().toLowerCase();
+    const field = String(f.field ?? '').trim().toLowerCase();
+    const ds = f.datasetId ?? '';
+    return `${sem}|${field}|${ds}`;
+  };
+  // A later entry must NOT clobber an earlier VALUED one on the same field just
+  // because it is empty (an unselected "All" slicer). Keep whichever carries an
+  // active value.
+  const isActiveVal = (f: BaseFilter): boolean => {
+    const v = (f as any)?.value;
+    if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
+    return v != null && String(v).trim() !== '';
+  };
+  const byKey = new Map<string, BaseFilter>();
+  const setKeyed = (f: BaseFilter) => {
+    const k = dedupeKey(f);
+    const ex = byKey.get(k);
+    if (!ex || isActiveVal(f) || !isActiveVal(ex)) byKey.set(k, f);
+  };
+  // SELECTIONS = overridable visible defaults + viewer slicers (an active
+  // slicer overrides a same-field visible default; an empty one does not).
+  // Page filters are deliberately NOT here — they are hard bounds.
+  for (const f of globalFilters) if (!isAuthoritative(f)) setKeyed(f);
+  for (const f of globalSlicers) {
+    if (f && typeof f === 'object' && (f as any).type === 'image') continue;
+    // scope 'custom' slicers only filter pages where pageScope.filter is set.
+    if (!slicerFiltersPage(f, activePageId)) continue;
+    setKeyed(f as BaseFilter);
+  }
+  for (const f of pageSlicers) {
+    if (f && typeof f === 'object' && (f as any).type === 'image') continue;
+    setKeyed(f as BaseFilter);
+  }
+  const selections = Array.from(byKey.values());
+  // PAGE SCOPE ("Filters on this page") = HARD BOUND: a same-field selection
+  // may only narrow WITHIN it, never escape (applyScopeBound intersects them).
+  const pageScopes = pageFilters.filter((f) => !isAuthoritative(f));
+  const bounded = applyScopeBound(selections, pageScopes);
+  // AUTHORITATIVE (locked/hidden) — applied last so they always win.
+  const result = new Map<string, BaseFilter>();
+  for (const f of bounded) result.set(dedupeKey(f), f);
+  for (const f of [...globalFilters, ...pageFilters]) {
+    if (isAuthoritative(f)) result.set(dedupeKey(f), f);
+  }
+  return Array.from(result.values());
+}
+
+/**
  * Get default operator for a filter type
  */
 export function getDefaultOperator(type: FilterType): FilterOperator {
