@@ -2428,6 +2428,22 @@ def _execute_semantic_chart_runtime(
     # dataset → run on the service-account config; else the datasource's own cred.
     _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
 
+    # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
+    # The warehouse query below can run up to 60s. The request's ORM Session has
+    # an open (read-only) transaction from loading the chart/model, which pins a
+    # pooled DB connection for that whole 60s. N concurrent tiles (a dashboard
+    # open, or a post-Refresh re-fetch) then pin N connections → QueuePool
+    # (pool_size + max_overflow) is exhausted and EVERY later request — including
+    # /health — blocks on pool_timeout. Everything needed for execution is
+    # already captured in plain locals (`_exec_config`, `sql`, `ds_type`); commit
+    # ends the txn so the connection returns to the pool for the BQ wait.
+    # Post-query code only touches `datasource.id` (PK — no reload) + plain
+    # locals; any other ORM access re-acquires a connection lazily.
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001 — read path: nothing critical pending
+        db.rollback()
+
     # BigQuery cost guard (mirrors LiveQueryService behavior).
     if ds_type == "bigquery":
         config = decrypt_config(_exec_config)
@@ -3463,9 +3479,18 @@ class ChartService:
             # Phase-15.83 — cap raised from 5000 → 10M sentinel; DB
             # short-circuits on the real row count.
             source_sample_limit = max(1, min(int(source_sample_limit), 10_000_000))
+            # Release the pooled DB connection for the ≤60s warehouse query (see
+            # the QueuePool-exhaustion note in _execute_semantic_chart_runtime).
+            # Capture config first so the commit's attribute-expiry can't force a
+            # reload mid-flight; the ORM Session re-acquires lazily afterwards.
+            _src_exec_config = datasource.config
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001 — read path: nothing critical pending
+                db.rollback()
             source_columns, source_rows, source_execution_time_ms = DataSourceConnectionService.execute_query(
                 ds_type,
-                datasource.config,
+                _src_exec_config,
                 custom_sql,
                 limit=source_sample_limit,
                 timeout_seconds=timeout,

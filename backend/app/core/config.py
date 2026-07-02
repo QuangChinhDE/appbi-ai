@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     # `materialization_write_credentials_json` overrides both.
     MATERIALIZATION_SA_KEY_FILE: str = ""
     MATERIALIZATION_SA_CREDENTIALS_JSON: str = ""
+    # ── DB connection pool (SQLAlchemy) ─────────────────────────────────────
+    # Sized for concurrent long BigQuery queries; the connection is released
+    # during each warehouse call (chart_service) so these rarely bind. Keep
+    # (pool_size + max_overflow) × uvicorn_workers below Postgres max_connections.
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 30
+    DB_POOL_TIMEOUT: int = 10                            # fail fast on exhaustion
+    DB_POOL_RECYCLE: int = 1800                          # drop conns after 30 min
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache

@@ -25,12 +25,21 @@ def prepare_database_url(url: str) -> str:
                     return f"{scheme}://{user}:{encoded_password}@{host_part}"
     return url
 
-# Create SQLAlchemy engine
+# Create SQLAlchemy engine.
+# NOTE: the real fix for QueuePool exhaustion under concurrent long BigQuery
+# queries is releasing the ORM connection during the warehouse call (see
+# chart_service._execute_semantic_chart_runtime). These pool settings are
+# defense-in-depth: a modestly larger pool for burst concurrency, `pool_timeout`
+# so an exhausted pool fails fast (10s) with a clear error instead of blocking
+# every request (incl. /health) for the SQLAlchemy default 30s, and
+# `pool_recycle` to drop connections a managed Postgres may have silently closed.
 engine = create_engine(
     prepare_database_url(settings.DATABASE_URL),
     pool_pre_ping=True,  # Verify connections before using them
-    pool_size=10,
-    max_overflow=20,
+    pool_size=int(getattr(settings, "DB_POOL_SIZE", 20) or 20),
+    max_overflow=int(getattr(settings, "DB_MAX_OVERFLOW", 30) or 30),
+    pool_timeout=int(getattr(settings, "DB_POOL_TIMEOUT", 10) or 10),
+    pool_recycle=int(getattr(settings, "DB_POOL_RECYCLE", 1800) or 1800),
 )
 
 # Create session factory
