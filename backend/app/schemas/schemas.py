@@ -484,6 +484,11 @@ class ChartDebugInfo(BaseModel):
     row_count: Optional[int] = None
     warnings: List[str] = Field(default_factory=list)
     dropped_filters: List[DroppedFilterInfo] = Field(default_factory=list)
+    # Dashboard perf #5 — snapshot materialization freshness. `data_source_mode`
+    # ∈ {live, snapshot, mixed}; `snapshot_as_of` is the oldest snapshot build
+    # time used (ISO string) for the builder "Số tính đến HH:MM" label.
+    data_source_mode: Optional[str] = None
+    snapshot_as_of: Optional[str] = None
 
 
 class ChartDataResponse(BaseModel):

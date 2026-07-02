@@ -203,3 +203,40 @@ class DatasetQualitySchedule(Base):
     dataset = relationship("Dataset", back_populates="quality_schedule", uselist=False)
     runs = relationship("DatasetQualityRun", back_populates="schedule")
 
+
+class DatasetTableSnapshot(Base):
+    """
+    Near-realtime snapshot-materialization registry (Dashboard perf #5).
+
+    Each row records a physical flat table (in the datasource's snapshot dataset,
+    e.g. `appbi_snapshots`) that materializes ONE dataset table's resolved output.
+    Charts read the flat snapshot instead of re-running the heavy source pipeline.
+
+    Freshness/consistency model:
+      • `fingerprint` = sha256(resolved-source-SQL + ordered columns + dialect).
+        A snapshot is only usable when its fingerprint matches the live model —
+        a model edit changes the fingerprint and forces a rebuild.
+      • Exactly one row per table is `is_current` (partial-unique index). A build
+        inserts a `building` row; on success ONE txn flips the pointer
+        (old → superseded, new → ready + is_current). A failed build leaves the
+        previous current untouched, so readers never see a torn/half-built state.
+      • A dashboard render resolves all its tables in ONE registry read, so every
+        tile of that open sees a self-consistent snapshot set.
+    """
+    __tablename__ = "dataset_table_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(BigInteger, nullable=False)                 # monotonic per table (epoch-ms)
+    physical_ref = Column(Text, nullable=False)                  # project.appbi_snapshots.snap_t{tid}_v{ver}
+    fingerprint = Column(String(64), nullable=False)             # sha256 of resolved SQL + schema + dialect
+    row_count = Column(BigInteger, nullable=True)
+    build_ms = Column(Integer, nullable=True)
+    status = Column(String(16), nullable=False, default="building")  # building | ready | failed | superseded
+    error = Column(Text, nullable=True)
+    is_current = Column(Boolean, nullable=False, default=False, server_default=expression.false(), index=True)
+    built_at = Column(DateTime, nullable=True)                   # set when status → ready
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+

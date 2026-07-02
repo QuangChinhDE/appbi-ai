@@ -73,6 +73,27 @@ class BigQueryConfig(BaseModel):
         None,
         description="Connected Google account email",
     )
+    # --- Near-realtime snapshot materialization (Dashboard perf #5) ---
+    # Opt-in. When enabled, each heavy dataset table is materialized into a flat
+    # snapshot table in `materialization_dataset`; charts read the flat snapshot.
+    # All optional/default-off so existing datasources are unaffected.
+    materialization_enabled: bool = Field(
+        False,
+        description="Materialize dataset tables into flat BQ snapshots for fast dashboards",
+    )
+    materialization_dataset: Optional[str] = Field(
+        None,
+        description="BQ dataset that holds snapshot tables (default: appbi_snapshots)",
+    )
+    materialization_write_credentials_json: Optional[str] = Field(
+        None,
+        description="Optional separate SA JSON with write on the snapshot dataset; omit to reuse the read credential",
+    )
+    materialization_default_ttl_minutes: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Default snapshot freshness TTL in minutes (builder + public link fallback)",
+    )
 
     @field_validator("project_id")
     @classmethod

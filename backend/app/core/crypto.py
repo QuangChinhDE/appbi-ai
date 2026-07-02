@@ -36,6 +36,7 @@ _SENSITIVE_FIELDS = frozenset({
     "client_secret",
     "service_account_json",
     "credentials_json",
+    "materialization_write_credentials_json",
 })
 
 

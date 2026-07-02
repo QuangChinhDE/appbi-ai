@@ -267,6 +267,23 @@ def _build_gcp_credentials(config: Dict[str, Any]):
     return service_account.Credentials.from_service_account_info(credentials_info)
 
 
+def _materialization_bq_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Config for snapshot DDL. Uses the separate write credential when configured
+    (`materialization_write_credentials_json`), else reuses the read credential.
+    Returns a DECRYPTED config so `_build_bigquery_client` keys the client cache by
+    the write identity (separate warm client from the read path)."""
+    from app.core.crypto import decrypt_config
+    dc = decrypt_config(config)
+    write_cred = str(dc.get("materialization_write_credentials_json") or "").strip()
+    if write_cred:
+        wc = dict(dc)
+        wc["auth_mode"] = "service_account"
+        wc["credentials_json"] = write_cred
+        wc.pop("google_oauth_user_id", None)  # force SA path, not oauth
+        return wc
+    return dc
+
+
 _BQ_CLIENT_CACHE: Dict[str, Tuple[float, bigquery.Client]] = {}
 _BQ_CLIENT_CACHE_TTL_SEC = 300  # 5 min — keeps client warm across dashboard requests
 
@@ -1115,6 +1132,119 @@ class DataSourceConnectionService:
             # warm transport and forced a rebuild on the next tile.
             if client and not _bq_client_is_cached(config, client):
                 client.close()
+
+    # ── Snapshot materialization DDL (Dashboard perf #5) ────────────────────
+    # These are the ONLY DDL entrypoints. They deliberately bypass
+    # `validate_select_only` + the SELECT cost-check because the CTAS body is
+    # built solely from the engine's own `_sql_table_for_table` output (never
+    # user free-text), and the target is always a fixed `appbi_snapshots.snap_*`
+    # table. They use the write credential when one is configured.
+    @staticmethod
+    def get_bigquery_location(config: Dict[str, Any]) -> str | None:
+        """Location of the source's default dataset, so a snapshot dataset can be
+        COLOCATED (BQ cannot CTAS across locations). None → BQ default (US).
+        Uses the READ credential (it can see the source dataset)."""
+        from app.core.crypto import decrypt_config
+        dc = decrypt_config(config)
+        default_ds = str(dc.get("default_dataset") or "").strip()
+        if not default_ds:
+            return None
+        client = None
+        try:
+            client = _build_bigquery_client(dc)
+            project = str(dc.get("project_id") or "").strip()
+            return client.get_dataset(f"{project}.{default_ds}").location
+        except Exception:
+            return None
+        finally:
+            if client and not _bq_client_is_cached(dc, client):
+                client.close()
+
+    @staticmethod
+    def execute_bigquery_ddl(
+        config: Dict[str, Any], ddl_sql: str, timeout_seconds: int = 300,
+        location: str | None = None,
+    ) -> Dict[str, Any]:
+        """Run a DDL/CTAS statement on BigQuery. Returns job stats. `location`
+        pins the job to the source location (required for cross-dataset CTAS)."""
+        mat_cfg = _materialization_bq_config(config)
+        client = None
+        t0 = time.time()
+        try:
+            client = _build_bigquery_client(mat_cfg)
+            job = client.query(ddl_sql, location=location) if location else client.query(ddl_sql)
+            job.result(timeout=timeout_seconds)
+            return {
+                "ok": True,
+                "elapsed_ms": int((time.time() - t0) * 1000),
+                "affected_rows": getattr(job, "num_dml_affected_rows", None),
+            }
+        finally:
+            if client and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
+    def ensure_bigquery_dataset(
+        config: Dict[str, Any], dataset_name: str, location: str | None = None
+    ) -> None:
+        """Idempotently create the snapshot dataset with a default table
+        expiration (so orphaned snapshot tables self-clean)."""
+        mat_cfg = _materialization_bq_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(mat_cfg)
+            project = str(mat_cfg.get("project_id") or "").strip()
+            ds = bigquery.Dataset(f"{project}.{dataset_name}")
+            if location:
+                ds.location = location
+            ds.default_table_expiration_ms = 2 * 24 * 60 * 60 * 1000  # 2 days
+            client.create_dataset(ds, exists_ok=True)
+        finally:
+            if client and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
+    def drop_bigquery_table(config: Dict[str, Any], physical_ref: str) -> None:
+        mat_cfg = _materialization_bq_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(mat_cfg)
+            client.delete_table(physical_ref, not_found_ok=True)
+        finally:
+            if client and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
+    def get_bigquery_table_num_rows(config: Dict[str, Any], physical_ref: str) -> int | None:
+        mat_cfg = _materialization_bq_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(mat_cfg)
+            return int(client.get_table(physical_ref).num_rows)
+        except Exception:
+            return None
+        finally:
+            if client and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
+    def verify_bigquery_dataset_writable(
+        config: Dict[str, Any], dataset_name: str, location: str | None = None
+    ) -> Tuple[bool, str | None]:
+        """Preflight: can we create + drop a table in the snapshot dataset?
+        Returns (ok, error). Never raises — a False result → caller falls back to
+        live execution."""
+        try:
+            DataSourceConnectionService.ensure_bigquery_dataset(config, dataset_name, location)
+            project = str(_materialization_bq_config(config).get("project_id") or "").strip()
+            probe = f"{project}.{dataset_name}.appbi_wtest_{int(time.time())}"
+            DataSourceConnectionService.execute_bigquery_ddl(
+                config, f"CREATE OR REPLACE TABLE `{probe}` AS SELECT 1 AS x", timeout_seconds=60
+            )
+            DataSourceConnectionService.drop_bigquery_table(config, probe)
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
     @staticmethod
     def _estimate_bigquery_bytes(config: Dict[str, Any], sql_query: str) -> int:

@@ -5,7 +5,7 @@ import contextvars
 from copy import deepcopy
 import re
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import IntegrityError
@@ -499,6 +499,9 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "warnings": list(runtime_result.get("warnings") or []),
         # Phase-15.78: forward structured drop log to the API response.
         "dropped_filters": list(raw_debug.get("dropped_filters") or []),
+        # Dashboard perf #5 — snapshot freshness for the builder "as of" label.
+        "data_source_mode": raw_debug.get("data_source_mode"),
+        "snapshot_as_of": raw_debug.get("snapshot_as_of"),
     }
 
 
@@ -1824,6 +1827,87 @@ def _build_filtered_live_sql_for_dataset_table(
     )
 
 
+def _resolve_chart_snapshot_overrides(
+    db: Session,
+    datasource,
+    binding: dict,
+    base_view_name: str,
+    model_id,
+    dimension_refs: list,
+    measure_refs: list,
+    engine_filters: dict,
+    *,
+    ttl_minutes: Optional[int] = None,
+    force: bool = False,
+) -> Tuple[Dict[int, str], Optional[Any], str]:
+    """Dashboard perf #5 — resolve (and lazily build) snapshot tables for the
+    views THIS chart references, returning ({dataset_table_id: physical_ref},
+    as_of, mode). Bounded to the chart's own tables (base + field/filter views)
+    so one chart never blocks on the whole model. Any failure / disabled / no
+    write access → ({}, None, "live") so the chart falls back to the live path
+    unchanged. NEVER raises."""
+    try:
+        from app.services import snapshot_service
+        if not snapshot_service.is_enabled(datasource):
+            return {}, None, "live"
+        from app.models.semantic import SemanticView
+        from app.models.dataset import Dataset, DatasetTable
+        from app.models.models import DataSource
+
+        view_names = {str(base_view_name or "").strip()}
+        for ref in list(dimension_refs or []) + list(measure_refs or []) + list((engine_filters or {}).keys()):
+            vn = str(ref or "").split(".")[0].strip()
+            if vn:
+                view_names.add(vn)
+        view_names.discard("")
+        if not view_names:
+            return {}, None, "live"
+
+        # SemanticView has no model_id; its name (usually `dataset_table_<id>`)
+        # + unique dataset_table_id identify it. Resolve names → table ids, then
+        # scope to the chart's dataset so a same-named view in another model
+        # can't leak in.
+        table_ids = {
+            v.dataset_table_id
+            for v in db.query(SemanticView).filter(SemanticView.name.in_(list(view_names))).all()
+            if getattr(v, "dataset_table_id", None)
+        }
+        if not table_ids:
+            return {}, None, "live"
+
+        tables = db.query(DatasetTable).filter(DatasetTable.id.in_(list(table_ids))).all()
+        dataset_id = binding.get("datasetId") or (tables[0].dataset_id if tables else None)
+        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first() if dataset_id else None
+        if dataset_obj is None:
+            return {}, None, "live"
+        tables = [t for t in tables if t.dataset_id == dataset_obj.id]
+        tables_by_id = {t.id: t for t in tables}
+        if not tables_by_id:
+            return {}, None, "live"
+        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
+        datasource_by_id = {
+            d.id: d for d in db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
+        }
+
+        overrides = snapshot_service.ensure_and_resolve(
+            db, dataset_obj, tables_by_id, datasource_by_id,
+            force=force, ttl_minutes=ttl_minutes, build=True,
+        )
+        if not overrides:
+            return {}, None, "live"
+        as_of = snapshot_service.as_of(db, list(overrides.keys()))
+        materializable = {
+            tid for tid, t in tables_by_id.items()
+            if snapshot_service.should_materialize(t)
+            and snapshot_service.is_enabled(datasource_by_id.get(t.datasource_id))
+        }
+        mode = "snapshot" if materializable and set(overrides.keys()) >= materializable else "mixed"
+        return overrides, as_of, mode
+    except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
+        logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
+        return {}, None, "live"
+
+
 def _execute_semantic_chart_runtime(
     db: Session,
     datasource,
@@ -2170,6 +2254,18 @@ def _execute_semantic_chart_runtime(
     # N dry-runs for results already in cache. Compute the key + probe the
     # cache up front so a HIT returns before any of that work runs. (User
     # decision 2026-06-10: "skip dry-run on cache-hit + dashboard".)
+    # Dashboard perf #5 — resolve (and lazily build) snapshot tables BEFORE the
+    # cache probe, so the snapshot version is part of the cache key (a Refresh /
+    # new snapshot version → new key → clean miss → re-run over fresh data). MVP
+    # (builder + dashboard): use the CURRENT snapshot, build if none, no TTL
+    # age-out (freshness is controlled by the explicit Refresh button; public
+    # per-link TTL is Stage 2). Disabled/unavailable → ({}, None, "live").
+    _snap_overrides, _snap_as_of, _snap_mode = _resolve_chart_snapshot_overrides(
+        db, datasource, binding, base_view_name, model_id,
+        dimension_refs, measure_refs, engine_filters,
+        ttl_minutes=None, force=False,
+    )
+
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
         "_semantic_chart_runtime": True,
@@ -2177,6 +2273,8 @@ def _execute_semantic_chart_runtime(
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
         "_limit": effective_limit,
+        # #5 — snapshot version in the cache key so a refresh invalidates cleanly.
+        "_snapshot_asof": (_snap_as_of.isoformat() if _snap_as_of else None),
         # Phase-15.xx — time_grains MUST be part of the cache key. Two
         # requests with identical dimensions/measures but different date
         # grains (raw daily vs month bucketing) otherwise collapse onto the
@@ -2292,6 +2390,7 @@ def _execute_semantic_chart_runtime(
         explore_id=explore_id,
         response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
         diagnostics=filter_diagnostics,
+        snapshot_overrides=_snap_overrides,
     )
     try:
         sql, _engine_columns, _pivot_metadata = engine.run(_spec)
@@ -2426,6 +2525,11 @@ def _execute_semantic_chart_runtime(
             "dialect": dialect,
             "routing": "semantic_engine",
             "row_count": len(rows),
+            # Dashboard perf #5 — snapshot freshness for the builder "as of HH:MM"
+            # label + a live/snapshot badge. Oldest built_at wins (never over-
+            # claims freshness); "live" when no snapshot was used.
+            "data_source_mode": _snap_mode,
+            "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
             # Phase-15.78: structured record of every filter the BE dropped
             # before generating SQL. Empty list = nothing dropped. FE can
             # banner this so users discover when a slicer they applied

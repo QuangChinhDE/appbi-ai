@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -774,6 +774,30 @@ export default function DashboardDetailPage() {
   // FilterPane sidebar. Persisted in window only (intentionally not URL),
   // since pane state is a viewing preference.
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
+
+  // Dashboard perf #5 — snapshot "Refresh data" state.
+  const [isRefreshingSnapshots, setIsRefreshingSnapshots] = useState(false);
+  const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  const handleRefreshSnapshots = useCallback(async () => {
+    if (isRefreshingSnapshots) return;
+    setIsRefreshingSnapshots(true);
+    try {
+      const res = await dashboardApi.refreshSnapshots(dashboardId);
+      setSnapshotAsOf(res?.as_of ?? null);
+      // Force every tile to re-fetch against the freshly-rebuilt snapshots.
+      await queryClient.invalidateQueries({ queryKey: ['charts'] });
+      if (res?.as_of) {
+        const hhmm = new Date(res.as_of).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        toast.success(t('dashboards.detail.snapshotRefreshed', { time: hhmm }));
+      } else {
+        toast.success(t('dashboards.detail.snapshotRefreshedNoop'));
+      }
+    } catch {
+      toast.error(t('dashboards.detail.snapshotRefreshFailed'));
+    } finally {
+      setIsRefreshingSnapshots(false);
+    }
+  }, [isRefreshingSnapshots, dashboardId, queryClient, t]);
 
   // Filter changes are applied explicitly via the Apply action.
   //
@@ -2496,6 +2520,28 @@ export default function DashboardDetailPage() {
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
             <div className="flex shrink-0 items-center gap-1">
+              {/* Dashboard perf #5 — Refresh data (rebuild snapshots → latest
+                  numbers) + "Số tính đến HH:MM" freshness hint. */}
+              <button
+                type="button"
+                onClick={handleRefreshSnapshots}
+                disabled={isRefreshingSnapshots}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                title={snapshotAsOf
+                  ? t('dashboards.detail.snapshotAsOf', { time: new Date(snapshotAsOf).toLocaleString() })
+                  : t('dashboards.detail.refreshData')}
+              >
+                {isRefreshingSnapshots
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <RefreshCw className="h-3 w-3" />}
+                <span>{t('dashboards.detail.refreshData')}</span>
+                {snapshotAsOf && (
+                  <span className="text-[10px] text-text-quaternary">
+                    {new Date(snapshotAsOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </button>
+
               {/* Filter pane toggle (Phase-15.81).
                   Opens the right-dock FilterPane sidebar instead of the
                   old popover. Active state when pane is open OR when

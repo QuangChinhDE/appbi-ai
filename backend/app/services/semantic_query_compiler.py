@@ -50,6 +50,10 @@ class SemanticQuerySpec:
     # Caller-side extras (not engine args):
     response_aliases: dict[str, str] = field(default_factory=dict)
     diagnostics: list[dict] = field(default_factory=list)
+    # Dashboard perf #5 — {dataset_table_id -> snapshot physical_ref}. When set,
+    # the engine reads the flat snapshot for those views instead of re-running
+    # their heavy source SQL. Empty → live (byte-identical SQL).
+    snapshot_overrides: dict[int, str] = field(default_factory=dict)
 
 
 # ── The single role classifier (dimension vs measure) ───────────────────────

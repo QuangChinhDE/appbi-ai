@@ -195,6 +195,11 @@ class Settings(BaseSettings):
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
     BQ_MAX_BYTES_SCANNED: int = 60 * 1024**3            # 60 GB dry-run guard
     BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
+    # Dashboard perf #5 — snapshot materialization. Global default dataset where
+    # flat snapshot tables are written; a per-datasource `materialization_dataset`
+    # config value overrides it, this is the .env-configurable fallback.
+    MATERIALIZATION_DATASET: str = "appbi_snapshots"
+    MATERIALIZATION_DEFAULT_TTL_MINUTES: int = 30       # freshness TTL fallback (public links / builder)
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache

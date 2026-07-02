@@ -2365,6 +2365,31 @@ def create_dataset(
     return db_dataset
 
 
+@router.post("/{dataset_id}/snapshots/refresh")
+def refresh_dataset_snapshots(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dashboard perf #5 — force-rebuild the materialized snapshots for this
+    dataset's heavy tables (the builder "Refresh data" action → latest numbers).
+    Only tables on a materialization-enabled BigQuery datasource are rebuilt;
+    everything else is skipped. Returns the new `as_of` for the "Số tính đến"
+    label."""
+    from app.models.dataset import Dataset
+    from app.services import snapshot_service
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
+    return {"ok": True, **result}
+
+
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
 def get_dataset(
     dataset_id: int,

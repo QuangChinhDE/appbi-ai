@@ -54,6 +54,15 @@ export const dashboardApi = {
     await apiClient.delete(`/dashboards/${id}`);
   },
 
+  // Dashboard perf #5 — force-rebuild the materialized snapshots for every
+  // dataset this dashboard reads. Returns { as_of } for the "Số tính đến" label.
+  refreshSnapshots: async (
+    dashboardId: number,
+  ): Promise<{ ok: boolean; as_of: string | null; datasets: any[] }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/snapshots/refresh`);
+    return response.data;
+  },
+
   addChart: async (
     dashboardId: number,
     chartId: number,

@@ -152,7 +152,10 @@ class SemanticQueryEngine:
         # paths can recover a column's real type even when it was never
         # modeled as a declared dimension. Keyed by dataset_table_id.
         self._phys_coltype_cache: Dict[Any, Dict[str, str]] = {}
-    
+        # Dashboard perf #5 — snapshot redirect map (see generate_sql). Default
+        # empty = live behaviour; set per-request by the caller.
+        self._snapshot_overrides: Dict[int, str] = {}
+
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
         every path compiles to via ``semantic_query_compiler``). Unpacks to
@@ -174,6 +177,7 @@ class SemanticQueryEngine:
             measure_agg_overrides=(dict(spec.measure_agg_overrides) or None) if spec.measure_agg_overrides else None,
             model_id=spec.model_id,
             explore_id=spec.explore_id,
+            snapshot_overrides=getattr(spec, "snapshot_overrides", None),
         )
 
     def generate_sql(
@@ -197,6 +201,7 @@ class SemanticQueryEngine:
         explore_id: Optional[int] = None,
         _reanchored: bool = False,
         _disable_isolation: bool = False,
+        snapshot_overrides: Optional[Dict[int, str]] = None,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -211,6 +216,16 @@ class SemanticQueryEngine:
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
         self._phys_coltype_cache = {}
+        # Dashboard perf #5 — snapshot redirect. {dataset_table_id -> physical_ref}.
+        # When a view's table has a fresh materialized snapshot, the FROM clause
+        # reads the flat snapshot instead of re-running its heavy source SQL.
+        # Empty map → no change (byte-identical SQL). Read-only; never mutates the
+        # ORM SemanticView (no accidental DB flush). Set ONLY when the caller
+        # passes a value so it PERSISTS across the internal recursive
+        # generate_sql calls (measure-isolation re-anchor + per-fact multifact),
+        # which pass no override arg.
+        if snapshot_overrides is not None:
+            self._snapshot_overrides = dict(snapshot_overrides)
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -1874,7 +1889,7 @@ class SemanticQueryEngine:
         # measure `_measure_fact_view` returns the declared view (unchanged).
         view_name = self._measure_fact_view(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
-        m_table = view.sql_table_name or view_name
+        m_table = self._snapshot_ref_for_view(view) or view.sql_table_name or view_name
 
         plain_agg = self._render_measure(
             field_ref, agg_override=agg_override, _isolate=False,
@@ -2820,6 +2835,21 @@ class SemanticQueryEngine:
             if keyword in sql_upper:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
+    def _snapshot_ref_for_view(self, view) -> Optional[str]:
+        """Dashboard perf #5 — if this view's dataset table has a fresh
+        materialized snapshot, return a drop-in FROM operand that reads the flat
+        snapshot instead of re-running the view's heavy source SQL. Returns None
+        (→ use the normal sql_table_name) when there is no override. The snapshot
+        was materialized FROM the view's fully-resolved SQL, so `SELECT *` over it
+        is column-identical."""
+        if not self._snapshot_overrides:
+            return None
+        tid = getattr(view, "dataset_table_id", None)
+        ref = self._snapshot_overrides.get(tid) if tid is not None else None
+        if not ref:
+            return None
+        return f"(SELECT * FROM `{ref}`)"
+
     def _build_from_clause(
         self,
         explore: SemanticExplore,
@@ -2851,8 +2881,8 @@ class SemanticQueryEngine:
         if not base_view:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
 
-        # Determine base table name
-        base_table = base_view.sql_table_name or explore.base_view_name
+        # Determine base table name (snapshot redirect wins when present — #5)
+        base_table = self._snapshot_ref_for_view(base_view) or base_view.sql_table_name or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
 
         joined_nodes: set[str] = {explore.base_view_name}
@@ -2890,7 +2920,7 @@ class SemanticQueryEngine:
                 if edge.to_node in joined_nodes:
                     continue
                 join_view = self._get_view_for_node(edge.to_node)
-                join_table = join_view.sql_table_name or edge.to_view
+                join_table = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
                 join_condition_rendered = self._render_edge_join_condition(edge)
                 if not join_condition_rendered:
                     raise ValueError(
@@ -3637,7 +3667,7 @@ class SemanticQueryEngine:
                     join_view = self._get_view_for_node(edge.to_node)
                 except ValueError:
                     return None
-                relation = join_view.sql_table_name or edge.to_view
+                relation = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
                 # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
                 # (the user's production case: `WITH a AS (WITH b AS (...))`
                 # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
