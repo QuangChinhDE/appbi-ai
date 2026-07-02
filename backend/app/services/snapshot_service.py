@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -288,4 +288,14 @@ def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
         .all()
     )
     times = [r[0] for r in rows if r[0] is not None]
-    return min(times) if times else None
+    if not times:
+        return None
+    # `built_at` is stored as naive UTC (datetime.utcnow at build time). Stamp it
+    # UTC-aware so callers' `.isoformat()` emits an offset (…+00:00) — otherwise
+    # the tz-less string is parsed by the browser as LOCAL time, showing the
+    # "as of" label ~7h off in UTC+7. The frontend's toLocaleString then renders
+    # it in the viewer's own timezone.
+    oldest = min(times)
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    return oldest
