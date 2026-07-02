@@ -2485,6 +2485,52 @@ def _distinct_filter_targets_self(
     return False
 
 
+def _distinct_snapshot_context(db: Session, dataset_id: int):
+    """Dashboard perf #5 for the SLICER cascade (not just charts).
+
+    Slicer dropdowns call the distinct cascade, which re-scans the heavy
+    ``sql_query`` pipeline LIVE on every open (e.g. 15-21s each on report-demo)
+    even though the charts are already sub-second on snapshots. Mirror the chart
+    resolver's ALL-OR-NOTHING rule: only when the dataset is snapshot-eligible
+    (every table is sql_query or generated_calendar) AND every sql_query table
+    has a fresh current snapshot do we return
+    ``({dataset_table_id: physical_ref}, exec_ds_on_SA_cred)`` so the cascade
+    redirects EVERY relation to its snapshot and runs on the service-account
+    credential. Any gap → ``({}, None)`` and the cascade runs live, unchanged.
+    Because eligibility guarantees no physical/derived table remains, the
+    SA-executed SQL references only snapshot tables (+ inline calendar) — never
+    a source table the write SA cannot read. NEVER raises."""
+    try:
+        from types import SimpleNamespace
+        from app.services import snapshot_service
+        from app.services.datasource_service import DataSourceConnectionService
+        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
+        if len(ds_ids) != 1:
+            return {}, None
+        datasource = db.query(DataSource).filter(DataSource.id == next(iter(ds_ids))).first()
+        if datasource is None or not snapshot_service.is_enabled(datasource):
+            return {}, None
+        snap_map: Dict[int, str] = {}
+        for t in tables:
+            if is_generated_calendar_table(t):
+                continue
+            if not snapshot_service.should_materialize(t):
+                return {}, None  # physical/derived → SA can't read source → live
+            ref = snapshot_service.resolve_current_ref(db, t.id)
+            if not ref:
+                return {}, None  # a gap → all-or-nothing → live
+            snap_map[t.id] = ref
+        if not snap_map:
+            return {}, None
+        sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
+        exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
+        return snap_map, exec_ds
+    except Exception:  # noqa: BLE001 — snapshot must NEVER break a slicer
+        logger.warning("[snapshot] distinct-cascade context failed; using live", exc_info=True)
+        return {}, None
+
+
 def get_distinct_field_values(
     db: Session,
     dataset_id: int,
@@ -2561,6 +2607,10 @@ def get_distinct_field_values(
         )
     if not view:
         raise ValueError(f"View '{view_name}' not found")
+
+    # Perf #5 — serve the slicer cascade from snapshots (all-or-nothing). Empty
+    # map → live path byte-identical to before.
+    _snap_map, _snap_exec_ds = _distinct_snapshot_context(db, dataset_id)
 
     from app.core.crypto import decrypt_config
     from app.services.datasource_service import DataSourceConnectionService
@@ -2795,6 +2845,7 @@ def get_distinct_field_values(
         datasource_obj,
         dialect: str,
         dropped: list[dict],
+        use_snapshots: bool = False,
     ) -> str:
         """Phase-15.94 — Cascading filter strategy switched from
         `LEFT JOIN dim_X ... WHERE dim_X.col = ...` (which acted as an
@@ -2906,7 +2957,19 @@ def get_distinct_field_values(
                 joined_view = _get_view(step.edge.to_node)
                 if joined_view is None:
                     return None, "view_not_found"
-                relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
+                # Perf #5 — when the cascade runs on snapshots, redirect each
+                # joined relation to its snapshot table (a backtick-quoted ref
+                # that _wrap_live_sql_relation passes through unchanged) instead
+                # of the heavy live pipeline. Calendar views are absent from the
+                # map → fall through to the inline live relation (SA-safe).
+                _snap_ref = (
+                    _snap_map.get(getattr(joined_view, "dataset_table_id", None))
+                    if use_snapshots else None
+                )
+                relation = (
+                    f"`{_snap_ref}`" if _snap_ref
+                    else _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
+                )
                 if not relation:
                     return None, "view_not_found"
                 # Phase-15.95 — BigQuery rejects `WITH` clauses inside a
@@ -3347,9 +3410,13 @@ def get_distinct_field_values(
         dialect = _dialect_for_ds_type(ds_type)
         calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
-        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped)
-        table_identifier = f"calendar_view:{dataset_id}:{view_name}"
-        values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_datasource, table_identifier, sql))
+        # Perf #5 — calendar base is inline (SA-safe); if the cascade is on
+        # snapshots, run on the SA cred so any snapshot relation resolves.
+        _cal_snap = _snap_exec_ds is not None
+        cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
+        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
+        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + (":snap" if _cal_snap else "")
+        values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_exec_ds, table_identifier, sql))
         return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
     live_table = db_table
@@ -3372,6 +3439,16 @@ def get_distinct_field_values(
     def fetch_live_values() -> list[str]:
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
+        # Perf #5 — if this dropdown's own table has a fresh snapshot (and the
+        # dataset is eligible), scan the flat snapshot instead of re-running the
+        # heavy pipeline, and execute on the SA cred so every cascade relation
+        # (also redirected to snapshots) resolves. Any gap → live, unchanged.
+        _base_ref = _snap_map.get(getattr(live_table, "id", None))
+        if _base_ref and _snap_exec_ds is not None:
+            base_sql = f"SELECT * FROM `{_base_ref}`"
+            sql = _build_distinct_sql(base_sql, datasource, dialect, dropped, use_snapshots=True)
+            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap"
+            return execute_distinct_sql(_snap_exec_ds, table_identifier, sql)
         plan = resolve_dataset_table_relation(datasource, live_table)
         sql = _build_distinct_sql(plan.sql, datasource, dialect, dropped)
         table_identifier = build_dataset_table_cache_identifier(live_table)
