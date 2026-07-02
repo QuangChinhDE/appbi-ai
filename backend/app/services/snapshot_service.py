@@ -116,8 +116,6 @@ def _fingerprint(resolved_sql: str, table: DatasetTable) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _physical_ref(project: str, snap_dataset: str, table_id: int, version: int) -> str:
-    return f"{project}.{snap_dataset}.snap_t{table_id}_v{version}"
 
 
 # ── build (single-flight) ───────────────────────────────────────────────────
@@ -159,7 +157,8 @@ def build_table_snapshot(
             return current
 
         version = int(time.time() * 1000)
-        ref = _physical_ref(project, snap_dataset, table.id, version)
+        table_name = f"snap_t{table.id}_v{version}"
+        ref = f"{project}.{snap_dataset}.{table_name}"
         row = DatasetTableSnapshot(
             dataset_id=dataset_obj.id,
             dataset_table_id=table.id,
@@ -173,14 +172,19 @@ def build_table_snapshot(
         db.commit()
 
         t0 = time.time()
-        location = _source_location(datasource)
         try:
+            # EXTRACT with the datasource's own read credential, LOAD with the
+            # write service account — the write SA never reads the source, and
+            # the snapshot dataset is SA-only (per the chosen access model).
+            location = _source_location(datasource)
             DataSourceConnectionService.ensure_bigquery_dataset(datasource.config, snap_dataset, location=location)
-            ddl = f"CREATE OR REPLACE TABLE `{ref}` AS (\n{resolved_sql}\n)"
-            DataSourceConnectionService.execute_bigquery_ddl(
-                datasource.config, ddl, timeout_seconds=_DDL_TIMEOUT_SEC, location=location
+            bq_schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
+                datasource.config, resolved_sql, timeout_seconds=_DDL_TIMEOUT_SEC
             )
-            row.row_count = DataSourceConnectionService.get_bigquery_table_num_rows(datasource.config, ref)
+            row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
+                datasource.config, snap_dataset, table_name, bq_schema, rows,
+                timeout_seconds=_DDL_TIMEOUT_SEC,
+            )
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             row = db.query(DatasetTableSnapshot).get(row.id)
@@ -242,39 +246,6 @@ def resolve_current_ref(db: Session, table_id: int, *, ttl_minutes: Optional[int
         if age_min > ttl_minutes:
             return None
     return row.physical_ref
-
-
-def ensure_and_resolve(
-    db: Session,
-    dataset_obj: Dataset,
-    tables_by_id: Dict[int, DatasetTable],
-    datasource_by_id: Dict[int, DataSource],
-    *,
-    force: bool = False,
-    ttl_minutes: Optional[int] = None,
-    build: bool = True,
-) -> Dict[int, str]:
-    """For the given dataset tables, (optionally) build stale snapshots then
-    return {table_id -> physical_ref} for all tables that now have a fresh ready
-    snapshot. Tables that can't be materialized / failed are omitted (→ live)."""
-    out: Dict[int, str] = {}
-    for tid, table in tables_by_id.items():
-        if not should_materialize(table):
-            continue
-        ds = datasource_by_id.get(table.datasource_id)
-        if not is_enabled(ds):
-            continue
-        eff_ttl = ttl_minutes
-        if build:
-            ref = resolve_current_ref(db, tid, ttl_minutes=eff_ttl if not force else None)
-            if force or ref is None:
-                built = build_table_snapshot(db, dataset_obj, table, ds, force=force)
-                ref = built.physical_ref if built is not None else None
-        else:
-            ref = resolve_current_ref(db, tid, ttl_minutes=eff_ttl)
-        if ref:
-            out[tid] = ref
-    return out
 
 
 def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True) -> dict:

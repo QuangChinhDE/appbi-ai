@@ -200,6 +200,12 @@ class Settings(BaseSettings):
     # config value overrides it, this is the .env-configurable fallback.
     MATERIALIZATION_DATASET: str = "appbi_snapshots"
     MATERIALIZATION_DEFAULT_TTL_MINUTES: int = 30       # freshness TTL fallback (public links / builder)
+    # Global AppBI write service account for snapshot CREATE+LOAD (never reads
+    # source). KEY_FILE (path to SA JSON) takes priority over inline JSON; blank
+    # → fall back to the datasource's own credential. Per-datasource
+    # `materialization_write_credentials_json` overrides both.
+    MATERIALIZATION_SA_KEY_FILE: str = ""
+    MATERIALIZATION_SA_CREDENTIALS_JSON: str = ""
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache

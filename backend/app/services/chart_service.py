@@ -1838,71 +1838,60 @@ def _resolve_chart_snapshot_overrides(
     engine_filters: dict,
     *,
     ttl_minutes: Optional[int] = None,
-    force: bool = False,
 ) -> Tuple[Dict[int, str], Optional[Any], str]:
-    """Dashboard perf #5 — resolve (and lazily build) snapshot tables for the
-    views THIS chart references, returning ({dataset_table_id: physical_ref},
-    as_of, mode). Bounded to the chart's own tables (base + field/filter views)
-    so one chart never blocks on the whole model. Any failure / disabled / no
-    write access → ({}, None, "live") so the chart falls back to the live path
-    unchanged. NEVER raises."""
+    """Dashboard perf #5 — decide whether this chart can be served from snapshots.
+    Returns ({dataset_table_id: physical_ref}, as_of, mode). Non-empty overrides
+    ⇒ the ENTIRE query reads only SA-only snapshot tables (+ inline calendar) and
+    MUST be executed with the snapshot (service-account) credential.
+
+    ALL-OR-NOTHING, resolve-only (no build in the hot path — the Refresh action
+    / scheduler builds): only when the dataset is snapshot-ELIGIBLE (every table
+    is sql_query or generated_calendar — NO physical/derived table that the write
+    SA couldn't read) AND every sql_query table already has a fresh current
+    snapshot. Any gap → ({}, None, "live") so the chart runs live on the user
+    credential unchanged. NEVER raises."""
     try:
         from app.services import snapshot_service
+        from app.services.dataset_calendar_service import is_generated_calendar_table
         if not snapshot_service.is_enabled(datasource):
             return {}, None, "live"
         from app.models.semantic import SemanticView
         from app.models.dataset import Dataset, DatasetTable
-        from app.models.models import DataSource
 
-        view_names = {str(base_view_name or "").strip()}
-        for ref in list(dimension_refs or []) + list(measure_refs or []) + list((engine_filters or {}).keys()):
-            vn = str(ref or "").split(".")[0].strip()
-            if vn:
-                view_names.add(vn)
-        view_names.discard("")
-        if not view_names:
-            return {}, None, "live"
-
-        # SemanticView has no model_id; its name (usually `dataset_table_<id>`)
-        # + unique dataset_table_id identify it. Resolve names → table ids, then
-        # scope to the chart's dataset so a same-named view in another model
-        # can't leak in.
-        table_ids = {
-            v.dataset_table_id
-            for v in db.query(SemanticView).filter(SemanticView.name.in_(list(view_names))).all()
-            if getattr(v, "dataset_table_id", None)
-        }
-        if not table_ids:
-            return {}, None, "live"
-
-        tables = db.query(DatasetTable).filter(DatasetTable.id.in_(list(table_ids))).all()
-        dataset_id = binding.get("datasetId") or (tables[0].dataset_id if tables else None)
+        # Resolve the chart's dataset (binding.datasetId, else via the base view).
+        dataset_id = binding.get("datasetId")
+        if not dataset_id and base_view_name:
+            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
+            if bv is not None and getattr(bv, "dataset_table_id", None):
+                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
+                dataset_id = bt.dataset_id if bt else None
         dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first() if dataset_id else None
         if dataset_obj is None:
             return {}, None, "live"
-        tables = [t for t in tables if t.dataset_id == dataset_obj.id]
-        tables_by_id = {t.id: t for t in tables}
-        if not tables_by_id:
-            return {}, None, "live"
-        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
-        datasource_by_id = {
-            d.id: d for d in db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
-        }
 
-        overrides = snapshot_service.ensure_and_resolve(
-            db, dataset_obj, tables_by_id, datasource_by_id,
-            force=force, ttl_minutes=ttl_minutes, build=True,
-        )
-        if not overrides:
+        all_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
+        # Eligible only if the SA (which can't read source) could run the whole
+        # query: every table must be a snapshot (sql_query) or inline calendar.
+        # A physical/derived table would leave a source reference in the SQL.
+        sql_tables = []
+        for t in all_tables:
+            if is_generated_calendar_table(t):
+                continue
+            if not snapshot_service.should_materialize(t):  # physical / derived
+                return {}, None, "live"
+            sql_tables.append(t)
+        if not sql_tables:
             return {}, None, "live"
+
+        # All-or-nothing: every sql_query table must have a fresh current snapshot.
+        overrides: Dict[int, str] = {}
+        for t in sql_tables:
+            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=ttl_minutes)
+            if ref is None:
+                return {}, None, "live"
+            overrides[t.id] = ref
         as_of = snapshot_service.as_of(db, list(overrides.keys()))
-        materializable = {
-            tid for tid, t in tables_by_id.items()
-            if snapshot_service.should_materialize(t)
-            and snapshot_service.is_enabled(datasource_by_id.get(t.datasource_id))
-        }
-        mode = "snapshot" if materializable and set(overrides.keys()) >= materializable else "mixed"
-        return overrides, as_of, mode
+        return overrides, as_of, "snapshot"
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
         logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
         return {}, None, "live"
@@ -2263,7 +2252,14 @@ def _execute_semantic_chart_runtime(
     _snap_overrides, _snap_as_of, _snap_mode = _resolve_chart_snapshot_overrides(
         db, datasource, binding, base_view_name, model_id,
         dimension_refs, measure_refs, engine_filters,
-        ttl_minutes=None, force=False,
+        ttl_minutes=None,
+    )
+    # When snapshots back the whole query, execute with the snapshot (service-
+    # account) credential — the snapshot dataset is SA-only, so the user cred
+    # can't read it. Empty overrides → normal user-cred live execution.
+    _snap_exec_config = (
+        DataSourceConnectionService.snapshot_query_config(datasource.config)
+        if _snap_overrides else None
     )
 
     cache_enabled = _should_cache_live_query(ds_type)
@@ -2428,9 +2424,13 @@ def _execute_semantic_chart_runtime(
     # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
     # Reaching here means a cache MISS, so we generated SQL and now execute.
 
+    # Execution credential: snapshot-backed queries read the SA-only snapshot
+    # dataset → run on the service-account config; else the datasource's own cred.
+    _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
+
     # BigQuery cost guard (mirrors LiveQueryService behavior).
     if ds_type == "bigquery":
-        config = decrypt_config(datasource.config)
+        config = decrypt_config(_exec_config)
         estimated_bytes = _estimate_bigquery_bytes(config, sql)
         max_bytes = settings.BQ_MAX_BYTES_SCANNED
         if estimated_bytes > max_bytes:
@@ -2450,7 +2450,7 @@ def _execute_semantic_chart_runtime(
     try:
         _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
             ds_type,
-            datasource.config,
+            _exec_config,
             sql,
             timeout_seconds=timeout,
             skip_bigquery_cost_check=True,

@@ -267,14 +267,37 @@ def _build_gcp_credentials(config: Dict[str, Any]):
     return service_account.Credentials.from_service_account_info(credentials_info)
 
 
+def _materialization_write_credentials_json(dc: Dict[str, Any]) -> str:
+    """Resolve the write-SA key JSON. Precedence: per-datasource
+    `materialization_write_credentials_json` → global `.env`
+    MATERIALIZATION_SA_KEY_FILE (path) → MATERIALIZATION_SA_CREDENTIALS_JSON
+    (inline) → '' (fall back to the datasource read credential)."""
+    per_ds = str(dc.get("materialization_write_credentials_json") or "").strip()
+    if per_ds:
+        return per_ds
+    try:
+        from app.core.config import settings
+        key_file = str(getattr(settings, "MATERIALIZATION_SA_KEY_FILE", "") or "").strip()
+        if key_file and os.path.exists(key_file):
+            with open(key_file, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+        inline = str(getattr(settings, "MATERIALIZATION_SA_CREDENTIALS_JSON", "") or "").strip()
+        if inline:
+            return inline
+    except Exception:  # noqa: BLE001 — never let config lookup break materialization
+        logger.warning("[snapshot] global write-SA lookup failed", exc_info=True)
+    return ""
+
+
 def _materialization_bq_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Config for snapshot DDL. Uses the separate write credential when configured
-    (`materialization_write_credentials_json`), else reuses the read credential.
-    Returns a DECRYPTED config so `_build_bigquery_client` keys the client cache by
-    the write identity (separate warm client from the read path)."""
+    """Config for snapshot CREATE+LOAD + reading the SA-only snapshot dataset.
+    Uses the write service account (per-datasource cred, else the global .env SA)
+    so it never rides the datasource read identity; falls back to the read
+    credential only when no write SA is configured. Returns a DECRYPTED config so
+    `_build_bigquery_client` keys the client cache by the write identity."""
     from app.core.crypto import decrypt_config
     dc = decrypt_config(config)
-    write_cred = str(dc.get("materialization_write_credentials_json") or "").strip()
+    write_cred = _materialization_write_credentials_json(dc)
     if write_cred:
         wc = dict(dc)
         wc["auth_mode"] = "service_account"
@@ -1140,6 +1163,80 @@ class DataSourceConnectionService:
     # user free-text), and the target is always a fixed `appbi_snapshots.snap_*`
     # table. They use the write credential when one is configured.
     @staticmethod
+    def extract_bigquery_for_snapshot(
+        config: Dict[str, Any], sql: str, timeout_seconds: int = 280
+    ) -> Tuple[list, List[Dict[str, Any]]]:
+        """EXTRACT step of snapshot materialization: run `sql` with the datasource's
+        OWN (read) credential and return (bq_schema, json_safe_rows). The schema is
+        the source query's exact BigQuery schema so the LOAD preserves types 1:1
+        (no autodetect drift — parity is non-negotiable). Rows are coerced to
+        JSON-loadable values (dates→ISO, NUMERIC/Decimal→str, bytes→base64)."""
+        import base64
+        import datetime as _dt
+        from decimal import Decimal
+        client = None
+        try:
+            client = _build_bigquery_client(config)  # datasource READ credential
+            job = client.query(sql)
+            it = job.result(timeout=timeout_seconds)
+            schema = list(it.schema)
+
+            def _coerce(v):
+                if v is None:
+                    return None
+                if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+                    return v.isoformat()
+                if isinstance(v, Decimal):
+                    return str(v)
+                if isinstance(v, bytes):
+                    return base64.b64encode(v).decode("ascii")
+                if isinstance(v, dict):
+                    return {k: _coerce(x) for k, x in v.items()}
+                if isinstance(v, (list, tuple)):
+                    return [_coerce(x) for x in v]
+                return v
+
+            rows = [{k: _coerce(val) for k, val in dict(r).items()} for r in it]
+            return schema, rows
+        finally:
+            if client and not _bq_client_is_cached(config, client):
+                client.close()
+
+    @staticmethod
+    def load_bigquery_snapshot(
+        config: Dict[str, Any], dataset_name: str, table_name: str,
+        bq_schema: list, rows: List[Dict[str, Any]], timeout_seconds: int = 280,
+    ) -> int:
+        """LOAD step: write `rows` into `<snapshot_dataset>.<table_name>` using the
+        WRITE service account (materialization credential) with the EXACT source
+        schema. WRITE_TRUNCATE = full replace. The write SA never reads the source.
+        Returns loaded row count."""
+        mat_cfg = _materialization_bq_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(mat_cfg)
+            project = str(mat_cfg.get("project_id") or "").strip()
+            table_ref = f"{project}.{dataset_name}.{table_name}"
+            job_config = bigquery.LoadJobConfig(
+                schema=bq_schema,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            )
+            job = client.load_table_from_json(rows, table_ref, job_config=job_config)
+            job.result(timeout=timeout_seconds)
+            return int(getattr(client.get_table(table_ref), "num_rows", len(rows)) or len(rows))
+        finally:
+            if client and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
+    def snapshot_query_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Config for READING snapshot tables at chart time — uses the write
+        service account (which is the only identity granted on the SA-only
+        snapshot dataset). Returns a decrypted config ready for execute_query."""
+        return _materialization_bq_config(config)
+
+    @staticmethod
     def get_bigquery_location(config: Dict[str, Any]) -> str | None:
         """Location of the source's default dataset, so a snapshot dataset can be
         COLOCATED (BQ cannot CTAS across locations). None → BQ default (US).
@@ -1187,14 +1284,24 @@ class DataSourceConnectionService:
     def ensure_bigquery_dataset(
         config: Dict[str, Any], dataset_name: str, location: str | None = None
     ) -> None:
-        """Idempotently create the snapshot dataset with a default table
-        expiration (so orphaned snapshot tables self-clean)."""
+        """Make sure the snapshot dataset exists — tolerant of the strict-perms
+        model. Checks existence FIRST (needs only read/get, which the write SA's
+        dataEditor grants); only attempts create when it's missing. So a SA that
+        has dataEditor on a PRE-CREATED dataset but NO project-level
+        `datasets.create` never hits a 403 here."""
+        from google.api_core.exceptions import NotFound
         mat_cfg = _materialization_bq_config(config)
         client = None
         try:
             client = _build_bigquery_client(mat_cfg)
             project = str(mat_cfg.get("project_id") or "").strip()
-            ds = bigquery.Dataset(f"{project}.{dataset_name}")
+            ref = f"{project}.{dataset_name}"
+            try:
+                client.get_dataset(ref)
+                return  # already exists → no create needed (strict-perms friendly)
+            except NotFound:
+                pass
+            ds = bigquery.Dataset(ref)
             if location:
                 ds.location = location
             ds.default_table_expiration_ms = 2 * 24 * 60 * 60 * 1000  # 2 days

@@ -203,3 +203,8 @@ backend/scripts/seed_phase16_*.sql
 backend/scripts/finalize_demo_*.py
 backend/scripts/verify_demo_*.py
 backend/scripts/update_workboard10_*.py
+
+# GCP service-account keys (NEVER commit — snapshot materialization write SA)
+base-testlab-*.json
+*service-account*.json
+*serviceaccount*.json
