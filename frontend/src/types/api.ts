@@ -183,6 +183,8 @@ export interface DashboardThemeConfig {
   /** Structural (charts) */
   gridlineColor?: string;
   axisLabelColor?: string;
+  /** #4 — dashboard-wide display units for value axes + KPI values (PBI parity). */
+  displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
   /** Phase-B16 — report background image (data-URL) + readability controls.
    *  Charts render ON TOP of the image. */
   backgroundImage?: string;       // data:image/...;base64,... (downscaled)

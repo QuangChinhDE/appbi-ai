@@ -132,9 +132,15 @@ export function normalizeDashboardTheme(theme?: DashboardThemeConfig | null) {
   const bgOverlayRaw = typeof raw.bgOverlay === 'number' ? raw.bgOverlay : Number(raw.bgOverlay);
   const bgOverlay = Number.isFinite(bgOverlayRaw) ? Math.min(Math.max(bgOverlayRaw, 0), 0.9) : undefined;
   const glassCards = raw.glassCards === true || String(raw.glassCards) === 'true';
+  // #4 — dashboard-wide "Display units" (PBI parity). Applies to value axes +
+  // KPI values so a report reads in one consistent magnitude (tỷ/triệu/nghìn).
+  const DU = new Set(['auto', 'none', 'thousands', 'millions', 'billions']);
+  const duRaw = typeof raw.displayUnits === 'string' ? raw.displayUnits.trim().toLowerCase() : '';
+  const displayUnits = DU.has(duRaw) ? (duRaw as 'auto' | 'none' | 'thousands' | 'millions' | 'billions') : undefined;
 
   return {
     mode: raw.mode ?? 'light',
+    displayUnits,
     accent,
     fontFamily: normalizeFont(raw.fontFamily ?? raw.font),
     background,
@@ -183,6 +189,8 @@ export type DashboardChartTheme = {
   cardBackdrop?: string;
   /** Phase-B16 — theme accent so KPI values can follow it (PBI cohesion). */
   accent?: string;
+  /** #4 — dashboard-wide display units for value axes + KPI values. */
+  displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
 };
 
 export const DashboardThemeContext = React.createContext<DashboardChartTheme>({});
@@ -273,6 +281,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
     titleFontSize: t.titleFontSize,
     titleColor: t.titleColor,
     accent: t.accent,
+    displayUnits: t.displayUnits,
     // Phase-B16 — translucent "glass" tiles so a background image shows through.
     // High opacity keeps charts crisp (low opacity reads muddy, esp. dark over a
     // bright image); the blur + the tile shadow give a clean "floating" look.

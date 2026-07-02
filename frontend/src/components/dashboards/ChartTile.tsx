@@ -1074,7 +1074,7 @@ function ChartTileBase({
                 <span className="flex-1" aria-hidden />
               )
             ) : displayTitle ? (
-              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
+              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle} title={displayTitle}>{displayTitle}</h3>
             ) : canEdit ? (
               /* Phase-B11 — no auto chart-name title; nudge the DA to add one. */
               <button
