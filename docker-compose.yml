@@ -60,6 +60,10 @@ services:
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       # Workboard module — bundled with the core stack.
       WORKBOARDS_ENABLED: ${WORKBOARDS_ENABLED:-true}
+      # Web Push (VAPID) for mini-app notifications — set in .env (keys never committed).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@appbi.io}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@appbi.io}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}

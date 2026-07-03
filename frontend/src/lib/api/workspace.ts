@@ -124,12 +124,14 @@ export interface FormScreenResponse {
   primary_key_columns: string[];
   submit_label?: string | null;
   fields: Array<Record<string, unknown>>;
-  lookups: Record<string, Array<{ label: string; value: unknown }>>;
+  lookups: Record<string, Array<{ label: string; value: unknown; geometry?: unknown; lat?: unknown; lng?: unknown; filter?: unknown }>>;
   initial_values: Record<string, unknown>;
   after_submit?: ScreenAction | null;
   /** Columns the workboard auto-fills on insert when left blank.
    *  Treat as readonly with a hint so the user knows typing is ignored. */
   auto_number_columns?: string[];
+  /** When set, the FE captures device GPS at submit and writes "lat,lng" here. */
+  geo_stamp_column?: string | null;
   /** Pages array for multi-step forms (optional). */
   pages?: Array<Record<string, unknown>>;
   /** Section headings used to group fields inside a single page. */
@@ -211,7 +213,7 @@ export interface TableScreenResponse {
       sections?: Record<string, string[]>;
     };
     empty_state_message?: string | null;
-    display_mode?: 'table' | 'gallery';
+    display_mode?: 'table' | 'gallery' | 'calendar';
     gallery_config?: {
       image_column: string;
       title_column?: string | null;
@@ -219,8 +221,15 @@ export interface TableScreenResponse {
       group_by_column?: string | null;
       columns_per_row?: number;
     } | null;
+    calendar_config?: {
+      date_column: string;
+      title_column?: string | null;
+      color_column?: string | null;
+    } | null;
+    stat_tiles?: Array<{ label: string; column: string; agg?: string; format?: string | null; unit?: string | null }>;
   };
   totals_row?: Record<string, unknown> | null;
+  stat_tiles?: Array<{ label: string; value: unknown; format?: string | null; unit?: string | null }>;
   column_groups?: Array<{ label: string; columns: string[] }>;
   merges?: Array<{ column: string; row_start: number; row_span: number }>;
   column_labels?: Record<string, string>;
@@ -420,6 +429,30 @@ export const workspaceApi = {
     const r = await client.delete(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       { data: { pk } },
+    );
+    return r.data;
+  },
+  // ── Web Push (C13) ──
+  async pushConfig(token: string): Promise<{ enabled: boolean; public_key: string | null }> {
+    const r = await client.get(`/public/workspaces/${token}/push/config`);
+    return r.data;
+  },
+  async pushSubscribe(
+    token: string,
+    workboardId: number,
+    subscription: unknown,
+    unsubscribe = false,
+  ): Promise<Record<string, unknown>> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/push/subscribe`,
+      { subscription, unsubscribe },
+    );
+    return r.data;
+  },
+  async pushTest(token: string, workboardId: number): Promise<{ ok: boolean; delivered: number }> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/push/test`,
+      {},
     );
     return r.data;
   },

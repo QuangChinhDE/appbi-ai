@@ -16,7 +16,7 @@
  *                                                    screens/reports viewed at least once
  *   - everything else                             -> network (untouched)
  */
-const VERSION = 'appbi-pwa-v2';
+const VERSION = 'appbi-pwa-v3';
 const STATIC_CACHE = `${VERSION}-static`;
 const PAGE_CACHE = `${VERSION}-pages`;
 const RSC_CACHE = `${VERSION}-rsc`;
@@ -41,6 +41,40 @@ self.addEventListener('activate', (event) => {
 // Let the app force activation of a freshly-deployed SW.
 self.addEventListener('message', (e) => {
   if (e.data === 'SKIP_WAITING') self.skipWaiting();
+});
+
+// ── Web Push (C13) ────────────────────────────────────────────────────────
+// Payload is JSON {title, body, url}. Shows a notification; clicking it focuses
+// an existing mini-app tab or opens the target URL.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { body: event.data ? event.data.text() : '' };
+  }
+  const title = data.title || 'Thông báo';
+  const options = {
+    body: data.body || '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    data: { url: data.url || '/m' },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/m';
+  event.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of all) {
+        if (client.url.includes(target) && 'focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })(),
+  );
 });
 
 const isStatic = (u) =>

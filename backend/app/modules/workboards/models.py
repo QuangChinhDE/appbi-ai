@@ -309,6 +309,41 @@ class WorkboardAppUser(Base):
     )
 
 
+class WorkboardPushSubscription(Base):
+    """A Web Push subscription for one mini-app user on one device.
+
+    Stored per (workboard, username, endpoint). The endpoint is the unique
+    per-device push URL the browser hands us; p256dh + auth are the keys the
+    server needs to encrypt payloads (RFC 8291). Sent via VAPID.
+    """
+
+    __tablename__ = "workboard_push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workboard_id = Column(
+        Integer,
+        ForeignKey("workboards.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    username = Column(String(255), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(String(255), nullable=False)
+    auth = Column(String(255), nullable=False)
+    user_agent = Column(String(500), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workboard_id", "username", "endpoint", name="uq_wb_push_sub"
+        ),
+    )
+
+
 class WorkboardSyncRun(Base):
     """One outbound webhook execution kicked off from a doc data_table block.
 

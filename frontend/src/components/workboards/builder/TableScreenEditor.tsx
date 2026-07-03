@@ -719,25 +719,66 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       const gc = tableSpec.gallery_config || { image_column: '' };
       const updateGallery = (patch: Partial<NonNullable<TableSpec['gallery_config']>>) =>
         updateTable({ gallery_config: { ...gc, ...patch } });
+      const cal = tableSpec.calendar_config || { date_column: '' };
+      const updateCalendar = (patch: Partial<NonNullable<TableSpec['calendar_config']>>) =>
+        updateTable({ calendar_config: { ...cal, ...patch } });
       const visibleCols = tableSpec.columns || [];
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
           title="Chế độ hiển thị"
-          subtitle="Bảng dữ liệu hoặc lưới thẻ ảnh (Gallery) — cùng dữ liệu, chỉ khác cách hiển thị."
+          subtitle="Bảng / lưới thẻ ảnh (Gallery) / lịch (Calendar) — cùng dữ liệu, chỉ khác cách hiển thị."
         >
           <Lbl label="Kiểu hiển thị">
             <select
               value={mode}
               onChange={(event) =>
-                updateTable({ display_mode: event.target.value as 'table' | 'gallery' })
+                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' })
               }
               className={INPUT}
             >
               <option value="table">Bảng (mặc định)</option>
               <option value="gallery">Gallery ảnh</option>
+              <option value="calendar">Lịch (Calendar)</option>
             </select>
           </Lbl>
+
+          {mode === 'calendar' && (
+            <div className="mt-3 space-y-3">
+              {visibleCols.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  Hãy chọn cột hiển thị trước — Calendar cần một cột ngày.
+                </BuilderEmptyHint>
+              ) : (
+                <>
+                  <Lbl label="Cột ngày (bắt buộc)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.date_column || null}
+                      onChange={(next) => updateCalendar({ date_column: next || '' })}
+                      placeholder="-- cột ngày đặt bản ghi lên lịch --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột nhãn trên ô ngày (tùy chọn)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.title_column || null}
+                      onChange={(next) => updateCalendar({ title_column: next || null })}
+                      placeholder="-- mặc định: khoá chính --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột tô màu chip (tùy chọn, vd trạng thái)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.color_column || null}
+                      onChange={(next) => updateCalendar({ color_column: next || null })}
+                      placeholder="-- không --"
+                    />
+                  </Lbl>
+                </>
+              )}
+            </div>
+          )}
 
           {mode === 'gallery' && (
             <div className="mt-3 space-y-3">
@@ -797,6 +838,87 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               )}
             </div>
           )}
+
+          <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700">Thẻ KPI (trên đầu bảng)</div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateTable({
+                    stat_tiles: [
+                      ...(tableSpec.stat_tiles || []),
+                      { label: '', column: '', agg: 'sum' },
+                    ],
+                  })
+                }
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                <Plus className="h-3.5 w-3.5" /> Thêm thẻ
+              </button>
+            </div>
+            {(tableSpec.stat_tiles || []).length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                Chưa có thẻ KPI. Thêm để hiện tổng/đếm ngay trên đầu bảng (vd Σ Sản lượng).
+              </BuilderEmptyHint>
+            ) : (
+              (tableSpec.stat_tiles || []).map((tile, idx) => {
+                const updateTile = (patch: Partial<NonNullable<TableSpec['stat_tiles']>[number]>) =>
+                  updateTable({
+                    stat_tiles: (tableSpec.stat_tiles || []).map((t, i) =>
+                      i === idx ? { ...t, ...patch } : t,
+                    ),
+                  });
+                return (
+                  <div key={idx} className="flex items-center gap-2">
+                    <input
+                      value={tile.label}
+                      onChange={(event) => updateTile({ label: event.target.value })}
+                      placeholder="Nhãn (Σ Sản lượng)"
+                      className={INPUT}
+                    />
+                    <SingleColumnPicker
+                      sourceColumns={tableSpec.columns || []}
+                      value={tile.column || null}
+                      onChange={(next) => updateTile({ column: next || '' })}
+                      placeholder="-- cột --"
+                    />
+                    <select
+                      value={tile.agg || 'sum'}
+                      onChange={(event) =>
+                        updateTile({ agg: event.target.value as NonNullable<TableSpec['stat_tiles']>[number]['agg'] })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="sum">sum</option>
+                      <option value="avg">avg</option>
+                      <option value="min">min</option>
+                      <option value="max">max</option>
+                      <option value="count">count</option>
+                    </select>
+                    <input
+                      value={tile.unit || ''}
+                      onChange={(event) => updateTile({ unit: event.target.value || null })}
+                      placeholder="đơn vị"
+                      className={`${INPUT} w-20`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateTable({
+                          stat_tiles: (tableSpec.stat_tiles || []).filter((_, i) => i !== idx),
+                        })
+                      }
+                      className="shrink-0 text-rose-600"
+                      title="Xoá"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </BuilderInspectorPanel>
       );
     }

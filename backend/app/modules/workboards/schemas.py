@@ -73,6 +73,51 @@ class LookupConfig(BaseModel):
         default="satellite", description="Basemap tile style for the map widget."
     )
 
+    # ── Dependent / cascading lookup (widget=select/lookup) ──────────────────
+    # When set, the FE narrows the options to the rows whose `filter_column`
+    # equals the current value of another form field (`filter_by_field`).
+    # `_resolve_lookup_options` projects `filter_column` into each option so the
+    # FE can filter client-side as the parent field changes.
+    filter_by_field: Optional[str] = Field(
+        default=None,
+        description="Column of ANOTHER form field whose value narrows these options (cascading select).",
+    )
+    filter_column: Optional[str] = Field(
+        default=None,
+        description="Remote column on the lookup table matched against filter_by_field's value.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatusState(BaseModel):
+    """One state in a status/approval widget."""
+
+    value: str = Field(..., min_length=1, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=120)
+    color: Optional[str] = Field(
+        default=None,
+        description="Badge tone: slate|green|amber|red|blue|violet (FE maps to Tailwind).",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatusConfig(BaseModel):
+    """Config for widget='status' — a colored lifecycle select with per-role gating.
+
+    Distinct from a plain select: it renders a badge, and `editable_by_roles`
+    restricts WHO may change it (approval gate) on top of the screen RLS
+    ``writable_columns``. Empty ``editable_by_roles`` = every role that can write
+    the row may change it.
+    """
+
+    states: List[StatusState] = Field(default_factory=list)
+    editable_by_roles: List[str] = Field(
+        default_factory=list,
+        description="Roles allowed to change the status. Empty = anyone who can write the row.",
+    )
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -90,6 +135,13 @@ class FormField(BaseModel):
         "file",
         "image",
         "map",
+        "geopoint",   # capture device GPS -> "lat,lng"
+        "images",     # multiple photos -> JSON array of data URLs
+        "signature",  # canvas signature -> data:image PNG
+        "barcode",    # QR/barcode scan (BarcodeDetector) + manual fallback
+        "audio",      # voice note -> data:audio data URL
+        "computed",   # readonly, value computed live from `formula`
+        "status",     # colored lifecycle select (approval)
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -136,10 +188,33 @@ class FormField(BaseModel):
         ge=1,
         le=10240,
         description=(
-            "For widget='file' / 'image': max size in KB the FE will accept. "
-            "BE enforces a hard ceiling at 1024 KB regardless — file upload is "
-            "base64-into-JSONB so anything larger destroys the row's payload."
+            "For widget='file' / 'image' / 'images' / 'signature' / 'audio': max size "
+            "in KB the FE will accept per item. BE enforces a hard ceiling at 1024 KB "
+            "regardless — media is base64-into-JSONB so anything larger destroys the row."
         ),
+    )
+    # ── Capture / media extras ───────────────────────────────────────────────
+    capture_only: Optional[bool] = Field(
+        default=None,
+        description="widget=image/images: force live camera capture (no gallery pick) — field-work anti-fraud.",
+    )
+    max_items: Optional[int] = Field(
+        default=None, ge=1, le=20,
+        description="widget=images: max number of photos.",
+    )
+    unit: Optional[str] = Field(
+        default=None, max_length=16,
+        description="widget=number/computed: unit suffix shown after the value (e.g. 'kg', '%').",
+    )
+    formula: Optional[str] = Field(
+        default=None, max_length=1000,
+        description=(
+            "widget=computed: arithmetic expression over [other_column] evaluated LIVE "
+            "on the form and stored on submit, e.g. `[san_luong] * [drc] / 100`."
+        ),
+    )
+    status_config: Optional[StatusConfig] = Field(
+        default=None, description="widget=status only: the lifecycle states + approval gating.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -523,6 +598,13 @@ class FormScreenSpec(BaseModel):
     pages: List[FormPage] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
     ocr: Optional[OcrConfig] = None
+    geo_stamp_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the FE captures the device GPS at submit and writes 'lat,lng' "
+            "into this column (readonly, anti-fraud geo-audit of who was where)."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -681,6 +763,48 @@ class GalleryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CalendarConfig(BaseModel):
+    """Month-calendar layout for a Table screen when ``display_mode='calendar'``.
+
+    Same query / RLS / filters / detail-panel as the grid — rows are placed on
+    a month grid by ``date_column``. Clicking a chip opens the detail panel.
+    """
+
+    date_column: str = Field(
+        ..., min_length=1,
+        description="Column holding the date each row is placed on (ISO date / datetime).",
+    )
+    title_column: Optional[str] = Field(
+        default=None, description="Column shown as each day-chip's label (defaults to the PK).",
+    )
+    color_column: Optional[str] = Field(
+        default=None,
+        description="Optional column whose value tints the chip (e.g. a status column).",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatTile(BaseModel):
+    """One KPI tile shown above a Table screen.
+
+    Aggregates a column across the loaded (RLS-filtered) rows so a worker sees
+    e.g. "Σ Sản lượng hôm nay" without opening a whole dashboard. Computed on
+    the same page cap as footer totals — cheap, no extra query.
+    """
+
+    label: str = Field(..., min_length=1, max_length=80)
+    column: str = Field(..., min_length=1)
+    agg: Literal["sum", "avg", "min", "max", "count"] = "sum"
+    format: Optional[str] = Field(
+        default=None,
+        description="Optional cell format key (number|integer|currency|percent|...).",
+    )
+    unit: Optional[str] = Field(default=None, max_length=16, description="Suffix after the value.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -773,13 +897,21 @@ class TableScreenSpec(BaseModel):
 
     empty_state_message: Optional[str] = None
 
-    display_mode: Literal["table", "gallery"] = Field(
+    display_mode: Literal["table", "gallery", "calendar"] = Field(
         default="table",
-        description="'table' = spreadsheet grid (default). 'gallery' = image cards, requires gallery_config.",
+        description="'table' = grid (default). 'gallery' = image cards (gallery_config). 'calendar' = month view (calendar_config).",
     )
     gallery_config: Optional[GalleryConfig] = Field(
         default=None,
         description="Card layout config; required (and its image_column must be in `columns`) when display_mode='gallery'.",
+    )
+    calendar_config: Optional[CalendarConfig] = Field(
+        default=None,
+        description="Month-view config; required (and its date_column must be in `columns`) when display_mode='calendar'.",
+    )
+    stat_tiles: List[StatTile] = Field(
+        default_factory=list,
+        description="KPI tiles shown above the table/gallery (aggregate a column across the loaded rows).",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -878,6 +1010,26 @@ class TableScreenSpec(BaseModel):
                 if col and col not in visible:
                     raise ValueError(
                         f"gallery_config.{label} '{col}' must be listed in "
+                        f"'columns' so the runtime returns its value."
+                    )
+
+        # Calendar display mode: date_column drives placement, so it (and any
+        # title/color column) must be surfaced in `columns` to reach the FE.
+        if self.display_mode == "calendar":
+            if self.calendar_config is None:
+                raise ValueError(
+                    "display_mode='calendar' requires calendar_config."
+                )
+            cc = self.calendar_config
+            visible = set(self.columns or [])
+            for label, col in (
+                ("date_column", cc.date_column),
+                ("title_column", cc.title_column),
+                ("color_column", cc.color_column),
+            ):
+                if col and col not in visible:
+                    raise ValueError(
+                        f"calendar_config.{label} '{col}' must be listed in "
                         f"'columns' so the runtime returns its value."
                     )
 

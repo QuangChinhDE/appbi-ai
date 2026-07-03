@@ -33,7 +33,14 @@ export interface FormFieldSpec {
     | 'lookup'
     | 'file'
     | 'image'
-    | 'map';
+    | 'map'
+    | 'geopoint'
+    | 'images'
+    | 'signature'
+    | 'barcode'
+    | 'audio'
+    | 'computed'
+    | 'status';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -56,6 +63,9 @@ export interface FormFieldSpec {
     lat_column?: string | null;
     lng_column?: string | null;
     basemap?: 'satellite' | 'streets' | 'light' | null;
+    // Cascading select — narrow options by another field's value.
+    filter_by_field?: string | null;
+    filter_column?: string | null;
   } | null;
   section?: string | null;
   page?: number | null;
@@ -66,6 +76,15 @@ export interface FormFieldSpec {
   valid_if_error?: string | null;
   computed_from_dataset?: string | null;
   max_file_kb?: number | null;
+  // Capture / media / measurement extras.
+  capture_only?: boolean | null;
+  max_items?: number | null;
+  unit?: string | null;
+  formula?: string | null;
+  status_config?: {
+    states?: Array<{ value: string; label?: string | null; color?: string | null }>;
+    editable_by_roles?: string[];
+  } | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -81,6 +100,7 @@ export interface FormScreenSpecBuilt {
   }>;
   sections?: string[];
   ocr?: OcrConfigSpec | null;
+  geo_stamp_column?: string | null;
 }
 
 export interface OcrConfigSpec {
@@ -169,7 +189,7 @@ export interface TableScreenSpecBuilt {
   column_metadata?: Record<string, TableColumnMetaSpec>;
   detail_panel?: TableDetailPanelSpec;
   empty_state_message?: string | null;
-  display_mode?: 'table' | 'gallery';
+  display_mode?: 'table' | 'gallery' | 'calendar';
   gallery_config?: {
     image_column: string;
     title_column?: string | null;
@@ -177,6 +197,18 @@ export interface TableScreenSpecBuilt {
     group_by_column?: string | null;
     columns_per_row?: number;
   } | null;
+  calendar_config?: {
+    date_column: string;
+    title_column?: string | null;
+    color_column?: string | null;
+  } | null;
+  stat_tiles?: Array<{
+    label: string;
+    column: string;
+    agg?: 'sum' | 'avg' | 'min' | 'max' | 'count';
+    format?: string | null;
+    unit?: string | null;
+  }>;
 }
 
 export interface DocBlockSpec {

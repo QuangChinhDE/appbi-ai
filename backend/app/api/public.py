@@ -2237,7 +2237,79 @@ if settings.WORKBOARDS_ENABLED:
             ) from exc
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        # Web-push (C13): when someone reviews/edits a row owned by another
+        # app-user, notify that owner ("your record was updated"). Best-effort.
+        try:
+            row = result.get("row") if isinstance(result, dict) else None
+            owner = row.get("miniapp_user") if isinstance(row, dict) else None
+            updater = app_user.get("username") if isinstance(app_user, dict) else None
+            if owner and owner != updater:
+                from app.modules.workboards.services import push_service
+                push_service.send_to_user(
+                    db, wb.id, owner,
+                    title=f"Cập nhật: {screen.title}",
+                    body=f"Bản ghi của bạn vừa được {updater or 'quản lý'} cập nhật.",
+                    url=f"/ws/{token}/workboards/{wb.id}",
+                )
+        except Exception:
+            logger.exception("push notify on update failed")
         return {"action": "update", **result}
+
+
+    @router.get("/workspaces/{token}/push/config")
+    def workspace_push_config(token: str, db: Session = Depends(get_db)):
+        """VAPID public key for the browser's pushManager.subscribe. Public."""
+        from app.modules.workboards.services import push_service
+        _load_workspace_or_404(db, token)
+        return {"enabled": push_service.is_configured(), "public_key": push_service.get_public_key()}
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/push/subscribe")
+    def workspace_push_subscribe(
+        token: str,
+        workboard_id: int,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import push_service
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        sub = (body or {}).get("subscription") if isinstance(body, dict) else None
+        unsub = (body or {}).get("unsubscribe") if isinstance(body, dict) else None
+        username = app_user.get("username") if isinstance(app_user, dict) else None
+        if not isinstance(sub, dict) or not sub.get("endpoint"):
+            raise HTTPException(status_code=400, detail="subscription with endpoint is required.")
+        if unsub:
+            push_service.delete_subscription(db, wb.id, sub["endpoint"])
+            return {"ok": True, "unsubscribed": True}
+        try:
+            push_service.save_subscription(
+                db, wb.id, username, sub, user_agent=request.headers.get("user-agent"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/push/test")
+    def workspace_push_test(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import push_service
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        username = app_user.get("username") if isinstance(app_user, dict) else None
+        sent = push_service.send_to_user(
+            db, wb.id, username,
+            title="Thông báo thử",
+            body="Bạn đã bật thông báo cho mini-app này ✅",
+            url=f"/ws/{token}/workboards/{wb.id}",
+        )
+        return {"ok": True, "delivered": sent}
 
 
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/row")

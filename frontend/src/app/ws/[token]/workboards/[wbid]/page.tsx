@@ -23,17 +23,23 @@ import 'leaflet/dist/leaflet.css';
 import {
   AlertTriangle,
   ArrowLeft,
+  Bell,
   Camera,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
   ClipboardList,
   Download,
   Factory,
   Loader2,
   LogOut,
+  MapPin,
   Menu,
+  Mic,
   MoreHorizontal,
   Plus,
   RefreshCw,
+  ScanLine,
   Send,
   Trash2,
   Upload,
@@ -57,7 +63,7 @@ import {
   publicDashboardApi,
   savePublicSession,
 } from '@/lib/api/public';
-import { evaluateTruthy } from '@/lib/wb-expr';
+import { evaluateTruthy, evaluateExpr } from '@/lib/wb-expr';
 import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
 import { isNetworkError } from '@/lib/offline/sync';
 
@@ -113,18 +119,24 @@ interface RuntimeField extends Record<string, unknown> {
   valid_if_error?: unknown;
   computed_from_dataset?: unknown;
   max_file_kb?: unknown;
+  capture_only?: unknown;
+  max_items?: unknown;
+  unit?: unknown;
+  formula?: unknown;
+  status_config?: { states?: Array<{ value: string; label?: string | null; color?: string | null }>; editable_by_roles?: string[] };
   lookup?: Record<string, unknown>;
 }
 
 /** A lookup option resolved by the backend. `geometry`/`lat`/`lng` are only
- * populated for the map widget (LookupConfig.geometry_column etc.); select /
- * lookup widgets ignore them. */
+ * populated for the map widget; `filter` for cascading select — select/lookup
+ * widgets ignore keys they don't use. */
 interface LookupOption {
   label: string;
   value: unknown;
-  geometry?: string | Record<string, unknown> | null;
-  lat?: number | string | null;
-  lng?: number | string | null;
+  geometry?: unknown;
+  lat?: unknown;
+  lng?: unknown;
+  filter?: unknown;
 }
 
 interface RuntimeFormSpecExtras {
@@ -351,6 +363,8 @@ export default function WorkspaceWorkboardPage() {
         appName={appName}
         accent={accent}
         logoUrl={shell.branding.logo_url}
+        token={token}
+        workboardId={workboardId}
         showBackToMenu={(siblingApps ?? 1) > 1}
         onLogout={async () => {
           try {
@@ -520,6 +534,8 @@ function Header({
   appName,
   accent,
   logoUrl,
+  token,
+  workboardId,
   showBackToMenu = false,
   onLogout,
   onBackToMenu,
@@ -527,6 +543,8 @@ function Header({
   appName: string;
   accent: string;
   logoUrl?: string | null;
+  token: string;
+  workboardId: number;
   showBackToMenu?: boolean;
   onLogout: () => void;
   onBackToMenu: () => void;
@@ -561,6 +579,8 @@ function Header({
           {appName}
         </h1>
 
+        <PushToggle token={token} workboardId={workboardId} accent={accent} />
+
         <button
           onClick={onLogout}
           className="flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
@@ -570,6 +590,89 @@ function Header({
         </button>
       </div>
     </header>
+  );
+}
+
+// ── Web Push enable toggle (C13) ─────────────────────────────────────────
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function PushToggle({
+  token,
+  workboardId,
+  accent,
+}: {
+  token: string;
+  workboardId: number;
+  accent: string;
+}) {
+  const [state, setState] = useState<'hidden' | 'idle' | 'on' | 'busy'>('hidden');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+      try {
+        const cfg = await workspaceApi.pushConfig(token);
+        if (!alive || !cfg.enabled || !cfg.public_key) return;
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        setState(existing ? 'on' : 'idle');
+      } catch {
+        /* push not available — keep hidden */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [token, workboardId]);
+
+  const enable = async () => {
+    setState('busy');
+    try {
+      const cfg = await workspaceApi.pushConfig(token);
+      if (!cfg.enabled || !cfg.public_key) {
+        setState('hidden');
+        return;
+      }
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        setState('idle');
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const sub =
+        (await reg.pushManager.getSubscription()) ||
+        (await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(cfg.public_key) as unknown as BufferSource,
+        }));
+      await workspaceApi.pushSubscribe(token, workboardId, sub.toJSON());
+      await workspaceApi.pushTest(token, workboardId);
+      setState('on');
+    } catch {
+      setState('idle');
+    }
+  };
+
+  if (state === 'hidden') return null;
+  return (
+    <button
+      onClick={enable}
+      disabled={state === 'busy' || state === 'on'}
+      title={state === 'on' ? 'Đã bật thông báo' : 'Bật thông báo'}
+      className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-70"
+      style={{ borderColor: state === 'on' ? accent : '#e2e8f0', color: state === 'on' ? accent : '#475569' }}
+    >
+      {state === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
+      <span className="hidden sm:inline">{state === 'on' ? 'Đã bật' : 'Thông báo'}</span>
+    </button>
   );
 }
 
@@ -1298,6 +1401,21 @@ function FormScreen({
         if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
         payload[k] = v;
       }
+      // Geo-stamp (A3): capture the device location at submit into the
+      // configured column (anti-fraud audit of who was where). Non-blocking —
+      // a denied/failed fix just leaves the column empty.
+      const geoStampCol = (spec as unknown as { geo_stamp_column?: string | null }).geo_stamp_column;
+      if (geoStampCol) {
+        const coords = await new Promise<string | null>((resolve) => {
+          if (typeof navigator === 'undefined' || !navigator.geolocation) return resolve(null);
+          navigator.geolocation.getCurrentPosition(
+            (p) => resolve(`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`),
+            () => resolve(null),
+            { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
+          );
+        });
+        if (coords) payload[geoStampCol] = coords;
+      }
       // Client-side valid_if check. Mirrors the BE enforcement so the user
       // sees the rule-specific error message inline instead of waiting for a
       // round-trip rejection. BE remains the source of truth on submit.
@@ -1712,6 +1830,20 @@ function Field({
       value: unknown;
     }>) ?? []);
 
+  // Cascading select (A7): narrow options to those whose `filter` matches the
+  // current value of the parent field. Empty parent → force picking it first.
+  const filterByField = (field.lookup as Record<string, unknown> | undefined)?.filter_by_field as
+    | string
+    | undefined;
+  const parentVal =
+    filterByField && evalCtx ? (evalCtx.row as Record<string, unknown>)[filterByField] : undefined;
+  const effectiveOpts: LookupOption[] = filterByField
+    ? parentVal == null || parentVal === ''
+      ? []
+      : (lookupOpts as LookupOption[]).filter((o) => String(o.filter) === String(parentVal))
+    : (lookupOpts as LookupOption[]);
+
+  const unit = field.unit ? String(field.unit) : '';
   const stringValue = value == null ? '' : String(value);
   const baseInput =
     'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500';
@@ -1752,8 +1884,12 @@ function Field({
           required={required}
           className={baseInput}
         >
-          <option value="">— chọn —</option>
-          {(lookupOpts as Array<{ label: string; value: unknown }>).map((opt) => (
+          <option value="">
+            {filterByField && (parentVal == null || parentVal === '')
+              ? '— chọn mục ở trên trước —'
+              : '— chọn —'}
+          </option>
+          {effectiveOpts.map((opt) => (
             <option key={String(opt.value)} value={String(opt.value)}>
               {opt.label}
             </option>
@@ -1778,18 +1914,21 @@ function Field({
           className={baseInput}
         />
       ) : widget === 'number' ? (
-        <input
-          type="number"
-          value={stringValue}
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange(v === '' ? '' : Number(v));
-          }}
-          disabled={readonly}
-          required={required}
-          placeholder={placeholder}
-          className={baseInput}
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            value={stringValue}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChange(v === '' ? '' : Number(v));
+            }}
+            disabled={readonly}
+            required={required}
+            placeholder={placeholder}
+            className={baseInput}
+          />
+          {unit && <span className="shrink-0 text-sm text-slate-500">{unit}</span>}
+        </div>
       ) : widget === 'file' || widget === 'image' ? (
         <FileUploadField
           field={field}
@@ -1798,6 +1937,39 @@ function Field({
           readonly={readonly}
           required={required}
           isImage={widget === 'image'}
+          captureOnly={!!field.capture_only}
+        />
+      ) : widget === 'images' ? (
+        <MultiImageField
+          field={field}
+          value={value}
+          onChange={onChange}
+          readonly={readonly}
+          captureOnly={!!field.capture_only}
+        />
+      ) : widget === 'geopoint' ? (
+        <GeoPointField value={value} onChange={onChange} readonly={readonly} />
+      ) : widget === 'signature' ? (
+        <SignatureField value={value} onChange={onChange} readonly={readonly} />
+      ) : widget === 'barcode' ? (
+        <BarcodeField value={value} onChange={onChange} readonly={readonly} placeholder={placeholder} baseInput={baseInput} />
+      ) : widget === 'audio' ? (
+        <AudioField field={field} value={value} onChange={onChange} readonly={readonly} />
+      ) : widget === 'computed' ? (
+        <ComputedField
+          formula={typeof field.formula === 'string' ? field.formula : ''}
+          unit={unit}
+          value={value}
+          onChange={onChange}
+          evalCtx={evalCtx}
+        />
+      ) : widget === 'status' ? (
+        <StatusField
+          field={field}
+          value={value}
+          onChange={onChange}
+          readonly={readonly}
+          viewerRole={evalCtx ? String((evalCtx.app_user as Record<string, unknown>)?.role ?? '') : ''}
         />
       ) : widget === 'map' ? (
         <MapSelectField
@@ -1853,6 +2025,7 @@ function FileUploadField({
   readonly,
   required,
   isImage,
+  captureOnly,
 }: {
   field: RuntimeField;
   value: unknown;
@@ -1860,6 +2033,7 @@ function FileUploadField({
   readonly: boolean;
   required: boolean;
   isImage: boolean;
+  captureOnly?: boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   const maxKb = Math.min(
@@ -1916,6 +2090,7 @@ function FileUploadField({
           <input
             type="file"
             accept={isImage ? 'image/*' : undefined}
+            capture={isImage && captureOnly ? 'environment' : undefined}
             onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
             required={required && !hasValue}
             className="text-xs"
@@ -1941,6 +2116,556 @@ function FileUploadField({
         </p>
       )}
     </div>
+  );
+}
+
+// ── Multi-image widget (widget='images') ─────────────────────────────────
+// Stores an array of data:image base64 strings in the JSONB cell. capture_only
+// forces the device camera (field-work: photograph tree + cup + slip in one go).
+function asImageArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string' && value) {
+    if (value.startsWith('[')) {
+      try {
+        const p = JSON.parse(value);
+        return Array.isArray(p) ? p.filter((v): v is string => typeof v === 'string') : [];
+      } catch {
+        return value.startsWith('data:') ? [value] : [];
+      }
+    }
+    return value.startsWith('data:') ? [value] : [];
+  }
+  return [];
+}
+
+function MultiImageField({
+  field,
+  value,
+  onChange,
+  readonly,
+  captureOnly,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+  captureOnly?: boolean;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const items = asImageArray(value);
+  const maxKb = Math.min(Number(field.max_file_kb) || FILE_HARD_CAP_KB, FILE_HARD_CAP_KB);
+  const maxItems = Math.min(Number(field.max_items) || 10, 20);
+
+  const addFiles = (files: FileList | null) => {
+    setError(null);
+    if (!files || files.length === 0) return;
+    const room = maxItems - items.length;
+    if (room <= 0) {
+      setError(`Tối đa ${maxItems} ảnh.`);
+      return;
+    }
+    const chosen = Array.from(files).slice(0, room);
+    const readers = chosen.map(
+      (file) =>
+        new Promise<string | null>((resolve) => {
+          if (Math.round(file.size / 1024) > maxKb) {
+            setError(`Có ảnh vượt ${maxKb} KB — hãy chụp nhỏ hơn.`);
+            resolve(null);
+            return;
+          }
+          const r = new FileReader();
+          r.onload = () => resolve(typeof r.result === 'string' ? r.result : null);
+          r.onerror = () => resolve(null);
+          r.readAsDataURL(file);
+        }),
+    );
+    void Promise.all(readers).then((results) => {
+      const next = [...items, ...results.filter((x): x is string => !!x)];
+      onChange(next);
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      {items.length > 0 && (
+        <div className="grid grid-cols-3 gap-2">
+          {items.map((src, i) => (
+            <div key={i} className="relative">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={src} alt={`${field.column}-${i}`} className="h-24 w-full rounded-md border border-slate-200 object-cover" />
+              {!readonly && (
+                <button
+                  type="button"
+                  onClick={() => onChange(items.filter((_, j) => j !== i))}
+                  className="absolute right-1 top-1 rounded-full bg-black/60 px-1.5 text-xs text-white"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!readonly && items.length < maxItems && (
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          capture={captureOnly ? 'environment' : undefined}
+          onChange={(e) => addFiles(e.target.files)}
+          className="text-xs"
+        />
+      )}
+      {error ? (
+        <p className="text-xs text-rose-600">{error}</p>
+      ) : (
+        <p className="text-xs text-slate-500">
+          {items.length}/{maxItems} ảnh · tối đa {maxKb} KB mỗi ảnh{captureOnly ? ' · chỉ chụp trực tiếp' : ''}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── GPS capture widget (widget='geopoint') ───────────────────────────────
+// Captures the device location as "lat,lng" and previews it on a satellite
+// mini-map. Used for attendance / "I was at plot X" geo-audit.
+function GeoPointField({
+  value,
+  onChange,
+  readonly,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const mapEl = useRef<HTMLDivElement | null>(null);
+  const stringValue = typeof value === 'string' ? value : '';
+  const parts = stringValue.split(',').map((s) => Number(s.trim()));
+  const hasPoint = parts.length === 2 && parts.every((n) => Number.isFinite(n));
+
+  const capture = () => {
+    setError(null);
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setError('Thiết bị không hỗ trợ định vị.');
+      return;
+    }
+    setBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setBusy(false);
+        setAccuracy(Math.round(pos.coords.accuracy));
+        onChange(`${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`);
+      },
+      (err) => {
+        setBusy(false);
+        setError(err.code === 1 ? 'Bạn đã từ chối quyền vị trí.' : 'Không lấy được vị trí.');
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
+  };
+
+  useEffect(() => {
+    if (!hasPoint || !mapEl.current) return;
+    let map: { remove: () => void } | null = null;
+    let disposed = false;
+    (async () => {
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const L: any = (await import('leaflet')).default;
+      if (disposed || !mapEl.current) return;
+      map = L.map(mapEl.current, { attributionControl: false, zoomControl: false, dragging: false, scrollWheelZoom: false });
+      L.tileLayer(ESRI_BASEMAPS.satellite, { maxZoom: 19 }).addTo(map);
+      (map as any).setView([parts[0], parts[1]], 16);
+      L.circleMarker([parts[0], parts[1]], { radius: 8, color: '#f59e0b', fillColor: '#f59e0b', fillOpacity: 0.6 }).addTo(map);
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+    })();
+    return () => {
+      disposed = true;
+      if (map) try { map.remove(); } catch { /* gone */ }
+    };
+  }, [hasPoint, parts[0], parts[1]]);
+
+  return (
+    <div className="space-y-1.5">
+      {hasPoint && <div ref={mapEl} className="h-40 w-full overflow-hidden rounded-md border border-slate-300" style={{ zIndex: 0 }} />}
+      <div className="flex items-center gap-2">
+        {!readonly && (
+          <button
+            type="button"
+            onClick={capture}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-60 hover:bg-slate-50"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPin className="h-4 w-4" />}
+            {hasPoint ? 'Cập nhật vị trí' : 'Lấy vị trí của tôi'}
+          </button>
+        )}
+        {hasPoint && (
+          <span className="text-xs text-slate-500">
+            {parts[0].toFixed(5)}, {parts[1].toFixed(5)}
+            {accuracy != null ? ` · ±${accuracy}m` : ''}
+          </span>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
+// ── Signature widget (widget='signature') ────────────────────────────────
+// Hand-drawn signature on a canvas -> data:image/png. For on-the-spot
+// acceptance / hand-over slips.
+function SignatureField({
+  value,
+  onChange,
+  readonly,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawing = useRef(false);
+  const dirty = useRef(false);
+  const stringValue = typeof value === 'string' ? value : '';
+
+  const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = canvasRef.current!;
+    const r = c.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * c.width, y: ((e.clientY - r.top) / r.height) * c.height };
+  };
+  const start = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (readonly) return;
+    drawing.current = true;
+    const ctx = canvasRef.current!.getContext('2d')!;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawing.current) return;
+    const ctx = canvasRef.current!.getContext('2d')!;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#0f172a';
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    dirty.current = true;
+  };
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    if (dirty.current && canvasRef.current) onChange(canvasRef.current.toDataURL('image/png'));
+  };
+  const clear = () => {
+    const c = canvasRef.current;
+    if (c) c.getContext('2d')!.clearRect(0, 0, c.width, c.height);
+    dirty.current = false;
+    onChange('');
+  };
+
+  if (readonly) {
+    return stringValue.startsWith('data:image') ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={stringValue} alt="signature" className="h-28 rounded-md border border-slate-200 bg-white" />
+    ) : (
+      <p className="text-sm text-slate-400">Chưa ký.</p>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <canvas
+        ref={canvasRef}
+        width={480}
+        height={160}
+        onPointerDown={start}
+        onPointerMove={move}
+        onPointerUp={end}
+        onPointerLeave={end}
+        className="h-40 w-full touch-none rounded-md border border-dashed border-slate-300 bg-white"
+      />
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={clear} className="text-xs text-rose-600 hover:underline">
+          Xoá & ký lại
+        </button>
+        <span className="text-xs text-slate-500">Ký bằng ngón tay / chuột vào ô trên.</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Barcode / QR scan widget (widget='barcode') ──────────────────────────
+// Uses the native BarcodeDetector when available (Chrome/Android), always with
+// a manual-entry fallback. Value is the decoded string (tank/lot/badge code).
+function BarcodeField({
+  value,
+  onChange,
+  readonly,
+  placeholder,
+  baseInput,
+}: {
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+  placeholder: string;
+  baseInput: string;
+}) {
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const stringValue = typeof value === 'string' ? value : '';
+  const supported = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+
+  const stop = () => {
+    setScanning(false);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  };
+  useEffect(() => () => stop(), []);
+
+  const scan = async () => {
+    setError(null);
+    try {
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const Detector = (window as any).BarcodeDetector;
+      const detector = new Detector();
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
+      setScanning(true);
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      await v.play();
+      const tick = async () => {
+        if (!streamRef.current) return;
+        try {
+          const codes = await detector.detect(v);
+          if (codes && codes.length) {
+            onChange(String(codes[0].rawValue || ''));
+            stop();
+            return;
+          }
+        } catch { /* frame not ready */ }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+    } catch {
+      setError('Không mở được camera — nhập tay bên dưới.');
+      stop();
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {scanning && (
+        <div className="space-y-1">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video ref={videoRef} className="h-48 w-full rounded-md border border-slate-300 bg-black object-cover" />
+          <button type="button" onClick={stop} className="text-xs text-rose-600 hover:underline">
+            Dừng quét
+          </button>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={readonly}
+          placeholder={placeholder || 'Mã (quét hoặc nhập tay)'}
+          className={baseInput}
+        />
+        {!readonly && supported && !scanning && (
+          <button
+            type="button"
+            onClick={scan}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            <ScanLine className="h-4 w-4" /> Quét
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
+// ── Audio note widget (widget='audio') ───────────────────────────────────
+// Records a short voice memo (MediaRecorder) -> data:audio data URL. Hands-free
+// notes from the field.
+function AudioField({
+  field,
+  value,
+  onChange,
+  readonly,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const recRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const stringValue = typeof value === 'string' ? value : '';
+  const maxKb = Math.min(Number(field.max_file_kb) || FILE_HARD_CAP_KB, FILE_HARD_CAP_KB);
+
+  const start = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        if (Math.round(blob.size / 1024) > maxKb) {
+          setError(`Ghi âm ${Math.round(blob.size / 1024)} KB vượt ${maxKb} KB — hãy nói ngắn hơn.`);
+          return;
+        }
+        const r = new FileReader();
+        r.onload = () => typeof r.result === 'string' && onChange(r.result);
+        r.readAsDataURL(blob);
+      };
+      recRef.current = rec;
+      rec.start();
+      setRecording(true);
+    } catch {
+      setError('Không truy cập được micro.');
+    }
+  };
+  const stop = () => {
+    recRef.current?.stop();
+    setRecording(false);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {stringValue.startsWith('data:audio') && (
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <audio controls src={stringValue} className="w-full" />
+      )}
+      {!readonly && (
+        <div className="flex items-center gap-3">
+          {!recording ? (
+            <button type="button" onClick={start} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+              <Mic className="h-4 w-4" /> {stringValue ? 'Ghi lại' : 'Ghi âm'}
+            </button>
+          ) : (
+            <button type="button" onClick={stop} className="inline-flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> Dừng
+            </button>
+          )}
+          {stringValue && !recording && (
+            <button type="button" onClick={() => onChange('')} className="text-xs text-rose-600 hover:underline">
+              Xoá
+            </button>
+          )}
+        </div>
+      )}
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
+// ── Computed (live) widget (widget='computed') ───────────────────────────
+// Readonly value computed on the form from `formula` (e.g. kg khô = kg × DRC%),
+// stored on submit. Uses the shared wb-expr grammar.
+function ComputedField({
+  formula,
+  unit,
+  value,
+  onChange,
+  evalCtx,
+}: {
+  formula: string;
+  unit: string;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  evalCtx?: RuntimeEvalCtx;
+}) {
+  const raw = evalCtx ? evaluateExpr(formula, evalCtx) : null;
+  const computed = typeof raw === 'number' && Number.isFinite(raw) ? Math.round(raw * 1e6) / 1e6 : raw ?? '';
+  // Persist the computed value into the form state so it is submitted.
+  useEffect(() => {
+    if (String(computed ?? '') !== String(value ?? '')) onChange(computed === '' ? '' : computed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [String(computed ?? '')]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+        {computed === '' || computed == null ? <span className="text-slate-400">—</span> : String(computed)}
+      </div>
+      {unit && <span className="shrink-0 text-sm text-slate-500">{unit}</span>}
+    </div>
+  );
+}
+
+// ── Status / approval widget (widget='status') ───────────────────────────
+// Colored lifecycle select. `editable_by_roles` restricts who may change it
+// (approval gate) on top of screen RLS writable_columns; others see a badge.
+const STATUS_TONES: Record<string, string> = {
+  slate: 'bg-slate-100 text-slate-700 border-slate-200',
+  green: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  amber: 'bg-amber-100 text-amber-700 border-amber-200',
+  red: 'bg-rose-100 text-rose-700 border-rose-200',
+  blue: 'bg-sky-100 text-sky-700 border-sky-200',
+  violet: 'bg-violet-100 text-violet-700 border-violet-200',
+};
+
+function StatusField({
+  field,
+  value,
+  onChange,
+  readonly,
+  viewerRole,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  readonly: boolean;
+  viewerRole: string;
+}) {
+  const cfg = field.status_config || {};
+  const states = cfg.states || [];
+  const editableRoles = cfg.editable_by_roles || [];
+  const canEdit =
+    !readonly && (editableRoles.length === 0 || editableRoles.map((r) => r.toLowerCase()).includes((viewerRole || '').toLowerCase()));
+  const stringValue = value == null ? '' : String(value);
+  const current = states.find((s) => String(s.value) === stringValue);
+  const tone = STATUS_TONES[current?.color || 'slate'] || STATUS_TONES.slate;
+
+  if (!canEdit) {
+    return (
+      <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${tone}`}>
+        {current?.label || current?.value || '—'}
+      </span>
+    );
+  }
+  return (
+    <select
+      value={stringValue}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+    >
+      <option value="">— chọn trạng thái —</option>
+      {states.map((s) => (
+        <option key={String(s.value)} value={String(s.value)}>
+          {s.label || s.value}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -2302,6 +3027,15 @@ function GalleryView({
 }) {
   const groupCol = config.group_by_column || null;
   const perRow = Math.min(Math.max(Number(config.columns_per_row) || 3, 1), 6);
+  // Responsive: cap columns on small screens so cards don't get tiny on phones.
+  const [vw, setVw] = useState(1024);
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const effPerRow = vw < 480 ? Math.min(perRow, 2) : vw < 768 ? Math.min(perRow, 3) : perRow;
 
   // Bucket rows into sections preserving first-seen order.
   const sections = useMemo(() => {
@@ -2328,7 +3062,7 @@ function GalleryView({
     );
   }
 
-  const gridStyle = { gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))` };
+  const gridStyle = { gridTemplateColumns: `repeat(${effPerRow}, minmax(0, 1fr))` };
 
   return (
     <div className="space-y-5 px-1 py-2">
@@ -2388,6 +3122,227 @@ function GalleryView({
   );
 }
 
+// ── Calendar display mode for a Table screen ─────────────────────────────
+// Places rows on a month grid by a date column. Same rows / RLS / filters /
+// detail-panel as the grid — clicking a chip opens the detail panel.
+type CalendarConfigView = NonNullable<
+  NonNullable<TableScreenResponse['table_view']>['calendar_config']
+>;
+
+const CAL_TONES = [
+  { dot: 'bg-sky-500', chip: 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200' },
+  { dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200' },
+  { dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200' },
+  { dot: 'bg-violet-500', chip: 'bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200' },
+  { dot: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200' },
+  { dot: 'bg-slate-400', chip: 'bg-slate-50 text-slate-600 ring-1 ring-inset ring-slate-200' },
+];
+const CAL_WEEKDAYS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+
+function toDayKey(v: unknown): string | null {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  // ISO date / datetime → first 10 chars are YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function CalendarView({
+  rows,
+  config,
+  accent,
+  canAdd,
+  canEdit,
+  onEditRow,
+  onAddOnDate,
+}: {
+  rows: Array<Record<string, unknown>>;
+  config: CalendarConfigView;
+  accent: string;
+  canAdd: boolean;
+  canEdit: boolean;
+  onEditRow: (row: Record<string, unknown>) => void;
+  onAddOnDate: (dateKey: string) => void;
+}) {
+  // Bucket rows by day; assign a stable tone per distinct color-column value.
+  const { byDay, toneIdxFor, legend } = useMemo(() => {
+    const map: Record<string, Array<Record<string, unknown>>> = {};
+    for (const row of rows) {
+      const key = toDayKey(row[config.date_column]);
+      if (!key) continue;
+      (map[key] ||= []).push(row);
+    }
+    const colorKeys: string[] = [];
+    const idxOf = (row: Record<string, unknown>): number => {
+      if (!config.color_column) return 0;
+      const v = String(row[config.color_column] ?? '');
+      let idx = colorKeys.indexOf(v);
+      if (idx < 0) {
+        colorKeys.push(v);
+        idx = colorKeys.length - 1;
+      }
+      return idx % CAL_TONES.length;
+    };
+    // Prime the color order deterministically (sorted by value) for a stable legend.
+    if (config.color_column) {
+      Array.from(new Set(rows.map((r) => String(r[config.color_column!] ?? ''))))
+        .filter((v) => v !== '')
+        .sort()
+        .forEach((v) => colorKeys.includes(v) || colorKeys.push(v));
+    }
+    const leg = config.color_column
+      ? colorKeys.map((v, i) => ({ value: v, tone: CAL_TONES[i % CAL_TONES.length] }))
+      : [];
+    return { byDay: map, toneIdxFor: idxOf, legend: leg };
+  }, [rows, config.date_column, config.color_column]);
+
+  const initial = useMemo(() => {
+    const keys = Object.keys(byDay).sort();
+    const base = keys.length ? new Date(keys[keys.length - 1]) : new Date();
+    return { y: base.getFullYear(), m: base.getMonth() };
+  }, [byDay]);
+  const [ym, setYm] = useState(initial);
+  useEffect(() => setYm(initial), [initial]);
+
+  const first = new Date(ym.y, ym.m, 1);
+  const monthName = first.toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' });
+  const startOffset = (first.getDay() + 6) % 7; // Monday-first
+  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+  const cells: Array<{ day: number; key: string } | null> = [];
+  for (let i = 0; i < startOffset; i += 1) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d += 1) {
+    cells.push({ day: d, key: `${ym.y}-${String(ym.m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}` });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  const todayKey = toDayKey(new Date().toISOString());
+  const monthCount = cells.reduce((n, c) => n + (c ? (byDay[c.key]?.length || 0) : 0), 0);
+  const shift = (delta: number) => {
+    const nm = ym.m + delta;
+    setYm({ y: ym.y + Math.floor(nm / 12), m: ((nm % 12) + 12) % 12 });
+  };
+
+  return (
+    <div className="px-1 py-2">
+      {/* Header */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-base font-semibold capitalize text-slate-800">{monthName}</div>
+          <div className="text-xs text-slate-400">{monthCount} ghi nhận trong tháng</div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setYm({ y: new Date().getFullYear(), m: new Date().getMonth() })}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Hôm nay
+          </button>
+          <div className="flex items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <button type="button" onClick={() => shift(-1)} aria-label="Tháng trước" className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="h-4 w-px bg-slate-200" />
+            <button type="button" onClick={() => shift(1)} aria-label="Tháng sau" className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Grid */}
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="grid grid-cols-7 border-b border-slate-100">
+          {CAL_WEEKDAYS.map((w, i) => (
+            <div
+              key={w}
+              className={`px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wide ${
+                i >= 5 ? 'text-slate-400' : 'text-slate-500'
+              }`}
+            >
+              {w}
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7">
+          {cells.map((cell, i) => {
+            const isToday = !!cell && cell.key === todayKey;
+            const dayRows = cell ? byDay[cell.key] || [] : [];
+            const isWeekend = i % 7 >= 5;
+            return (
+              <div
+                key={i}
+                className={`group relative min-h-[112px] border-b border-r border-slate-100 p-1.5 [&:nth-child(7n)]:border-r-0 ${
+                  cell ? (isWeekend ? 'bg-slate-50/40' : 'bg-white') : 'bg-slate-50/60'
+                } ${cell && canAdd ? 'cursor-pointer hover:bg-emerald-50/40' : ''}`}
+                onClick={cell && canAdd ? () => onAddOnDate(cell.key) : undefined}
+              >
+                {cell && (
+                  <>
+                    <div className="mb-1 flex items-center justify-between">
+                      <span
+                        className={`flex h-6 w-6 items-center justify-center rounded-full text-[12px] ${
+                          isToday ? 'font-bold text-white' : 'text-slate-500'
+                        }`}
+                        style={isToday ? { backgroundColor: accent } : undefined}
+                      >
+                        {cell.day}
+                      </span>
+                      {canAdd && (
+                        <span className="rounded-md p-0.5 text-slate-300 opacity-0 transition group-hover:opacity-100" title="Thêm ghi nhận">
+                          <Plus className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      {dayRows.slice(0, 3).map((row, j) => {
+                        const label = config.title_column ? String(row[config.title_column] ?? '') : 'Bản ghi';
+                        const tone = CAL_TONES[toneIdxFor(row)];
+                        return (
+                          <button
+                            type="button"
+                            key={j}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (canEdit) onEditRow(row);
+                            }}
+                            className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] ${tone.chip} ${
+                              canEdit ? 'hover:brightness-[0.97]' : 'cursor-default'
+                            }`}
+                            title={canEdit ? `Sửa: ${label}` : label}
+                          >
+                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
+                            <span className="truncate">{label || '•'}</span>
+                          </button>
+                        );
+                      })}
+                      {dayRows.length > 3 && (
+                        <div className="px-1 text-[10px] font-medium text-slate-400">+{dayRows.length - 3} ghi nhận</div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Legend + hint */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-[11px] text-slate-500">
+        {legend.slice(0, 6).map((l) => (
+          <span key={l.value} className="inline-flex items-center gap-1">
+            <span className={`h-2 w-2 rounded-full ${l.tone.dot}`} />
+            {l.value}
+          </span>
+        ))}
+        {canAdd && <span className="text-slate-400">· Chạm ô ngày để thêm · chạm thẻ để sửa</span>}
+      </div>
+    </div>
+  );
+}
+
 function TableScreen({
   spec,
   token,
@@ -2421,6 +3376,9 @@ function TableScreen({
   const [panelDraft, setPanelDraft] = useState<Record<string, unknown>>({});
   const [panelSaving, setPanelSaving] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
+  // 'edit' opens an existing row; 'create' opens a blank row (same side panel,
+  // one consistent concept for add + edit) — used by the calendar day-click.
+  const [panelMode, setPanelMode] = useState<'edit' | 'create'>('edit');
 
   useEffect(() => {
     setCurrent(spec);
@@ -2800,6 +3758,7 @@ function TableScreen({
   const openDetailPanel = async (row: Record<string, unknown>) => {
     if (!panelEnabled || pkCols.length === 0) return;
     const key = tableRowKey(row, pkCols);
+    setPanelMode('edit');
     setPanelRowKey(key);
     setPanelError(null);
     setPanelDraft({});
@@ -2824,20 +3783,50 @@ function TableScreen({
     }
   };
 
+  // Open the SAME side panel for a brand-new row (add), with `prefill` values
+  // (e.g. the calendar day the user tapped). No fetch — synthesize a blank
+  // detail so add + edit share one consistent UI.
+  const openCreatePanel = (prefill: Record<string, unknown>) => {
+    if (!allowAdd) return;
+    const cols = Array.from(editableCols);
+    setPanelMode('create');
+    setPanelError(null);
+    setPanelDraft({ ...prefill });
+    setPanelLoading(false);
+    setPanelDetail({
+      row: { ...prefill },
+      columns: cols,
+      editable_columns: cols,
+      primary_key_columns: [],
+      column_labels: colLabels,
+    } as unknown as TableRowDetailResponse);
+    setPanelRowKey('__new__');
+  };
+
   const closeDetailPanel = () => {
     setPanelRowKey(null);
     setPanelDetail(null);
     setPanelDraft({});
     setPanelError(null);
+    setPanelMode('edit');
   };
 
   const savePanelDraft = async () => {
-    if (!panelDetail || Object.keys(panelDraft).length === 0) return;
-    const pk: Record<string, unknown> = {};
-    for (const c of panelDetail.primary_key_columns || []) pk[c] = panelDetail.row[c];
+    if (!panelDetail) return;
     setPanelSaving(true);
     setPanelError(null);
     try {
+      if (panelMode === 'create') {
+        // Merge the synthetic row (prefill) with the user's draft edits.
+        const values = { ...(panelDetail.row || {}), ...panelDraft };
+        await workspaceApi.insertScreenRow(token, workboardId, current.screen_id, values);
+        await reloadRows(filterValues);
+        closeDetailPanel();
+        return;
+      }
+      if (Object.keys(panelDraft).length === 0) return;
+      const pk: Record<string, unknown> = {};
+      for (const c of panelDetail.primary_key_columns || []) pk[c] = panelDetail.row[c];
       await workspaceApi.updateScreenRow(token, workboardId, current.screen_id, pk, panelDraft);
       setPanelDraft({});
       await reloadRows(filterValues);
@@ -2888,7 +3877,7 @@ function TableScreen({
               if (filter.kind === 'date_range' || filter.kind === 'number_range') {
                 const type = filter.kind === 'date_range' ? 'date' : 'number';
                 return (
-                  <div key={key} className="grid grid-cols-2 gap-2">
+                  <div key={key} className="grid grid-cols-2 gap-2 md:col-span-2">
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-slate-600">
                         {label} from
@@ -2960,6 +3949,21 @@ function TableScreen({
         </form>
       )}
 
+      {Array.isArray(current.stat_tiles) && current.stat_tiles.length > 0 && (
+        <div className="grid gap-2 px-1 py-2 sm:grid-cols-2 lg:grid-cols-4">
+          {current.stat_tiles.map((tile, i) => (
+            <div key={i} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <div className="truncate text-xs text-slate-500">{tile.label}</div>
+              <div className="mt-0.5 text-lg font-semibold text-slate-800">
+                {tile.value == null || tile.value === ''
+                  ? '—'
+                  : `${formatCellValue(tile.value)}${tile.unit ? ' ' + tile.unit : ''}`}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {tv.display_mode === 'gallery' && tv.gallery_config ? (
         <GalleryView
           rows={rows}
@@ -2968,6 +3972,16 @@ function TableScreen({
           onOpen={openDetailPanel}
           panelEnabled={panelEnabled}
           emptyMessage={tv.empty_state_message}
+        />
+      ) : tv.display_mode === 'calendar' && tv.calendar_config ? (
+        <CalendarView
+          rows={rows}
+          config={tv.calendar_config}
+          accent={accent}
+          canAdd={allowAdd}
+          canEdit={panelEnabled && pkCols.length > 0}
+          onEditRow={openDetailPanel}
+          onAddOnDate={(d) => openCreatePanel({ [tv.calendar_config!.date_column]: d })}
         />
       ) : (
       <div className="overflow-x-auto">
@@ -3379,13 +4393,15 @@ function TableScreen({
         </div>
       )}
 
-      {panelRowKey && panelEnabled && (
+      {panelRowKey && (panelEnabled || panelMode === 'create') && (
         <div className="fixed inset-0 z-40 flex">
           <div className="flex-1 bg-black/30" onClick={closeDetailPanel} />
           <aside className="flex h-full w-full max-w-md flex-col border-l border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-900">
-                {panelDetail?.title || spec.title || 'Chi tiết'}
+                {panelMode === 'create'
+                  ? `Thêm mới · ${spec.title || ''}`.trim().replace(/·\s*$/, '')
+                  : panelDetail?.title || spec.title || 'Chi tiết'}
               </h3>
               <button
                 type="button"
@@ -3416,20 +4432,20 @@ function TableScreen({
               <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
                 <button
                   type="button"
-                  onClick={() => setPanelDraft({})}
-                  disabled={panelSaving || Object.keys(panelDraft).length === 0}
+                  onClick={panelMode === 'create' ? closeDetailPanel : () => setPanelDraft({})}
+                  disabled={panelSaving}
                   className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                 >
-                  Huỷ thay đổi
+                  {panelMode === 'create' ? 'Huỷ' : 'Huỷ thay đổi'}
                 </button>
                 <button
                   type="button"
                   onClick={() => void savePanelDraft()}
-                  disabled={panelSaving || Object.keys(panelDraft).length === 0}
+                  disabled={panelSaving || (panelMode === 'edit' && Object.keys(panelDraft).length === 0)}
                   className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                   style={{ backgroundColor: accent }}
                 >
-                  {panelSaving ? 'Đang lưu...' : 'Lưu'}
+                  {panelSaving ? 'Đang lưu...' : panelMode === 'create' ? 'Thêm' : 'Lưu'}
                 </button>
               </div>
             )}

@@ -93,7 +93,14 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'checkbox', label: 'On / off' },
   { value: 'file', label: 'File upload (base64, ≤1MB)' },
   { value: 'image', label: 'Image upload (base64, ≤1MB)' },
+  { value: 'images', label: 'Nhiều ảnh (chụp thực địa)' },
   { value: 'map', label: 'Bản đồ (chọn vùng trên map)' },
+  { value: 'geopoint', label: 'Vị trí GPS (chấm công/định vị)' },
+  { value: 'signature', label: 'Chữ ký tay' },
+  { value: 'barcode', label: 'Quét mã QR / Barcode' },
+  { value: 'audio', label: 'Ghi âm ghi chú' },
+  { value: 'computed', label: 'Tính tự động (công thức)' },
+  { value: 'status', label: 'Trạng thái / duyệt' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -753,6 +760,14 @@ function SubmitFlowInspector({
           )}
         </Lbl>
       )}
+      <Lbl label="Đóng dấu GPS khi lưu (geo-stamp) — cột lưu 'lat,lng'" className="wb-col-span-2">
+        <input
+          value={form.geo_stamp_column || ''}
+          onChange={(event) => onChange({ geo_stamp_column: event.target.value || null })}
+          className={INPUT}
+          placeholder="vd: vi_tri_gps (để trống = tắt)"
+        />
+      </Lbl>
     </div>
   );
 }
@@ -1224,6 +1239,63 @@ function FieldInspector({
         </CollapsibleGroup>
       )}
 
+      {(field.widget === 'computed' ||
+        field.widget === 'number' ||
+        field.widget === 'images' ||
+        field.widget === 'image' ||
+        field.widget === 'status') && (
+        <CollapsibleGroup title="Cấu hình widget">
+          {field.widget === 'computed' && (
+            <Lbl label="Công thức (VD: [san_luong] * [drc] / 100)">
+              <input
+                value={field.formula || ''}
+                onChange={(event) => onChange({ formula: event.target.value || null })}
+                className={INPUT}
+                placeholder="[san_luong] * [drc] / 100"
+              />
+            </Lbl>
+          )}
+          {(field.widget === 'computed' || field.widget === 'number') && (
+            <Lbl label="Đơn vị (hậu tố, VD: kg, %)">
+              <input
+                value={field.unit || ''}
+                onChange={(event) => onChange({ unit: event.target.value || null })}
+                className={INPUT}
+                placeholder="kg"
+              />
+            </Lbl>
+          )}
+          {(field.widget === 'image' || field.widget === 'images') && (
+            <label className="mt-1 flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={!!field.capture_only}
+                onChange={(event) => onChange({ capture_only: event.target.checked })}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              Chỉ cho chụp trực tiếp (không chọn từ thư viện)
+            </label>
+          )}
+          {field.widget === 'images' && (
+            <Lbl label="Số ảnh tối đa">
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={field.max_items ?? 10}
+                onChange={(event) =>
+                  onChange({ max_items: Math.min(Math.max(Number(event.target.value) || 10, 1), 20) })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+          )}
+          {field.widget === 'status' && (
+            <StatusStatesEditor field={field} onChange={onChange} />
+          )}
+        </CollapsibleGroup>
+      )}
+
       <CollapsibleGroup title="Advanced" defaultOpen={false}>
         <div className={BUILDER_GRID_4}>
           <Lbl label="Show when (show_if)">
@@ -1419,6 +1491,30 @@ function LookupEditor({
             </Lbl>
           </>
         )}
+
+        {lookup.kind === 'dataset_table' &&
+          (field.widget === 'select' || field.widget === 'lookup') && (
+            <>
+              <Lbl label="Lọc theo field (cột form cha) — tùy chọn">
+                <input
+                  value={lookup.filter_by_field || ''}
+                  onChange={(event) =>
+                    onChange({ lookup: { ...lookup, filter_by_field: event.target.value || null } })
+                  }
+                  className={INPUT}
+                  placeholder="VD: lo_id (field chọn trước đó)"
+                />
+              </Lbl>
+              <Lbl label="Cột khớp trên bảng nguồn">
+                <SingleColumnPicker
+                  sourceColumns={lookupCols.map((column) => column.name)}
+                  value={lookup.filter_column || null}
+                  onChange={(next) => onChange({ lookup: { ...lookup, filter_column: next || '' } })}
+                  placeholder="-- cột để lọc --"
+                />
+              </Lbl>
+            </>
+          )}
       </div>
 
       {lookup.kind === 'static' ? (
@@ -1678,6 +1774,92 @@ function StaticValuesEditor({
         <Plus className="h-3.5 w-3.5" />
         Add choice
       </BuilderActionButton>
+    </div>
+  );
+}
+
+const STATUS_COLORS = ['slate', 'green', 'amber', 'red', 'blue', 'violet'];
+
+function StatusStatesEditor({
+  field,
+  onChange,
+}: {
+  field: FormFieldSpec;
+  onChange: (patch: Partial<FormFieldSpec>) => void;
+}) {
+  const cfg = field.status_config || { states: [], editable_by_roles: [] };
+  const states = cfg.states || [];
+  const setCfg = (patch: Partial<NonNullable<FormFieldSpec['status_config']>>) =>
+    onChange({ status_config: { ...cfg, ...patch } });
+  const updateState = (
+    index: number,
+    patch: Partial<{ value: string; label: string; color: string }>,
+  ) => {
+    const next = states.map((s, i) => (i === index ? { ...s, ...patch } : s));
+    setCfg({ states: next });
+  };
+  return (
+    <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+      <div className="text-caption font-emphasis text-text-secondary">Các trạng thái</div>
+      {states.length > 0 ? (
+        <div className="space-y-2">
+          {states.map((s, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                value={s.value}
+                onChange={(event) => updateState(index, { value: event.target.value })}
+                placeholder="giá trị (vd: cho_duyet)"
+                className={INPUT}
+              />
+              <input
+                value={s.label || ''}
+                onChange={(event) => updateState(index, { label: event.target.value })}
+                placeholder="nhãn (vd: Chờ duyệt)"
+                className={INPUT}
+              />
+              <select
+                value={s.color || 'slate'}
+                onChange={(event) => updateState(index, { color: event.target.value })}
+                className={INPUT}
+              >
+                {STATUS_COLORS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <BuilderIconButton
+                onClick={() => setCfg({ states: states.filter((_, i) => i !== index) })}
+                title="Delete"
+                variant="danger"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-danger" />
+              </BuilderIconButton>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <BuilderEmptyHint>Chưa có trạng thái nào.</BuilderEmptyHint>
+      )}
+      <BuilderActionButton
+        onClick={() => setCfg({ states: [...states, { value: '', label: '', color: 'slate' }] })}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Thêm trạng thái
+      </BuilderActionButton>
+      <Lbl label="Chỉ role này được đổi trạng thái (cách nhau dấu phẩy) — trống = ai sửa được dòng đều đổi được">
+        <input
+          value={(cfg.editable_by_roles || []).join(', ')}
+          onChange={(event) =>
+            setCfg({
+              editable_by_roles: event.target.value
+                .split(',')
+                .map((r) => r.trim())
+                .filter(Boolean),
+            })
+          }
+          className={INPUT}
+          placeholder="vd: admin, quan_doc"
+        />
+      </Lbl>
     </div>
   );
 }

@@ -491,8 +491,9 @@ def _resolve_lookup_options(
             return []
         base_rows = result.get("rows") or []
 
-        def _attach_geo(opt: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
-            """Additively enrich an option with geometry for the map widget.
+        def _attach_extras(opt: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+            """Additively enrich an option with map geometry and/or the
+            cascading-filter key.
 
             select/lookup callers never read these keys, so this is safe for
             every field — the extra keys are simply ignored downstream.
@@ -506,6 +507,10 @@ def _resolve_lookup_options(
                 if lat not in (None, "") and lng not in (None, ""):
                     opt["lat"] = lat
                     opt["lng"] = lng
+            # Cascading select: carry the remote match value so the FE can keep
+            # only the options whose `filter_column` == the parent field's value.
+            if cfg.filter_column:
+                opt["filter"] = row.get(cfg.filter_column)
             return opt
 
         if cfg.relationship_path:
@@ -517,7 +522,7 @@ def _resolve_lookup_options(
                 hops=cfg.relationship_path,
             )
             return [
-                _attach_geo(
+                _attach_extras(
                     {
                         "label": resolved_labels.get(row.get(value_col))
                         or str(row.get(label_col, "") or ""),
@@ -528,7 +533,7 @@ def _resolve_lookup_options(
                 for row in base_rows
             ]
         return [
-            _attach_geo(
+            _attach_extras(
                 {
                     "label": str(row.get(label_col, "") or ""),
                     "value": row.get(value_col),
@@ -851,6 +856,9 @@ def render_form_screen(
         # treats these as readonly + shows a hint so users don't think the
         # form is broken when typing into them is ignored.
         "auto_number_columns": auto_number_columns,
+        # When set, the FE captures device GPS at submit and writes "lat,lng"
+        # into this column (anti-fraud geo-audit).
+        "geo_stamp_column": screen.form.geo_stamp_column,
     }
 
 
@@ -1363,6 +1371,54 @@ def _compute_table_totals(
     return out
 
 
+def _compute_stat_tiles(
+    table_spec: Any,
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Aggregate :class:`TableScreenSpec.stat_tiles` across ``rows``.
+
+    Returns ``[{label, value, format, unit}]`` — the FE renders one KPI card
+    per entry above the table/gallery. Reuses the same coercion as footer
+    totals, over the same (RLS-filtered, capped) row set.
+    """
+    tiles = list(getattr(table_spec, "stat_tiles", None) or [])
+    if not tiles:
+        return []
+    out: List[Dict[str, Any]] = []
+    for tile in tiles:
+        column = getattr(tile, "column", None)
+        agg = (getattr(tile, "agg", "sum") or "sum").lower()
+        value: Any
+        if not column:
+            value = None
+        elif agg == "count":
+            value = sum(1 for row in rows if row.get(column) not in (None, ""))
+        else:
+            nums = [
+                n for n in (_coerce_total(row.get(column)) for row in rows)
+                if n is not None
+            ]
+            if not nums:
+                value = None
+            elif agg == "sum":
+                value = sum(nums)
+            elif agg in ("avg", "average"):
+                value = sum(nums) / len(nums)
+            elif agg == "min":
+                value = min(nums)
+            elif agg == "max":
+                value = max(nums)
+            else:
+                value = None
+        out.append({
+            "label": getattr(tile, "label", "") or "",
+            "value": value,
+            "format": getattr(tile, "format", None),
+            "unit": getattr(tile, "unit", None),
+        })
+    return out
+
+
 def render_table_screen(
     db: Session,
     workboard: Workboard,
@@ -1458,6 +1514,12 @@ def render_table_screen(
         for col in (panel.columns or selected_columns):
             if col in all_db_columns and col not in row_keys:
                 row_keys.append(col)
+    # KPI stat tiles aggregate a column across the loaded rows — make sure that
+    # column is fetched even when it isn't a visible grid column.
+    for tile in getattr(table_spec, "stat_tiles", None) or []:
+        tcol = getattr(tile, "column", None)
+        if tcol in all_db_columns and tcol not in row_keys:
+            row_keys.append(tcol)
     row_keys = list(dict.fromkeys(row_keys))
 
     base_rows: List[Dict[str, Any]] = [
@@ -1514,6 +1576,7 @@ def render_table_screen(
         base_rows = base_rows[:_TOTALS_ROW_CAP]
     total_count = len(base_rows)
     totals_row = _compute_table_totals(table_spec, base_rows) or None
+    stat_tiles = _compute_stat_tiles(table_spec, base_rows)
 
     # ── Slice the requested page out of the full set ─────────────────
     page_rows = base_rows[offset:offset + page_size]
@@ -1532,6 +1595,7 @@ def render_table_screen(
         "totals_partial": totals_partial,
         "table_view": table_spec.model_dump(),
         "totals_row": totals_row,
+        "stat_tiles": stat_tiles,
         "column_groups": column_groups,
         "merges": merges,
         "column_labels": screen.column_labels or {},
