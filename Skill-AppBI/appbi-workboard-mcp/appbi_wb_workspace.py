@@ -103,7 +103,7 @@ async def _deliver_workspace(
     return {"action": "updated", "workspace": updated, "menu_item": item}
 
 
-@tool("delivery")
+@tool("deliver")
 async def deliver_workboard_to_workspace(
     workboard_id: int,
     workspace: dict[str, Any],
@@ -126,7 +126,7 @@ async def deliver_workboard_to_workspace(
     return await _deliver_workspace(workboard, workspace)
 
 
-@tool("delivery")
+@tool("deliver")
 async def create_workspace_preview_session(
     workspace_id: int,
     workboard_id: int,
@@ -148,7 +148,7 @@ async def create_workspace_preview_session(
     )
 
 
-@tool("delivery")
+@tool("deliver")
 async def run_workboard_runtime_smoke_test(
     workspace_token: str,
     workboard_id: int,

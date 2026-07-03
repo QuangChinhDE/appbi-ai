@@ -50,7 +50,7 @@ async def _replace_webhook_settings(
     }
 
 
-@tool({"design", "delivery"})
+@tool({"discover", "deliver"})
 async def list_workboard_webhooks(
     workboard_id: int,
     screen_id: str | None = None,
@@ -66,7 +66,7 @@ async def list_workboard_webhooks(
     }
 
 
-@tool("delivery")
+@tool("deliver")
 async def replace_workboard_webhooks(
     workboard_id: int,
     webhooks: list[dict[str, Any]],
@@ -99,7 +99,7 @@ async def replace_workboard_webhooks(
     return await _replace_webhook_settings(int(workboard_id), webhooks)
 
 
-@tool("delivery")
+@tool("deliver")
 async def test_workboard_webhook(
     workboard_id: int,
     webhook_id: str,
@@ -132,7 +132,7 @@ async def test_workboard_webhook(
     )
 
 
-@tool({"design", "delivery"})
+@tool({"discover", "deliver"})
 async def list_workboard_sync_runs(
     workboard_id: int,
     webhook_id: str | None = None,
