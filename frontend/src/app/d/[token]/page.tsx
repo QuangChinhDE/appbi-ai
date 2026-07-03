@@ -1649,12 +1649,25 @@ export default function PublicDashboardPage() {
               (PowerBI/Looker) instead of the old one-line pill toolbar. */}
           <div className="flex items-center gap-2.5">
             {brandMarkEl}
-            <h1
-              className="min-w-0 flex-1 truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
-              title={presentationTitle}
-            >
-              {presentationTitle}
-            </h1>
+            <div className="min-w-0 flex-1">
+              <h1
+                className="truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
+                title={presentationTitle}
+              >
+                {presentationTitle}
+              </h1>
+              {snapshotAsOf && (
+                <p
+                  className="mt-0.5 truncate text-[11px] text-text-tertiary"
+                  title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+                >
+                  Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+                  {snapshotStale && (
+                    <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+                  )}
+                </p>
+              )}
+            </div>
             <div className="ml-auto shrink-0">
               <Button
                 variant="secondary"
