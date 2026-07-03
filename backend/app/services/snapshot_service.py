@@ -302,6 +302,63 @@ def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
     return oldest
 
 
+def invalidate_stale_fingerprints(db: Session, dataset_id: int) -> int:
+    """Schema-drift guard (call after a model/table edit): recompute each current
+    snapshot's fingerprint against the CURRENT table definition and mark stale
+    (is_current=False) any whose fingerprint changed — so the resolver never
+    serves a column-mismatched or stale-logic snapshot. Unchanged tables keep
+    their fast snapshot; drifted ones rebuild on the next Refresh (builder) or
+    TTL view (public). Cheap: runs only on edits, never in the chart hot path.
+    Returns the number invalidated. NEVER raises."""
+    try:
+        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if dataset_obj is None:
+            return 0
+        current = (
+            db.query(DatasetTableSnapshot)
+            .filter(
+                DatasetTableSnapshot.dataset_id == dataset_id,
+                DatasetTableSnapshot.is_current.is_(True),
+                DatasetTableSnapshot.status == "ready",
+            )
+            .all()
+        )
+        if not current:
+            return 0
+        by_tid = {r.dataset_table_id: r for r in current}
+        tables = db.query(DatasetTable).filter(DatasetTable.id.in_(list(by_tid))).all()
+        table_by_id = {t.id: t for t in tables}
+        ds_cache: Dict[int, Optional[DataSource]] = {}
+        n = 0
+        for tid, row in by_tid.items():
+            t = table_by_id.get(tid)
+            if t is None:  # table deleted → snapshot orphaned → invalidate
+                row.is_current = False
+                row.status = "superseded"
+                n += 1
+                continue
+            ds = ds_cache.get(t.datasource_id)
+            if ds is None and t.datasource_id:
+                ds = db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
+                ds_cache[t.datasource_id] = ds
+            try:
+                fp = _fingerprint(_resolved_sql(dataset_obj, t, ds, db), t)
+            except Exception:  # noqa: BLE001 — can't resolve → be safe, invalidate
+                fp = None
+            if fp != row.fingerprint:
+                row.is_current = False
+                row.status = "superseded"
+                n += 1
+        if n:
+            db.commit()
+            logger.info("[snapshot] invalidated %d drifted snapshot(s) dataset=%s", n, dataset_id)
+        return n
+    except Exception:  # noqa: BLE001 — invalidation must never break an edit
+        db.rollback()
+        logger.warning("[snapshot] fingerprint invalidation failed dataset=%s", dataset_id, exc_info=True)
+        return 0
+
+
 def is_stale(as_of_ts: Optional[datetime], ttl_minutes: Optional[int]) -> bool:
     """True when a snapshot built at `as_of_ts` is older than `ttl_minutes`.
     ttl None / <= 0 → never stale (no age-out; freshness is manual/realtime is

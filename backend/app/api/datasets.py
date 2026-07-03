@@ -1951,6 +1951,15 @@ def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
     except Exception as exc:
         db.rollback()
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
+    # Schema-drift guard: after a model/table edit, drop any snapshot whose
+    # fingerprint no longer matches the current table definition so the resolver
+    # can't serve a column-mismatched or stale-logic snapshot (rebuilt on next
+    # Refresh / TTL view). Best-effort — never breaks the edit.
+    try:
+        from app.services import snapshot_service
+        snapshot_service.invalidate_stale_fingerprints(db, dataset_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("snapshot fingerprint invalidation skipped for dataset %s", dataset_id, exc_info=True)
 
 
 def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
