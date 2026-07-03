@@ -1,0 +1,39 @@
+{
+  "case_id": "G16_ds56_declared_measure_baseline",
+  "description": "Declared measure total_revenue, no filter",
+  "chart_name": "[snow] M revenue (declared)",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:23.270754+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "declared_measure"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "SUM(dataset_table_193.amount)"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_193.total_revenue": "2400"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_total_revenue FROM (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

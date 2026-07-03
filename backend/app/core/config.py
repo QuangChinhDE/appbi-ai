@@ -88,14 +88,17 @@ class Settings(BaseSettings):
     # Workboard mini-app builder module — bundled with the core stack.
     WORKBOARDS_ENABLED: bool = True
 
-    # ── Metadata Catalog (hidden OpenMetadata backend) ──────────────────
-    # Default OFF — the metadata_catalog module is fully INERT until enabled
-    # (it is not even imported while off; see app/api/__init__.py). When True,
-    # AppBI proxies a hidden OM server for catalog/glossary/lineage under
-    # /api/v1/catalog/*. Deployment lives in the repo's open-metadata/ folder.
+    # ── Metadata Catalog / Governance (DB-backed) ───────────────────────
+    # Default OFF — the catalog module is fully INERT until enabled (not even
+    # imported while off; see app/api/__init__.py). When True, /api/v1/catalog/*
+    # is served by the AppBI DB-backed GovernanceService (no external OM server).
     METADATA_CATALOG_ENABLED: bool = False
-    OPENMETADATA_API_URL: str = "http://openmetadata-server:8585/api"
-    OPENMETADATA_BOT_TOKEN: str = ""
+    # Per-module flags for the catalog surfaces (each its own toggle, like
+    # WORKBOARDS_ENABLED). Effective only when METADATA_CATALOG_ENABLED is on
+    # (the modules need the /catalog backend) — see permissions._OPTIONAL_MODULES.
+    # Govern = Metrics/Glossary/Classification; Observability = Data Quality/Incidents/Alerts.
+    GOVERN_ENABLED: bool = True
+    OBSERVABILITY_ENABLED: bool = True
 
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
@@ -192,6 +195,25 @@ class Settings(BaseSettings):
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
     BQ_MAX_BYTES_SCANNED: int = 60 * 1024**3            # 60 GB dry-run guard
     BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
+    # Dashboard perf #5 — snapshot materialization. Global default dataset where
+    # flat snapshot tables are written; a per-datasource `materialization_dataset`
+    # config value overrides it, this is the .env-configurable fallback.
+    MATERIALIZATION_DATASET: str = "appbi_snapshots"
+    MATERIALIZATION_DEFAULT_TTL_MINUTES: int = 30       # freshness TTL fallback (public links / builder)
+    # Global AppBI write service account for snapshot CREATE+LOAD (never reads
+    # source). KEY_FILE (path to SA JSON) takes priority over inline JSON; blank
+    # → fall back to the datasource's own credential. Per-datasource
+    # `materialization_write_credentials_json` overrides both.
+    MATERIALIZATION_SA_KEY_FILE: str = ""
+    MATERIALIZATION_SA_CREDENTIALS_JSON: str = ""
+    # ── DB connection pool (SQLAlchemy) ─────────────────────────────────────
+    # Sized for concurrent long BigQuery queries; the connection is released
+    # during each warehouse call (chart_service) so these rarely bind. Keep
+    # (pool_size + max_overflow) × uvicorn_workers below Postgres max_connections.
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 30
+    DB_POOL_TIMEOUT: int = 10                            # fail fast on exhaustion
+    DB_POOL_RECYCLE: int = 1800                          # drop conns after 30 min
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache

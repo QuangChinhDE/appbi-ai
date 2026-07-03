@@ -385,9 +385,13 @@ export function PublicLinksManager({
   //                    set it).
   // `action: 'lock'` → write {field, operator, value, hidden: false}
   //                    using the override value the author entered.
+  // `action: 'limit'`→ write {field, operator:'in', value, limit: true}.
+  //                    Slicer stays INTERACTIVE on the public link but the
+  //                    viewer can only pick within this allow-list (e.g. 3 of
+  //                    5 RCs). BE bounds data + dropdown server-side.
   // `action: 'hide'` → write {field, hidden: true} so the BE merger
   //                    drops the field entirely.
-  type LinkEntryAction = { action: 'show' | 'lock' | 'hide'; value?: any };
+  type LinkEntryAction = { action: 'show' | 'lock' | 'limit' | 'hide'; value?: any };
   const [linkActions, setLinkActions] = useState<Record<string, LinkEntryAction>>({});
 
   const [view, setView] = useState<ModalView>('list');
@@ -545,8 +549,19 @@ export function PublicLinksManager({
   const baseDistinctValues: Record<string, string[]> = Object.keys(propDistinctValues ?? {}).length > 0
     ? propDistinctValues ?? {}
     : dv;
+  // Distinct-value targets: every gateable field, NOT just author-added extra
+  // rows. The old code passed only `extraRows`, so locking/limiting an
+  // INHERITED slicer (e.g. an RLS column "RC" that is a slicer but not a
+  // chart dimension) left its value picker empty — the author couldn't see
+  // RC01/RC02/… to choose. Feed inherited slicers + filters too so
+  // useFilterDistinctValues fetches their full domain from
+  // /datasets/{id}/model/distinct-values.
+  const distinctFilterTargets = useMemo(
+    () => [...inheritedSlicers, ...inheritedFilters, ...extraRows],
+    [inheritedSlicers, inheritedFilters, extraRows],
+  );
   const { distinctValues: activeDistinctValues } =
-    useFilterDistinctValues(activeColumns, extraRows, baseDistinctValues);
+    useFilterDistinctValues(activeColumns, distinctFilterTargets, baseDistinctValues);
 
   // ── Unified link-filter table ─────────────────────────────────────
   // Stable identity for a row, mirroring the BE dedupe shape
@@ -856,17 +871,21 @@ export function PublicLinksManager({
     for (const row of rows) {
       const action = actions[row.key]?.action ?? defaultActionForRow(row);
       if (action === 'show') continue;
-      // Both 'lock' and 'hide' ENFORCE a value (PBI parity). 'hide' adds
-      // `hidden:true` so the public viewer suppresses its banner/control,
-      // but the BE still applies the value (data IS filtered). Use the
+      // 'lock'/'hide'/'limit' all ENFORCE a value (PBI parity). 'hide' adds
+      // `hidden:true` so the public viewer suppresses its banner/control;
+      // 'limit' adds `limit:true` so the BE bounds (intersects) the viewer's
+      // pick to this allow-list while KEEPING the slicer interactive. Use the
       // author's override value, falling back to the dashboard's saved value.
       // Align operator with value shape: an array value forces in/not_in
       // (a scalar `eq` over a list emits invalid SQL `WHERE field = ('A','B')`).
       const overrideValue = actions[row.key]?.value !== undefined ? actions[row.key]?.value : row.value;
       const inheritedOp = (row as any).operator || 'in';
-      const effectiveOp = Array.isArray(overrideValue)
-        ? (inheritedOp === 'not_in' ? 'not_in' : 'in')
-        : inheritedOp;
+      // A 'limit' allow-list is inherently a multi-value IN set.
+      const effectiveOp = action === 'limit'
+        ? 'in'
+        : Array.isArray(overrideValue)
+          ? (inheritedOp === 'not_in' ? 'not_in' : 'in')
+          : inheritedOp;
       out.push({
         field: row.field,
         semanticField: row.semanticField,
@@ -874,6 +893,7 @@ export function PublicLinksManager({
         operator: effectiveOp,
         value: overrideValue,
         ...(action === 'hide' ? { hidden: true } : {}),
+        ...(action === 'limit' ? { limit: true } : {}),
       });
     }
     return out;
@@ -895,6 +915,8 @@ export function PublicLinksManager({
     for (const row of unifiedRows) {
       const action = linkActions[row.key]?.action ?? defaultActionForRow(row);
       if (action === 'show') continue;
+      // 'limit' needs ≥1 allowed value too — an empty allow-list bounds
+      // nothing (would silently behave like 👁 Hiện = full domain).
       const overrideValue = linkActions[row.key]?.value !== undefined
         ? linkActions[row.key]?.value
         : (row as any).value;
@@ -919,8 +941,13 @@ export function PublicLinksManager({
       if (!entry || typeof entry !== 'object') continue;
       const key = entryKey(entry);
       const isHidden = entry.hidden === true;
-      // Both hide + lock carry a value now (PBI: hide also enforces).
-      actions[key] = { action: isHidden ? 'hide' : 'lock', value: entry.value };
+      const isLimit = entry.limit === true && !isHidden;
+      // hide + lock + limit all carry a value (PBI: hide also enforces;
+      // limit is the interactive allow-list).
+      actions[key] = {
+        action: isHidden ? 'hide' : isLimit ? 'limit' : 'lock',
+        value: entry.value,
+      };
       if (!inheritedByKey.has(key)) {
         // Non-inherited gate — keep it as a visible row so the author
         // can see and change it (was the old "Access filters" / "Hidden
@@ -1563,11 +1590,12 @@ export function PublicLinksManager({
                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-surface-2 px-3 py-2 text-tiny">
                     <span className="text-text-tertiary">Người xem sẽ thấy:</span>
                     <span className="text-success">👁 {unifiedRows.filter((r) => effectiveAction(r) === 'show').length} control</span>
+                    <span className="text-brand">🎯 {unifiedRows.filter((r) => effectiveAction(r) === 'limit').length} giới hạn</span>
                     <span className="text-warning">🔒 {unifiedRows.filter((r) => effectiveAction(r) === 'lock').length} khoá</span>
                     <span className="text-text-secondary">🚫 {unifiedRows.filter((r) => effectiveAction(r) === 'hide').length} ẩn</span>
                   </div>
                   <p className="mt-1.5 text-tiny text-text-quaternary">
-                    Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá link</span> → <span className="text-text-secondary">Filter trang</span> → <span className="text-text-secondary">Slicer người xem</span>.
+                    Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá link</span> → <span className="text-text-secondary">🎯 Giới hạn</span> → <span className="text-text-secondary">Filter trang</span> → <span className="text-text-secondary">Slicer người xem</span>.
                   </p>
 
                   <div className="mt-4 space-y-4">
@@ -1594,11 +1622,13 @@ export function PublicLinksManager({
                             <div className="space-y-2">
                               {groupRows.map((row) => {
                                 const action = effectiveAction(row);
-                                const enforces = action === 'lock' || action === 'hide';
+                                // lock/hide/limit all need a value editor below.
+                                const enforces = action === 'lock' || action === 'hide' || action === 'limit';
                                 const lockValue = linkActions[row.key]?.value ?? (enforces ? row.value : undefined);
                                 const scopeBadge = row.source === 'extra' ? 'thủ công' : (row.pageName ? row.pageName : 'mọi trang');
                                 const seg = [
                                   { opt: 'show' as const, label: '👁 Hiện', on: 'bg-success/15 text-success' },
+                                  { opt: 'limit' as const, label: '🎯 Giới hạn', on: 'bg-brand/15 text-brand' },
                                   { opt: 'lock' as const, label: '🔒 Khoá', on: 'bg-warning/15 text-warning' },
                                   { opt: 'hide' as const, label: '🚫 Ẩn', on: 'bg-[rgba(255,255,255,0.10)] text-text-secondary' },
                                 ];
@@ -1617,7 +1647,7 @@ export function PublicLinksManager({
                                               type="button"
                                               onClick={() => setLinkActions((prev) => ({
                                                 ...prev,
-                                                [row.key]: { action: opt, value: (opt === 'lock' || opt === 'hide') ? (prev[row.key]?.value ?? row.value) : undefined },
+                                                [row.key]: { action: opt, value: (opt === 'lock' || opt === 'hide' || opt === 'limit') ? (prev[row.key]?.value ?? row.value) : undefined },
                                               }))}
                                               className={`rounded px-2 py-1 font-medium transition-colors ${action === opt ? on : 'text-text-quaternary hover:text-text-secondary'}`}
                                             >
@@ -1651,7 +1681,9 @@ export function PublicLinksManager({
                                         <p className="mt-1 text-tiny text-text-quaternary">
                                           {action === 'hide'
                                             ? 'Dữ liệu vẫn bị lọc theo giá trị này; viewer KHÔNG thấy control/banner.'
-                                            : 'Viewer thấy banner read-only với giá trị này. Để trống = dùng giá trị dashboard.'}
+                                            : action === 'limit'
+                                              ? 'Viewer thấy slicer tương tác nhưng CHỈ chọn được trong các giá trị này (vd 3/5 RC).'
+                                              : 'Viewer thấy banner read-only với giá trị này. Để trống = dùng giá trị dashboard.'}
                                         </p>
                                       </div>
                                     )}

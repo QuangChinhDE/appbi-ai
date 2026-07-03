@@ -121,6 +121,7 @@ name     = os.environ.get("ADMIN_NAME", "Admin")
 
 full_perms = json.dumps({
     "data_sources": "full", "datasets": "full",
+    "govern": "full", "observability": "full",
     "explore_charts": "full", "dashboards": "full",
     "workboards": "full", "settings": "full"
 })

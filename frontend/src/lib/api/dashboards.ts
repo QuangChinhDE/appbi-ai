@@ -54,6 +54,24 @@ export const dashboardApi = {
     await apiClient.delete(`/dashboards/${id}`);
   },
 
+  // Dashboard perf #5 — force-rebuild the materialized snapshots for every
+  // dataset this dashboard reads. Returns { as_of } for the "Số tính đến" label.
+  refreshSnapshots: async (
+    dashboardId: number,
+  ): Promise<{ ok: boolean; as_of: string | null; datasets: any[] }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/snapshots/refresh`);
+    return response.data;
+  },
+
+  // Report-level "data as of" WITHOUT rebuilding, so the freshness label shows
+  // on load (not only after a Refresh click).
+  getSnapshotInfo: async (
+    dashboardId: number,
+  ): Promise<{ as_of: string | null; mode: string }> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/snapshots/info`);
+    return response.data;
+  },
+
   addChart: async (
     dashboardId: number,
     chartId: number,

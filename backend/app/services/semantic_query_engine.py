@@ -147,7 +147,15 @@ class SemanticQueryEngine:
         # (Looker MD5 trick) because a SYMMETRIC-mode filter introduced a 1:N
         # join fan-out at SELECT time. Populated by _build_where_clause.
         self._symmetric_aggregate_views: Set[str] = set()
-    
+        # BUG-018 redux — per-table {column: physical_type} maps, lazily built
+        # from DatasetTable.columns_cache so the type-aware filter/aggregate
+        # paths can recover a column's real type even when it was never
+        # modeled as a declared dimension. Keyed by dataset_table_id.
+        self._phys_coltype_cache: Dict[Any, Dict[str, str]] = {}
+        # Dashboard perf #5 — snapshot redirect map (see generate_sql). Default
+        # empty = live behaviour; set per-request by the caller.
+        self._snapshot_overrides: Dict[int, str] = {}
+
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
         every path compiles to via ``semantic_query_compiler``). Unpacks to
@@ -169,6 +177,7 @@ class SemanticQueryEngine:
             measure_agg_overrides=(dict(spec.measure_agg_overrides) or None) if spec.measure_agg_overrides else None,
             model_id=spec.model_id,
             explore_id=spec.explore_id,
+            snapshot_overrides=getattr(spec, "snapshot_overrides", None),
         )
 
     def generate_sql(
@@ -192,6 +201,7 @@ class SemanticQueryEngine:
         explore_id: Optional[int] = None,
         _reanchored: bool = False,
         _disable_isolation: bool = False,
+        snapshot_overrides: Optional[Dict[int, str]] = None,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -205,6 +215,17 @@ class SemanticQueryEngine:
         self._model = None
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
+        self._phys_coltype_cache = {}
+        # Dashboard perf #5 — snapshot redirect. {dataset_table_id -> physical_ref}.
+        # When a view's table has a fresh materialized snapshot, the FROM clause
+        # reads the flat snapshot instead of re-running its heavy source SQL.
+        # Empty map → no change (byte-identical SQL). Read-only; never mutates the
+        # ORM SemanticView (no accidental DB flush). Set ONLY when the caller
+        # passes a value so it PERSISTS across the internal recursive
+        # generate_sql calls (measure-isolation re-anchor + per-fact multifact),
+        # which pass no override arg.
+        if snapshot_overrides is not None:
+            self._snapshot_overrides = dict(snapshot_overrides)
         pivots = pivots or []
         sorts = sorts or []
         window_functions = window_functions or []
@@ -1233,18 +1254,23 @@ class SemanticQueryEngine:
         # cross-view reference we must not blindly cast.
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col):
             return False
-        dim = next(
-            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
-            None,
-        )
-        if not dim:
-            return False
         # Physical string-family storage types across supported warehouses
         # (BigQuery STRING, Postgres text/varchar/char, MySQL char/varchar/…).
         _STRING_PHYSICAL = {
             "string", "text", "varchar", "char", "nvarchar", "nchar",
             "character varying", "character", "bpchar", "clob", "str", "utf8",
         }
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if not dim:
+            # Not a declared dimension — fall back to the physical type from
+            # columns_cache so SUM/AVG over a numeric-looking STRING column that
+            # was never modeled still gets SAFE_CAST (else SUM(STRING) → 400).
+            # No physical type / a genuine numeric → False (no cast), unchanged.
+            phys = (self._physical_source_type(view, col) or "").strip().lower()
+            return bool(phys) and phys in _STRING_PHYSICAL
         source_type = str(dim.get("source_type") or "").strip().lower()
         if source_type:
             return source_type in _STRING_PHYSICAL
@@ -1302,6 +1328,54 @@ class SemanticQueryEngine:
         _DATE_TYPES = {"date", "datetime", "timestamp", "timestamptz", "time"}
         return str(dim.get("type") or "").strip().lower() in _DATE_TYPES
 
+    def _physical_source_type(self, view, col: str) -> Optional[str]:
+        """Resolve a column's PHYSICAL warehouse type from the view's underlying
+        ``DatasetTable.columns_cache`` — for columns that are NOT declared
+        dimensions.
+
+        Model generation turns most columns into dimensions (carrying
+        ``source_type``), but a DA can (a) delete a dimension, (b) reference a
+        column added to the source AFTER generation, or (c) pick — via the
+        measure-filter / aggregation column combobox, which lists EVERY physical
+        column — a numeric column that was never modeled as a dimension. The
+        dimension-only type lookups then saw nothing and the caller fell back to
+        "quote as a string", which slipped ``INT64_col = '1'`` to BigQuery → 400
+        "No matching signature for operator = INT64, STRING" (BUG-018 only fixed
+        the declared-dimension case). This recovers the real type so the value
+        renders with a matching SQL literal.
+
+        Returns a lowercased type string (physical ``source_type`` preferred,
+        value-sampled ``type`` as fallback) or None when unresolvable (→ caller
+        keeps the legacy quote, byte-identical to before).
+        """
+        table_id = getattr(view, "dataset_table_id", None)
+        cache_key = table_id if table_id is not None else id(view)
+        cached = self._phys_coltype_cache.get(cache_key)
+        if cached is None:
+            cached = {}
+            try:
+                table = getattr(view, "dataset_table", None)
+                cc = getattr(table, "columns_cache", None) if table is not None else None
+                if isinstance(cc, dict):
+                    cols = cc.get("columns", []) or []
+                elif isinstance(cc, list):
+                    cols = cc
+                else:
+                    cols = []
+                for c in cols:
+                    if not isinstance(c, dict):
+                        continue
+                    name = str(c.get("name") or "").strip()
+                    if not name:
+                        continue
+                    t = str(c.get("source_type") or c.get("type") or "").strip().lower()
+                    if t:
+                        cached[name] = t
+            except Exception:  # noqa: BLE001 — best-effort; never block SQL-gen
+                cached = {}
+            self._phys_coltype_cache[cache_key] = cached
+        return cached.get(col)
+
     def _filter_type_family(self, field: str, default_view: str) -> Optional[str]:
         """Resolve a filter column's INTENT type → 'number'|'bool'|'date'|
         'datetime'|'string'|None. Drives type-aware literal rendering so a
@@ -1313,7 +1387,11 @@ class SemanticQueryEngine:
         signal (``number`` means the analyst wants a numeric comparison even if
         the column is physically STRING — Airbyte/Sheets — in which case the
         caller SAFE_CASTs), with physical ``source_type`` confirming bool/date.
-        Returns None for non-dimension columns → caller keeps the legacy quote.
+        For columns that are NOT declared dimensions, falls back to the physical
+        type from ``columns_cache`` (``_physical_source_type``) so a filter on a
+        never-modeled numeric column still coerces instead of emitting
+        ``INT64 = STRING``. Returns None only when the column is wholly
+        unresolvable → caller keeps the legacy quote.
         """
         if "." in field:
             try:
@@ -1329,10 +1407,17 @@ class SemanticQueryEngine:
             (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
             None,
         )
-        if not dim:
-            return None
-        st = str(dim.get("source_type") or "").strip().lower()
-        sem = str(dim.get("type") or "").strip().lower()
+        if dim:
+            st = str(dim.get("source_type") or "").strip().lower()
+            sem = str(dim.get("type") or "").strip().lower()
+        else:
+            # Not a declared dimension — recover the column's physical type so
+            # the value still renders with a matching literal (else a numeric
+            # column the DA never modeled slips ``INT64_col = '1'`` to BigQuery).
+            st = (self._physical_source_type(view, col) or "").strip().lower()
+            sem = ""
+            if not st:
+                return None
         _NUM = {
             "int", "integer", "int64", "bigint", "smallint", "tinyint",
             "float", "float64", "double", "double precision", "real",
@@ -1804,7 +1889,7 @@ class SemanticQueryEngine:
         # measure `_measure_fact_view` returns the declared view (unchanged).
         view_name = self._measure_fact_view(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
-        m_table = view.sql_table_name or view_name
+        m_table = self._snapshot_ref_for_view(view) or view.sql_table_name or view_name
 
         plain_agg = self._render_measure(
             field_ref, agg_override=agg_override, _isolate=False,
@@ -2040,7 +2125,19 @@ class SemanticQueryEngine:
                     measures=fact_measures,
                     filters=rebound,
                     sorts=[],
-                    limit=limit,
+                    # Per-fact CTEs must cover EVERY dimension group, so the row
+                    # limit must NOT be pushed down here: each `_mf` is aggregated
+                    # independently and stitched onto `_skel` by the conformed
+                    # dims, and the limit is re-applied to the FINAL stitched
+                    # result below. Propagating the outer limit truncated each
+                    # fact to an arbitrary (un-ordered, possibly mismatched) N
+                    # rows BEFORE the stitch → a dim value kept in one fact but
+                    # dropped in another surfaced as a spurious NULL measure (and
+                    # nondeterministic rows). No-op for the common sentinel limit
+                    # (every fact already covered all groups); fixes explicit
+                    # small-limit cross-fact charts. The outer `LIMIT {limit}`
+                    # (below) still bounds the returned rows.
+                    limit=10_000_000,
                     time_grains=time_grains,
                     measure_agg_overrides=measure_agg_overrides,
                     model_id=model_id,
@@ -2738,6 +2835,21 @@ class SemanticQueryEngine:
             if keyword in sql_upper:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
+    def _snapshot_ref_for_view(self, view) -> Optional[str]:
+        """Dashboard perf #5 — if this view's dataset table has a fresh
+        materialized snapshot, return a drop-in FROM operand that reads the flat
+        snapshot instead of re-running the view's heavy source SQL. Returns None
+        (→ use the normal sql_table_name) when there is no override. The snapshot
+        was materialized FROM the view's fully-resolved SQL, so `SELECT *` over it
+        is column-identical."""
+        if not self._snapshot_overrides:
+            return None
+        tid = getattr(view, "dataset_table_id", None)
+        ref = self._snapshot_overrides.get(tid) if tid is not None else None
+        if not ref:
+            return None
+        return f"(SELECT * FROM `{ref}`)"
+
     def _build_from_clause(
         self,
         explore: SemanticExplore,
@@ -2769,8 +2881,8 @@ class SemanticQueryEngine:
         if not base_view:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
 
-        # Determine base table name
-        base_table = base_view.sql_table_name or explore.base_view_name
+        # Determine base table name (snapshot redirect wins when present — #5)
+        base_table = self._snapshot_ref_for_view(base_view) or base_view.sql_table_name or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
 
         joined_nodes: set[str] = {explore.base_view_name}
@@ -2808,7 +2920,7 @@ class SemanticQueryEngine:
                 if edge.to_node in joined_nodes:
                     continue
                 join_view = self._get_view_for_node(edge.to_node)
-                join_table = join_view.sql_table_name or edge.to_view
+                join_table = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
                 join_condition_rendered = self._render_edge_join_condition(edge)
                 if not join_condition_rendered:
                     raise ValueError(
@@ -3555,7 +3667,7 @@ class SemanticQueryEngine:
                     join_view = self._get_view_for_node(edge.to_node)
                 except ValueError:
                     return None
-                relation = join_view.sql_table_name or edge.to_view
+                relation = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
                 # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
                 # (the user's production case: `WITH a AS (WITH b AS (...))`
                 # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.

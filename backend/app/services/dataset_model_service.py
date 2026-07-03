@@ -2485,14 +2485,77 @@ def _distinct_filter_targets_self(
     return False
 
 
+def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | None = None):
+    """Dashboard perf #5 for the SLICER cascade (not just charts).
+
+    Slicer dropdowns call the distinct cascade, which re-scans the heavy
+    ``sql_query`` pipeline LIVE on every open (e.g. 15-21s each on report-demo)
+    even though the charts are already sub-second on snapshots. Mirror the chart
+    resolver's ALL-OR-NOTHING rule: only when the dataset is snapshot-eligible
+    (every table is sql_query or generated_calendar) AND every sql_query table
+    has a fresh current snapshot do we return
+    ``({dataset_table_id: physical_ref}, exec_ds_on_SA_cred)`` so the cascade
+    redirects EVERY relation to its snapshot and runs on the service-account
+    credential. Any gap → ``({}, None)`` and the cascade runs live, unchanged.
+    Because eligibility guarantees no physical/derived table remains, the
+    SA-executed SQL references only snapshot tables (+ inline calendar) — never
+    a source table the write SA cannot read. NEVER raises."""
+    try:
+        from types import SimpleNamespace
+        from app.services import snapshot_service
+        from app.services.datasource_service import DataSourceConnectionService
+        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
+        if len(ds_ids) != 1:
+            return {}, None
+        datasource = db.query(DataSource).filter(DataSource.id == next(iter(ds_ids))).first()
+        if datasource is None or not snapshot_service.is_enabled(datasource):
+            return {}, None
+        if ttl_minutes == 0:  # Realtime → live
+            return {}, None
+        snap_map: Dict[int, str] = {}
+        for t in tables:
+            if is_generated_calendar_table(t):
+                continue
+            if not snapshot_service.should_materialize(t):
+                return {}, None  # physical/derived → SA can't read source → live
+            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)  # any age (serve-stale)
+            if not ref:
+                # Eligible but unbuilt → live now; warm for next time if public TTL.
+                if ttl_minutes:
+                    snapshot_service.trigger_async_refresh(dataset_id)
+                return {}, None
+            snap_map[t.id] = ref
+        if not snap_map:
+            return {}, None
+        # Public per-link TTL: serve the stale snapshot but kick off a background
+        # rebuild so the slicer cascade stays consistent with the charts.
+        if snapshot_service.is_stale(snapshot_service.as_of(db, list(snap_map.keys())), ttl_minutes):
+            snapshot_service.trigger_async_refresh(dataset_id)
+        sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
+        exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
+        return snap_map, exec_ds
+    except Exception:  # noqa: BLE001 — snapshot must NEVER break a slicer
+        logger.warning("[snapshot] distinct-cascade context failed; using live", exc_info=True)
+        return {}, None
+
+
 def get_distinct_field_values(
     db: Session,
     dataset_id: int,
     field: str,
     limit: int = 200,
     filters: list[dict] | None = None,
+    explain: bool = False,
+    snapshot_ttl_minutes: int | None = None,
 ) -> dict:
     """Return distinct values + dropped-filter diagnostics.
+
+    When ``explain`` is set (admin debug only), the response also carries a
+    ``debug_sql`` list with every SQL string generated for this request —
+    captured before execution so it is present even when the warehouse
+    rejects the query. This is the objective way to see what the cascade
+    actually emitted (e.g. whether a subquery ended up correlated).
 
     Shape: ``{"values": [...], "dropped_filters": [{...}]}``. Returning a
     dict (instead of just ``list[str]``) is the Phase-15.94 fix for the
@@ -2555,6 +2618,11 @@ def get_distinct_field_values(
     if not view:
         raise ValueError(f"View '{view_name}' not found")
 
+    # Perf #5 — serve the slicer cascade from snapshots (all-or-nothing). Empty
+    # map → live path byte-identical to before. Public per-link TTL threads in
+    # via snapshot_ttl_minutes (serve-stale-then-async past the TTL).
+    _snap_map, _snap_exec_ds = _distinct_snapshot_context(db, dataset_id, snapshot_ttl_minutes)
+
     from app.core.crypto import decrypt_config
     from app.services.datasource_service import DataSourceConnectionService
     from app.services.live_query_service import (
@@ -2566,6 +2634,29 @@ def get_distinct_field_values(
     )
     from app.services.chart_contracts import normalize_filter_conditions, normalize_filter_operator
     from app.services.dataset_relation_service import resolve_dataset_table_relation
+    from app.services.semantic_query_engine import SemanticQueryEngine
+    from app.services.type_override_service import build_safe_cast_sql
+
+    # Reuse the engine's EXACT type-family classifier so the dropdown-cascade
+    # path coerces filter literals identically to the chart WHERE-builder and
+    # the measure-filter path (convergence — see `dashboard_filter_dual_path`).
+    # Without this a numeric column compared against a STRING slicer value
+    # (dropdown/'in' values arrive as strings) emitted e.g.
+    # ``year BETWEEN '2023' AND '2024'`` → BigQuery 400 "No matching signature
+    # for operator BETWEEN ... INT64, STRING, STRING". views_cache is seeded
+    # per-call below so no extra DB round-trip is needed.
+    _family_engine = SemanticQueryEngine(db)
+
+    def _resolve_field_family(view_obj, field_name: str) -> str | None:
+        """Type family of a declared field via the engine's classifier
+        (number/bool/date/datetime/string/None). None → legacy quoted literal."""
+        if view_obj is None:
+            return None
+        try:
+            _family_engine.views_cache[view_obj.name] = view_obj
+            return _family_engine._filter_type_family(field_name, view_obj.name)
+        except Exception:  # noqa: BLE001 — family detection is best-effort
+            return None
 
     cache_payload = {
         "field": field_name,
@@ -2573,7 +2664,14 @@ def get_distinct_field_values(
         "filters": normalize_filter_conditions(filters or []),
     }
 
+    # When explain=True (admin debug) collect every generated distinct SQL so
+    # the caller can inspect exactly what was sent to the warehouse. Captured
+    # before execution, so it survives a warehouse rejection.
+    captured_sqls: list[str] = []
+
     def execute_distinct_sql(datasource_obj, table_identifier: str, sql: str) -> list[str]:
+        if explain:
+            captured_sqls.append(sql)
         ds_type = datasource_obj.type if isinstance(datasource_obj.type, str) else datasource_obj.type.value
         cached = query_cache.get_cached(
             datasource_obj.id,
@@ -2639,43 +2737,75 @@ def get_distinct_field_values(
                 add_ref(linked_field)
         return refs
 
-    def _render_filter_condition(field_expression: str, filter_condition: dict) -> str | None:
+    def _render_filter_condition(
+        field_expression: str,
+        filter_condition: dict,
+        *,
+        field_family: str | None = None,
+        dialect: str = "postgresql",
+    ) -> str | None:
         op = normalize_filter_operator(filter_condition.get("operator"))
-        value = filter_condition.get("value")
+        raw_value = filter_condition.get("value")
 
         def value_present(candidate) -> bool:
             return candidate is not None and not (isinstance(candidate, str) and not candidate.strip())
 
+        # Type-aware literal rendering — parity with the chart WHERE-builder and
+        # the measure-filter path. Coerce the (string-from-FE) value to the
+        # column's family so numbers/bools render UNQUOTED, and SAFE_CAST the
+        # column when comparing against a number (no-op on genuine numerics,
+        # parses STRING-stored numerics). `field_family=None` → no coercion →
+        # legacy quoted literal, byte-identical to before. LIKE/pattern ops keep
+        # the raw (uncoerced) value — they are string-only by definition.
+        value = SemanticQueryEngine._coerce_typed_filter_value(raw_value, field_family)
+        _d = (dialect or "").lower()
+
+        def _lit(v) -> str:
+            if isinstance(v, bool):
+                return "TRUE" if v else "FALSE"
+            if isinstance(v, (int, float)):
+                return str(v)
+            return _sql_literal(v)
+
+        def _numcast(col_sql: str, *vals) -> str:
+            present = [v for v in vals if value_present(v)]
+            if present and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+            ):
+                return build_safe_cast_sql(col_sql, "float", _d)
+            return col_sql
+
         if op == "eq":
-            return f"{field_expression} = {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} = {_lit(value)}"
         if op in ("neq", "ne"):
-            return f"{field_expression} != {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} != {_lit(value)}"
         if op == "gt":
-            return f"{field_expression} > {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} > {_lit(value)}"
         if op == "gte":
-            return f"{field_expression} >= {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} >= {_lit(value)}"
         if op == "lt":
-            return f"{field_expression} < {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} < {_lit(value)}"
         if op == "lte":
-            return f"{field_expression} <= {_sql_literal(value)}"
+            return f"{_numcast(field_expression, value)} <= {_lit(value)}"
         if op == "between" and isinstance(value, list):
             lo = value[0] if len(value) > 0 else None
             hi = value[1] if len(value) > 1 else None
             if value_present(lo) and value_present(hi):
-                return f"{field_expression} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}"
+                return f"{_numcast(field_expression, lo, hi)} BETWEEN {_lit(lo)} AND {_lit(hi)}"
             if value_present(lo):
-                return f"{field_expression} >= {_sql_literal(lo)}"
+                return f"{_numcast(field_expression, lo)} >= {_lit(lo)}"
             if value_present(hi):
-                return f"{field_expression} <= {_sql_literal(hi)}"
+                return f"{_numcast(field_expression, hi)} <= {_lit(hi)}"
             return None
         if op in {"in", "not_in"} and isinstance(value, list):
-            vals = ", ".join(_sql_literal(item) for item in value if value_present(item))
-            if not vals:
+            present_vals = [item for item in value if value_present(item)]
+            if not present_vals:
                 return None
+            vals = ", ".join(_lit(item) for item in present_vals)
             keyword = "IN" if op == "in" else "NOT IN"
-            return f"{field_expression} {keyword} ({vals})"
-        if op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
-            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            return f"{_numcast(field_expression, *present_vals)} {keyword} ({vals})"
+        if op in {"like", "contains", "not_contains", "starts_with"} and raw_value is not None:
+            esc = str(raw_value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
             if op == "not_contains":
                 return f"{field_expression} NOT LIKE '%{esc}%' ESCAPE '\\'"
             if op == "starts_with":
@@ -2726,6 +2856,7 @@ def get_distinct_field_values(
         datasource_obj,
         dialect: str,
         dropped: list[dict],
+        use_snapshots: bool = False,
     ) -> str:
         """Phase-15.94 — Cascading filter strategy switched from
         `LEFT JOIN dim_X ... WHERE dim_X.col = ...` (which acted as an
@@ -2800,7 +2931,7 @@ def get_distinct_field_values(
             next_exists_index[0] += 1
             return alias
 
-        def _emit_exists_for_single_path(path, name: str) -> tuple[str | None, str | None]:
+        def _emit_exists_for_single_path(path, name: str) -> tuple[tuple | None, str | None]:
             """Build ONE ``EXISTS (SELECT 1 FROM ...)`` for a single resolved
             join path: the inner JOIN chain mirrors the path and the first hop
             correlates back to the outer base_alias.
@@ -2837,7 +2968,19 @@ def get_distinct_field_values(
                 joined_view = _get_view(step.edge.to_node)
                 if joined_view is None:
                     return None, "view_not_found"
-                relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
+                # Perf #5 — when the cascade runs on snapshots, redirect each
+                # joined relation to its snapshot table (a backtick-quoted ref
+                # that _wrap_live_sql_relation passes through unchanged) instead
+                # of the heavy live pipeline. Calendar views are absent from the
+                # map → fall through to the inline live relation (SA-safe).
+                _snap_ref = (
+                    _snap_map.get(getattr(joined_view, "dataset_table_id", None))
+                    if use_snapshots else None
+                )
+                relation = (
+                    f"`{_snap_ref}`" if _snap_ref
+                    else _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
+                )
                 if not relation:
                     return None, "view_not_found"
                 # Phase-15.95 — BigQuery rejects `WITH` clauses inside a
@@ -2911,9 +3054,50 @@ def get_distinct_field_values(
             if not _semantic_view_has_field(leaf_view, name):
                 return None, "field_not_on_view"
             leaf_expr = f"{leaf_alias}.{_quote_identifier(name, dialect)}"
-            predicate = _render_filter_condition(leaf_expr, filter_condition)
+            predicate = _render_filter_condition(
+                leaf_expr,
+                filter_condition,
+                field_family=_resolve_field_family(leaf_view, name),
+                dialect=dialect,
+            )
             if not predicate:
                 return None, "no_join_path"
+
+            # De-correlate the first-hop correlation into a NON-correlated IN
+            # subquery. The correlated form
+            #   EXISTS (SELECT 1 FROM <body> WHERE base.x = d0.y AND <leaf>)
+            # is REJECTED by BigQuery ("Correlated subqueries that reference
+            # other tables are not supported unless they can be de-correlated …
+            # into an efficient JOIN") whenever the inner body references another
+            # table — exactly the cross-entity cascade a slicer dropdown builds
+            # (e.g. an owner-dim slicer cascaded by a date filter that lives on
+            # the Date view, reached via a fact). Postgres ACCEPTS the correlated
+            # form, which is why this only ever surfaced on BigQuery datasets and
+            # local PG fixtures never caught it. Rewriting it as
+            #   base.x IN (SELECT d0.y FROM <body> WHERE <leaf> AND d0.y IS NOT NULL)
+            # drops the outer correlation (BQ-valid) and is an identical semi-join
+            # on every dialect. Only the clean single-equality first hop is
+            # de-correlated; a composite / non-splittable correlation falls back
+            # to the correlated EXISTS (rare; still fine on PG/MySQL).
+            corr = correlation_predicates[0] if len(correlation_predicates) == 1 else None
+            if corr and corr.count(" = ") == 1:
+                lhs, rhs = (s.strip() for s in corr.split(" = ", 1))
+                base_pref = f"{base_alias}."
+                if (base_pref in lhs) != (base_pref in rhs):
+                    outer_expr = lhs if base_pref in lhs else rhs
+                    inner_expr = rhs if base_pref in lhs else lhs
+                    if base_pref not in inner_expr:
+                        in_body = [
+                            f"SELECT {inner_expr} AS _appbi_semi_key",
+                            *sql_pieces,
+                            f"WHERE {predicate} AND {inner_expr} IS NOT NULL",
+                        ]
+                        # Return STRUCTURED (tag, base-key expr, key-set SELECT)
+                        # so the combiner can UNION DISTINCT same-key paths and
+                        # emit ONE INNER JOIN semi-join (BigQuery won't flatten an
+                        # IN over an aggregated/windowed subquery). The key is
+                        # projected AS _appbi_semi_key for a stable UNION/JOIN col.
+                        return ("in", outer_expr, " ".join(in_body)), None
 
             where_parts_inner = [*correlation_predicates, predicate]
             body_parts = [
@@ -2921,7 +3105,10 @@ def get_distinct_field_values(
                 *sql_pieces,
                 f"WHERE {' AND '.join(where_parts_inner)}",
             ]
-            return "EXISTS (" + " ".join(body_parts) + ")", None
+            # Composite / non-splittable correlation — keep the correlated
+            # EXISTS (fine on PG/MySQL; rare on BQ). Tagged "raw" so the
+            # combiner OR-joins it verbatim.
+            return ("raw", "EXISTS (" + " ".join(body_parts) + ")"), None
 
         def _build_exists_for_path(node: str, name: str) -> tuple[str | None, str | None]:
             """Cascade a filter on ``node.name`` into the dropdown's base view.
@@ -2954,7 +3141,7 @@ def get_distinct_field_values(
             if not candidate_paths:
                 return None, "no_join_path"
 
-            clauses: list[str] = []
+            clauses: list[tuple] = []
             last_reason: str | None = None
             for cand in candidate_paths:
                 clause, reason = _emit_exists_for_single_path(cand, name)
@@ -2964,9 +3151,55 @@ def get_distinct_field_values(
                     last_reason = reason
             if not clauses:
                 return None, last_reason or "no_join_path"
-            if len(clauses) == 1:
-                return clauses[0], None
-            return "(" + " OR ".join(clauses) + ")", None
+
+            # Combine the per-path clauses. A slicer dim reaches the filter's
+            # view via one semi-join per equal-shortest path (owner→revenue→date,
+            # owner→activity→date, …), all keyed on the SAME base column.
+            #
+            # BigQuery will NOT flatten an ``x IN (SELECT …)`` whose subquery
+            # aggregates / windows / UNIONs into a semi-join, nor one nested in
+            # OR — it rejects the query: "Correlated subqueries that reference
+            # other tables are not supported unless they can be de-correlated …
+            # into an efficient JOIN". report-demo's fact views are exactly that
+            # (CTEs with GROUP BY / COUNT(DISTINCT) / SUM() OVER). So when every
+            # path is a same-key semi-join, emit it as the explicit INNER JOIN
+            # BigQuery asks for (see _build_distinct_sql) rather than an IN:
+            # the per-path key SELECTs are UNION DISTINCT-ed into one key-set
+            # (making the key unique so the join can't fan out the base), and
+            # membership becomes ``base INNER JOIN (keyset) ON base.k = keyset.k``
+            # — which BQ handles even when the key-set is a complex derived
+            # table. Postgres/MySQL run it identically.
+            in_selects_by_expr: dict[str, list[str]] = {}
+            in_expr_order: list[str] = []
+            raw_clauses: list[str] = []
+            for clause in clauses:
+                if clause[0] == "in":
+                    _, expr, select_sql = clause
+                    if expr not in in_selects_by_expr:
+                        in_selects_by_expr[expr] = []
+                        in_expr_order.append(expr)
+                    in_selects_by_expr[expr].append(select_sql)
+                else:
+                    raw_clauses.append(clause[1])
+
+            # Clean, common case: every path is a semi-join on ONE base key →
+            # emit an INNER JOIN semi-join (BQ-friendly, see _build_distinct_sql).
+            if not raw_clauses and len(in_expr_order) == 1:
+                expr = in_expr_order[0]
+                keyset = " UNION DISTINCT ".join(in_selects_by_expr[expr])
+                return {"kind": "join", "on_expr": expr, "select": keyset}, None
+
+            # Residual (rare): different key exprs, or a fallback correlated
+            # EXISTS. Keep the WHERE form, still merging same-key INs via UNION
+            # DISTINCT to minimise OR. May be rejected by BQ for the same reason,
+            # but this path was already the prior (rare) behaviour.
+            rendered: list[str] = [
+                f"{expr} IN (" + " UNION DISTINCT ".join(in_selects_by_expr[expr]) + ")"
+                for expr in in_expr_order
+            ]
+            rendered.extend(raw_clauses)
+            where_sql = rendered[0] if len(rendered) == 1 else "(" + " OR ".join(rendered) + ")"
+            return {"kind": "where", "sql": where_sql}, None
 
         exists_clauses: list[str] = []
         base_predicates: list[str] = []
@@ -2994,7 +3227,12 @@ def get_distinct_field_values(
                         last_view = node
                         continue
                     field_expr = f"{base_alias}.{_quote_identifier(name, dialect)}"
-                    predicate = _render_filter_condition(field_expr, filter_condition)
+                    predicate = _render_filter_condition(
+                        field_expr,
+                        filter_condition,
+                        field_family=_resolve_field_family(view_obj, name),
+                        dialect=dialect,
+                    )
                     if predicate:
                         base_predicates.append(predicate)
                         handled = True
@@ -3039,10 +3277,31 @@ def get_distinct_field_values(
                     detail_by_reason.get(reason, reason),
                 )
 
-        where_parts = [f"{target_expr} IS NOT NULL", *base_predicates, *exists_clauses]
+        # exists_clauses entries are dicts. {"kind":"join", on_expr, select} →
+        # an INNER JOIN semi-join in the FROM — the form BigQuery asks for and
+        # the only one that works when the key-set aggregates/windows/UNIONs.
+        # {"kind":"where", sql} → a WHERE predicate (rare mixed/EXISTS fallback).
+        # A semi-join drops base rows with no match (correct cascade semantics),
+        # and the outer SELECT DISTINCT collapses any duplicate values.
+        where_parts = [f"{target_expr} IS NOT NULL", *base_predicates]
+        join_parts: list[str] = []
+        for idx, clause in enumerate(exists_clauses):
+            if isinstance(clause, dict) and clause.get("kind") == "join":
+                alias = f"_appbi_semi_{idx}"
+                join_parts.append(
+                    f"INNER JOIN ({clause['select']}) AS {alias} "
+                    f"ON {clause['on_expr']} = {alias}._appbi_semi_key"
+                )
+            elif isinstance(clause, dict):
+                where_parts.append(clause["sql"])
+            else:  # legacy string form (defensive)
+                where_parts.append(clause)
+        from_sql = f"({base_sql}) AS {base_alias}"
+        if join_parts:
+            from_sql = from_sql + " " + " ".join(join_parts)
         return (
             f"SELECT DISTINCT {target_expr} AS value "
-            f"FROM ({base_sql}) AS {base_alias} "
+            f"FROM {from_sql} "
             f"WHERE {' AND '.join(where_parts)} "
             f"ORDER BY 1 "
             f"LIMIT {limit}"
@@ -3133,7 +3392,7 @@ def get_distinct_field_values(
         source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
         table_identifier = f"semantic_view:{view_name}:{source_hash}"
         values = _safe_execute("semantic_view", lambda: execute_distinct_sql(datasource_for_view, table_identifier, sql))
-        return {"values": values, "dropped_filters": dropped}
+        return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
     db_table = db.query(DatasetTable).filter(
         DatasetTable.id == view.dataset_table_id,
@@ -3162,10 +3421,14 @@ def get_distinct_field_values(
         dialect = _dialect_for_ds_type(ds_type)
         calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
-        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped)
-        table_identifier = f"calendar_view:{dataset_id}:{view_name}"
-        values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_datasource, table_identifier, sql))
-        return {"values": values, "dropped_filters": dropped}
+        # Perf #5 — calendar base is inline (SA-safe); if the cascade is on
+        # snapshots, run on the SA cred so any snapshot relation resolves.
+        _cal_snap = _snap_exec_ds is not None
+        cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
+        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
+        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + (":snap" if _cal_snap else "")
+        values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_exec_ds, table_identifier, sql))
+        return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
     live_table = db_table
     datasource = (
@@ -3187,6 +3450,16 @@ def get_distinct_field_values(
     def fetch_live_values() -> list[str]:
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
+        # Perf #5 — if this dropdown's own table has a fresh snapshot (and the
+        # dataset is eligible), scan the flat snapshot instead of re-running the
+        # heavy pipeline, and execute on the SA cred so every cascade relation
+        # (also redirected to snapshots) resolves. Any gap → live, unchanged.
+        _base_ref = _snap_map.get(getattr(live_table, "id", None))
+        if _base_ref and _snap_exec_ds is not None:
+            base_sql = f"SELECT * FROM `{_base_ref}`"
+            sql = _build_distinct_sql(base_sql, datasource, dialect, dropped, use_snapshots=True)
+            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap"
+            return execute_distinct_sql(_snap_exec_ds, table_identifier, sql)
         plan = resolve_dataset_table_relation(datasource, live_table)
         sql = _build_distinct_sql(plan.sql, datasource, dialect, dropped)
         table_identifier = build_dataset_table_cache_identifier(live_table)
@@ -3195,7 +3468,7 @@ def get_distinct_field_values(
     if datasource is None:
         raise ValueError("Data source not found")
     values = _safe_execute("live_table", fetch_live_values)
-    return {"values": values, "dropped_filters": dropped}
+    return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
 
 # ===========================================================================

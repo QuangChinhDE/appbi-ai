@@ -1,0 +1,42 @@
+{
+  "case_id": "G13_ds56_rev_by_owner_dealfilter_fanout",
+  "description": "Revenue by owner + filter deal.org_id (JOIN owner + EXISTS deal)",
+  "chart_name": "[snow] revenue by owner",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:22.938705+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "group_by",
+    "fan_out"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "GROUP BY",
+    "EXISTS"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_188.crm_name": "An",
+        "dataset_table_193.amount": "1200"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_188.crm_name AS dataset_table_188_crm_name, SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 LEFT JOIN (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 ON dataset_table_193.bc_key = dataset_table_188.bc_key WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 INNER JOIN (SELECT * FROM `bcfix`.`bc_deal`) AS dataset_table_190 ON dataset_table_188.bc_key = dataset_table_190.bc_key WHERE dataset_table_193.bc_key = dataset_table_188.bc_key AND dataset_table_190.org_id = 'O1') GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

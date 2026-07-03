@@ -16,6 +16,10 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+// Leaflet base stylesheet for the `map` form widget. Side-effect import (the
+// standard way to load Leaflet CSS under webpack) — dynamic import() of a CSS
+// path does not reliably inject styles and breaks TS module resolution.
+import 'leaflet/dist/leaflet.css';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -110,6 +114,17 @@ interface RuntimeField extends Record<string, unknown> {
   computed_from_dataset?: unknown;
   max_file_kb?: unknown;
   lookup?: Record<string, unknown>;
+}
+
+/** A lookup option resolved by the backend. `geometry`/`lat`/`lng` are only
+ * populated for the map widget (LookupConfig.geometry_column etc.); select /
+ * lookup widgets ignore them. */
+interface LookupOption {
+  label: string;
+  value: unknown;
+  geometry?: string | Record<string, unknown> | null;
+  lat?: number | string | null;
+  lng?: number | string | null;
 }
 
 interface RuntimeFormSpecExtras {
@@ -1660,7 +1675,7 @@ function Field({
   autoNumberSet,
 }: {
   field: RuntimeField;
-  lookups: Record<string, Array<{ label: string; value: unknown }>>;
+  lookups: Record<string, LookupOption[]>;
   value: unknown;
   onChange: (v: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
@@ -1783,6 +1798,16 @@ function Field({
           readonly={readonly}
           required={required}
           isImage={widget === 'image'}
+        />
+      ) : widget === 'map' ? (
+        <MapSelectField
+          options={lookupOpts as LookupOption[]}
+          value={value}
+          onChange={onChange}
+          readonly={readonly}
+          basemap={String(
+            (field.lookup as Record<string, unknown> | undefined)?.basemap || 'satellite',
+          )}
         />
       ) : (
         <input
@@ -1915,6 +1940,191 @@ function FileUploadField({
           Tối đa {maxKb} KB. Tệp được lưu trực tiếp trong cơ sở dữ liệu — phù hợp cho ảnh/scan nhỏ.
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Map polygon-select widget (Leaflet, dynamic import) ──────────────────
+//
+// Each lookup option becomes a polygon (or centroid marker fallback) on a
+// satellite basemap; tapping one calls onChange(opt.value). The value is a
+// plain string (lô id) — same shape as a <select> — so it passes
+// required/valid_if and carries into shared_context unchanged.
+//
+// Leaflet reads `window` at module load, so it is dynamic-imported inside the
+// effect. We deliberately avoid L.marker default icons (external PNG assets
+// that break under the bundler + CSP) — polygons + circleMarker only.
+// NB: the satellite tile host must be allow-listed in nginx `img-src`
+// (see nginx.conf) or tiles are blocked on public links (blank grey map).
+
+const ESRI_BASEMAPS: Record<string, string> = {
+  satellite:
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  streets:
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+  light:
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+};
+
+const MAP_STYLE_SELECTED = { color: '#f59e0b', weight: 3, fillColor: '#f59e0b', fillOpacity: 0.45 };
+const MAP_STYLE_DEFAULT = { color: '#38bdf8', weight: 2, fillColor: '#38bdf8', fillOpacity: 0.15 };
+
+function parseGeometry(geo: unknown): Record<string, unknown> | null {
+  if (!geo) return null;
+  if (typeof geo === 'object') return geo as Record<string, unknown>;
+  if (typeof geo === 'string') {
+    try {
+      return JSON.parse(geo) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function MapSelectField({
+  options,
+  value,
+  onChange,
+  readonly,
+  basemap,
+}: {
+  options: LookupOption[];
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+  basemap: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<unknown>(null);
+  // Keep each option's rendered layer so the value-effect can restyle without
+  // rebuilding the whole map (which would reset pan/zoom).
+  const layersRef = useRef<Array<{ value: unknown; layer: { setStyle?: (s: unknown) => void } }>>([]);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const selectedLabel = useMemo(() => {
+    const match = options.find((o) => String(o.value) === String(value ?? ''));
+    return match?.label ?? null;
+  }, [options, value]);
+
+  // Stable key so we only rebuild the map when the option set / basemap /
+  // readonly actually change — not on every parent re-render.
+  const buildKey = useMemo(
+    () =>
+      JSON.stringify({
+        b: basemap,
+        r: readonly,
+        o: options.map((o) => [o.value, o.geometry ?? null, o.lat ?? null, o.lng ?? null]),
+      }),
+    [options, basemap, readonly],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    // Leaflet is dynamic-imported so we can't lean on its static types here;
+    // treat handles as `any` and keep the surface small + readable.
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    let map: any = null;
+    (async () => {
+      const el = containerRef.current;
+      if (!el || options.length === 0) return;
+      const L: any = (await import('leaflet')).default;
+      if (disposed || !containerRef.current) return;
+
+      map = L.map(el, { attributionControl: true, scrollWheelZoom: true });
+      mapRef.current = map;
+      L.tileLayer(ESRI_BASEMAPS[basemap] || ESRI_BASEMAPS.satellite, {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri',
+      }).addTo(map);
+
+      const built: Array<{ value: unknown; layer: { setStyle?: (s: unknown) => void } }> = [];
+      const bounds = L.latLngBounds([]);
+      for (const opt of options) {
+        const isSelected = String(opt.value) === String(value ?? '');
+        const gj = parseGeometry(opt.geometry);
+        let layer: any = null;
+        if (gj) {
+          layer = L.geoJSON(gj, {
+            style: () => (isSelected ? MAP_STYLE_SELECTED : MAP_STYLE_DEFAULT),
+          });
+          const b = layer.getBounds?.();
+          if (b && b.isValid?.()) bounds.extend(b);
+        } else if (opt.lat != null && opt.lng != null) {
+          const lat = Number(opt.lat);
+          const lng = Number(opt.lng);
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            layer = L.circleMarker([lat, lng], {
+              radius: 9,
+              ...(isSelected ? MAP_STYLE_SELECTED : MAP_STYLE_DEFAULT),
+            });
+            bounds.extend([lat, lng]);
+          }
+        }
+        if (!layer) continue;
+        if (opt.label) layer.bindTooltip?.(String(opt.label));
+        if (!readonly) {
+          layer.on('click', () => onChangeRef.current(opt.value));
+        }
+        layer.addTo(map);
+        built.push({ value: opt.value, layer });
+      }
+      layersRef.current = built;
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [24, 24] });
+      } else {
+        map.setView([16.0, 107.5], 6);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      layersRef.current = [];
+      if (map) {
+        try {
+          map.remove();
+        } catch {
+          /* already gone */
+        }
+      }
+      mapRef.current = null;
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildKey]);
+
+  // Restyle on value change without rebuilding the map.
+  useEffect(() => {
+    for (const { value: v, layer } of layersRef.current) {
+      layer.setStyle?.(String(v) === String(value ?? '') ? MAP_STYLE_SELECTED : MAP_STYLE_DEFAULT);
+    }
+  }, [value]);
+
+  if (options.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
+        Chưa có vùng nào để hiển thị. Kiểm tra cấu hình bảng dữ liệu / cột geometry.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div
+        ref={containerRef}
+        className="h-64 w-full overflow-hidden rounded-md border border-slate-300"
+        style={{ zIndex: 0 }}
+      />
+      <p className="text-xs text-slate-500">
+        {selectedLabel ? (
+          <>
+            Đã chọn: <span className="font-medium text-slate-700">{selectedLabel}</span>
+          </>
+        ) : (
+          'Chạm vào một vùng trên bản đồ để chọn.'
+        )}
+      </p>
     </div>
   );
 }
@@ -2062,6 +2272,120 @@ interface TableCellPatch {
 function tableRowKey(row: Record<string, unknown>, pkCols: string[]): string {
   if (pkCols.length === 0) return '__no_pk__';
   return pkCols.map((c) => JSON.stringify(row[c] ?? null)).join('|');
+}
+
+// ── Gallery display mode for a Table screen ──────────────────────────────
+//
+// Same rows / RLS / filters / detail-panel as the grid — only the render
+// differs: rows become image cards, optionally bucketed into sections by
+// `group_by_column` (header shows the value + count "16/05/2025 (3)").
+// Reuses the <img data:image> approach from FileUploadField.
+
+type GalleryConfigView = NonNullable<
+  NonNullable<TableScreenResponse['table_view']>['gallery_config']
+>;
+
+function GalleryView({
+  rows,
+  config,
+  colLabels,
+  onOpen,
+  panelEnabled,
+  emptyMessage,
+}: {
+  rows: Array<Record<string, unknown>>;
+  config: GalleryConfigView;
+  colLabels: Record<string, string>;
+  onOpen: (row: Record<string, unknown>) => void;
+  panelEnabled: boolean;
+  emptyMessage?: string | null;
+}) {
+  const groupCol = config.group_by_column || null;
+  const perRow = Math.min(Math.max(Number(config.columns_per_row) || 3, 1), 6);
+
+  // Bucket rows into sections preserving first-seen order.
+  const sections = useMemo(() => {
+    if (!groupCol) return [{ key: '__all__', label: null as string | null, rows }];
+    const order: string[] = [];
+    const buckets: Record<string, Array<Record<string, unknown>>> = {};
+    for (const row of rows) {
+      const raw = row[groupCol];
+      const key = raw == null || raw === '' ? '—' : String(raw);
+      if (!buckets[key]) {
+        buckets[key] = [];
+        order.push(key);
+      }
+      buckets[key].push(row);
+    }
+    return order.map((key) => ({ key, label: key, rows: buckets[key] }));
+  }, [rows, groupCol]);
+
+  if (rows.length === 0) {
+    return (
+      <div className="px-4 py-10 text-center text-sm text-slate-500">
+        {emptyMessage || 'Chưa có dữ liệu.'}
+      </div>
+    );
+  }
+
+  const gridStyle = { gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))` };
+
+  return (
+    <div className="space-y-5 px-1 py-2">
+      {sections.map((section) => (
+        <div key={section.key} className="space-y-2">
+          {section.label !== null && (
+            <div className="flex items-center gap-2 border-b border-slate-100 pb-1 text-sm font-semibold text-slate-700">
+              <span>{section.label}</span>
+              <span className="text-xs font-normal text-slate-400">({section.rows.length})</span>
+            </div>
+          )}
+          <div className="grid gap-3" style={gridStyle}>
+            {section.rows.map((row, idx) => {
+              const img = row[config.image_column];
+              const imgSrc = typeof img === 'string' && img.startsWith('data:image') ? img : null;
+              const title = config.title_column ? row[config.title_column] : null;
+              const subtitle = config.subtitle_column ? row[config.subtitle_column] : null;
+              return (
+                <button
+                  type="button"
+                  key={idx}
+                  onClick={() => panelEnabled && onOpen(row)}
+                  className={`group flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white text-left transition ${
+                    panelEnabled ? 'cursor-pointer hover:border-slate-300 hover:shadow-sm' : 'cursor-default'
+                  }`}
+                >
+                  <div className="flex aspect-square w-full items-center justify-center bg-slate-100">
+                    {imgSrc ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={imgSrc}
+                        alt={title ? String(title) : colLabels[config.image_column] || config.image_column}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span className="text-2xl text-slate-300">🖼️</span>
+                    )}
+                  </div>
+                  {(title != null || subtitle != null) && (
+                    <div className="space-y-0.5 px-2 py-1.5">
+                      {title != null && (
+                        <div className="truncate text-xs font-medium text-slate-700">{String(title)}</div>
+                      )}
+                      {subtitle != null && (
+                        <div className="truncate text-[11px] text-slate-400">{String(subtitle)}</div>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function TableScreen({
@@ -2636,6 +2960,16 @@ function TableScreen({
         </form>
       )}
 
+      {tv.display_mode === 'gallery' && tv.gallery_config ? (
+        <GalleryView
+          rows={rows}
+          config={tv.gallery_config}
+          colLabels={colLabels}
+          onOpen={openDetailPanel}
+          panelEnabled={panelEnabled}
+          emptyMessage={tv.empty_state_message}
+        />
+      ) : (
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -2925,6 +3259,7 @@ function TableScreen({
           </tbody>
         </table>
       </div>
+      )}
 
       {(tablePage > 1 || hasNextPage) && (
         <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-xs text-slate-600">

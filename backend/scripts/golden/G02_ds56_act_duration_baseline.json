@@ -1,0 +1,39 @@
+{
+  "case_id": "G02_ds56_act_duration_baseline",
+  "description": "Activity duration total, no filter",
+  "chart_name": "[snow] activity duration total",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:21.457273+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "baseline"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "SUM(dataset_table_192.duration)"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_192.duration": "245"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM `bcfix`.`bc_activity`) AS dataset_table_192 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

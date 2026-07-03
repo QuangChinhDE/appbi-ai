@@ -1,0 +1,40 @@
+{
+  "case_id": "G10_ds56_rev_stage_closed_via_owner",
+  "description": "Revenue ← stage.process=closed (3-hop multi-fact path)",
+  "chart_name": "[snow] revenue total",
+  "dataset_id": 56,
+  "captured_at": "2026-06-03T01:01:26.779025+00:00",
+  "captured_at_commit": "B-fix-AND-shared-dim-paths",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "multi_hop"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "EXISTS",
+    "dataset_table_189"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_193.amount": "1000"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_193.amount) AS dataset_table_193_amount FROM (SELECT * FROM `bcfix`.`bc_revenue`) AS dataset_table_193 WHERE (EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 INNER JOIN (SELECT * FROM `bcfix`.`bc_deal`) AS dataset_table_190 ON dataset_table_188.bc_key = dataset_table_190.bc_key INNER JOIN (SELECT * FROM `bcfix`.`bc_dim_stage`) AS dataset_table_189 ON dataset_table_190.stage_id = dataset_table_189.migrate_stage_id WHERE dataset_table_193.bc_key = dataset_table_188.bc_key AND dataset_table_189.process = 'closed') AND EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_date`) AS dataset_table_187 INNER JOIN (SELECT * FROM `bcfix`.`bc_deal`) AS dataset_table_190 ON dataset_table_187.date = dataset_table_190.som_deal_add_time INNER JOIN (SELECT * FROM `bcfix`.`bc_dim_stage`) AS dataset_table_189 ON dataset_table_190.stage_id = dataset_table_189.migrate_stage_id WHERE dataset_table_193.payment_month = dataset_table_187.date AND dataset_table_189.process = 'closed')) LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

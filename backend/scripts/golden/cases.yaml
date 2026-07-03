@@ -1,0 +1,339 @@
+# Filter system regression cases.
+#
+# Each case = one (chart, filter-combo) tuple captured with its golden output.
+# Update only via `--capture --case <id>` after intentional behavior change;
+# blanket recapture is forbidden (would mask regressions).
+#
+# Schema (see regression_filter_matrix.py CaseDef):
+#   id              required, stable identifier
+#   description     human-readable; shown in verify output
+#   chart_name      resolved to id at runtime (case-insensitive trim)
+#   dataset_id      sanity for cross-env validation
+#   extra_filters   list of filter dicts; matches BE extra_filters arg
+#   expect_status   ok | error
+#   tags            list of strings for --tag filtering
+#   comparison_keys default [data, row_count, dropped_filter_reasons, routing]
+#   sql_comparison  exact | pattern | none  (default pattern)
+#   sql_patterns    when sql_comparison=pattern, list of substrings that must all appear
+#
+# Filter object shape mirrors what FE sends to GET /charts/{id}/data?filters=...:
+#   semanticField, field, operator, value, datasetId
+
+version: 1
+cases:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Baselines — no filter — anchors the engine's "default" behavior
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G01_ds56_rev_total_baseline
+    description: "Snowflake fixture — revenue total, no filter"
+    chart_name: "[snow] revenue total"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, baseline]
+    sql_comparison: pattern
+    sql_patterns:
+      - "SUM(dataset_table_193.amount)"
+      - "bcfix"
+
+  - id: G02_ds56_act_duration_baseline
+    description: "Activity duration total, no filter"
+    chart_name: "[snow] activity duration total"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, baseline]
+    sql_comparison: pattern
+    sql_patterns:
+      - "SUM(dataset_table_192.duration)"
+
+  - id: G03_ds56_deal_amount_baseline
+    description: "Deal amount total, no filter"
+    chart_name: "[snow] Deal amount total"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, baseline]
+    sql_comparison: pattern
+    sql_patterns:
+      - "SUM(dataset_table_190.amount)"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Conformed dimension — bc_owner shared by all 3 facts
+  # Slicer on owner.team must filter every fact correctly
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G04_ds56_rev_owner_team_north
+    description: "Revenue ← owner.team=North (conformed dim filter)"
+    chart_name: "[snow] revenue total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_188.team
+        field: dataset_table_188.team
+        operator: eq
+        value: North
+        datasetId: 56
+    tags: [snowflake, conformed_dim]
+    sql_comparison: pattern
+    sql_patterns:
+      - "dataset_table_188"
+      - "North"
+
+  - id: G05_ds56_act_owner_team_north
+    description: "Activity duration ← owner.team=North"
+    chart_name: "[snow] activity duration total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_188.team
+        field: dataset_table_188.team
+        operator: eq
+        value: North
+        datasetId: 56
+    tags: [snowflake, conformed_dim]
+
+  - id: G06_ds56_deal_owner_team_north
+    description: "Deal amount ← owner.team=North"
+    chart_name: "[snow] Deal amount total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_188.team
+        field: dataset_table_188.team
+        operator: eq
+        value: North
+        datasetId: 56
+    tags: [snowflake, conformed_dim]
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Conformed dimension — bc_date shared by all 3 facts (role-played per fact)
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G07_ds56_rev_date_year_2025
+    description: "Revenue ← date.year=2025 (conformed date)"
+    chart_name: "[snow] revenue total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_187.year
+        field: dataset_table_187.year
+        operator: eq
+        value: 2025
+        datasetId: 56
+    tags: [snowflake, conformed_dim, date]
+
+  - id: G08_ds56_act_date_year_2025
+    description: "Activity duration ← date.year=2025"
+    chart_name: "[snow] activity duration total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_187.year
+        field: dataset_table_187.year
+        operator: eq
+        value: 2025
+        datasetId: 56
+    tags: [snowflake, conformed_dim, date]
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Fan-out — THE bug that motivated Phase-B' EXISTS rewrite (commit 5f8b7fd)
+  # revenue → owner → deal: owner→deal is one_to_many, naive JOIN would 2x revenue
+  # Correct answer: 1200 (R1=500 + R2=700 from K1 who has 2 O1 deals; not 2400)
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G09_ds56_rev_fanout_deal_org_O1
+    description: "Revenue ← deal.org_id=O1 — FAN-OUT case, must NOT double-count"
+    chart_name: "[snow] revenue total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_190.org_id
+        field: dataset_table_190.org_id
+        operator: eq
+        value: O1
+        datasetId: 56
+    tags: [snowflake, fan_out, regression]
+    sql_comparison: pattern
+    sql_patterns:
+      - "EXISTS"
+      - "dataset_table_190.org_id"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Multi-hop reverse — revenue→owner→deal→stage (3 hops)
+  # Tests bidirectional reachability of conformed dims to snowflake dim
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G10_ds56_rev_stage_closed_via_owner
+    description: "Revenue ← stage.process=closed (3-hop multi-fact path)"
+    chart_name: "[snow] revenue total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_189.process
+        field: dataset_table_189.process
+        operator: eq
+        value: closed
+        datasetId: 56
+    tags: [snowflake, multi_hop]
+    sql_comparison: pattern
+    sql_patterns:
+      - "EXISTS"
+      - "dataset_table_189"
+
+  # G11 (activity ← stage.process=closed): activity reaches `stage` only via the
+  # shared owner/date dims (chasm). Since the AND-all-shared-dim-paths fix the
+  # engine INTERSECTS both paths → 135 (activities where owner∈{K1,K4} AND
+  # date∈{2025-04-10, 2026-02-05} = A2+A5), the PowerBI-correct value — NOT an
+  # arbitrary single-path pick. (The old note's "165 via owner-path" was ONE
+  # path, not the AND.) Captured data already reflects 135.
+  - id: G11_ds56_act_stage_closed_ambiguous
+    description: "Activity ← stage.process=closed (multi shared-dim → AND of paths = 135, PBI-correct)"
+    chart_name: "[snow] activity duration total"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_189.process
+        field: dataset_table_189.process
+        operator: eq
+        value: closed
+        datasetId: 56
+    tags: [snowflake, multi_hop]
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Group-by joined dim — exercises FROM JOIN (not EXISTS) for SELECT-side view
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G12_ds56_rev_by_owner_crmname
+    description: "Revenue by owner.crm_name (joined dim grouped — JOIN path, no fan-out)"
+    chart_name: "[snow] revenue by owner"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, group_by]
+    sql_comparison: pattern
+    sql_patterns:
+      - "GROUP BY"
+      - "dataset_table_188.crm_name"
+      - "JOIN"
+
+  - id: G13_ds56_rev_by_owner_dealfilter_fanout
+    description: "Revenue by owner + filter deal.org_id (JOIN owner + EXISTS deal)"
+    chart_name: "[snow] revenue by owner"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_190.org_id
+        field: dataset_table_190.org_id
+        operator: eq
+        value: O1
+        datasetId: 56
+    tags: [snowflake, group_by, fan_out]
+    sql_comparison: pattern
+    sql_patterns:
+      - "GROUP BY"
+      - "EXISTS"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Cross-table measure — base = bc_owner, measure lives on bc_revenue (joined)
+  # Tests the case where the AGGREGATED column is on a different view from base
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G14_ds56_revenue_per_owner_baseline
+    description: "Owner-base chart, measure=SUM(revenue.amount) (cross-table measure)"
+    chart_name: "[snow] M revenue per owner (cross-table measure)"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, cross_table_measure]
+
+  - id: G15_ds56_revenue_per_owner_date_filter
+    description: "Same chart filtered by date.year=2025"
+    chart_name: "[snow] M revenue per owner (cross-table measure)"
+    dataset_id: 56
+    extra_filters:
+      - semanticField: dataset_table_187.year
+        field: dataset_table_187.year
+        operator: eq
+        value: 2025
+        datasetId: 56
+    tags: [snowflake, cross_table_measure, date]
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Declared measure — uses SemanticView.measures (vs implicit SUM on dim)
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G16_ds56_declared_measure_baseline
+    description: "Declared measure total_revenue, no filter"
+    chart_name: "[snow] M revenue (declared)"
+    dataset_id: 56
+    extra_filters: []
+    tags: [snowflake, declared_measure]
+    sql_comparison: pattern
+    sql_patterns:
+      - "SUM(dataset_table_193.amount)"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Dataset 55 — SnowflakeTest BigQuery fixture
+  # Coverage: baseline KPI, joined dim (project / dept), calendar dim,
+  # and ambiguous cross-dim filter that exercises Phase 2 propagation.
+  # ─────────────────────────────────────────────────────────────────────
+
+  - id: G55A_ds55_tasks_kpi_baseline
+    description: "ds55 baseline — KPI tasks count, no filter"
+    chart_name: "[Audit] KPI total tasks"
+    dataset_id: 55
+    extra_filters: []
+    tags: [bigquery, ds55, baseline]
+    sql_comparison: pattern
+    sql_patterns:
+      - "dataset_table_182"
+      - "COUNT"
+
+  - id: G55B_ds55_tasks_by_project
+    description: "ds55 — BAR tasks by project (joined dim)"
+    chart_name: "[Audit] BAR tasks by project"
+    dataset_id: 55
+    extra_filters: []
+    tags: [bigquery, ds55, joined_dim]
+    sql_comparison: pattern
+    sql_patterns:
+      - "dataset_table_183"
+      - "GROUP BY"
+
+  - id: G55C_ds55_tasks_by_dept
+    description: "ds55 — TREEMAP tasks by dept"
+    chart_name: "[Audit] TREEMAP tasks by dept"
+    dataset_id: 55
+    extra_filters: []
+    tags: [bigquery, ds55, joined_dim]
+    sql_comparison: pattern
+    sql_patterns:
+      - "dataset_table_184"
+      - "GROUP BY"
+
+  - id: G55D_ds55_tasks_timeline
+    description: "ds55 — TIMELINE tasks over date (own-view dim, no JOIN)"
+    chart_name: "[Audit] TIMELINE tasks over time"
+    dataset_id: 55
+    extra_filters: []
+    tags: [bigquery, ds55, time_grain]
+
+  - id: G55E_ds55_tasks_by_project_dept_crossfilter
+    description: "ds55 — BAR tasks by project, filter on dept (cross-dim via tasks)"
+    chart_name: "[Audit] BAR tasks by project"
+    dataset_id: 55
+    extra_filters:
+      - semanticField: dataset_table_184.name
+        field: dataset_table_184.name
+        operator: in
+        value: ["Engineering"]
+        datasetId: 55
+    tags: [bigquery, ds55, cross_dim_filter]
+
+  # ─────────────────────────────────────────────────────────────────────
+  # GRAIN / chasm group-by guard — now GATED (tags include `snowflake`).
+  # base=revenue, SUM(amount) grouped by deal.title — `deal` is another FACT
+  # reachable from revenue ONLY via the shared owner/date dims (chasm). Before
+  # the Phase-6 grain validator the normal build JOINed deal and FANNED the SUM
+  # NON-deterministically (4000 via date-path / 3600 via owner-path, both wrong
+  # vs the true 2400). The grain validator now FAILS LOUD (status=error, 0 rows)
+  # — no silently-wrong number. This case locks that: status=error forever.
+  # ─────────────────────────────────────────────────────────────────────
+  - id: G_GRAIN_ds56_rev_by_deal_title_chasm
+    description: "GRAIN: revenue by deal.title (chasm) — FAILS LOUD ✅ (grain validator; no silent fan-out)"
+    chart_name: "[snow] grain rev by deal-title (chasm)"
+    dataset_id: 56
+    extra_filters: []
+    expect_status: error
+    tags: [snowflake, grain, grain_validator]
+    comparison_keys: [row_count]
+    sql_comparison: none

@@ -1,0 +1,350 @@
+{
+  "case_id": "G55B_ds55_tasks_by_project",
+  "description": "ds55 — BAR tasks by project (joined dim)",
+  "chart_name": "[Audit] BAR tasks by project",
+  "dataset_id": 55,
+  "captured_at": "2026-05-29T02:35:29.419309+00:00",
+  "captured_at_commit": "unknown",
+  "expect_status": "ok",
+  "tags": [
+    "bigquery",
+    "ds55",
+    "joined_dim"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [
+    "dataset_table_183",
+    "GROUP BY"
+  ],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_183.name": "Bản sao của Dự án Đổi mới nhân sự",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án Test upload file",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dương tạo mới không sửa",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "New project",
+        "dataset_table_182.task_count": "4"
+      },
+      {
+        "dataset_table_183.name": "Phòng pháp lý",
+        "dataset_table_182.task_count": "15"
+      },
+      {
+        "dataset_table_183.name": "Test tiếng Lào",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_183.name": "[Tạo CV con đầy đủ] - Dự án Nam test",
+        "dataset_table_182.task_count": "5"
+      },
+      {
+        "dataset_table_183.name": "chinguyen test",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_183.name": "Dự án của TV",
+        "dataset_table_182.task_count": "8"
+      },
+      {
+        "dataset_table_183.name": "bản sao của Dự án Lchi Test",
+        "dataset_table_182.task_count": "80"
+      },
+      {
+        "dataset_table_183.name": "Dự án chinguyen test",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án 2",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Dự án 3",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Dự án Test",
+        "dataset_table_182.task_count": "12"
+      },
+      {
+        "dataset_table_183.name": "Dự án Lchi Test",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "PB test",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Migrate dự án Lchi test",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Test dự án tên dài siêu dài để xem có lỗi hay không nhé, test test test thử thôi, có hay không =)))",
+        "dataset_table_182.task_count": "5"
+      },
+      {
+        "dataset_table_183.name": "@@@Test dự án tên dài siêu dài để xem có lỗi hay không nhé, test test test thử thôi, có hay không =)))",
+        "dataset_table_182.task_count": "6"
+      },
+      {
+        "dataset_table_183.name": "Dự án của LC test - Member",
+        "dataset_table_182.task_count": "5"
+      },
+      {
+        "dataset_table_183.name": "LC test tạo dự án mới",
+        "dataset_table_182.task_count": "4"
+      },
+      {
+        "dataset_table_183.name": "Dự án của LCHI test",
+        "dataset_table_182.task_count": "8"
+      },
+      {
+        "dataset_table_183.name": "chinguyen08 test upload file",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_183.name": "Dự án của Chi Member - App admin",
+        "dataset_table_182.task_count": "12"
+      },
+      {
+        "dataset_table_183.name": "Dự án của Chi Member - Check đổi email",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_183.name": "Dự án của Chi Tester 4 - Chưa map email",
+        "dataset_table_182.task_count": "6"
+      },
+      {
+        "dataset_table_183.name": "Dự án của Chi Tester 4 - Đã map email - Email cũ của 1 user khác",
+        "dataset_table_182.task_count": "12"
+      },
+      {
+        "dataset_table_183.name": "Dự án của Chi Tester 5 - App Admin - Chưa map email",
+        "dataset_table_182.task_count": "6"
+      },
+      {
+        "dataset_table_183.name": "Dự án tạo mới sau đẩy code 27/12/2025",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Nhân bản - Phòng ban test phân quyền",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_183.name": "Bản sao của Từ mẫu tick full nhưng không chọn giữ permission",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Từ mẫu tick full",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Phòng ban test phân quyền",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Đã có em là nhà",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "Dự án Thi công Khu đô thị Eco Riverside – Giai đoạn 2",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Nhân bản",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Phòng ban tạo để nguyên mặc định",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_183.name": "Dự án Phân tích thị trường Tây Nam Bộ Q3/2025",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "DHG",
+        "dataset_table_182.task_count": "6"
+      },
+      {
+        "dataset_table_183.name": "jaja",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "test",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "hello phòng ban",
+        "dataset_table_182.task_count": "8"
+      },
+      {
+        "dataset_table_183.name": "Gói thầu test hudland",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án 1 test service",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Project MA (PMA1)",
+        "dataset_table_182.task_count": "15"
+      },
+      {
+        "dataset_table_183.name": "hehehe",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "QA test 123",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "dự án tạo mẫu",
+        "dataset_table_182.task_count": "4"
+      },
+      {
+        "dataset_table_183.name": "Du an global tag",
+        "dataset_table_182.task_count": "8"
+      },
+      {
+        "dataset_table_183.name": "Tạo phòng ban check xoá",
+        "dataset_table_182.task_count": "10"
+      },
+      {
+        "dataset_table_183.name": "Test tạo phòng ban",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Data External",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_183.name": "Dự án mẫu là Long Thành",
+        "dataset_table_182.task_count": "3"
+      },
+      {
+        "dataset_table_183.name": "Người đầu tiên nhưng xóa bớt CF",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án Quy hoạch Khu đô thị Xanh - Long Thành",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án khu đô thị Nam Sầm Sơn thuộc sở hữu của tập đoàn Sungroup & *** tập đoàn Eva",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Test đóng nhóm cv",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Chuyển dữ liệu từ ver 1 sang ver 2",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án check phân quyền của thuongnguyen [nhân bản có giữ lại phân quyền sử dụng]",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "bản sao của du an check workload",
+        "dataset_table_182.task_count": "9"
+      },
+      {
+        "dataset_table_183.name": "Nhân bản dự án có setting KLCV [04.12]",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Người đầu tiên",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Thương lỗi CEO",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "du an check workload",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án check import sang Projects",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Dự án được tạo từ mẫu dự án - có giữ permission",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "dự án check key cf",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Project check CF FBT",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "Dự án My test Service",
+        "dataset_table_182.task_count": "5"
+      },
+      {
+        "dataset_table_183.name": "Dự án mới sau khi back code",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Test lỗi search",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "Test lỗi",
+        "dataset_table_182.task_count": "2"
+      },
+      {
+        "dataset_table_183.name": "test base table",
+        "dataset_table_182.task_count": "1"
+      },
+      {
+        "dataset_table_183.name": "Base AI",
+        "dataset_table_182.task_count": "20"
+      },
+      {
+        "dataset_table_183.name": "Test thành viên tham gia",
+        "dataset_table_182.task_count": "8"
+      },
+      {
+        "dataset_table_183.name": "!@#",
+        "dataset_table_182.task_count": "6"
+      },
+      {
+        "dataset_table_183.name": "Dự án không có người thực thi",
+        "dataset_table_182.task_count": "9"
+      }
+    ],
+    "row_count": 78,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT dataset_table_183.name AS dataset_table_183_name, COUNT(*) AS dataset_table_182_task_count FROM (SELECT * FROM `base-testlab-01.base_wework.test_task`) AS dataset_table_182 LEFT JOIN (SELECT * FROM `base-testlab-01.base_wework.test_project`) AS dataset_table_183 ON dataset_table_182.project_id = dataset_table_183.id GROUP BY 1 LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

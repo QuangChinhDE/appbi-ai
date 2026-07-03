@@ -192,6 +192,12 @@ export interface FilterCardDroppedInfo {
 interface FilterCardPBIProps {
   filter: BaseFilter;
   distinctValues?: string[];
+  /** Per-field distinct-query status so the value list can distinguish
+   * "still loading" from "loaded and got []". WITHOUT this the checklist
+   * showed "Loading values…" FOREVER whenever distinctValues was empty —
+   * e.g. a sibling date filter ("Tháng này") cascades the card to a range
+   * with no rows, so the BE returns [] and the card hung. */
+  distinctStatus?: { isLoading: boolean; isError: boolean; hasFilterContext: boolean };
   /** Optional list of cascading filters the BE dropped when computing
    * distinctValues for this card. */
   droppedFilters?: FilterCardDroppedInfo[];
@@ -218,7 +224,7 @@ function dropReasonLabel(reason: string): string {
   }
 }
 
-export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onChange, onRemove }: FilterCardPBIProps) {
+export function FilterCardPBI({ filter, distinctValues = [], distinctStatus, droppedFilters, onChange, onRemove }: FilterCardPBIProps) {
   const { t } = useI18n();
   const [isEditingLabel, setIsEditingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState(filter.label ?? '');
@@ -414,11 +420,11 @@ export function FilterCardPBI({ filter, distinctValues = [], droppedFilters, onC
             ? <NumberBody filter={filter} onUpdateValue={updateValue} onUpdateOperator={updateOperator} />
             : (
               isMultiSelect
-                ? <CategoricalChecklist values={merged} filtered={filteredValues} selected={Array.isArray(filter.value) ? filter.value : []} search={search} setSearch={setSearch} onToggle={(val) => {
+                ? <CategoricalChecklist values={merged} filtered={filteredValues} distinctStatus={distinctStatus} selected={Array.isArray(filter.value) ? filter.value : []} search={search} setSearch={setSearch} onToggle={(val) => {
                     const cur: string[] = Array.isArray(filter.value) ? filter.value : [];
                     updateValue(cur.includes(val) ? cur.filter((v) => v !== val) : [...cur, val]);
                   }} />
-                : <CategoricalRadio values={merged} filtered={filteredValues} selected={typeof filter.value === 'string' ? filter.value : ''} search={search} setSearch={setSearch} onSelect={updateValue} />
+                : <CategoricalRadio values={merged} filtered={filteredValues} distinctStatus={distinctStatus} selected={typeof filter.value === 'string' ? filter.value : ''} search={search} setSearch={setSearch} onSelect={updateValue} />
             )
         }
       </div>
@@ -555,9 +561,10 @@ function NumberRangeInputs({ filter, onUpdate }: { filter: BaseFilter; onUpdate:
 }
 
 // ─── Categorical: checklist (multi) and radio (single) ──────────────────
-function CategoricalChecklist({ values, filtered, selected, search, setSearch, onToggle }: {
+function CategoricalChecklist({ values, filtered, distinctStatus, selected, search, setSearch, onToggle }: {
   values: string[];
   filtered: string[];
+  distinctStatus?: { isLoading: boolean; isError: boolean; hasFilterContext: boolean };
   selected: string[];
   search: string;
   setSearch: (s: string) => void;
@@ -581,7 +588,15 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
       <div className="max-h-40 overflow-y-auto space-y-0.5">
         {filtered.length === 0 ? (
           <p className="py-1 text-xs italic text-text-quaternary">
-            {values.length === 0 ? t('dashboards.filterPane.loadingValues') : t('dashboards.filterPane.noMatch')}
+            {values.length > 0
+              ? t('dashboards.filterPane.noMatch')
+              : distinctStatus?.isError
+                ? t('dashboards.selectBody.failedToLoad')
+                : (distinctStatus && !distinctStatus.isLoading)
+                  ? (distinctStatus.hasFilterContext
+                      ? t('dashboards.selectBody.noValuesActiveFilter')
+                      : t('dashboards.selectBody.noValuesAvailable'))
+                  : t('dashboards.filterPane.loadingValues')}
           </p>
         ) : (
           filtered.map((val) => {
@@ -609,9 +624,10 @@ function CategoricalChecklist({ values, filtered, selected, search, setSearch, o
   );
 }
 
-function CategoricalRadio({ values, filtered, selected, search, setSearch, onSelect }: {
+function CategoricalRadio({ values, filtered, distinctStatus, selected, search, setSearch, onSelect }: {
   values: string[];
   filtered: string[];
+  distinctStatus?: { isLoading: boolean; isError: boolean; hasFilterContext: boolean };
   selected: string;
   search: string;
   setSearch: (s: string) => void;
@@ -635,7 +651,15 @@ function CategoricalRadio({ values, filtered, selected, search, setSearch, onSel
       <div className="max-h-40 overflow-y-auto space-y-0.5">
         {filtered.length === 0 ? (
           <p className="py-1 text-xs italic text-text-quaternary">
-            {values.length === 0 ? t('dashboards.filterPane.loadingValues') : t('dashboards.filterPane.noMatch')}
+            {values.length > 0
+              ? t('dashboards.filterPane.noMatch')
+              : distinctStatus?.isError
+                ? t('dashboards.selectBody.failedToLoad')
+                : (distinctStatus && !distinctStatus.isLoading)
+                  ? (distinctStatus.hasFilterContext
+                      ? t('dashboards.selectBody.noValuesActiveFilter')
+                      : t('dashboards.selectBody.noValuesAvailable'))
+                  : t('dashboards.filterPane.loadingValues')}
           </p>
         ) : (
           filtered.map((val) => {
@@ -798,6 +822,7 @@ export function FilterPane({
           onAddFilter={(key) => sectionAddFilter('page', key)}
           onChange={onChangePageFilters}
           distinctValues={distinctValues}
+          distinctStatus={distinctStatus}
           droppedFiltersByColumn={droppedFiltersByColumn}
         />
         <Section
@@ -811,6 +836,7 @@ export function FilterPane({
           onAddFilter={(key) => sectionAddFilter('all', key)}
           onChange={onChangeAllFilters}
           distinctValues={distinctValues}
+          distinctStatus={distinctStatus}
           droppedFiltersByColumn={droppedFiltersByColumn}
         />
       </div>
@@ -887,9 +913,10 @@ interface SectionProps {
   onAddFilter: (columnKey: string) => void;
   onChange: (next: BaseFilter[]) => void;
   distinctValues: Record<string, string[]>;
+  distinctStatus?: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean }>;
   droppedFiltersByColumn?: Record<string, FilterCardDroppedInfo[]>;
 }
-function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, droppedFiltersByColumn }: SectionProps) {
+function Section({ scope, title, subtitle, expanded, onToggle, filters, columns, onAddFilter, onChange, distinctValues, distinctStatus, droppedFiltersByColumn }: SectionProps) {
   const { t } = useI18n();
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -966,6 +993,7 @@ function Section({ scope, title, subtitle, expanded, onToggle, filters, columns,
               key={f.id}
               filter={f}
               distinctValues={distinctValues[f.fieldKey ?? f.field] ?? []}
+              distinctStatus={distinctStatus?.[f.fieldKey ?? f.field]}
               droppedFilters={droppedFiltersByColumn?.[f.fieldKey ?? f.field]}
               onChange={(next) => onChange(filters.map((x) => x.id === next.id ? next : x))}
               onRemove={() => onChange(filters.filter((x) => x.id !== f.id))}

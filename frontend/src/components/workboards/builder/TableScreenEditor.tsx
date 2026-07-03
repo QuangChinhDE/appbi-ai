@@ -23,6 +23,7 @@ import {
   Calculator,
   Columns3,
   Filter,
+  LayoutGrid,
   Link2,
   ListFilter,
   PencilLine,
@@ -84,6 +85,7 @@ type ActiveItem =
   | 'column_meta'
   | 'detail_panel'
   | 'empty'
+  | 'display'
   | `filter:${number}`
   | `computed:${number}`
   | `lookup:${number}`;
@@ -708,6 +710,93 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               placeholder="e.g. No matching rows. Tap + to add one."
             />
           </Lbl>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'display') {
+      const mode = tableSpec.display_mode || 'table';
+      const gc = tableSpec.gallery_config || { image_column: '' };
+      const updateGallery = (patch: Partial<NonNullable<TableSpec['gallery_config']>>) =>
+        updateTable({ gallery_config: { ...gc, ...patch } });
+      const visibleCols = tableSpec.columns || [];
+      return (
+        <BuilderInspectorPanel
+          icon={<LayoutGrid className="h-4 w-4" />}
+          title="Chế độ hiển thị"
+          subtitle="Bảng dữ liệu hoặc lưới thẻ ảnh (Gallery) — cùng dữ liệu, chỉ khác cách hiển thị."
+        >
+          <Lbl label="Kiểu hiển thị">
+            <select
+              value={mode}
+              onChange={(event) =>
+                updateTable({ display_mode: event.target.value as 'table' | 'gallery' })
+              }
+              className={INPUT}
+            >
+              <option value="table">Bảng (mặc định)</option>
+              <option value="gallery">Gallery ảnh</option>
+            </select>
+          </Lbl>
+
+          {mode === 'gallery' && (
+            <div className="mt-3 space-y-3">
+              {visibleCols.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  Hãy chọn cột hiển thị trước — Gallery lấy ảnh và nhãn từ các cột đang hiển thị.
+                </BuilderEmptyHint>
+              ) : (
+                <>
+                  <Lbl label="Cột ảnh (bắt buộc)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={gc.image_column || null}
+                      onChange={(next) => updateGallery({ image_column: next || '' })}
+                      placeholder="-- cột chứa ảnh (data:image) --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột tiêu đề thẻ (tùy chọn)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={gc.title_column || null}
+                      onChange={(next) => updateGallery({ title_column: next || null })}
+                      placeholder="-- không --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột mô tả phụ (tùy chọn)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={gc.subtitle_column || null}
+                      onChange={(next) => updateGallery({ subtitle_column: next || null })}
+                      placeholder="-- không --"
+                    />
+                  </Lbl>
+                  <Lbl label="Nhóm theo cột (vd: ngày ghi nhận)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={gc.group_by_column || null}
+                      onChange={(next) => updateGallery({ group_by_column: next || null })}
+                      placeholder="-- không nhóm --"
+                    />
+                  </Lbl>
+                  <Lbl label="Số thẻ mỗi hàng">
+                    <input
+                      type="number"
+                      min={1}
+                      max={6}
+                      value={gc.columns_per_row ?? 3}
+                      onChange={(event) =>
+                        updateGallery({
+                          columns_per_row: Math.min(Math.max(Number(event.target.value) || 3, 1), 6),
+                        })
+                      }
+                      className={INPUT}
+                    />
+                  </Lbl>
+                </>
+              )}
+            </div>
+          )}
         </BuilderInspectorPanel>
       );
     }
@@ -1527,6 +1616,13 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
               active={activeItem === 'empty'}
               onClick={() => setActiveItem('empty')}
+            />
+            <BuilderNavigatorItem
+              icon={<LayoutGrid className="h-3.5 w-3.5" />}
+              label="Chế độ hiển thị"
+              subtitle={tableSpec.display_mode === 'gallery' ? 'Gallery ảnh' : 'Bảng'}
+              active={activeItem === 'display'}
+              onClick={() => setActiveItem('display')}
             />
           </BuilderNavigatorGroup>
 

@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -52,6 +52,7 @@ import {
   getFilterKey,
   inferColumnTypeFromData,
   isSemanticDimensionFilterableForDashboard,
+  resolveEffectiveFilterSet,
   toBaseFilter,
 } from '@/lib/filters';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
@@ -272,6 +273,12 @@ export default function DashboardDetailPage() {
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
   // Refs for filter seeding
   const filtersSeededRef = React.useRef(false);
+  // Gate the tiles' data fetch until BOTH the filter + slicer seeds (below)
+  // have run. Without it the tiles fetch UNFILTERED on first render (before the
+  // seed effects populate the applied filters), flashing wrong (unfiltered)
+  // numbers and wasting a warehouse scan per chart. The public page already
+  // gates its fetch this way (`filtersSeeded`); the Builder didn't.
+  const [filtersReady, setFiltersReady] = React.useState(false);
   const filtersSnapshotRef = React.useRef<string>('[]');
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
@@ -451,6 +458,11 @@ export default function DashboardDetailPage() {
     const layoutSeed = (dashboard as any).slicer_cluster_layout || null;
     setDraftSlicerClusterLayout(layoutSeed);
     setAppliedSlicerClusterLayout(layoutSeed);
+    // Both seeds have now run (the filter seed above shares the same
+    // [dashboard] dep and, being defined earlier, runs first) → release the
+    // tile-fetch gate so tiles fetch ONCE, already filtered. Set even when the
+    // seed is empty (no filters/slicers) so a filter-less dashboard still loads.
+    setFiltersReady(true);
   }, [dashboard]);
 
   // Phase-G — auto-stage the cluster layout (position/direction/size)
@@ -708,66 +720,23 @@ export default function DashboardDetailPage() {
   // must win over a slicer on the same field, so it's applied LAST.
   // (No link layer in the editor preview.) Without this split the editor
   // preview diverged from the public link, which is what users hit.
-  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(() => {
-    const isAuthoritative = (f: BaseFilter) =>
-      f.publicMode === 'locked' || f.publicMode === 'hidden';
-    // Phase-H — dedupe key MUST match the BE `_filter_dedupe_key`
-    // (semanticField/fieldKey, field, datasetId — operator-agnostic) so
-    // the editor preview collapses the same set the public merge does.
-    // The old getFilterKey (fieldKey ?? semanticField ?? field, no
-    // datasetId) could group/split differently → editor ≠ public.
-    const dedupeKey = (f: BaseFilter) => {
-      const sem = String(f.semanticField ?? f.fieldKey ?? '').trim().toLowerCase();
-      const field = String(f.field ?? '').trim().toLowerCase();
-      const ds = f.datasetId ?? '';
-      return `${sem}|${field}|${ds}`;
-    };
-    // A later entry must NOT clobber an earlier VALUED one on the same field
-    // just because it is empty. An unselected ("All") slicer that shares a
-    // field with a valued default used to overwrite it here, silently dropping
-    // it — the "Filters on this page stopped working" regression. Keep
-    // whichever carries an active value.
-    const isActiveVal = (f: BaseFilter): boolean => {
-      const v = (f as any)?.value;
-      if (Array.isArray(v)) return v.some((x) => x != null && String(x).trim() !== '');
-      return v != null && String(v).trim() !== '';
-    };
-    const byKey = new Map<string, BaseFilter>();
-    const setKeyed = (f: BaseFilter) => {
-      const k = dedupeKey(f);
-      const ex = byKey.get(k);
-      if (!ex || isActiveVal(f) || !isActiveVal(ex)) byKey.set(k, f);
-    };
-    // SELECTIONS = overridable visible dashboard defaults + viewer slicers (an
-    // active slicer overrides a same-field visible default; an empty one does
-    // not). Page filters are deliberately NOT here — they are hard bounds.
-    for (const f of appliedGlobalFiltersLegacy) if (!isAuthoritative(f)) setKeyed(f);
-    for (const f of appliedGlobalSlicers) {
-      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      // scope 'custom' slicers only filter pages where pageScope.filter is set.
-      if (!slicerFiltersPage(f, activePageId)) continue;
-      setKeyed(f as BaseFilter);
-    }
-    for (const f of activePageSlicers) {
-      if (f && typeof f === 'object' && (f as any).type === 'image') continue;
-      setKeyed(f as BaseFilter);
-    }
-    const selections = Array.from(byKey.values());
-    // PAGE SCOPE ("Filters on this page") = HARD BOUND: a same-field selection
-    // may only narrow WITHIN it, never escape (applyScopeBound intersects them).
-    // Previously a page filter was treated as a plain default that an active
-    // slicer could override → the viewer/preview could escape the page scope
-    // (e.g. pick a product the page excluded). Mirrors the public viewer fix.
-    const pageScopes = activePageFilters.filter((f) => !isAuthoritative(f));
-    const bounded = applyScopeBound(selections, pageScopes);
-    // AUTHORITATIVE (locked/hidden) — applied last so they always win.
-    const result = new Map<string, BaseFilter>();
-    for (const f of bounded) result.set(dedupeKey(f), f);
-    for (const f of [...appliedGlobalFiltersLegacy, ...activePageFilters]) {
-      if (isAuthoritative(f)) result.set(dedupeKey(f), f);
-    }
-    return Array.from(result.values());
-  }, [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage]);
+  // Phase-H — resolution extracted to `resolveEffectiveFilterSet` (lib/filters)
+  // so the distinct-value cascade collapses the SAME set (chart↔dropdown
+  // parity — see `dashboard_filter_dual_path`). Behaviour here is unchanged:
+  // SELECTIONS (visible defaults + page-scoped slicers, active-valued wins) →
+  // applyScopeBound(page hard bounds) → authoritative (locked/hidden) last.
+  const effectivePageScopeFilters = React.useMemo<BaseFilter[]>(
+    () =>
+      resolveEffectiveFilterSet({
+        globalFilters: appliedGlobalFiltersLegacy,
+        pageFilters: activePageFilters,
+        globalSlicers: appliedGlobalSlicers,
+        pageSlicers: activePageSlicers,
+        activePageId,
+        slicerFiltersPage,
+      }),
+    [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage],
+  );
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -805,6 +774,40 @@ export default function DashboardDetailPage() {
   // FilterPane sidebar. Persisted in window only (intentionally not URL),
   // since pane state is a viewing preference.
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
+
+  // Dashboard perf #5 — snapshot "Refresh data" state.
+  const [isRefreshingSnapshots, setIsRefreshingSnapshots] = useState(false);
+  const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  // Populate the "Số tính đến" label on load (not only after a Refresh) so the
+  // builder always shows when the snapshot data was last updated.
+  useEffect(() => {
+    let cancelled = false;
+    dashboardApi
+      .getSnapshotInfo(dashboardId)
+      .then((res) => { if (!cancelled) setSnapshotAsOf(res?.as_of ?? null); })
+      .catch(() => { /* materialization off / not eligible → no label */ });
+    return () => { cancelled = true; };
+  }, [dashboardId]);
+  const handleRefreshSnapshots = useCallback(async () => {
+    if (isRefreshingSnapshots) return;
+    setIsRefreshingSnapshots(true);
+    try {
+      const res = await dashboardApi.refreshSnapshots(dashboardId);
+      setSnapshotAsOf(res?.as_of ?? null);
+      // Force every tile to re-fetch against the freshly-rebuilt snapshots.
+      await queryClient.invalidateQueries({ queryKey: ['charts'] });
+      if (res?.as_of) {
+        const stamp = new Date(res.as_of).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        toast.success(t('dashboards.detail.snapshotRefreshed', { time: stamp }));
+      } else {
+        toast.success(t('dashboards.detail.snapshotRefreshedNoop'));
+      }
+    } catch {
+      toast.error(t('dashboards.detail.snapshotRefreshFailed'));
+    } finally {
+      setIsRefreshingSnapshots(false);
+    }
+  }, [isRefreshingSnapshots, dashboardId, queryClient, t]);
 
   // Filter changes are applied explicitly via the Apply action.
   //
@@ -1918,6 +1921,9 @@ export default function DashboardDetailPage() {
     const legacyDraftAll = draftGlobalFilters
       .map((f) => toBaseFilter(f, { allowInactive: true }))
       .filter((b): b is BaseFilter => b !== null);
+    // COLUMN DISCOVERY set — the raw union (incl. inactive slots via
+    // allowInactive) decides WHICH fields get a distinct dropdown. Never dedupe
+    // here or a just-dragged-in slot could lose its dropdown.
     const combinedFilters: BaseFilter[] = [
       ...legacyDraftAll,
       ...draftPageFilters,
@@ -1929,6 +1935,24 @@ export default function DashboardDetailPage() {
       return [];
     }
 
+    // CASCADE CONTEXT set — resolve same-field EXACTLY like the chart-data path
+    // (effectivePageScopeFilters) so each dropdown cascades on the value the
+    // CHARTS actually use. Without this a same-field visible default + slicer
+    // (e.g. Trung_tam=RC02 default + Trung_tam=PKD4.1 slicer) were both passed
+    // as context → the BE ANDs them → `WHERE Trung_tam=RC02 AND Trung_tam=PKD4.1`
+    // → impossible → every OTHER dropdown came back EMPTY, while the charts show
+    // the slicer's value. Chart↔dropdown parity (`dashboard_filter_dual_path`).
+    // applyScopeBound is preserved inside, so locked/page-scope hard bounds are
+    // never escaped by the dropdown cascade either.
+    const resolvedContextFilters = resolveEffectiveFilterSet({
+      globalFilters: legacyDraftAll,
+      pageFilters: draftPageFilters,
+      globalSlicers: draftGlobalSlicers as BaseFilter[],
+      pageSlicers: draftPageSlicers as BaseFilter[],
+      activePageId,
+      slicerFiltersPage,
+    });
+
     const columnsByKey = new Map(
       semanticColumnsResult.columns.map((column) => [getColumnKey(column), column]),
     );
@@ -1936,7 +1960,34 @@ export default function DashboardDetailPage() {
 
     for (const filter of combinedFilters) {
       const key = getFilterKey(filter);
-      const column = columnsByKey.get(key);
+      // Prefer the chart-binding-derived column (accurate semantic type/label).
+      // Fall back to a column synthesized from the slicer/filter itself when the
+      // field isn't reachable from any chart binding — this guarantees a canvas
+      // slicer ALWAYS resolves a queryable column. Notably CALENDAR ROLE-PLAY
+      // fields (e.g. `…__order_date__date_dim.year`) live in a SYNTHETIC view
+      // that is NOT part of `model.views`, so they never entered
+      // `semanticColumnsResult.columns` → this lookup failed → the slicer's
+      // distinct query never fired → the dropdown hung on "Loading values…".
+      // Public links don't hit this because the BE guarantees slicer fields via
+      // `_augment_with_slicer_fields` + `_build_public_calendar_filter_fields`.
+      let column = columnsByKey.get(key);
+      if (
+        (!column?.datasetId || !column.semanticField)
+        && filter.datasetId
+        && (filter.semanticField || filter.fieldKey)
+      ) {
+        column = {
+          key,
+          name: filter.field,
+          label: filter.label ?? filter.field,
+          type: filter.type,
+          datasetId: filter.datasetId,
+          semanticField: filter.semanticField ?? filter.fieldKey,
+          chartCoverage: 0,
+          datasetChartCount: 0,
+          sharedAcrossDataset: false,
+        };
+      }
       if (!column?.datasetId || !column.semanticField) continue;
       // Fetch distinct values for categorical columns (dropdown/text) AND
       // for numeric/date columns used as a multi-select slicer
@@ -1952,14 +2003,14 @@ export default function DashboardDetailPage() {
     }
 
     return Array.from(activeColumns.values()).map((column) => {
-      const filterContext = getDistinctValueFilterContext(combinedFilters, column);
+      const filterContext = getDistinctValueFilterContext(resolvedContextFilters, column);
       return {
         column,
         filterContext,
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, draftPageFilters, draftGlobalSlicers, draftPageSlicers, semanticColumnsResult.columns, activePageId, slicerFiltersPage]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
@@ -2479,6 +2530,28 @@ export default function DashboardDetailPage() {
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
             <div className="flex shrink-0 items-center gap-1">
+              {/* Dashboard perf #5 — Refresh data (rebuild snapshots → latest
+                  numbers) + "Số tính đến HH:MM" freshness hint. */}
+              <button
+                type="button"
+                onClick={handleRefreshSnapshots}
+                disabled={isRefreshingSnapshots}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                title={snapshotAsOf
+                  ? t('dashboards.detail.snapshotAsOf', { time: new Date(snapshotAsOf).toLocaleString() })
+                  : t('dashboards.detail.refreshData')}
+              >
+                {isRefreshingSnapshots
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <RefreshCw className="h-3 w-3" />}
+                <span>{t('dashboards.detail.refreshData')}</span>
+                {snapshotAsOf && (
+                  <span className="text-[10px] text-text-quaternary">
+                    {new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </button>
+
               {/* Filter pane toggle (Phase-15.81).
                   Opens the right-dock FilterPane sidebar instead of the
                   old popover. Active state when pane is open OR when
@@ -2782,6 +2855,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
+            filtersReady={filtersReady}
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
@@ -2807,6 +2881,7 @@ export default function DashboardDetailPage() {
             onRemoveChart={canEditResource ? handleRemoveChart : undefined}
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
+            filtersReady={filtersReady}
             globalFilters={effectivePageScopeFilters}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}

@@ -3,6 +3,7 @@ Main FastAPI application.
 """
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -208,3 +209,38 @@ def root():
 def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+# Bump this string whenever the SQL codegen behaviour changes, so a deployed
+# instance can be asked "which code are you running?" without shell access.
+CODE_VERSION = "distinct-decorrelation-v1"
+
+
+@app.get("/api/v1/health")
+def api_health_check():
+    """API-reachable health + version probe.
+
+    Nginx only proxies ``/api/*`` to the backend, so the root ``/health``
+    is not reachable through the public gateway — this one is. ``git_sha``
+    is best-effort from the build environment; ``features`` are *code
+    constants*, so a flag is present iff THIS source is the running process.
+    That makes it an objective test of whether a deploy actually took effect
+    (a stale build 404s this route or reports the flag absent).
+    """
+    return {
+        "status": "healthy",
+        "git_sha": (
+            os.getenv("GIT_SHA")
+            or os.getenv("SOURCE_COMMIT")
+            or os.getenv("COMMIT_SHA")
+            or "unknown"
+        ),
+        "code_version": CODE_VERSION,
+        "features": {
+            # True only in code that de-correlates the distinct-value cascade
+            # (EXISTS -> IN), the fix for BigQuery "Correlated subqueries" 400.
+            # If this is missing/false on a live instance, it is running a
+            # pre-fix build regardless of what was pulled.
+            "distinct_cascade_decorrelation": True,
+        },
+    }

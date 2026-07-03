@@ -1450,11 +1450,24 @@ function ExploreChartInner({
   // W/D) without mutating the saved chart. Only active in embedded viewers; the
   // standalone editor keeps persisting through onStyleConfigChange untouched.
   const [ephemeralDrill, setEphemeralDrill] = useState<TimeGranularity | undefined>(undefined);
+  // Phase-B15 — dashboard theme palette + structural colors. In standalone
+  // Explore there is no DashboardThemeProvider, so this is {} and behaviour is
+  // unchanged. Inside a dashboard/public view it supplies the report palette.
+  const dashboardTheme = useDashboardChartTheme();
   const style = useMemo(
     () => {
       let s = (!onStyleConfigChange && ephemeralDrill !== undefined
         ? { ...baseStyle, dateDrillLevel: ephemeralDrill }
         : baseStyle);
+      // #4 — dashboard-wide "Display units" (PBI parity): the value AXIS of every
+      // chart inherits the report-level units (tỷ/triệu/nghìn) unless this chart
+      // set its own axisDisplayUnits. Data labels & tooltips keep their precise
+      // format; only the axis abbreviates. Per-chart choice always wins.
+      // 'auto' is the DEFAULT_STYLE_CONFIG value (i.e. "no explicit per-chart
+      // choice"), so treat it — like null — as inheriting the report units.
+      if (dashboardTheme.displayUnits && (s.axisDisplayUnits == null || s.axisDisplayUnits === 'auto')) {
+        s = { ...s, axisDisplayUnits: dashboardTheme.displayUnits as ChartStyleConfig['axisDisplayUnits'] };
+      }
       // Phase-16.x — "format follows the field": overlay each measure's declared
       // format (formatMap, from measure.format.kind) UNDER any explicit
       // per-series override, keyed by the series' metricKey. This makes a
@@ -1477,12 +1490,8 @@ function ExploreChartInner({
       }
       return s;
     },
-    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, type, roleConfig],
+    [baseStyle, onStyleConfigChange, ephemeralDrill, formatMap, type, roleConfig, dashboardTheme.displayUnits],
   );
-  // Phase-B15 — dashboard theme palette + structural colors. In standalone
-  // Explore there is no DashboardThemeProvider, so this is {} and behaviour is
-  // unchanged. Inside a dashboard/public view it supplies the report palette.
-  const dashboardTheme = useDashboardChartTheme();
   const PALETTE = useMemo(
     () => {
       const chosen = (style.palette as ChartPaletteName) || 'default';
@@ -1874,7 +1883,23 @@ function ExploreChartInner({
    * `content=` renderer respecting position / rotation / font / bg.
    * Falls back to plain text if labels are disabled for this series.
    */
+  // Density declutter — parity with the scatter-family fix (SCATTER/BUBBLE/
+  // NINE_BOX) and with `dotsForCount`. A printed data label on EVERY mark turns
+  // a dense line/bar/area into an unreadable blob (report-demo: a ~30-point
+  // trend line labelled every point). Power BI / Tableau suppress printed
+  // labels past a density threshold and rely on the hover tooltip. Point marks
+  // (line/area) collide sooner than bar-anchored labels, so they get a tighter
+  // limit. The tooltip always keeps the exact value — nothing is lost.
+  const LABEL_DENSITY_POINT = 20;
+  const LABEL_DENSITY_BAR = 30;
+  // Every cartesian branch (BAR/AREA/LINE/HBAR/ComposedChart) plots
+  // `displayData = sortedCategoricalData`, so its length is the true count of
+  // marks that would each receive a printed label.
+  const cartesianPointCount = sortedCategoricalData.length;
   const dataLabelContent = (seriesKey: string, seriesLabel: string, orientation: 'vertical' | 'horizontal' | 'point') => {
+    const densityLimit = orientation === 'point' ? LABEL_DENSITY_POINT : LABEL_DENSITY_BAR;
+    // Dense chart → render no printed label (tooltip still carries the value).
+    if (cartesianPointCount > densityLimit) return () => null;
     const resolved = resolveDataLabelStyle(style, seriesKey);
     return buildDataLabelContent({
       resolved,
@@ -2420,6 +2445,7 @@ function ExploreChartInner({
               value={kpiDisplayValue}
               label={cardLabel}
               format={kpiFormat}
+              displayUnits={dashboardTheme.displayUnits}
               decimalPlaces={kpiDecimals}
               currencySymbol={style.currencySymbol}
               contextTemplate={style.kpiContextTemplate}
@@ -2782,7 +2808,10 @@ function ExploreChartInner({
                     fillOpacity={hlScatterLabels ? (hlScatterLabels.has(String(point?.label)) ? 1 : HIGHLIGHT_DIM_OPACITY) : 1}
                   />
                 ))}
-                {scatterLabelField && (() => {
+                {scatterLabelField && sortedScatterPoints.length <= 16 && (() => {
+                  // Declutter: a per-point label on every mark overlaps into an
+                  // unreadable blob once the scatter is dense — suppress past a
+                  // small count and rely on the hover tooltip (Power BI parity).
                   // Phase-15.86 — when DataLabels enabled, route through
                   // the shared dataLabelContent renderer so font/colour/bg
                   // / position / rotation work the same as BAR/LINE.

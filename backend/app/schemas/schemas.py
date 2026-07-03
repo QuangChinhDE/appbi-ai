@@ -484,6 +484,14 @@ class ChartDebugInfo(BaseModel):
     row_count: Optional[int] = None
     warnings: List[str] = Field(default_factory=list)
     dropped_filters: List[DroppedFilterInfo] = Field(default_factory=list)
+    # Dashboard perf #5 — snapshot materialization freshness. `data_source_mode`
+    # ∈ {live, snapshot, mixed}; `snapshot_as_of` is the oldest snapshot build
+    # time used (ISO string) for the builder "Số tính đến HH:MM" label.
+    data_source_mode: Optional[str] = None
+    snapshot_as_of: Optional[str] = None
+    # Public per-link TTL (Stage 2): served snapshot is older than the link TTL
+    # and a background rebuild was kicked off — FE shows a "refreshing…" hint.
+    snapshot_stale: Optional[bool] = None
 
 
 class ChartDataResponse(BaseModel):

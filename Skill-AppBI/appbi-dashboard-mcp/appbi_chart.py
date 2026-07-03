@@ -61,7 +61,7 @@ SUPPORTED_CHART_TYPE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "trend": ("LINE", "AREA", "TIME_SERIES", "RIBBON", "TIMELINE"),
     "composition": ("PIE", "DONUT", "POLAR_AREA", "TREEMAP", "FUNNEL", "WORD_CLOUD"),
-    "relationship": ("SCATTER", "BUBBLE", "HEATMAP", "BOXPLOT", "RADAR", "SANKEY", "SUNBURST"),
+    "relationship": ("SCATTER", "BUBBLE", "NINE_BOX", "HEATMAP", "BOXPLOT", "RADAR", "SANKEY", "SUNBURST"),
     "geo": ("MAP_POINT", "MAP_REGION"),
 }
 SUPPORTED_CHART_TYPES: tuple[str, ...] = tuple(
@@ -105,6 +105,7 @@ CHART_ROLE_REQUIREMENTS: dict[str, dict[str, Any]] = {
     "SCATTER": {"required": ["scatterX", "scatterY"], "optional": ["dimension"]},
     "BUBBLE": {"required": ["scatterX", "scatterY", "metrics[0]"], "optional": ["dimension"]},
     "MAP_POINT": {"required": ["scatterX", "scatterY"], "optional": ["dimension", "metrics[0]"]},
+    "NINE_BOX": {"required": ["scatterX", "scatterY"], "optional": ["dimension", "metrics[0]"], "notes": "3×3 talent/BCG grid. Numeric axis → tertiles; 3-level category → bands."},
     "MAP_REGION": {"required": ["dimension", "metrics[0]"]},
     "HEATMAP": {"required": ["dimension", "breakdown", "metrics[0]"]},
     "BOXPLOT": {"required": ["dimension", "metrics[0]"], "notes": "Uses raw distribution rows."},

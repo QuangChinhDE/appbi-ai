@@ -61,6 +61,7 @@ _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 from appbi_core import (
     APPBI_LONG_TIMEOUT_SECONDS,
+    BackendError,
     Context,
     _append_session_log,
     _drop_none,
@@ -250,6 +251,7 @@ _LAYOUT_DEFAULTS: dict[str, tuple[int, int]] = {
     "PIVOT_TABLE": (12, 5),
     "SCATTER": (6, 5),
     "MAP_POINT": (6, 5),
+    "NINE_BOX": (6, 6),
     "COMBO": (12, 4),
 }
 _LAYOUT_DEFAULT_FALLBACK = (6, 4)  # LINE, BAR, AREA, PIE, etc.
@@ -393,7 +395,7 @@ DASHBOARD_BLUEPRINT_SHAPE = {
 # ---------------------------------------------------------------------------
 
 
-@tool({"report", "explore"})
+@tool({"report", "explore", "design"})
 async def propose_semantic_model(
     dataset_id: int,
     business_intent: str,
@@ -538,7 +540,7 @@ async def propose_semantic_model(
     }
 
 
-@tool("explore")
+@tool({"explore", "design"})
 async def commit_semantic_model(
     plan_json: str,
     user_confirmed: bool = False,
@@ -1183,7 +1185,7 @@ async def commit_semantic_model(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def propose_dashboard_blueprint(
     dataset_id: int,
     business_intent: str,
@@ -1380,7 +1382,7 @@ async def propose_dashboard_blueprint(
     }
 
 
-@tool("all")
+@tool({"all", "design"})
 async def commit_dashboard_blueprint(
     blueprint_json: str,
     user_confirmed: bool = False,
@@ -1928,7 +1930,7 @@ async def commit_dashboard_blueprint(
 # ---------------------------------------------------------------------------
 
 
-@tool("all")
+@tool({"all", "design"})
 async def audit_chart_semantic_health(
     dataset_id: int | None = None,
     ctx: Context | None = None,
@@ -2015,7 +2017,7 @@ async def audit_chart_semantic_health(
     }
 
 
-@tool("all")
+@tool({"all", "design"})
 async def repair_chart_semantic_binding(
     chart_id: int,
     dataset_table_id: int | None = None,
@@ -2158,7 +2160,7 @@ async def repair_chart_semantic_binding(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def propose_dataset_workspace(
     business_intent: str,
     datasource_id: int | None = None,
@@ -2177,6 +2179,8 @@ async def propose_dataset_workspace(
         raise ValueError("business_intent is required.")
 
     existing: dict[str, Any] | None = None
+    model_status: str | None = None
+    model_view_count = 0
     if existing_dataset_id is not None:
         try:
             existing = await _request(
@@ -2186,6 +2190,22 @@ async def propose_dataset_workspace(
             logger.warning(
                 "Failed to load dataset %s: %s", existing_dataset_id, exc
             )
+        # Does this dataset already have a semantic model? Non-tech flows
+        # need a model before measures/charts resolve — if missing, tell
+        # Claude to run generate_dataset_model first.
+        try:
+            model = await _request(
+                "GET", f"/datasets/{int(existing_dataset_id)}/model"
+            )
+            views = (model or {}).get("views") or []
+            model_view_count = len(views)
+            model_status = "ready" if (
+                (model or {}).get("generated") or views
+            ) else "missing"
+        except RuntimeError as exc:
+            logger.warning("Failed to read model for dataset %s: %s",
+                           existing_dataset_id, exc)
+            model_status = "unknown"
 
     sources: list[dict[str, Any]] = []
     if datasource_id is not None:
@@ -2198,9 +2218,29 @@ async def propose_dataset_workspace(
                 "Failed to list source tables for %s: %s", datasource_id, exc
             )
 
+    if model_status == "missing":
+        model_hint = (
+            "Dataset has NO semantic model yet. Before authoring measures/"
+            "charts, call generate_dataset_model(dataset_id="
+            f"{existing_dataset_id}, user_confirmed=true) — it builds a "
+            "starter model (views + joins) from columns_cache with no LLM "
+            "call. Then read it with get_dataset_model and design on top."
+        )
+    elif model_status == "ready":
+        model_hint = (
+            f"Dataset already has a semantic model ({model_view_count} views). "
+            "Read it with get_dataset_model, then design measures/charts on "
+            "top of the existing views."
+        )
+    else:
+        model_hint = None
+
     return {
         "business_intent": intent,
         "existing_dataset": existing,
+        "model_status": model_status,
+        "model_view_count": model_view_count,
+        "model_hint": model_hint,
         "available_source_tables": sources[:50],
         "plan_template": {
             "dataset": {
@@ -2217,18 +2257,44 @@ async def propose_dataset_workspace(
                     "source_query": "<str — SQL for sql_query / derived_table>",
                 }
             ],
+            "semantic": "<full plan_json — see propose_semantic_model.plan_template>",
+            "planned_charts": [
+                {
+                    "title": "<str>",
+                    "chart_type": "<BAR|LINE|KPI|...>",
+                    "role_config": "<role_config dict — prefer qualified view.field refs>",
+                    "dataset_table_name": "<str — matches tables[].display_name>",
+                    "layout": {"x": 0, "y": 0, "w": 6, "h": 4},
+                }
+            ],
+            "planned_filters": [
+                {
+                    "label": "<str — chip label>",
+                    "field": "<str — qualified view.col>",
+                    "kind": "date|dropdown",
+                    "date_preset": "<this_month|last_30_days|… — for date>",
+                    "default_values": ["<…>"],
+                    "multi_select": True,
+                    "scope": "all",
+                }
+            ],
+            "dashboard_meta": {"name": "<str>", "description": "<str>"},
         },
         "next_step": (
-            "Author the plan, then call "
-            "commit_dataset_workspace(plan, user_confirmed=true). After "
-            "that returns, call get_table_profile for each table, then "
-            "propose_semantic_model + propose_dashboard_blueprint, then "
-            "commit_full_dashboard(...). Total user confirmations: 2."
+            "PREFER create_report(spec) cho luồng chuẩn. Đây là tool "
+            "blueprint (profile 'design'). Nếu dùng: (1) khám phá dataset "
+            "(get_table_profile mỗi bảng) → (2) đảm bảo có model "
+            "(generate_dataset_model nếu model_status='missing') → (3) tác "
+            "giả plan gồm semantic + measures + planned_charts + "
+            "planned_filters → (4) commit_dataset_workspace(plan, "
+            "user_confirmed=true) → (5) build_dashboard_from_design("
+            "user_confirmed=true) tạo charts + filters. Claude TỰ vẽ mock-up "
+            "cho user duyệt trước, MCP chỉ materialize."
         ),
     }
 
 
-@tool("report")
+@tool({"report", "design"})
 async def commit_dataset_workspace(
     plan: dict[str, Any] | str,
     user_confirmed: bool = False,
@@ -2254,6 +2320,13 @@ async def commit_dataset_workspace(
         dataset_table_index}. role_config may use cross-view qualified
         refs (e.g. dimension='owner.name') if `relationships` connects
         the views.
+      planned_filters?[]: dashboard filters logged for Phase 2 (shown in
+        the real-data demo + materialised onto the dashboard so the built
+        report matches the demo). Each: {label, field (qualified
+        view.col), kind: 'date'|'dropdown', date_preset? (for date),
+        default_values? + multi_select? (for dropdown), scope?='all',
+        page_id?}. Date-bucket cross-filters use a RANGE not equality;
+        page-scope is a hard bound.
       dashboard_meta?: {name, description?} logged for Phase 2.
 
     Rollback: table-add failure → rollback added tables + new dataset.
@@ -2269,6 +2342,7 @@ async def commit_dataset_workspace(
     semantic_plan = plan_dict.get("semantic")
     relationships = plan_dict.get("relationships") or []
     planned_charts = plan_dict.get("planned_charts") or []
+    planned_filters = plan_dict.get("planned_filters") or []
     dashboard_meta_in = plan_dict.get("dashboard_meta") or {}
 
     if not isinstance(tables, list) or not tables:
@@ -2310,6 +2384,12 @@ async def commit_dataset_workspace(
                 "planned_chart_count": len(planned_charts),
                 "planned_chart_titles": [
                     c.get("title") for c in planned_charts[:8]
+                ],
+                "planned_filter_count": len(planned_filters),
+                "planned_filter_labels": [
+                    (f.get("label") or f.get("field"))
+                    for f in planned_filters[:8]
+                    if isinstance(f, dict)
                 ],
                 "dashboard_name": dashboard_meta_in.get("name"),
             },
@@ -2529,7 +2609,7 @@ async def commit_dataset_workspace(
         resolved_charts.append(resolved)
 
     design_log_path: str | None = None
-    if resolved_charts or dashboard_meta_in:
+    if resolved_charts or dashboard_meta_in or planned_filters:
         try:
             design_path = _session_log_dir(dataset_id) / "charts_design.json"
             payload = {
@@ -2539,6 +2619,7 @@ async def commit_dataset_workspace(
                 "table_name_to_id": name_to_id,
                 "dashboard_meta": dashboard_meta_in,
                 "planned_charts": resolved_charts,
+                "planned_filters": planned_filters,
             }
             design_path.write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False),
@@ -2568,6 +2649,7 @@ async def commit_dataset_workspace(
         "relationships_committed": relationship_results,
         "relationship_errors": relationship_errors,
         "planned_chart_count": len(resolved_charts),
+        "planned_filter_count": len(planned_filters),
         "auto_logged_to": [
             p for p in [dataset_log_path, design_log_path] if p
         ],
@@ -2592,7 +2674,7 @@ async def commit_dataset_workspace(
     }
 
 
-@tool("report")
+@tool({"report", "design"})
 async def build_dashboard_from_design(
     dataset_id: int | None = None,
     dashboard_meta_override: dict[str, Any] | None = None,
@@ -2600,13 +2682,15 @@ async def build_dashboard_from_design(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """CONFIRM 2 of 2 — materialise the dashboard from Phase 1's logged
-    `charts_design.json`. No re-design — pulls everything from the log.
+    """Materialiser used by `create_report` — builds charts + filters +
+    dashboard from a logged `charts_design.json`. Not in the lean `core`
+    surface; prefer `create_report(spec)` which wraps this.
 
-    Without user_confirmed: renders HTML preview at
-    `dashboard_preview.html` in the same log folder, returns its path
-    for browser review.
-    With user_confirmed=True: creates charts + dashboard in AppBI.
+    Without user_confirmed: writes a spec-only layout sketch at
+    `dashboard_preview.html` + returns a confirm plan (nothing created).
+    With user_confirmed=True: creates charts + dashboard AND materialises
+    `planned_filters` (staged as DRAFT via /dashboards/{id}/draft-filters
+    — the human publishes later).
 
     `dashboard_meta_override` — optional {name, description} overriding
     the logged meta. `design_log_path` — explicit path for resumed
@@ -2680,7 +2764,10 @@ async def build_dashboard_from_design(
             "hint": "Logged design has no planned_charts. Update Phase 1.",
         }
 
-    # Always (re)write the HTML preview so DA can open it.
+    planned_filters = design.get("planned_filters") or []
+
+    # Static layout sketch (spec-only, no data) so a path exists for review.
+    # Claude shows the user its OWN report mockup; this MCP just materialises.
     preview_path = design_file.parent / "dashboard_preview.html"
     try:
         preview_path.write_text(
@@ -2710,10 +2797,12 @@ async def build_dashboard_from_design(
             "dashboard_name": dashboard_meta.get("name"),
             "chart_count": len(planned_charts),
             "chart_titles": [c.get("title") for c in planned_charts[:8]],
+            "filter_count": len(planned_filters),
             "hint": (
-                "Open html_preview_path in a browser to verify the "
-                "layout. Call again with user_confirmed=True to write "
-                "the charts + dashboard to AppBI."
+                "Confirm-2 gate. Charts + filters NOT created yet. Call again "
+                "with user_confirmed=True to materialise them. (Claude should "
+                "already have shown the user its own report mockup/artifact "
+                "and gotten approval — this MCP only materialises.)"
             ),
         }
         if locked_charts:
@@ -2832,6 +2921,52 @@ async def build_dashboard_from_design(
     dashboard_id = (
         dashboard_result.get("id") if isinstance(dashboard_result, dict) else None
     )
+
+    # Materialise filters so the built dashboard matches the demo (charts +
+    # filters). Slots are built via the SAME `_build_filter_slot` the recipe
+    # tools use → byte-identical. Staged into the DRAFT pipeline (MCP
+    # proposes = draft; human publishes), so a public link only sees them
+    # after publish_dashboard_draft. Filter failure is reported, NOT fatal —
+    # charts + dashboard are already saved.
+    filters_materialized: list[str] = []
+    filters_error: str | None = None
+    if dashboard_id is not None and planned_filters:
+        try:
+            from appbi_dashboard_library import _build_filter_slot
+            slots: list[dict[str, Any]] = []
+            for f in planned_filters:
+                if not isinstance(f, dict):
+                    continue
+                kind = str(f.get("kind") or f.get("type") or "dropdown").lower()
+                field = f.get("field") or f.get("semanticField") or ""
+                label = f.get("label") or field
+                if not field:
+                    continue
+                if kind == "date":
+                    slots.append(_build_filter_slot(
+                        "date", label, field,
+                        date_preset=f.get("date_preset") or f.get("datePreset") or "this_month",
+                        linked_fields=f.get("linked_fields"),
+                    ))
+                else:
+                    slots.append(_build_filter_slot(
+                        "dropdown", label, field,
+                        default_values=f.get("default_values"),
+                        multi_select=bool(f.get("multi_select", True)),
+                        linked_fields=f.get("linked_fields"),
+                    ))
+            if slots:
+                await _request(
+                    "PUT",
+                    f"/dashboards/{int(dashboard_id)}/draft-filters",
+                    json_body={"filters_config": slots},
+                )
+                filters_materialized = [s.get("label") for s in slots]
+        except (BackendError, RuntimeError) as exc:
+            filters_error = str(exc)[:300]
+            logger.warning("Filter materialisation failed for dashboard %s: %s",
+                           dashboard_id, exc)
+
     # Route logs to the dataset folder: design.json was written with the
     # dataset_id during Phase 1; reuse it here so the same dataset's
     # dataset.md / charts.md / report.md sit together.
@@ -2869,20 +3004,196 @@ async def build_dashboard_from_design(
         "dashboard_name": dashboard_meta.get("name"),
         "created_charts": created_charts,
         "placement_count": len(placements),
+        "filters_materialized": filters_materialized,
+        "filters_error": filters_error,
         "html_preview_path": str(preview_path),
         "auto_logged_to": [
             p for p in [charts_log_path, report_log_path] if p
         ],
         "instruction_for_claude": (
-            "Phase 2 of 2 committed. Tell the user briefly: "
+            "Committed. Tell the user briefly: "
             f"(a) dashboard_id={dashboard_id}, "
             f"(b) {len(placements)} charts placed, "
-            f"(c) HTML preview at {preview_path}, "
-            "(d) auto-log files written. The 2-confirm workflow is complete."
+            f"(c) {len(filters_materialized)} filters staged (DRAFT)."
         ),
         "next_step": (
-            "Dashboard is live in AppBI. Open html_preview_path to compare "
-            "the design with what was committed."
+            "Dashboard is live in AppBI. Filters are staged as DRAFT — they "
+            "appear on the public link only after the user explicitly asks to "
+            "publish (publish_dashboard_draft). To confirm prod, read it back "
+            "with get_dashboard / get_chart_data."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# create_report — THE materialiser. Claude has already explored the data,
+# drawn its OWN report mockup, and gotten the user's sign-off; this single
+# call writes the final, confirmed report to AppBI. Wraps the two existing
+# committers so the MCP keeps ONE lean entry point in the `core` surface.
+# ---------------------------------------------------------------------------
+
+
+@tool("core")
+async def create_report(
+    spec: dict[str, Any] | str,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Create a FINAL, user-approved report on AppBI in ONE call.
+
+    Use this AFTER Claude has explored the data (discovery tools), designed
+    the report itself, drawn its own mockup, and the user has approved.
+    This MCP does NOT design — it materialises what was confirmed.
+
+    `spec` (inline dict or JSON string):
+      existing_dataset_id | dataset{name,description?}   (one required)
+      tables?[]            : create from source if dataset is new — same
+                             shape as commit_dataset_workspace.plan.tables.
+      semantic?            : full semantic plan_json (views + measures +
+                             dimensions). Omit to reuse an existing model.
+      relationships?[]     : dataset-model joins.
+      planned_charts[]     : REQUIRED — {title, chart_type, role_config
+                             (prefer qualified `view.field`), dataset_table_name
+                             OR dataset_table_id, layout?}.
+      planned_filters?[]   : {label, field (qualified), kind:'date'|'dropdown',
+                             date_preset? | default_values?+multi_select?}.
+      dashboard_meta       : {name, description?}.
+      public_link?         : {name, password?, appearance_config?,
+                             filters_config?} — created (DRAFT filters need
+                             publish first to show on the link).
+
+    Without user_confirmed: returns a summary plan (nothing created).
+    With user_confirmed=True: creates dataset?/tables?/semantic?/joins? then
+    charts + filters + dashboard (+ public link if given). Filters land as
+    DRAFT — publish only when the user asks.
+    """
+    spec_dict = _parse_plan_json(spec, "spec") if isinstance(spec, str) else spec
+    if not isinstance(spec_dict, dict):
+        raise ValueError("spec must be an object (dict) or a JSON string.")
+
+    tables = spec_dict.get("tables") or []
+    semantic_plan = spec_dict.get("semantic")
+    planned_charts = spec_dict.get("planned_charts") or []
+    planned_filters = spec_dict.get("planned_filters") or []
+    dashboard_meta = spec_dict.get("dashboard_meta") or {}
+    existing_dataset_id = spec_dict.get("existing_dataset_id")
+    dataset_meta = spec_dict.get("dataset") or {}
+
+    if not planned_charts:
+        raise ValueError(
+            "spec.planned_charts must be a non-empty list — these are the "
+            "charts to create. (To only build a dataset/model, use the "
+            "granular create_* tools.)"
+        )
+    if existing_dataset_id is None and not dataset_meta.get("name"):
+        raise ValueError("spec needs either existing_dataset_id or dataset.name.")
+    # commit_dataset_workspace requires a non-empty tables list. When reusing
+    # an existing dataset with no new tables/semantic, skip that stage.
+    skip_dataset_stage = bool(existing_dataset_id) and not tables and not semantic_plan
+
+    if not user_confirmed:
+        sem_views = (semantic_plan or {}).get("views") or []
+        return _requires_confirmation(
+            "create_report",
+            {
+                "dataset_action": (
+                    f"reuse id={existing_dataset_id}"
+                    if existing_dataset_id is not None
+                    else f"create '{dataset_meta.get('name')}'"
+                ),
+                "table_count": len(tables),
+                "semantic_views": [v.get("name") for v in sem_views],
+                "measure_count": sum(
+                    len((v or {}).get("measures") or []) for v in sem_views
+                ),
+                "chart_count": len(planned_charts),
+                "chart_titles": [c.get("title") for c in planned_charts[:10]],
+                "filter_count": len(planned_filters),
+                "filter_labels": [
+                    (f.get("label") or f.get("field"))
+                    for f in planned_filters[:10]
+                    if isinstance(f, dict)
+                ],
+                "dashboard_name": dashboard_meta.get("name"),
+                "creates_public_link": bool(spec_dict.get("public_link")),
+                "note": (
+                    "Nothing created yet. Confirm to materialise the report "
+                    "the user already approved."
+                ),
+            },
+        )
+
+    # Stage 1 — dataset + tables + semantic + joins + log planned_charts/filters.
+    if skip_dataset_stage:
+        dataset_id: Any = int(existing_dataset_id)
+        try:
+            design_path = _session_log_dir(dataset_id) / "charts_design.json"
+            design_path.write_text(
+                json.dumps({
+                    "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                    "dataset_id": dataset_id,
+                    "dashboard_meta": dashboard_meta,
+                    "planned_charts": planned_charts,
+                    "planned_filters": planned_filters,
+                }, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            return {"status": "design_log_failed", "error": str(exc)}
+        workspace: dict[str, Any] = {
+            "status": "committed", "dataset_id": dataset_id, "reused": True,
+        }
+    else:
+        workspace = await commit_dataset_workspace(spec_dict, user_confirmed=True, ctx=ctx)
+        if not isinstance(workspace, dict) or workspace.get("status") != "committed":
+            return {
+                "status": "dataset_stage_failed",
+                "stage": "commit_dataset_workspace",
+                "detail": workspace,
+            }
+        dataset_id = workspace.get("dataset_id")
+        if dataset_id is None:
+            return {"status": "dataset_stage_failed", "detail": workspace}
+
+    # Stage 2 — charts + filters + dashboard.
+    build = await build_dashboard_from_design(
+        dataset_id=int(dataset_id),
+        dashboard_meta_override=dashboard_meta or None,
+        user_confirmed=True,
+        ctx=ctx,
+    )
+    dashboard_id = build.get("dashboard_id") if isinstance(build, dict) else None
+
+    # Optional public link.
+    public_link = None
+    pl = spec_dict.get("public_link")
+    if isinstance(pl, dict) and dashboard_id:
+        try:
+            from appbi_dashboard import create_public_link
+            public_link = await create_public_link(
+                dashboard_id=int(dashboard_id),
+                name=pl.get("name") or f"{dashboard_meta.get('name') or 'Dashboard'} link",
+                filters_config=pl.get("filters_config"),
+                appearance_config=pl.get("appearance_config"),
+                password=pl.get("password"),
+                user_confirmed=True,
+                ctx=ctx,
+            )
+        except (BackendError, RuntimeError) as exc:
+            public_link = {"status": "public_link_failed", "error": str(exc)[:300]}
+
+    return {
+        "status": build.get("status") if isinstance(build, dict) else "unknown",
+        "dataset_id": dataset_id,
+        "dashboard_id": dashboard_id,
+        "created_charts": build.get("created_charts") if isinstance(build, dict) else None,
+        "filters_materialized": build.get("filters_materialized") if isinstance(build, dict) else None,
+        "public_link": public_link,
+        "build": build,
+        "instruction_for_claude": (
+            "Report materialised. Tell the user: dashboard_id, chart count, "
+            "filter count (DRAFT — publish only if they ask). Read back with "
+            "get_dashboard to confirm if needed."
         ),
     }
 
@@ -2895,7 +3206,7 @@ async def build_dashboard_from_design(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def propose_report_spec(
     business_intent: str,
     dataset_id: int | None = None,
@@ -2974,6 +3285,17 @@ async def propose_report_spec(
                     "layout": {"x": 0, "y": 0, "w": 6, "h": 4},
                 }
             ],
+            "planned_filters": [
+                {
+                    "label": "<str — chip label shown to viewer>",
+                    "field": "<str — qualified view.col>",
+                    "kind": "date|dropdown",
+                    "date_preset": "<this_month|last_30_days|… — for kind=date>",
+                    "default_values": ["<…>"],
+                    "multi_select": True,
+                    "scope": "all",
+                }
+            ],
             "dashboard_meta": {
                 "name": "<str>",
                 "description": "<str>",
@@ -2986,7 +3308,7 @@ async def propose_report_spec(
     }
 
 
-@tool("report")
+@tool({"report", "design"})
 async def commit_from_spec_file(
     spec_file_path: str,
     user_confirmed: bool = False,
@@ -3103,7 +3425,7 @@ async def commit_from_spec_file(
     }
 
 
-@tool("all")
+@tool({"all", "design"})
 async def commit_full_dashboard(
     semantic_plan: dict[str, Any] | str,
     dashboard_blueprint: dict[str, Any] | str,
@@ -3284,6 +3606,7 @@ def _build_chart_config_from_spec(chart_spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
 async def _runtime_preview_preflight(
     *,
     dataset_table_id: int,

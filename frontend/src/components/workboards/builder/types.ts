@@ -32,7 +32,8 @@ export interface FormFieldSpec {
     | 'checkbox'
     | 'lookup'
     | 'file'
-    | 'image';
+    | 'image'
+    | 'map';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -50,6 +51,11 @@ export interface FormFieldSpec {
       value_column?: string | null;
       label_column?: string | null;
     }> | null;
+    // Map widget only — geometry projection + basemap style.
+    geometry_column?: string | null;
+    lat_column?: string | null;
+    lng_column?: string | null;
+    basemap?: 'satellite' | 'streets' | 'light' | null;
   } | null;
   section?: string | null;
   page?: number | null;
@@ -163,6 +169,14 @@ export interface TableScreenSpecBuilt {
   column_metadata?: Record<string, TableColumnMetaSpec>;
   detail_panel?: TableDetailPanelSpec;
   empty_state_message?: string | null;
+  display_mode?: 'table' | 'gallery';
+  gallery_config?: {
+    image_column: string;
+    title_column?: string | null;
+    subtitle_column?: string | null;
+    group_by_column?: string | null;
+    columns_per_row?: number;
+  } | null;
 }
 
 export interface DocBlockSpec {

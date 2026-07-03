@@ -1,0 +1,38 @@
+{
+  "case_id": "G08_ds56_act_date_year_2025",
+  "description": "Activity duration ← date.year=2025",
+  "chart_name": "[snow] activity duration total",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:22.299770+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "conformed_dim",
+    "date"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_192.duration": "155"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM `bcfix`.`bc_activity`) AS dataset_table_192 WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_date`) AS dataset_table_187 WHERE dataset_table_192.som_due_datetime = dataset_table_187.date AND dataset_table_187.year = 2025) LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

@@ -18,7 +18,8 @@ _scheduler: BackgroundScheduler | None = None
 
 
 def _run_anomaly_scan():
-    """Scheduled job: run anomaly detection for all active metrics."""
+    """Scheduled job: run anomaly detection, then the observability scan
+    (freshness/volume/schema monitors + fold quality+anomaly into incidents)."""
     db = SessionLocal()
     try:
         result = AnomalyDetectionService.run_all_checks(db)
@@ -27,6 +28,18 @@ def _run_anomaly_scan():
         logger.error("Anomaly scan failed: %s", exc)
     finally:
         db.close()
+
+    # Observability spine scan — runs the native monitors and folds every
+    # detector's breaches into the unified incident store.
+    db2 = SessionLocal()
+    try:
+        from app.services.observability_service import ObservabilityService
+        obs_result = ObservabilityService.scan_all(db2)
+        logger.info("Observability scan completed: %s", obs_result)
+    except Exception as exc:
+        logger.error("Observability scan failed: %s", exc)
+    finally:
+        db2.close()
 
 
 def startup():

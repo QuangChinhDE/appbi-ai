@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, public, personal_access_tokens, teams
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, observability, feedback, public, personal_access_tokens, teams
 from app.core.config import settings
 from app.routers import semantic
 
@@ -47,6 +47,9 @@ if settings.METADATA_CATALOG_ENABLED:
 
 # Phase 4: Proactive Intelligence
 api_router.include_router(anomaly.router)
+
+# Observability — unified 5-pillar module (monitors + incidents + lineage + usage)
+api_router.include_router(observability.router)
 
 # Phase 5: Feedback-Driven Knowledge System
 api_router.include_router(feedback.router)

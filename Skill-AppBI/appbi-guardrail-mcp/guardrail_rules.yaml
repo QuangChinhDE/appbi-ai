@@ -1,0 +1,535 @@
+# AppBI Engineering Guardrail — rule base (the SINGLE source of truth).
+#
+# The MCP is READ-ONLY and rule-driven: it answers ONLY from what is encoded
+# here. Anything not covered returns UNKNOWN (never a guessed rule). To teach
+# the guardrail a new rule, add it here — do NOT hardcode rules in the Python.
+#
+# Rules are DERIVED from the real repo layout + DA-Test/Regression-Catalog.md +
+# the project memory. Keep them factual; if unsure, omit (→ UNKNOWN) rather than
+# invent.
+version: 2
+repo_root_markers: ["backend/app", "frontend/src"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. LAYERS — each file belongs to exactly one layer (first matching glob wins,
+#    order matters). `may_depend_on` lists the layers it is ALLOWED to import.
+#    An import into a layer NOT listed = architecture violation. A file matching
+#    no layer = UNKNOWN (not a violation — we don't guess).
+# ─────────────────────────────────────────────────────────────────────────────
+layers:
+  - id: be_main
+    match: ["backend/app/main.py", "backend/app/__init__.py"]
+    label: "Backend entrypoint / app wiring"
+    may_depend_on: ["*"]           # composition root may wire everything
+
+  - id: be_core
+    match: ["backend/app/core/**"]
+    label: "Backend core (config, database, dependencies, crypto)"
+    may_depend_on: ["be_core"]     # leaf: no api/services/models/modules
+
+  - id: be_models
+    match: ["backend/app/models/**"]
+    label: "Backend models (SQLAlchemy ORM)"
+    may_depend_on: ["be_core", "be_models"]   # NOT services/api (would invert layering)
+
+  - id: be_schemas
+    match: ["backend/app/schemas/**"]
+    label: "Backend Pydantic schemas"
+    may_depend_on: ["be_core", "be_models", "be_schemas"]
+
+  - id: be_services
+    match: ["backend/app/services/**"]
+    label: "Backend services (business logic; incl. the semantic layer)"
+    may_depend_on: ["be_core", "be_models", "be_schemas", "be_services"]  # NOT api/modules
+
+  - id: be_modules
+    match: ["backend/app/modules/**"]
+    label: "Backend feature modules (workboards, metadata_catalog)"
+    may_depend_on: ["be_core", "be_models", "be_schemas", "be_services", "be_modules"]
+
+  - id: be_api
+    match: ["backend/app/api/**", "backend/app/routers/**"]
+    label: "Backend HTTP routers (FastAPI)"
+    may_depend_on: ["be_core", "be_models", "be_schemas", "be_services", "be_modules", "be_api"]
+
+  - id: be_scripts
+    match: ["backend/scripts/**", "backend/app/scripts/**"]
+    label: "Backend scripts / QA harnesses (NOT runtime; not committed as app code)"
+    may_depend_on: ["*"]
+
+  - id: fe_lib
+    match: ["frontend/src/lib/**"]
+    label: "Frontend lib (api clients, filters, utils)"
+    may_depend_on: ["fe_lib"]
+
+  - id: fe_types
+    match: ["frontend/src/types/**"]
+    label: "Frontend shared types"
+    may_depend_on: ["fe_types"]
+
+  - id: fe_stores
+    match: ["frontend/src/stores/**", "frontend/src/providers/**"]
+    label: "Frontend stores / providers"
+    may_depend_on: ["fe_lib", "fe_types", "fe_stores"]
+
+  - id: fe_hooks
+    match: ["frontend/src/hooks/**"]
+    label: "Frontend hooks"
+    may_depend_on: ["fe_lib", "fe_types", "fe_stores", "fe_hooks"]
+
+  - id: fe_components
+    match: ["frontend/src/components/**"]
+    label: "Frontend components"
+    may_depend_on: ["fe_lib", "fe_types", "fe_stores", "fe_hooks", "fe_components"]
+
+  - id: fe_pages
+    match: ["frontend/src/app/**", "frontend/src/middleware.ts"]
+    label: "Frontend pages (Next app router)"
+    may_depend_on: ["fe_lib", "fe_types", "fe_stores", "fe_hooks", "fe_components", "fe_pages"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. PROTECTED SUBSYSTEMS — high blast-radius; the AI must NOT replace/rewrite,
+#    only surgically fix. Changes REQUIRE the listed gates.
+# ─────────────────────────────────────────────────────────────────────────────
+protected:
+  - id: semantic_layer
+    label: "Semantic layer (query engine + model + joins + calendar + filters)"
+    files:
+      - backend/app/services/semantic_query_engine.py
+      - backend/app/services/semantic_query_compiler.py
+      - backend/app/services/semantic_join_resolver.py
+      - backend/app/services/dataset_model_service.py
+      - backend/app/services/dataset_calendar_service.py
+      - backend/app/services/filter_propagation.py
+      - backend/app/services/type_override_service.py
+      - backend/app/services/chart_contracts.py
+      - backend/app/services/chart_semantic_service.py
+      - backend/app/services/chart_service.py   # carries the semantic-relation helpers the distinct cascade imports
+    directive: >
+      DO NOT rewrite or replace the semantic layer. It is golden-proven
+      (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
+      SMALLEST surgical change; never flip symmetric/propagation defaults; keep
+      the SQL dialect-correct for BigQuery AND Postgres. Any change is
+      behaviour-critical → run the golden gates.
+    required_tests: [golden_sql, galaxy_golden, distinct_cascade_bq, filter_matrix]
+
+  - id: public_link_security
+    label: "Public-link filter merge / access (data-exposure surface)"
+    files:
+      - backend/app/api/public.py
+      - frontend/src/app/d/[token]/page.tsx
+      - frontend/src/app/embed/[token]/page.tsx
+      - frontend/src/lib/api/public.ts
+    directive: >
+      Data-exposure surface. Locked/hidden filters must stay enforced (scope
+      bound, no leak). The public FE must use publicClient ONLY (no authed
+      calls). Verify logged-out.
+    required_tests: [layered_merge, galaxy_golden]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. FEATURES — impact map. A changed file that owns a feature drags in that
+#    feature's invariants + required tests. `keywords` help match a fix
+#    description (validate_fix_plan) to the right owner files.
+# ─────────────────────────────────────────────────────────────────────────────
+features:
+  - id: distinct_value_cascade
+    label: "Slicer/filter dropdown distinct-value cascade"
+    files: [backend/app/services/dataset_model_service.py, backend/app/api/public.py]
+    keywords: [distinct, dropdown, slicer, cascade, "khong ra gia tri", "không ra giá trị", "filter value", "loading values"]
+    invariants: [distinct_no_correlated_bq, distinct_no_or_of_ins, distinct_no_in_over_aggregated, distinct_strict_no_showall, distinct_self_exclude]
+    required_tests: [distinct_cascade_bq, galaxy_golden]
+
+  - id: chart_sql_engine
+    label: "Chart SQL generation (semantic query engine)"
+    files: [backend/app/services/semantic_query_engine.py, backend/app/services/semantic_query_compiler.py]
+    keywords: [measure, aggregate, group by, sql, fan-out, fanout, "sai so", "double count", grain, having]
+    invariants: [fanout_exists_not_join, agg_default_auto, sum_over_string_gate, symmetric_flag_default]
+    required_tests: [golden_sql, galaxy_golden, measure_render, filter_matrix]
+
+  - id: join_resolution
+    label: "Semantic join resolver (multi-hop, cardinality, role-play, chasm)"
+    files: [backend/app/services/semantic_join_resolver.py]
+    keywords: [join, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
+    invariants: [model_autojoin_pk]
+    required_tests: [galaxy_golden, filter_matrix, relationship_metadata]
+
+  - id: calendar_time
+    label: "Calendar / time dimension (generated calendar, role-play, grain)"
+    files: [backend/app/services/dataset_calendar_service.py]
+    keywords: [calendar, date dim, time grain, month, quarter, "date_dim", role-play, "parse_date", timezone]
+    invariants: [calendar_no_parse_date_on_date]
+    required_tests: [galaxy_golden, filter_matrix]
+
+  - id: filter_layered_merge
+    label: "Public/dashboard filter layered merge + scope bound"
+    files: [backend/app/api/public.py, frontend/src/lib/filters.ts]
+    keywords: [locked, hidden, "public filter", "scope bound", layered, leak, viewer]
+    invariants: [public_client_only, scope_bound_no_leak]
+    required_tests: [layered_merge, galaxy_golden]
+
+  - id: dashboard_build_render
+    label: "Dashboard Builder tile render + filter seeding (FE)"
+    files:
+      - frontend/src/app/(main)/dashboards/[id]/page.tsx
+      - frontend/src/components/dashboards/ChartTile.tsx
+      - frontend/src/components/dashboards/DashboardGrid.tsx
+      - frontend/src/components/dashboards/DashboardCanvas.tsx
+    keywords: [dashboard, tile, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
+    invariants: [tile_fetch_seed_gate]
+    required_tests: [tsc, browser_verify]
+
+  - id: filter_pane_slicers
+    label: "Filter pane / slicer cluster (FE)"
+    files:
+      - frontend/src/components/dashboards/FilterPane.tsx
+      - frontend/src/components/dashboards/SlicerCluster.tsx
+      - frontend/src/components/dashboards/DashboardFilterBar.tsx
+      - frontend/src/hooks/use-public-filter-distinct-values.ts
+    keywords: [slicer, filter pane, "filters on this page", scope, "trang nay", distinctStatus]
+    invariants: [fe_be_limit_pair]
+    required_tests: [tsc, browser_verify]
+
+  - id: measures
+    label: "Measures (expression/filters/ratio/context modifiers)"
+    files: [backend/app/services/semantic_query_engine.py]
+    keywords: [measure, ratio, "count distinct", "percent of total", "filtered measure", "where_sql", "depends_on"]
+    invariants: [agg_default_auto, sum_over_string_gate]
+    required_tests: [measure_render, galaxy_golden, golden_sql]
+
+  - id: auth_permissions
+    label: "Auth / permissions"
+    files: [backend/app/api/auth.py, backend/app/api/permissions.py, backend/app/core/dependencies.py, frontend/src/lib/auth.ts, frontend/src/hooks/use-permissions.ts]
+    keywords: [auth, login, token, permission, role, jwt, "access control"]
+    invariants: []
+    required_tests: [import_smoke]
+
+  - id: workboards
+    label: "Workboards (mini-app) module"
+    files: [backend/app/modules/workboards/**]
+    keywords: [workboard, screen, mini-app, "form", "RLS", "workspace", "cong"]
+    invariants: []
+    required_tests: [import_smoke]
+
+  - id: metadata_catalog
+    label: "Governance / Observability (metadata catalog) module"
+    files: [backend/app/modules/metadata_catalog/**]
+    keywords: [govern, catalog, observability, lineage, monitor, incident, metric]
+    invariants: []
+    required_tests: [import_smoke]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. TESTS REGISTRY — from DA-Test/Regression-Catalog.md §1. `run` is the exact
+#    command; `locks` is what a green run guarantees.
+# ─────────────────────────────────────────────────────────────────────────────
+tests:
+  distinct_cascade_bq:
+    run: "CI_FIXTURE_SEED=1 DB_HOST=appbi-db python backend/scripts/verify_distinct_cascade_bigquery.py"
+    locks: "distinct cascade emits INNER JOIN semi-join on BigQuery — no correlated EXISTS / OR-of-INs / IN-over-aggregated; PG values correct"
+  galaxy_golden:
+    run: "python backend/scripts/verify_galaxy_golden.py"
+    locks: "14 golden numbers + 7 distinct-cascade + 4 public strict cascade (ds113 galaxy)"
+  golden_sql:
+    run: "python scratchpad/golden_sql_harness.py  (+ committed baselines)"
+    locks: "non-regression of every saved chart's generated SQL on Postgres + BigQuery"
+  filter_matrix:
+    run: "python backend/scripts/regression_filter_matrix.py --verify --tag snowflake"
+    locks: "fan-out→EXISTS, conformed-dim transitive filter, multi-hop, chasm fail-loud, cross-table measure re-anchor"
+  locked_contract:
+    run: "pytest backend/tests/test_locked_contract.py"
+    locks: "agg-default=auto (not SUM), dropped-filter policy, grain validator, pivot semantics"
+  filter_propagation_test:
+    run: "pytest backend/tests/test_phase2_filter_propagation.py"
+    locks: "PLAIN/JOIN_CHAIN/EXISTS/DROP routing, fan-out detection, unreachable/ambiguous"
+  layered_merge:
+    run: "pytest backend/tests/test_filter_layered_merge.py"
+    locks: "filter precedence (link_locked>dashboard_locked>visible>viewer_slicer>chart_base), empty-lock no-op"
+  distinct_self_target:
+    run: "pytest backend/tests/test_distinct_self_target.py"
+    locks: "slicer dropdown excludes its own field; other filters cascade in"
+  symmetric_agg:
+    run: "pytest backend/tests/test_phase4_symmetric_aggregates.py"
+    locks: "Looker MD5 dedup per dialect + fallback"
+  measure_render:
+    run: "pytest backend/tests/test_semantic_query_engine_measures.py"
+    locks: "sql/expression/filters/where_sql, quote-escaping, NULL-safe, dataset-scope load"
+  relationship_metadata:
+    run: "pytest backend/tests/test_phase1_relationship_metadata.py"
+    locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"
+  error_contracts:
+    run: "pytest backend/tests/test_phase15_error_contracts.py"
+    locks: "ValueError→400, VN messages, two-path implicit-measure hint"
+  explore_dashboard_parity:
+    run: "python backend/scripts/test_explore_dashboard_parity.py"
+    locks: "preview SQL/data == dashboard tile"
+  tsc:
+    run: "cd frontend && npx tsc --noEmit"
+    locks: "frontend type-safety (schema/prop changes)"
+  browser_verify:
+    run: "rebuild FE standalone + docker cp + restart, then Playwright verify vs the RUNNING build (static audits miss runtime/build-staleness)"
+    locks: "FE change actually renders/behaves in a real build (not just source)"
+  import_smoke:
+    run: "docker cp <file> into backend + restart + hit the touched endpoint (lazy imports hide errors)"
+    locks: "no import/attribute error on the touched runtime path"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. INVARIANTS — diff-scanned business/architecture rules. Each has a file
+#    `scope` (only checked when a changed file matches), and either
+#    `added_patterns` (regex whose APPEARANCE in added lines is a risk) or
+#    `removed_patterns` (regex whose REMOVAL is a risk). Matches are RISK SIGNALS
+#    (not proofs) → they point at the gate to run. From Regression-Catalog + memory.
+# ─────────────────────────────────────────────────────────────────────────────
+invariants:
+  # GROUNDED (verified L3017/3115/3218/3037). Guards the PRESENCE of the
+  # de-correlation fix — a diff removing its markers undoes it.
+  - id: distinct_decorrelation_semijoin
+    label: "Distinct cascade must stay a de-correlated UNION-DISTINCT / INNER JOIN semi-join (BigQuery)"
+    scope: ["backend/app/services/dataset_model_service.py"]
+    removed_patterns: ['_appbi_semi_key', 'UNION DISTINCT']
+    added_patterns: ['\)\s+OR\s+_appbi_base']
+    severity: high
+    message: >
+      The distinct cascade was de-correlated EXISTS→IN→INNER JOIN. Verified real
+      markers: `_appbi_semi_key` (semi-join key, L3017/3219), `UNION DISTINCT`
+      merge (L3115), INNER JOIN emission (L3218). REMOVING them — or ORing
+      `_appbi_base` IN-subqueries — re-creates the BigQuery-invalid correlated /
+      OR-of-INs / IN-over-aggregated form. Postgres HIDES it (an `EXISTS (` in
+      source is the LEGIT composite-key fallback at L3037, NOT a regression).
+    tests: [distinct_cascade_bq, galaxy_golden]
+
+  # GROUNDED (verified L1848/2010). Cross-fact measure correctness.
+  - id: measure_isolation_present
+    label: "Cross-fact measure isolation + multi-fact stitch must remain (no double-count)"
+    scope: ["backend/app/services/semantic_query_engine.py"]
+    removed_patterns: ['_build_isolated_measure_subquery', '_build_dimensioned_multifact_sql']
+    severity: high
+    message: >
+      Cross-fact measures are isolated at their own grain (`_build_isolated_measure_subquery`
+      L1848) and multi-fact results stitched (`_build_dimensioned_multifact_sql` L2010).
+      Removing either re-introduces base-scope contamination / cross-fact double-count.
+    tests: [galaxy_golden, golden_sql, measure_render]
+
+  # GROUNDED (verified L4031). Chasm fail-loud.
+  - id: group_grain_validator_present
+    label: "Chasm group-grain validator must remain (fail-loud, not silent fan-out)"
+    scope: ["backend/app/services/semantic_query_engine.py"]
+    removed_patterns: ['_validate_group_grain']
+    severity: high
+    message: >
+      `_validate_group_grain` (L4031) fails loud when a grouped dim isn't M:1-reachable
+      (chasm) — removing it lets a chasm group-by silently produce non-deterministic
+      wrong totals.
+    tests: [filter_matrix, galaxy_golden]
+
+  # GROUNDED (verified dataset_model_service L1425/1364, engine _coerce/_filter_type_family).
+  - id: type_family_coercion_present
+    label: "Filter literal type-coercion must remain (INT64=STRING fix)"
+    scope: ["backend/app/services/dataset_model_service.py", "backend/app/services/semantic_query_engine.py"]
+    removed_patterns: ['_coerce_typed_filter_value', '_filter_type_family']
+    severity: medium
+    message: >
+      Filter literals are coerced to the column's type-family (`_coerce_typed_filter_value` /
+      `_filter_type_family`) so a numeric column vs a STRING slicer value doesn't emit
+      `year BETWEEN '2023' AND '2024'` → BigQuery 400. Removing it re-breaks numeric filters on BQ.
+    tests: [galaxy_golden, filter_matrix, golden_sql]
+
+  - id: distinct_strict_no_showall
+    label: "Distinct cascade must stay strict (no show-all fallback)"
+    scope: ["backend/app/services/dataset_model_service.py", "backend/app/api/public.py"]
+    added_patterns: ['security_only\s*=\s*True', 'show[_-]?all', 'fallback.*full.*domain']
+    severity: high
+    message: >
+      A slicer dropdown cascades STRICTLY by other filters (PBI parity). Do NOT
+      relax to the full domain when the cascade is empty (the reverted "no-trap").
+      Empty cascade → empty dropdown, never show-all.
+    tests: [galaxy_golden]
+
+  - id: distinct_self_exclude
+    label: "Distinct query must strip a filter on its own target field"
+    scope: ["backend/app/services/dataset_model_service.py"]
+    removed_patterns: ['_distinct_filter_targets_self', 'targets_self']
+    severity: medium
+    message: "Removing self-field stripping re-pins a slicer dropdown to its own current value."
+    tests: [distinct_self_target]
+
+  # GROUNDED (verified L3543). Broad `LEFT JOIN` add was blind (LEFT JOIN is
+  # used legitimately everywhere) → guard the EXISTS builder's presence instead.
+  - id: fanout_exists_builder_present
+    label: "Filter-only 1:N joins must go through the EXISTS builder (no fan-out double-count)"
+    scope: ["backend/app/services/semantic_query_engine.py"]
+    removed_patterns: ['_build_filter_exists_clause']
+    severity: high
+    message: >
+      Filter-only reachability is rendered as EXISTS via `_build_filter_exists_clause`
+      (L3543) so a 1:N filter join doesn't multiply SELECT rows. Removing/bypassing it
+      (LEFT-JOINing filter-only views into the FROM) causes fan-out double-count.
+    tests: [filter_matrix, galaxy_golden]
+
+  - id: agg_default_auto
+    label: "Measure default aggregation is 'auto', never hardcoded SUM"
+    scope: ["backend/app/services/semantic_query_engine.py", "backend/app/services/chart_contracts.py"]
+    added_patterns: ['default.*=.*[\x27\x22]?sum', 'agg.*=.*[\x27\x22]?SUM']
+    severity: medium
+    message: "Default agg must resolve to 'auto' (per-type), not SUM — hardcoding SUM breaks non-additive measures."
+    tests: [locked_contract, galaxy_golden]
+
+  # GROUNDED (verified type_override_service L221; engine L1723/2519/3011).
+  # Broad `SUM(` add was blind → guard the SAFE_CAST helper's presence.
+  - id: safe_cast_gate_present
+    label: "STRING-physical numeric columns must SAFE_CAST (Airbyte STRING → BigQuery)"
+    scope: ["backend/app/services/semantic_query_engine.py", "backend/app/services/type_override_service.py"]
+    removed_patterns: ['build_safe_cast_sql']
+    severity: medium
+    message: >
+      Numeric ops over an Airbyte/STRING physical column are SAFE_CAST-ed via
+      `build_safe_cast_sql` (type_override_service L221; called in engine L1723/2519/3011).
+      Removing/bypassing it re-breaks SUM/AVG/compare on STRING-stored numerics on BigQuery.
+    tests: [galaxy_golden, golden_sql]
+
+  - id: symmetric_flag_default
+    label: "Do not flip fan-out feature-flag defaults without a golden diff"
+    scope: ["backend/app/services/semantic_query_engine.py", "backend/app/core/config.py"]
+    added_patterns: ['FEATURE_SYMMETRIC_AGGREGATES.{0,14}=\s*True', 'FEATURE_PROPAGATION_ENGINE_V2.{0,14}=\s*True', 'FEATURE_SYMMETRIC_AGGREGATES[\x22\x27],\s*True', 'FEATURE_PROPAGATION_ENGINE_V2[\x22\x27],\s*True']
+    severity: high
+    message: >
+      Flipping FEATURE_SYMMETRIC_AGGREGATES / FEATURE_PROPAGATION_ENGINE_V2 ON
+      changes SQL for EVERY multi-join chart (Postgres 53× slower; BQ-only correct).
+      Gate behind a per-dataset flag + golden-number diff + sign-off.
+    tests: [golden_sql, galaxy_golden, symmetric_agg]
+
+  - id: tile_fetch_seed_gate
+    label: "Builder tile fetch must gate on filter-seeding (no unfiltered flash)"
+    scope: ["frontend/src/components/dashboards/ChartTile.tsx"]
+    removed_patterns: ['filtersReady', 'serverFilterKey\s*===\s*debouncedFilterKey']
+    severity: medium
+    message: >
+      The tile data query is gated on `filtersReady && serverFilterKey ===
+      debouncedFilterKey`. Removing it re-introduces the unfiltered wave-1 fetch
+      (a flash of wrong numbers on the Builder + a wasted warehouse scan).
+    tests: [tsc, browser_verify]
+
+  - id: public_client_only
+    label: "Public FE must call publicClient only (no authed calls)"
+    scope: ["frontend/src/app/d/**", "frontend/src/app/embed/**"]
+    added_patterns: ['\bapiClient\b', 'from\s+[\x27\x22]@/lib/api-client', 'credentials:\s*[\x27\x22]?include']
+    severity: high
+    message: >
+      A public link page must use publicClient ONLY. An authed client call 401s
+      a logged-out viewer → login redirect. Test logged-out.
+    tests: [browser_verify]
+
+  - id: scope_bound_no_leak
+    label: "Filter scope bound must intersect (no escape/leak)"
+    scope: ["backend/app/api/public.py", "frontend/src/lib/filters.ts"]
+    removed_patterns: ['applyScopeBound', 'link_entry_has_value', 'link_locked', 'dashboard_filters_locked']
+    severity: high
+    message: "Removing the scope-bound intersect lets a viewer escape a locked filter (data leak)."
+    tests: [layered_merge, galaxy_golden]
+
+  # GROUNDED (verified filters.ts resolveEffectiveFilterSet + page.tsx distinct
+  # context 2026-07). Guards chart↔dropdown parity — the dropdown cascade must
+  # collapse same-field filters the SAME way the chart-data path does.
+  - id: distinct_context_same_field_resolved
+    label: "Distinct-cascade context must be same-field-resolved like chart-data (chart↔dropdown parity)"
+    scope: ["frontend/src/lib/filters.ts", "frontend/src/app/(main)/dashboards/[id]/page.tsx"]
+    removed_patterns: ['resolveEffectiveFilterSet', 'getDistinctValueFilterContext\(resolvedContextFilters']
+    added_patterns: ['getDistinctValueFilterContext\(combinedFilters']
+    severity: high
+    message: >
+      The dropdown distinct-value cascade MUST collapse same-field filters the
+      SAME way the chart-data path does — BOTH go through `resolveEffectiveFilterSet`
+      (lib/filters), which dedupes a same-field visible-default + slicer to ONE
+      value (active slicer wins) + `applyScopeBound` for locked/page hard-bounds.
+      Feeding the RAW union (`getDistinctValueFilterContext(combinedFilters, …)`)
+      re-creates the chart↔dropdown divergence: two same-field selections get
+      ANDed (`Trung_tam=RC02 AND Trung_tam=PKD4.1`) → every OTHER dropdown empties
+      while the charts still show the slicer's value. Keep the distinct context on
+      the resolved set. See `dashboard_filter_dual_path`. Note the public path
+      (`use-public-filter-distinct-values.ts`) must stay consistent too — its
+      chart data is BE-merged, so its dropdown cascade must match that winner.
+    tests: [tsc, browser_verify, galaxy_golden]
+
+  - id: fe_be_limit_pair
+    label: "Raising a FE numeric limit needs a matching BE Pydantic Field(le=)"
+    scope: ["frontend/src/components/dashboards/**", "frontend/src/lib/**"]
+    added_patterns: ['(limit|max|Limit|Max)\s*[:=]\s*\d{3,}']
+    severity: low
+    message: "A raised FE numeric bound without a lock-step BE `Field(le=)` → 422 at runtime. Pair them."
+    tests: [tsc]
+
+  - id: calendar_no_parse_date_on_date
+    label: "No PARSE_DATE on an already-DATE/INT column (BigQuery 400)"
+    scope: ["backend/app/services/dataset_calendar_service.py", "backend/app/services/semantic_query_engine.py"]
+    added_patterns: ['PARSE_DATE']
+    severity: medium
+    message: "PARSE_DATE on a column already DATE/INT is a BQ 400. CAST instead; verify the source column's physical type."
+    tests: [galaxy_golden, golden_sql]
+
+  - id: model_autojoin_pk
+    label: "Generate-Model join must resolve the real FK, not hardcode 'id'"
+    scope: ["backend/app/services/semantic_join_resolver.py", "backend/app/services/dataset_model_service.py"]
+    added_patterns: ['to_column\s*=\s*[\x27\x22]id[\x27\x22]', 'join.*[\x27\x22]id[\x27\x22]']
+    severity: low
+    message: "Hardcoding join target 'id' breaks entities keyed on <entity>_id. Resolve the heuristic target column."
+    tests: [galaxy_golden, relationship_metadata]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5b. SEMANTIC CONTRACT — the backbone inventory. verify_semantic_contract()
+#     reads the CURRENT code and asserts every file + symbol below still EXISTS
+#     (a removed/renamed symbol = DRIFT — a backbone guard changed), AND flags
+#     any NEW service matching semantic_file_globs that is NOT registered here
+#     (an unregistered semantic file = the contract drifting out of coverage).
+#     All symbols were verified present at authoring time via CodeGraph/Serena.
+# ─────────────────────────────────────────────────────────────────────────────
+semantic_contract:
+  semantic_file_globs:
+    - "backend/app/services/semantic_*.py"
+    - "backend/app/services/dataset_model_service.py"
+    - "backend/app/services/dataset_calendar_service.py"
+    - "backend/app/services/filter_propagation.py"
+    - "backend/app/services/type_override_service.py"
+    - "backend/app/services/chart_contracts.py"
+    - "backend/app/services/chart_semantic_service.py"
+  files:
+    backend/app/services/semantic_query_engine.py:
+      symbols: [SemanticQueryEngine, generate_sql, _render_measure, _build_filter_exists_clause, _render_symmetric_aggregate, _build_isolated_measure_subquery, _build_dimensioned_multifact_sql, _validate_group_grain, _coerce_typed_filter_value, _filter_type_family, _render_dimension_with_time_grain]
+    backend/app/services/dataset_model_service.py:
+      symbols: [get_distinct_field_values, _build_distinct_sql, _emit_exists_for_single_path, _build_exists_for_path, _distinct_filter_targets_self]
+    backend/app/services/semantic_join_resolver.py:
+      symbols: [SemanticJoinResolver, resolve_path, resolve_paths]
+    backend/app/services/dataset_calendar_service.py:
+      symbols: [build_calendar_live_sql, is_generated_calendar_table]
+    backend/app/services/type_override_service.py:
+      symbols: [build_safe_cast_sql]
+    backend/app/services/filter_propagation.py:
+      symbols: [resolve_filter_propagation]
+    backend/app/services/chart_contracts.py:
+      symbols: [normalize_filter_conditions, normalize_filter_operator]
+    backend/app/services/chart_service.py:
+      symbols: [_build_live_relation_for_semantic_view, _render_step_join_condition, _semantic_view_has_field, _wrap_live_sql_relation]
+    backend/app/services/chart_semantic_service.py:
+      symbols: [resolve_chart_semantic_binding, with_chart_semantic_binding]
+    backend/app/services/semantic_query_compiler.py:
+      symbols: []   # entry module registered; no pinned symbols yet (add when known)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.
+# ─────────────────────────────────────────────────────────────────────────────
+policy:
+  commit_only_runtime:
+    # These paths are NOT runtime app code — flag if a "fix"/commit is ONLY here
+    # (or MUST NOT be committed as product code).
+    non_runtime_globs: ["backend/scripts/**", "DA-Test/**", "**/*.spec.ts", "scratchpad/**", "Skill-AppBI/**", "**/seed_*.py", "**/verify_*.py"]
+    note: "Commits should carry runtime code (backend/app, frontend/src, deps). Test/seed/QA/docs are not runtime."
+  high_blast_files:
+    # Touching these is inherently high-risk regardless of the diff content.
+    globs:
+      - backend/app/services/semantic_query_engine.py
+      - backend/app/services/dataset_model_service.py
+      - backend/app/services/semantic_join_resolver.py
+      - backend/app/core/config.py
+      - backend/app/core/dependencies.py
+  dialect_blindness:
+    note: >
+      Any SQL-generation change must be validated on the ACTUAL warehouse dialect
+      (BigQuery), not only local Postgres — PG hides correlated-subquery + implicit-cast
+      failures that BQ rejects hard. Prefer a dialect-structural check.

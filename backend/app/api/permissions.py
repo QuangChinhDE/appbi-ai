@@ -32,6 +32,11 @@ router = APIRouter(prefix="/permissions", tags=["permissions"])
 # the API actually serves.
 _OPTIONAL_MODULES = {
     "workboards": settings.WORKBOARDS_ENABLED,
+    # Catalog surfaces: each module its own flag, but both need the /catalog
+    # backend deployed (METADATA_CATALOG_ENABLED) — so a stray module flag can't
+    # produce dead-nav pointing at an unregistered router.
+    "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    "observability": settings.METADATA_CATALOG_ENABLED and settings.OBSERVABILITY_ENABLED,
 }
 
 
@@ -42,6 +47,8 @@ def _module_enabled(name: str) -> bool:
 _ALL_MODULES = [
     "data_sources",
     "datasets",
+    "govern",
+    "observability",
     "explore_charts",
     "dashboards",
     "workboards",
@@ -54,6 +61,8 @@ MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
 _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "data_sources":      ["none", "view", "edit", "full"],
     "datasets":          ["none", "view", "edit", "full"],
+    "govern":            ["none", "view", "edit", "full"],
+    "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
     "workboards":        ["none", "view", "edit", "full"],
@@ -72,6 +81,8 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "admin": {
         "data_sources": "full",
         "datasets": "full",
+        "govern": "full",
+        "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
         "workboards": "full",
@@ -80,6 +91,8 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "editor": {
         "data_sources": "view",
         "datasets": "edit",
+        "govern": "edit",
+        "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
         "workboards": "edit",
@@ -88,6 +101,8 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "viewer": {
         "data_sources": "view",
         "datasets": "view",
+        "govern": "view",
+        "observability": "view",
         "explore_charts": "view",
         "dashboards": "view",
         "workboards": "view",
@@ -96,6 +111,8 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "minimal": {
         "data_sources": "none",
         "datasets": "none",
+        "govern": "none",
+        "observability": "none",
         "explore_charts": "none",
         "dashboards": "view",
         "workboards": "none",

@@ -279,6 +279,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
     kpiFontSize: initial?.kpiFontSize ?? '',
     gridlineColor: initial?.gridlineColor ?? '',
     axisLabelColor: initial?.axisLabelColor ?? '',
+    displayUnits: (initial?.displayUnits ?? '') as any,
     // Phase-B16
     backgroundImage: initial?.backgroundImage ?? '',
     backgroundSize: initial?.backgroundSize ?? '',
@@ -366,6 +367,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         ...(num(theme.kpiFontSize) != null ? { kpiFontSize: theme.kpiFontSize } : {}),
         ...(str(theme.gridlineColor) ? { gridlineColor: str(theme.gridlineColor) } : {}),
         ...(str(theme.axisLabelColor) ? { axisLabelColor: str(theme.axisLabelColor) } : {}),
+        ...(str(theme.displayUnits) ? { displayUnits: theme.displayUnits as DashboardThemeConfig['displayUnits'] } : {}),
         // Phase-B16 — background image + readability + applied preset id.
         ...(str(theme.backgroundImage) ? { backgroundImage: str(theme.backgroundImage) } : {}),
         ...(str(theme.backgroundSize) ? { backgroundSize: str(theme.backgroundSize) } : {}),
@@ -647,6 +649,22 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 <p className="text-xs text-text-quaternary">{t('dashboards.themeModal.gridAxisHint')}</p>
                 <ColorRow label={t('dashboards.themeModal.gridlineColor')} value={theme.gridlineColor} fallback="#e2e8f0" onChange={(v) => update('gridlineColor', v)} />
                 <ColorRow label={t('dashboards.themeModal.axisLabelColor')} value={theme.axisLabelColor} fallback="#64748b" onChange={(v) => update('axisLabelColor', v)} />
+              </div>
+              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3 space-y-2.5">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.displayUnitsLabel')}</div>
+                <p className="text-xs text-text-quaternary">{t('dashboards.themeModal.displayUnitsHint')}</p>
+                <select
+                  value={(theme.displayUnits as string) ?? ''}
+                  onChange={(e) => update('displayUnits', (e.target.value || '') as DashboardThemeConfig['displayUnits'])}
+                  className={inputCls}
+                >
+                  <option value="">{t('dashboards.themeModal.duInherit')}</option>
+                  <option value="auto">{t('dashboards.themeModal.duAuto')}</option>
+                  <option value="none">{t('dashboards.themeModal.duNone')}</option>
+                  <option value="thousands">{t('dashboards.themeModal.duThousands')}</option>
+                  <option value="millions">{t('dashboards.themeModal.duMillions')}</option>
+                  <option value="billions">{t('dashboards.themeModal.duBillions')}</option>
+                </select>
               </div>
             </div>
           )}

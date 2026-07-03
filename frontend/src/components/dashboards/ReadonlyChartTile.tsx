@@ -409,7 +409,7 @@ export function ReadonlyChartTile({
             <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
               <div className="min-w-0 flex-1">
                 {displayTitle && (
-                  <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle}>{displayTitle}</p>
+                  <p data-pdf-tile-title className="truncate font-medium text-text-secondary" style={themeTitleStyle} title={displayTitle}>{displayTitle}</p>
                 )}
                 {showChartTypeLabel && chart?.chart_type && (
                   <p className="mt-1 truncate text-[11px] text-text-quaternary">

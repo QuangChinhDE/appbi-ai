@@ -82,12 +82,27 @@ export function usePublicFilterDistinctValues(
 
   return useMemo(() => {
     const mergedValues: Record<string, string[]> = { ...fallbackDistinctValues };
+    // Per-column query status so the slicer dropdown can tell "still fetching"
+    // from "fetched and got []" — parity with the authed dashboard page
+    // (semanticDistinctStatus). WITHOUT this the public path passed no status,
+    // so the FilterCard's `!isLoading` guard was vacuously true and the amber
+    // "No values match — Try relaxing…" banner showed WHILE the distinct query
+    // was still in flight, then values appeared ("vàng xong lại ra data").
+    // isLoading deliberately includes isFetching so a REFETCH (after Apply or a
+    // cascade-filter change) also suppresses the banner, not just the first load.
+    const status: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean }> = {};
 
-    activeSemanticDistinctTargets.forEach(({ column }, index) => {
-      const values = semanticDistinctQueries[index]?.data?.values;
+    activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
+      const q = semanticDistinctQueries[index];
+      const values = q?.data?.values;
       if (values) {
         mergedValues[getColumnKey(column)] = values;
       }
+      status[getColumnKey(column)] = {
+        isLoading: Boolean(q?.isLoading || q?.isFetching),
+        isError: Boolean(q?.isError),
+        hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
+      };
     });
 
     // Bound each slicer's option list by any HARD page/dashboard scope on the
@@ -106,6 +121,6 @@ export function usePublicFilterDistinctValues(
       mergedValues[key] = current.filter((v) => allow.has(String(v)));
     }
 
-    return mergedValues;
+    return { values: mergedValues, status };
   }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries, extraContextFilters]);
 }

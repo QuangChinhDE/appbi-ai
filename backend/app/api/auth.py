@@ -68,6 +68,8 @@ _DUMMY_BCRYPT_HASH = "$2b$12$KIXBKl9Xv5iyYFiC.gEuQuT3s.d6OM2nqYbJt6n4PjNn2YGFQbZ
 _ADMIN_PERMISSIONS = {
     "data_sources": "full",
     "datasets": "full",
+    "govern": "full",
+    "observability": "full",
     "explore_charts": "full",
     "dashboards": "full",
     "workboards": "full",

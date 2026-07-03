@@ -1,6 +1,9 @@
 param(
-    [ValidateSet('all', 'report', 'dataset', 'explore')]
-    [string]$Profile = 'all'
+    # Default is the lean `core` surface (discovery + materialize). Opt into
+    # more with -Profile design / admin / all. For comma combos
+    # (e.g. core,design) set $env:APPBI_MCP_PROFILE before launching instead.
+    [ValidateSet('core', 'design', 'admin', 'all', 'report', 'dataset', 'explore')]
+    [string]$Profile = 'core'
 )
 
 $ErrorActionPreference = 'Stop'

@@ -5,7 +5,7 @@ import contextvars
 from copy import deepcopy
 import re
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +19,15 @@ from sqlalchemy import func
 # None for non-chart callers (CSV export, MCP previews, etc.).
 _pbi_chart_id_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "pbi_chart_id", default=None,
+)
+
+# Public per-link snapshot TTL (minutes) for the current request, threaded via a
+# contextvar to avoid plumbing a param through the whole render call-stack.
+# None → builder/authed (use current snapshot, never auto-rebuild); 0 → Realtime
+# (live); >0 → serve-stale-then-async-rebuild past the TTL. Set by the public
+# chart-data endpoint; default None everywhere else.
+_snapshot_ttl_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "snapshot_ttl_minutes", default=None,
 )
 
 
@@ -499,6 +508,10 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "warnings": list(runtime_result.get("warnings") or []),
         # Phase-15.78: forward structured drop log to the API response.
         "dropped_filters": list(raw_debug.get("dropped_filters") or []),
+        # Dashboard perf #5 — snapshot freshness for the builder "as of" label.
+        "data_source_mode": raw_debug.get("data_source_mode"),
+        "snapshot_as_of": raw_debug.get("snapshot_as_of"),
+        "snapshot_stale": raw_debug.get("snapshot_stale"),
     }
 
 
@@ -1824,6 +1837,91 @@ def _build_filtered_live_sql_for_dataset_table(
     )
 
 
+def _resolve_chart_snapshot_overrides(
+    db: Session,
+    datasource,
+    binding: dict,
+    base_view_name: str,
+    model_id,
+    dimension_refs: list,
+    measure_refs: list,
+    engine_filters: dict,
+    *,
+    ttl_minutes: Optional[int] = None,
+) -> Tuple[Dict[int, str], Optional[Any], str, bool, Optional[int]]:
+    """Dashboard perf #5 — decide whether this chart can be served from snapshots.
+    Returns ``(overrides, as_of, mode, stale, trigger_dataset_id)``. Non-empty
+    overrides ⇒ the ENTIRE query reads only SA-only snapshot tables (+ inline
+    calendar) and MUST run on the snapshot (service-account) credential.
+
+    ALL-OR-NOTHING: only when the dataset is snapshot-ELIGIBLE (every table is
+    sql_query or generated_calendar — NO physical/derived table the write SA
+    couldn't read) AND every sql_query table has a current snapshot. Any gap →
+    ``({}, None, "live", False, ...)`` so the chart runs live unchanged.
+
+    ``ttl_minutes`` (public per-link TTL, Stage 2):
+      • None  → builder/authed: use the current snapshot at ANY age, never
+                auto-rebuild (freshness is the explicit Refresh button). Manual.
+      • 0     → Realtime: bypass snapshots → live.
+      • > 0   → serve the current snapshot even when older than the TTL
+                (stale-then-async) and set ``stale=True`` + a
+                ``trigger_dataset_id`` so the caller schedules a BACKGROUND
+                rebuild — no viewer ever waits for the extract-load.
+    ``trigger_dataset_id`` is also set when the dataset is eligible but has NO
+    snapshot yet (first public open), so the first view warms it for the next.
+    NEVER raises."""
+    try:
+        from app.services import snapshot_service
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+        if not snapshot_service.is_enabled(datasource):
+            return {}, None, "live", False, None
+        if ttl_minutes == 0:  # Realtime → always live
+            return {}, None, "live", False, None
+        from app.models.semantic import SemanticView
+        from app.models.dataset import Dataset, DatasetTable
+
+        # Resolve the chart's dataset (binding.datasetId, else via the base view).
+        dataset_id = binding.get("datasetId")
+        if not dataset_id and base_view_name:
+            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
+            if bv is not None and getattr(bv, "dataset_table_id", None):
+                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
+                dataset_id = bt.dataset_id if bt else None
+        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first() if dataset_id else None
+        if dataset_obj is None:
+            return {}, None, "live", False, None
+
+        all_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
+        # Eligible only if the SA (which can't read source) could run the whole
+        # query: every table must be a snapshot (sql_query) or inline calendar.
+        # A physical/derived table would leave a source reference in the SQL.
+        sql_tables = []
+        for t in all_tables:
+            if is_generated_calendar_table(t):
+                continue
+            if not snapshot_service.should_materialize(t):  # physical / derived
+                return {}, None, "live", False, None
+            sql_tables.append(t)
+        if not sql_tables:
+            return {}, None, "live", False, None
+
+        # All-or-nothing: resolve the CURRENT snapshot at any age (serve-stale).
+        overrides: Dict[int, str] = {}
+        for t in sql_tables:
+            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)
+            if ref is None:
+                # Eligible but not built yet → live now; warm it for next time.
+                return {}, None, "live", False, (dataset_obj.id if ttl_minutes else None)
+            overrides[t.id] = ref
+        as_of = snapshot_service.as_of(db, list(overrides.keys()))
+        stale = snapshot_service.is_stale(as_of, ttl_minutes)
+        trigger = dataset_obj.id if stale else None
+        return overrides, as_of, "snapshot", stale, trigger
+    except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
+        logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
+        return {}, None, "live", False, None
+
+
 def _execute_semantic_chart_runtime(
     db: Session,
     datasource,
@@ -2170,6 +2268,33 @@ def _execute_semantic_chart_runtime(
     # N dry-runs for results already in cache. Compute the key + probe the
     # cache up front so a HIT returns before any of that work runs. (User
     # decision 2026-06-10: "skip dry-run on cache-hit + dashboard".)
+    # Dashboard perf #5 — resolve (and lazily build) snapshot tables BEFORE the
+    # cache probe, so the snapshot version is part of the cache key (a Refresh /
+    # Builder/authed pass ttl=None (use current snapshot, no auto-rebuild —
+    # freshness is the explicit Refresh button). The public endpoint sets the
+    # per-link TTL via the contextvar → serve-stale-then-async past the TTL.
+    try:
+        _snap_ttl = _snapshot_ttl_var.get()
+    except LookupError:
+        _snap_ttl = None
+    _snap_overrides, _snap_as_of, _snap_mode, _snap_stale, _snap_trigger = _resolve_chart_snapshot_overrides(
+        db, datasource, binding, base_view_name, model_id,
+        dimension_refs, measure_refs, engine_filters,
+        ttl_minutes=_snap_ttl,
+    )
+    if _snap_trigger:
+        # Stale (or eligible-but-unbuilt) under a public TTL → warm in the
+        # background; this request still serves the stale/live result instantly.
+        from app.services import snapshot_service as _ss
+        _ss.trigger_async_refresh(_snap_trigger)
+    # When snapshots back the whole query, execute with the snapshot (service-
+    # account) credential — the snapshot dataset is SA-only, so the user cred
+    # can't read it. Empty overrides → normal user-cred live execution.
+    _snap_exec_config = (
+        DataSourceConnectionService.snapshot_query_config(datasource.config)
+        if _snap_overrides else None
+    )
+
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
         "_semantic_chart_runtime": True,
@@ -2177,6 +2302,8 @@ def _execute_semantic_chart_runtime(
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
         "_limit": effective_limit,
+        # #5 — snapshot version in the cache key so a refresh invalidates cleanly.
+        "_snapshot_asof": (_snap_as_of.isoformat() if _snap_as_of else None),
         # Phase-15.xx — time_grains MUST be part of the cache key. Two
         # requests with identical dimensions/measures but different date
         # grains (raw daily vs month bucketing) otherwise collapse onto the
@@ -2240,6 +2367,10 @@ def _execute_semantic_chart_runtime(
             try:
                 cached_debug = dict(cached.get("_debug") or {})
                 cached_debug["dropped_filters"] = list(filter_diagnostics)
+                # snapshot_stale is time-dependent (age vs the per-request TTL),
+                # so it must reflect THIS request, not the value baked in when the
+                # slot was cached — else the "refreshing…" hint is wrong on a hit.
+                cached_debug["snapshot_stale"] = bool(_snap_stale)
                 cached = {**cached, "_debug": cached_debug}
             except Exception:
                 logger.debug("Failed to overlay dropped_filters onto cached chart response", exc_info=True)
@@ -2292,6 +2423,7 @@ def _execute_semantic_chart_runtime(
         explore_id=explore_id,
         response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
         diagnostics=filter_diagnostics,
+        snapshot_overrides=_snap_overrides,
     )
     try:
         sql, _engine_columns, _pivot_metadata = engine.run(_spec)
@@ -2329,9 +2461,29 @@ def _execute_semantic_chart_runtime(
     # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
     # Reaching here means a cache MISS, so we generated SQL and now execute.
 
+    # Execution credential: snapshot-backed queries read the SA-only snapshot
+    # dataset → run on the service-account config; else the datasource's own cred.
+    _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
+
+    # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
+    # The warehouse query below can run up to 60s. The request's ORM Session has
+    # an open (read-only) transaction from loading the chart/model, which pins a
+    # pooled DB connection for that whole 60s. N concurrent tiles (a dashboard
+    # open, or a post-Refresh re-fetch) then pin N connections → QueuePool
+    # (pool_size + max_overflow) is exhausted and EVERY later request — including
+    # /health — blocks on pool_timeout. Everything needed for execution is
+    # already captured in plain locals (`_exec_config`, `sql`, `ds_type`); commit
+    # ends the txn so the connection returns to the pool for the BQ wait.
+    # Post-query code only touches `datasource.id` (PK — no reload) + plain
+    # locals; any other ORM access re-acquires a connection lazily.
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001 — read path: nothing critical pending
+        db.rollback()
+
     # BigQuery cost guard (mirrors LiveQueryService behavior).
     if ds_type == "bigquery":
-        config = decrypt_config(datasource.config)
+        config = decrypt_config(_exec_config)
         estimated_bytes = _estimate_bigquery_bytes(config, sql)
         max_bytes = settings.BQ_MAX_BYTES_SCANNED
         if estimated_bytes > max_bytes:
@@ -2351,7 +2503,7 @@ def _execute_semantic_chart_runtime(
     try:
         _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
             ds_type,
-            datasource.config,
+            _exec_config,
             sql,
             timeout_seconds=timeout,
             skip_bigquery_cost_check=True,
@@ -2426,6 +2578,14 @@ def _execute_semantic_chart_runtime(
             "dialect": dialect,
             "routing": "semantic_engine",
             "row_count": len(rows),
+            # Dashboard perf #5 — snapshot freshness for the builder "as of HH:MM"
+            # label + a live/snapshot badge. Oldest built_at wins (never over-
+            # claims freshness); "live" when no snapshot was used.
+            "data_source_mode": _snap_mode,
+            "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
+            # Public per-link TTL: the served snapshot is older than the TTL and
+            # a background rebuild was kicked off; the FE shows "đang làm mới…".
+            "snapshot_stale": bool(_snap_stale),
             # Phase-15.78: structured record of every filter the BE dropped
             # before generating SQL. Empty list = nothing dropped. FE can
             # banner this so users discover when a slicer they applied
@@ -3102,17 +3262,24 @@ class ChartService:
         extra_filters: list | None = None,
         filter_context: str | None = None,
         granularity_override: str | None = None,
+        snapshot_ttl_minutes: int | None = None,
     ):
         """Get chart configuration with data.
 
         ``granularity_override`` (#2 viewer date-hierarchy) re-buckets the time
         axis at a grain the end-user picked in the Dashboard/Public viewer.
-        None ⇒ exact previous behaviour."""
+        None ⇒ exact previous behaviour.
+
+        ``snapshot_ttl_minutes`` (public per-link TTL): None → builder/authed
+        (current snapshot, no auto-rebuild); 0 → Realtime (live); >0 →
+        serve-stale-then-async past the TTL. Threaded to the snapshot resolver
+        via a contextvar so the deep render call-stack needs no new param."""
         # [pbi-filter] entry log + chart_id context propagation — downstream
         # logs in semantic engine (SQL emit, measure-filter wrap) read this
         # contextvar so DA can grep ``chart_id=<N>`` and see EVERY log line
         # produced by that one tile. Temporary debug instrumentation.
         _pbi_token = _pbi_chart_id_var.set(chart_id)
+        _snap_ttl_token = _snapshot_ttl_var.set(snapshot_ttl_minutes)
         logger.info(
             "[pbi-filter] entry get_chart_data chart_id=%s extra_filters=%d context=%r",
             chart_id, len(extra_filters or []), filter_context,
@@ -3154,6 +3321,7 @@ class ChartService:
             )
         finally:
             _pbi_chart_id_var.reset(_pbi_token)
+            _snapshot_ttl_var.reset(_snap_ttl_token)
 
     @staticmethod
     def _get_chart_data_inner(
@@ -3359,9 +3527,18 @@ class ChartService:
             # Phase-15.83 — cap raised from 5000 → 10M sentinel; DB
             # short-circuits on the real row count.
             source_sample_limit = max(1, min(int(source_sample_limit), 10_000_000))
+            # Release the pooled DB connection for the ≤60s warehouse query (see
+            # the QueuePool-exhaustion note in _execute_semantic_chart_runtime).
+            # Capture config first so the commit's attribute-expiry can't force a
+            # reload mid-flight; the ORM Session re-acquires lazily afterwards.
+            _src_exec_config = datasource.config
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001 — read path: nothing critical pending
+                db.rollback()
             source_columns, source_rows, source_execution_time_ms = DataSourceConnectionService.execute_query(
                 ds_type,
-                datasource.config,
+                _src_exec_config,
                 custom_sql,
                 limit=source_sample_limit,
                 timeout_seconds=timeout,

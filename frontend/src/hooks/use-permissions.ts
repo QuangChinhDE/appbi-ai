@@ -6,6 +6,8 @@ export type PermissionLevel = 'none' | 'view' | 'edit' | 'full';
 export type ModuleKey =
   | 'data_sources'
   | 'datasets'
+  | 'govern'
+  | 'observability'
   | 'explore_charts'
   | 'dashboards'
   | 'workboards'

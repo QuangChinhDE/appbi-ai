@@ -490,6 +490,24 @@ def _resolve_lookup_options(
         if not value_col:
             return []
         base_rows = result.get("rows") or []
+
+        def _attach_geo(opt: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+            """Additively enrich an option with geometry for the map widget.
+
+            select/lookup callers never read these keys, so this is safe for
+            every field — the extra keys are simply ignored downstream.
+            """
+            if cfg.geometry_column:
+                geo = row.get(cfg.geometry_column)
+                if geo not in (None, ""):
+                    opt["geometry"] = geo
+            if cfg.lat_column and cfg.lng_column:
+                lat, lng = row.get(cfg.lat_column), row.get(cfg.lng_column)
+                if lat not in (None, "") and lng not in (None, ""):
+                    opt["lat"] = lat
+                    opt["lng"] = lng
+            return opt
+
         if cfg.relationship_path:
             resolved_labels = _resolve_relationship_labels(
                 db,
@@ -499,18 +517,24 @@ def _resolve_lookup_options(
                 hops=cfg.relationship_path,
             )
             return [
-                {
-                    "label": resolved_labels.get(row.get(value_col))
-                    or str(row.get(label_col, "") or ""),
-                    "value": row.get(value_col),
-                }
+                _attach_geo(
+                    {
+                        "label": resolved_labels.get(row.get(value_col))
+                        or str(row.get(label_col, "") or ""),
+                        "value": row.get(value_col),
+                    },
+                    row,
+                )
                 for row in base_rows
             ]
         return [
-            {
-                "label": str(row.get(label_col, "") or ""),
-                "value": row.get(value_col),
-            }
+            _attach_geo(
+                {
+                    "label": str(row.get(label_col, "") or ""),
+                    "value": row.get(value_col),
+                },
+                row,
+            )
             for row in base_rows
         ]
     return []

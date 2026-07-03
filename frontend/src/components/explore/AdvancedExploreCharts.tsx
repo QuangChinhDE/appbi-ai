@@ -155,6 +155,14 @@ interface PairValue {
 const SVG_W = 800;
 const SVG_H = 420;
 
+// Above this many marks, per-point data labels overlap into an unreadable
+// "soup" (report-demo: 114-owner BUBBLE, clustered NINE_BOX cells). Suppress
+// them past the threshold and let the hover tooltip carry each label — the
+// declutter Power BI / Tableau do. BUBBLE/SCATTER read one label per mark;
+// NINE_BOX packs several marks per cell so its labels collide much sooner.
+const SCATTER_POINT_LABEL_MAX = 16;
+const NINE_BOX_POINT_LABEL_MAX = 9;
+
 function formatNumber(value: unknown, style?: ChartStyleConfig): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value ?? '');
@@ -993,8 +1001,14 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggr
   // Phase-15.86 — BUBBLE/MAP_POINT DataLabels. Master switch shows the
   // dimension label next to each point. fontSize/fontColor per-point
   // override (keyed by label).
+  // Declutter (report-demo): a per-point label on EVERY mark turns into an
+  // unreadable "soup" once there are many points (a 114-owner BUBBLE overlaps
+  // every name into a blob). Power BI / Tableau suppress point labels when the
+  // plot is dense and rely on hover. So only draw labels when the point count
+  // is small enough to stay legible; the tooltip still carries every label.
   const dlc = style.dataLabelConfig;
-  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  const labelsEnabled = (dlc?.enabled ?? style.showDataLabels ?? false)
+    && points.length <= SCATTER_POINT_LABEL_MAX;
   return (
     <ResponsiveSvg>
       {(W, H) => {
@@ -1354,7 +1368,12 @@ function NineBoxChart({ rows, roleConfig, metric, style, palette, preAggregated,
   // Diagonal cell shading by score = xBand + yBand (0 worst … 4 best).
   const cellFill = ['rgba(239,68,68,0.13)', 'rgba(249,115,22,0.11)', 'rgba(234,179,8,0.11)', 'rgba(132,204,22,0.11)', 'rgba(34,197,94,0.14)'];
   const dlc = style.dataLabelConfig;
-  const labelsEnabled = dlc?.enabled ?? style.showDataLabels ?? false;
+  // Declutter: NINE_BOX packs several marks per cell, so labels collide much
+  // sooner than a plain scatter — suppress them past a small count and let the
+  // tooltip carry each name (report-demo: 13-owner grid was an unreadable
+  // white blob in the dense cells).
+  const labelsEnabled = (dlc?.enabled ?? style.showDataLabels ?? false)
+    && points.length <= NINE_BOX_POINT_LABEL_MAX;
   const fieldNameX = fieldLabel(scatterX, labelMap);
   const fieldNameY = fieldLabel(scatterY, labelMap);
   const sizeName = metric ? fieldLabel(metric.field, labelMap) : '';

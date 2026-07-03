@@ -1,0 +1,128 @@
+name: Backend semantic-contract tests
+
+# Locks the PowerBI-parity semantic contract in CI (reviewer ask: "đưa
+# regression golden vào tracked CI"), split into two tiers:
+#
+#   • unit         — SQLite / hand-built views, NO BigQuery or live Postgres.
+#                    Deterministic; runs on every push/PR touching the backend.
+#   • integration  — seeds the snowflake fixture into a real Postgres and
+#                    replays the golden harness end-to-end through ChartService.
+#
+# The unit tier pins the contract invariants (single-resolver fail-loud, no-agg-
+# defers-to-declared-type, hard/soft dropped-filter policy, cross-table measure
+# grain, the FE auto-seed agg contract). The integration tier proves the actual
+# *behaviour* (cross-table measures, conformed-dim filters, group-by JOIN,
+# declared measures) against emitted SQL — which SQLite cannot exercise.
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-contract-tests.yml"
+      # The metric-identity ('auto' vs 'sum') + role contract also lives in the
+      # FE — run the contract suite (incl. the structural FE guard in
+      # test_locked_contract.py) when these change, so a FE revert to 'sum' or a
+      # role-slot regression is caught even though the rest of the diff is FE.
+      - "frontend/src/components/explore/**"
+      - "frontend/src/lib/explore-query.ts"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-contract-tests.yml"
+      - "frontend/src/components/explore/**"
+      - "frontend/src/lib/explore-query.ts"
+
+jobs:
+  # ── Tier 1: unit (no external DB) ──────────────────────────────────────────
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # No external DB — the suites set a SQLite URL themselves, but provide a
+      # default so any import-time engine creation succeeds.
+      DATABASE_URL: "sqlite:///./ci_contract.db"
+      PYTHONPATH: ${{ github.workspace }}/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run semantic-contract + engine unit tests (no BigQuery)
+        run: |
+          python -m pytest -q \
+            tests/test_locked_contract.py \
+            tests/test_phase2_filter_propagation.py \
+            tests/test_phase4_symmetric_aggregates.py \
+            tests/test_filter_entry_schemas.py \
+            tests/test_phase1_relationship_metadata.py \
+            tests/test_distinct_self_target.py \
+            tests/test_filter_layered_merge.py
+
+  # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
+  integration-golden:
+    runs-on: ubuntu-latest
+    needs: unit
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: appbi
+          POSTGRES_PASSWORD: appbi
+          POSTGRES_DB: appbi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # appbi metadata DB (alembic + SessionLocal) AND the bcfix source DB are
+      # the same Postgres service — bcfix is just a schema in it (mirrors dev).
+      DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: appbi
+      DB_USER: appbi
+      DB_PASSWORD: appbi
+      # No encryption key in CI → datasource creds stored plaintext, so both the
+      # schema-inference and the chart-execution paths connect with "appbi".
+      DATASOURCE_ENCRYPTION_KEY: ""
+      ENVIRONMENT: test
+      # Opt-in required by seed_snowflake_ci_fixture.py (it DROPs schema 'bcfix'
+      # and force-assigns fixed ids — disposable CI DB only).
+      CI_FIXTURE_SEED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build appbi metadata schema (alembic)
+        run: alembic upgrade head
+
+      - name: Seed snowflake fixture (dataset + model + measures + golden charts)
+        run: python scripts/seed_snowflake_ci_fixture.py
+
+      - name: GATE — golden replay (full snowflake suite, all PowerBI-correct)
+        run: python scripts/regression_filter_matrix.py --verify --tag snowflake
+
+      - name: GATE — Explore preview == Dashboard tile parity (same query, both BE paths)
+        run: python scripts/test_explore_dashboard_parity.py

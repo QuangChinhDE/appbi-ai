@@ -12,6 +12,10 @@ type KpiCardProps = {
   label?: string;
   comparison?: number | null;
   format?: NumberFormat;
+  /** Dashboard-wide "Display units" (PBI parity). Scales + suffixes numeric
+   *  values (number/currency/compact) to a consistent unit across the report;
+   *  never applies to percent. Undefined/'none' = full value. */
+  displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
   decimalPlaces?: number;
   currencySymbol?: string;
   contextTemplate?: string;
@@ -57,12 +61,34 @@ function toNumber(value: number | string | null | undefined): number | null {
   return null;
 }
 
+type DisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
+
+/** Scale + suffix a number to a display unit. 'auto' = per-value K/M/B; a fixed
+ *  unit forces the magnitude so a whole report reads in one unit (e.g. tỷ). */
+function scaleToUnit(n: number, units: DisplayUnits, dp: number): string {
+  if (units === 'auto') {
+    const a = Math.abs(n);
+    if (a >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(dp)}B`;
+    if (a >= 1_000_000) return `${(n / 1_000_000).toFixed(dp)}M`;
+    if (a >= 1_000) return `${(n / 1_000).toFixed(dp)}K`;
+    return n.toLocaleString(undefined, { maximumFractionDigits: dp });
+  }
+  const map: Record<string, [number, string]> = {
+    thousands: [1_000, 'K'],
+    millions: [1_000_000, 'M'],
+    billions: [1_000_000_000, 'B'],
+  };
+  const [div, suf] = map[units] ?? [1, ''];
+  return `${(n / div).toFixed(dp)}${suf}`;
+}
+
 function formatNumericValue(
   value: number | string | null | undefined,
   options: {
     format?: NumberFormat;
     decimalPlaces?: number;
     currencySymbol?: string;
+    displayUnits?: DisplayUnits;
   },
 ): string {
   if (value === null || value === undefined || value === '') return '--';
@@ -73,7 +99,23 @@ function formatNumericValue(
   const format = options.format ?? 'compact';
   const decimalPlaces = options.decimalPlaces ?? 1;
   const currencySymbol = options.currencySymbol || '$';
+  const displayUnits = options.displayUnits;
   const abs = Math.abs(numericValue);
+
+  // Percent is a ratio — dashboard display units never apply to it.
+  if (format === 'percent') {
+    return `${(numericValue * 100).toFixed(decimalPlaces)}%`;
+  }
+
+  // Dashboard-wide "Display units": scale EVERY numeric format (percent already
+  // returned above) to one consistent unit so KPIs across a report read the same
+  // (fixes the "raw 10-digit next to a %" inconsistency). Currency keeps its
+  // prefix; 'number' full digits yield to the report unit; 'auto' + any declared
+  // measure format-kind (e.g. 'decimal'/'integer') are covered too. 'none' = off.
+  if (displayUnits && displayUnits !== 'none') {
+    const prefix = format === 'currency' ? currencySymbol : '';
+    return `${prefix}${scaleToUnit(numericValue, displayUnits, decimalPlaces)}`;
+  }
 
   if (format === 'compact') {
     if (abs >= 1_000_000_000) return `${(numericValue / 1_000_000_000).toFixed(decimalPlaces)}B`;
@@ -83,10 +125,6 @@ function formatNumericValue(
       minimumFractionDigits: 0,
       maximumFractionDigits: decimalPlaces,
     });
-  }
-
-  if (format === 'percent') {
-    return `${(numericValue * 100).toFixed(decimalPlaces)}%`;
   }
 
   if (format === 'currency') {
@@ -190,6 +228,7 @@ export function KpiCard({
   label,
   comparison,
   format = 'compact',
+  displayUnits,
   decimalPlaces = 1,
   currencySymbol = '$',
   contextTemplate,
@@ -213,6 +252,10 @@ export function KpiCard({
   // Phase-B15 — dashboard theme: KPI value size + status colors. Empty {} when
   // rendered standalone (no DashboardThemeProvider), so behaviour is unchanged.
   const dashTheme = useDashboardChartTheme();
+  // #4 — dashboard-wide display units. An explicit prop (from ExploreChart) wins;
+  // otherwise inherit the report theme so the legacy ChartPreview KPI path (no
+  // prop) is covered too. Undefined in standalone Explore → behaviour unchanged.
+  const effectiveDisplayUnits = displayUnits ?? dashTheme.displayUnits;
   const toneColor = (tone: 'good' | 'bad' | 'neutral'): string | undefined => {
     if (tone === 'good') return dashTheme.goodColor;
     if (tone === 'bad') return dashTheme.badColor;
@@ -230,8 +273,8 @@ export function KpiCard({
   const matchedRule = enableColorRules && numericValue !== null
     ? colorRules.find((rule) => evaluateRule(numericValue, rule))
     : undefined;
-  const formattedValue = formatNumericValue(value, { format, decimalPlaces, currencySymbol });
-  const formattedBenchmark = formatNumericValue(numericBenchmark, { format, decimalPlaces, currencySymbol });
+  const formattedValue = formatNumericValue(value, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });
+  const formattedBenchmark = formatNumericValue(numericBenchmark, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });
   const valueColor = matchedRule?.color || effectiveAccent || FALLBACK_VALUE_COLOR;
   const delta = numericValue !== null && numericBenchmark !== null ? numericValue - numericBenchmark : null;
   const deltaPercent = delta !== null && numericBenchmark !== null && numericBenchmark !== 0
@@ -247,7 +290,7 @@ export function KpiCard({
     rawValue: value == null ? '' : String(value),
     benchmark: formattedBenchmark,
     benchmarkLabel: benchmarkLabel?.trim() || 'Benchmark',
-    delta: formatNumericValue(delta, { format, decimalPlaces, currencySymbol }),
+    delta: formatNumericValue(delta, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol }),
     deltaPercent: deltaPercent === null ? '--' : `${deltaPercent > 0 ? '+' : ''}${(deltaPercent * 100).toFixed(decimalPlaces)}%`,
     rows: typeof rowCount === 'number' ? rowCount.toLocaleString() : '0',
     label: label?.trim() || 'KPI',
@@ -272,12 +315,16 @@ export function KpiCard({
   // untouched — boxH stays 0 and all original classes/styles apply.
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [boxH, setBoxH] = useState(0);
+  const [boxW, setBoxW] = useState(0);
   useEffect(() => {
     if (!embedded) return;
     const el = rootRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setBoxH(Math.round(entry.contentRect.height));
+      for (const entry of entries) {
+        setBoxH(Math.round(entry.contentRect.height));
+        setBoxW(Math.round(entry.contentRect.width));
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -296,8 +343,19 @@ export function KpiCard({
   // or 56; floor = 18 so it stays legible. Reserve more height for the value
   // when panels share the card.
   const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 56;
+  // Height budget — the original behaviour.
+  const heightFont = boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36);
+  // Width budget — the fix. A long full-format number (e.g. "3,907,698,730",
+  // 13 chars) at a height-derived 56px is far WIDER than a narrow tile, so the
+  // old height-only auto-fit let it wrap mid-number ("3,907,698,73" / "0").
+  // Clamp the font so the whole headline fits on ONE line: with tabular-nums
+  // semibold, a glyph is ≈0.62em wide, so maxFont ≈ usableWidth / (chars·0.62).
+  // Subtract the tile padding and, when a status pill shares the row, its width.
+  const valueCharCount = Math.max((formattedValue ?? '').length, 1);
+  const usableW = Math.max(0, boxW - 16 - (statusLabel ? 84 : 0));
+  const widthFont = usableW > 0 ? usableW / (valueCharCount * 0.62) : Infinity;
   const autoValueFont = autoFit
-    ? Math.round(Math.min(fontCeil, Math.max(18, boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36))))
+    ? Math.round(Math.min(fontCeil, Math.max(16, Math.min(heightFont, widthFont))))
     : undefined;
 
   // Inside a dashboard tile the surrounding tile already draws the card frame.
@@ -354,7 +412,7 @@ export function KpiCard({
             )}
 
             <div
-              className={`break-words font-semibold tracking-tight text-text-primary tabular-nums ${compact ? 'mt-1' : 'mt-3'} ${autoFit ? '' : 'text-4xl sm:text-5xl'}`}
+              className={`font-semibold tracking-tight text-text-primary tabular-nums ${autoFit ? 'overflow-hidden whitespace-nowrap' : 'break-words text-4xl sm:text-5xl'} ${compact ? 'mt-1' : 'mt-3'}`}
               style={{
                 color: valueColor || FALLBACK_VALUE_COLOR,
                 ...(autoValueFont
@@ -414,7 +472,7 @@ export function KpiCard({
                 >
                   <DeltaIcon className="h-4 w-4" />
                   <span>
-                    {formatNumericValue(delta, { format, decimalPlaces, currencySymbol })}
+                    {formatNumericValue(delta, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol })}
                     {deltaPercent !== null && ` (${deltaPercent > 0 ? '+' : ''}${(deltaPercent * 100).toFixed(decimalPlaces)}%)`}
                   </span>
                 </div>

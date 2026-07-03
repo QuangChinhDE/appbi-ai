@@ -59,7 +59,7 @@ from appbi_core import (
 _LAYOUT_DEFAULTS: dict[str, tuple[int, int]] = {
     "KPI": (3, 2), "GAUGE": (3, 2), "BULLET": (3, 2), "PODIUM": (6, 4),
     "TABLE": (12, 5), "MATRIX": (12, 5),
-    "SCATTER": (6, 5), "BUBBLE": (6, 5), "MAP_POINT": (6, 5),
+    "SCATTER": (6, 5), "BUBBLE": (6, 5), "MAP_POINT": (6, 5), "NINE_BOX": (6, 6),
     "MAP_REGION": (6, 5), "HEATMAP": (12, 5), "SANKEY": (12, 5),
     "SUNBURST": (6, 5), "TREEMAP": (6, 5), "RADAR": (6, 5),
     "BAR_LINE": (12, 4), "TIME_SERIES": (12, 4), "RIBBON": (12, 4),
@@ -409,7 +409,7 @@ async def _post_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_kpi_chart(
     dataset_table_id: int,
     metric_field: str,
@@ -431,7 +431,7 @@ async def add_kpi_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_gauge_chart(
     dataset_table_id: int,
     metric_field: str,
@@ -453,7 +453,7 @@ async def add_gauge_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_bullet_chart(
     dataset_table_id: int,
     metric_field: str,
@@ -475,7 +475,7 @@ async def add_bullet_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_podium_chart(
     dataset_table_id: int,
     dimension: str,
@@ -499,7 +499,7 @@ async def add_podium_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_bar_chart(
     dataset_table_id: int,
     dimension: str,
@@ -529,7 +529,7 @@ async def add_bar_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_horizontal_bar_chart(
     dataset_table_id: int,
     dimension: str,
@@ -550,7 +550,7 @@ async def add_horizontal_bar_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_grouped_bar_chart(
     dataset_table_id: int,
     dimension: str,
@@ -574,7 +574,7 @@ async def add_grouped_bar_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_stacked_bar_chart(
     dataset_table_id: int,
     dimension: str,
@@ -598,7 +598,7 @@ async def add_stacked_bar_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_bar_line_chart(
     dataset_table_id: int,
     dimension: str,
@@ -622,7 +622,7 @@ async def add_bar_line_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_waterfall_chart(
     dataset_table_id: int,
     dimension: str,
@@ -646,7 +646,7 @@ async def add_waterfall_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_line_chart(
     dataset_table_id: int,
     dimension: str,
@@ -678,7 +678,7 @@ async def add_line_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_area_chart(
     dataset_table_id: int,
     dimension: str,
@@ -705,7 +705,7 @@ async def add_area_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_time_series_chart(
     dataset_table_id: int,
     time_field: str,
@@ -731,7 +731,7 @@ async def add_time_series_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_ribbon_chart(
     dataset_table_id: int,
     time_field: str,
@@ -757,7 +757,7 @@ async def add_ribbon_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_timeline_chart(
     dataset_table_id: int,
     time_field: str,
@@ -787,7 +787,7 @@ async def add_timeline_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_pie_chart(
     dataset_table_id: int,
     slice_field: str,
@@ -806,7 +806,7 @@ async def add_pie_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_donut_chart(
     dataset_table_id: int,
     slice_field: str,
@@ -825,7 +825,7 @@ async def add_donut_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_polar_area_chart(
     dataset_table_id: int,
     slice_field: str,
@@ -844,7 +844,7 @@ async def add_polar_area_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_treemap_chart(
     dataset_table_id: int,
     dimension: str,
@@ -863,7 +863,7 @@ async def add_treemap_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_funnel_chart(
     dataset_table_id: int,
     stage_field: str,
@@ -882,7 +882,7 @@ async def add_funnel_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_word_cloud_chart(
     dataset_table_id: int,
     dimension: str,
@@ -906,7 +906,7 @@ async def add_word_cloud_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_heatmap_chart(
     dataset_table_id: int,
     dimension: str,
@@ -930,7 +930,7 @@ async def add_heatmap_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_sankey_chart(
     dataset_table_id: int,
     source_field: str,
@@ -954,7 +954,7 @@ async def add_sankey_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_sunburst_chart(
     dataset_table_id: int,
     inner_field: str,
@@ -983,7 +983,7 @@ async def add_sunburst_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_scatter_chart(
     dataset_table_id: int,
     x_field: str,
@@ -1004,7 +1004,7 @@ async def add_scatter_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_bubble_chart(
     dataset_table_id: int,
     x_field: str,
@@ -1031,7 +1031,35 @@ async def add_bubble_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
+async def add_nine_box_chart(
+    dataset_table_id: int,
+    x_field: str,
+    y_field: str,
+    title: str,
+    item_dimension: str | None = None,
+    size_metric_field: str | None = None,
+    size_metric_agg: str = "auto",
+    description: str | None = None,
+    layout: dict[str, Any] | None = None,
+    dashboard_id: int | None = None,
+    user_confirmed: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """NINE_BOX — talent / BCG 3×3 grid. `x_field` / `y_field` are the two axes:
+    a numeric field is auto-binned into tertiles (low/mid/high), a 3-level
+    category is used directly. `item_dimension` labels each plotted item;
+    `size_metric_field` (optional) drives bubble size."""
+    role: dict[str, Any] = {"scatterX": x_field.strip(), "scatterY": y_field.strip()}
+    if item_dimension:
+        role["dimension"] = item_dimension.strip()
+    if size_metric_field:
+        role["metrics"] = [_metric(size_metric_field, size_metric_agg)]
+    return await _post_chart("NINE_BOX", dataset_table_id, role, title, layout,
+                              description, user_confirmed, dashboard_id=dashboard_id)
+
+
+@tool({"report", "design"})
 async def add_radar_chart(
     dataset_table_id: int,
     dimension: str,
@@ -1052,7 +1080,7 @@ async def add_radar_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_boxplot_chart(
     dataset_table_id: int,
     dimension: str,
@@ -1076,7 +1104,7 @@ async def add_boxplot_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_map_point_chart(
     dataset_table_id: int,
     longitude_field: str,
@@ -1104,7 +1132,7 @@ async def add_map_point_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_map_region_chart(
     dataset_table_id: int,
     region_field: str,
@@ -1128,7 +1156,7 @@ async def add_map_region_chart(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_table_chart(
     dataset_table_id: int,
     title: str,
@@ -1153,7 +1181,7 @@ async def add_table_chart(
                               description, user_confirmed, dashboard_id=dashboard_id)
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_pivot_table_chart(
     dataset_table_id: int,
     row_dimension: str,

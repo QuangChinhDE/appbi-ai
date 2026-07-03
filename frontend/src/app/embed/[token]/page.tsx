@@ -710,7 +710,7 @@ export default function EmbedDashboardPage() {
     ),
     [availableFilterColumns, dashboard?.available_filter_fields, filterRuntime.columnChartCount],
   );
-  const resolvedDistinctValues = usePublicFilterDistinctValues(
+  const { values: resolvedDistinctValues, status: resolvedDistinctStatus } = usePublicFilterDistinctValues(
     token,
     activeSessionToken,
     availableFilterColumns,
@@ -910,6 +910,7 @@ export default function EmbedDashboardPage() {
                       columns={availableFilterColumns}
                       columnChartCount={availableFilterChartCount}
                       distinctValues={resolvedDistinctValues}
+                      distinctStatus={resolvedDistinctStatus}
                       filters={draftViewerFilters}
                       onFiltersChange={setDraftViewerFilters}
                       hasPendingChanges={hasPendingFilterChanges}

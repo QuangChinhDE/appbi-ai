@@ -1951,6 +1951,15 @@ def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
     except Exception as exc:
         db.rollback()
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
+    # Schema-drift guard: after a model/table edit, drop any snapshot whose
+    # fingerprint no longer matches the current table definition so the resolver
+    # can't serve a column-mismatched or stale-logic snapshot (rebuilt on next
+    # Refresh / TTL view). Best-effort — never breaks the edit.
+    try:
+        from app.services import snapshot_service
+        snapshot_service.invalidate_stale_fingerprints(db, dataset_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("snapshot fingerprint invalidation skipped for dataset %s", dataset_id, exc_info=True)
 
 
 def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
@@ -2363,6 +2372,31 @@ def create_dataset(
     _sync_dataset_model_safely(db, db_dataset.id)
     db.refresh(db_dataset)
     return db_dataset
+
+
+@router.post("/{dataset_id}/snapshots/refresh")
+def refresh_dataset_snapshots(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dashboard perf #5 — force-rebuild the materialized snapshots for this
+    dataset's heavy tables (the builder "Refresh data" action → latest numbers).
+    Only tables on a materialization-enabled BigQuery datasource are rebuilt;
+    everything else is skipped. Returns the new `as_of` for the "Số tính đến"
+    label."""
+    from app.models.dataset import Dataset
+    from app.services import snapshot_service
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
+    return {"ok": True, **result}
 
 
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
@@ -4291,6 +4325,10 @@ def get_dataset_model_distinct_values(
         default=None,
         description="JSON-encoded list of dashboard filter objects used to cascade distinct values.",
     ),
+    explain: bool = Query(
+        default=False,
+        description="Debug: also return the generated SQL string(s) as debug_sql (view access required, same as the rest of the response).",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -4314,12 +4352,17 @@ def get_dataset_model_distinct_values(
             raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
 
     try:
-        result = get_distinct_field_values(db, dataset_id, field, limit=limit, filters=filter_context)
-        return {
+        result = get_distinct_field_values(
+            db, dataset_id, field, limit=limit, filters=filter_context, explain=explain
+        )
+        payload = {
             "field": field,
             "values": result.get("values", []),
             "dropped_filters": result.get("dropped_filters", []),
         }
+        if explain and "debug_sql" in result:
+            payload["debug_sql"] = result["debug_sql"]
+        return payload
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -6271,7 +6314,9 @@ def get_table_profile(
     payload: Dict[str, Any] = {
         "table": {
             "id": db_table.id,
-            "name": db_table.name,
+            # DatasetTable has no `name` column — use the source/physical name,
+            # falling back to display_name (never null) so profiling never 500s.
+            "name": db_table.source_table_name or db_table.display_name,
             "display_name": db_table.display_name,
             "description": db_table.auto_description,
             "description_source": db_table.description_source,
@@ -6296,7 +6341,7 @@ def get_table_profile(
             except Exception as exc:
                 logger.warning(
                     "Column stats failed for %s.%s: %s",
-                    db_table.name, col["name"], exc,
+                    db_table.display_name, col["name"], exc,
                 )
                 stats[col["name"]] = {"error": str(exc)}
         payload["stats"] = stats

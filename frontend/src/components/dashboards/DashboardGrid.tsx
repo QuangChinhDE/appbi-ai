@@ -69,6 +69,10 @@ interface DashboardGridProps {
   onEditWidget?: (dashboardChartId: number) => void;
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
+  /** Forwarded to ChartTile — gate the tile data fetch until the page has
+   *  seeded filters/slicers from the saved config (avoids the unfiltered flash
+   *  + wasted warehouse scan). See ChartTileProps.filtersReady. */
+  filtersReady?: boolean;
   globalFilters?: BaseFilter[];
   crossFilters?: BaseFilter[];
   crossFilterSourceChartId?: number | null;
@@ -105,6 +109,7 @@ export function DashboardGrid({
   onEditWidget,
   removingChartId,
   dashboardFilters = [],
+  filtersReady = true,
   globalFilters = [],
   crossFilters = [],
   crossFilterSourceChartId = null,
@@ -280,6 +285,7 @@ export function DashboardGrid({
             onRemove={onRemoveChart}
             isRemoving={removingChartId === dc.id}
             dashboardFilters={dashboardFilters}
+            filtersReady={filtersReady}
             globalFilters={globalFilters}
             /* Click a point → SOURCE chart dims its non-selected marks, every
                OTHER chart FILTERS to the value (PBI parity):

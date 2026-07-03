@@ -47,6 +47,15 @@ interface ChartTileProps {
   onRemove?: (dashboardChartId: number) => void;
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
+  /**
+   * Gate: the dashboard has finished seeding its filters/slicers from the
+   * saved config. Until true the tile MUST NOT fetch — otherwise it fires an
+   * UNFILTERED query first (before the seed effect populates applied filters),
+   * then re-fetches filtered: a flash of wrong (unfiltered) numbers + a wasted
+   * warehouse scan per chart. Mirrors the public page's `filtersSeeded` gate.
+   * Defaults true so non-dashboard ChartTile usages are unaffected.
+   */
+  filtersReady?: boolean;
   globalFilters?: BaseFilter[];
   crossFilters?: BaseFilter[];
   onDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
@@ -209,6 +218,7 @@ function ChartTileBase({
   onRemove,
   isRemoving,
   dashboardFilters = [],
+  filtersReady = true,
   globalFilters = [],
   crossFilters = [],
   onDataLoaded,
@@ -474,7 +484,14 @@ function ChartTileBase({
     chartId,
     debouncedFilters,
     'dashboard',
-    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart), keepPrevious: true },
+    // `filtersReady` blocks the fetch until the page seeds applied filters.
+    // `serverFilterKey === debouncedFilterKey` blocks it until the 300ms filter
+    // debounce has CAUGHT UP to those filters — otherwise, the moment the seed
+    // sets filtersReady=true the debounced value is still the stale-empty one,
+    // so the query fires ONCE unfiltered (wave-1) and again filtered (wave-2):
+    // a flash of wrong numbers + a wasted warehouse scan. Both gates ⇒ exactly
+    // one filtered fetch. (Genuine later user changes still debounce normally.)
+    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && filtersReady && serverFilterKey === debouncedFilterKey, keepPrevious: true },
     viewerGrain,
   );
 
@@ -501,7 +518,7 @@ function ChartTileBase({
     chartId,
     debouncedOverlayFilters,
     'dashboard',
-    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && Boolean(debouncedOverlayFilters) },
+    { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && filtersReady && Boolean(debouncedOverlayFilters) },
     viewerGrain,
   );
 
@@ -1057,7 +1074,7 @@ function ChartTileBase({
                 <span className="flex-1" aria-hidden />
               )
             ) : displayTitle ? (
-              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle}>{displayTitle}</h3>
+              <h3 data-pdf-tile-title className="text-sm font-semibold truncate flex-1" style={themeTitleStyle} title={displayTitle}>{displayTitle}</h3>
             ) : canEdit ? (
               /* Phase-B11 — no auto chart-name title; nudge the DA to add one. */
               <button

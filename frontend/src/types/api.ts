@@ -183,6 +183,8 @@ export interface DashboardThemeConfig {
   /** Structural (charts) */
   gridlineColor?: string;
   axisLabelColor?: string;
+  /** #4 — dashboard-wide display units for value axes + KPI values (PBI parity). */
+  displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
   /** Phase-B16 — report background image (data-URL) + readability controls.
    *  Charts render ON TOP of the image. */
   backgroundImage?: string;       // data:image/...;base64,... (downscaled)
@@ -571,6 +573,12 @@ export interface PublicLinkAppearanceConfig {
   allow_viewer_filters?: boolean;
   show_footer?: boolean;
   show_chart_type_label?: boolean;
+  /** Snapshot freshness for this public link (perf #5, Stage 2). Minutes past
+   *  which a snapshot is served-stale then rebuilt in the background.
+   *  undefined/null → default (30); 0 → Realtime (live, no snapshot); -1 →
+   *  Manual (serve current forever, refresh only via the builder Refresh);
+   *  15|30|60 → lazy TTL. */
+  cache_ttl_minutes?: number | null;
   ai_bot_enabled?: boolean;
   /** Admin-configured AI provider for this link (e.g. "openai", "anthropic", "gemini"). */
   ai_bot_provider?: string;

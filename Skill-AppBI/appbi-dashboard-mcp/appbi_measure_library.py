@@ -238,7 +238,7 @@ def _apply_extra(
 # ---------------------------------------------------------------------------
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_sum_measure(
     view_id: int,
     name: str,
@@ -274,7 +274,7 @@ async def add_sum_measure(
     return await _append_measure(view_id, measure, user_confirmed, "add_sum_measure")
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_avg_measure(
     view_id: int,
     name: str,
@@ -302,7 +302,7 @@ async def add_avg_measure(
     return await _append_measure(view_id, measure, user_confirmed, "add_avg_measure")
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_count_measure(
     view_id: int,
     name: str,
@@ -330,7 +330,7 @@ async def add_count_measure(
     return await _append_measure(view_id, measure, user_confirmed, "add_count_measure")
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_count_distinct_measure(
     view_id: int,
     name: str,
@@ -357,7 +357,7 @@ async def add_count_distinct_measure(
     )
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_min_max_measure(
     view_id: int,
     name: str,
@@ -389,7 +389,7 @@ async def add_min_max_measure(
     return await _append_measure(view_id, measure, user_confirmed, f"add_{kind}_measure")
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_ratio_measure(
     view_id: int,
     name: str,
@@ -431,7 +431,7 @@ async def add_ratio_measure(
     return await _append_measure(view_id, measure, user_confirmed, "add_ratio_measure")
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_percent_of_total_measure(
     view_id: int,
     name: str,
@@ -463,7 +463,7 @@ async def add_percent_of_total_measure(
     )
 
 
-@tool("report")
+@tool({"report", "design"})
 async def add_advanced_measure(
     view_id: int,
     measure_spec: dict[str, Any],

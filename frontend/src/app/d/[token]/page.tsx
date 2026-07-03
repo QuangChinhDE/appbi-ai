@@ -241,6 +241,11 @@ export default function PublicDashboardPage() {
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
+  // numbers were last refreshed. `snapshotStale` → a background rebuild was
+  // triggered (link past its TTL); show a subtle "đang làm mới…" hint.
+  const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  const [snapshotStale, setSnapshotStale] = useState(false);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
@@ -353,6 +358,12 @@ export default function PublicDashboardPage() {
       const nextDashboard = await publicDashboardApi.get(token, sessionToken);
       setDashboard(nextDashboard);
       setPageState('loaded');
+      // Fire-and-forget: fetch the report-level snapshot freshness for the
+      // "data as of" label (never blocks the dashboard render).
+      publicDashboardApi
+        .getSnapshotInfo(token, sessionToken)
+        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); setSnapshotStale(!!info?.stale); })
+        .catch(() => { /* live / not materialized → no label */ });
       if (sessionToken) {
         scheduleSessionExpiry(token);
       }
@@ -1000,7 +1011,7 @@ export default function PublicDashboardPage() {
     ),
     [availableFilterColumns, dashboard?.available_filter_fields, filterRuntime.columnChartCount],
   );
-  const resolvedDistinctValues = usePublicFilterDistinctValues(
+  const { values: resolvedDistinctValues, status: resolvedDistinctStatus } = usePublicFilterDistinctValues(
     token,
     activeSessionToken,
     availableFilterColumns,
@@ -1180,6 +1191,7 @@ export default function PublicDashboardPage() {
         columns={availableFilterColumns}
         columnChartCount={availableFilterChartCount}
         distinctValues={resolvedDistinctValues}
+        distinctStatus={resolvedDistinctStatus}
         hasPendingChanges={hasPendingFilterChanges}
         onApply={handleApplyFilters}
         onReset={handleResetFilters}
@@ -1239,12 +1251,25 @@ export default function PublicDashboardPage() {
   // Title for the LEFT shell — wraps to multiple lines instead of truncating
   // (the left column is narrow; user asked to let a long title wrap).
   const titleEl = (
-    <h1
-      className="min-w-0 flex-1 break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
-      title={presentationTitle}
-    >
-      {presentationTitle}
-    </h1>
+    <div className="min-w-0 flex-1">
+      <h1
+        className="break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
+        title={presentationTitle}
+      >
+        {presentationTitle}
+      </h1>
+      {snapshotAsOf && (
+        <p
+          className="mt-0.5 text-[11px] text-text-tertiary"
+          title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+        >
+          Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+          {snapshotStale && (
+            <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+          )}
+        </p>
+      )}
+    </div>
   );
 
   const pageTabsEl = showPageTabs ? (
@@ -1624,12 +1649,25 @@ export default function PublicDashboardPage() {
               (PowerBI/Looker) instead of the old one-line pill toolbar. */}
           <div className="flex items-center gap-2.5">
             {brandMarkEl}
-            <h1
-              className="min-w-0 flex-1 truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
-              title={presentationTitle}
-            >
-              {presentationTitle}
-            </h1>
+            <div className="min-w-0 flex-1">
+              <h1
+                className="truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
+                title={presentationTitle}
+              >
+                {presentationTitle}
+              </h1>
+              {snapshotAsOf && (
+                <p
+                  className="mt-0.5 truncate text-[11px] text-text-tertiary"
+                  title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+                >
+                  Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+                  {snapshotStale && (
+                    <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+                  )}
+                </p>
+              )}
+            </div>
             <div className="ml-auto shrink-0">
               <Button
                 variant="secondary"

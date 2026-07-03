@@ -269,6 +269,96 @@ def get_dashboard_filter_fields(
     }
 
 
+@router.post("/{dashboard_id}/snapshots/refresh")
+def refresh_dashboard_snapshots(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dashboard perf #5 — the builder "Refresh data" action. Force-rebuilds the
+    materialized snapshots for every dataset this dashboard's charts read, then
+    returns the new `as_of` (oldest across datasets) for the "Số tính đến" label.
+    Datasets without materialization enabled are skipped."""
+    from app.models.dataset import DatasetTable
+    from app.services import snapshot_service
+
+    dash = (
+        db.query(Dashboard)
+        .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+        .filter(Dashboard.id == dashboard_id)
+        .first()
+    )
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+
+    charts = [dc.chart for dc in (dash.dashboard_charts or []) if dc.chart is not None]
+    table_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
+    if not table_ids:
+        return {"ok": True, "datasets": [], "as_of": None}
+    dataset_ids = {
+        t.dataset_id
+        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(table_ids))).all()
+        if t.dataset_id
+    }
+    results, as_ofs = [], []
+    for ds_id in dataset_ids:
+        r = snapshot_service.refresh_all_for_dataset(db, ds_id, force=True)
+        results.append({"dataset_id": ds_id, **r})
+        if r.get("as_of"):
+            as_ofs.append(r["as_of"])
+    return {"ok": True, "datasets": results, "as_of": (min(as_ofs) if as_ofs else None)}
+
+
+def _dashboard_snapshot_as_of(db: Session, dash) -> Optional[Any]:
+    """Report-level snapshot freshness: the OLDEST built_at across the current
+    snapshots of every dataset this dashboard's charts read. Since a TTL rebuild
+    refreshes a dataset's snapshots together, this single timestamp is the
+    report's "last updated" — shown to builders and public viewers alike. None
+    when nothing is materialized (live)."""
+    from app.models.dataset import DatasetTable
+    from app.services import snapshot_service
+
+    charts = [dc.chart for dc in (dash.dashboard_charts or []) if dc.chart is not None]
+    base_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
+    if not base_ids:
+        return None
+    dataset_ids = {
+        t.dataset_id
+        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(base_ids))).all()
+        if t.dataset_id
+    }
+    if not dataset_ids:
+        return None
+    all_tids = [
+        t.id for t in db.query(DatasetTable.id)
+        .filter(DatasetTable.dataset_id.in_(list(dataset_ids)))
+        .all()
+    ]
+    return snapshot_service.as_of(db, all_tids)
+
+
+@router.get("/{dashboard_id}/snapshots/info")
+def get_dashboard_snapshot_info(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Report-level "data as of" for the builder header, WITHOUT rebuilding —
+    so the freshness label shows on load, not only after a Refresh click."""
+    dash = (
+        db.query(Dashboard)
+        .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+        .filter(Dashboard.id == dashboard_id)
+        .first()
+    )
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+    ts = _dashboard_snapshot_as_of(db, dash)
+    return {"as_of": ts.isoformat() if ts else None, "mode": "snapshot" if ts else "live"}
+
+
 @router.post("/import-html/analyze", response_model=DashboardHtmlImportAnalyzeResponse)
 async def analyze_html_dashboard_import(
     html_content: str = Form(...),

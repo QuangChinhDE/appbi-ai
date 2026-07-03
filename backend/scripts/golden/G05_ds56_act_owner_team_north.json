@@ -1,0 +1,37 @@
+{
+  "case_id": "G05_ds56_act_owner_team_north",
+  "description": "Activity duration ← owner.team=North",
+  "chart_name": "[snow] activity duration total",
+  "dataset_id": 56,
+  "captured_at": "2026-05-28T10:06:21.925260+00:00",
+  "captured_at_commit": "b84d052",
+  "expect_status": "ok",
+  "tags": [
+    "snowflake",
+    "conformed_dim"
+  ],
+  "comparison_keys": [
+    "data",
+    "row_count",
+    "dropped_filter_reasons",
+    "routing"
+  ],
+  "sql_comparison": "pattern",
+  "sql_patterns": [],
+  "result": {
+    "status": "ok",
+    "data_repr": [
+      {
+        "dataset_table_192.duration": "135"
+      }
+    ],
+    "row_count": 1,
+    "dropped_filters": [],
+    "dropped_filter_reasons": [],
+    "routing": "semantic_engine",
+    "sql_normalized": "SELECT SUM(dataset_table_192.duration) AS dataset_table_192_duration FROM (SELECT * FROM `bcfix`.`bc_activity`) AS dataset_table_192 WHERE EXISTS(SELECT 1 FROM (SELECT * FROM `bcfix`.`bc_owner`) AS dataset_table_188 WHERE dataset_table_192.bc_key = dataset_table_188.bc_key AND dataset_table_188.team = 'North') LIMIT 10000000",
+    "sql_normalized_truncated": false,
+    "warnings": [],
+    "error": null
+  }
+}

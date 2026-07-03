@@ -211,6 +211,14 @@ export interface TableScreenResponse {
       sections?: Record<string, string[]>;
     };
     empty_state_message?: string | null;
+    display_mode?: 'table' | 'gallery';
+    gallery_config?: {
+      image_column: string;
+      title_column?: string | null;
+      subtitle_column?: string | null;
+      group_by_column?: string | null;
+      columns_per_row?: number;
+    } | null;
   };
   totals_row?: Record<string, unknown> | null;
   column_groups?: Array<{ label: string; columns: string[] }>;
