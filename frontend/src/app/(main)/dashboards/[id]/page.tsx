@@ -797,8 +797,8 @@ export default function DashboardDetailPage() {
       // Force every tile to re-fetch against the freshly-rebuilt snapshots.
       await queryClient.invalidateQueries({ queryKey: ['charts'] });
       if (res?.as_of) {
-        const hhmm = new Date(res.as_of).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        toast.success(t('dashboards.detail.snapshotRefreshed', { time: hhmm }));
+        const stamp = new Date(res.as_of).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        toast.success(t('dashboards.detail.snapshotRefreshed', { time: stamp }));
       } else {
         toast.success(t('dashboards.detail.snapshotRefreshedNoop'));
       }
@@ -2547,7 +2547,7 @@ export default function DashboardDetailPage() {
                 <span>{t('dashboards.detail.refreshData')}</span>
                 {snapshotAsOf && (
                   <span className="text-[10px] text-text-quaternary">
-                    {new Date(snapshotAsOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </span>
                 )}
               </button>
