@@ -126,6 +126,8 @@ def _validate_lookup(
             lookup.get("geometry_column"),
             lookup.get("lat_column"),
             lookup.get("lng_column"),
+            # cascading select: remote match column
+            lookup.get("filter_column"),
         ]
         missing = [
             str(column) for column in expected
@@ -306,6 +308,25 @@ def _validate_screen_columns(
                 if isinstance(col, str) and col and col not in declared:
                     errors.append(
                         f"screen '{screen_id}' table.gallery_config.{key} '{col}' "
+                        f"must be listed in table.columns."
+                    )
+    if spec.get("display_mode") == "calendar":
+        cal = spec.get("calendar_config")
+        if not isinstance(cal, dict):
+            errors.append(
+                f"screen '{screen_id}' table: display_mode='calendar' requires calendar_config."
+            )
+        else:
+            if not (isinstance(cal.get("date_column"), str) and cal.get("date_column").strip()):
+                errors.append(
+                    f"screen '{screen_id}' table.calendar_config.date_column is required."
+                )
+            declared = set(str(c) for c in (spec.get("columns") or []))
+            for key in ("date_column", "title_column", "color_column"):
+                col = cal.get(key)
+                if isinstance(col, str) and col and col not in declared:
+                    errors.append(
+                        f"screen '{screen_id}' table.calendar_config.{key} '{col}' "
                         f"must be listed in table.columns."
                     )
     for index, lookup in enumerate(spec.get("lookup_columns") or []):
@@ -686,16 +707,24 @@ _SCREEN_SCHEMA_REFERENCE = {
         "pages": "[{id>=1, title, description?, show_if?}] for multi-step forms; FormField.page places a field",
         "sections": "[str] section headings within a page",
         "ocr": "{enabled, provider, model, hint} photo-to-fields (BYOK api_key)",
+        "geo_stamp_column": "optional: FE captures device GPS at submit and writes 'lat,lng' into this column (anti-fraud geo-audit).",
     },
     "form_field": {
         "column": "required db column",
-        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map",
+        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map|geopoint|images|signature|barcode|audio|computed|status",
         "required/readonly/default/help_text/placeholder/label": "presentation",
         "lookup": "LookupConfig when widget=lookup/select/map",
         "map_widget": "widget=map: tap a polygon/point on a satellite basemap to pick a value. Options + geometry come from a dataset_table lookup (set lookup.geometry_column). Selected value is a plain string (the value_column) — behaves like select for required/valid_if/carry.",
+        "field_widgets": "geopoint=capture device GPS 'lat,lng'; images=multiple photos (JSON array of data URLs, max_items, capture_only); signature=hand-drawn PNG; barcode=QR/Barcode scan (native BarcodeDetector + manual fallback); audio=voice memo data URL; computed=readonly value from `formula` (stored on submit); status=colored lifecycle select (status_config).",
+        "cascading_select": "widget=select/lookup: set lookup.filter_by_field (another field's column) + lookup.filter_column (remote match column) to narrow options by the parent field's value.",
+        "capture_only": "widget=image/images: force live camera (no gallery pick).",
+        "max_items": "widget=images: max photo count (1-20).",
+        "unit": "widget=number/computed: unit suffix (e.g. 'kg', '%').",
+        "formula": "widget=computed: arithmetic over [col], e.g. '[san_luong] * [drc] / 100'.",
+        "status_config": "widget=status: {states:[{value,label,color: slate|green|amber|red|blue|violet}], editable_by_roles:[]} — approval gate.",
         "show_if/required_if/readonly_if": "expressions over [other_column]",
         "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message",
-        "max_file_kb": "widget=file/image only; hard BE ceiling 1024 KB (base64 into JSONB)",
+        "max_file_kb": "widget=file/image/images/signature/audio; hard BE ceiling 1024 KB per item (base64 into JSONB)",
     },
     "lookup_config": {
         "kind": "static | dataset_table",
@@ -705,6 +734,7 @@ _SCREEN_SCHEMA_REFERENCE = {
         "geometry_column": "widget=map only: column holding a GeoJSON Polygon/MultiPolygon string per row (drawn on the map)",
         "lat_column/lng_column": "widget=map only: optional centroid columns; used as a marker fallback when a row has no geometry",
         "basemap": "widget=map only: satellite (default) | streets | light",
+        "filter_by_field/filter_column": "cascading select: narrow options where filter_column (remote) == the value of filter_by_field (another form field's column)",
     },
     "table_spec": {
         "columns": "display order; may include computed/lookup column names",
@@ -720,8 +750,10 @@ _SCREEN_SCHEMA_REFERENCE = {
         "column_groups": "multi-level header spanning contiguous columns",
         "row_actions": "[ScreenAction] per-row navigate+carry",
         "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
-        "display_mode": "table (default) | gallery — gallery renders rows as image cards instead of a grid (same query/RLS/filters/detail_panel)",
+        "display_mode": "table (default) | gallery | calendar — same query/RLS/filters/detail_panel, different render",
         "gallery_config": "required when display_mode=gallery: {image_column (data:image column, REQUIRED + must be in columns), title_column?, subtitle_column?, group_by_column? (section per value, e.g. a date), columns_per_row? 1-6}. All named columns must be listed in `columns`.",
+        "calendar_config": "required when display_mode=calendar: {date_column (REQUIRED, places rows on a month grid), title_column? (chip label), color_column? (tints chips)}. All named columns must be listed in `columns`.",
+        "stat_tiles": "[{label, column, agg: sum|avg|min|max|count, unit?, format?}] KPI cards above the grid, computed across the loaded (RLS-filtered) rows.",
         "required_columns/default_values/column_metadata/empty_state_message": "extras",
     },
     "doc_spec": {
@@ -805,6 +837,10 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "editable_columns is the only inline-edit switch; never list a computed/lookup column there.",
             "Map picker: widget='map' on a form field + lookup.kind=dataset_table with geometry_column (GeoJSON per row). The picked value is the value_column string; add it to after_submit.carry to feed the next screen. Geometry table needs a GeoJSON column (Polygon/MultiPolygon).",
             "Gallery: a table screen with display_mode='gallery' + gallery_config. image_column (a data:image column) and every other gallery column MUST also be in table.columns. group_by_column buckets cards into sections (e.g. a capture-date column). Great as the 'view saved photos' screen after an image-upload form.",
+            "Field-work widgets: geopoint (GPS 'lat,lng'), images (multi-photo, capture_only for anti-fraud), signature, barcode (QR/scan), audio (voice memo), computed (live formula, stored on submit), status (colored approval select). Media widgets store base64 in JSONB and ride the offline queue like image/file.",
+            "Approval: use widget=status with status_config.editable_by_roles to gate who can advance the state; combine with per-role rls writable_columns so only approvers can change it server-side.",
+            "KPI + cascading: table.stat_tiles show aggregates above the grid; lookup.filter_by_field + filter_column make a select depend on an earlier field (e.g. plot -> rows).",
+            "Calendar: a table screen with display_mode='calendar' + calendar_config.date_column places rows on a month grid (title_column = chip label, color_column tints). date_column MUST be in table.columns. Same query/RLS/filters/detail-panel as the grid.",
             "Doc data_table sync_triggers[].webhook_ids must match bundle.webhooks ids; webhooks bind to a doc screen_id.",
             "RLS/visible_for_roles roles must match app_user roles; owner bypasses RLS but keep user/admin explicit.",
             "Validate computed-column JS with test_screen_js before apply.",
