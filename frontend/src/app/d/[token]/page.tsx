@@ -241,6 +241,9 @@ export default function PublicDashboardPage() {
 
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
+  // numbers were last refreshed.
+  const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
@@ -353,6 +356,12 @@ export default function PublicDashboardPage() {
       const nextDashboard = await publicDashboardApi.get(token, sessionToken);
       setDashboard(nextDashboard);
       setPageState('loaded');
+      // Fire-and-forget: fetch the report-level snapshot freshness for the
+      // "data as of" label (never blocks the dashboard render).
+      publicDashboardApi
+        .getSnapshotInfo(token, sessionToken)
+        .then((info) => setSnapshotAsOf(info?.as_of ?? null))
+        .catch(() => { /* live / not materialized → no label */ });
       if (sessionToken) {
         scheduleSessionExpiry(token);
       }
@@ -1240,12 +1249,22 @@ export default function PublicDashboardPage() {
   // Title for the LEFT shell — wraps to multiple lines instead of truncating
   // (the left column is narrow; user asked to let a long title wrap).
   const titleEl = (
-    <h1
-      className="min-w-0 flex-1 break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
-      title={presentationTitle}
-    >
-      {presentationTitle}
-    </h1>
+    <div className="min-w-0 flex-1">
+      <h1
+        className="break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
+        title={presentationTitle}
+      >
+        {presentationTitle}
+      </h1>
+      {snapshotAsOf && (
+        <p
+          className="mt-0.5 text-[11px] text-text-tertiary"
+          title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+        >
+          Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+        </p>
+      )}
+    </div>
   );
 
   const pageTabsEl = showPageTabs ? (

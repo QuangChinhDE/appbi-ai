@@ -2340,6 +2340,28 @@ def _resolve_public_snapshot_ttl(appearance_config: dict | None) -> int | None:
     return None if v == -1 else v
 
 
+@router.get("/dashboards/{token}/snapshots/info")
+def get_public_snapshot_info(
+    token: str,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Report-level "data as of" + staleness for the public viewer header, so
+    viewers see when the numbers were last refreshed (perf #5)."""
+    from app.api.dashboards import _dashboard_snapshot_as_of
+    from app.services import snapshot_service
+    dash, _, _, appearance = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    ts = _dashboard_snapshot_as_of(db, dash)
+    ttl = _resolve_public_snapshot_ttl(appearance)
+    return {
+        "as_of": ts.isoformat() if ts else None,
+        "mode": "snapshot" if ts else "live",
+        "stale": snapshot_service.is_stale(ts, ttl),
+    }
+
+
 @router.get("/dashboards/{token}/filters/distinct-values")
 @_limiter.limit("30/minute")
 def get_public_filter_distinct_values(

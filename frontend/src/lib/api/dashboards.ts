@@ -63,6 +63,15 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // Report-level "data as of" WITHOUT rebuilding, so the freshness label shows
+  // on load (not only after a Refresh click).
+  getSnapshotInfo: async (
+    dashboardId: number,
+  ): Promise<{ as_of: string | null; mode: string }> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/snapshots/info`);
+    return response.data;
+  },
+
   addChart: async (
     dashboardId: number,
     chartId: number,

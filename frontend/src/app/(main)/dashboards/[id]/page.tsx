@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw } from 'lucide-react';
@@ -778,6 +778,16 @@ export default function DashboardDetailPage() {
   // Dashboard perf #5 — snapshot "Refresh data" state.
   const [isRefreshingSnapshots, setIsRefreshingSnapshots] = useState(false);
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  // Populate the "Số tính đến" label on load (not only after a Refresh) so the
+  // builder always shows when the snapshot data was last updated.
+  useEffect(() => {
+    let cancelled = false;
+    dashboardApi
+      .getSnapshotInfo(dashboardId)
+      .then((res) => { if (!cancelled) setSnapshotAsOf(res?.as_of ?? null); })
+      .catch(() => { /* materialization off / not eligible → no label */ });
+    return () => { cancelled = true; };
+  }, [dashboardId]);
   const handleRefreshSnapshots = useCallback(async () => {
     if (isRefreshingSnapshots) return;
     setIsRefreshingSnapshots(true);

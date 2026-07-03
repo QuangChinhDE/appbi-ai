@@ -42,6 +42,17 @@ export const publicDashboardApi = {
     return res.data;
   },
 
+  /** Report-level "data as of" + staleness so the public viewer sees when the
+   *  snapshot numbers were last refreshed (perf #5). */
+  getSnapshotInfo: async (
+    token: string,
+    sessionToken?: string,
+  ): Promise<{ as_of: string | null; mode: string; stale: boolean }> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.get(`/public/dashboards/${token}/snapshots/info`, { headers });
+    return res.data;
+  },
+
   getChartData: async (
     token: string,
     chartId: number,
