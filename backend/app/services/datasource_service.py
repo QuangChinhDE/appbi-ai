@@ -1237,6 +1237,41 @@ class DataSourceConnectionService:
         return _materialization_bq_config(config)
 
     @staticmethod
+    def bigquery_source_watermark(config: Dict[str, Any], sql: str, timeout_seconds: int = 30):
+        """MAX(last_modified_time) across the source tables that `sql` reads,
+        for change-driven snapshot refresh (perf #5). Resolves the referenced
+        tables via a FREE dry-run (no scan / no cost), then reads each table's
+        `.modified` from metadata. Uses the datasource's READ credential (the SA
+        can't see source). Returns a tz-aware UTC datetime, or None when it
+        can't be determined (no refs / view / federated / permission) → callers
+        fall back to TTL. NEVER raises."""
+        from app.core.crypto import decrypt_config
+        dc = decrypt_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(dc)
+            job = client.query(
+                sql,
+                job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+            )
+            refs = list(getattr(job, "referenced_tables", []) or [])
+            mods = []
+            for ref in refs:
+                try:
+                    t = client.get_table(ref)
+                    if getattr(t, "modified", None) is not None:
+                        mods.append(t.modified)
+                except Exception:  # noqa: BLE001 — skip tables we can't stat
+                    continue
+            return max(mods) if mods else None
+        except Exception:  # noqa: BLE001 — watermark is best-effort → None → TTL fallback
+            logger.debug("[snapshot] source watermark unavailable", exc_info=True)
+            return None
+        finally:
+            if client and not _bq_client_is_cached(dc, client):
+                client.close()
+
+    @staticmethod
     def get_bigquery_location(config: Dict[str, Any]) -> str | None:
         """Location of the source's default dataset, so a snapshot dataset can be
         COLOCATED (BQ cannot CTAS across locations). None → BQ default (US).

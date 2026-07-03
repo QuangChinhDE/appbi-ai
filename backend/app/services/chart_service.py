@@ -1916,6 +1916,9 @@ def _resolve_chart_snapshot_overrides(
         as_of = snapshot_service.as_of(db, list(overrides.keys()))
         stale = snapshot_service.is_stale(as_of, ttl_minutes)
         trigger = dataset_obj.id if stale else None
+        # Change-driven refresh: rate-limited background check — rebuild if the
+        # SOURCE DATA changed since build (works for builder too; no TTL needed).
+        snapshot_service.schedule_source_change_check(dataset_obj.id)
         return overrides, as_of, "snapshot", stale, trigger
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
         logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
