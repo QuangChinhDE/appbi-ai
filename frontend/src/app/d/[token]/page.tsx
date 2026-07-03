@@ -242,8 +242,10 @@ export default function PublicDashboardPage() {
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
-  // numbers were last refreshed.
+  // numbers were last refreshed. `snapshotStale` → a background rebuild was
+  // triggered (link past its TTL); show a subtle "đang làm mới…" hint.
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  const [snapshotStale, setSnapshotStale] = useState(false);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
@@ -360,7 +362,7 @@ export default function PublicDashboardPage() {
       // "data as of" label (never blocks the dashboard render).
       publicDashboardApi
         .getSnapshotInfo(token, sessionToken)
-        .then((info) => setSnapshotAsOf(info?.as_of ?? null))
+        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); setSnapshotStale(!!info?.stale); })
         .catch(() => { /* live / not materialized → no label */ });
       if (sessionToken) {
         scheduleSessionExpiry(token);
@@ -1262,6 +1264,9 @@ export default function PublicDashboardPage() {
           title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
         >
           Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+          {snapshotStale && (
+            <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+          )}
         </p>
       )}
     </div>
