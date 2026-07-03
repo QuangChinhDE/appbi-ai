@@ -137,6 +137,9 @@ export function PublicLinkAppearanceEditor({
     ai_bot_report_context_note: value.ai_bot_report_context_note,
     ai_bot_key: value.ai_bot_key,
     ai_bot_key_configured: value.ai_bot_key_configured,
+    // Snapshot freshness TTL lives on the same appearance_config object —
+    // preserve it so editing layout here never resets the data-freshness choice.
+    cache_ttl_minutes: value.cache_ttl_minutes,
   });
 
   const updateField = <K extends keyof PublicLinkAppearanceConfig>(
@@ -236,6 +239,32 @@ export function PublicLinkAppearanceEditor({
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
         </div>
+      </div>
+
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+        <SectionKicker
+          icon={Sparkles}
+          label="Độ tươi dữ liệu (snapshot)"
+          description="Với dataset đã bật materialization: báo cáo phục vụ snapshot đã dựng sẵn nên mở rất nhanh. Chọn sau bao lâu thì một lượt xem sẽ tự dựng lại snapshot ở nền (số hiện tại vẫn hiện ngay, không ai phải chờ)."
+        />
+        <select
+          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-primary"
+          value={value.cache_ttl_minutes ?? ''}
+          onChange={(event) => {
+            const raw = event.target.value;
+            updateField('cache_ttl_minutes', raw === '' ? null : Number(raw));
+          }}
+        >
+          <option value="">Tự động (mặc định 30 phút)</option>
+          <option value="0">Realtime — luôn chạy trực tiếp (không dùng snapshot)</option>
+          <option value="15">Làm mới sau 15 phút</option>
+          <option value="30">Làm mới sau 30 phút</option>
+          <option value="60">Làm mới sau 60 phút</option>
+          <option value="-1">Thủ công — chỉ làm mới khi DA bấm Refresh trong builder</option>
+        </select>
+        <p className="mt-2 text-caption leading-6 text-text-tertiary">
+          Ví dụ TTL 30 phút: mở lúc 10:00 phục vụ snapshot hiện có; trong 10:00–10:30 không dựng lại. Ai xem sau 10:30 sẽ kích hoạt dựng snapshot mới ở nền; nếu 10:30 không ai xem thì không tự dựng.
+        </p>
       </div>
 
     </div>
