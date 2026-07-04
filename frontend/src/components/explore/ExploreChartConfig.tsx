@@ -1271,11 +1271,37 @@ const KPI_GOAL_DIRECTION_OPTIONS: Array<{ value: KpiGoalDirection; label: string
   { value: 'down', label: 'Lower is better' },
 ];
 
-type TableBenchmarkMode = 'value' | 'field';
+type TableBenchmarkMode = 'value' | 'field' | 'percentile' | 'percentage';
 
 function getTableBenchmarkMode(rule: ConditionalFormatRule): TableBenchmarkMode {
+  if (rule.benchmarkType) return rule.benchmarkType;
   return rule.benchmarkField ? 'field' : 'value';
 }
+
+// Feature #4 — how a matched rule is presented.
+const CF_MODE_OPTIONS: Array<{ value: NonNullable<ConditionalFormatRule['mode']>; label: string }> = [
+  { value: 'color', label: 'Màu nền / chữ' },
+  { value: 'dataBar', label: 'Thanh dữ liệu (Data bar)' },
+  { value: 'icon', label: 'Biểu tượng (Icon)' },
+];
+// Feature #5 — benchmark type. Percentile/percentage are computed over the column.
+const CF_BENCHMARK_OPTIONS: Array<{ value: TableBenchmarkMode; label: string }> = [
+  { value: 'value', label: 'Giá trị cố định' },
+  { value: 'field', label: 'Cột khác' },
+  { value: 'percentile', label: 'Phân vị (Percentile)' },
+  { value: 'percentage', label: '% của giá trị lớn nhất' },
+];
+const CF_ICON_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'up', label: '↑  Tăng' },
+  { value: 'down', label: '↓  Giảm' },
+  { value: 'flat', label: '—  Ổn định' },
+  { value: 'check', label: '✓  Đạt' },
+  { value: 'cross', label: '✕  Không đạt' },
+  { value: 'warning', label: '⚠  Cảnh báo' },
+  { value: 'flag', label: '⚑  Cờ' },
+  { value: 'star', label: '★  Sao' },
+  { value: 'dot', label: '●  Chấm' },
+];
 
 function createDefaultTableRule(displayedColumns: Col[], availableColumns: Col[]): ConditionalFormatRule {
   const numericDisplayed = displayedColumns.find(isNumeric);
@@ -1291,6 +1317,8 @@ function createDefaultTableRule(displayedColumns: Col[], availableColumns: Col[]
     value: '',
     color: '#1f2937',
     backgroundColor: '#dbeafe',
+    mode: 'color',
+    benchmarkType: 'value',
   };
 }
 
@@ -2341,7 +2369,7 @@ function FormatGroup({
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Toggle switch ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, checked, onChange, description }: { label: string; checked: boolean; onChange: (v: boolean) => void; description?: string }) {
   return (
     <div
       className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 transition-colors ${
@@ -2350,9 +2378,13 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
     >
       <div className="min-w-0">
         <div className={`text-xs font-semibold ${checked ? 'text-brand' : 'text-text-secondary'}`}>{label}</div>
-        <div className={`text-[11px] ${checked ? 'text-brand' : 'text-text-quaternary'}`}>
-          {checked ? 'Enabled' : 'Disabled'}
-        </div>
+        {description ? (
+          <div className="text-[11px] leading-4 text-text-quaternary">{description}</div>
+        ) : (
+          <div className={`text-[11px] ${checked ? 'text-brand' : 'text-text-quaternary'}`}>
+            {checked ? 'Enabled' : 'Disabled'}
+          </div>
+        )}
       </div>
       <button
         type="button"
@@ -4109,7 +4141,8 @@ export function ExploreChartConfig({
 
           {tableNumericColumns.length > 0 && (
             <Toggle
-              label="Heatmap"
+              label="Thang màu / Gradient (Color scale)"
+              description="Tô nền chuyển sắc theo độ lớn — nhìn nhanh giá trị cao/thấp mà không cần đặt ngưỡng."
               checked={isHeatmapEnabled}
               onChange={toggleTableHeatmap}
             />
@@ -4117,7 +4150,8 @@ export function ExploreChartConfig({
 
           {tableFormattingColumns.length > 0 && (
             <Toggle
-              label="Conditional formatting"
+              label="Định dạng theo điều kiện (Conditional formatting)"
+              description="Nhiều quy tắc: đổi màu / thanh dữ liệu / icon theo ngưỡng, phân vị, %, hoặc giá trị cột khác."
               checked={isConditionalFormattingEnabled}
               onChange={toggleTableConditionalFormatting}
             />
@@ -4486,8 +4520,8 @@ export function ExploreChartConfig({
 
       {isTableLike && isHeatmapEnabled && tableNumericColumns.length > 0 && (
         <Disclosure
-          title="Heatmap"
-          hint="Split each numeric column into color bands based on that column's own value range."
+          title="Thang màu / Gradient (Color scale)"
+          hint="Tô nền mỗi cột số chuyển sắc theo khoảng min–max của chính cột đó (đậm = cao, nhạt = thấp)."
           defaultOpen
         >
           {tableHeatmapRules.length > 0 && (
@@ -4564,14 +4598,15 @@ export function ExploreChartConfig({
 
       {isTableLike && isConditionalFormattingEnabled && tableFormattingColumns.length > 0 && (
         <Disclosure
-          title="Conditional Formatting"
-          hint="Rules run from top to bottom. The first match wins, and conditional formatting overrides heatmap colors on the same cell."
+          title="Định dạng theo điều kiện (Conditional formatting)"
+          hint="Nhiều quy tắc chạy từ trên xuống, quy tắc khớp đầu tiên thắng. Mỗi quy tắc chọn kiểu (màu / thanh dữ liệu / icon), ngưỡng (giá trị / phân vị / % / cột khác), và có thể tô cột này dựa trên giá trị cột khác."
           defaultOpen
         >
           {tableConditionalFormatting.length > 0 && (
             <div className="space-y-3">
               {tableConditionalFormatting.map((rule, index) => {
                 const benchmarkMode = getTableBenchmarkMode(rule);
+                const ruleMode = rule.mode || 'color';
                 return (
                   <div
                     key={`table-rule-${index}`}
@@ -4591,8 +4626,22 @@ export function ExploreChartConfig({
                       </button>
                     </div>
 
+                    {/* Feature #4 — presentation style */}
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-text-secondary">Kiểu định dạng</label>
+                      <select
+                        value={ruleMode}
+                        onChange={e => updateTableRule(index, { mode: e.target.value as ConditionalFormatRule['mode'] })}
+                        className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                      >
+                        {CF_MODE_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     <SelectSlot
-                      label="Highlight Column"
+                      label="Tô định dạng cho cột"
                       required
                       value={rule.field}
                       options={tableFormattingColumns}
@@ -4600,81 +4649,136 @@ export function ExploreChartConfig({
                       onChange={value => updateTableRule(index, { field: value })}
                     />
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Operator</label>
-                        <select
-                          value={rule.operator}
-                          onChange={e => updateTableRule(index, {
-                            operator: e.target.value as ConditionalFormatRule['operator'],
-                          })}
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        >
-                          {CONDITIONAL_OPERATOR_OPTIONS.map(option => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark Type</label>
-                        <select
-                          value={benchmarkMode}
-                          onChange={e => {
-                            const nextMode = e.target.value as TableBenchmarkMode;
-                            updateTableRule(index, nextMode === 'field'
-                              ? { benchmarkField: rule.benchmarkField ?? tableBenchmarkColumns[0]?.name }
-                              : { benchmarkField: undefined });
-                          }}
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        >
-                          <option value="value">Fixed value</option>
-                          <option value="field">Another column</option>
-                        </select>
-                      </div>
+                    {/* Feature #3 — cross-column: condition can read another column */}
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-text-secondary">
+                        Dựa trên giá trị cột
+                      </label>
+                      <select
+                        value={rule.sourceColumn ?? ''}
+                        onChange={e => updateTableRule(index, { sourceColumn: e.target.value || undefined })}
+                        className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                      >
+                        <option value="">(chính cột này)</option>
+                        {tableFormattingColumns.map(c => (
+                          <option key={c.name} value={c.name}>{c.label ?? c.name}</option>
+                        ))}
+                      </select>
                     </div>
 
-                    {benchmarkMode === 'field' ? (
-                      <SelectSlot
-                        label="Benchmark Column"
-                        required
-                        value={rule.benchmarkField || ''}
-                        options={tableBenchmarkColumns}
-                        placeholder="select column"
-                        onChange={value => updateTableRule(index, { benchmarkField: value || undefined })}
+                    {ruleMode === 'dataBar' ? (
+                      // Data bars are column-wide (no condition): just a bar color.
+                      <ColorField
+                        label="Màu thanh"
+                        value={rule.barColor || '#3b82f6'}
+                        onChange={value => updateTableRule(index, { barColor: value })}
                       />
                     ) : (
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark</label>
-                        <input
-                          type="text"
-                          value={String(rule.value ?? '')}
-                          onChange={e => updateTableRule(index, { value: e.target.value })}
-                          placeholder="e.g. 1000"
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        />
-                      </div>
-                    )}
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Toán tử</label>
+                            <select
+                              value={rule.operator}
+                              onChange={e => updateTableRule(index, {
+                                operator: e.target.value as ConditionalFormatRule['operator'],
+                              })}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            >
+                              {CONDITIONAL_OPERATOR_OPTIONS.map(option => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <ColorField
-                        label="Background"
-                        value={rule.backgroundColor || '#dbeafe'}
-                        onChange={value => updateTableRule(index, { backgroundColor: value })}
-                      />
-                      <ColorField
-                        label="Text"
-                        value={rule.color || '#1f2937'}
-                        onChange={value => updateTableRule(index, { color: value })}
-                      />
-                    </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Loại ngưỡng</label>
+                            <select
+                              value={benchmarkMode}
+                              onChange={e => {
+                                const nextMode = e.target.value as TableBenchmarkMode;
+                                updateTableRule(index, nextMode === 'field'
+                                  ? { benchmarkType: 'field', benchmarkField: rule.benchmarkField ?? tableBenchmarkColumns[0]?.name }
+                                  : { benchmarkType: nextMode, benchmarkField: undefined });
+                              }}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            >
+                              {CF_BENCHMARK_OPTIONS.map(o => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
 
-                    {benchmarkMode === 'value' && String(rule.value ?? '').trim() === '' && (
-                      <p className="text-[11px] text-warning">
-                        Enter a benchmark value to activate this rule on the table.
-                      </p>
+                        {benchmarkMode === 'field' ? (
+                          <SelectSlot
+                            label="Cột so sánh"
+                            required
+                            value={rule.benchmarkField || ''}
+                            options={tableBenchmarkColumns}
+                            placeholder="select column"
+                            onChange={value => updateTableRule(index, { benchmarkField: value || undefined })}
+                          />
+                        ) : (
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">
+                              {benchmarkMode === 'percentile' ? 'Phân vị (0–100)'
+                                : benchmarkMode === 'percentage' ? '% của Max (0–100)'
+                                : 'Ngưỡng'}
+                            </label>
+                            <input
+                              type="text"
+                              value={String(rule.value ?? '')}
+                              onChange={e => updateTableRule(index, { value: e.target.value })}
+                              placeholder={benchmarkMode === 'percentile' ? 'vd 90 = top 10%'
+                                : benchmarkMode === 'percentage' ? 'vd 80 = ≥80% của Max'
+                                : 'vd 1000'}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                        )}
+
+                        {ruleMode === 'icon' ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="mb-1 block text-xs font-semibold text-text-secondary">Biểu tượng</label>
+                              <select
+                                value={rule.icon || 'flag'}
+                                onChange={e => updateTableRule(index, { icon: e.target.value })}
+                                className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                              >
+                                {CF_ICON_OPTIONS.map(o => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <ColorField
+                              label="Màu icon"
+                              value={rule.color || '#1f2937'}
+                              onChange={value => updateTableRule(index, { color: value })}
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            <ColorField
+                              label="Màu nền"
+                              value={rule.backgroundColor || '#dbeafe'}
+                              onChange={value => updateTableRule(index, { backgroundColor: value })}
+                            />
+                            <ColorField
+                              label="Màu chữ"
+                              value={rule.color || '#1f2937'}
+                              onChange={value => updateTableRule(index, { color: value })}
+                            />
+                          </div>
+                        )}
+
+                        {benchmarkMode !== 'field' && String(rule.value ?? '').trim() === '' && (
+                          <p className="text-[11px] text-warning">
+                            Nhập ngưỡng để kích hoạt quy tắc này.
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                 );

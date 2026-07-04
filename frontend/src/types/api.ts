@@ -33,6 +33,34 @@ export interface ConditionalFormatRule {
   benchmarkField?: string;
   color?: string; // Text color
   backgroundColor?: string; // Background color
+  /**
+   * Cross-column (Feature #3): the column whose value DRIVES the condition,
+   * while the style is applied to `field`. Undefined → the condition is
+   * evaluated on `field` itself (backward-compatible). Example: color the
+   * "Tên nhân viên" column (field) red when "Doanh thu" (sourceColumn) < 50M.
+   */
+  sourceColumn?: string;
+  /**
+   * Benchmark type (Feature #5):
+   *  - 'value'      → compare against the literal `value` (default / legacy).
+   *  - 'field'      → compare against another column `benchmarkField` (legacy,
+   *                   inferred when benchmarkField is set).
+   *  - 'percentile' → `value` is a percentile 0–100 computed over the column's
+   *                   values this render (e.g. operator '>=' + value 90 → top 10%).
+   *  - 'percentage' → `value` is a % of the column's max (value/max*100).
+   */
+  benchmarkType?: 'value' | 'field' | 'percentile' | 'percentage';
+  /**
+   * Presentation (Feature #4):
+   *  - 'color'   → text/background color (default / legacy).
+   *  - 'dataBar' → an in-cell horizontal bar proportional to the value across
+   *                the column's min…max (Excel/PBI style). `barColor` sets fill.
+   *  - 'icon'    → prepend an indicator icon (`icon`) when the rule matches.
+   */
+  mode?: 'color' | 'dataBar' | 'icon';
+  barColor?: string;
+  /** Icon key for mode 'icon': up | down | flat | check | cross | warning | flag | star | dot. */
+  icon?: string;
 }
 
 export interface TableHeatmapRule {

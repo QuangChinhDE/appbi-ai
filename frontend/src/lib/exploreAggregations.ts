@@ -17,6 +17,26 @@ export interface TableHeatmapStats {
   };
 }
 
+// Per-column stats for conditional formatting that needs the column's
+// distribution: percentile thresholds (Feature #5), percentage-of-max, and
+// data-bar min…max scaling (Feature #4). Keyed by the SOURCE column that drives
+// the rule (sourceColumn ?? field).
+export interface ConditionalColumnStats {
+  min: number;
+  max: number;
+  sorted: number[]; // ascending — for percentile lookups
+}
+export type ConditionalStats = Record<string, ConditionalColumnStats>;
+
+// Rich per-cell format output. `color`/`backgroundColor` = the legacy color
+// styling; `dataBar` = an in-cell proportional bar; `icon` = an indicator glyph.
+export interface CellFormat {
+  color?: string;
+  backgroundColor?: string;
+  dataBar?: { ratio: number; color: string };
+  icon?: { key: string; color?: string };
+}
+
 /**
  * Apply an aggregation function to an array of values
  */
@@ -329,75 +349,145 @@ export function getHeatmapCellStyle(
   };
 }
 
+// A rule needs column distribution stats when it scales to the column:
+// percentile / percentage benchmarks (Feature #5) or a data-bar (Feature #4).
+function ruleNeedsStats(rule: ConditionalFormatRule): boolean {
+  return (
+    rule.mode === 'dataBar' ||
+    rule.benchmarkType === 'percentile' ||
+    rule.benchmarkType === 'percentage'
+  );
+}
+
 /**
- * Get cell style based on conditional formatting rules
- * 
- * @param value - Cell value
- * @param field - Field name
- * @param rules - Conditional formatting rules
- * @returns Style object with color and backgroundColor
+ * Build per-source-column stats (min/max/sorted) for the rules that scale to the
+ * column (percentile, percentage, data bars). Keyed by the SOURCE column that
+ * drives each such rule so cross-column rules (Feature #3) read the right values.
+ */
+export function buildConditionalStats(
+  rows: Record<string, any>[],
+  rules: ConditionalFormatRule[] | null,
+): ConditionalStats {
+  const stats: ConditionalStats = {};
+  if (!rules || rules.length === 0 || rows.length === 0) return stats;
+  const cols = new Set<string>();
+  for (const rule of rules) {
+    if (ruleNeedsStats(rule)) cols.add(rule.sourceColumn || rule.field);
+  }
+  for (const col of cols) {
+    const nums = rows
+      .map((r) => parseNumericCellValue(r?.[col]))
+      .filter((v): v is number => v !== null);
+    if (nums.length === 0) continue;
+    const sorted = [...nums].sort((a, b) => a - b);
+    stats[col] = { min: sorted[0], max: sorted[sorted.length - 1], sorted };
+  }
+  return stats;
+}
+
+// Value at the p-th percentile (0–100) of an ascending array (linear interp).
+function percentileValue(sorted: number[], p: number): number | null {
+  if (!sorted || sorted.length === 0) return null;
+  const clampP = clamp(p, 0, 100);
+  if (sorted.length === 1) return sorted[0];
+  const idx = (clampP / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+function compareOp(
+  op: ConditionalFormatRule['operator'],
+  a: number | null,
+  b: number | null,
+  aStr: string,
+  bStr: string,
+): boolean {
+  switch (op) {
+    case '>':  return a !== null && b !== null && a > b;
+    case '<':  return a !== null && b !== null && a < b;
+    case '>=': return a !== null && b !== null && a >= b;
+    case '<=': return a !== null && b !== null && a <= b;
+    case '=':  return (a !== null && b !== null) ? a === b : aStr === bStr;
+    case '!=': return (a !== null && b !== null) ? a !== b : aStr !== bStr;
+    default:   return false;
+  }
+}
+
+/**
+ * Compute the conditional-formatting output for one cell. Supports:
+ *  - multiple rules with priority (first applicable wins) — Feature #1
+ *  - cross-column: the condition reads `sourceColumn`, the style lands on
+ *    `field` — Feature #3
+ *  - benchmark types value | field | percentile | percentage — Feature #5
+ *  - presentation modes color | dataBar | icon — Feature #4
+ * Backward-compatible: a legacy rule {field, operator, value|benchmarkField,
+ * color, backgroundColor} behaves exactly as before.
+ *
+ * @param value  the styled cell's value (rule.field's cell)
+ * @param field  the column being rendered
+ * @param rules  conditional rules
+ * @param row    the full row (needed for cross-column + benchmarkField)
+ * @param stats  column stats from buildConditionalStats (for percentile/%/dataBar)
  */
 export function getCellStyle(
   value: any,
   field: string,
   rules: ConditionalFormatRule[] | null,
   row?: Record<string, any>,
-): { color?: string; backgroundColor?: string } {
-  if (!rules || rules.length === 0) {
-    return {};
-  }
-  
-  const applicableRules = rules.filter(rule => rule.field === field);
-  
+  stats?: ConditionalStats | null,
+): CellFormat {
+  if (!rules || rules.length === 0) return {};
+  const applicableRules = rules.filter((rule) => rule.field === field);
+
   for (const rule of applicableRules) {
-    const benchmarkValue = rule.benchmarkField ? row?.[rule.benchmarkField] : rule.value;
-    if (benchmarkValue === undefined || benchmarkValue === null || benchmarkValue === '') {
-      continue;
+    const mode = rule.mode || 'color';
+    const srcCol = rule.sourceColumn || rule.field;
+    // The value that DRIVES the condition (cross-column reads another column).
+    const srcRaw = row && srcCol in row ? row[srcCol] : value;
+    const srcNum = parseNumericCellValue(srcRaw);
+    const colStats = stats?.[srcCol];
+
+    // Data bars are column-wide (no condition) — draw a bar ∝ value in min…max.
+    if (mode === 'dataBar') {
+      if (srcNum === null || !colStats) continue;
+      const span = colStats.max - colStats.min;
+      const ratio = span <= 0 ? 1 : clamp((srcNum - colStats.min) / span, 0, 1);
+      return { dataBar: { ratio, color: rule.barColor || '#3b82f6' } };
     }
 
-    const numValue = parseNumericCellValue(value);
-    const ruleValue = parseNumericCellValue(benchmarkValue);
-    
-    // Skip if values can't be compared numerically and operator is numeric
-    if (numValue === null && ['>', '<', '>=', '<='].includes(rule.operator)) {
-      continue;
-    }
-    
+    // color / icon: evaluate the condition.
+    const benchmarkType =
+      rule.benchmarkType || (rule.benchmarkField ? 'field' : 'value');
     let matches = false;
-    
-    switch (rule.operator) {
-      case '>':
-        matches = numValue !== null && ruleValue !== null && numValue > ruleValue;
-        break;
-      case '<':
-        matches = numValue !== null && ruleValue !== null && numValue < ruleValue;
-        break;
-      case '>=':
-        matches = numValue !== null && ruleValue !== null && numValue >= ruleValue;
-        break;
-      case '<=':
-        matches = numValue !== null && ruleValue !== null && numValue <= ruleValue;
-        break;
-      case '=':
-        matches = numValue !== null && ruleValue !== null
-          ? numValue === ruleValue
-          : String(value ?? '') === String(benchmarkValue ?? '');
-        break;
-      case '!=':
-        matches = numValue !== null && ruleValue !== null
-          ? numValue !== ruleValue
-          : String(value ?? '') !== String(benchmarkValue ?? '');
-        break;
+
+    if (benchmarkType === 'percentile') {
+      const p = parseNumericCellValue(rule.value);
+      const threshold = p !== null && colStats ? percentileValue(colStats.sorted, p) : null;
+      matches = compareOp(rule.operator, srcNum, threshold, String(srcRaw ?? ''), String(threshold ?? ''));
+    } else if (benchmarkType === 'percentage') {
+      const target = parseNumericCellValue(rule.value);
+      const pct = colStats && colStats.max !== 0 && srcNum !== null ? (srcNum / colStats.max) * 100 : null;
+      matches = compareOp(rule.operator, pct, target, String(pct ?? ''), String(target ?? ''));
+    } else {
+      const benchmarkRaw = benchmarkType === 'field' ? row?.[rule.benchmarkField ?? ''] : rule.value;
+      if (benchmarkRaw === undefined || benchmarkRaw === null || benchmarkRaw === '') continue;
+      const ruleNum = parseNumericCellValue(benchmarkRaw);
+      if (srcNum === null && ['>', '<', '>=', '<='].includes(rule.operator)) continue;
+      matches = compareOp(rule.operator, srcNum, ruleNum, String(srcRaw ?? ''), String(benchmarkRaw ?? ''));
     }
-    
-    if (matches) {
-      return {
-        color: rule.color,
-        backgroundColor: rule.backgroundColor
-      };
+
+    if (!matches) continue;
+
+    if (mode === 'icon') {
+      const out: CellFormat = { icon: { key: rule.icon || 'flag', color: rule.color } };
+      if (rule.backgroundColor) out.backgroundColor = rule.backgroundColor;
+      return out;
     }
+    return { color: rule.color, backgroundColor: rule.backgroundColor };
   }
-  
+
   return {};
 }
 

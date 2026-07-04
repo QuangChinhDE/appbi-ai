@@ -3,7 +3,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useExportMode } from '@/lib/export-mode';
-import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import {
+  ArrowUp, ArrowDown, ArrowUpDown,
+  Minus, Check, X as XIcon, AlertTriangle, Flag, Star, Circle,
+  type LucideIcon,
+} from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
@@ -14,10 +18,17 @@ import {
 } from '@/types/api';
 import {
   buildTableHeatmapStats,
+  buildConditionalStats,
   getCellStyle,
   getHeatmapCellStyle,
   parseNumericCellValue,
 } from '@/lib/exploreAggregations';
+
+// Icon keys usable in conditional-formatting "icon" mode (Feature #4).
+const CF_ICONS: Record<string, LucideIcon> = {
+  up: ArrowUp, down: ArrowDown, flat: Minus, check: Check,
+  cross: XIcon, warning: AlertTriangle, flag: Flag, star: Star, dot: Circle,
+};
 
 export interface TableVisualizationProps {
   data: Record<string, any>[];
@@ -428,6 +439,12 @@ export function TableVisualization({
     () => buildTableHeatmapStats(rows, heatmapRules),
     [heatmapRules, rows],
   );
+  // Column stats for conditional rules that scale to the column (percentile,
+  // percentage, data bars). Built once per (rows, rules) — see getCellStyle.
+  const conditionalStats = useMemo(
+    () => buildConditionalStats(rows, conditionalFormatting),
+    [conditionalFormatting, rows],
+  );
   const resolvedSummaryRows = useMemo<TableSummaryRowConfig[]>(() => {
     if (showSummaryRow === false) {
       return [];
@@ -650,22 +667,51 @@ export function TableVisualization({
                   const cellValue = row[col];
                   const alignment = getColumnAlignment(col, columnAlignments);
                   const heatmapStyle = getHeatmapCellStyle(cellValue, col, heatmapRules, heatmapStats);
-                  const conditionalStyle = getCellStyle(cellValue, col, conditionalFormatting, row);
-                  const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
+                  const cf = getCellStyle(cellValue, col, conditionalFormatting, row, conditionalStats);
+                  // Color/background: conditional rule wins; else heatmap fallback.
+                  const colorStyle = (cf.color || cf.backgroundColor)
+                    ? { color: cf.color, backgroundColor: cf.backgroundColor }
+                    : heatmapStyle;
+                  const dataBar = cf.dataBar;
+                  const IconGlyph = cf.icon ? CF_ICONS[cf.icon.key] : undefined;
                   const hyperlinkRule = hyperlinkRuleByColumn[col];
                   const safeHref = hyperlinkRule ? resolveRuleHref(hyperlinkRule, row) : null;
                   const displayValue = formatCellValue(cellValue, { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
-                  
+
                   return (
                     <td
                       key={col}
                       className="border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top"
                       style={{
-                        ...style,
+                        ...colorStyle,
                         textAlign: alignment,
+                        position: dataBar ? 'relative' : undefined,
                       }}
                     >
-                      <div className="break-words">
+                      {dataBar && (
+                        <div
+                          aria-hidden
+                          className="pointer-events-none absolute inset-y-1.5 left-2 right-2 flex items-center"
+                        >
+                          <div
+                            style={{
+                              width: `${Math.max(2, dataBar.ratio * 100)}%`,
+                              height: '100%',
+                              backgroundColor: dataBar.color,
+                              opacity: 0.28,
+                              borderRadius: 3,
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div className={clsx('relative break-words', IconGlyph && 'inline-flex items-center gap-1.5')}>
+                        {IconGlyph && (
+                          <IconGlyph
+                            className="h-3.5 w-3.5 shrink-0"
+                            style={cf.icon?.color ? { color: cf.icon.color } : undefined}
+                            aria-hidden
+                          />
+                        )}
                         {safeHref ? (
                           <a
                             href={safeHref}
