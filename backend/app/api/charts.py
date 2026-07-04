@@ -609,6 +609,7 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "benchmarkColor", "benchmarkLineStyle", "benchmarkLines",
     # KPI
     "kpiLabel", "kpiContextTemplate", "kpiBenchmarkValue",
+    "kpiBenchmarkMultiplier", "kpiBenchmarkOffset",
     "kpiBenchmarkLabel", "kpiShowBenchmarkValue", "kpiShowDelta",
     "kpiGoalDirection", "kpiAccentColor", "kpiEnableColorRules",
     "kpiColorRules", "kpiIconName", "kpiIconColor", "kpiAccentBorder",

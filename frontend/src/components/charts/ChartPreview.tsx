@@ -28,7 +28,7 @@ import { ChartType } from '@/types/api';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { getPalette, buildDimensionColorMap, ChartPaletteName, DEFAULT_CHART_THEME } from '@/lib/chartColors';
-import { resolveBenchmarkLines } from '@/lib/exploreAggregations';
+import { resolveBenchmarkLines, applyKpiBenchmarkCalc } from '@/lib/exploreAggregations';
 import type { ChartStyleConfig, NumberFormat } from '@/components/explore/ExploreChartConfig';
 import { normalizeChartStyleConfig } from '@/components/explore/ExploreChartConfig';
 import type { ConditionalFormatRule, ChartSortRule, TimeGranularity } from '@/types/api';
@@ -888,9 +888,10 @@ export function ChartPreview({
       || chartTitle
       || fallbackValueField
       || 'KPI';
-    const kpiBenchmarkValue = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
+    const kpiBenchmarkBase = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
       ? null
       : Number(style.kpiBenchmarkValue);
+    const kpiBenchmarkValue = applyKpiBenchmarkCalc(kpiBenchmarkBase, style);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}

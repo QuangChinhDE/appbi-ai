@@ -571,6 +571,21 @@ export function resolveBenchmarkLines(
   return out;
 }
 
+// KPI manual benchmark calculation (Feature): apply `base × multiplier + offset`
+// to the benchmark base (dynamic Target metric OR manual value) so a target can
+// be expressed relative to a live value, e.g. Goal × 1.1 = beat goal by 10%.
+export function applyKpiBenchmarkCalc(
+  base: number | null | undefined,
+  opts: { kpiBenchmarkMultiplier?: number | ''; kpiBenchmarkOffset?: number | '' } | null | undefined,
+): number | null {
+  if (base === null || base === undefined || !Number.isFinite(base)) return base ?? null;
+  const m = opts?.kpiBenchmarkMultiplier;
+  const o = opts?.kpiBenchmarkOffset;
+  const mult = typeof m === 'number' && Number.isFinite(m) ? m : 1;
+  const off = typeof o === 'number' && Number.isFinite(o) ? o : 0;
+  return base * mult + off;
+}
+
 /**
  * Format aggregation function name for display
  */

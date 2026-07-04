@@ -282,6 +282,11 @@ export interface ChartStyleConfig {
   kpiLabel?: string;
   kpiContextTemplate?: string;
   kpiBenchmarkValue?: number | '';
+  // Calculation on the benchmark (dynamic "Target" metric OR the manual value):
+  // final = base × multiplier + offset. Lets "[Goal] × 1.1" (110% of goal)
+  // without hand-editing the number when the goal changes.
+  kpiBenchmarkMultiplier?: number | '';
+  kpiBenchmarkOffset?: number | '';
   kpiBenchmarkLabel?: string;
   kpiShowBenchmarkValue?: boolean;
   kpiShowDelta?: boolean;
@@ -4895,13 +4900,19 @@ export function ExploreChartConfig({
             </div>
           </div>
 
+          <p className="text-[11px] leading-4 text-text-tertiary">
+            Benchmark ĐỘNG: đặt <span className="font-semibold">Target</span> ở phần Field Roles (một chỉ số) —
+            benchmark tự tính theo dữ liệu &amp; bộ lọc. Nếu không có Target thì dùng giá trị thủ công dưới đây.
+            Công thức bên dưới áp cho CẢ hai: <span className="font-mono">benchmark × hệ số + cộng thêm</span> (vd × 1.1 = vượt mục tiêu 10%).
+          </p>
+
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Manual Benchmark</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark thủ công (giá trị)</label>
               <input
                 type="number"
                 value={normalizedStyleConfig.kpiBenchmarkValue ?? ''}
-                placeholder="Optional"
+                placeholder="Tùy chọn (nếu không đặt Target)"
                 onChange={e => updStyle({
                   kpiBenchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
                 })}
@@ -4910,12 +4921,36 @@ export function ExploreChartConfig({
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Label</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Nhãn benchmark</label>
               <input
                 type="text"
                 value={normalizedStyleConfig.kpiBenchmarkLabel || ''}
                 placeholder="Target"
                 onChange={e => updStyle({ kpiBenchmarkLabel: e.target.value })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Hệ số nhân (×)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={normalizedStyleConfig.kpiBenchmarkMultiplier ?? ''}
+                placeholder="1 (vd 1.1 = +10%)"
+                onChange={e => updStyle({ kpiBenchmarkMultiplier: e.target.value === '' ? '' : Number(e.target.value) })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Cộng thêm (+)</label>
+              <input
+                type="number"
+                value={normalizedStyleConfig.kpiBenchmarkOffset ?? ''}
+                placeholder="0"
+                onChange={e => updStyle({ kpiBenchmarkOffset: e.target.value === '' ? '' : Number(e.target.value) })}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
               />
             </div>
@@ -5290,7 +5325,7 @@ export function ExploreChartConfig({
           {['GAUGE', 'BULLET'].includes(chartType) && <>
             <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Target — Benchmark động (chỉ số)" hint="Chọn 1 chỉ số làm benchmark động (tự tính theo dữ liệu + bộ lọc). Áp công thức ×/+ ở phần KPI để đặt vd Goal × 1.1." single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ benchmarkMetric: v[0] })} />
           </>}
 

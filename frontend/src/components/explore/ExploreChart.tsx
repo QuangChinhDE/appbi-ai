@@ -29,7 +29,7 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
-import { resolveBenchmarkLines } from '@/lib/exploreAggregations';
+import { resolveBenchmarkLines, applyKpiBenchmarkCalc } from '@/lib/exploreAggregations';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
@@ -2369,11 +2369,13 @@ function ExploreChartInner({
   if (type === 'KPI') {
     if (!kpiMetric || kpiValue === undefined) return <EmptyState message={t('explore.emptyState.kpi')} />;
     const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric, labelMap);
-    const benchmarkValue = kpiBenchmarkValue ?? (
+    const benchmarkBase = kpiBenchmarkValue ?? (
       style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
         ? null
         : Number(style.kpiBenchmarkValue)
     );
+    // Apply the benchmark calculation (× multiplier + offset), e.g. Goal × 1.1.
+    const benchmarkValue = applyKpiBenchmarkCalc(benchmarkBase, style);
     // Phase-15.86 — KPI per-metric format precedence. If the user set a
     // per-series format on the KPI's metric, pass that into KpiCard
     // instead of the global numberFormat. Lets a $-format KPI sit next
