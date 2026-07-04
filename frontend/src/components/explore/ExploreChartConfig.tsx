@@ -576,6 +576,10 @@ export function normalizeChartStyleConfig(
       value: Number.isFinite(Number(rule.value)) ? Number(rule.value) : 0,
       color: normalizeColorInput(rule.color || '#16a34a', '#16a34a'),
       label: rule.label?.trim() || undefined,
+      // Preserve dynamic-threshold fields (source/multiplier/offset).
+      source: rule.source === 'benchmark' ? 'benchmark' : 'value',
+      ...(typeof rule.multiplier === 'number' ? { multiplier: rule.multiplier } : {}),
+      ...(typeof rule.offset === 'number' ? { offset: rule.offset } : {}),
     }));
   }
 
@@ -5024,7 +5028,7 @@ export function ExploreChartConfig({
 
                   <div className="grid grid-cols-[96px_1fr] gap-2">
                     <div>
-                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Operator</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Toán tử</label>
                       <select
                         value={rule.operator}
                         onChange={e => updStyle({
@@ -5043,7 +5047,69 @@ export function ExploreChartConfig({
                     </div>
 
                     <div>
-                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Value</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Nguồn ngưỡng</label>
+                      <select
+                        value={rule.source === 'benchmark' ? 'benchmark' : 'value'}
+                        onChange={e => updStyle({
+                          kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                            ruleIndex === index
+                              ? { ...currentRule, source: e.target.value === 'benchmark' ? 'benchmark' : 'value' }
+                              : currentRule
+                          )),
+                        })}
+                        className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                      >
+                        <option value="value">Giá trị cố định</option>
+                        <option value="benchmark">So với Target / Benchmark</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {rule.source === 'benchmark' ? (
+                    <div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">× Hệ số</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={rule.multiplier ?? 1}
+                            placeholder="1"
+                            onChange={e => updStyle({
+                              kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                                ruleIndex === index
+                                  ? { ...currentRule, multiplier: e.target.value === '' ? undefined : Number(e.target.value) }
+                                  : currentRule
+                              )),
+                            })}
+                            className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">+ Cộng thêm</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={rule.offset ?? 0}
+                            placeholder="0"
+                            onChange={e => updStyle({
+                              kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                                ruleIndex === index
+                                  ? { ...currentRule, offset: e.target.value === '' ? undefined : Number(e.target.value) }
+                                  : currentRule
+                              )),
+                            })}
+                            className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                          />
+                        </div>
+                      </div>
+                      <p className="mt-1 text-[10px] leading-tight text-text-quaternary">
+                        Ngưỡng = Target/Benchmark × Hệ số + Cộng thêm. Ví dụ × 0.9 = 90% mục tiêu.
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Giá trị</label>
                       <input
                         type="number"
                         value={rule.value}
@@ -5057,7 +5123,7 @@ export function ExploreChartConfig({
                         className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                       />
                     </div>
-                  </div>
+                  )}
 
                   <div>
                     <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Status Label</label>

@@ -155,20 +155,34 @@ function formatNumericValue(
   });
 }
 
-function evaluateRule(value: number, rule: KpiValueColorRule): boolean {
+// Resolve a rule's comparison threshold. Static (`value`) or dynamic — the KPI's
+// benchmark/Target — with an optional formula (× multiplier + offset), e.g.
+// Target × 1.2. Returns null when a benchmark-source rule has no benchmark
+// (rule can't apply).
+function resolveRuleThreshold(rule: KpiValueColorRule, benchmark: number | null): number | null {
+  const mult = typeof rule.multiplier === 'number' && Number.isFinite(rule.multiplier) ? rule.multiplier : 1;
+  const off = typeof rule.offset === 'number' && Number.isFinite(rule.offset) ? rule.offset : 0;
+  const base = rule.source === 'benchmark' ? benchmark : rule.value;
+  if (base === null || base === undefined || !Number.isFinite(base)) return null;
+  return base * mult + off;
+}
+
+function evaluateRule(value: number, rule: KpiValueColorRule, benchmark: number | null): boolean {
+  const threshold = resolveRuleThreshold(rule, benchmark);
+  if (threshold === null) return false;
   switch (rule.operator) {
     case '>':
-      return value > rule.value;
+      return value > threshold;
     case '<':
-      return value < rule.value;
+      return value < threshold;
     case '=':
-      return value === rule.value;
+      return value === threshold;
     case '>=':
-      return value >= rule.value;
+      return value >= threshold;
     case '<=':
-      return value <= rule.value;
+      return value <= threshold;
     case '!=':
-      return value !== rule.value;
+      return value !== threshold;
     default:
       return false;
   }
@@ -271,7 +285,7 @@ export function KpiCard({
   const numericValue = toNumber(value);
   const numericBenchmark = toNumber(benchmarkValue);
   const matchedRule = enableColorRules && numericValue !== null
-    ? colorRules.find((rule) => evaluateRule(numericValue, rule))
+    ? colorRules.find((rule) => evaluateRule(numericValue, rule, numericBenchmark))
     : undefined;
   const formattedValue = formatNumericValue(value, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });
   const formattedBenchmark = formatNumericValue(numericBenchmark, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });

@@ -145,6 +145,17 @@ export interface KpiValueColorRule {
   value: number;
   color: string;
   label?: string;
+  /**
+   * Dynamic threshold source:
+   *  - 'value'      → compare against the static `value` (default / legacy).
+   *  - 'benchmark'  → compare against the KPI's Target/benchmark value (which can
+   *                   itself be a dynamic metric, e.g. Goal/Budget/Target). The
+   *                   `multiplier`/`offset` form a simple formula, e.g.
+   *                   benchmark × 1.2 or benchmark + 10.
+   */
+  source?: 'value' | 'benchmark';
+  multiplier?: number;
+  offset?: number;
 }
 
 // Explore 2.0: Grouping configuration
