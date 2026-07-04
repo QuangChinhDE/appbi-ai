@@ -1,13 +1,15 @@
 /**
  * Explore 2.0: Aggregation, grouping, sorting, and conditional formatting utilities
  */
-import { 
-  AggregationFn, 
-  MeasureConfig, 
-  SortConfig, 
-  ConditionalFormatRule, 
+import {
+  AggregationFn,
+  MeasureConfig,
+  SortConfig,
+  ConditionalFormatRule,
   TableHeatmapRule,
-  GroupingConfig 
+  GroupingConfig,
+  BenchmarkLineDef,
+  BenchmarkAggregate,
 } from '@/types/api';
 
 export interface TableHeatmapStats {
@@ -489,6 +491,84 @@ export function getCellStyle(
   }
 
   return {};
+}
+
+// ── Benchmark / reference lines ──────────────────────────────────────────────
+// Resolve the chart's benchmark lines (multiple, each fixed OR a dynamic
+// aggregate of a metric over the CURRENT rows) into concrete y/x values +
+// styling. Shared by both chart renderers (ExploreChart + ChartPreview).
+export interface ResolvedBenchmarkLine {
+  value: number;
+  label?: string;
+  color: string;
+  dash?: string; // strokeDasharray; undefined = solid
+}
+
+interface BenchmarkStyleInput {
+  showBenchmarkLine?: boolean;
+  benchmarkValue?: number | '';
+  benchmarkLabel?: string;
+  benchmarkColor?: string;
+  benchmarkLineStyle?: 'solid' | 'dashed';
+  benchmarkLines?: BenchmarkLineDef[];
+}
+
+function aggregateBenchmark(nums: number[], agg: BenchmarkAggregate, pct?: number): number | null {
+  if (nums.length === 0) return null;
+  switch (agg) {
+    case 'sum': return nums.reduce((a, b) => a + b, 0);
+    case 'avg': return nums.reduce((a, b) => a + b, 0) / nums.length;
+    case 'min': return Math.min(...nums);
+    case 'max': return Math.max(...nums);
+    case 'median': {
+      const s = [...nums].sort((a, b) => a - b);
+      const m = Math.floor(s.length / 2);
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    }
+    case 'percentile': return percentileValue([...nums].sort((a, b) => a - b), pct ?? 50);
+    default: return null;
+  }
+}
+
+export function resolveBenchmarkLines(
+  style: BenchmarkStyleInput | null | undefined,
+  rows: Record<string, any>[],
+): ResolvedBenchmarkLine[] {
+  if (!style || !style.showBenchmarkLine) return [];
+  // New array model wins; else synthesize a single line from the legacy scalars.
+  let defs: BenchmarkLineDef[] = [];
+  if (Array.isArray(style.benchmarkLines) && style.benchmarkLines.length > 0) {
+    defs = style.benchmarkLines;
+  } else if (style.benchmarkValue !== '' && style.benchmarkValue != null) {
+    defs = [{
+      source: 'value',
+      value: style.benchmarkValue,
+      label: style.benchmarkLabel,
+      color: style.benchmarkColor,
+      lineStyle: style.benchmarkLineStyle,
+    }];
+  }
+  const out: ResolvedBenchmarkLine[] = [];
+  for (const d of defs) {
+    let val: number | null = null;
+    if ((d.source ?? 'value') === 'aggregate' && d.field) {
+      const nums = (rows || [])
+        .map((r) => parseNumericCellValue(r?.[d.field as string]))
+        .filter((v): v is number => v !== null);
+      val = aggregateBenchmark(nums, d.aggregate ?? 'avg', d.percentile);
+    } else {
+      const n = typeof d.value === 'number' ? d.value : Number(d.value);
+      val = Number.isFinite(n) ? n : null;
+    }
+    if (val === null) continue;
+    out.push({
+      value: val,
+      label: (d.label ?? '').trim() || undefined,
+      color: d.color || '#dc2626',
+      dash: d.lineStyle === 'solid' ? undefined : '6 4',
+    });
+  }
+  return out;
 }
 
 /**

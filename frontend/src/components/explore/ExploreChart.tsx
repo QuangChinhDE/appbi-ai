@@ -29,6 +29,7 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
+import { resolveBenchmarkLines } from '@/lib/exploreAggregations';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
@@ -1110,11 +1111,6 @@ function CustomTooltip({ active, payload, label, series, style, fontSize, xField
   );
 }
 
-function getBenchmarkValue(style?: ChartStyleConfig): number | null {
-  if (style?.benchmarkValue === '' || style?.benchmarkValue == null) return null;
-  const value = Number(style.benchmarkValue);
-  return Number.isFinite(value) ? value : null;
-}
 
 function parseDateAxisValue(value: unknown): number | null {
   if (value instanceof Date) {
@@ -1963,11 +1959,6 @@ function ExploreChartInner({
     || (type === 'BAR_LINE' ? comboLineSeries?.[0]?.label : undefined)
     || undefined;
   const scatterLabelField = style.scatterLabelField?.trim() || undefined;
-  const benchmarkValue = getBenchmarkValue(style);
-  const showBenchmarkLine = Boolean(style.showBenchmarkLine && benchmarkValue !== null);
-  const benchmarkColor = style.benchmarkColor || '#dc2626';
-  const benchmarkDash = style.benchmarkLineStyle === 'solid' ? undefined : '6 4';
-  const benchmarkLabel = style.benchmarkLabel?.trim() || undefined;
 
   // PBI parity: a BAR/COLUMN chart's value axis ALWAYS includes 0 as the
   // baseline. Recharts' default 'auto' domain zooms to [dataMin, dataMax],
@@ -2306,26 +2297,30 @@ function ExploreChartInner({
     });
   };
 
-  const renderBenchmarkLine = (axis: 'x' | 'y') => {
-    if (!showBenchmarkLine || benchmarkValue === null) return null;
-
-    return (
+  // Multiple benchmark lines (fixed + dynamic-aggregate), resolved over the rows
+  // actually plotted so aggregate lines (avg/median/…) react to filters. axis
+  // 'x' for horizontal bars, 'y' otherwise.
+  const renderBenchmarkLines = (axis: 'x' | 'y', rows: Record<string, any>[]) => {
+    const lines = resolveBenchmarkLines(style, rows);
+    if (lines.length === 0) return null;
+    return lines.map((line, i) => (
       <ReferenceLine
+        key={`benchmark-${i}`}
         ifOverflow="extendDomain"
-        stroke={benchmarkColor}
+        stroke={line.color}
         strokeWidth={2}
-        strokeDasharray={benchmarkDash}
-        label={benchmarkLabel
+        strokeDasharray={line.dash}
+        label={line.label
           ? {
-              value: benchmarkLabel,
+              value: line.label,
               position: 'insideTopRight',
-              fill: benchmarkColor,
+              fill: line.color,
               fontSize: Math.max(fontSize - 1, 10),
             }
           : undefined}
-        {...(axis === 'x' ? { x: benchmarkValue } : { y: benchmarkValue })}
+        {...(axis === 'x' ? { x: line.value } : { y: line.value })}
       />
-    );
+    ));
   };
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ KPI ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -2827,7 +2822,7 @@ function ExploreChartInner({
                   );
                 })()}
               </Scatter>
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', sortedScatterPoints)}
               {renderAnnotations()}
             </ScatterChart>
           </ResponsiveContainer>
@@ -3168,7 +3163,7 @@ function ExploreChartInner({
                   );
                 });
               })()}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </BarChart>,
             displayData.length,
@@ -3241,7 +3236,7 @@ function ExploreChartInner({
                   </React.Fragment>
                 );
               })}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </AreaChart>,
             displayData.length,
@@ -3307,7 +3302,7 @@ function ExploreChartInner({
                   </React.Fragment>
                 );
               })}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </LineChart>,
             displayData.length,
@@ -3393,7 +3388,7 @@ function ExploreChartInner({
             </Bar>
           );
         })}
-        {renderBenchmarkLine('x')}
+        {renderBenchmarkLines('x', hbarData)}
         {renderAnnotations()}
       </BarChart>
     );
@@ -3583,7 +3578,7 @@ function ExploreChartInner({
                   </>
                 )
               }
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
               {renderAnnotations()}
             </ComposedChart>,
             displayData.length,
@@ -3655,7 +3650,7 @@ function ExploreChartInner({
                 </Bar>
               );
             })}
-            {renderBenchmarkLine('y')}
+            {renderBenchmarkLines('y', barChartData)}
             {renderAnnotations()}
           </BarChart>,
           barChartData.length,

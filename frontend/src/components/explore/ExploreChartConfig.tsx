@@ -41,6 +41,8 @@ import {
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 import type {
   ChartBenchmarkLineStyle,
+  BenchmarkLineDef,
+  BenchmarkAggregate,
   ChartSortRule,
   ConditionalFormatRule,
   KpiGoalDirection,
@@ -267,8 +269,11 @@ export interface ChartStyleConfig {
   // Line
   showDots?: boolean;
   lineStyle?: 'solid' | 'dashed';
-  // Benchmark line
+  // Benchmark line. showBenchmarkLine is the master enable. `benchmarkLines` is
+  // the multi-line model (fixed or dynamic-aggregate); the legacy single scalars
+  // below are kept for back-compat and folded into a one-element list on load.
   showBenchmarkLine?: boolean;
+  benchmarkLines?: BenchmarkLineDef[];
   benchmarkValue?: number | '';
   benchmarkLabel?: string;
   benchmarkColor?: string;
@@ -542,6 +547,19 @@ export function normalizeChartStyleConfig(
   if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'showBenchmarkLine')) {
     normalized.showBenchmarkLine = rawStyleConfig?.benchmarkValue !== undefined && rawStyleConfig?.benchmarkValue !== '';
   }
+  // Fold the legacy single benchmark scalars into the multi-line array so the
+  // editor shows the existing line. Only when no array is already present.
+  if ((!Array.isArray(normalized.benchmarkLines) || normalized.benchmarkLines.length === 0)
+      && normalized.benchmarkValue !== undefined && normalized.benchmarkValue !== '') {
+    normalized.benchmarkLines = [{
+      source: 'value',
+      value: normalized.benchmarkValue,
+      label: normalized.benchmarkLabel,
+      color: normalized.benchmarkColor,
+      lineStyle: normalized.benchmarkLineStyle,
+    }];
+  }
+  if (!Array.isArray(normalized.benchmarkLines)) normalized.benchmarkLines = [];
 
   normalized.fontSize = normalizePixelSize(normalized.fontSize, DEFAULT_STYLE_CONFIG.fontSize, 8, 48);
   normalized.chartTitleFontSize = normalizePixelSize(normalized.chartTitleFontSize, undefined, 10, 48);
@@ -3572,6 +3590,22 @@ export function ExploreChartConfig({
     'LINE', 'TIME_SERIES', 'AREA', 'SCATTER',
   ].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
+  // Metric keys the chart plots — a dynamic-aggregate benchmark reads one of
+  // these off the data rows (metricKey = `${agg}__${field}`, present per bucket).
+  const benchmarkFieldOptions = [
+    ...(normalizedRoleConfig.metrics || []),
+    ...(normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : []),
+  ].map((m) => ({ value: metricKey(m), label: `${m.agg}(${m.field})` }));
+  const benchmarkLines = normalizedStyleConfig.benchmarkLines ?? [];
+  const setBenchmarkLines = (next: BenchmarkLineDef[]) => updStyle({ benchmarkLines: next });
+  const addBenchmarkLine = () => setBenchmarkLines([
+    ...benchmarkLines,
+    { source: 'value', value: '', label: `Mục tiêu ${benchmarkLines.length + 1}`, color: '#dc2626', lineStyle: 'dashed' },
+  ]);
+  const updateBenchmarkLine = (i: number, patch: Partial<BenchmarkLineDef>) =>
+    setBenchmarkLines(benchmarkLines.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const removeBenchmarkLine = (i: number) =>
+    setBenchmarkLines(benchmarkLines.filter((_, idx) => idx !== i));
   const supportsDataSection = !isTableLike && !isNoDimensionMetric;
   const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
   const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
@@ -6175,65 +6209,124 @@ export function ExploreChartConfig({
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Bar options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {supportsBenchmarkLine && (
-        <Disclosure title="Benchmark Line" hint="Optional reference line for the numeric axis.">
+        <Disclosure
+          title="Đường benchmark (Benchmark lines)"
+          hint="Nhiều đường mục tiêu cùng lúc (vd Tối thiểu / Kỳ vọng / Xuất sắc). Mỗi đường là giá trị cố định HOẶC động (trung bình/trung vị/max/min/phân vị của một chỉ số — tự đổi theo bộ lọc)."
+        >
           <Toggle
-            label="Enable benchmark"
+            label="Bật đường benchmark"
             checked={normalizedStyleConfig.showBenchmarkLine ?? false}
             onChange={v => updStyle({ showBenchmarkLine: v })}
           />
 
           {normalizedStyleConfig.showBenchmarkLine && (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Value</label>
-                  <input
-                    type="number"
-                    value={normalizedStyleConfig.benchmarkValue ?? ''}
-                    placeholder="1000"
-                    onChange={e => updStyle({
-                      benchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
-                    })}
-                    className={`w-full px-2 py-1.5 text-xs border rounded-md ${
-                      normalizedStyleConfig.benchmarkValue === ''
-                        ? 'border-warning/40 bg-warning/10'
-                        : 'border-[rgb(var(--border-strong))]'
-                    }`}
-                  />
-                </div>
+            <div className="mt-2 space-y-3">
+              {benchmarkLines.map((line, index) => {
+                const src = line.source ?? 'value';
+                return (
+                  <div key={`bench-${index}`} className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">Đường {index + 1}</span>
+                      <button type="button" onClick={() => removeBenchmarkLine(index)}
+                        className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger" title="Xoá đường">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Label</label>
-                  <input
-                    type="text"
-                    value={normalizedStyleConfig.benchmarkLabel ?? ''}
-                    placeholder="Benchmark"
-                    onChange={e => updStyle({ benchmarkLabel: e.target.value })}
-                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
-                  />
-                </div>
-              </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Nguồn giá trị</label>
+                        <select
+                          value={src}
+                          onChange={e => updateBenchmarkLine(index, { source: e.target.value as BenchmarkLineDef['source'] })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                        >
+                          <option value="value">Giá trị cố định</option>
+                          <option value="aggregate">Động (theo chỉ số)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Nhãn</label>
+                        <input type="text" value={line.label ?? ''} placeholder="vd Mục tiêu"
+                          onChange={e => updateBenchmarkLine(index, { label: e.target.value })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs" />
+                      </div>
+                    </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <ColorField
-                  label="Line Color"
-                  value={normalizedStyleConfig.benchmarkColor || '#dc2626'}
-                  onChange={value => updStyle({ benchmarkColor: value })}
-                />
+                    {src === 'aggregate' ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold text-text-secondary">Chỉ số</label>
+                          <select
+                            value={line.field ?? ''}
+                            onChange={e => updateBenchmarkLine(index, { field: e.target.value || undefined })}
+                            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                          >
+                            <option value="">— chọn chỉ số —</option>
+                            {benchmarkFieldOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold text-text-secondary">Phép tính</label>
+                          <select
+                            value={line.aggregate ?? 'avg'}
+                            onChange={e => updateBenchmarkLine(index, { aggregate: e.target.value as BenchmarkAggregate })}
+                            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                          >
+                            <option value="avg">Trung bình</option>
+                            <option value="median">Trung vị</option>
+                            <option value="min">Nhỏ nhất</option>
+                            <option value="max">Lớn nhất</option>
+                            <option value="sum">Tổng</option>
+                            <option value="percentile">Phân vị</option>
+                          </select>
+                        </div>
+                        {line.aggregate === 'percentile' && (
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Phân vị (0–100)</label>
+                            <input type="number" value={line.percentile ?? 90} placeholder="90"
+                              onChange={e => updateBenchmarkLine(index, { percentile: e.target.value === '' ? undefined : Number(e.target.value) })}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs" />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Giá trị</label>
+                        <input type="number" value={line.value ?? ''} placeholder="vd 1000"
+                          onChange={e => updateBenchmarkLine(index, { value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className={`w-full rounded-md border px-2 py-1.5 text-xs ${line.value === '' || line.value == null ? 'border-warning/40 bg-warning/10' : 'border-[rgb(var(--border-strong))] bg-surface-1'}`} />
+                      </div>
+                    )}
 
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Style</label>
-                  <select
-                    value={normalizedStyleConfig.benchmarkLineStyle || 'dashed'}
-                    onChange={e => updStyle({ benchmarkLineStyle: e.target.value as ChartBenchmarkLineStyle })}
-                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                  </select>
-                </div>
-              </div>
-            </>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ColorField label="Màu đường" value={line.color || '#dc2626'}
+                        onChange={value => updateBenchmarkLine(index, { color: value })} />
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Kiểu nét</label>
+                        <select
+                          value={line.lineStyle ?? 'dashed'}
+                          onChange={e => updateBenchmarkLine(index, { lineStyle: e.target.value as ChartBenchmarkLineStyle })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                        >
+                          <option value="solid">Liền</option>
+                          <option value="dashed">Đứt</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {src === 'aggregate' && !line.field && (
+                      <p className="text-[11px] text-warning">Chọn chỉ số để kích hoạt đường động này.</p>
+                    )}
+                  </div>
+                );
+              })}
+
+              <button type="button" onClick={addBenchmarkLine}
+                className="w-full rounded-md border border-dashed border-brand/40 bg-brand/10 px-3 py-2 text-xs font-medium text-brand hover:bg-brand/15">
+                + Thêm đường benchmark
+              </button>
+            </div>
           )}
         </Disclosure>
       )}

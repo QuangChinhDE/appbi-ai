@@ -106,6 +106,31 @@ export interface TableSummaryRowConfig {
 export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
 export type KpiGoalDirection = 'up' | 'down';
 
+// Benchmark line aggregate (dynamic value computed over the plotted data — like
+// a Tableau/PBI reference line). `percentile` uses `percentile` (0–100).
+export type BenchmarkAggregate = 'avg' | 'median' | 'min' | 'max' | 'sum' | 'percentile';
+
+/**
+ * One benchmark / reference line on a bar/line/area chart. Multiple lines are
+ * supported (e.g. "Minimum target", "Expected", "Excellent"). The value is
+ * either a FIXED number or DYNAMIC — an aggregate of a chosen metric computed
+ * over the current (filtered) data, so the line moves with the data.
+ */
+export interface BenchmarkLineDef {
+  id?: string;
+  label?: string;
+  color?: string;
+  lineStyle?: ChartBenchmarkLineStyle;
+  /** 'value' → fixed number; 'aggregate' → computed from `field`. */
+  source?: 'value' | 'aggregate';
+  value?: number | '';
+  /** Metric key (agg__field) to aggregate for source='aggregate'. */
+  field?: string;
+  aggregate?: BenchmarkAggregate;
+  /** 0–100 for aggregate='percentile'. */
+  percentile?: number;
+}
+
 // Chart-level sort rule (applied client-side before rendering)
 export interface ChartSortRule {
   field: string;
