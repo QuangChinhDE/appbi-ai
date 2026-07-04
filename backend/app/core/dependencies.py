@@ -243,6 +243,17 @@ def require_permission(module: str, min_level: str = "view"):
     async def _check(user: User = Depends(get_current_user)) -> User:
         perms = _normalize_permissions(user)
         user_level = perms.get(module, "none")
+        # Admin (settings=full) implicitly gets access to modules added AFTER
+        # their permissions row was created (no key stored yet), so newly enabled
+        # modules like govern/observability aren't invisible to existing admins.
+        # Explicit "none" is respected; scoped-token caps still apply.
+        if (
+            module != "settings"
+            and user_level == "none"
+            and module not in (user.permissions or {})
+            and _sanitize_permission_level(perms.get("settings")) == "full"
+        ):
+            user_level = _cap_effective_permission(user, module, "full")
         if LEVEL_ORDER.get(user_level, 0) < LEVEL_ORDER.get(min_level, 0):
             _dep_logger.warning(
                 "PERMISSION_DENIED user=%s module=%s required=%s actual=%s",
