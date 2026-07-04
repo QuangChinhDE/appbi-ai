@@ -2202,8 +2202,8 @@ export default function DashboardDetailPage() {
       setIsExportDialogOpen(false);
       if (result === 'saved') {
         try { previewWindow?.close(); } catch { /* noop */ }
-        toast.info('Đã tải PDF về máy', {
-          description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',
+        toast.info(t('dashboards.detail.pdfDownloaded'), {
+          description: t('dashboards.detail.pdfPopupBlocked'),
         });
       }
     } catch (err) {
@@ -3008,10 +3008,10 @@ export default function DashboardDetailPage() {
         {publishConflict && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-sm rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-lg">
-              <h2 className="text-sm font-semibold text-text-primary">Trùng chỗ sửa</h2>
+              <h2 className="text-sm font-semibold text-text-primary">{t('dashboards.detail.publishConflictTitle')}</h2>
               <p className="mt-1.5 text-[13px] leading-5 text-text-secondary">
-                {publishConflict.editor || 'Người khác'} vừa lưu{' '}
-                <b>{publishConflict.tiles && publishConflict.tiles.length > 0 ? publishConflict.tiles.join(', ') : 'biểu đồ này'}</b>.
+                {t('dashboards.detail.publishConflictSaved', { editor: publishConflict.editor || t('dashboards.detail.someoneElse') })}{' '}
+                <b>{publishConflict.tiles && publishConflict.tiles.length > 0 ? publishConflict.tiles.join(', ') : t('dashboards.detail.thisChart')}</b>.
               </p>
               <div className="mt-3 flex items-center justify-end gap-2">
                 <button
@@ -3019,21 +3019,21 @@ export default function DashboardDetailPage() {
                   onClick={() => setPublishConflict(null)}
                   className="rounded-md px-2.5 py-1.5 text-[13px] text-text-tertiary hover:text-text-primary"
                 >
-                  Để sau
+                  {t('dashboards.detail.conflictLater')}
                 </button>
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
                   className="rounded-md bg-brand px-3 py-1.5 text-[13px] font-medium text-white hover:opacity-90"
                 >
-                  Tải lại
+                  {t('dashboards.detail.conflictReload')}
                 </button>
                 <button
                   type="button"
                   onClick={handleForcePublish}
                   className="rounded-md border border-danger/40 px-3 py-1.5 text-[13px] font-medium text-danger hover:bg-danger/10"
                 >
-                  Ghi đè
+                  {t('dashboards.detail.conflictOverwrite')}
                 </button>
               </div>
             </div>

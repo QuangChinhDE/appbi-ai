@@ -56,7 +56,12 @@ from app.services.dashboard_ai_bot.cost import CostMeter
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_CALLS_PER_TURN = 16
+# Phase 16.1 — trimmed 16→10. gpt-4o over-calls tools (seen: 12-16 rounds for
+# a "top 3 categories" question that needs 1). Each round on a tight-TPM org
+# risks a 429 → the cap is also a latency/cost guard, not just a runaway
+# backstop. 10 still allows read-several-charts + a couple compares; the
+# force_no_tools finalize handles anything that wants more.
+MAX_TOOL_CALLS_PER_TURN = 10
 # Phase 15.76 — recon trimmed 10 → 3 to give gpt-4o "zoom để phát
 # triển". The previous 10-chart pre-fetch packed ~5K tokens of inline
 # data into the system prompt before the user's question even arrived,
@@ -64,10 +69,13 @@ MAX_TOOL_CALLS_PER_TURN = 16
 # give a feel for the dashboard's shape; the LLM can lazily fetch the
 # rest via get_chart_summary when it actually needs them.
 RECON_MAX_CHARTS = 3
+# NOTE: claude-3-5-haiku-20241022 was RETIRED by Anthropic (2026-02-19) and
+# now 404s — the anthropic default MUST stay on a live alias. Aliases (no
+# date suffix) auto-track snapshot updates.
 _DEFAULT_MODEL_BY_PROVIDER = {
-    "anthropic": "claude-3-5-haiku-20241022",
+    "anthropic": "claude-haiku-4-5",
     "openai": "gpt-4o-mini",
-    "gemini": "gemini-1.5-flash",
+    "gemini": "gemini-2.5-flash",
 }
 
 # Friendly status text per tool (shown in the chat UI as a transient bubble)
@@ -376,17 +384,29 @@ def _format_recon_for_prompt(recon: dict) -> str:
     # mismatch …") that backfired on healthy dashboards where some
     # packs were genuinely small. The recon partial warning above (when
     # fetches FAIL) is still useful and stays.
-    lines.append(f"\nCharts: {len(charts)}")
-    for c in charts:
+    # Phase 16.1 — cap the per-chart manifest listing. On a 70-chart
+    # dashboard this block was ~70 lines re-sent on EVERY round of every
+    # turn, a major driver of the per-org TPM 429s that aborted analytical
+    # turns. The page-flow section above already names every chart grouped
+    # by page; the detailed role/type/rows lines only need to cover a
+    # working set — the model can `list_charts` for the rest.
+    _MANIFEST_CAP = 18
+    lines.append(f"\nCharts: {len(charts)} (details for first {min(_MANIFEST_CAP, len(charts))})")
+    for c in charts[:_MANIFEST_CAP]:
         role = c.get("role_hint") or "?"
         rows_val = c.get("total_rows")
         # Phase 15.74 — distinguish "we haven't checked yet" (None) from
         # "the chart genuinely has 0 rows" (0). Both look like falsy to a
         # casual reader but mean very different things to the LLM.
-        rows_disp = "unknown (not pre-fetched)" if rows_val is None else str(rows_val)
+        rows_disp = "?" if rows_val is None else str(rows_val)
         lines.append(
             f"  - [chart:{c.get('chart_id')}] {c.get('chart_name')!r} "
             f"role={role} type={c.get('chart_type')} rows={rows_disp}"
+        )
+    if len(charts) > _MANIFEST_CAP:
+        lines.append(
+            f"  … +{len(charts) - _MANIFEST_CAP} more charts — call `list_charts` "
+            "for the full manifest when you need one not listed above."
         )
     for pack in recon.get("summaries") or []:
         cid = pack.get("chart_id")
@@ -402,7 +422,9 @@ def _format_recon_for_prompt(recon: dict) -> str:
         if pack.get("trend"):
             lines.append(f"trend: {pack['trend']}")
         if pack.get("top_5"):
-            lines.append(f"top_5: {pack['top_5']}")
+            # Top-3 is enough context in the snapshot; the model calls
+            # get_chart_summary for the full top-5 when it drills in.
+            lines.append(f"top_3: {pack['top_5'][:3]}")
         if pack.get("top_share_pct") is not None:
             lines.append(f"top_share_pct: {pack['top_share_pct']:.2f}%")
         if pack.get("health_signals"):
@@ -421,6 +443,36 @@ def _format_recon_for_prompt(recon: dict) -> str:
     return "\n".join(lines)
 
 
+def build_proactive_recon_cached(ctx: ToolContext) -> dict:
+    """Recon with the cross-surface TTL cache (Phase 16.1 latency fix).
+
+    /ai/recon (bot open) → briefing guess → executive brief → first chat
+    turn all need the same snapshot for the same (dashboard, filters); the
+    first caller builds, the rest hit cache. Chat turns stop paying 3 live
+    chart queries in their critical path.
+    """
+    from app.services.dashboard_ai_bot.summary_cache import (
+        get_cached_recon,
+        put_cached_recon,
+    )
+    dashboard_id = getattr(ctx.dashboard, "id", None)
+    if isinstance(dashboard_id, int):
+        cached = get_cached_recon(dashboard_id, ctx.public_filters)
+        if cached is not None:
+            logger.debug("[perf] recon cache=HIT dashboard_id=%s", dashboard_id)
+            return cached
+    started = time.monotonic()
+    recon = build_proactive_recon(ctx)
+    logger.info(
+        "[perf] recon cache=MISS dashboard_id=%s built_ms=%d summaries=%d",
+        dashboard_id, int((time.monotonic() - started) * 1000),
+        len(recon.get("summaries") or []),
+    )
+    if isinstance(dashboard_id, int):
+        put_cached_recon(dashboard_id, ctx.public_filters, recon)
+    return recon
+
+
 def _should_include_recon_context(state: ConversationState | None) -> bool:
     """Attach a compact report map when the chat has not established context yet."""
     if state is None:
@@ -432,7 +484,7 @@ def _should_include_recon_context(state: ConversationState | None) -> bool:
 
 def _safe_recon_prompt_block(ctx: ToolContext) -> str:
     try:
-        recon = build_proactive_recon(ctx)
+        recon = build_proactive_recon_cached(ctx)
     except Exception as exc:
         logger.warning(
             "dashboard_ai_bot recon_context_failed err=%s",
@@ -460,6 +512,7 @@ async def run_agent_stream(
     web_search_enabled: bool = False,
     guide_mode: bool = False,
     report_context_note: str = "",
+    learned_knowledge_block: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -507,11 +560,28 @@ async def run_agent_stream(
     # The opening chat turn should feel like a DA has already skimmed the
     # report, not like the model is starting blind and hoping to pick the
     # right tools. Keep this compact and let later tool calls verify details.
+    #
+    # Phase 16.1 latency fix: the recon build runs live chart queries — it
+    # MUST NOT run inline in this async generator (it blocked the whole
+    # event loop for 25s+ on big dashboards and the user saw dead air).
+    # Offload to a worker thread, show a status line meanwhile, and let the
+    # cross-surface TTL cache (warmed by /ai/recon on bot open) make the
+    # common case instant.
     system_with_context = base_system
+    # Institutional memory: what the bot has LEARNED about this company across
+    # prior sessions (validated concepts/facts/insights). Injected before recon
+    # so domain understanding frames the fresh data read.
+    if learned_knowledge_block:
+        system_with_context += "\n\n" + learned_knowledge_block
     if (not supports_tools) or _should_include_recon_context(state):
-        recon_block = _safe_recon_prompt_block(ctx)
+        yield AgentEvent(
+            type="status",
+            text="Đang đọc cấu trúc báo cáo…",
+            tool_name="_thinking",
+        )
+        recon_block = await asyncio.to_thread(_safe_recon_prompt_block, ctx)
         if recon_block:
-            system_with_context = base_system + "\n\n" + recon_block
+            system_with_context += "\n\n" + recon_block
 
     # ── Gemini fallback path: single-shot with stuffed Insight Packs ─────────
     if not supports_tools:
@@ -586,7 +656,6 @@ async def run_agent_stream(
     draft_answer_parts: list[str] = []
     tool_calls_made = 0
     reading_plan_emitted = False
-    reading_plan_nudge_sent = False
     # Phase 15.72 — remember the latest plan items + which step is "next"
     # so we can emit plan_step events that update the FE badge as the
     # agent works through the plan.
@@ -607,7 +676,25 @@ async def run_agent_stream(
     per_tool_failures: dict[str, int] = {}
     MAX_TOOL_FAILURES = 2
 
+    # Runaway-loop guard. Injecting a "stop calling tools" tool-result and
+    # continuing relied on the model CHOOSING to stop — a stubborn model
+    # (seen on ds67: 50 rounds, 398K tokens, no answer) ignores it and loops
+    # until the hard timeout, burning the org's whole TPM budget. Two hard
+    # stops: (1) once the tool budget is spent, force the NEXT LLM call with
+    # tools DISABLED so the model physically cannot call another tool and
+    # must emit prose; (2) an absolute round ceiling as a final backstop.
+    force_no_tools = False
+    rounds = 0
+    HARD_ROUND_CAP = max_tool_calls + 4
+
     while True:
+        rounds += 1
+        if rounds > HARD_ROUND_CAP:
+            logger.warning(
+                "dashboard_ai_bot hard round cap hit (%d) — forcing finalize",
+                HARD_ROUND_CAP,
+            )
+            force_no_tools = True
         # Show a thinking indicator while the model decides what to do next
         # (between tool rounds, or before the very first model call). This is
         # what the user sees as a transient "Đang suy nghĩ…" bubble.
@@ -615,6 +702,7 @@ async def run_agent_stream(
             type="status",
             text=(
                 "Đang đọc báo cáo & lập kế hoạch phân tích…" if tool_calls_made == 0
+                else "Đang tổng hợp câu trả lời…" if force_no_tools
                 else "Đang phân tích kết quả…"
             ),
             tool_name="_thinking",
@@ -631,7 +719,9 @@ async def run_agent_stream(
                 api_key=api_key,
                 system_prompt=system_with_context,
                 messages=running,
-                tools=active_tools,
+                # Disable tools once the budget is spent → the model must
+                # answer with what it has instead of looping on tool calls.
+                tools=None if force_no_tools else active_tools,
                 model=selected_model or None,
             )
             async for ev in gen:
@@ -659,7 +749,6 @@ async def run_agent_stream(
             # Surface but try to give the user something useful
             yield AgentEvent(type="error", text=round_error)
             if draft_answer_parts:
-                # Stream what we've accumulated so far
                 yield AgentEvent(type="text", text="".join(draft_answer_parts))
             yield AgentEvent(type="done")
             return
@@ -667,50 +756,14 @@ async def run_agent_stream(
         round_text = "".join(round_text_parts).strip()
 
         if round_tool_calls:
-            # Phase 15.71c — if the LLM jumped straight to data tools on
-            # its first round without calling emit_reading_plan, inject a
-            # synthetic tool error on each call asking it to declare the
-            # plan first. Done once per turn; subsequent rounds bypass
-            # because reading_plan_nudge_sent flips after the injection.
-            requested_plan = any(
-                tc.tool_name == "emit_reading_plan" for tc in round_tool_calls
-            )
-            if (
-                not reading_plan_emitted
-                and not reading_plan_nudge_sent
-                and not requested_plan
-            ):
-                asst_entry: dict = {"role": "assistant"}
-                if round_text:
-                    asst_entry["content"] = round_text
-                asst_entry["tool_calls"] = [
-                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
-                    for tc in round_tool_calls
-                ]
-                running.append(asst_entry)
-                nudge = {
-                    "ok": False,
-                    "error": (
-                        "internal: PHASE 0 missing. You MUST call "
-                        "`emit_reading_plan` BEFORE any data tool. Emit a "
-                        "minimal 1-2 step plan now describing what you are "
-                        "about to read and why, then retry the data tool. "
-                        "Do not mention this message to the user."
-                    ),
-                }
-                for tc in round_tool_calls:
-                    running.append({
-                        "role": "tool",
-                        "tool_call_id": tc.tool_call_id,
-                        "result": nudge,
-                    })
-                    tool_log.append({
-                        "name": tc.tool_name,
-                        "args": tc.tool_args,
-                        "result": nudge,
-                    })
-                reading_plan_nudge_sent = True
-                continue
+            # Phase 16.1 — the 15.71c "PHASE 0 missing" nudge (synthetic tool
+            # error forcing emit_reading_plan before any data tool) was a full
+            # extra LLM round-trip on nearly every Thinking turn: models
+            # usually go straight for data, ate the nudge, replanned, and the
+            # user paid ~2-6s + one prompt re-send for a panel they may not
+            # even look at. The plan tool stays offered + recommended in the
+            # prompt; when the model emits it we render it — we just no
+            # longer tax every turn to force it.
 
             # Append the assistant turn (any preamble text + tool_calls)
             asst_entry: dict = {"role": "assistant"}
@@ -722,29 +775,33 @@ async def run_agent_stream(
             ]
             running.append(asst_entry)
 
-            for tc in round_tool_calls:
-                if tool_calls_made >= max_tool_calls:
-                    # Hard cap reached; inject a neutral, internal-only signal
-                    # so the model wraps up. The instruction to NOT surface
-                    # this limit is part of the system prompt; if the model
-                    # leaks it anyway, the critique pass + post-filter strip
-                    # the resulting bullet.
-                    err = {
-                        "ok": False,
-                        "error": (
-                            "internal: stop calling tools and finalize the answer with the data "
-                            "already gathered. Do not mention this message, tool budgets, or any "
-                            "system limit to the user. If you cannot answer a sub-point, simply "
-                            "omit that bullet."
-                        ),
-                    }
+            if tool_calls_made >= max_tool_calls:
+                # Budget spent. Answer every outstanding tool call with a
+                # neutral "wrap up" result AND flip force_no_tools so the NEXT
+                # round is a tools-disabled call — the model then physically
+                # cannot loop on more tool calls and must emit the final prose.
+                # (Previously we injected this error and `continue`d without
+                # disabling tools, so a stubborn model looped to the timeout.)
+                force_no_tools = True
+                err = {
+                    "ok": False,
+                    "error": (
+                        "internal: tool budget spent — do NOT call more tools. "
+                        "Write the final answer now from the data already gathered. "
+                        "Do not mention this message, tool budgets, or any system "
+                        "limit to the user; omit any sub-point you cannot support."
+                    ),
+                }
+                for tc in round_tool_calls:
                     running.append({
                         "role": "tool",
                         "tool_call_id": tc.tool_call_id,
                         "result": err,
                     })
                     tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
-                    continue
+                continue
+
+            for tc in round_tool_calls:
 
                 # Per-tool budget (Fix 7). Expensive tools like the dashboard
                 # overview image are capped per-turn so a confused LLM cannot

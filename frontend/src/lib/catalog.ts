@@ -217,6 +217,228 @@ export async function updateMetric(patch: MetricPatch): Promise<void> {
   await apiClient.patch('/catalog/govern/metric', patch);
 }
 
+// ── Managed Metrics (metrics quản trị doanh nghiệp) — AUTHORED KPIs ──────────
+export interface ManagedMetric {
+  name: string;                 // display name
+  machine_name: string;         // stable id
+  fqn: string;
+  definition?: string | null;
+  formula?: string | null;
+  unit?: string | null;
+  grain?: string | null;        // daily|weekly|monthly|quarterly|yearly|point_in_time
+  category?: string | null;
+  direction: 'up_good' | 'down_good' | 'neutral';
+  target_value?: number | null;
+  target_operator?: string | null;   // >= | <= | = | between
+  target_value2?: number | null;
+  owner?: string | null;
+  related_term_fqn?: string | null;
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  measure_ref?: string | null;
+  home_doc_id?: number | null;  // knowledge doc where this metric is DEFINED (home/SSOT)
+  anchor?: string | null;
+  synonyms: string[];
+  status: 'Draft' | 'Approved' | 'Deprecated';
+  version: number;
+  provider?: string | null;
+  updated_at?: string | null;
+  /** Resolved on LIST — title of the home doc + how many docs reuse it. */
+  home_doc_title?: string | null;
+  usage_count?: number;
+}
+
+/** A minimal knowledge-doc reference used in metric lineage + asset-docs. */
+export interface KnowledgeDocRef {
+  id: number;
+  title: string;
+  space: string;
+}
+
+export interface ManagedMetricLineage {
+  home_doc: KnowledgeDocRef | null;
+  used_in: KnowledgeDocRef[];
+}
+
+/** GET one managed metric — carries the reuse/SSOT lineage graph. */
+export interface ManagedMetricDetail extends ManagedMetric {
+  lineage?: ManagedMetricLineage;
+}
+
+export interface ManagedMetricWrite {
+  name: string;
+  machine_name?: string;        // set on EDIT
+  definition?: string;
+  formula?: string;
+  unit?: string;
+  grain?: string;
+  category?: string;
+  direction?: 'up_good' | 'down_good' | 'neutral';
+  target_value?: number | null;
+  target_operator?: string;
+  target_value2?: number | null;
+  owner?: string;
+  related_term_fqn?: string;
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  measure_ref?: string;
+  home_doc_id?: number | null;
+  anchor?: string;
+  synonyms?: string[];
+  status?: 'Draft' | 'Approved' | 'Deprecated';
+}
+
+export interface GovernChangeEntry {
+  id: number;
+  entity_type: string;
+  entity_fqn: string;
+  action: string;
+  summary?: string | null;
+  changed_by?: string | null;
+  created_at?: string | null;
+}
+
+export async function listManagedMetrics(params?: { category?: string; status?: string }): Promise<ManagedMetric[]> {
+  const { data } = await apiClient.get<{ metrics: ManagedMetric[] }>('/catalog/govern/managed-metrics', { params });
+  return data.metrics ?? [];
+}
+
+/** Fetch a single managed metric (by machine_name) with its SSOT + reuse lineage. */
+export async function getManagedMetric(machineName: string): Promise<ManagedMetricDetail> {
+  const { data } = await apiClient.get<ManagedMetricDetail>(`/catalog/govern/managed-metric/${encodeURIComponent(machineName)}`);
+  return data;
+}
+
+export async function upsertManagedMetric(body: ManagedMetricWrite): Promise<{ machine_name: string; version: number }> {
+  const { data } = await apiClient.put('/catalog/govern/managed-metric', body);
+  return data;
+}
+
+export async function deleteManagedMetric(name: string): Promise<void> {
+  await apiClient.delete(`/catalog/govern/managed-metric/${encodeURIComponent(name)}`);
+}
+
+export async function getGovernChangeLog(params?: { entity_type?: string; entity_fqn?: string; limit?: number }): Promise<GovernChangeEntry[]> {
+  const { data } = await apiClient.get<{ entries: GovernChangeEntry[] }>('/catalog/govern/change-log', { params });
+  return data.entries ?? [];
+}
+
+// ── Knowledge Hub (Cẩm nang tri thức) ───────────────────────────────────────
+export interface KnowledgeDoc {
+  id: number;
+  title: string;
+  slug?: string | null;
+  space: string;
+  parent_id?: number | null;
+  position: number;
+  doc_type: string;             // overview|guide|domain|process|faq|article
+  summary?: string | null;
+  body?: string;                // markdown (only on GET one)
+  tags: string[];
+  related_metrics: string[];
+  related_terms: string[];
+  related_dashboard_ids: number[];
+  related_dataset_ids: number[];
+  status: 'Draft' | 'Published' | 'Archived';
+  version: number;
+  pinned: boolean;
+  owner?: string | null;
+  updated_at?: string | null;
+  /** Resolved on GET one — metric embed tokens ({{metric:slug}}) → cards. */
+  metrics_on_page?: (ManagedMetric & { is_source: boolean })[];
+  missing_metric_tokens?: string[];
+  /** Resolved on GET one — asset embed tokens ({{dashboard|dataset|term:...}}). */
+  assets_on_page?: KnowledgeAsset[];
+  /** Resolved on GET one — other docs sharing ≥1 governed metric with this one. */
+  related_docs?: { id: number; title: string; space: string; shared_metrics: string[] }[];
+}
+
+export interface KnowledgeAsset {
+  type: 'dashboard' | 'dataset' | 'term';
+  ref: string;
+  name?: string | null;
+  description?: string | null;
+  definition?: string | null;
+  open_path?: string | null;
+  exists: boolean;
+}
+
+export interface KnowledgeSpace { space: string; count: number; }
+
+export interface KnowledgeDocWrite {
+  id?: number;
+  title: string;
+  space?: string;
+  parent_id?: number | null;
+  position?: number;
+  doc_type?: string;
+  summary?: string;
+  body?: string;
+  tags?: string[];
+  related_metrics?: string[];
+  related_terms?: string[];
+  related_dashboard_ids?: number[];
+  related_dataset_ids?: number[];
+  status?: 'Draft' | 'Published' | 'Archived';
+  pinned?: boolean;
+  owner?: string;
+  change_note?: string;         // optional note recorded on the version snapshot
+}
+
+export async function listKnowledge(params?: { space?: string; status?: string }): Promise<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }> {
+  const { data } = await apiClient.get<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }>('/catalog/govern/knowledge', { params });
+  return { docs: data.docs ?? [], spaces: data.spaces ?? [] };
+}
+
+export async function getKnowledgeDoc(id: number): Promise<KnowledgeDoc> {
+  const { data } = await apiClient.get<KnowledgeDoc>(`/catalog/govern/knowledge/${id}`);
+  return data;
+}
+
+export async function upsertKnowledgeDoc(body: KnowledgeDocWrite): Promise<{ id: number; version: number; slug: string }> {
+  const { data } = await apiClient.put('/catalog/govern/knowledge', body);
+  return data;
+}
+
+export async function deleteKnowledgeDoc(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/knowledge/${id}`);
+}
+
+// Version history (locked snapshots of a business doc over time)
+export interface KnowledgeDocVersion {
+  version: number;
+  title: string;
+  status?: string | null;
+  change_note?: string | null;
+  changed_by?: string | null;
+  created_at?: string | null;
+  space?: string | null;
+  doc_type?: string | null;
+  summary?: string | null;
+  body?: string;
+}
+
+export async function listDocVersions(docId: number): Promise<KnowledgeDocVersion[]> {
+  const { data } = await apiClient.get<{ versions: KnowledgeDocVersion[] }>(`/catalog/govern/knowledge/${docId}/versions`);
+  return data.versions ?? [];
+}
+
+export async function getDocVersion(docId: number, version: number): Promise<KnowledgeDocVersion> {
+  const { data } = await apiClient.get<KnowledgeDocVersion>(`/catalog/govern/knowledge/${docId}/versions/${version}`);
+  return data;
+}
+
+/** Reverse lineage: knowledge docs that reference a given dashboard/dataset/term. */
+export async function assetDocs(
+  assetType: 'dashboard' | 'dataset' | 'term',
+  assetRef: string | number,
+): Promise<KnowledgeDocRef[]> {
+  const { data } = await apiClient.get<{ docs: KnowledgeDocRef[] }>('/catalog/govern/asset-docs', {
+    params: { asset_type: assetType, asset_ref: String(assetRef) },
+  });
+  return data.docs ?? [];
+}
+
 /** Reverse lineage: metrics that have a given glossary term / classification tag attached. */
 export async function getVocabUsage(fqn: string): Promise<VocabUsage> {
   const { data } = await apiClient.get<VocabUsage>('/catalog/govern/vocab-usage', { params: { fqn } });

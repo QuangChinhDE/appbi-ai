@@ -42,6 +42,10 @@ async def lifespan(app: FastAPI):
     from app.services.dataset_quality_scheduler import startup as quality_scheduler_startup
     quality_scheduler_startup()
 
+    # AI bot institutional-memory daily reflection (curate learned knowledge)
+    from app.services.dashboard_ai_bot.learning_scheduler import startup as ai_learning_startup
+    ai_learning_startup()
+
     # Periodic cleanup of expired revoked tokens
     from app.services.token_cleanup import schedule_token_cleanup
     schedule_token_cleanup()
@@ -66,6 +70,9 @@ async def lifespan(app: FastAPI):
 
     from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
     quality_scheduler_shutdown()
+
+    from app.services.dashboard_ai_bot.learning_scheduler import shutdown as ai_learning_shutdown
+    ai_learning_shutdown()
 
 
 # Disable Swagger UI / ReDoc / OpenAPI schema in production to prevent

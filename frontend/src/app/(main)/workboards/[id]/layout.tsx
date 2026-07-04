@@ -35,8 +35,10 @@ import {
   consumeWorkboardDefaultOwnerNotice,
   type WorkboardDefaultOwnerNotice,
 } from '@/lib/workboard-default-owner-notice';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export default function WorkboardLayout({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const pathname = usePathname() || '';
@@ -72,12 +74,12 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
         <ClipboardList className="h-10 w-10 text-text-tertiary" />
-        <p className="text-body text-text-secondary">Workboard not found.</p>
+        <p className="text-body text-text-secondary">{t('workboards.layout.notFound')}</p>
         <Button
           onClick={() => router.push('/workboards')}
           leadingIcon={<ChevronLeft className="h-4 w-4" />}
         >
-          Back to list
+          {t('workboards.layout.backToList')}
         </Button>
       </div>
     );
@@ -99,7 +101,7 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           className="flex items-center gap-1 text-sm text-text-tertiary transition-colors hover:text-text-primary"
         >
           <ChevronLeft className="h-4 w-4" />
-          Workboards
+          {t('workboards.layout.workboards')}
         </button>
         <span className="text-text-quaternary">/</span>
         <span className="max-w-[260px] truncate text-sm font-medium text-text-primary">
@@ -111,19 +113,19 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
         <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           <SegmentLink active={isBuilder} href={baseHref}>
             <Wrench className="h-3.5 w-3.5" />
-            Builder
+            {t('workboards.layout.builder')}
           </SegmentLink>
           <SegmentLink active={isUsers} href={`${baseHref}/users`}>
             <UserCircle2 className="h-3.5 w-3.5" />
-            Users
+            {t('workboards.layout.users')}
           </SegmentLink>
           <SegmentLink active={isPreview} href={`${baseHref}/preview`}>
             <Eye className="h-3.5 w-3.5" />
-            Preview
+            {t('workboards.layout.preview')}
           </SegmentLink>
           <SegmentLink active={isWebhooks} href={`${baseHref}/webhooks`}>
             <Webhook className="h-3.5 w-3.5" />
-            Webhook
+            {t('workboards.layout.webhook')}
           </SegmentLink>
         </div>
 
@@ -139,18 +141,18 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
         <button
           onClick={() => setShowShare(true)}
           className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-          title="Chia sẻ app ra link công khai (Cổng) cho người dùng"
+          title={t('workboards.layout.shareTitle')}
         >
           <Share2 className="h-3.5 w-3.5" />
-          Chia sẻ
+          {t('common.share')}
         </button>
         <button
           onClick={() => setImportExportMode('export')}
           className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-          title="Export workboard cho thư viện template"
+          title={t('workboards.layout.exportTitle')}
         >
           <Download className="h-3.5 w-3.5" />
-          Export
+          {t('workboards.layout.export')}
         </button>
       </div>
 
@@ -158,10 +160,11 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
         <div className="flex items-start gap-3 border-b border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="font-medium">Owner mặc định vừa được tạo cho workboard này.</p>
+            <p className="font-medium">{t('workboards.layout.defaultOwnerCreated')}</p>
             <p className="text-xs text-danger/90">
-              Username: <strong>{defaultOwnerNotice.username}</strong> | PIN mặc định:{' '}
-              <strong>{defaultOwnerNotice.pin}</strong>. Hãy đổi PIN này trong tab Users.
+              {t('workboards.layout.usernameLabel')} <strong>{defaultOwnerNotice.username}</strong> |{' '}
+              {t('workboards.layout.defaultPinLabel')}{' '}
+              <strong>{defaultOwnerNotice.pin}</strong>. {t('workboards.layout.changePinInUsers')}
             </p>
           </div>
           <button
@@ -169,7 +172,7 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
             onClick={() => setDefaultOwnerNotice(null)}
             className="rounded px-1 py-0.5 text-xs text-danger/80 transition-colors hover:bg-danger/10 hover:text-danger"
           >
-            Đóng
+            {t('workboards.layout.close')}
           </button>
         </div>
       )}

@@ -30,14 +30,15 @@ const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'gpt-4o-mini', label: 'GPT-4o mini (cheap, fast)' },
   ],
   anthropic: [
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
-    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (strongest)' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (cheap, fast)' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5 (recommended)' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (strongest)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (cheap, fast)' },
   ],
   gemini: [
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (cheap, fast)' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recommended)' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (cheap, fast)' },
   ],
 };
 

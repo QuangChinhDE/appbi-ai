@@ -48,12 +48,14 @@ from app.services.dashboard_ai_bot.tool_context import ToolContext
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_CALLS_PER_TURN = 12
+MAX_TOOL_CALLS_PER_TURN = 8  # Phase 16.1 — trimmed 12→8 (latency/quota guard)
 RECON_MAX_CHARTS = 3
+# Keep in sync with thinking/agent.py — claude-3-5-haiku was retired
+# (2026-02-19); gemini-1.5-flash is EOL. Aliases track live snapshots.
 _DEFAULT_MODEL_BY_PROVIDER = {
-    "anthropic": "claude-3-5-haiku-20241022",
+    "anthropic": "claude-haiku-4-5",
     "openai": "gpt-4o-mini",
-    "gemini": "gemini-1.5-flash",
+    "gemini": "gemini-2.5-flash",
 }
 
 _TOOL_STATUS_VI = {
@@ -150,6 +152,7 @@ async def run_agent_stream(
     enable_critique: bool = False,
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
     report_context_note: str = "",
+    learned_knowledge_block: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects."""
     if not user_messages or not isinstance(user_messages, list):
@@ -190,8 +193,31 @@ async def run_agent_stream(
         )
 
     # Recon snapshot — small, stays out of the LLM's way otherwise.
-    recon_block = _format_recon_for_prompt(build_proactive_recon(ctx))
-    system_with_context = base_system + "\n\n" + recon_block
+    #
+    # Phase 16.1 latency fix: this used to call the module's SEQUENTIAL
+    # builder inline in the async generator — 3 chart queries one-by-one,
+    # blocking the event loop (measured 25s+ dead air on dashboard 67
+    # before the first LLM byte, for EVERY normal turn). Use the shared
+    # cached+parallel builder off-thread; /ai/recon on bot open warms it.
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as _recon_cached,
+    )
+    yield AgentEvent(
+        type="status",
+        text="Đang đọc cấu trúc báo cáo…",
+        tool_name="_thinking",
+    )
+    try:
+        recon = await asyncio.to_thread(_recon_cached, ctx)
+    except Exception:
+        logger.warning("normal recon build failed", exc_info=True)
+        recon = {"manifest": {}, "summaries": []}
+    recon_block = _format_recon_for_prompt(recon)
+    system_with_context = base_system
+    # Institutional memory (validated learnings about this company).
+    if learned_knowledge_block:
+        system_with_context += "\n\n" + learned_knowledge_block
+    system_with_context += "\n\n" + recon_block
 
     # ── Gemini fallback path: single-shot (no tools) ────────────────────────
     if not supports_tools:
@@ -221,11 +247,22 @@ async def run_agent_stream(
     tool_log: list[dict] = []
     draft_answer_parts: list[str] = []
     tool_calls_made = 0
+    # Runaway-loop guard (see thinking/agent.py for the ds67 50-round case).
+    force_no_tools = False
+    rounds = 0
+    HARD_ROUND_CAP = max_tool_calls + 4
 
     while True:
+        rounds += 1
+        if rounds > HARD_ROUND_CAP:
+            force_no_tools = True
         yield AgentEvent(
             type="status",
-            text=("Đang suy nghĩ…" if tool_calls_made == 0 else "Đang phân tích kết quả…"),
+            text=(
+                "Đang suy nghĩ…" if tool_calls_made == 0
+                else "Đang tổng hợp câu trả lời…" if force_no_tools
+                else "Đang phân tích kết quả…"
+            ),
             tool_name="_thinking",
         )
 
@@ -238,7 +275,7 @@ async def run_agent_stream(
                 api_key=api_key,
                 system_prompt=system_with_context,
                 messages=running,
-                tools=TOOL_DEFINITIONS,
+                tools=None if force_no_tools else TOOL_DEFINITIONS,
                 model=selected_model or None,
             )
             async for ev in gen:
@@ -275,22 +312,28 @@ async def run_agent_stream(
             ]
             running.append(asst_entry)
 
-            for tc in round_tool_calls:
-                if tool_calls_made >= max_tool_calls:
-                    err = {
-                        "ok": False,
-                        "error": (
-                            "internal: stop calling tools and finalize the answer with the data "
-                            "already gathered. Do not mention this message to the user."
-                        ),
-                    }
+            if tool_calls_made >= max_tool_calls:
+                # Budget spent — disable tools next round so the model must
+                # answer (not loop). See thinking/agent.py runaway guard.
+                force_no_tools = True
+                err = {
+                    "ok": False,
+                    "error": (
+                        "internal: tool budget spent — do NOT call more tools. Write the "
+                        "final answer now from the data already gathered. Do not mention "
+                        "this message to the user."
+                    ),
+                }
+                for tc in round_tool_calls:
                     running.append({
                         "role": "tool",
                         "tool_call_id": tc.tool_call_id,
                         "result": err,
                     })
                     tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
-                    continue
+                continue
+
+            for tc in round_tool_calls:
 
                 yield AgentEvent(
                     type="status",

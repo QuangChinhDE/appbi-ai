@@ -6,6 +6,7 @@ import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { getDashboardChartPageId } from '@/lib/dashboard-pages';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { DashboardChart, DashboardPageConfig } from '@/types/api';
 
 interface DashboardChartManagerModalProps {
@@ -27,6 +28,7 @@ export function DashboardChartManagerModal({
   removingChartId,
   onRemoveChart,
 }: DashboardChartManagerModalProps) {
+  const { t } = useI18n();
   const pageNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const page of pages) {
@@ -48,34 +50,34 @@ export function DashboardChartManagerModal({
       const pageCompare = leftPageName.localeCompare(rightPageName);
       if (pageCompare !== 0) return pageCompare;
 
-      const leftName = String(left.chart?.name ?? `Chart #${left.chart_id}`);
-      const rightName = String(right.chart?.name ?? `Chart #${right.chart_id}`);
+      const leftName = String(left.chart?.name ?? t('dashboards.chartManager.chartFallback', { id: left.chart_id }));
+      const rightName = String(right.chart?.name ?? t('dashboards.chartManager.chartFallback', { id: right.chart_id }));
       return leftName.localeCompare(rightName);
     });
-  }, [currentPageId, dashboardCharts, pageNameById]);
+  }, [currentPageId, dashboardCharts, pageNameById, t]);
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Manage Dashboard Charts"
+      title={t('dashboards.chartManager.title')}
       size="lg"
     >
       <div className="space-y-4">
         <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-secondary">
-          Remove broken tiles here without relying on the chart tile itself to render successfully.
+          {t('dashboards.chartManager.help')}
         </div>
 
         {chartItems.length === 0 ? (
           <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-8 text-center text-caption text-text-tertiary">
-            This dashboard does not contain any charts.
+            {t('dashboards.chartManager.empty')}
           </div>
         ) : (
           <div className="space-y-3">
             {chartItems.map((dashboardChart) => {
               const pageId = getDashboardChartPageId(dashboardChart.layout);
               const pageName = pageNameById.get(pageId) ?? pageId;
-              const chartName = String(dashboardChart.chart?.name ?? `Chart #${dashboardChart.chart_id}`);
+              const chartName = String(dashboardChart.chart?.name ?? t('dashboards.chartManager.chartFallback', { id: dashboardChart.chart_id }));
               const chartType = String(dashboardChart.chart?.chart_type ?? '').trim();
               const isRemoving = removingChartId === dashboardChart.id;
 
@@ -91,13 +93,13 @@ export function DashboardChartManagerModal({
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Badge variant="neutral" size="xs">
-                        Dashboard tile #{dashboardChart.id}
+                        {t('dashboards.chartManager.dashboardTile', { id: dashboardChart.id })}
                       </Badge>
                       <Badge variant="brand" size="xs">
-                        Page: {pageName}
+                        {t('dashboards.chartManager.page', { name: pageName })}
                       </Badge>
                       <Badge variant="neutral" size="xs">
-                        Chart #{dashboardChart.chart_id}
+                        {t('dashboards.chartManager.chartId', { id: dashboardChart.chart_id })}
                       </Badge>
                       {chartType && (
                         <Badge variant="neutral" size="xs" className="uppercase">
@@ -120,7 +122,7 @@ export function DashboardChartManagerModal({
                     }
                     className="border-danger/30 text-danger hover:bg-danger/10"
                   >
-                    Remove from dashboard
+                    {t('dashboards.chartManager.remove')}
                   </Button>
                 </div>
               );

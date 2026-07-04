@@ -8,6 +8,7 @@ import { useDashboards } from '@/hooks/use-dashboards';
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input, Select } from '@/components/ui/Input';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface AddToDashboardModalProps {
   isOpen: boolean;
@@ -32,6 +33,7 @@ export function AddToDashboardModal({
   lookConfig,
   onAdd,
 }: AddToDashboardModalProps) {
+  const { t } = useI18n();
   const [selectedDashboardId, setSelectedDashboardId] = useState<number | null>(null);
   const [chartTitle, setChartTitle] = useState('');
   const { data: dashboards, isLoading } = useDashboards();
@@ -49,40 +51,40 @@ export function AddToDashboardModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Add to Dashboard"
+      title={t('explore.addToDashboard.title')}
       size="sm"
       footer={(
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose}>{t('common.cancel')}</Button>
           <Button
             variant="primary"
             onClick={handleAdd}
             disabled={!selectedDashboardId || !chartTitle.trim()}
           >
-            Add to Dashboard
+            {t('explore.addToDashboard.title')}
           </Button>
         </>
       )}
     >
       <div className="space-y-4">
-        <FieldGroup label="Chart Title">
+        <FieldGroup label={t('explore.addToDashboard.chartTitle')}>
           <Input
             type="text"
             value={chartTitle}
             onChange={(e) => setChartTitle(e.target.value)}
-            placeholder="Enter chart title..."
+            placeholder={t('explore.addToDashboard.chartTitlePlaceholder')}
           />
         </FieldGroup>
 
-        <FieldGroup label="Select Dashboard">
+        <FieldGroup label={t('explore.addToDashboard.selectDashboard')}>
           {isLoading ? (
-            <div className="text-caption text-text-tertiary">Loading dashboards...</div>
+            <div className="text-caption text-text-tertiary">{t('explore.addToDashboard.loadingDashboards')}</div>
           ) : dashboards && dashboards.length > 0 ? (
             <Select
               value={selectedDashboardId || ''}
               onChange={(e) => setSelectedDashboardId(Number(e.target.value))}
             >
-              <option value="">Select a dashboard...</option>
+              <option value="">{t('explore.addToDashboard.selectDashboardPlaceholder')}</option>
               {dashboards.map((dashboard) => (
                 <option key={dashboard.id} value={dashboard.id}>
                   {dashboard.name}
@@ -91,17 +93,17 @@ export function AddToDashboardModal({
             </Select>
           ) : (
             <div className="text-caption text-text-tertiary">
-              No dashboards available. Create a dashboard first.
+              {t('explore.addToDashboard.noDashboards')}
             </div>
           )}
         </FieldGroup>
 
         <div className="rounded-md bg-surface-2 p-3">
-          <p className="text-caption font-emphasis text-text-secondary mb-1">Chart Configuration:</p>
+          <p className="text-caption font-emphasis text-text-secondary mb-1">{t('explore.addToDashboard.chartConfiguration')}</p>
           <div className="space-y-1 text-caption text-text-secondary">
-            <p>Type: <span className="font-emphasis text-text-primary">{lookConfig.chartType}</span></p>
-            <p>Dimensions: <span className="font-emphasis text-text-primary">{lookConfig.dimensions.join(', ') || 'None'}</span></p>
-            <p>Measures: <span className="font-emphasis text-text-primary">{lookConfig.measures.join(', ') || 'None'}</span></p>
+            <p>{t('explore.addToDashboard.type')}: <span className="font-emphasis text-text-primary">{lookConfig.chartType}</span></p>
+            <p>{t('explore.addToDashboard.dimensions')}: <span className="font-emphasis text-text-primary">{lookConfig.dimensions.join(', ') || t('explore.addToDashboard.none')}</span></p>
+            <p>{t('explore.addToDashboard.measures')}: <span className="font-emphasis text-text-primary">{lookConfig.measures.join(', ') || t('explore.addToDashboard.none')}</span></p>
           </div>
         </div>
       </div>

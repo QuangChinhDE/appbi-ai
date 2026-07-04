@@ -208,3 +208,7 @@ backend/scripts/update_workboard10_*.py
 base-testlab-*.json
 *service-account*.json
 *serviceaccount*.json
+
+# Agent / editor scratch (Playwright a11y dumps, atomic-write temp files)
+thinking-state.md
+*.py.tmp.*

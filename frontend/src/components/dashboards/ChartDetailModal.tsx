@@ -32,6 +32,7 @@ import {
   getEffectiveDashboardChartStyleConfig,
 } from '@/lib/dashboard-chart-style';
 import { inferQueryColumns } from '@/lib/explore-query';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartParameter, ColumnMetadata } from '@/types/api';
 
 interface ChartDetailModalProps {
@@ -327,6 +328,7 @@ export function ChartDetailModal({
   allowAppearanceEdit = false,
   initialTab = 'data',
 }: ChartDetailModalProps) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(isOpen ? chartId : 0);
   const config = (chart?.config as Record<string, any> | undefined) ?? {};
@@ -392,7 +394,7 @@ export function ChartDetailModal({
     staleTime: 60 * 1000,
   });
 
-  const displayTitle = title || chart?.name || `Chart ${chartId}`;
+  const displayTitle = title || chart?.name || t('dashboards.chartDetail.fallbackTitle', { id: chartId });
   const exploreChartType = chart?.chart_type ? String(chart.chart_type) : '';
   const canEditAppearance = Boolean(allowAppearanceEdit && dashboardId && dashboardChartId);
   const baseStyleConfig = useMemo(
@@ -449,11 +451,11 @@ export function ChartDetailModal({
     ? customSourceColumns
     : runtimeColumns;
   const dataPreviewTitle = queryMode === 'custom' && customSourceRows.length > 0
-    ? 'SQL output sample'
-    : 'Chart data preview';
+    ? t('dashboards.chartDetail.sqlOutputSample')
+    : t('dashboards.chartDetail.chartDataPreview');
   const dataPreviewDescription = queryMode === 'custom' && customSourceRows.length > 0
-    ? 'Sample rows returned by the saved SQL before chart rendering.'
-    : 'Rows currently feeding this saved chart configuration.';
+    ? t('dashboards.chartDetail.sqlOutputDescription')
+    : t('dashboards.chartDetail.chartDataDescription');
   const dataPreviewError = queryMode === 'custom'
     ? (customSourcePreview.error && customSourceRows.length === 0
       ? getErrorMessage(customSourcePreview.error, '')
@@ -549,10 +551,10 @@ export function ChartDetailModal({
         queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }),
       ]);
       toast.success(styleOverride
-        ? 'Chart appearance updated for this dashboard tile'
-        : 'Chart appearance reset to the original chart style');
+        ? t('dashboards.chartDetail.saveUpdatedToast')
+        : t('dashboards.chartDetail.saveResetToast'));
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Failed to save chart appearance.'));
+      toast.error(getErrorMessage(error, t('dashboards.chartDetail.saveFailedToast')));
     } finally {
       setIsSavingAppearance(false);
     }
@@ -563,8 +565,8 @@ export function ChartDetailModal({
       onClose={onClose}
       title={displayTitle}
       description={canEditAppearance
-        ? 'Preview the saved chart, inspect its data, and adjust only appearance settings for this dashboard tile. Chart type and field bindings stay locked.'
-        : 'Read-only preview of the saved chart setup and sample data.'}
+        ? t('dashboards.chartDetail.editableDescription')
+        : t('dashboards.chartDetail.readonlyDescription')}
       icon={<BarChart3 className="h-5 w-5" />}
       maxWidthClass="max-w-[97vw]"
       panelClassName="h-[94vh]"
@@ -579,7 +581,7 @@ export function ChartDetailModal({
               disabled={isSavingAppearance || JSON.stringify(normalizeChartStyleConfig(draftStyleConfig)) === JSON.stringify(normalizeChartStyleConfig(baseStyleConfig))}
               className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Reset to chart default
+              {t('dashboards.chartDetail.resetToChartDefault')}
             </button>
           )}
           <button
@@ -588,7 +590,7 @@ export function ChartDetailModal({
             disabled={isSavingAppearance}
             className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Close
+            {t('dashboards.chartDetail.close')}
           </button>
           {canEditAppearance && (
             <button
@@ -598,7 +600,7 @@ export function ChartDetailModal({
               className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSavingAppearance && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save appearance
+              {t('dashboards.chartDetail.saveAppearance')}
             </button>
           )}
         </>
@@ -608,25 +610,25 @@ export function ChartDetailModal({
         <div className="shrink-0 space-y-4 px-6 pb-4 pt-6">
           <div className="grid gap-3 md:grid-cols-4">
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart type</p>
-              <p className="mt-2 text-sm font-medium text-text-primary">{chart?.chart_type ?? 'Unknown'}</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.chartDetail.chartType')}</p>
+              <p className="mt-2 text-sm font-medium text-text-primary">{chart?.chart_type ?? t('dashboards.chartDetail.unknown')}</p>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Query mode</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.chartDetail.queryMode')}</p>
               <p className="mt-2 text-sm font-medium capitalize text-text-primary">{queryMode}</p>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source table</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.chartDetail.sourceTable')}</p>
               <p className="mt-2 text-sm font-medium text-text-primary">
-                {datasetTable?.display_name || datasetTable?.source_table_name || (chart?.dataset_table_id ? `Table #${chart.dataset_table_id}` : 'Not linked')}
+                {datasetTable?.display_name || datasetTable?.source_table_name || (chart?.dataset_table_id ? t('dashboards.chartDetail.tableFallback', { id: chart.dataset_table_id }) : t('dashboards.chartDetail.notLinked'))}
               </p>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Instance params</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.chartDetail.instanceParams')}</p>
               <p className="mt-2 text-sm font-medium text-text-primary">
                 {instanceParameters && Object.keys(instanceParameters).length > 0
-                  ? `${Object.keys(instanceParameters).length} override(s)`
-                  : 'None'}
+                  ? t('dashboards.chartDetail.overrideCount', { count: Object.keys(instanceParameters).length })
+                  : t('dashboards.chartDetail.none')}
               </p>
             </div>
           </div>
@@ -652,10 +654,10 @@ export function ChartDetailModal({
           <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
             <div className="flex items-center gap-2 text-text-primary">
               <BarChart3 className="h-4 w-4 text-brand" />
-              <h3 className="text-sm font-semibold">Chart preview</h3>
+              <h3 className="text-sm font-semibold">{t('dashboards.chartDetail.chartPreviewTitle')}</h3>
             </div>
             <p className="mt-1 text-xs text-text-tertiary">
-              Saved visualization rendered from the current chart configuration.
+              {t('dashboards.chartDetail.chartPreviewDescription')}
             </p>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-5">
@@ -666,13 +668,13 @@ export function ChartDetailModal({
             ) : runtimeError ? (
               <div className="flex h-full items-center justify-center text-center">
                 <div>
-                  <p className="text-sm font-medium text-text-primary">Failed to load chart preview</p>
-                  <p className="mt-1 text-xs text-text-tertiary">{getErrorMessage(runtimeError, 'Could not load chart preview.')}</p>
+                  <p className="text-sm font-medium text-text-primary">{t('dashboards.chartDetail.chartPreviewLoadFailed')}</p>
+                  <p className="mt-1 text-xs text-text-tertiary">{getErrorMessage(runtimeError, t('dashboards.chartDetail.chartPreviewFallbackError'))}</p>
                 </div>
               </div>
             ) : !chartRuntime ? (
               <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-                No chart preview available.
+                {t('dashboards.chartDetail.chartPreviewEmpty')}
               </div>
             ) : activeRoleConfig && normalizedRoleConfig ? (
               <ExploreChart
@@ -695,7 +697,7 @@ export function ChartDetailModal({
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-                No chart preview available.
+                {t('dashboards.chartDetail.chartPreviewEmpty')}
               </div>
             )}
           </div>
@@ -711,7 +713,7 @@ export function ChartDetailModal({
                   <Table2 className="h-4 w-4 text-brand" />
                 )}
                 <h3 className="text-sm font-semibold">
-                  {activeTab === 'appearance' ? 'Appearance controls' : dataPreviewTitle}
+                  {activeTab === 'appearance' ? t('dashboards.chartDetail.appearanceControls') : dataPreviewTitle}
                 </h3>
               </div>
               {canEditAppearance && (
@@ -725,7 +727,7 @@ export function ChartDetailModal({
                         : 'text-text-tertiary hover:text-text-secondary'
                     }`}
                   >
-                    Appearance
+                    {t('dashboards.chartDetail.appearanceTab')}
                   </button>
                   <button
                     type="button"
@@ -736,14 +738,14 @@ export function ChartDetailModal({
                         : 'text-text-tertiary hover:text-text-secondary'
                     }`}
                   >
-                    Data
+                    {t('dashboards.chartDetail.dataTab')}
                   </button>
                 </div>
               )}
             </div>
             <p className="mt-1 text-xs text-text-tertiary">
               {activeTab === 'appearance'
-                ? 'Only presentation settings can change here. The original chart type, source, dimensions, and metrics remain locked.'
+                ? t('dashboards.chartDetail.appearanceDescription')
                 : dataPreviewDescription}
             </p>
           </div>
@@ -751,7 +753,7 @@ export function ChartDetailModal({
           {activeTab === 'appearance' ? (
             <div className="min-h-0 flex-1 overflow-y-auto bg-surface-2/50">
               <div className="border-b border-brand/20 bg-brand/10 px-5 py-3 text-[11px] text-brand">
-                Appearance edits are saved only on this dashboard tile, so the owner&apos;s original chart stays unchanged everywhere else.
+                {t('dashboards.chartDetail.appearanceTileHint')}
               </div>
               {!chart ? (
                 <div className="flex h-full items-center justify-center p-6">
@@ -779,7 +781,7 @@ export function ChartDetailModal({
             <>
               {queryMode === 'custom' && customSourceRows.length > 0 && (
                 <div className="border-b border-warning/20 bg-warning/10 px-5 py-2 text-[11px] text-warning">
-                  This follows the Explore setup view: the table below is the sampled SQL output, while the chart preview on the left shows the saved visualization.
+                  {t('dashboards.chartDetail.customSqlOutputHint')}
                 </div>
               )}
               {datasetTable && (
@@ -799,15 +801,15 @@ export function ChartDetailModal({
                 ) : dataPreviewError ? (
                   <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
-                      <p className="text-sm font-medium text-text-primary">Failed to load data preview</p>
+                      <p className="text-sm font-medium text-text-primary">{t('dashboards.chartDetail.dataPreviewLoadFailed')}</p>
                       <p className="mt-1 text-xs text-text-tertiary">{dataPreviewError}</p>
                     </div>
                   </div>
                 ) : dataPreviewRows.length === 0 ? (
                   <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
-                      <p className="text-sm font-medium text-text-primary">No preview rows available</p>
-                      <p className="mt-1 text-xs text-text-tertiary">This chart currently has no sample rows to display.</p>
+                      <p className="text-sm font-medium text-text-primary">{t('dashboards.chartDetail.dataPreviewRowsEmptyTitle')}</p>
+                      <p className="mt-1 text-xs text-text-tertiary">{t('dashboards.chartDetail.dataPreviewRowsEmptyDescription')}</p>
                     </div>
                   </div>
                 ) : (

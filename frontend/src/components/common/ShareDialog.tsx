@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast';
 import { Modal } from '@/components/common/Modal';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type Permission = 'view' | 'edit';
 
@@ -56,6 +57,7 @@ interface ShareDialogProps {
 }
 
 export function ShareDialog({ resourceType, resourceId, resourceName, onClose }: ShareDialogProps) {
+  const { t } = useI18n();
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [teams, setTeams] = useState<TeamOption[]>([]);
@@ -74,16 +76,16 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
 
   const getShareTargetLabel = (share: ShareEntry) => {
     if (share.target_type === 'team') {
-      return share.team?.name || 'Team';
+      return share.team?.name || t('shared.share.teamFallback');
     }
-    return share.user?.full_name || share.user?.email || share.user_id || 'User';
+    return share.user?.full_name || share.user?.email || share.user_id || t('shared.share.userFallback');
   };
 
   const getShareTargetDescription = (share: ShareEntry) => {
     if (share.target_type === 'team') {
-      return share.team?.description || 'Applies to current and future members of this team.';
+      return share.team?.description || t('shared.share.teamAccessDescription');
     }
-    return share.user?.email || 'Direct user access';
+    return share.user?.email || t('shared.share.directUserAccess');
   };
 
   // Load existing shares, users, and shareable teams
@@ -100,7 +102,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
         setUsers(Array.isArray(usersData) ? usersData : []);
         setTeams(Array.isArray(teamsData) ? teamsData : []);
       } catch {
-        const message = 'Failed to load sharing information.';
+        const message = t('shared.share.loadFailed');
         setError(message);
         toast.error(message, {
           description: resourceName,
@@ -113,7 +115,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       }
     };
     load();
-  }, [resourceType, resourceId]);
+  }, [resourceType, resourceId, resourceName, t]);
 
   const directUserShareIds = new Set(
     shares
@@ -142,7 +144,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
 
   const handleShare = async () => {
     if (!sharePayload) {
-      setError('Choose a listed user, or enter a valid AppBI user email.');
+      setError(t('shared.share.chooseUserError'));
       return;
     }
     setUserShareLoading(true);
@@ -152,13 +154,16 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       // Refresh shares
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
-      toast.success('Access shared', {
-        description: `${matchedUser?.full_name || matchedUser?.email || typedEmail} • ${resourceName}`,
+      toast.success(t('shared.share.accessShared'), {
+        description: t('shared.share.toastDescription', {
+          target: matchedUser?.full_name || matchedUser?.email || typedEmail,
+          resource: resourceName,
+        }),
       });
       setSelectedUser(null);
       setSearch('');
     } catch (err: unknown) {
-      const message = extractApiError(err, 'Failed to share.');
+      const message = extractApiError(err, t('shared.share.failedToShare'));
       setError(message);
       toast.error(message, {
         description: resourceName,
@@ -170,7 +175,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
 
   const handleShareTeam = async () => {
     if (!selectedTeam) {
-      setError('Choose a configured team to share with.');
+      setError(t('shared.share.chooseTeamError'));
       return;
     }
     setTeamShareLoading(true);
@@ -179,12 +184,15 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       await sharesApi.share(resourceType, resourceId, { team_id: selectedTeam.id, permission });
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
-      toast.success('Team access shared', {
-        description: `${selectedTeam.name} • ${resourceName}`,
+      toast.success(t('shared.share.teamAccessShared'), {
+        description: t('shared.share.toastDescription', {
+          target: selectedTeam.name,
+          resource: resourceName,
+        }),
       });
       setSelectedTeamId('');
     } catch (err: unknown) {
-      const message = extractApiError(err, 'Failed to share with team.');
+      const message = extractApiError(err, t('shared.share.failedToShareTeam'));
       setError(message);
       toast.error(message, {
         description: resourceName,
@@ -202,11 +210,14 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       setShares((prev) =>
         prev.map((s) => (s.id === shareId ? { ...s, permission: newPermission } : s))
       );
-      toast.success('Permission updated', {
-        description: `${sharedTarget ? getShareTargetLabel(sharedTarget) : shareId} • ${resourceName}`,
+      toast.success(t('shared.share.permissionUpdated'), {
+        description: t('shared.share.toastDescription', {
+          target: sharedTarget ? getShareTargetLabel(sharedTarget) : shareId,
+          resource: resourceName,
+        }),
       });
     } catch {
-      const message = 'Failed to update permission.';
+      const message = t('shared.share.permissionUpdateFailed');
       setError(message);
       toast.error(message, {
         description: resourceName,
@@ -220,11 +231,14 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     try {
       await sharesApi.revokeShareEntry(resourceType, resourceId, shareId);
       setShares((prev) => prev.filter((s) => s.id !== shareId));
-      toast.success('Access revoked', {
-        description: `${sharedTarget ? getShareTargetLabel(sharedTarget) : shareId} • ${resourceName}`,
+      toast.success(t('shared.share.accessRevoked'), {
+        description: t('shared.share.toastDescription', {
+          target: sharedTarget ? getShareTargetLabel(sharedTarget) : shareId,
+          resource: resourceName,
+        }),
       });
     } catch {
-      const message = 'Failed to revoke access.';
+      const message = t('shared.share.revokeFailed');
       setError(message);
       toast.error(message, {
         description: resourceName,
@@ -236,7 +250,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     <Modal
       isOpen
       onClose={onClose}
-      title={`Share "${resourceName}"`}
+      title={t('shared.share.title', { name: resourceName })}
       size="lg"
     >
       <div className="space-y-5">
@@ -248,13 +262,13 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
 
         {/* Add user section */}
         <div>
-          <label className="block text-label font-emphasis text-text-secondary mb-2">Add people</label>
+          <label className="block text-label font-emphasis text-text-secondary mb-2">{t('shared.share.addPeople')}</label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Input
                 leadingIcon={<Search className="h-4 w-4" />}
                 type="text"
-                placeholder="Search by name or email…"
+                placeholder={t('shared.share.searchPeoplePlaceholder')}
                 value={selectedUser ? `${selectedUser.full_name} <${selectedUser.email}>` : search}
                 onChange={(e) => {
                   if (selectedUser) setSelectedUser(null);
@@ -283,8 +297,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
               value={permission}
               onChange={(e) => setPermission(e.target.value as Permission)}
             >
-              <option value="view">Viewer</option>
-              <option value="edit">Editor</option>
+              <option value="view">{t('shared.share.viewer')}</option>
+              <option value="edit">{t('shared.share.editor')}</option>
             </Select>
 
             <Button
@@ -293,30 +307,30 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
               disabled={!sharePayload || userShareLoading}
               loading={userShareLoading}
             >
-              {userShareLoading ? 'Sharing…' : 'Share'}
+              {userShareLoading ? t('shared.share.sharing') : t('shared.share.shareButton')}
             </Button>
           </div>
           {!selectedUser && normalizedSearch && (
             <p className="mt-2 text-tiny text-text-quaternary">
               {matchedUser
-                ? `Matched ${matchedUser.email}. Click Share to grant access.`
+                ? t('shared.share.matchedUserHint', { email: matchedUser.email })
                 : typedEmail
-                  ? `Share will look up ${typedEmail} in AppBI even if you do not pick it from the list.`
-                  : 'Keep typing a name, or enter a full email address.'}
+                  ? t('shared.share.emailLookupHint', { email: typedEmail })
+                  : t('shared.share.keepTypingHint')}
             </p>
           )}
         </div>
 
         {/* Add team section */}
         <div className="border-t border-[rgb(var(--border-line))] pt-4">
-          <label className="block text-label font-emphasis text-text-secondary mb-2">Add team</label>
+          <label className="block text-label font-emphasis text-text-secondary mb-2">{t('shared.share.addTeam')}</label>
           <div className="flex gap-2">
             <Select
               className="flex-1"
               value={selectedTeamId}
               onChange={(e) => setSelectedTeamId(e.target.value)}
             >
-              <option value="">Select a configured team…</option>
+              <option value="">{t('shared.share.selectTeamPlaceholder')}</option>
               {availableTeams.map((team) => (
                 <option key={team.id} value={team.id}>
                   {team.name} ({team.member_count})
@@ -328,8 +342,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
               value={permission}
               onChange={(e) => setPermission(e.target.value as Permission)}
             >
-              <option value="view">Viewer</option>
-              <option value="edit">Editor</option>
+              <option value="view">{t('shared.share.viewer')}</option>
+              <option value="edit">{t('shared.share.editor')}</option>
             </Select>
             <Button
               variant="primary"
@@ -337,23 +351,23 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
               disabled={!selectedTeam || teamShareLoading}
               loading={teamShareLoading}
             >
-              {teamShareLoading ? 'Sharing…' : 'Share'}
+              {teamShareLoading ? t('shared.share.sharing') : t('shared.share.shareButton')}
             </Button>
           </div>
           <p className="mt-2 text-tiny text-text-quaternary">
-            Team shares follow the team setup in Settings, so future members inherit access automatically.
+            {t('shared.share.teamInheritsHint')}
           </p>
         </div>
 
         {/* Existing shares */}
         <div>
           <h3 className="text-label font-emphasis text-text-secondary mb-2">
-            People and teams with access {shares.length > 0 && <span className="text-text-quaternary">({shares.length})</span>}
+            {t('shared.share.accessListTitle')} {shares.length > 0 && <span className="text-text-quaternary">({shares.length})</span>}
           </h3>
           {loadingShares ? (
-            <p className="text-caption text-text-quaternary">Loading…</p>
+            <p className="text-caption text-text-quaternary">{t('common.loading')}</p>
           ) : shares.length === 0 ? (
-            <p className="text-caption text-text-quaternary">Not shared with anyone yet.</p>
+            <p className="text-caption text-text-quaternary">{t('shared.share.notSharedYet')}</p>
           ) : (
             <ul className="space-y-2">
               {shares.map((s) => (
@@ -380,11 +394,11 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
                     value={s.permission}
                     onChange={(e) => handleUpdatePermission(s.id, e.target.value as Permission)}
                   >
-                    <option value="view">Viewer</option>
-                    <option value="edit">Editor</option>
+                    <option value="view">{t('shared.share.viewer')}</option>
+                    <option value="edit">{t('shared.share.editor')}</option>
                   </Select>
                   <IconButton
-                    aria-label="Remove access"
+                    aria-label={t('shared.share.removeAccess')}
                     variant="ghost"
                     size="sm"
                     onClick={() => handleRevoke(s.id)}

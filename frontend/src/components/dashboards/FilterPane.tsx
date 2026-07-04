@@ -205,20 +205,21 @@ interface FilterCardPBIProps {
   onRemove: () => void;
 }
 
+/** Maps a drop-reason code to an i18n key; the caller resolves it with t(). */
 function dropReasonLabel(reason: string): string {
   switch (reason) {
     case 'no_join_path':
-      return 'không có đường JOIN giữa hai view';
+      return 'dashboards.filterPane.dropReasonNoJoinPath';
     case 'view_not_found':
-      return 'không tìm thấy view trong dataset';
+      return 'dashboards.filterPane.dropReasonViewNotFound';
     case 'field_not_on_view':
-      return 'view không có cột tương ứng';
+      return 'dashboards.filterPane.dropReasonFieldNotOnView';
     case 'no_field':
-      return 'filter thiếu field';
+      return 'dashboards.filterPane.dropReasonNoField';
     case 'cte_in_subquery':
-      return 'view ngu​ồn dùng WITH/CTE — không cascade được trong dropdown';
+      return 'dashboards.filterPane.dropReasonCteInSubquery';
     case 'sql_error':
-      return 'SQL bị lỗi khi chạy';
+      return 'dashboards.filterPane.dropReasonSqlError';
     default:
       return reason;
   }
@@ -332,7 +333,7 @@ export function FilterCardPBI({ filter, distinctValues = [], distinctStatus, dro
             <ul className="mt-0.5 list-disc pl-4 text-amber-700">
               {droppedFilters.slice(0, 3).map((d, i) => (
                 <li key={`${d.field}-${i}`}>
-                  <span className="font-mono">{d.field}</span> — {dropReasonLabel(d.reason)}
+                  <span className="font-mono">{d.field}</span> — {t(dropReasonLabel(d.reason))}
                 </li>
               ))}
               {droppedFilters.length > 3 && (

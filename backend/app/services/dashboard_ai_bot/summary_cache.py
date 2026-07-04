@@ -146,3 +146,59 @@ def invalidate_dashboard_summary_cache(dashboard_id: int) -> int:
 
 def summary_cache_stats() -> dict[str, Any]:
     return _INSTANCE.stats()
+
+
+# ── Recon cache (Phase 16.1 — chat-turn latency fix) ─────────────────────────
+#
+# The recon snapshot (light manifest + first-3 chart summaries) was being
+# rebuilt for EVERY surface that needs it: /ai/recon on bot open, the
+# briefing guess, the executive brief, and — worst — inside every chat
+# turn's system-prompt assembly. On a big dashboard that is 3+ live chart
+# queries in the turn's critical path (measured 25s+ before the first LLM
+# byte on dashboard 67). Same determinism argument as packs: for one
+# (dashboard, merged-filters) pair the recon is stable → cache the whole
+# dict. Shorter TTL than packs because it is the bot's FIRST impression of
+# the data.
+
+RECON_TTL_SECONDS = 180
+_RECON_MAX_ENTRIES = 32
+_recon_lock = threading.RLock()
+_recon_store: OrderedDict[tuple[int, str], tuple[float, dict]] = OrderedDict()
+
+
+def get_cached_recon(dashboard_id: int, filters: list[dict] | None) -> dict | None:
+    key = (int(dashboard_id), _filters_hash(filters))
+    now = time.monotonic()
+    with _recon_lock:
+        entry = _recon_store.get(key)
+        if entry is None:
+            return None
+        ts, recon = entry
+        if now - ts > RECON_TTL_SECONDS:
+            _recon_store.pop(key, None)
+            return None
+        _recon_store.move_to_end(key)
+        return recon
+
+
+def put_cached_recon(dashboard_id: int, filters: list[dict] | None, recon: dict) -> None:
+    if not isinstance(recon, dict):
+        return
+    # Never cache a recon whose summaries ALL failed (transient warehouse
+    # hiccup) — same poisoning argument as the empty-pack skip above.
+    if not (recon.get("summaries") or []):
+        return
+    key = (int(dashboard_id), _filters_hash(filters))
+    with _recon_lock:
+        _recon_store[key] = (time.monotonic(), recon)
+        _recon_store.move_to_end(key)
+        while len(_recon_store) > _RECON_MAX_ENTRIES:
+            _recon_store.popitem(last=False)
+
+
+def invalidate_dashboard_recon_cache(dashboard_id: int) -> int:
+    with _recon_lock:
+        keys = [k for k in _recon_store if k[0] == int(dashboard_id)]
+        for k in keys:
+            _recon_store.pop(k, None)
+        return len(keys)

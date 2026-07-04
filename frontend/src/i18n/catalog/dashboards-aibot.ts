@@ -3,6 +3,7 @@ import type { ModuleCatalog } from '../messages';
 // DashboardAiBot panel strings, harvested from the panel externalization workflow.
 export const dashboardsAiBotCatalog: ModuleCatalog = {
   en: {
+    "dashboards.aiBot.title": "AI Analyst",
     "dashboards.aiBot.analyzing": "AI Analyst is analyzing",
     "dashboards.aiBot.webSourcesLabel": "Web sources",
     "dashboards.aiBot.stopTitle": "Stop generating",
@@ -64,6 +65,7 @@ export const dashboardsAiBotCatalog: ModuleCatalog = {
     "dashboards.aiBot.unknownError": "Unknown error.",
   },
   vi: {
+    "dashboards.aiBot.title": "AI Analyst",
     "dashboards.aiBot.analyzing": "AI Analyst đang phân tích",
     "dashboards.aiBot.webSourcesLabel": "Nguồn tham khảo trên web",
     "dashboards.aiBot.stopTitle": "Dừng tạo câu trả lời",

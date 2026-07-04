@@ -19,6 +19,7 @@ import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
 import type { Workboard } from '@/lib/api/workboards';
 import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
   workboard: Workboard;
@@ -69,6 +70,7 @@ function ExportPanel({
   workboard: Workboard;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [bundle, setBundle] = useState<ExportBundle | null>(null);
   // Default ON: the common case is moving an app within the same system, where
@@ -87,7 +89,7 @@ function ExportPanel({
         );
         if (alive) setBundle(r.data);
       } catch (err: unknown) {
-        toast.error(getApiErrorMessage(err, 'Could not export.'));
+        toast.error(getApiErrorMessage(err, t('workboards.export.exportFailed')));
       } finally {
         if (alive) setLoading(false);
       }
@@ -95,7 +97,7 @@ function ExportPanel({
     return () => {
       alive = false;
     };
-  }, [workboard.id, includeCredentials]);
+  }, [workboard.id, includeCredentials, t]);
 
   const handleDownload = () => {
     if (!bundle) return;
@@ -120,9 +122,9 @@ function ExportPanel({
     if (!bundle) return;
     try {
       await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
-      toast.success('Copied to clipboard');
+      toast.success(t('workboards.export.copied'));
     } catch {
-      toast.error('The browser blocked clipboard copy');
+      toast.error(t('workboards.export.copyBlocked'));
     }
   };
 
@@ -136,15 +138,15 @@ function ExportPanel({
     <Modal
       isOpen
       onClose={onClose}
-      title="Export workboard"
+      title={t('workboards.export.title')}
       size="lg"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Close
+            {t('workboards.export.close')}
           </Button>
           <Button variant="secondary" size="sm" onClick={handleCopy} disabled={!bundle}>
-            Copy JSON
+            {t('workboards.export.copyJson')}
           </Button>
           <Button
             variant="primary"
@@ -153,7 +155,7 @@ function ExportPanel({
             onClick={handleDownload}
             disabled={!bundle}
           >
-            Download .json
+            {t('workboards.export.downloadJson')}
           </Button>
         </>
       }
@@ -163,14 +165,13 @@ function ExportPanel({
           <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
         </div>
       ) : !bundle ? (
-        <p className="text-caption text-text-tertiary">No data.</p>
+        <p className="text-caption text-text-tertiary">{t('workboards.export.noData')}</p>
       ) : (
         <div className="space-y-4">
           <div className="rounded-md border border-info/20 bg-info/5 p-3 text-caption text-text-secondary">
-            Bundle gói trọn <strong>toàn bộ dataset</strong> (mọi bảng + cột + quan
-            hệ/measure) và toàn bộ layout của app. Khi import ở chỗ khác, bạn chỉ
-            cần <strong>chọn đúng Source</strong> — hệ thống tự tạo Dataset khớp
-            Source đó rồi dựng lại app + bảng user.
+            {t('workboards.export.descriptionPrefix')} <strong>{t('workboards.export.entireDataset')}</strong>{' '}
+            {t('workboards.export.descriptionMiddle')} <strong>{t('workboards.export.chooseSource')}</strong>{' '}
+            {t('workboards.export.descriptionSuffix')}
           </div>
 
           <label className="flex items-start gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-caption">
@@ -182,26 +183,25 @@ function ExportPanel({
             />
             <div>
               <div className="font-medium text-text-primary">
-                Kèm PIN (đã hash) cho {bundle.app_users?.length ?? 0} app user
+                {t('workboards.export.includeCredentialsTitle', { count: bundle.app_users?.length ?? 0 })}
               </div>
               <div className="mt-0.5 text-caption text-text-tertiary">
-                Mặc định BẬT để chuyển nội bộ cùng hệ thống — import xong user đăng
-                nhập được ngay. <strong>Tắt</strong> trước khi chia sẻ file ra ngoài;
-                khi tắt, admin phải đặt lại PIN cho từng user sau import.
+                {t('workboards.export.includeCredentialsDescriptionPrefix')} <strong>{t('workboards.export.turnOff')}</strong>{' '}
+                {t('workboards.export.includeCredentialsDescriptionSuffix')}
               </div>
             </div>
           </label>
 
           <div className="grid grid-cols-4 gap-3">
-            <Stat label="Screens" value={screens.length} />
-            <Stat label="Referenced tables" value={tableCount} />
-            <Stat label="App users" value={bundle.app_users?.length ?? 0} />
-            <Stat label="Bundle version" value={String(bundle.bundle_version ?? 1)} />
+            <Stat label={t('workboards.export.screens')} value={screens.length} />
+            <Stat label={t('workboards.export.referencedTables')} value={tableCount} />
+            <Stat label={t('workboards.export.appUsers')} value={bundle.app_users?.length ?? 0} />
+            <Stat label={t('workboards.export.bundleVersion')} value={String(bundle.bundle_version ?? 1)} />
           </div>
 
           <div>
             <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Tables in bundle
+              {t('workboards.export.tablesInBundle')}
             </h4>
             <div className="space-y-1">
               {Object.entries(tablesMeta).map(([id, m]) => (
@@ -209,15 +209,15 @@ function ExportPanel({
                   key={id}
                   className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-caption"
                 >
-                  <FileJson className="h-3.5 w-3.5 text-text-tertiary" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-emphasis text-text-primary">
-                      {m.display_name || m.source_table_name || `Table ${id}`}
-                    </div>
-                    <div className="truncate text-caption text-text-quaternary">
-                      {m.source_table_name} · {m.columns?.length || 0} columns ·
-                      dataset: {m.dataset_name || '?'}
-                    </div>
+                    <FileJson className="h-3.5 w-3.5 text-text-tertiary" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-emphasis text-text-primary">
+                        {m.display_name || m.source_table_name || t('workboards.import.tableFallback', { id })}
+                      </div>
+                      <div className="truncate text-caption text-text-quaternary">
+                        {m.source_table_name} · {t('workboards.import.columnCount', { count: m.columns?.length || 0 })} ·
+                        {t('workboards.export.datasetLabel')} {m.dataset_name || '?'}
+                      </div>
                   </div>
                 </div>
               ))}

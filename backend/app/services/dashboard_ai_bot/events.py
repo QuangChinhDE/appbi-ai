@@ -28,6 +28,14 @@ EventType = Literal[
     # uses it to update the badge next to each step from
     # pending → running → done.
     "plan_step",
+    # Phase 16 (InsightBench rework) — goal-driven exploration engine.
+    # `insight` carries one typed Insight object (rung + statement +
+    # evidence + justification + optional action) the moment it is
+    # extracted; `exploration_step` is the engine's progress tick
+    # (question generated / being answered / done) so the FE can render
+    # the exploration tree live.
+    "insight",
+    "exploration_step",
 ]
 
 

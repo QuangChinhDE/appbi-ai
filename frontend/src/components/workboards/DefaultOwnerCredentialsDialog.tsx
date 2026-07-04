@@ -6,6 +6,7 @@ import { Check, Copy, KeyRound, ShieldAlert } from 'lucide-react';
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
   isOpen: boolean;
@@ -25,6 +26,7 @@ export function DefaultOwnerCredentialsDialog({
   pin,
   onConfirm,
 }: Props) {
+  const { t } = useI18n();
   const [confirmed, setConfirmed] = React.useState(false);
   const [copied, setCopied] = React.useState<CopyKey | null>(null);
 
@@ -41,7 +43,7 @@ export function DefaultOwnerCredentialsDialog({
       setCopied(key);
       window.setTimeout(() => setCopied((current) => (current === key ? null : current)), 1500);
     } catch {
-      toast.error('Không thể copy. Hãy chọn và copy thủ công.');
+      toast.error(t('workboards.credentials.copyFailed'));
     }
   };
 
@@ -57,10 +59,10 @@ export function DefaultOwnerCredentialsDialog({
           return;
         }
         toast.error(
-          'Hãy lưu lại username + PIN trước khi đóng — đây là tài khoản admin đầu tiên cho mini-app.',
+          t('workboards.credentials.mustSaveBeforeClose'),
         );
       }}
-      title="Tài khoản admin mặc định cho mini-app"
+      title={t('workboards.credentials.title')}
       size="md"
       footer={
         <>
@@ -76,7 +78,7 @@ export function DefaultOwnerCredentialsDialog({
               )
             }
           >
-            {copied === 'both' ? 'Đã copy' : 'Copy cả hai'}
+            {copied === 'both' ? t('workboards.credentials.copied') : t('workboards.credentials.copyBoth')}
           </Button>
           <Button
             variant="primary"
@@ -85,11 +87,11 @@ export function DefaultOwnerCredentialsDialog({
             onClick={onConfirm}
             title={
               confirmed
-                ? 'Vào builder để cấu hình mini-app'
-                : 'Tick xác nhận đã lưu PIN ở trên trước'
+                ? t('workboards.credentials.enterBuilderTitle')
+                : t('workboards.credentials.confirmSaveTitle')
             }
           >
-            Tôi đã lưu — vào Builder
+            {t('workboards.credentials.enterBuilder')}
           </Button>
         </>
       }
@@ -99,28 +101,29 @@ export function DefaultOwnerCredentialsDialog({
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
           <div className="text-tiny text-text-secondary">
             <p className="font-emphasis text-text-primary">
-              PIN này chỉ hiện đúng 1 lần.
+              {t('workboards.credentials.oneTimeTitle')}
             </p>
             <p className="mt-0.5">
-              Hãy copy và gửi cho người sẽ quản trị mini-app{' '}
-              <span className="font-emphasis text-text-primary">“{workboardName}”</span>.
-              Sau khi đóng cửa sổ này, hệ thống không hiển thị lại được nữa —
-              nếu mất, bạn phải vào tab <span className="font-emphasis">Users</span>{' '}
-              để đặt lại PIN.
+              {t('workboards.credentials.oneTimeBodyPrefix')}{' '}
+              <span className="font-emphasis text-text-primary">"{workboardName}"</span>.
+              {' '}
+              {t('workboards.credentials.oneTimeBodyMiddle')}{' '}
+              <span className="font-emphasis">{t('workboards.credentials.usersTab')}</span>{' '}
+              {t('workboards.credentials.oneTimeBodySuffix')}
             </p>
           </div>
         </div>
 
         <div className="space-y-2">
           <CredentialField
-            label="Tên đăng nhập"
+            label={t('workboards.credentials.username')}
             value={username}
             onCopy={() => copy('username', username)}
             copied={copied === 'username'}
             icon={<KeyRound className="h-3.5 w-3.5" />}
           />
           <CredentialField
-            label="PIN"
+            label={t('workboards.credentials.pin')}
             value={pin}
             onCopy={() => copy('pin', pin)}
             copied={copied === 'pin'}
@@ -136,8 +139,7 @@ export function DefaultOwnerCredentialsDialog({
             className="mt-0.5 h-3.5 w-3.5 shrink-0"
           />
           <span>
-            Tôi đã copy/lưu lại tên đăng nhập và PIN ở nơi an toàn (mật khẩu
-            quản lý, ghi chú nội bộ, v.v.)
+            {t('workboards.credentials.confirmSaved')}
           </span>
         </label>
       </div>
@@ -160,6 +162,7 @@ function CredentialField({
   mono?: boolean;
   icon?: React.ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-emphasis text-text-tertiary">
@@ -178,15 +181,15 @@ function CredentialField({
           type="button"
           onClick={onCopy}
           className="flex shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-tiny font-medium text-text-secondary hover:border-brand hover:text-brand"
-          title={`Copy ${label.toLowerCase()}`}
+          title={t('workboards.credentials.copyFieldTitle', { label: label.toLowerCase() })}
         >
           {copied ? (
             <>
-              <Check className="h-3.5 w-3.5" /> Đã copy
+              <Check className="h-3.5 w-3.5" /> {t('workboards.credentials.copied')}
             </>
           ) : (
             <>
-              <Copy className="h-3.5 w-3.5" /> Copy
+              <Copy className="h-3.5 w-3.5" /> {t('workboards.credentials.copy')}
             </>
           )}
         </button>

@@ -19,6 +19,7 @@ import { FilterTag } from '@/components/ui/FilterTag';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
 import { usePublishWorkboard, useUpdateWorkboard } from '@/hooks/use-workboards';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { Workboard } from '@/lib/api/workboards';
 
 function apiErrorMessage(err: unknown, fallback: string): string {
@@ -34,6 +35,7 @@ interface Props {
 }
 
 export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: Props) {
+  const { t } = useI18n();
   const publish = usePublishWorkboard();
   const update = useUpdateWorkboard();
   const [confirmingDraft, setConfirmingDraft] = useState(false);
@@ -49,11 +51,11 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
   const doPublish = async () => {
     try {
       await publish.mutateAsync(workboard.id);
-      toast.success('Đã xuất bản — app hiển thị qua link công khai');
+      toast.success(t('workboards.publish.publishedToast'));
     } catch (err) {
       // Surface the BE's actionable reason (e.g. "đổi PIN mặc định cho owner…")
       // instead of a generic failure, so the user knows what to fix.
-      toast.error(apiErrorMessage(err, 'Không xuất bản được'));
+      toast.error(apiErrorMessage(err, t('workboards.publish.publishFailed')));
     }
   };
 
@@ -61,9 +63,9 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     setConfirmingDraft(false);
     try {
       await update.mutateAsync({ id: workboard.id, data: { is_published: false } });
-      toast.success('Đã chuyển về Bản nháp — ẩn khỏi link công khai');
+      toast.success(t('workboards.publish.draftToast'));
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Không chuyển về nháp được'));
+      toast.error(apiErrorMessage(err, t('workboards.publish.draftFailed')));
     }
   };
 
@@ -77,23 +79,23 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     <Modal
       isOpen
       onClose={() => setConfirmingDraft(false)}
-      title="Chuyển về Bản nháp?"
+      title={t('workboards.publish.confirmTitle')}
       size="sm"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={() => setConfirmingDraft(false)}>
-            Huỷ
+            {t('workboards.publish.cancel')}
           </Button>
           <Button variant="danger" size="sm" onClick={doDraft} loading={update.isPending}>
-            Chuyển về nháp
+            {t('workboards.publish.confirmDraft')}
           </Button>
         </>
       }
     >
       <p className="text-caption text-text-secondary">
-        App <strong>{workboard.name}</strong> sẽ <strong>ẩn khỏi mọi link công khai</strong> —
-        người dùng đang dùng sẽ không vào được nữa cho tới khi bạn xuất bản lại. Dữ liệu
-        không bị mất.
+        {t('workboards.publish.confirmDescriptionPrefix')} <strong>{workboard.name}</strong>{' '}
+        {t('workboards.publish.confirmDescriptionMiddle')} <strong>{t('workboards.publish.hiddenFromPublicLinks')}</strong>{' '}
+        {t('workboards.publish.confirmDescriptionSuffix')}
       </p>
     </Modal>
   ) : null;
@@ -102,8 +104,8 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     return (
       <>
         <IconButton
-          aria-label={published ? 'Chuyển về Bản nháp' : 'Xuất bản'}
-          title={published ? 'Đã xuất bản — bấm để chuyển về nháp' : 'Bản nháp — bấm để xuất bản'}
+          aria-label={published ? t('workboards.publish.moveToDraftAria') : t('workboards.publish.publishAria')}
+          title={published ? t('workboards.publish.publishedTitle') : t('workboards.publish.draftTitle')}
           variant="ghost"
           size="xs"
           onClick={onClick}
@@ -133,14 +135,14 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
         onClick={onClick}
         disabled={busy}
         className="gap-1"
-        title={published ? 'Đã xuất bản — bấm để chuyển về nháp' : 'Bản nháp — bấm để xuất bản'}
+        title={published ? t('workboards.publish.publishedTitle') : t('workboards.publish.draftTitle')}
       >
         {busy ? (
           <Loader2 className="h-3 w-3 animate-spin" />
         ) : (
           <span className={`h-1.5 w-1.5 rounded-full ${published ? 'bg-success' : 'bg-warning'}`} />
         )}
-        {published ? 'Đã xuất bản' : 'Bản nháp'}
+        {published ? t('workboards.filter.published') : t('workboards.filter.draft')}
       </FilterTag>
       {confirmModal}
     </>
@@ -148,10 +150,11 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
 }
 
 function StatePill({ published }: { published: boolean; muted?: boolean }) {
+  const { t } = useI18n();
   return (
     <FilterTag tone={published ? 'success' : 'warning'} disabled className="gap-1">
       <span className={`h-1.5 w-1.5 rounded-full ${published ? 'bg-success' : 'bg-warning'}`} />
-      {published ? 'Đã xuất bản' : 'Bản nháp'}
+      {published ? t('workboards.filter.published') : t('workboards.filter.draft')}
     </FilterTag>
   );
 }

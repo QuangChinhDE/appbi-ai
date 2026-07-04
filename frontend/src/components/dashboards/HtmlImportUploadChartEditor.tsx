@@ -30,6 +30,7 @@ import {
 } from '@/components/explore/ExploreChartConfig';
 import { usePreviewDashboardHtmlImportCalculatedFields } from '@/hooks/use-dashboards';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import type {
   DashboardHtmlImportCalculatedField,
   DashboardHtmlImportChartPlan,
@@ -74,6 +75,7 @@ export function HtmlImportUploadChartEditor({
   onClose,
   onSave,
 }: HtmlImportUploadChartEditorProps) {
+  const { t } = useI18n();
   const activeProfile = useMemo(
     () => profileForPlan(plan, sourceProfile, allSourceProfiles),
     [plan, sourceProfile, allSourceProfiles],
@@ -176,7 +178,7 @@ export function HtmlImportUploadChartEditor({
         setEnrichedRows(result.rows || baseSampleRows);
         const errMap: Record<string, string> = {};
         for (const e of result.errors || []) {
-          if (e?.name) errMap[e.name] = e.error || 'Invalid expression';
+          if (e?.name) errMap[e.name] = e.error || t('dashboards.htmlImport.invalidExpression');
         }
         setCalcFieldErrors(errMap);
       } catch (error: any) {
@@ -186,7 +188,7 @@ export function HtmlImportUploadChartEditor({
         setEnrichedColumns(baseColumns);
         setEnrichedRows(baseSampleRows);
         const detail =
-          error?.response?.data?.detail || error?.message || 'Could not preview calculated fields.';
+          error?.response?.data?.detail || error?.message || t('dashboards.htmlImport.previewCalculatedFieldsError');
         toast.error(String(detail));
       }
     }
@@ -197,7 +199,7 @@ export function HtmlImportUploadChartEditor({
     // previewMutation is intentionally excluded because react-query mutations
     // are stable — relying on it would cause effect loops after each run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile, baseColumns, baseSampleRows, applicableCalcFields]);
+  }, [activeProfile, baseColumns, baseSampleRows, applicableCalcFields, t]);
 
   const availableColumns = enrichedColumns.length > 0 ? enrichedColumns : baseColumns;
   const sampleRows = enrichedRows.length > 0 || applicableCalcFields.length === 0
@@ -240,20 +242,20 @@ export function HtmlImportUploadChartEditor({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={plan ? `Edit chart — ${plan.title}` : 'Edit chart'}
+      title={plan ? t('dashboards.htmlImport.editChartTitle', { title: plan.title }) : t('dashboards.htmlImport.editChart')}
       size="full"
       bodyClassName="overflow-hidden p-0"
       contentClassName="max-w-[92rem]"
       footer={
         <>
-          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" size="sm" onClick={onClose}>{t('dashboards.htmlImport.cancel')}</Button>
           <Button
             variant="primary"
             size="sm"
             onClick={handleApply}
             disabled={!plan || !chartName.trim() || Boolean(requirementMessage)}
           >
-            Apply Changes
+            {t('dashboards.htmlImport.applyChanges')}
           </Button>
         </>
       }
@@ -263,45 +265,43 @@ export function HtmlImportUploadChartEditor({
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-brand/30 bg-brand/5 p-3 text-xs text-text-secondary">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" />
             <div>
-              <p className="font-medium text-text-primary">Quick preview from sampled rows</p>
+              <p className="font-medium text-text-primary">{t('dashboards.htmlImport.quickPreviewTitle')}</p>
               <p className="mt-0.5 text-caption text-text-tertiary">
-                You are editing a chart backed by an Excel/CSV upload that has not been saved as a dataset yet.
-                The preview uses up to {sampleRows.length} sampled rows — final results may differ slightly.
-                Custom SQL is available after the dashboard is built.
+                {t('dashboards.htmlImport.quickPreviewDescription', { count: sampleRows.length })}
               </p>
             </div>
           </div>
 
           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-            Chart name
+            {t('dashboards.htmlImport.chartName')}
           </label>
           <Input
             size="sm"
             value={chartName}
             onChange={(event) => setChartName(event.target.value)}
-            placeholder="Chart name"
+            placeholder={t('dashboards.htmlImport.chartName')}
           />
           <label className="mb-1 mt-3 block text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-            Description <span className="font-normal normal-case text-text-quaternary">(optional)</span>
+            {t('dashboards.htmlImport.description')} <span className="font-normal normal-case text-text-quaternary">{t('dashboards.htmlImport.optionalSuffix')}</span>
           </label>
           <Input
             size="sm"
             value={chartDescription}
             onChange={(event) => setChartDescription(event.target.value)}
-            placeholder="What does this chart show?"
+            placeholder={t('dashboards.htmlImport.chartDescriptionPlaceholder')}
           />
 
           {sourceKeyOptions.length > 1 && (
             <>
               <label className="mb-1 mt-3 block text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-                Source sheet / file
+                {t('dashboards.htmlImport.sourceSheetFile')}
               </label>
               <select
                 value={sourceKey}
                 onChange={(event) => setSourceKey(event.target.value)}
                 className="w-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm text-text-secondary"
               >
-                <option value="">— Default —</option>
+                <option value="">{t('dashboards.htmlImport.defaultOption')}</option>
                 {sourceKeyOptions.map((key) => (
                   <option key={key} value={key}>{key}</option>
                 ))}
@@ -327,26 +327,26 @@ export function HtmlImportUploadChartEditor({
 
         <div className="min-h-0 overflow-hidden bg-surface-1 p-4">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Live preview</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('dashboards.htmlImport.livePreview')}</p>
             <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
-              {sampleRows.length} sample row{sampleRows.length === 1 ? '' : 's'}
+              {t('dashboards.htmlImport.sampleRowsCount', { count: sampleRows.length })}
             </span>
           </div>
           {!activeProfile ? (
             <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-              No source data available for preview.
+              {t('dashboards.htmlImport.noSourcePreviewData')}
             </div>
           ) : requirementMessage ? (
             <div className="flex h-full items-center justify-center">
               <div className="max-w-sm text-center text-text-tertiary">
                 <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-warning" />
-                <p className="text-sm font-medium text-text-secondary">Chart setup is incomplete</p>
+                <p className="text-sm font-medium text-text-secondary">{t('dashboards.htmlImport.chartSetupIncomplete')}</p>
                 <p className="mt-1 text-caption">{requirementMessage}</p>
               </div>
             </div>
           ) : sampleRows.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-              Uploaded source does not contain any sample rows to preview.
+              {t('dashboards.htmlImport.noSampleRowsPreview')}
             </div>
           ) : (
             <div className="h-full min-h-0">

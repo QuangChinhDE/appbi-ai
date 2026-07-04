@@ -39,6 +39,7 @@ import {
   Info,
 } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
+import { useI18n } from '@/providers/LanguageProvider';
 import type {
   ChartBenchmarkLineStyle,
   BenchmarkLineDef,
@@ -2358,6 +2359,7 @@ function FormatGroup({
   searchActive?: boolean;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(defaultOpen);
   if (!matchesSearch) return null;
   const isOpen = searchActive ? true : open;
@@ -2378,7 +2380,7 @@ function FormatGroup({
             className={`h-1.5 w-1.5 rounded-full transition-colors ${
               hasCustomization ? 'bg-brand' : 'bg-text-quaternary/40'
             }`}
-            title={hasCustomization ? 'Has custom settings' : 'Default settings'}
+            title={hasCustomization ? t('explore.config.hasCustomSettings') : t('explore.config.defaultSettings')}
           />
           <span>{title}</span>
         </span>
@@ -3479,6 +3481,7 @@ export function ExploreChartConfig({
   onRoleConfigChange,
   onStyleConfigChange,
 }: ExploreChartConfigProps) {
+  const { t } = useI18n();
   const isStyleOnly = mode === 'styleOnly';
   const upd = useCallback(
     (patch: Partial<ChartRoleConfig>) => onRoleConfigChange({ ...roleConfig, ...patch }),
@@ -3616,13 +3619,13 @@ export function ExploreChartConfig({
   const removeBenchmarkLine = (i: number) =>
     setBenchmarkLines(benchmarkLines.filter((_, idx) => idx !== i));
   const supportsDataSection = !isTableLike && !isNoDimensionMetric;
-  const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
-  const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
+  const chartBindingTitle = queryMode === 'custom' ? t('explore.config.sqlColumnRoles') : t('explore.config.fieldRoles');
+  const tableBindingTitle = isPivotEnabled ? t('explore.config.pivotLayout') : t('explore.config.visibleColumns');
   const tableRoleSectionHint = queryMode === 'custom'
-    ? 'Choose directly from the columns returned by your SQL. Nothing is inferred back into Config Builder fields.'
-    : 'Standard table stays as-is. Enable pivot only when you want dynamic cross-tab headers driven by distinct column values.';
+    ? t('explore.config.tableRoleHintCustom')
+    : t('explore.config.tableRoleHintGenerated');
   const chartRoleSectionHint = queryMode === 'custom'
-    ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
+    ? t('explore.config.chartRoleHintCustom')
     : undefined;
   const showQuickView = !isTableLike && chartType !== 'KPI';
   const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || isPieLike || isScatterLike || chartType === 'TIME_SERIES' || supportsDataSection);
@@ -4330,14 +4333,14 @@ export function ExploreChartConfig({
 
       {isTableLike && tableFormattingColumns.length > 0 && (
         <Disclosure
-          title="Column Layout"
-          hint="Rename table headers for this chart, set value alignment, and clear saved widths. Raw column keys and queries stay unchanged."
+          title={t('explore.config.columnLayout')}
+          hint={t('explore.config.columnLayoutHint')}
           defaultOpen
         >
           <div className="flex items-center justify-between rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
             <div className="flex items-center gap-1">
-              <div className="text-xs font-semibold text-text-secondary">Resizable columns</div>
-              <HelpTooltip text="Drag the divider on a column header in the preview to widen or shrink that column." />
+              <div className="text-xs font-semibold text-text-secondary">{t('explore.config.resizableColumns')}</div>
+              <HelpTooltip text={t('explore.config.resizableColumnsHelp')} />
             </div>
             <button
               type="button"
@@ -4345,14 +4348,14 @@ export function ExploreChartConfig({
               disabled={Object.keys(tableColumnWidths).length === 0}
               className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Reset all widths
+              {t('explore.config.resetAllWidths')}
             </button>
           </div>
 
           <div className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
-            <span className="min-w-0 flex-1">Column</span>
-            <span className="w-[84px] text-center">Align</span>
-            <span className="w-[112px]">Format</span>
+            <span className="min-w-0 flex-1">{t('explore.config.column')}</span>
+            <span className="w-[84px] text-center">{t('explore.config.align')}</span>
+            <span className="w-[112px]">{t('explore.config.formatColumn')}</span>
             <span className="w-6" />
           </div>
           <div className="space-y-1">
@@ -4380,7 +4383,7 @@ export function ExploreChartConfig({
                       onChange={(event) => updateTableColumnLabel(column.name, event.target.value)}
                       placeholder={colLabel(column)}
                       className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-[11px]"
-                      title="Custom table header for this chart"
+                      title={t('explore.config.customHeaderTitle')}
                     />
                   </div>
                   <div className="inline-flex w-[84px] shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
@@ -4390,7 +4393,7 @@ export function ExploreChartConfig({
                         <button
                           key={`${column.name}-${option.value}`}
                           type="button"
-                          title={`Align ${option.label}`}
+                          title={t('explore.config.alignOption', { option: option.label })}
                           onClick={() => updateTableColumnAlignment(column.name, option.value)}
                           className={`flex-1 py-1 text-[11px] font-semibold transition-colors ${
                             active ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2'
@@ -4404,15 +4407,15 @@ export function ExploreChartConfig({
                   <select
                     value={tableColumnFormats[column.name] ?? ''}
                     onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
-                    title="Number format for this column"
+                    title={t('explore.config.columnNumberFormatTitle')}
                     className="w-[112px] shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-1 text-[11px]"
                   >
-                    <option value="">Default</option>
-                    <option value="auto">Number</option>
-                    <option value="compact">Compact</option>
+                    <option value="">{t('explore.config.default')}</option>
+                    <option value="auto">{t('explore.config.number')}</option>
+                    <option value="compact">{t('explore.config.compact')}</option>
                     <option value="number">1,234</option>
-                    <option value="percent">Percent %</option>
-                    <option value="currency">Currency {normalizedStyleConfig.currencySymbol || '$'}</option>
+                    <option value="percent">{t('explore.config.percent')}</option>
+                    <option value="currency">{t('explore.config.currency')} {normalizedStyleConfig.currencySymbol || '$'}</option>
                   </select>
                   <button
                     type="button"
@@ -5415,8 +5418,8 @@ export function ExploreChartConfig({
       {showQuickView && (
         <SectionPanel
           step={quickViewStep}
-          title="Format"
-          description="Style the chart. Visual covers the everyday controls; open Axes & Scale or Advanced when you need extra tuning."
+          title={t('explore.config.format')}
+          description={t('explore.config.formatDescription')}
         >
         {/* Phase-15.92 v2 — search box. Style aligned with the surface-1
             inputs used throughout the panel (border-strong + bg-surface-1
@@ -5427,7 +5430,7 @@ export function ExploreChartConfig({
             type="text"
             value={formatSearch}
             onChange={e => setFormatSearch(e.target.value)}
-            placeholder="Search settings (eg. axis, label, color)…"
+            placeholder={t('explore.config.searchSettingsPlaceholder')}
             className="w-full pl-8 pr-8 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 placeholder:text-text-quaternary focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand/40 transition-colors"
           />
           {formatSearch && (
@@ -5435,8 +5438,8 @@ export function ExploreChartConfig({
               type="button"
               onClick={() => setFormatSearch('')}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-text-quaternary hover:text-text-secondary rounded"
-              title="Clear search"
-              aria-label="Clear search"
+              title={t('explore.config.clearSearch')}
+              aria-label={t('explore.config.clearSearch')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -5444,7 +5447,7 @@ export function ExploreChartConfig({
         </div>
 
         <FormatGroup
-          title="Visual"
+          title={t('explore.config.visual')}
           defaultOpen
           matchesSearch={matchesFormatSearch(['visual', 'chart title', 'color palette', 'series colors', 'legend labels', 'rename', 'label', 'number format', 'legend', 'data labels', 'font', 'font size', 'donut', 'stack mode'])}
           searchActive={formatSearchActive}
@@ -5459,8 +5462,8 @@ export function ExploreChartConfig({
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           {/* Chart Title */}
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Chart Title</label>
-            <input type="text" value={styleConfig.chartTitle || ''} placeholder="Optional title"
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.chartTitle')}</label>
+            <input type="text" value={styleConfig.chartTitle || ''} placeholder={t('explore.config.optionalTitle')}
               onChange={e => updStyle({ chartTitle: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
@@ -5472,8 +5475,8 @@ export function ExploreChartConfig({
                   the renderer — otherwise the slider reads "0% (Pie)" while the
                   chart shows a donut. */}
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Donut Hole: {styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}%
-                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)) === 0 ? 'Pie' : 'Donut'})</span>
+                {t('explore.config.donutHole', { value: styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0) })}
+                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)) === 0 ? t('explore.config.pie') : t('explore.config.donut')})</span>
               </label>
               <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}
                 onChange={e => updStyle({ pieInnerRadius: Number(e.target.value) })}
@@ -5484,12 +5487,12 @@ export function ExploreChartConfig({
           {/* STACKED_BAR: 100% stack mode */}
           {chartType === 'STACKED_BAR' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Stack Mode</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.stackMode')}</label>
               <select value={styleConfig.stackMode || 'normal'}
                 onChange={e => updStyle({ stackMode: e.target.value as 'normal' | 'percent' })}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="normal">Normal (absolute values)</option>
-                <option value="percent">100% Stacked (percentage)</option>
+                <option value="normal">{t('explore.config.stackNormal')}</option>
+                <option value="percent">{t('explore.config.stackPercent')}</option>
               </select>
             </div>
           )}
@@ -5505,7 +5508,7 @@ export function ExploreChartConfig({
             const activePalette = CHART_PALETTES.find(p => p.name === activePaletteName) ?? CHART_PALETTES[0];
             return (
               <div>
-                <label className="text-xs font-semibold text-text-secondary mb-1 block">Color Palette</label>
+                <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.colorPalette')}</label>
                 <div className="flex items-center gap-2">
                   <select
                     value={activePaletteName}
@@ -5518,7 +5521,7 @@ export function ExploreChartConfig({
                   </select>
                   <div
                     className="flex shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1"
-                    title={`${activePalette.label} palette preview`}
+                    title={t('explore.config.palettePreview', { name: activePalette.label })}
                   >
                     {activePalette.colors.slice(0, 5).map((c, i) => (
                       <div
@@ -5546,7 +5549,7 @@ export function ExploreChartConfig({
                    accident). */}
           {chartType === 'GAUGE' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Data Label Format</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.dataLabelFormat')}</label>
               <select
                 value={styleConfig.dataLabelConfig?.format ?? ''}
                 onChange={(e) => {
@@ -5561,12 +5564,12 @@ export function ExploreChartConfig({
                 }}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
               >
-                <option value="">Inherit Number Format</option>
-                <option value="auto">Auto (raw)</option>
-                <option value="compact">Compact (1.2K, 3.4M)</option>
-                <option value="number">Full Number (1,234)</option>
-                <option value="percent">Percent (%)</option>
-                <option value="currency">Currency ($)</option>
+                <option value="">{t('explore.config.inheritNumberFormat')}</option>
+                <option value="auto">{t('explore.config.formatAuto')}</option>
+                <option value="compact">{t('explore.config.formatCompact')}</option>
+                <option value="number">{t('explore.config.formatNumber')}</option>
+                <option value="percent">{t('explore.config.formatPercent')}</option>
+                <option value="currency">{t('explore.config.formatCurrency')}</option>
               </select>
             </div>
           )}
@@ -5593,7 +5596,7 @@ export function ExploreChartConfig({
               controls instead of below the Advanced cluster. */}
           {chartType === 'HEATMAP' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.fontSize', { value: styleConfig.fontSize || 12 })}</label>
               <input
                 type="range"
                 min={8}
@@ -5607,29 +5610,29 @@ export function ExploreChartConfig({
           )}
 
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.numberFormat')}</label>
             <select value={styleConfig.numberFormat || 'compact'}
               onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="auto">Auto (raw)</option>
-              <option value="compact">Compact (1.2K, 3.4M)</option>
-              <option value="number">Full Number (1,234)</option>
-              <option value="percent">Percent (%)</option>
-              <option value="currency">Currency ($)</option>
+              <option value="auto">{t('explore.config.formatAuto')}</option>
+              <option value="compact">{t('explore.config.formatCompact')}</option>
+              <option value="number">{t('explore.config.formatNumber')}</option>
+              <option value="percent">{t('explore.config.formatPercent')}</option>
+              <option value="currency">{t('explore.config.formatCurrency')}</option>
             </select>
           </div>
 
           {/* Phase-15.92 — Legend moved up alongside Number Format. */}
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.legend')}</label>
             <select value={styleConfig.legendPosition || 'bottom'}
               onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="top">Top</option>
-              <option value="bottom">Bottom</option>
-              <option value="left">Left</option>
-              <option value="right">Right</option>
-              <option value="none">Hidden</option>
+              <option value="top">{t('explore.config.legendTop')}</option>
+              <option value="bottom">{t('explore.config.legendBottom')}</option>
+              <option value="left">{t('explore.config.legendLeft')}</option>
+              <option value="right">{t('explore.config.legendRight')}</option>
+              <option value="none">{t('explore.config.legendHidden')}</option>
             </select>
           </div>
         </FormatGroup>
@@ -5641,7 +5644,7 @@ export function ExploreChartConfig({
             disclosures: Series mix, Per-series fmt, Tooltip extras,
             Annotations, Conditional colors, Calc fields, Data Labels. */}
         <FormatGroup
-          title="Advanced"
+          title={t('explore.config.advanced')}
           defaultOpen={false}
           matchesSearch={matchesFormatSearch(['advanced', 'series mix', 'per-series', 'tooltip', 'annotation', 'conditional', 'calculated', 'data label', 'template', 'value format', 'format', 'currency', 'percent', 'decimal'])}
           searchActive={formatSearchActive}
@@ -6234,7 +6237,7 @@ export function ExploreChartConfig({
             reference-line / sort controls. */}
         {hasAdvancedControls && (
           <FormatGroup
-            title="Axes & Scale"
+            title={t('explore.config.axesScale')}
             defaultOpen={false}
             matchesSearch={matchesFormatSearch(['axis', 'axes', 'scale', 'grid', 'benchmark', 'bar', 'line', 'dual', 'time', 'granularity', 'point', 'sort', 'limit'])}
             searchActive={formatSearchActive}
@@ -6259,13 +6262,13 @@ export function ExploreChartConfig({
           <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
             onChange={v => updStyle({ showGrid: v })} />
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">X Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.xAxisLabel')}</label>
             <input type="text" value={styleConfig.xAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ xAxisLabel: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Y Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.yAxisLabel')}</label>
             <input type="text" value={styleConfig.yAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ yAxisLabel: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
@@ -6544,21 +6547,21 @@ export function ExploreChartConfig({
 
       {/* Sort & Limit */}
       {supportsDataSection && (
-        <Disclosure title="Sort & Limit" hint="Sort by the chart output columns before rendering, then optionally cap the number of displayed rows.">
+        <Disclosure title={t('explore.config.sortLimit')} hint={t('explore.config.sortLimitHint')}>
           {/* Sort rules */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-text-secondary">Sort Rules</span>
+              <span className="text-xs font-semibold text-text-secondary">{t('explore.config.sortRules')}</span>
               <button type="button"
                 onClick={() => {
                   if (sortLimitCols.length === 0) return;
                   updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
                 }}
                 disabled={sortLimitCols.length === 0}
-                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">+ Add rule</button>
+                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">{t('explore.config.addRule')}</button>
             </div>
             {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
-              <p className="text-[11px] text-text-quaternary italic">Run query first to enable sorting.</p>
+              <p className="text-[11px] text-text-quaternary italic">{t('explore.config.runQueryEnableSorting')}</p>
             )}
             {chartSortRules.map((rule, i) => (
               <div key={i} className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2">
@@ -6589,21 +6592,21 @@ export function ExploreChartConfig({
               / dataLimitDirection via applyDataLimit in ExploreChart and
               ChartPreview. */}
           <div className="mt-3 space-y-1.5 border-t border-[rgb(var(--border-line))] pt-3">
-            <span className="text-xs font-semibold text-text-secondary">Limit</span>
+            <span className="text-xs font-semibold text-text-secondary">{t('explore.config.limit')}</span>
             <div className="flex items-center gap-1.5">
               <select
                 value={styleConfig.dataLimitDirection ?? 'top'}
                 onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
                 className="w-24 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="top">Top</option>
-                <option value="bottom">Bottom</option>
+                <option value="top">{t('explore.config.top')}</option>
+                <option value="bottom">{t('explore.config.bottom')}</option>
               </select>
               <input
                 type="number"
                 min={1}
                 step={1}
                 inputMode="numeric"
-                placeholder="All rows"
+                placeholder={t('explore.config.allRows')}
                 value={styleConfig.dataLimit === undefined || styleConfig.dataLimit === '' ? '' : styleConfig.dataLimit}
                 onChange={e => {
                   const raw = e.target.value;
@@ -6613,9 +6616,9 @@ export function ExploreChartConfig({
                 }}
                 className="flex-1 min-w-0 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
               />
-              <span className="text-[11px] text-text-quaternary">rows</span>
+              <span className="text-[11px] text-text-quaternary">{t('explore.config.rows')}</span>
             </div>
-            <p className="text-[10px] text-text-quaternary">Applied after sorting. Leave blank to show every row.</p>
+            <p className="text-[10px] text-text-quaternary">{t('explore.config.limitHelp')}</p>
           </div>
         </Disclosure>
       )}

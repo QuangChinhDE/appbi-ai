@@ -18,6 +18,9 @@ import { IconButton } from '@/components/ui/Button';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
 import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
 import type { Workboard } from '@/lib/api/workboards';
+import { useI18n } from '@/providers/LanguageProvider';
+
+type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 interface WorkboardListProps {
   workboards: Workboard[];
@@ -33,31 +36,31 @@ interface WorkboardListProps {
   hasFooter?: boolean;
 }
 
-function getAccessMeta(permission?: string | null): {
+function getAccessMeta(permission: string | null | undefined, t: Translate): {
   label: string;
   tone: FilterTagTone;
   value: string;
 } {
   switch (permission) {
     case 'full':
-      return { label: 'Full access', tone: 'brand', value: 'full' };
+      return { label: t('workboards.filter.fullAccess'), tone: 'brand', value: 'full' };
     case 'edit':
-      return { label: 'Editable', tone: 'info', value: 'edit' };
+      return { label: t('workboards.filter.editable'), tone: 'info', value: 'edit' };
     case 'view':
-      return { label: 'View only', tone: 'neutral', value: 'view' };
+      return { label: t('workboards.filter.viewOnly'), tone: 'neutral', value: 'view' };
     default:
-      return { label: 'Restricted', tone: 'neutral', value: 'none' };
+      return { label: t('workboards.filter.restricted'), tone: 'neutral', value: 'none' };
   }
 }
 
-function getStateMeta(published: boolean): {
+function getStateMeta(published: boolean, t: Translate): {
   label: string;
   tone: FilterTagTone;
   value: string;
 } {
   return published
-    ? { label: 'Published', tone: 'success', value: 'published' }
-    : { label: 'Draft', tone: 'warning', value: 'draft' };
+    ? { label: t('workboards.filter.published'), tone: 'success', value: 'published' }
+    : { label: t('workboards.filter.draft'), tone: 'warning', value: 'draft' };
 }
 
 export function WorkboardList({
@@ -72,14 +75,15 @@ export function WorkboardList({
   onToggleSelectAll,
   hasFooter,
 }: WorkboardListProps) {
+  const { t, locale } = useI18n();
   const router = useRouter();
 
   if (workboards.length === 0) {
     return (
       <EmptyState
         icon={<ClipboardList />}
-        title="No workboards yet"
-        description="Create a workboard to give your team a form, list, and document UI on top of an existing dataset table."
+        title={t('workboards.empty.title')}
+        description={t('workboards.empty.description')}
       />
     );
   }
@@ -113,19 +117,19 @@ export function WorkboardList({
                   />
                 </th>
               )}
-              <th className="app-list-header w-[36%]">Workboard</th>
-              <th className="app-list-header w-[18%]">Tags</th>
-              <th className="app-list-header w-[16%]">Owner</th>
-              <th className="app-list-header w-[14%]">Dataset</th>
-              <th className="app-list-header w-[12%]">Updated</th>
-              <th className="app-list-header w-[96px] text-right">Actions</th>
+              <th className="app-list-header w-[36%]">{t('workboards.list.headerWorkboard')}</th>
+              <th className="app-list-header w-[18%]">{t('workboards.list.headerTags')}</th>
+              <th className="app-list-header w-[16%]">{t('workboards.list.headerOwner')}</th>
+              <th className="app-list-header w-[14%]">{t('workboards.list.headerDataset')}</th>
+              <th className="app-list-header w-[12%]">{t('workboards.list.headerUpdated')}</th>
+              <th className="app-list-header w-[96px] text-right">{t('workboards.list.headerActions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
             {workboards.map((wb) => {
               const perms = getResourcePermissions(wb.user_permission ?? undefined);
-              const stateMeta = getStateMeta(!!wb.is_published);
-              const accessMeta = getAccessMeta(wb.user_permission);
+              const stateMeta = getStateMeta(!!wb.is_published, t);
+              const accessMeta = getAccessMeta(wb.user_permission, t);
 
               return (
                 <tr key={wb.id} className="hover:bg-surface-2">
@@ -187,10 +191,10 @@ export function WorkboardList({
                     />
                   </td>
                   <td className="app-list-cell text-caption text-text-tertiary">
-                    Dataset #{wb.dataset_id}
+                    {t('workboards.list.datasetFallback', { id: wb.dataset_id })}
                   </td>
                   <td className="app-list-cell text-caption text-text-tertiary">
-                    {new Date(wb.updated_at).toLocaleDateString()}
+                    {new Date(wb.updated_at).toLocaleDateString(locale)}
                   </td>
                   <td className="app-list-cell-tight text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -201,23 +205,23 @@ export function WorkboardList({
                       />
                       {onShare && perms.canShare && (
                         <IconButton
-                          aria-label="Share workboard"
+                          aria-label={t('workboards.list.shareAria')}
                           variant="ghost"
                           size="xs"
                           onClick={() => onShare(wb)}
-                          title="Share"
+                          title={t('common.share')}
                         >
                           <Share2 className="h-3.5 w-3.5" />
                         </IconButton>
                       )}
                       {onDelete && perms.canDelete && (
                         <IconButton
-                          aria-label="Delete workboard"
+                          aria-label={t('workboards.list.deleteAria')}
                           variant="ghost"
                           size="xs"
                           onClick={() => onDelete(wb)}
                           disabled={deletingId === wb.id}
-                          title="Delete workboard"
+                          title={t('workboards.list.deleteAria')}
                           className="text-text-tertiary hover:text-danger hover:bg-danger/10"
                         >
                           {deletingId === wb.id ? (

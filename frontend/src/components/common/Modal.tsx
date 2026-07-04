@@ -4,6 +4,7 @@ import React, { useRef } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { IconButton } from '@/components/ui/Button';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface ModalProps {
   isOpen: boolean;
@@ -28,6 +29,8 @@ export function Modal({
   contentClassName,
   footerClassName,
 }: ModalProps) {
+  const { t } = useI18n();
+
   // Track where the press started so we only treat a backdrop click as
   // "close" when both press AND release happened on the backdrop. Without
   // this, dragging the cursor from a native <select> option (or a text
@@ -79,7 +82,7 @@ export function Modal({
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[rgb(var(--border-line))]">
           <h3 className="text-small font-strong text-text-primary">{title}</h3>
           <IconButton
-            aria-label="Close"
+            aria-label={t('common.close')}
             variant="ghost"
             size="sm"
             onClick={onClose}

@@ -20,7 +20,7 @@ type Props = {
 type ThemePreset = { id: string; label: string; hint: string; value: DashboardThemeConfig };
 const PRESETS: ThemePreset[] = [
   {
-    id: 'clean-light', label: 'Trắng tinh', hint: 'Chuẩn · Tableau 10',
+    id: 'clean-light', label: 'dashboards.themeModal.presetCleanLight', hint: 'dashboards.themeModal.presetCleanLightHint',
     value: {
       mode: 'light', cardStyle: 'soft', density: 'normal', background: '#f8fafc', accent: '#2563eb',
       dataColors: ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#9c755f'],
@@ -28,7 +28,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'neutral-slate', label: 'Xám trung tính', hint: 'Doanh nghiệp · dịu',
+    id: 'neutral-slate', label: 'dashboards.themeModal.presetNeutralSlate', hint: 'dashboards.themeModal.presetNeutralSlateHint',
     value: {
       mode: 'light', cardStyle: 'flat', density: 'normal', background: '#eef2f6', accent: '#475569',
       dataColors: ['#5b7c99', '#8aa399', '#c4a35a', '#a3766b', '#7d8597', '#b0a6c0'],
@@ -36,7 +36,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'cb-safe', label: 'Mù màu an toàn', hint: 'Okabe–Ito',
+    id: 'cb-safe', label: 'dashboards.themeModal.presetCbSafe', hint: 'dashboards.themeModal.presetCbSafeHint',
     value: {
       mode: 'light', cardStyle: 'soft', density: 'normal', background: '#ffffff', accent: '#0072b2',
       dataColors: ['#0072b2', '#e69f00', '#009e73', '#cc79a7', '#56b4e9', '#d55e00', '#f0e442'],
@@ -44,7 +44,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'high-contrast', label: 'Tương phản cao', hint: 'IBM Carbon · rõ',
+    id: 'high-contrast', label: 'dashboards.themeModal.presetHighContrast', hint: 'dashboards.themeModal.presetHighContrastHint',
     value: {
       mode: 'light', cardStyle: 'sharp', density: 'normal', background: '#ffffff', accent: '#0f172a',
       dataColors: ['#1192e8', '#fa4d56', '#198038', '#9f1853', '#fff1f1', '#6929c4', '#b28600', '#009d9a'],
@@ -53,7 +53,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'ocean', label: 'Đại dương', hint: 'viridis · xanh ngọc',
+    id: 'ocean', label: 'dashboards.themeModal.presetOcean', hint: 'dashboards.themeModal.presetOceanHint',
     value: {
       mode: 'light', cardStyle: 'soft', density: 'normal',
       background: 'linear-gradient(180deg, #ecfeff 0%, #f0fdfa 100%)', accent: '#0e7490',
@@ -62,7 +62,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'warm-sunset', label: 'Hoàng hôn ấm', hint: 'ColorBrewer · ấm',
+    id: 'warm-sunset', label: 'dashboards.themeModal.presetWarmSunset', hint: 'dashboards.themeModal.presetWarmSunsetHint',
     value: {
       mode: 'light', cardStyle: 'soft', density: 'normal',
       background: 'linear-gradient(180deg, #fff7ed 0%, #fffbeb 100%)', accent: '#ea580c',
@@ -71,7 +71,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'midnight', label: 'Tối Midnight', hint: 'Dark · sáng nổi',
+    id: 'midnight', label: 'dashboards.themeModal.presetMidnight', hint: 'dashboards.themeModal.presetMidnightHint',
     value: {
       mode: 'dark', cardStyle: 'soft', density: 'normal', background: '#0f172a', accent: '#38bdf8',
       dataColors: ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#a78bfa', '#22d3ee', '#f472b6', '#a3e635'],
@@ -79,7 +79,7 @@ const PRESETS: ThemePreset[] = [
     },
   },
   {
-    id: 'graphite', label: 'Tối Than chì', hint: 'Dark · IBM vivid',
+    id: 'graphite', label: 'dashboards.themeModal.presetGraphite', hint: 'dashboards.themeModal.presetGraphiteHint',
     value: {
       mode: 'dark', cardStyle: 'flat', density: 'normal', background: '#101114', accent: '#a78bfa',
       dataColors: ['#8a3ffc', '#33b1ff', '#007d79', '#ff7eb6', '#fa4d56', '#42be65', '#d4bbff', '#ffb000'],
@@ -90,18 +90,18 @@ const PRESETS: ThemePreset[] = [
 
 /** Data-color (series) palettes — the report-wide chart palette, like PBI. */
 const PALETTE_PRESETS: Array<{ label: string; colors: string[] }> = [
-  { label: 'Mặc định', colors: ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#7c3aed', '#06b6d4', '#ec4899', '#84cc16'] },
-  { label: 'Doanh nghiệp', colors: ['#1e3a5f', '#2e6da4', '#5b9bd5', '#a5c8e1', '#c9a227', '#8c8c8c'] },
-  { label: 'Rực rỡ', colors: ['#ff6b6b', '#feca57', '#1dd1a1', '#5f27cd', '#54a0ff', '#ff9ff3'] },
-  { label: 'Dịu', colors: ['#7c93d8', '#6ec79a', '#e6b566', '#e88aa6', '#a07ad8', '#5fc2bb'] },
+  { label: 'dashboards.themeModal.paletteDefault', colors: ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#7c3aed', '#06b6d4', '#ec4899', '#84cc16'] },
+  { label: 'dashboards.themeModal.paletteEnterprise', colors: ['#1e3a5f', '#2e6da4', '#5b9bd5', '#a5c8e1', '#c9a227', '#8c8c8c'] },
+  { label: 'dashboards.themeModal.paletteVibrant', colors: ['#ff6b6b', '#feca57', '#1dd1a1', '#5f27cd', '#54a0ff', '#ff9ff3'] },
+  { label: 'dashboards.themeModal.paletteSoft', colors: ['#7c93d8', '#6ec79a', '#e6b566', '#e88aa6', '#a07ad8', '#5fc2bb'] },
 ];
 
 const SECTIONS = [
-  { key: 'mau', label: 'Mẫu', icon: LayoutTemplate },
-  { key: 'color', label: 'Màu', icon: PaletteIcon },
-  { key: 'text', label: 'Chữ', icon: Type },
-  { key: 'card', label: 'Thẻ', icon: Square },
-  { key: 'chart', label: 'Biểu đồ', icon: BarChart3 },
+  { key: 'mau', label: 'dashboards.themeModal.sectionTemplates', icon: LayoutTemplate },
+  { key: 'color', label: 'dashboards.themeModal.sectionColors', icon: PaletteIcon },
+  { key: 'text', label: 'dashboards.themeModal.sectionText', icon: Type },
+  { key: 'card', label: 'dashboards.themeModal.sectionCards', icon: Square },
+  { key: 'chart', label: 'dashboards.themeModal.sectionCharts', icon: BarChart3 },
 ] as const;
 type SectionKey = (typeof SECTIONS)[number]['key'];
 
@@ -116,16 +116,17 @@ const SWATCH_CLS = 'h-8 w-10 shrink-0 rounded border border-[rgb(var(--border-li
 /** Color row (swatch + hex text + reset). Hoisted to module scope so it is a
  *  stable component — defining it inside the modal would remount it every
  *  render and steal input focus after each keystroke. */
-function ColorRow({ label, value, onChange, fallback, placeholder = 'mặc định' }: {
+function ColorRow({ label, value, onChange, fallback, placeholder }: {
   label: string; value?: string; onChange: (v: string) => void; fallback: string; placeholder?: string;
 }) {
+  const { t } = useI18n();
   return (
     <label className="flex items-center gap-3 text-sm">
       <span className="w-28 shrink-0 text-text-tertiary">{label}</span>
       <input type="color" value={value || fallback} onChange={(e) => onChange(e.target.value)} className={SWATCH_CLS} />
-      <input type="text" value={value || ''} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} className={`flex-1 ${INPUT_CLS}`} />
+      <input type="text" value={value || ''} placeholder={placeholder ?? t('dashboards.themeModal.defaultPlaceholder')} onChange={(e) => onChange(e.target.value)} className={`flex-1 ${INPUT_CLS}`} />
       {value ? (
-        <button type="button" onClick={() => onChange('')} className="text-xs text-text-quaternary hover:text-text-secondary">Reset</button>
+        <button type="button" onClick={() => onChange('')} className="text-xs text-text-quaternary hover:text-text-secondary">{t('dashboards.themeModal.reset')}</button>
       ) : null}
     </label>
   );
@@ -154,6 +155,7 @@ const RADIUS_BY_STYLE: Record<string, number> = { soft: 10, elevated: 12, flat: 
 function ThemePresetCard({ preset, active, onApply }: {
   preset: ThemePreset; active: boolean; onApply: () => void;
 }) {
+  const { t } = useI18n();
   const v = preset.value;
   const dark = v.mode === 'dark';
   const cardFill = dark ? '#1e293b' : '#ffffff';
@@ -167,7 +169,7 @@ function ThemePresetCard({ preset, active, onApply }: {
     <button
       type="button"
       onClick={onApply}
-      title={preset.label}
+      title={t(preset.label)}
       className={`group relative flex flex-col overflow-hidden rounded-xl border text-left transition ${
         active ? 'border-brand ring-2 ring-brand/40' : 'border-[rgb(var(--border-line))] hover:border-brand/50'
       }`}
@@ -202,8 +204,8 @@ function ThemePresetCard({ preset, active, onApply }: {
       {/* label + palette dots */}
       <div className="flex items-center justify-between gap-1 border-t border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5">
         <div className="min-w-0">
-          <div className="truncate text-xs font-semibold text-text-primary">{preset.label}</div>
-          <div className="truncate text-[10px] text-text-quaternary">{preset.hint}</div>
+          <div className="truncate text-xs font-semibold text-text-primary">{t(preset.label)}</div>
+          <div className="truncate text-[10px] text-text-quaternary">{t(preset.hint)}</div>
         </div>
         <div className="flex shrink-0 gap-0.5">
           {palette.slice(0, 4).map((c, i) => (
@@ -422,7 +424,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {s.label}
+                {t(s.label)}
               </button>
             );
           })}
@@ -522,7 +524,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                   <div className="flex gap-1">
                     {PALETTE_PRESETS.map((p) => (
                       <button key={p.label} type="button" onClick={() => update('dataColors', [...p.colors])}
-                        className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs hover:bg-surface-3" title={p.label}>
+                        className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs hover:bg-surface-3" title={t(p.label)}>
                         <span className="flex items-center gap-0.5">
                           {p.colors.slice(0, 5).map((c, i) => (
                             <span key={i} className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: c }} />

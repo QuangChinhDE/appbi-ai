@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { DatasetTable } from '@/hooks/use-datasets';
 import {
   workboardApi,
@@ -85,6 +86,7 @@ interface ApiErrorShape {
 }
 
 export default function WorkboardImportModal({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: datasets = [], isLoading: datasetsLoading, error: datasetsError } = useDatasets();
@@ -148,7 +150,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         ai_used: r.ai_used,
       });
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Auto-map thất bại.'));
+      toast.error(getApiErrorMessage(err, t('workboards.import.autoMapFailed')));
     } finally {
       setAutoMapping(false);
     }
@@ -160,8 +162,8 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     setColumnMapping(pendingAiMap.column_mapping);
     toast.success(
       pendingAiMap.ai_used
-        ? 'AI đã áp mapping — bạn vẫn có thể chỉnh từng dòng trước khi Import.'
-        : 'Đã áp mapping theo tên cột (AI không khả dụng).',
+        ? t('workboards.import.aiMappingApplied')
+        : t('workboards.import.heuristicMappingApplied'),
     );
     setPendingAiMap(null);
   };
@@ -241,13 +243,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       setInspect(r);
       if (!r.all_found) {
         toast.error(
-          `${r.physical_total - r.physical_found}/${r.physical_total} bảng chưa thấy trên Source đã chọn — map tay hoặc đổi Source.`,
+          t('workboards.import.sourceMissingTablesToast', { missing: r.physical_total - r.physical_found, total: r.physical_total }),
         );
       } else {
-        toast.success(`Tất cả ${r.physical_total} bảng đều có trên Source đã chọn.`);
+        toast.success(t('workboards.import.sourceAllTablesFoundToast', { total: r.physical_total }));
       }
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Kiểm tra Source thất bại.'));
+      toast.error(getApiErrorMessage(err, t('workboards.import.inspectSourceFailed')));
     } finally {
       setInspecting(false);
     }
@@ -274,7 +276,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     // import is to publish the app and grab its public link to share with
     // end-users (no AppBI account needed). The success screen offers both
     // "Tạo link công khai" and "Mở workboard mới".
-    toast.success('Đã import workboard');
+    toast.success(t('workboards.import.importedToast'));
   };
 
   // Publish the imported workboard to a brand-new public Cổng and surface its
@@ -284,7 +286,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
   const handleCreatePublicLink = async () => {
     if (!createdSlug) {
       setPublishError(
-        'Workboard chưa có slug — mở workboard trong Builder, đặt slug ở phần cài đặt rồi publish.',
+        t('workboards.import.missingSlugPublishError'),
       );
       return;
     }
@@ -298,9 +300,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       });
       const origin = typeof window !== 'undefined' ? window.location.origin : '';
       setPublicLink(`${origin}/ws/${ws.token}`);
-      toast.success('Đã tạo Cổng công khai — copy link để chia sẻ');
+      toast.success(t('workboards.import.publicPortalCreatedToast'));
     } catch (err: unknown) {
-      setPublishError(getApiErrorMessage(err, 'Không tạo được Cổng công khai.'));
+      setPublishError(getApiErrorMessage(err, t('workboards.import.publicPortalCreateFailed')));
     } finally {
       setPublishing(false);
     }
@@ -310,9 +312,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     if (!publicLink) return;
     try {
       await navigator.clipboard.writeText(publicLink);
-      toast.success('Đã copy link');
+      toast.success(t('workboards.import.linkCopiedToast'));
     } catch {
-      toast.error('Trình duyệt chặn copy — bôi đen link để copy thủ công');
+      toast.error(t('workboards.import.copyBlocked'));
     }
   };
 
@@ -334,7 +336,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       });
       openCleanOrReport(data);
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Import thất bại.'));
+      toast.error(getApiErrorMessage(err, t('workboards.import.importFailed')));
     } finally {
       setSubmittingNew(false);
     }
@@ -346,7 +348,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       const text = await file.text();
       const parsed = JSON.parse(text) as WorkboardTemplateBundle;
       if (parsed.kind !== 'workboard_template') {
-        setBundleError('File không phải bundle workboard hợp lệ.');
+        setBundleError(t('workboards.import.invalidBundle'));
         return;
       }
       setBundle(parsed);
@@ -362,9 +364,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         (parsed.dataset_tables?.length ?? 0) > 0 &&
         (parsed.datasources?.length ?? 0) > 0;
       setMode(autoCapable ? 'new' : 'reuse');
-      if (parsed.workboard?.name && !name) setName(`${parsed.workboard.name} (imported)`);
+      if (parsed.workboard?.name && !name) setName(t('workboards.import.importedName', { name: parsed.workboard.name }));
     } catch {
-      setBundleError('Không đọc được file JSON.');
+      setBundleError(t('workboards.import.readJsonFailed'));
     }
   };
 
@@ -386,7 +388,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       });
       openCleanOrReport(data);
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Import thất bại.'));
+      toast.error(getApiErrorMessage(err, t('workboards.import.importFailed')));
     }
   };
 
@@ -394,13 +396,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     <Modal
       isOpen
       onClose={onClose}
-      title="Import workboard từ template"
+      title={t('workboards.import.title')}
       size="lg"
       footer={
         createdId ? (
           <>
             <Button variant="ghost" size="sm" onClick={onClose}>
-              Đóng
+              {t('workboards.import.close')}
             </Button>
             <Button
               variant="primary"
@@ -410,13 +412,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                 router.push(`/workboards/${createdId}`);
               }}
             >
-              Mở workboard mới
+              {t('workboards.import.openNewWorkboard')}
             </Button>
           </>
         ) : (
           <>
             <Button variant="ghost" size="sm" onClick={onClose}>
-              Huỷ
+              {t('workboards.import.cancel')}
             </Button>
             {mode === 'new' ? (
               <Button
@@ -427,7 +429,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                 disabled={!bundle || !allSourcesSelected || submittingNew}
                 loading={submittingNew}
               >
-                Tạo dataset + import
+                {t('workboards.import.createDatasetAndImport')}
               </Button>
             ) : (
               <Button
@@ -438,7 +440,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                 disabled={!bundle || !datasetId || targetDatasetHasNoTables || importMutation.isPending}
                 loading={importMutation.isPending}
               >
-                Import
+                {t('workboards.action.import')}
               </Button>
             )}
           </>
@@ -452,16 +454,15 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
           ) : (
             <div className="flex items-start gap-2 rounded-md border border-success/20 bg-success/5 p-3 text-caption text-text-secondary">
               <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" />
-              <div>Import thành công — app, dataset và bảng user đã được tạo.</div>
+              <div>{t('workboards.import.successSimple')}</div>
             </div>
           )}
           <div className="space-y-2 rounded-md border border-info/20 bg-info/5 p-3">
             <div className="text-caption font-medium text-text-primary">
-              Chia sẻ ra ngoài (người dùng không cần tài khoản AppBI)
+              {t('workboards.import.shareTitle')}
             </div>
             <div className="text-caption text-text-tertiary">
-              Tạo một Cổng công khai cho app này để lấy link chia sẻ — người dùng đăng
-              nhập bằng PIN đã import (vào thẳng mini-app, không cần AppBI).
+              {t('workboards.import.shareDescription')}
             </div>
             {publicLink ? (
               <div className="flex items-center gap-2">
@@ -472,10 +473,10 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                   className="flex-1 truncate rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary"
                 />
                 <Button variant="secondary" size="sm" onClick={copyPublicLink}>
-                  Copy
+                  {t('workboards.import.copy')}
                 </Button>
                 <a href={publicLink} target="_blank" rel="noreferrer">
-                  <Button variant="ghost" size="sm">Mở</Button>
+                  <Button variant="ghost" size="sm">{t('workboards.import.open')}</Button>
                 </a>
               </div>
             ) : (
@@ -486,7 +487,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                 loading={publishing}
                 disabled={publishing}
               >
-                Tạo link công khai
+                {t('workboards.import.createPublicLink')}
               </Button>
             )}
             {publishError && (
@@ -497,8 +498,8 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       ) : (
         <div className="space-y-4">
           <FieldGroup
-            label="Bundle file (.json)"
-            description="Là file bạn export từ workboard khác."
+            label={t('workboards.import.bundleFileLabel')}
+            description={t('workboards.import.bundleFileDescription')}
             required
           >
             <input
@@ -516,27 +517,28 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
             {bundle && (
               <div className="mt-2 rounded-md border border-success/20 bg-success/5 p-2 text-caption text-text-secondary">
                 <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-success" />
-                Bundle hợp lệ —{' '}
-                {Array.isArray(bundle.layout_json?.screens) ? bundle.layout_json.screens.length : 0} screen
+                {t('workboards.import.validBundle', { count: Array.isArray(bundle.layout_json?.screens) ? bundle.layout_json.screens.length : 0 })}
                 {canAutoCreate && (
                   <>
-                    , {bundle.dataset_tables?.length ?? 0} bảng dataset,{' '}
-                    {bundleDatasources.length} Source ({bundleDatasources.map((d) => d.name).join(', ')})
+                    , {t('workboards.import.datasetTableCount', { count: bundle.dataset_tables?.length ?? 0 })},{' '}
+                    {t('workboards.import.sourceCount', { count: bundleDatasources.length })} ({bundleDatasources.map((d) => d.name).join(', ')})
                   </>
                 )}
-                {(bundle.app_users?.length ?? 0) > 0 && <>, {bundle.app_users?.length} app user</>}.
+                {(bundle.app_users?.length ?? 0) > 0 && (
+                  <>, {t('workboards.import.appUserCount', { count: bundle.app_users?.length ?? 0 })}</>
+                )}.
               </div>
             )}
           </FieldGroup>
 
           <FieldGroup
-            label="Tên workboard mới"
-            description="Để trống = dùng tên từ bundle."
+            label={t('workboards.import.newNameLabel')}
+            description={t('workboards.import.newNameDescription')}
           >
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Imported workboard"
+              placeholder={t('workboards.import.newNamePlaceholder')}
               disabled={!bundle}
             />
           </FieldGroup>
@@ -550,30 +552,29 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                     active={mode === 'new'}
                     onClick={() => setMode('new')}
                     icon={Plug}
-                    title="Tạo Dataset mới từ Source"
-                    desc="Chỉ chọn Source — hệ thống tự tạo dataset khớp + dựng app."
+                    title={t('workboards.import.modeNewTitle')}
+                    desc={t('workboards.import.modeNewDescription')}
                   />
                   <ModeButton
                     active={mode === 'reuse'}
                     onClick={() => setMode('reuse')}
                     icon={Database}
-                    title="Dùng Dataset có sẵn"
-                    desc="Map bảng/cột vào một dataset đã có sẵn."
+                    title={t('workboards.import.modeReuseTitle')}
+                    desc={t('workboards.import.modeReuseDescription')}
                   />
                 </div>
               ) : (
                 <div className="rounded-md border border-warning/30 bg-warning/5 p-2 text-tiny text-warning">
-                  Bundle cũ (v1) không kèm cấu trúc dataset — chỉ có thể import vào một
-                  dataset có sẵn.
+                  {t('workboards.import.legacyBundleWarning')}
                 </div>
               )}
 
               {mode === 'new' && canAutoCreate ? (
                 <div className="space-y-3">
                   <FieldGroup
-                    label="Chọn Source cho app"
+                    label={t('workboards.import.sourceLabel')}
                     required
-                    description="App sẽ dựng trên Source bạn chọn — hệ thống tự tạo một Dataset mới khớp Source này (đọc cột trực tiếp từ Source)."
+                    description={t('workboards.import.sourceDescription')}
                   >
                     <div className="space-y-2">
                       {bundleDatasources.map((bds) => (
@@ -586,7 +587,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                               {bds.name}
                             </div>
                             <div className="text-tiny text-text-tertiary">
-                              Source gốc · {bds.type}
+                              {t('workboards.import.originalSource')} · {bds.type}
                             </div>
                           </div>
                           <select
@@ -599,7 +600,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                             className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2.5 py-1.5 text-caption"
                           >
                             <option value="">
-                              {datasourcesLoading ? 'Đang tải Source...' : '— Chọn Source đích —'}
+                              {datasourcesLoading
+                                ? t('workboards.import.loadingSources')
+                                : t('workboards.import.sourcePlaceholder')}
                             </option>
                             {datasources.map((d) => (
                               <option key={d.id} value={d.id}>
@@ -624,10 +627,10 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                         onClick={handleInspect}
                         disabled={!allSourcesSelected || inspecting}
                       >
-                        Kiểm tra Source
+                        {t('workboards.import.inspectSource')}
                       </Button>
                       <span className="text-tiny text-text-tertiary">
-                        Tùy chọn — xem bảng nào có / thiếu trước khi tạo.
+                        {t('workboards.import.inspectHint')}
                       </span>
                     </div>
                   </FieldGroup>
@@ -645,9 +648,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
               ) : (
                 <>
                   <FieldGroup
-                    label="Dataset đích"
+                    label={t('workboards.import.targetDatasetLabel')}
                     required
-                    description="Chọn dataset có sẵn chứa các bảng dữ liệu. Sau đó map từng bảng/cột nếu tên khác template."
+                    description={t('workboards.import.targetDatasetDescription')}
                   >
                     <select
                       value={datasetId ?? ''}
@@ -656,10 +659,10 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                     >
                       <option value="">
                         {datasetsLoading
-                          ? 'Đang tải danh sách dataset...'
+                          ? t('workboards.import.loadingDatasets')
                           : datasets.length === 0
-                          ? '— Không có dataset nào —'
-                          : '— Chọn dataset —'}
+                          ? t('workboards.import.noDatasetOption')
+                          : t('workboards.import.datasetPlaceholder')}
                       </option>
                       {datasets.map((d) => (
                         <option key={d.id} value={d.id}>
@@ -670,13 +673,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                     {!datasetsLoading && datasets.length === 0 && (
                       <p className="mt-1 text-tiny text-warning">
                         {datasetsError
-                          ? 'Không tải được danh sách dataset — kiểm tra quyền truy cập hoặc kết nối.'
-                          : 'Bạn chưa có dataset nào. Vào trang Datasets tạo dataset trước khi import workboard.'}
+                          ? t('workboards.import.datasetLoadFailed')
+                          : t('workboards.import.noDatasetWarning')}
                       </p>
                     )}
                     {targetDatasetHasNoTables && (
                       <p className="mt-1 text-tiny text-warning">
-                        Dataset này chưa có bảng vật lý nào. Hãy thêm bảng vào dataset trước khi import.
+                        {t('workboards.import.targetDatasetNoTables')}
                       </p>
                     )}
                   </FieldGroup>
@@ -685,9 +688,8 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                     <>
                       <div className="flex items-center justify-between rounded-md border border-brand/20 bg-brand/5 px-3 py-2">
                         <div className="text-caption text-text-secondary">
-                          <strong>AI auto-map</strong> đề xuất mapping bảng/cột dựa trên
-                          tên + kiểu dữ liệu. Bấm để xem trước rồi quyết định áp hay
-                          không — không có gì bị ghi đè trước khi bạn duyệt.
+                          <strong>{t('workboards.import.aiAutoMapTitle')}</strong>{' '}
+                          {t('workboards.import.aiAutoMapDescription')}
                         </div>
                         <Button
                           size="sm"
@@ -696,9 +698,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                           loading={autoMapping}
                           disabled={autoMapping || tablesLoading}
                           onClick={handleAutoMap}
-                          title="Gọi AI để gợi ý mapping. Sau đó bạn sẽ thấy preview diff trước khi áp."
+                          title={t('workboards.import.aiAutoMapButtonTitle')}
                         >
-                          Gợi ý mapping bằng AI
+                          {t('workboards.import.aiAutoMapButton')}
                         </Button>
                       </div>
 
@@ -789,6 +791,7 @@ function SourceInspectPreview({
   overrides: Record<number, string>;
   onOverride: (oldId: number, tbl: string) => void;
 }) {
+  const { t } = useI18n();
   const physical = inspect.tables.filter((t) => t.source_kind === 'physical_table');
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
@@ -799,41 +802,44 @@ function SourceInspectPreview({
           <AlertTriangle className="h-4 w-4 text-warning" />
         )}
         <span className="font-emphasis text-text-primary">
-          {inspect.physical_found}/{inspect.physical_total} bảng có trên Source
+          {t('workboards.import.sourceInspectCount', {
+            found: inspect.physical_found,
+            total: inspect.physical_total,
+          })}
         </span>
         {!inspect.all_found && (
-          <span className="text-tiny text-warning">— map tay bảng thiếu, hoặc đổi Source</span>
+          <span className="text-tiny text-warning">{t('workboards.import.sourceInspectMissingHint')}</span>
         )}
       </div>
       <div className="max-h-[34vh] space-y-1 overflow-y-auto pr-1">
-        {physical.map((t) => (
+        {physical.map((table) => (
           <div
-            key={t.old_table_id}
+            key={table.old_table_id}
             className="flex items-center gap-2 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
           >
-            {t.status === 'found' ? (
+            {table.status === 'found' ? (
               <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
             ) : (
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
             )}
             <div className="min-w-0 flex-1">
               <div className="truncate text-text-primary">
-                {t.display_name || t.source_table_name}
+                {table.display_name || table.source_table_name}
               </div>
               <div className="truncate text-tiny text-text-tertiary">
-                {t.status === 'found'
-                  ? `khớp: ${t.matched_source_table}`
-                  : 'không thấy bảng này trên Source đã chọn'}
+                {table.status === 'found'
+                  ? t('workboards.import.sourceInspectMatched', { table: table.matched_source_table || '' })
+                  : t('workboards.import.sourceInspectMissing')}
               </div>
             </div>
-            {t.status === 'missing' && (t.available_sample?.length ?? 0) > 0 && (
+            {table.status === 'missing' && (table.available_sample?.length ?? 0) > 0 && (
               <select
-                value={overrides[t.old_table_id] ?? ''}
-                onChange={(e) => onOverride(t.old_table_id, e.target.value)}
+                value={overrides[table.old_table_id] ?? ''}
+                onChange={(e) => onOverride(table.old_table_id, e.target.value)}
                 className="max-w-[180px] rounded border border-warning/40 bg-surface-0 px-1.5 py-1 text-tiny"
               >
-                <option value="">— chọn bảng thay thế —</option>
-                {t.available_sample!.map((n) => (
+                <option value="">{t('workboards.import.replacementTablePlaceholder')}</option>
+                {table.available_sample!.map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>
@@ -869,10 +875,11 @@ function ImportMappingEditor({
     targetColumn: string,
   ) => void;
 }) {
+  const { t } = useI18n();
   if (tablesLoading) {
     return (
       <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-caption text-text-tertiary">
-        Đang tải bảng trong dataset đích...
+        {t('workboards.import.loadingTargetTables')}
       </div>
     );
   }
@@ -884,7 +891,7 @@ function ImportMappingEditor({
   if (targetTables.length === 0) {
     return (
       <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
-        Dataset đích chưa có bảng nào để map. Import sẽ bị chặn cho đến khi dataset có ít nhất một bảng.
+        {t('workboards.import.targetTablesEmpty')}
       </div>
     );
   }
@@ -892,7 +899,7 @@ function ImportMappingEditor({
   return (
     <div className="space-y-2">
       <h4 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-        Mapping bảng và cột
+        {t('workboards.import.mappingTitle')}
       </h4>
       <div className="max-h-[44vh] space-y-2 overflow-y-auto pr-1">
         {sourceTables.map((source) => {
@@ -926,10 +933,10 @@ function ImportMappingEditor({
               <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]">
                 <div className="min-w-0">
                   <div className="truncate text-caption font-emphasis text-text-primary">
-                    {source.display_name || source.source_table_name || `Table ${source.old_table_id}`}
+                    {source.display_name || source.source_table_name || t('workboards.import.tableFallback', { id: source.old_table_id })}
                   </div>
                   <div className="truncate text-tiny text-text-tertiary">
-                    {source.source_table_name || 'Không có source_table_name'} · {source.columns.length} cột
+                    {source.source_table_name || t('workboards.import.noSourceTableName')} · {t('workboards.import.columnCount', { count: source.columns.length })}
                   </div>
                 </div>
                 <select
@@ -942,7 +949,7 @@ function ImportMappingEditor({
                   }
                   className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2.5 py-1.5 text-caption"
                 >
-                  <option value="">— Không map bảng này —</option>
+                  <option value="">{t('workboards.import.skipTableOption')}</option>
                   {targetTables.map((targetTable) => (
                     <option key={targetTable.id} value={targetTable.id}>
                       {targetTable.display_name} ({targetTable.source_table_name || `#${targetTable.id}`})
@@ -955,7 +962,10 @@ function ImportMappingEditor({
                 <>
                   {unmappedColumns.length > 0 && (
                     <p className="mt-2 rounded border border-warning/30 bg-warning/5 px-2 py-1 text-tiny text-warning">
-                      {unmappedColumns.length} cột chưa map: {unmappedColumns.slice(0, 6).join(', ')}
+                      {t('workboards.import.unmappedColumns', {
+                        count: unmappedColumns.length,
+                        columns: unmappedColumns.slice(0, 6).join(', '),
+                      })}
                       {unmappedColumns.length > 6 ? '…' : ''}
                     </p>
                   )}
@@ -975,7 +985,7 @@ function ImportMappingEditor({
                           }
                           className="min-w-0 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1"
                         >
-                          <option value="">— bỏ qua —</option>
+                          <option value="">{t('workboards.import.skipColumnOption')}</option>
                           {target.columns.map((targetColumn) => (
                             <option key={targetColumn.name} value={targetColumn.name}>
                               {targetColumn.name}
@@ -1001,6 +1011,7 @@ function ImportSuccessReport({
 }: {
   report: ImportReport;
 }) {
+  const { t } = useI18n();
   const matched = report.matched_tables.length;
   const missing = report.missing_tables.length;
   const colIssues = report.missing_columns.length;
@@ -1013,38 +1024,37 @@ function ImportSuccessReport({
       <div className="rounded-md border border-success/20 bg-success/5 p-3 text-caption">
         <div className="font-emphasis text-success">
           <CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />
-          Đã import app
+          {t('workboards.import.reportTitle')}
         </div>
         <div className="mt-1 text-text-secondary">
           {rebuild && (
             <>
-              Tạo dataset mới <strong>“{rebuild.dataset_name}”</strong> với{' '}
-              {rebuild.created_tables.length} bảng.{' '}
+              {t('workboards.import.reportDatasetCreatedPrefix')} <strong>“{rebuild.dataset_name}”</strong>{' '}
+              {t('workboards.import.reportDatasetCreatedSuffix', { count: rebuild.created_tables.length })}{' '}
             </>
           )}
-          {matched} bảng được nối vào app.
-          {missing > 0 && ` ${missing} bảng chưa khớp.`}
-          {colIssues > 0 && ` ${colIssues} cột không tồn tại — sẽ hiện trong Builder để bạn dọn.`}
-          {usersImported > 0 && ` ${usersImported} app user đã import.`}
+          {t('workboards.import.reportMatchedTables', { count: matched })}
+          {missing > 0 && ` ${t('workboards.import.reportMissingTables', { count: missing })}`}
+          {colIssues > 0 && ` ${t('workboards.import.reportMissingColumns', { count: colIssues })}`}
+          {usersImported > 0 && ` ${t('workboards.import.reportUsersImported', { count: usersImported })}`}
         </div>
       </div>
 
       {skippedRebuild.length > 0 && (
         <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
-          <strong>{skippedRebuild.length} bảng không tạo được</strong> trên Source đã
-          chọn (không tìm thấy / lỗi). Screen nào dùng các bảng này sẽ ở trạng thái
-          “cần cấu hình” trong Builder.
+          <strong>{t('workboards.import.reportSkippedTablesTitle', { count: skippedRebuild.length })}</strong>{' '}
+          {t('workboards.import.reportSkippedTablesBody')}
         </div>
       )}
 
       {usersNeedingPin.length > 0 && (
         <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
-          <strong>{usersNeedingPin.length} user chưa có PIN</strong> (bundle export
-          không kèm credentials). Vào tab <strong>Users</strong> trong Builder
-          để đặt PIN cho:{' '}
+          <strong>{t('workboards.import.reportUsersNeedPinTitle', { count: usersNeedingPin.length })}</strong>{' '}
+          {t('workboards.import.reportUsersNeedPinPrefix')} <strong>{t('workboards.import.usersTab')}</strong>{' '}
+          {t('workboards.import.reportUsersNeedPinSuffix')}{' '}
           <span className="text-text-secondary">
             {usersNeedingPin.slice(0, 8).join(', ')}
-            {usersNeedingPin.length > 8 && ` +${usersNeedingPin.length - 8} khác`}
+            {usersNeedingPin.length > 8 && ` ${t('workboards.import.moreUsers', { count: usersNeedingPin.length - 8 })}`}
           </span>
         </div>
       )}
@@ -1053,20 +1063,20 @@ function ImportSuccessReport({
         <div>
           <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-warning">
             <AlertTriangle className="mr-1 inline h-3 w-3" />
-            Bảng chưa khớp ({missing})
+            {t('workboards.import.missingTablesHeading', { count: missing })}
           </h4>
           <div className="space-y-1">
-            {report.missing_tables.map((t, i) => (
+            {report.missing_tables.map((table, i) => (
               <div
                 key={i}
                 className="rounded-md border border-warning/30 bg-warning/5 p-2 text-caption"
               >
                 <div className="font-emphasis text-text-primary">
-                  {t.display_name || t.source_table_name || `Table ${t.old_table_id}`}
+                  {table.display_name || table.source_table_name || t('workboards.import.tableFallback', { id: table.old_table_id })}
                 </div>
                 <div className="text-tiny text-text-tertiary">
-                  source_table_name:{' '}
-                  <code className="bg-surface-2 px-1">{t.source_table_name}</code>
+                  {t('workboards.import.sourceTableNameLabel')}{' '}
+                  <code className="bg-surface-2 px-1">{table.source_table_name}</code>
                 </div>
               </div>
             ))}
@@ -1078,7 +1088,7 @@ function ImportSuccessReport({
         <div>
           <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-warning">
             <AlertTriangle className="mr-1 inline h-3 w-3" />
-            Cột chưa khớp ({colIssues})
+            {t('workboards.import.missingColumnsHeading', { count: colIssues })}
           </h4>
           <div className="space-y-1">
             {report.missing_columns.slice(0, 12).map((item, i) => (
@@ -1088,13 +1098,13 @@ function ImportSuccessReport({
               >
                 <code className="bg-surface-2 px-1">{item.column}</code>
                 <span className="ml-2 text-tiny text-text-tertiary">
-                  {item.screen || 'screen'} · {item.where}
+                  {item.screen || t('workboards.import.screenFallback')} · {item.where}
                 </span>
               </div>
             ))}
             {report.missing_columns.length > 12 && (
               <p className="text-tiny text-text-tertiary">
-                Và {report.missing_columns.length - 12} cột khác.
+                {t('workboards.import.moreColumns', { count: report.missing_columns.length - 12 })}
               </p>
             )}
           </div>
@@ -1262,9 +1272,10 @@ function AiMapPreviewModal({
   onCancel: () => void;
   onApply: () => void;
 }) {
+  const { t } = useI18n();
   const targetById = useMemo(() => {
     const map = new Map<number, TargetTable>();
-    for (const t of targetTables) map.set(t.id, t);
+    for (const targetTable of targetTables) map.set(targetTable.id, targetTable);
     return map;
   }, [targetTables]);
 
@@ -1277,16 +1288,16 @@ function AiMapPreviewModal({
           ? (targetById.get(id)?.display_name
               || targetById.get(id)?.source_table_name
               || `#${id}`)
-          : '— chưa map —';
+          : t('workboards.import.unmappedTable');
       return {
         sourceKey: s.key,
-        sourceLabel: s.display_name || s.source_table_name || `Table ${s.old_table_id}`,
+        sourceLabel: s.display_name || s.source_table_name || t('workboards.import.tableFallback', { id: s.old_table_id }),
         before: labelOf(before),
         after: labelOf(after),
         changed: before !== after,
       };
     });
-  }, [sourceTables, currentTableMapping, proposedTableMapping, targetById]);
+  }, [sourceTables, currentTableMapping, proposedTableMapping, targetById, t]);
 
   const columnDiffs = useMemo<ColumnDiffRow[]>(() => {
     const out: ColumnDiffRow[] = [];
@@ -1329,15 +1340,15 @@ function AiMapPreviewModal({
     <Modal
       isOpen
       onClose={onCancel}
-      title={aiUsed ? 'AI đề xuất mapping' : 'Đề xuất mapping (heuristic)'}
+      title={aiUsed ? t('workboards.import.aiPreviewTitle') : t('workboards.import.heuristicPreviewTitle')}
       size="xl"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onCancel}>
-            Huỷ — không thay đổi
+            {t('workboards.import.aiPreviewCancel')}
           </Button>
           <Button variant="primary" size="sm" onClick={onApply}>
-            Áp dụng đề xuất
+            {t('workboards.import.aiPreviewApply')}
           </Button>
         </>
       }
@@ -1346,41 +1357,37 @@ function AiMapPreviewModal({
         <div className="rounded-md border border-info/20 bg-info/5 p-3 text-caption text-text-secondary">
           {aiUsed ? (
             <>
-              AI đã so sánh schema source (template) với schema target (dataset)
-              và đề xuất các thay đổi sau. <strong>Chưa có gì được áp dụng</strong> —
-              xem kỹ rồi bấm <em>Áp dụng đề xuất</em>, hoặc Huỷ để giữ mapping
-              hiện tại.
+              {t('workboards.import.aiPreviewBodyPrefix')} <strong>{t('workboards.import.aiPreviewNotApplied')}</strong> —
+              {t('workboards.import.aiPreviewBodySuffix')} <em>{t('workboards.import.aiPreviewApply')}</em>.
             </>
           ) : (
             <>
-              AI không khả dụng (chưa cấu hình API key hoặc đã hết quota).
-              Hệ thống đã fallback sang khớp tên cột theo heuristic
-              (lowercase + bỏ ký tự đặc biệt). Xem các thay đổi rồi quyết định.
+              {t('workboards.import.heuristicPreviewBody')}
             </>
           )}
         </div>
 
         <div className="grid grid-cols-4 gap-2 text-center text-caption">
-          <DiffStat label="Bảng đổi" value={tableChanged} tone="info" />
-          <DiffStat label="Cột thêm" value={colAdded} tone="success" />
-          <DiffStat label="Cột đổi" value={colChanged} tone="warning" />
-          <DiffStat label="Cột bỏ" value={colRemoved} tone="danger" />
+          <DiffStat label={t('workboards.import.diffTablesChanged')} value={tableChanged} tone="info" />
+          <DiffStat label={t('workboards.import.diffColumnsAdded')} value={colAdded} tone="success" />
+          <DiffStat label={t('workboards.import.diffColumnsChanged')} value={colChanged} tone="warning" />
+          <DiffStat label={t('workboards.import.diffColumnsRemoved')} value={colRemoved} tone="danger" />
         </div>
 
         <div>
           <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Mapping bảng
+            {t('workboards.import.tableMappingHeading')}
           </h4>
           {tableDiffs.length === 0 ? (
-            <p className="text-tiny text-text-tertiary">Không có bảng nào.</p>
+            <p className="text-tiny text-text-tertiary">{t('workboards.import.noTableDiffs')}</p>
           ) : (
             <div className="overflow-hidden rounded-md border border-[rgb(var(--border-line))]">
               <table className="w-full text-caption">
                 <thead className="bg-surface-2 text-tiny text-text-tertiary">
                   <tr>
                     <th className="px-3 py-1.5 text-left font-medium">Source</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Hiện tại</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Đề xuất</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.currentColumn')}</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.proposedColumn')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1416,22 +1423,22 @@ function AiMapPreviewModal({
 
         <div>
           <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Mapping cột
+            {t('workboards.import.columnMappingHeading')}
           </h4>
           {columnDiffs.length === 0 ? (
             <p className="text-tiny text-text-tertiary">
-              Không có cột nào đề xuất thay đổi.
+              {t('workboards.import.noColumnDiffs')}
             </p>
           ) : (
             <div className="max-h-[40vh] overflow-auto rounded-md border border-[rgb(var(--border-line))]">
               <table className="w-full text-caption">
                 <thead className="sticky top-0 bg-surface-2 text-tiny text-text-tertiary">
                   <tr>
-                    <th className="px-3 py-1.5 text-left font-medium">Bảng</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Cột source</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Hiện tại</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Đề xuất</th>
-                    <th className="px-3 py-1.5 text-left font-medium">Trạng thái</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.tableColumn')}</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.sourceColumn')}</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.currentColumn')}</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.proposedColumn')}</th>
+                    <th className="px-3 py-1.5 text-left font-medium">{t('workboards.import.statusColumn')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1504,11 +1511,12 @@ function diffStatusToClass(status: ColumnDiffRow['status']): string {
 }
 
 function DiffStatusBadge({ status }: { status: ColumnDiffRow['status'] }) {
+  const { t } = useI18n();
   const text = {
-    unchanged: 'không đổi',
-    added: 'thêm',
-    changed: 'đổi',
-    removed: 'bỏ',
+    unchanged: t('workboards.import.diffStatusUnchanged'),
+    added: t('workboards.import.diffStatusAdded'),
+    changed: t('workboards.import.diffStatusChanged'),
+    removed: t('workboards.import.diffStatusRemoved'),
   }[status];
   const cls = {
     unchanged: 'bg-surface-2 text-text-tertiary',

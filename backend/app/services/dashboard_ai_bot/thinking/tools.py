@@ -1192,3 +1192,18 @@ def execute_tool(ctx: ToolContext, name: str, args: dict | None) -> dict:
     except Exception as exc:
         # Don't leak stack traces to the LLM
         return _err(f"tool '{name}' raised {type(exc).__name__}: {str(exc)[:200]}")
+
+
+# ── Learning tools (institutional memory) ───────────────────────────────────
+# remember_fact / recall_knowledge are ALWAYS offered (independent of the web
+# flag) so the bot can persist what the user TEACHES it and recall accumulated
+# company knowledge. Registered here at import — after TOOLS + TOOL_DEFINITIONS
+# both exist — so execute_tool dispatch AND the offered tool list see them.
+# knowledge.py imports tool_context lazily (no import cycle with this module).
+from app.services.dashboard_ai_bot.knowledge import (  # noqa: E402
+    KNOWLEDGE_TOOL_DEFS,
+    KNOWLEDGE_TOOLS,
+)
+
+TOOLS.update(KNOWLEDGE_TOOLS)
+TOOL_DEFINITIONS.extend(KNOWLEDGE_TOOL_DEFS)

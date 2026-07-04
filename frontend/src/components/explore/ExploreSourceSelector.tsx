@@ -44,6 +44,7 @@ export function ExploreSourceSelector({
   lockDataset = false,
   hideTable = false,
 }: ExploreSourceSelectorProps) {
+  const { t } = useI18n();
   const { data: datasets = [], isLoading: loadingDatasets } = useDatasets();
   const { data: dataset } = useDataset(selectedDatasetId);
 
@@ -84,7 +85,7 @@ export function ExploreSourceSelector({
             onChange={(e) => handleDatasetChange(e.target.value)}
             disabled={disabled || lockDataset || loadingDatasets}
           >
-            <option value="">Select dataset...</option>
+            <option value="">{t('explore.source.selectDataset')}</option>
             {datasets.map((ws: any) => (
               <option key={ws.id} value={ws.id}>
                 {ws.name}
@@ -101,7 +102,7 @@ export function ExploreSourceSelector({
               onChange={(e) => handleTableChange(e.target.value)}
               disabled={disabled || !dataset?.tables?.length}
             >
-              <option value="">Select table...</option>
+              <option value="">{t('explore.source.selectTable')}</option>
               {dataset?.tables?.map((table: any) => (
                 <option key={table.id} value={table.id}>
                   {table.display_name || table.source_table_name}
@@ -120,7 +121,7 @@ export function ExploreSourceSelector({
         label={(
           <span className="inline-flex items-center gap-1.5">
             <Database className="h-3.5 w-3.5" />
-            Dataset
+            {t('explore.source.dataset')}
           </span>
         )}
       >
@@ -130,7 +131,7 @@ export function ExploreSourceSelector({
           onChange={(e) => handleDatasetChange(e.target.value)}
           disabled={disabled || lockDataset || loadingDatasets}
         >
-          <option value="">Select dataset...</option>
+          <option value="">{t('explore.source.selectDataset')}</option>
           {datasets.map((ws: any) => (
             <option key={ws.id} value={ws.id}>
               {ws.name}
@@ -144,12 +145,12 @@ export function ExploreSourceSelector({
           label={(
             <span className="inline-flex items-center gap-1.5">
               <TableIcon className="h-3.5 w-3.5" />
-              Table
+              {t('explore.source.table')}
             </span>
           )}
           description={
             dataset && dataset.tables?.length === 0
-              ? 'No tables in this dataset. Add tables first.'
+              ? t('explore.source.noTables')
               : undefined
           }
         >
@@ -159,7 +160,7 @@ export function ExploreSourceSelector({
             onChange={(e) => handleTableChange(e.target.value)}
             disabled={disabled || !dataset?.tables?.length}
           >
-            <option value="">Select table...</option>
+            <option value="">{t('explore.source.selectTable')}</option>
             {dataset?.tables?.map((table: any) => (
               <option key={table.id} value={table.id}>
                 {table.display_name || table.source_table_name}

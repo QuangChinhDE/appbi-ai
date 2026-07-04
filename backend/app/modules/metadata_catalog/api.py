@@ -148,6 +148,166 @@ def delete_tag(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_cu
     return _run(lambda: GovernanceService.delete_tag(db, fqn))
 
 
+# ════════════ GOVERN: MANAGED METRICS (metrics quản trị doanh nghiệp) ════════
+# AUTHORED KPIs a business governs by — definition, formula, unit, grain, target,
+# owner, physical binding, status/version. This is the DATA-ENTRY surface (nhập
+# liệu) that produces accurate business context; distinct from the derived
+# semantic measures under /govern/metrics. The AI reads these as authoritative.
+class ManagedMetricWrite(BaseModel):
+    name: str                              # display name the user typed
+    machine_name: str | None = None        # set on EDIT (keep stable); derived on CREATE
+    definition: str | None = None
+    formula: str | None = None
+    unit: str | None = None
+    grain: str | None = None               # daily|weekly|monthly|quarterly|yearly|point_in_time
+    category: str | None = None
+    direction: str | None = "neutral"      # up_good|down_good|neutral
+    target_value: float | None = None
+    target_operator: str | None = None     # >= | <= | = | between
+    target_value2: float | None = None
+    owner: str | None = None
+    related_term_fqn: str | None = None
+    dataset_id: int | None = None
+    dataset_table_id: int | None = None
+    measure_ref: str | None = None
+    home_doc_id: int | None = None         # knowledge doc where this metric is DEFINED (home/SSOT)
+    anchor: str | None = None
+    synonyms: list[str] = []
+    status: str | None = "Draft"           # Draft|Approved|Deprecated
+
+
+@router.get("/govern/managed-metrics")
+def govern_managed_metrics(
+    category: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {"metrics": GovernanceService.list_managed_metrics(db, category, status)}
+
+
+@router.get("/govern/managed-metric/{name}")
+def govern_managed_metric(name: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    m = GovernanceService.get_managed_metric(db, name)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chỉ số quản trị.")
+    return m
+
+
+@router.put("/govern/managed-metric")
+def upsert_managed_metric(
+    body: ManagedMetricWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.upsert_managed_metric(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/managed-metric/{name}")
+def delete_managed_metric(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.delete_managed_metric(db, name, changed_by=who))
+
+
+@router.get("/govern/change-log")
+def govern_change_log(
+    entity_type: str | None = Query(default=None),
+    entity_fqn: str | None = Query(default=None),
+    limit: int = Query(default=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Evolution of the business domain (log theo sự phát triển) — audit trail
+    of every governed-knowledge change."""
+    return {"entries": GovernanceService.list_change_log(db, entity_type, entity_fqn, limit)}
+
+
+# ════════════ GOVERN: KNOWLEDGE HUB (Cẩm nang tri thức) ══════════════════════
+# Rich-text knowledge articles organized into spaces + a page tree — the
+# onboarding "kho tàng" where a business records how its whole reporting system
+# works, with metrics/glossary/dashboards riding along as related links.
+class KnowledgeDocWrite(BaseModel):
+    id: int | None = None                 # set on EDIT
+    title: str
+    space: str | None = "Chung"
+    parent_id: int | None = None
+    position: int | None = 0
+    doc_type: str | None = "article"      # overview|guide|domain|process|faq|article
+    summary: str | None = None
+    body: str | None = None               # markdown
+    tags: list[str] = []
+    related_metrics: list[str] = []
+    related_terms: list[str] = []
+    related_dashboard_ids: list[int] = []
+    related_dataset_ids: list[int] = []
+    status: str | None = "Draft"          # Draft|Published|Archived
+    pinned: bool | None = False
+    owner: str | None = None
+    change_note: str | None = None        # optional note recorded on the version snapshot
+
+
+@router.get("/govern/knowledge")
+def govern_knowledge_list(
+    space: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {
+        "docs": GovernanceService.list_knowledge_docs(db, space, status),
+        "spaces": GovernanceService.knowledge_spaces(db),
+    }
+
+
+@router.get("/govern/knowledge/{doc_id}")
+def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    d = GovernanceService.get_knowledge_doc(db, doc_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    return d
+
+
+@router.put("/govern/knowledge")
+def govern_knowledge_upsert(
+    body: KnowledgeDocWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.upsert_knowledge_doc(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/knowledge/{doc_id}")
+def govern_knowledge_delete(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.delete_knowledge_doc(db, doc_id, changed_by=who))
+
+
+@router.get("/govern/asset-docs")
+def govern_asset_docs(
+    asset_type: str = Query(...),   # dashboard | dataset | term
+    asset_ref: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Reverse lineage: knowledge docs that reference a given report/dataset/term
+    (so an asset's Govern view can show 'documented in …')."""
+    return {"docs": GovernanceService.docs_referencing_asset(db, asset_type, asset_ref)}
+
+
+@router.get("/govern/knowledge/{doc_id}/versions")
+def govern_knowledge_versions(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Locked version history of a business document (evolution over time)."""
+    return {"versions": GovernanceService.list_doc_versions(db, doc_id)}
+
+
+@router.get("/govern/knowledge/{doc_id}/versions/{version}")
+def govern_knowledge_version(doc_id: int, version: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    v = GovernanceService.get_doc_version(db, doc_id, version)
+    if v is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiên bản.")
+    return v
+
+
 # ════════════════════════ GOVERN: METRICS (AppBI-native) ════════════════════
 def _collect_accessible_metrics(db: Session, user: User) -> list[dict[str, Any]]:
     """

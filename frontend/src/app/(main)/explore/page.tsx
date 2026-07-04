@@ -86,41 +86,46 @@ const CHART_TYPE_ICONS: Record<string, React.ElementType> = {
   NINE_BOX: LayoutGrid,
 };
 
-const CHART_TYPE_LABELS: Record<string, string> = {
-  BAR: 'Bar',
-  HORIZONTAL_BAR: 'Horizontal Bar',
-  LINE: 'Line',
-  PIE: 'Pie',
-  DONUT: 'Donut',
-  RADAR: 'Radar',
-  POLAR_AREA: 'Polar Area',
-  TIME_SERIES: 'Time Series',
-  AREA: 'Area',
-  STACKED_BAR: 'Stacked Bar',
-  GROUPED_BAR: 'Grouped Bar',
-  BAR_LINE: 'Bar + Line',
-  SCATTER: 'Scatter',
-  BUBBLE: 'Bubble',
-  HEATMAP: 'Heatmap',
-  TREEMAP: 'Treemap',
-  FUNNEL: 'Funnel',
-  GAUGE: 'Gauge',
-  WATERFALL: 'Waterfall',
-  MATRIX: 'Matrix',
-  MAP_POINT: 'Point Map',
-  MAP_REGION: 'Region Map',
-  BOXPLOT: 'Boxplot',
-  BULLET: 'Bullet',
-  SANKEY: 'Sankey',
-  SUNBURST: 'Sunburst',
-  RIBBON: 'Ribbon',
-  TIMELINE: 'Timeline',
-  WORD_CLOUD: 'Word Cloud',
-  KPI: 'KPI',
-  PODIUM: 'Podium',
-  TABLE: 'Table',
-  NINE_BOX: '9-Box Grid',
+const CHART_TYPE_LABEL_KEYS: Record<string, string> = {
+  BAR: 'explore.chartType.BAR',
+  HORIZONTAL_BAR: 'explore.chartType.HORIZONTAL_BAR',
+  LINE: 'explore.chartType.LINE',
+  PIE: 'explore.chartType.PIE',
+  DONUT: 'explore.chartType.DONUT',
+  RADAR: 'explore.chartType.RADAR',
+  POLAR_AREA: 'explore.chartType.POLAR_AREA',
+  TIME_SERIES: 'explore.chartType.TIME_SERIES',
+  AREA: 'explore.chartType.AREA',
+  STACKED_BAR: 'explore.chartType.STACKED_BAR',
+  GROUPED_BAR: 'explore.chartType.GROUPED_BAR',
+  BAR_LINE: 'explore.chartType.BAR_LINE',
+  SCATTER: 'explore.chartType.SCATTER',
+  BUBBLE: 'explore.chartType.BUBBLE',
+  HEATMAP: 'explore.chartType.HEATMAP',
+  TREEMAP: 'explore.chartType.TREEMAP',
+  FUNNEL: 'explore.chartType.FUNNEL',
+  GAUGE: 'explore.chartType.GAUGE',
+  WATERFALL: 'explore.chartType.WATERFALL',
+  MATRIX: 'explore.chartType.MATRIX',
+  MAP_POINT: 'explore.chartType.MAP_POINT',
+  MAP_REGION: 'explore.chartType.MAP_REGION',
+  BOXPLOT: 'explore.chartType.BOXPLOT',
+  BULLET: 'explore.chartType.BULLET',
+  SANKEY: 'explore.chartType.SANKEY',
+  SUNBURST: 'explore.chartType.SUNBURST',
+  RIBBON: 'explore.chartType.RIBBON',
+  TIMELINE: 'explore.chartType.TIMELINE',
+  WORD_CLOUD: 'explore.chartType.WORD_CLOUD',
+  KPI: 'explore.chartType.KPI',
+  PODIUM: 'explore.chartType.PODIUM',
+  TABLE: 'explore.chartType.TABLE',
+  NINE_BOX: 'explore.chartType.NINE_BOX',
 };
+
+function getChartTypeLabel(chartType: string, t: (key: string) => string): string {
+  const key = CHART_TYPE_LABEL_KEYS[chartType];
+  return key ? t(key) : chartType;
+}
 
 function buildChartSourceLabel(chart: Chart): string | null {
   const parts = [chart.dataset_name, chart.dataset_table_name]
@@ -218,7 +223,7 @@ export default function ExplorePage() {
       sourceLabel.includes(needle) ||
       (activeRoleConfig?.dimension ?? '').toLowerCase().includes(needle) ||
       (chart.owner_email ?? '').toLowerCase().includes(needle) ||
-      (CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type).toLowerCase().includes(needle);
+      getChartTypeLabel(chart.chart_type, t).toLowerCase().includes(needle);
 
     return (
       matchesSearch &&
@@ -234,8 +239,8 @@ export default function ExplorePage() {
   });
 
   const description = searchText.trim().length > 0 || activeListFilterCount > 0
-    ? `Showing ${filteredCharts.length} of ${allCharts.length} saved charts`
-    : `${allCharts.length} saved chart${allCharts.length !== 1 ? 's' : ''}`;
+    ? t('explore.list.descriptionFiltered', { shown: filteredCharts.length, total: allCharts.length })
+    : t(allCharts.length === 1 ? 'explore.list.descriptionOne' : 'explore.list.descriptionMany', { count: allCharts.length });
 
   const handleDeleteChart = (chart: Chart) => {
     setChartToDelete(chart);
@@ -247,14 +252,14 @@ export default function ExplorePage() {
     setIsDeletingChart(true);
     try {
       await deleteChart.mutateAsync(chartToDelete.id);
-      toast.success(`Deleted chart "${chartToDelete.name}"`);
+      toast.success(t('explore.list.deleteSuccess', { name: chartToDelete.name }));
       setChartToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        toast.error(`Could not delete: ${detail || error.message}`);
+        toast.error(t('explore.list.deleteFailed', { message: detail || error.message }));
         setChartToDelete(null);
       }
     } finally {
@@ -300,8 +305,8 @@ export default function ExplorePage() {
     }
     setSelectedIds(new Set());
     setIsBulkDeleting(false);
-    if (successCount > 0) toast.success(`Deleted ${successCount} chart(s)`);
-    if (failCount > 0) toast.error(`Failed to delete ${failCount} chart(s)`);
+    if (successCount > 0) toast.success(t('explore.list.bulkDeleteSuccess', { count: successCount }));
+    if (failCount > 0) toast.error(t('explore.list.bulkDeleteFailed', { count: failCount }));
   };
 
   return (
@@ -334,7 +339,7 @@ export default function ExplorePage() {
         ) : undefined}
         isLoading={isLoading}
         loadingText={t('common.loading')}
-        searchPlaceholder="Search by name, dataset, metric, tag..."
+        searchPlaceholder={t('explore.list.searchPlaceholder')}
         searchValue={searchText}
         onSearchValueChange={setSearchText}
         defaultView="list"
@@ -342,9 +347,9 @@ export default function ExplorePage() {
           <CrossModuleFilterControls
             index={relationIndex}
             configs={[
-              { key: 'dashboard', label: 'Dashboard', placeholder: 'All dashboards' },
-              { key: 'dataset', label: 'Dataset', placeholder: 'All datasets' },
-              { key: 'source', label: 'Source', placeholder: 'All sources' },
+              { key: 'dashboard', label: t('explore.list.filterDashboard'), placeholder: t('explore.list.allDashboards') },
+              { key: 'dataset', label: t('explore.list.filterDataset'), placeholder: t('explore.list.allDatasets') },
+              { key: 'source', label: t('explore.list.filterSource'), placeholder: t('explore.list.allSources') },
             ]}
             filters={{
               dashboard: listFilters.dashboard,
@@ -358,7 +363,7 @@ export default function ExplorePage() {
           <>
             {listFilters.type && (
               <FilterTag tone="brand" active onClick={() => toggleListFilter('type', listFilters.type!)}>
-                {CHART_TYPE_LABELS[listFilters.type] ?? listFilters.type}
+                {getChartTypeLabel(listFilters.type, t)}
               </FilterTag>
             )}
             {listFilters.scope && (
@@ -367,31 +372,31 @@ export default function ExplorePage() {
                 active
                 onClick={() => toggleListFilter('scope', listFilters.scope!)}
               >
-                {listFilters.scope === 'mine' ? 'Mine' : 'Shared'}
+                {listFilters.scope === 'mine' ? t('explore.list.mine') : t('explore.list.shared')}
               </FilterTag>
             )}
             {listFilters.owner && (
               <FilterTag active onClick={() => toggleListFilter('owner', listFilters.owner!)}>
-                Owner: {listFilters.owner.split('@')[0]}
+                {t('explore.list.ownerChip', { owner: listFilters.owner.split('@')[0] })}
               </FilterTag>
             )}
             {listFilters.dashboard && (
               <FilterTag tone="brand" active onClick={() => setListFilter('dashboard')}>
-                Dashboard: {getRelatedFilterLabel(relationIndex, 'dashboard', listFilters.dashboard)}
+                {t('explore.list.dashboardChip', { dashboard: getRelatedFilterLabel(relationIndex, 'dashboard', listFilters.dashboard) })}
               </FilterTag>
             )}
             {listFilters.dataset && (
               <FilterTag tone="brand" active onClick={() => setListFilter('dataset')}>
-                Dataset: {getRelatedFilterLabel(relationIndex, 'dataset', listFilters.dataset)}
+                {t('explore.list.datasetChip', { dataset: getRelatedFilterLabel(relationIndex, 'dataset', listFilters.dataset) })}
               </FilterTag>
             )}
             {listFilters.source && (
               <FilterTag tone="brand" active onClick={() => setListFilter('source')}>
-                Source: {getRelatedFilterLabel(relationIndex, 'source', listFilters.source)}
+                {t('explore.list.sourceChip', { source: getRelatedFilterLabel(relationIndex, 'source', listFilters.source) })}
               </FilterTag>
             )}
             <Button variant="ghost" size="xs" onClick={clearListFilters}>
-              Clear filters
+              {t('explore.list.clearFilters')}
             </Button>
           </>
         ) : null}
@@ -401,8 +406,8 @@ export default function ExplorePage() {
             return (
               <EmptyState
                 icon={<BarChart3 />}
-                title="No saved charts yet"
-                description="Create your first chart from a dataset table."
+                title={t('explore.list.emptyTitle')}
+                description={t('explore.list.emptyDescription')}
                 action={canEdit ? (
                   <Button
                     variant="primary"
@@ -410,7 +415,7 @@ export default function ExplorePage() {
                     leadingIcon={<Plus className="h-3.5 w-3.5" />}
                     onClick={() => router.push('/explore/new')}
                   >
-                    New Chart
+                    {t('action.newChart')}
                   </Button>
                 ) : undefined}
               />
@@ -428,7 +433,7 @@ export default function ExplorePage() {
                   {filteredCharts.length === 0 ? (
                     <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 text-center">
                       <Search className="mb-2 h-7 w-7 text-text-quaternary" />
-                      <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
+                      <p className="text-caption text-text-tertiary">{t('explore.list.noMatches')}</p>
                     </div>
                   ) : viewMode === 'list' ? (
                     <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
@@ -448,19 +453,19 @@ export default function ExplorePage() {
                           </th>
                         )}
                         <th className="app-list-header w-[34%]">
-                          Chart
+                          {t('explore.list.headerChart')}
                         </th>
                         <th className="app-list-header w-[20%]">
-                          Tags
+                          {t('explore.list.headerTags')}
                         </th>
                         <th className="app-list-header w-[16%]">
-                          Owner
+                          {t('explore.list.headerOwner')}
                         </th>
                         <th className="app-list-header w-[14%]">
-                          Updated
+                          {t('explore.list.headerUpdated')}
                         </th>
                         <th className="app-list-header w-[96px] text-right">
-                          Actions
+                          {t('explore.list.headerActions')}
                         </th>
                       </tr>
                     </thead>
@@ -468,7 +473,7 @@ export default function ExplorePage() {
                     {pageItems.map((chart) => {
                       const config = chart.config as any;
                       const activeRoleConfig = getActiveChartRoleConfig(config);
-                      const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
+                      const typeLabel = getChartTypeLabel(chart.chart_type, t);
                       const updatedAt = new Date(chart.updated_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
                       const itemPerms = getResourcePermissions(chart.user_permission);
                       const sourceLabel = buildChartSourceLabel(chart);
@@ -530,10 +535,10 @@ export default function ExplorePage() {
                                 active={listFilters.scope === scopeValue}
                                 onClick={() => toggleListFilter('scope', scopeValue)}
                               >
-                                {scopeValue === 'mine' ? 'Mine' : 'Shared'}
+                                {scopeValue === 'mine' ? t('explore.list.mine') : t('explore.list.shared')}
                               </FilterTag>
                               {chart.is_shared && (
-                                <ExploreStaticTag tone="brand">Shared link</ExploreStaticTag>
+                                <ExploreStaticTag tone="brand">{t('explore.list.sharedLink')}</ExploreStaticTag>
                               )}
                             </div>
                           </td>
@@ -554,7 +559,7 @@ export default function ExplorePage() {
                             <div className="flex items-center justify-end gap-0.5">
                               {itemPerms.canShare && (
                                 <IconButton
-                                  aria-label="Share"
+                                  aria-label={t('explore.list.shareChart')}
                                   variant="ghost"
                                   size="xs"
                                   onClick={() => setShareChart(chart)}
@@ -564,7 +569,7 @@ export default function ExplorePage() {
                               )}
                               {itemPerms.canDelete && (
                                 <IconButton
-                                  aria-label="Delete"
+                                  aria-label={t('explore.list.deleteChart')}
                                   variant="ghost"
                                   size="xs"
                                   className="hover:text-danger hover:bg-danger/10"
@@ -587,7 +592,7 @@ export default function ExplorePage() {
                       {pageItems.map((chart) => {
                     const config = chart.config as any;
                     const activeRoleConfig = getActiveChartRoleConfig(config);
-                    const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
+                    const typeLabel = getChartTypeLabel(chart.chart_type, t);
                     const createdAt = new Date(chart.created_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
                     const itemPerms = getResourcePermissions(chart.user_permission);
                     const sourceLabel = buildChartSourceLabel(chart);
@@ -604,7 +609,7 @@ export default function ExplorePage() {
                             {canEdit && (
                               <input
                                 type="checkbox"
-                                aria-label={`Select ${chart.name}`}
+                                aria-label={t('explore.list.selectChart', { name: chart.name })}
                                 checked={selectedIds.has(chart.id)}
                                 onClick={(event) => event.stopPropagation()}
                                 onChange={() => toggleSelect(chart.id)}
@@ -618,7 +623,7 @@ export default function ExplorePage() {
                           <div className="flex items-center gap-0.5 opacity-0 transition-all group-hover:opacity-100">
                             {itemPerms.canShare && (
                               <IconButton
-                                aria-label="Share"
+                                aria-label={t('explore.list.shareChart')}
                                 variant="ghost"
                                 size="xs"
                                 onClick={(event) => { event.stopPropagation(); setShareChart(chart); }}
@@ -628,7 +633,7 @@ export default function ExplorePage() {
                             )}
                             {itemPerms.canDelete && (
                               <IconButton
-                                aria-label="Delete"
+                                aria-label={t('explore.list.deleteChart')}
                                 variant="ghost"
                                 size="xs"
                                 className="hover:text-danger hover:bg-danger/10"
@@ -643,7 +648,7 @@ export default function ExplorePage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <h3 className="truncate text-caption font-strong text-text-primary">{chart.name}</h3>
-                            {chart.is_shared && <ExploreStaticTag tone="brand">Shared</ExploreStaticTag>}
+                            {chart.is_shared && <ExploreStaticTag tone="brand">{t('explore.list.shared')}</ExploreStaticTag>}
                           </div>
                           <div className="mt-1">
                             <OwnerBadge email={chart.owner_email} />
@@ -685,7 +690,7 @@ export default function ExplorePage() {
       {chartToDelete && (
         <DeleteConstraintModal
           itemName={chartToDelete.name}
-          itemTypeLabel="chart"
+          itemTypeLabel={t('explore.list.chartItemType')}
           constraints={deleteConstraints}
           isDeleting={isDeletingChart}
           onConfirm={confirmDeleteChart}
@@ -718,10 +723,10 @@ export default function ExplorePage() {
         isOpen={isBulkDeleteOpen}
         onClose={() => setIsBulkDeleteOpen(false)}
         onConfirm={handleBulkDelete}
-        title={`Delete ${selectedIds.size} chart${selectedIds.size === 1 ? '' : 's'}?`}
-        description="This action cannot be undone. All selected charts will be permanently deleted."
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        title={t('explore.list.bulkDeleteTitle', { count: selectedIds.size })}
+        description={t('explore.list.bulkDeleteDescription')}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
         variant="danger"
       />
     </>

@@ -52,6 +52,7 @@ import {
 } from '@/hooks/useDescription';
 import type { DescriptionGenerationStatus } from '@/hooks/useDescription';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
   chartId: number;
@@ -63,11 +64,13 @@ interface Props {
 // ─── Source badge ─────────────────────────────────────────────────────────────
 
 function SourceBadge({ source }: { source: string | null }) {
+  const { t } = useI18n();
+
   if (!source) return null;
   const cfg: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
-    auto:     { label: 'AI',      icon: <Bot className="h-2.5 w-2.5" />,         cls: 'bg-brand/10 text-brand border-brand/30' },
-    user:     { label: 'Edited',  icon: <User className="h-2.5 w-2.5" />,        cls: 'bg-success/10 text-success border-success/30' },
-    feedback: { label: 'Tuned',   icon: <MessageSquare className="h-2.5 w-2.5" />, cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' },
+    auto:     { label: t('explore.aiDescription.badgeAI'),      icon: <Bot className="h-2.5 w-2.5" />,         cls: 'bg-brand/10 text-brand border-brand/30' },
+    user:     { label: t('explore.aiDescription.badgeEdited'),  icon: <User className="h-2.5 w-2.5" />,        cls: 'bg-success/10 text-success border-success/30' },
+    feedback: { label: t('explore.aiDescription.badgeTuned'),   icon: <MessageSquare className="h-2.5 w-2.5" />, cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' },
   };
   const item = cfg[source] ?? { label: source, icon: null, cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' };
   return (
@@ -91,6 +94,7 @@ const STATUS_DOT: Record<DescriptionGenerationStatus, string> = {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }: Props) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { data, isLoading } = useChartDescription(chartId);
   const updateMut = useUpdateChartDescription(chartId);
@@ -139,12 +143,12 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
     const next = data.generation_status ?? 'idle';
     if (prev && prev !== next) {
       const wasBusy = prev === 'queued' || prev === 'processing';
-      if (wasBusy && next === 'succeeded') toast.success('AI description ready.');
-      if (wasBusy && next === 'failed')    toast.error(data.generation_error || 'AI generation failed.');
-      if (wasBusy && next === 'stale')     toast.warning('Chart changed - review AI description.');
+      if (wasBusy && next === 'succeeded') toast.success(t('explore.aiDescription.readyToast'));
+      if (wasBusy && next === 'failed')    toast.error(data.generation_error || t('explore.aiDescription.generationFailedToast'));
+      if (wasBusy && next === 'stale')     toast.warning(t('explore.aiDescription.changedToast'));
     }
     lastStatusRef.current = next;
-  }, [data]);
+  }, [data, t]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -156,9 +160,9 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
         common_questions: questions,
       });
       setIsDirty(false);
-      toast.success('AI description saved.');
+      toast.success(t('explore.aiDescription.savedToast'));
     } catch {
-      toast.error('Failed to save AI description.');
+      toast.error(t('explore.aiDescription.saveFailedToast'));
     }
   };
 
@@ -167,7 +171,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
       await regenMut.mutateAsync();
       setIsOpen(true); // auto-open so user sees progress
     } catch {
-      toast.error('Could not queue AI regeneration.');
+      toast.error(t('explore.aiDescription.queueFailedToast'));
     }
   };
 
@@ -202,7 +206,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
       >
         <div className="flex items-center gap-2">
           <Bot className="h-3.5 w-3.5 text-text-quaternary" />
-          <span className="text-xs font-semibold text-text-secondary">AI Description</span>
+          <span className="text-xs font-semibold text-text-secondary">{t('explore.aiDescription.title')}</span>
 
           {/* Status dot */}
           <span className={`h-1.5 w-1.5 rounded-full ${headerStatusDot}`} title={status} />
@@ -231,10 +235,10 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
               onClick={(e) => { e.stopPropagation(); handleRegen(); }}
               onKeyDown={(e) => e.key === 'Enter' && (e.stopPropagation(), handleRegen())}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-brand hover:bg-brand/15"
-              title="Generate with AI"
+              title={t('explore.aiDescription.generateTitle')}
             >
               <Sparkles className="h-3 w-3" />
-              {!hasContent ? 'Generate' : 'Regen'}
+              {!hasContent ? t('explore.aiDescription.generate') : t('explore.aiDescription.regen')}
             </span>
           )}
           {isOpen
@@ -253,8 +257,8 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
             <div className="flex items-center gap-2 rounded-lg bg-brand/10 px-3 py-2.5 text-xs text-brand">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
               <span>
-                {status === 'queued' ? 'Queued - waiting for AI...' : 'AI is analyzing this chart...'}
-                <span className="ml-1 text-brand">Panel refreshes automatically.</span>
+                {status === 'queued' ? t('explore.aiDescription.queued') : t('explore.aiDescription.analyzing')}
+                <span className="ml-1 text-brand">{t('explore.aiDescription.refreshesAutomatically')}</span>
               </span>
             </div>
           )}
@@ -262,8 +266,8 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
           {/* Error banner */}
           {status === 'failed' && !isGenerating && (
             <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-              <p className="font-medium">Generation failed</p>
-              <p className="text-danger">{data?.generation_error || 'Unknown error.'}</p>
+              <p className="font-medium">{t('explore.aiDescription.generationFailed')}</p>
+              <p className="text-danger">{data?.generation_error || t('explore.aiDescription.unknownError')}</p>
             </div>
           )}
 
@@ -271,7 +275,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
           {status === 'stale' && !isGenerating && (
             <div className="flex items-start gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
-              <span>{data?.stale_reason || 'Chart changed since last AI description. Regenerate to update.'}</span>
+              <span>{data?.stale_reason || t('explore.aiDescription.staleFallback')}</span>
             </div>
           )}
 
@@ -287,15 +291,15 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
               <div>
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Bot className="h-3 w-3" />
-                  Description
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">- used in chart search</span>
+                  {t('explore.aiDescription.descriptionLabel')}
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">{t('explore.aiDescription.descriptionSearchHint')}</span>
                 </label>
                 <textarea
                   rows={4}
                   value={descDraft}
                   onChange={(e) => { setDescDraft(e.target.value); setIsDirty(true); }}
                   disabled={disabled}
-                  placeholder={canEdit ? 'Describe what this chart shows and why it matters...' : 'No description yet.'}
+                  placeholder={canEdit ? t('explore.aiDescription.descriptionPlaceholder') : t('explore.aiDescription.noDescription')}
                   className="w-full resize-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs leading-relaxed text-text-secondary placeholder-gray-300 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
                 />
               </div>
@@ -304,8 +308,8 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
               <div>
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Tag className="h-3 w-3" />
-                  Search Keywords
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">- enriches vector index</span>
+                  {t('explore.aiDescription.keywordsLabel')}
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">{t('explore.aiDescription.keywordsHint')}</span>
                 </label>
                 <div className="mb-1.5 flex min-h-[28px] flex-wrap gap-1">
                   {keywords.map((kw, i) => (
@@ -318,7 +322,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       )}
                     </span>
                   ))}
-                  {keywords.length === 0 && <span className="text-[10px] italic text-text-quaternary">None yet.</span>}
+                  {keywords.length === 0 && <span className="text-[10px] italic text-text-quaternary">{t('explore.aiDescription.noneYet')}</span>}
                 </div>
                 {canEdit && !isGenerating && (
                   <div className="flex gap-1.5">
@@ -326,10 +330,10 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       value={kwInput}
                       onChange={(e) => setKwInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
-                      placeholder="Add keyword, press Enter..."
+                      placeholder={t('explore.aiDescription.addKeywordPlaceholder')}
                       className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     />
-                    <button onClick={addKeyword} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
+                    <button onClick={addKeyword} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">{t('explore.aiDescription.add')}</button>
                   </div>
                 )}
               </div>
@@ -338,8 +342,8 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
               <div>
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <HelpCircle className="h-3 w-3" />
-                  Suggested Questions
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">- suggested questions</span>
+                  {t('explore.aiDescription.questionsLabel')}
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">{t('explore.aiDescription.questionsHint')}</span>
                 </label>
                 <div className="mb-1.5 space-y-1">
                   {questions.map((q, i) => (
@@ -353,7 +357,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       )}
                     </div>
                   ))}
-                  {questions.length === 0 && <p className="text-[10px] italic text-text-quaternary px-1">None yet.</p>}
+                  {questions.length === 0 && <p className="text-[10px] italic text-text-quaternary px-1">{t('explore.aiDescription.noneYet')}</p>}
                 </div>
                 {canEdit && !isGenerating && (
                   <div className="flex gap-1.5">
@@ -361,10 +365,10 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       value={qInput}
                       onChange={(e) => setQInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addQuestion())}
-                      placeholder="Add question, press Enter..."
+                      placeholder={t('explore.aiDescription.addQuestionPlaceholder')}
                       className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     />
-                    <button onClick={addQuestion} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
+                    <button onClick={addQuestion} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">{t('explore.aiDescription.add')}</button>
                   </div>
                 )}
               </div>
@@ -372,7 +376,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
               {/* ── Save bar ── */}
               {canEdit && (
                 <div className="flex items-center justify-between gap-2 border-t border-[rgb(var(--border-line))] pt-2">
-                  {isDirty && <span className="text-[10px] font-medium text-warning">Unsaved changes</span>}
+                  {isDirty && <span className="text-[10px] font-medium text-warning">{t('explore.aiDescription.unsavedChanges')}</span>}
                   <div className="ml-auto flex gap-2">
                     {isDirty && (
                       <button
@@ -384,7 +388,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                         }}
                         className="rounded-md border border-[rgb(var(--border-line))] px-3 py-1.5 text-xs text-text-tertiary hover:bg-surface-2"
                       >
-                        Discard
+                        {t('explore.aiDescription.discard')}
                       </button>
                     )}
                     <button
@@ -393,7 +397,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                       className="inline-flex items-center gap-1 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <Check className="h-3 w-3" />
-                      {updateMut.isPending ? 'Saving...' : 'Save'}
+                      {updateMut.isPending ? t('explore.aiDescription.saving') : t('explore.aiDescription.save')}
                     </button>
                   </div>
                 </div>

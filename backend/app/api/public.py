@@ -2680,7 +2680,9 @@ def get_dashboard_ai_recon(
     Frontend calls this once when the bot opens to render a "what's notable"
     welcome message and to seed suggested questions. No LLM call here.
     """
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
@@ -2867,7 +2869,9 @@ def get_dashboard_ai_briefing_guess(
     metrics. The frontend wizard renders this as Step 1 (confirm/correct).
     No LLM call.
     """
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.thinking.briefing import guess_briefing_from_recon
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
@@ -2946,7 +2950,9 @@ async def post_dashboard_ai_briefing_brief(
     """
     import json as _json
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.thinking.briefing import (
         Briefing,
         EXEC_BRIEF_SYSTEM_PROMPT,
@@ -3091,7 +3097,9 @@ async def save_ai_chat_session(
     from app.models.ai_chat_session import AiChatSession
     from datetime import datetime
 
-    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    _dash_for_kb, _pf_kb, _z_kb, _ap_kb = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
 
     session_key = session_key.strip()
     if len(session_key) > 64 or not session_key:
@@ -3132,6 +3140,44 @@ async def save_ai_chat_session(
     row.updated_at = datetime.utcnow()
 
     db.commit()
+
+    # ── Learning capture (institutional memory) ─────────────────────────────
+    # Distil THIS turn's high-confidence findings into the company knowledge
+    # base and fold in any thumbs up/down. Best-effort — never break a save.
+    try:
+        from app.services.dashboard_ai_bot import knowledge as _kb
+        dash_id = getattr(_dash_for_kb, "id", None)
+        if isinstance(dash_id, int):
+            cs = body.conv_state if isinstance(body.conv_state, dict) else {}
+            all_findings = cs.get("findings") if isinstance(cs.get("findings"), list) else []
+            cur_turn = cs.get("turn_index")
+            # Only THIS turn's findings, so cumulative state doesn't re-inflate
+            # support_count on every save.
+            findings = [
+                f for f in all_findings
+                if not isinstance(cur_turn, int) or f.get("turn_index") == cur_turn
+            ]
+            last_rating = None
+            for m in reversed(safe_messages):
+                if m.get("role") == "assistant":
+                    last_rating = m.get("rating")
+                    break
+            _kb.capture_findings(
+                db, dashboard_id=dash_id, findings=findings,
+                rated_down=(last_rating == "down"),
+            )
+            for m in safe_messages:
+                if m.get("role") == "assistant" and m.get("rating") in ("up", "down"):
+                    _kb.apply_feedback(
+                        db, dashboard_id=dash_id,
+                        claim_text=str(m.get("content") or ""),
+                        positive=(m.get("rating") == "up"),
+                    )
+            db.commit()
+    except Exception:
+        logger.warning("ai knowledge capture failed", exc_info=True)
+        db.rollback()
+
     return {"ok": True}
 
 
@@ -3164,6 +3210,53 @@ async def clear_ai_chat_session(
         row.updated_at = datetime.utcnow()
         db.commit()
     return {"ok": True}
+
+
+# ── AI bot institutional memory (learned company knowledge) ──────────────────
+
+@router.get("/dashboards/{token}/ai/knowledge")
+@_limiter.limit("30/minute")
+async def list_ai_knowledge(
+    token: str,
+    request: Request,
+    include_retired: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """What the bot has LEARNED about this dashboard/company (validated +
+    candidate learnings). Gated behind ai_bot_enabled — same surface as chat."""
+    dash, _pf, _z, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+    from app.services.dashboard_ai_bot import knowledge as _kb
+    return {"items": _kb.list_knowledge(db, dashboard_id=dash.id, include_retired=include_retired)}
+
+
+@router.post("/dashboards/{token}/ai/knowledge/consolidate")
+@_limiter.limit("6/minute")
+async def consolidate_ai_knowledge(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Run the deterministic daily-reflection pass now (promote/decay/retire).
+    Also runs automatically each day via learning_scheduler."""
+    dash, _pf, _z, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+    from app.services.dashboard_ai_bot import knowledge as _kb
+    return _kb.consolidate(db, dashboard_id=dash.id)
 
 
 @router.post("/dashboards/{token}/ai/agent/chat")
@@ -3308,6 +3401,26 @@ async def chat_dashboard_ai_agent(
         HARD_TIMEOUT = 240.0
         loop = asyncio.get_event_loop()
         started = loop.time()
+        # Knowledge grounding — GENERIC, data-driven. Assembles whatever a
+        # business has AUTHORED for this dashboard's datasets (Govern glossary,
+        # data dictionary, semantic descriptions, aliases) PLUS institutional
+        # memory, and injects it so the bot reasons from authored definitions
+        # instead of guessing from column names. Zero per-report logic; empty
+        # (ungrounded fallback) when nothing is authored. Best-effort.
+        learned_block = ""
+        try:
+            from app.services.dashboard_ai_bot import knowledge_context as _kc
+            _last_q = ""
+            for _m in reversed(safe_messages):
+                if _m.get("role") == "user":
+                    _last_q = str(_m.get("content") or "")
+                    break
+            learned_block = _kc.build_knowledge_context_block(
+                db, dashboard_id=dash.id, question=_last_q,
+            )
+        except Exception:
+            logger.warning("ai knowledge context build failed", exc_info=True)
+
         agen = run_agent_stream(
             mode=effective_mode,
             ctx=ctx,
@@ -3321,6 +3434,7 @@ async def chat_dashboard_ai_agent(
             web_search_enabled=web_search_flag,
             guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
             report_context_note=report_note,
+            learned_knowledge_block=learned_block,
         ).__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
@@ -3429,6 +3543,183 @@ async def chat_dashboard_ai_agent(
     )
 
 
+class _AiAgentExploreBody(BaseModel):
+    """Body for the goal-driven exploration run ("Phân tích toàn diện")."""
+    briefing: dict | None = None
+    viewer_filters: list[dict] | None = None
+    session_key: str | None = None
+    # Bounded server-side (explorer.MAX_BREADTH/MAX_DEPTH) — the FE default
+    # of (3, 1) keeps a run under ~2-4 minutes.
+    breadth: int | None = None
+    depth: int | None = None
+
+
+@router.post("/dashboards/{token}/ai/agent/explore")
+@_limiter.limit("6/minute")
+async def explore_dashboard_ai_agent(
+    token: str,
+    body: _AiAgentExploreBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+    x_user_ai_model: str | None = Header(default=None),
+):
+    """Phase 16 — goal-driven exploration (InsightBench/AgentPoirot loop).
+
+    One SSE run: generate root questions from the SMART goal + chart
+    schema, answer each with the chart tools, extract typed insights,
+    follow up on the most promising thread, then stream a ranked summary
+    with action items. Same filter contract as chat: every tool call sees
+    exactly what the dashboard renders.
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
+    from app.services.dashboard_ai_bot.thinking.explorer import run_exploration_stream
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
+    )
+    report_note = sanitize_report_context_note(
+        (appearance_config or {}).get("ai_bot_report_context_note"),
+    )
+
+    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        [item for item in viewer_filters_body if isinstance(item, dict)],
+        context_for_log=f"ai_bot_explore:{token}",
+    )
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+
+    captured_key = effective_key
+
+    async def sse_stream():
+        import asyncio
+        # Exploration is a multi-question run — a longer leash than chat,
+        # but the same never-strand-the-UI watchdog contract.
+        IDLE_TIMEOUT = 90.0
+        HARD_TIMEOUT = 420.0
+        loop = asyncio.get_event_loop()
+        started = loop.time()
+        agen = run_exploration_stream(
+            ctx=ctx,
+            api_key=captured_key,
+            provider=provider,
+            model=model,
+            briefing=briefing_obj,
+            report_context_note=report_note,
+            breadth=body.breadth or 3,
+            depth=body.depth if body.depth is not None else 1,
+        ).__aiter__()
+        timed_out = False
+        m_insights = 0
+        m_prompt = m_completion = m_rounds = 0
+        m_usd = None
+        m_error = False
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(agen.__anext__(), timeout=IDLE_TIMEOUT)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
+                _et = getattr(ev, "type", None)
+                if _et == "insight":
+                    m_insights += 1
+                elif _et == "cost":
+                    c = (ev.extra or {}).get("cost") or {}
+                    m_prompt = int(c.get("prompt_tokens") or m_prompt)
+                    m_completion = int(c.get("completion_tokens") or m_completion)
+                    m_rounds = int(c.get("rounds") or m_rounds)
+                    m_usd = c.get("usd", m_usd)
+                elif _et == "error":
+                    m_error = True
+                envelope = _event_to_envelope(ev)
+                if envelope is not None:
+                    yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+                if envelope is not None and envelope.get("type") == "done":
+                    return
+                if loop.time() - started > HARD_TIMEOUT:
+                    timed_out = True
+                    break
+        finally:
+            try:
+                await agen.aclose()
+            except Exception:
+                pass
+            # Same telemetry table as chat turns; mode="explore" separates
+            # exploration runs in cost/UX analysis.
+            try:
+                from app.core.database import SessionLocal as _SL
+                from app.models.ai_chat_turn_log import AiChatTurnLog
+                _log_db = _SL()
+                try:
+                    _log_db.add(AiChatTurnLog(
+                        token=token,
+                        session_key=(body.session_key or None),
+                        mode="explore",
+                        routed="manual",
+                        provider=provider,
+                        model=model,
+                        question=(briefing_obj.smart_goal[:1000] if briefing_obj else ""),
+                        prompt_tokens=m_prompt,
+                        completion_tokens=m_completion,
+                        rounds=m_rounds,
+                        usd=(round(float(m_usd), 6) if m_usd is not None else None),
+                        tools_used=None,
+                        web_searched=False,
+                        had_answer=(m_insights > 0),
+                        errored=(m_error or timed_out),
+                        latency_ms=int((loop.time() - started) * 1000),
+                    ))
+                    _log_db.commit()
+                finally:
+                    _log_db.close()
+            except Exception:
+                logger.debug("ai_bot explore turn-log write failed", exc_info=True)
+        if timed_out:
+            logger.warning("ai_bot explore watchdog fired token=%s", token)
+            yield (
+                "data: "
+                + _json.dumps({
+                    "type": "error",
+                    "text": "Phân tích toàn diện mất quá nhiều thời gian và đã dừng. Các insight đã tìm được vẫn hiển thị ở trên.",
+                }, ensure_ascii=False)
+                + "\n\n"
+            )
+            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _event_to_envelope(ev) -> dict | None:
     """Convert an AgentEvent into the wire envelope.
 
@@ -3484,6 +3775,15 @@ def _event_to_envelope(ev) -> dict | None:
             "chart_id": extra.get("chart_id"),
             "status": extra.get("status"),
         }
+    if et == "insight":
+        # Phase 16 — one typed Insight extracted by the exploration engine
+        # (rung + statement + evidence chart ids + justification + action).
+        # Already sanitized in explorer._parse_insight (chart ids validated
+        # against the dashboard, strings capped).
+        return {"type": "insight", "insight": (ev.extra or {}).get("insight") or {}}
+    if et == "exploration_step":
+        # Phase 16 — exploration progress tick (stage + question metadata).
+        return {"type": "exploration_step", **(ev.extra or {})}
     if et == "error":
         return {"type": "error", "text": ev.text}
     if et == "state":
@@ -3497,5 +3797,5 @@ def _event_to_envelope(ev) -> dict | None:
         return {"type": "usage", **(ev.extra or {})}
     if et == "done":
         return {"type": "done"}
-    # tool_call is internal; not sent to FE
+    # tool_call (and the explorer-internal _answer) never reach the FE
     return None

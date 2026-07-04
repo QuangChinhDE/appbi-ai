@@ -10,6 +10,7 @@ import React, { useState } from 'react';
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
 import { workspaceAdminApi, type WorkspaceAdmin } from '@/lib/api/workspaces';
+import { useI18n } from '@/providers/LanguageProvider';
 
 function errorDetail(err: unknown, fallback: string): string {
   const detail = (err as { response?: { data?: { detail?: unknown } } })?.response
@@ -36,18 +37,19 @@ export function WorkspaceCreateModal({
   onClose,
   onCreated,
 }: Props) {
-  const [name, setName] = useState(`${workboardName} – cổng`);
+  const { t } = useI18n();
+  const [name, setName] = useState(() => t('workboards.workspace.defaultName', { name: workboardName }));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      setError('Nhập tên cổng.');
+      setError(t('workboards.workspace.nameRequired'));
       return;
     }
     if (!workboardSlug) {
-      setError('App chưa có slug — lưu app trước khi tạo cổng.');
+      setError(t('workboards.workspace.slugRequired'));
       return;
     }
     setBusy(true);
@@ -64,7 +66,7 @@ export function WorkspaceCreateModal({
       onCreated(ws);
       onClose();
     } catch (err) {
-      setError(errorDetail(err, 'Không thể tạo cổng.'));
+      setError(errorDetail(err, t('workboards.workspace.createFailed')));
     } finally {
       setBusy(false);
     }
@@ -74,21 +76,21 @@ export function WorkspaceCreateModal({
     <Modal
       isOpen
       onClose={onClose}
-      title="Tạo cổng công khai mới"
+      title={t('workboards.workspace.title')}
       size="sm"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-            Huỷ
+            {t('workboards.workspace.cancel')}
           </Button>
           <Button variant="primary" size="sm" loading={busy} onClick={() => void submit()}>
-            Tạo cổng
+            {t('workboards.workspace.create')}
           </Button>
         </>
       }
     >
       <label className="mb-1 block text-caption font-emphasis text-text-secondary">
-        Tên cổng (link công khai)
+        {t('workboards.workspace.nameLabel')}
       </label>
       <input
         autoFocus
@@ -97,17 +99,16 @@ export function WorkspaceCreateModal({
         onKeyDown={(e) => {
           if (e.key === 'Enter') void submit();
         }}
-        placeholder="VD: Cổng vận hành công trường"
+        placeholder={t('workboards.workspace.namePlaceholder')}
         className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-primary focus-visible:shadow-focus-brand focus-visible:outline-none"
       />
       <p className="mt-2 text-caption text-text-tertiary">
-        App “{workboardName}” sẽ tự động được thêm vào menu của cổng này.
+        {t('workboards.workspace.autoAddPrefix')} “{workboardName}” {t('workboards.workspace.autoAddSuffix')}
       </p>
       <p className="mt-1 text-caption text-text-quaternary">
-        Cổng là một link công khai (<code>/ws/…</code>) cho người dùng cuối đăng nhập
-        bằng PIN. Khác với “Workspace” — đó là nhóm màn hình bên trong app.
+        {t('workboards.workspace.publicLinkPrefix')} (<code>/ws/…</code>) {t('workboards.workspace.publicLinkSuffix')}
       </p>
-      {error && <p className="mt-2 text-caption text-danger">Lỗi: {error}</p>}
+      {error && <p className="mt-2 text-caption text-danger">{t('workboards.workspace.errorLabel')} {error}</p>}
     </Modal>
   );
 }

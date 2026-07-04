@@ -308,6 +308,7 @@ import { dashboardsCatalog } from './catalog/dashboards';
 import { dashboardsDetailCatalog } from './catalog/dashboards-detail';
 import { dashboardsModalsCatalog } from './catalog/dashboards-modals';
 import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
+import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
 import { workboardsCatalog } from './catalog/workboards';
@@ -320,6 +321,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   dashboardsDetailCatalog,
   dashboardsModalsCatalog,
   dashboardsAiBotCatalog,
+  dashboardsThemeCatalog,
   datasetsCatalog,
   exploreCatalog,
   workboardsCatalog,

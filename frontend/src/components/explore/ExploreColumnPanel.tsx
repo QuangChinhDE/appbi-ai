@@ -29,6 +29,9 @@ import {
   type DatasetModelView,
 } from '@/hooks/use-dataset-model';
 import { Input } from '@/components/ui/Input';
+import { useI18n } from '@/providers/LanguageProvider';
+
+type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 function DimensionIcon({ type }: { type: string }) {
   switch (type) {
@@ -78,11 +81,11 @@ interface ExploreColumnPanelProps {
   onRequestRelationship?: (params: { fromViewName: string; toViewName: string }) => void;
 }
 
-function measureTitle(measure: MeasureDefinition) {
+function measureTitle(measure: MeasureDefinition, t: Translate) {
   const source = measure.expression || measure.sql || measure.name;
   const parts = [`${measure.type.toUpperCase()}(${source})`];
-  if (measure.filters?.length) parts.push(`${measure.filters.length} measure filter(s)`);
-  if (measure.depends_on?.length) parts.push(`depends on: ${measure.depends_on.join(', ')}`);
+  if (measure.filters?.length) parts.push(t('explore.columnPanel.measureFilters', { count: measure.filters.length }));
+  if (measure.depends_on?.length) parts.push(t('explore.columnPanel.dependsOn', { fields: measure.depends_on.join(', ') }));
   return parts.join(' | ');
 }
 
@@ -98,6 +101,7 @@ export function ExploreColumnPanel({
   onSelectMeasure,
   onRequestRelationship,
 }: ExploreColumnPanelProps) {
+  const { t } = useI18n();
   const { data: model, isLoading } = useDatasetModel(datasetId);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewFilter, setViewFilter] = useState<string>('__all__');
@@ -175,17 +179,17 @@ export function ExploreColumnPanel({
   if (!datasetId) return null;
 
   if (isLoading) {
-    return <div className="px-4 py-3 text-caption text-text-quaternary">Loading model...</div>;
+    return <div className="px-4 py-3 text-caption text-text-quaternary">{t('explore.columnPanel.loadingModel')}</div>;
   }
 
   if (!model?.model_id || views.length === 0) {
     return (
       <div className="group/help relative flex cursor-default items-center gap-1.5 px-4 py-3 text-caption italic text-text-quaternary">
-        No data model.
+        {t('explore.columnPanel.noDataModel')}
         <span className="inline-flex items-center">
           <Info className="h-3.5 w-3.5 text-text-quaternary transition-colors group-hover/help:text-brand" />
           <span className="pointer-events-none absolute left-4 top-full z-50 mt-1 hidden w-64 rounded-md bg-surface-inverse px-2.5 py-2 text-tiny not-italic tracking-normal text-text-inverse shadow-linear-lg group-hover/help:block">
-            Generate a data model from the dataset Model tab to start using the column panel.
+            {t('explore.columnPanel.noDataModelHelp')}
           </span>
         </span>
       </div>
@@ -199,7 +203,7 @@ export function ExploreColumnPanel({
           size="sm"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search fields..."
+          placeholder={t('explore.columnPanel.searchFields')}
           leadingIcon={<Search className="h-3.5 w-3.5" />}
         />
         <div className="flex flex-wrap items-center gap-1">
@@ -211,7 +215,7 @@ export function ExploreColumnPanel({
                 : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
             }`}
           >
-            All views
+            {t('explore.columnPanel.allViews')}
           </button>
           {views.map((v) => (
             <button
@@ -222,7 +226,7 @@ export function ExploreColumnPanel({
                   ? 'border-brand bg-brand/10 text-brand'
                   : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:bg-surface-2'
               }`}
-              title={isReachable(v.name) ? undefined : 'This view is not joined to the base view.'}
+              title={isReachable(v.name) ? undefined : t('explore.columnPanel.viewNotJoined')}
             >
               {viewLabel(v)}
               {!isReachable(v.name) && <span className="ml-1 text-warning">⚠</span>}
@@ -233,10 +237,10 @@ export function ExploreColumnPanel({
 
       {hasMultipleViewsWithoutJoins && (
         <div className="mx-4 mb-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-tiny leading-snug text-warning">
-          <div className="font-emphasis">No relationships defined.</div>
+          <div className="font-emphasis">{t('explore.columnPanel.noRelationshipsTitle')}</div>
           <div className="opacity-90">
-            Multi-table charts require at least one join. Open <em>Data Model</em> or click the
-            <em> Need join</em> badge on a field to define a relationship.
+            {t('explore.columnPanel.multiTableNeedJoinPrefix')} <em>{t('explore.columnPanel.dataModel')}</em> {t('explore.columnPanel.multiTableNeedJoinMiddle')}{' '}
+            <em>{t('explore.columnPanel.needJoin')}</em> {t('explore.columnPanel.multiTableNeedJoinSuffix')}
           </div>
         </div>
       )}
@@ -244,14 +248,14 @@ export function ExploreColumnPanel({
       <div className="flex-1 overflow-y-auto pb-2">
         {dimensionFields.length === 0 && measureFields.length === 0 && (
           <div className="px-4 py-6 text-center text-caption italic text-text-quaternary">
-            No fields match.
+            {t('explore.columnPanel.noFieldsMatch')}
           </div>
         )}
 
         {dimensionFields.length > 0 && (
           <div className="mb-2">
             <div className="sticky top-0 z-10 bg-surface-1 px-4 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Dimensions
+              {t('explore.columnPanel.dimensions')}
             </div>
             {dimensionFields.map((field) => {
               const dim = field.dimension!;
@@ -264,7 +268,7 @@ export function ExploreColumnPanel({
                 dim.description,
                 dim.sql,
                 dim.name,
-                hasParent ? `Child of ${dim.parent}` : null,
+                hasParent ? t('explore.columnPanel.childOf', { parent: dim.parent! }) : null,
               ].filter(Boolean) as string[];
               return (
                 <FieldRow
@@ -282,7 +286,7 @@ export function ExploreColumnPanel({
                     <span
                       aria-hidden
                       className="ml-2 text-text-quaternary"
-                      title={`Drill-down child of ${dim.parent}`}
+                      title={t('explore.columnPanel.drillDownChildOf', { parent: dim.parent! })}
                     >
                       ↳
                     </span>
@@ -298,7 +302,7 @@ export function ExploreColumnPanel({
         {measureFields.length > 0 && (
           <div className="mb-2">
             <div className="sticky top-0 z-10 bg-surface-1 px-4 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Measures
+              {t('explore.columnPanel.measures')}
             </div>
             {measureFields.map((field) => {
               const m = field.measure!;
@@ -312,7 +316,7 @@ export function ExploreColumnPanel({
                   fromViewLabel={viewLabel(field.view)}
                   onRequestRelationship={onRequestRelationship}
                   hoverColorClass="hover:bg-warning/10 hover:text-warning"
-                  title={measureTitle(m)}
+                  title={measureTitle(m, t)}
                   onClick={() => onSelectMeasure?.(m, field.view.name)}
                 >
                   <Sigma className="h-3 w-3 shrink-0 text-warning" />
@@ -356,6 +360,8 @@ function FieldRow({
   onClick,
   children,
 }: FieldRowProps) {
+  const { t } = useI18n();
+
   return (
     <div className="group flex w-full items-center gap-2 px-4 py-1 text-caption">
       <button
@@ -376,11 +382,11 @@ function FieldRow({
               toViewName: fromViewName,
             })
           }
-          title={`Missing join from "${baseViewName}" to "${fromViewLabel}". Click to create a relationship.`}
+          title={t('explore.columnPanel.missingJoinTitle', { from: baseViewName, to: fromViewLabel })}
           className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-tiny font-emphasis text-warning hover:bg-warning/20"
         >
           <AlertTriangle className="h-2.5 w-2.5" />
-          Need join
+          {t('explore.columnPanel.needJoin')}
         </button>
       )}
     </div>

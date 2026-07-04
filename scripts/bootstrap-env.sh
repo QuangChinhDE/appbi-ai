@@ -111,6 +111,16 @@ if is_placeholder "$(env_get ADMIN_PASSWORD)"; then
   env_set ADMIN_PASSWORD "123456"; admin_defaulted=1
 fi
 
+# ── 4b. modules ON by default — force product-module flags to true ─────────
+# Per project policy: after `run`, every product module is enabled. This
+# OVERRIDES an existing false (unlike secrets, which are preserved). Datasource
+# sync is intentionally NOT here — it's a data-fetch mode, not a nav module.
+MODULE_FLAGS="WORKBOARDS_ENABLED NEXT_PUBLIC_WORKBOARDS_ENABLED METADATA_CATALOG_ENABLED GOVERN_ENABLED OBSERVABILITY_ENABLED"
+modules_on=()
+for mf in $MODULE_FLAGS; do
+  if [ "$(env_get "$mf")" != "true" ]; then env_set "$mf" "true"; modules_on+=("$mf"); fi
+done
+
 # ── 5. deprecated-key warnings (removed subsystems) ─────────────────────────
 deprecated=()
 while IFS= read -r line || [ -n "$line" ]; do
@@ -132,13 +142,14 @@ rm -f "$orig"
 # ── report ──────────────────────────────────────────────────────────────────
 [ ${#added[@]}     -gt 0 ] && echo "  [env] added missing keys: ${added[*]}"
 [ ${#generated[@]} -gt 0 ] && echo "  [env] generated secrets:  ${generated[*]}"
+[ ${#modules_on[@]} -gt 0 ] && echo "  [env] modules forced ON:  ${modules_on[*]}"
 if [ "$admin_defaulted" = "1" ]; then
   echo "  [env] WARNING: ADMIN_PASSWORD was a placeholder -> defaulted to '123456'. Change it in .env for production."
 fi
 if [ ${#deprecated[@]} -gt 0 ]; then
   echo "  [env] WARNING: deprecated keys still in .env (safe to remove): ${deprecated[*]}"
 fi
-if [ "$created" = "0" ] && [ ${#added[@]} -eq 0 ] && [ ${#generated[@]} -eq 0 ]; then
+if [ "$created" = "0" ] && [ ${#added[@]} -eq 0 ] && [ ${#generated[@]} -eq 0 ] && [ ${#modules_on[@]} -eq 0 ]; then
   echo "  [env] .env already in sync"
 fi
 exit 0

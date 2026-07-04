@@ -49,6 +49,7 @@ import {
   WORKBOARD_CONG_CHANGED,
   WORKBOARD_SHARE_OPEN,
 } from '@/components/workboards/WorkboardShareModal';
+import { useI18n } from '@/providers/LanguageProvider';
 
 function getApiErrorMessage(error: unknown, fallback: string) {
   const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
@@ -86,6 +87,7 @@ export default function BuilderLivePreview({
   collapsed,
   onToggle,
 }: Props) {
+  const { t } = useI18n();
   const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWs, setActiveWs] = useState<WorkspaceLite | null>(null);
   const [appUsers, setAppUsers] = useState<WorkboardAppUserResponse[]>([]);
@@ -305,14 +307,14 @@ export default function BuilderLivePreview({
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <h3 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Live Preview
+            {t('workboards.livePreview.title')}
           </h3>
           <SyncBadge status={saveStatus} savedAt={savedAt} error={saveError} />
         </div>
         <button
           onClick={onToggle}
           className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
-          title="Close Live Preview"
+          title={t('workboards.livePreview.close')}
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
@@ -332,9 +334,9 @@ export default function BuilderLivePreview({
                 }}
                 disabled={loadingUsers || activePreviewUsers.length === 0}
                 className="max-w-[140px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption disabled:opacity-60"
-                title="Role preview"
+                title={t('workboards.livePreview.rolePreview')}
               >
-                <option value="">{loadingUsers ? 'Loading roles...' : 'Auto role'}</option>
+                <option value="">{loadingUsers ? t('workboards.livePreview.loadingRoles') : t('workboards.livePreview.autoRole')}</option>
                 {previewRoleOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label} ({option.count})
@@ -349,14 +351,14 @@ export default function BuilderLivePreview({
                 }}
                 disabled={loadingUsers || filteredPreviewUsers.length === 0}
                 className="max-w-[200px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption disabled:opacity-60"
-                title="App user preview"
+                title={t('workboards.livePreview.appUserPreview')}
               >
                 <option value="">
                   {filteredPreviewUsers.length === 0
-                    ? 'No active users'
+                    ? t('workboards.livePreview.noActiveUsers')
                     : previewRole
-                      ? `First ${formatAppUserRoleLabel(previewRole)}`
-                      : 'First active user'}
+                      ? t('workboards.livePreview.firstRole', { role: formatAppUserRoleLabel(previewRole) })
+                      : t('workboards.livePreview.firstActiveUser')}
                 </option>
                 {filteredPreviewUsers.map((user) => (
                   <option key={user.id} value={user.username}>
@@ -370,9 +372,9 @@ export default function BuilderLivePreview({
           {isInternal && (
             <span
               className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-caption text-text-tertiary"
-              title="Internal workspace - preview runs as the AppBI staff account"
+              title={t('workboards.livePreview.internalTitle')}
             >
-              Internal · AppBI staff
+              {t('workboards.livePreview.internalBadge')}
             </span>
           )}
           <div className="flex items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5">
@@ -397,7 +399,7 @@ export default function BuilderLivePreview({
           <button
             onClick={() => setIframeKey((k) => k + 1)}
             className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-            title="Refresh iframe"
+            title={t('workboards.livePreview.refresh')}
             disabled={!sessionReady}
           >
             <RotateCw className="h-3.5 w-3.5" />
@@ -408,7 +410,7 @@ export default function BuilderLivePreview({
               target="_blank"
               rel="noreferrer"
               className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-              title="Open in a new tab"
+              title={t('workboards.livePreview.openNewTab')}
             >
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -425,9 +427,8 @@ export default function BuilderLivePreview({
         ) : !activeWs || !isWorkboardLinked(activeWs, workboardSlug) ? (
           <Centered>
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-center text-caption text-warning">
-              App chưa nằm trong Cổng công khai nào nên chưa preview như người dùng
-              cuối được. Mở <strong>Chia sẻ</strong> (góc trên) để gắn app vào một
-              Cổng hoặc tạo Cổng mới — xong quay lại đây để preview.
+              {t('workboards.livePreview.noPortalPrefix')} <strong>{t('common.share')}</strong>{' '}
+              {t('workboards.livePreview.noPortalSuffix')}
               <div className="mt-2">
                 <Button
                   variant="primary"
@@ -435,7 +436,7 @@ export default function BuilderLivePreview({
                   leadingIcon={<Share2 className="h-3 w-3" />}
                   onClick={() => window.dispatchEvent(new CustomEvent(WORKBOARD_SHARE_OPEN))}
                 >
-                  Mở Chia sẻ
+                  {t('workboards.livePreview.openShare')}
                 </Button>
               </div>
             </div>
@@ -445,14 +446,14 @@ export default function BuilderLivePreview({
             <div className="max-w-xs rounded-md border border-danger/30 bg-danger/10 p-3 text-caption text-danger">
               <div className="mb-2 flex items-center gap-1">
                 <AlertCircle className="h-3 w-3" />
-                Error
+                {t('workboards.livePreview.error')}
               </div>
               {sessionError}
               <button
                 onClick={startSession}
                 className="mt-2 text-caption text-brand hover:underline"
               >
-                Try again
+                {t('workboards.livePreview.tryAgain')}
               </button>
             </div>
           </Centered>
@@ -460,7 +461,7 @@ export default function BuilderLivePreview({
           <Centered>
             <div className="text-center">
               <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-text-tertiary" />
-              <p className="text-caption text-text-tertiary">Creating preview session...</p>
+              <p className="text-caption text-text-tertiary">{t('workboards.livePreview.creatingSession')}</p>
             </div>
           </Centered>
         ) : previewUrl ? (
@@ -481,7 +482,7 @@ export default function BuilderLivePreview({
                 key={iframeKey}
                 src={previewUrl}
                 className="h-full w-full bg-white"
-                title="Mini-app live preview"
+                title={t('workboards.livePreview.iframeTitle')}
               />
             </div>
           </div>
@@ -503,11 +504,12 @@ function SyncBadge({
   savedAt: Date | null;
   error: string | null;
 }) {
+  const { t } = useI18n();
   if (status === 'pending') {
     return (
       <span className="flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-micro text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
-        Editing...
+        {t('workboards.livePreview.editing')}
       </span>
     );
   }
@@ -515,7 +517,7 @@ function SyncBadge({
     return (
       <span className="flex items-center gap-1 rounded-full bg-info/10 px-2 py-0.5 text-micro text-info">
         <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        Saving...
+        {t('workboards.livePreview.saving')}
       </span>
     );
   }
@@ -523,10 +525,10 @@ function SyncBadge({
     return (
       <span
         className="flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-micro text-success"
-        title={`Saved at ${savedAt.toLocaleTimeString()}`}
+        title={t('workboards.livePreview.savedAt', { time: savedAt.toLocaleTimeString() })}
       >
         <CheckCircle2 className="h-2.5 w-2.5" />
-        Synced
+        {t('workboards.livePreview.synced')}
       </span>
     );
   }
@@ -537,7 +539,7 @@ function SyncBadge({
         title={error || ''}
       >
         <AlertCircle className="h-2.5 w-2.5" />
-        Save failed
+        {t('workboards.livePreview.saveFailed')}
       </span>
     );
   }

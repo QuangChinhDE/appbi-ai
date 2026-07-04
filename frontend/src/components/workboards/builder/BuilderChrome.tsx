@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { ChevronDown } from 'lucide-react';
+import { useI18n } from '@/providers/LanguageProvider';
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -344,6 +345,7 @@ export function BuilderTableMissingBanner({
   tableId: number | null | undefined;
   className?: string;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className={cx(
@@ -353,13 +355,13 @@ export function BuilderTableMissingBanner({
     >
       <div className="font-medium">
         {tableId
-          ? `Bảng (id=${tableId}) trong dataset không còn tồn tại.`
-          : 'Screen chưa gán bảng nguồn.'}
+          ? t('workboards.builder.missingTableTitle', { id: tableId })
+          : t('workboards.builder.unboundTableTitle')}
       </div>
       <div className="mt-1 text-text-secondary">
         {tableId
-          ? 'Có thể bảng đã bị xóa hoặc workboard vừa đổi dataset. Chọn lại bảng nguồn trước khi cấu hình tiếp — các cột hiển thị đang trống vì không có schema để tham chiếu.'
-          : 'Chọn dataset table ở mục "Data source" để bắt đầu cấu hình các cột.'}
+          ? t('workboards.builder.missingTableDescription')
+          : t('workboards.builder.unboundTableDescription')}
       </div>
     </div>
   );
