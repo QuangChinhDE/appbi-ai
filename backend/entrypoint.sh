@@ -63,42 +63,37 @@ done
 
 echo "==> PostgreSQL is up"
 
-# ── Ensure the pgvector extension before migrations ─────────────────────────
-# Several migrations run `CREATE EXTENSION IF NOT EXISTS vector`, which needs a
-# Postgres SUPERUSER to *install* the extension. On a managed DB whose app user
-# is not superuser this otherwise crash-loops with a deep stacktrace. Fail fast
-# with a clear, actionable message instead. If the extension already exists (an
-# admin installed it once), the IF NOT EXISTS calls become harmless no-ops.
-echo "==> Ensuring pgvector extension..."
+# ── Check the pgvector extension before migrations (check-only) ─────────────
+# The application DB account is USE-ONLY — it must never create extensions. We
+# only VERIFY that 'vector' (pgvector) is present. If it is missing, stop with a
+# clear message asking a superuser/admin account to install it once, instead of
+# crash-looping through a deep migration stacktrace. For the bundled local-db,
+# the extension is provisioned by the db container's own init (as the postgres
+# superuser) — see scripts/db-init/01-init-pgvector.sql — not by this app.
+echo "==> Checking pgvector extension..."
 python - <<'PYEOF'
 import os, sys
 from sqlalchemy import create_engine, text
-eng = create_engine(os.environ["DATABASE_URL"])
 try:
-    with eng.connect() as c:
-        if c.execute(text("SELECT 1 FROM pg_extension WHERE extname='vector'")).scalar():
-            print("==> pgvector already installed."); sys.exit(0)
-        try:
-            c.execute(text("CREATE EXTENSION IF NOT EXISTS vector")); c.commit()
-            print("==> pgvector extension created.")
-        except Exception as e:
-            sys.stderr.write(
-                "\n" + "=" * 72 + "\n"
-                "FATAL: the 'vector' (pgvector) extension is required but this DB\n"
-                "user cannot create it and it is not installed yet.\n\n"
-                "Have a Postgres SUPERUSER run ONCE against this database:\n"
-                "    CREATE EXTENSION vector;\n"
-                "then re-run ./run.sh --recreate\n"
-                "(Managed PG: connect as the admin user, e.g. 'postgres'. If the\n"
-                " extension is unavailable server-side, install pgvector on the PG\n"
-                " server / enable it in the managed instance first.)\n"
-                + "=" * 72 + "\n\n"
-                f"underlying error: {e}\n")
-            sys.exit(1)
-except SystemExit:
-    raise
+    with create_engine(os.environ["DATABASE_URL"]).connect() as c:
+        present = c.execute(text("SELECT 1 FROM pg_extension WHERE extname='vector'")).scalar()
 except Exception as e:
-    print(f"==> WARNING: could not verify pgvector ({e}); continuing to migrations.")
+    print(f"==> WARNING: could not check pgvector ({e}); continuing to migrations.")
+    sys.exit(0)
+if present:
+    print("==> pgvector present.")
+    sys.exit(0)
+sys.stderr.write(
+    "\n" + "=" * 72 + "\n"
+    "STOP: the 'vector' (pgvector) extension is not installed on this database.\n"
+    "This application account is use-only and will NOT create it.\n\n"
+    "Ask a Postgres SUPERUSER / admin account to run ONCE on this database:\n"
+    "    CREATE EXTENSION vector;\n"
+    "then restart:  ./run.sh --recreate\n"
+    "(If the extension is unavailable server-side, install pgvector on the PG\n"
+    " server / enable it in the managed instance first.)\n"
+    + "=" * 72 + "\n")
+sys.exit(1)
 PYEOF
 
 echo "==> Running Alembic migrations..."
