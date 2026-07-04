@@ -1,13 +1,27 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useExportMode } from '@/lib/export-mode';
 import {
   ArrowUp, ArrowDown, ArrowUpDown,
   Minus, Check, X as XIcon, AlertTriangle, Flag, Star, Circle,
+  Filter as FilterIcon, Search as SearchIcon,
   type LucideIcon,
 } from 'lucide-react';
+import {
+  type TableColumnFilter,
+  type TableFilterColumnType,
+  type TableFilterOperator,
+  EMPTY_TABLE_COLUMN_FILTER,
+  isTableColumnFilterActive,
+  detectTableColumnType,
+  rowMatchesAllTableFilters,
+  distinctTableColumnValues,
+  operatorsForType,
+  operatorValueCount,
+} from '@/lib/tableColumnFilter';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
@@ -51,6 +65,14 @@ export interface TableVisualizationProps {
   columnAlignments?: Record<string, TableColumnAlignment>;
   hyperlinkRules?: TableHyperlinkRule[];
   enableColumnResize?: boolean;
+  /**
+   * Excel/Power BI-style per-column view filter. When true (default), each
+   * header gets a filter control that narrows the ALREADY-fetched rows by
+   * text/number/date condition + multi-select checklist; multiple columns
+   * combine with AND. This is a pure client-side presentation filter — it
+   * never re-queries or touches the semantic/dashboard filter system.
+   */
+  enableColumnFilters?: boolean;
   numberFormat?: NumberFormat;
   decimalPlaces?: number;
   currencySymbol?: string;
@@ -238,6 +260,7 @@ export function TableVisualization({
   columnAlignments,
   hyperlinkRules,
   enableColumnResize = true,
+  enableColumnFilters = true,
   numberFormat = 'auto',
   decimalPlaces = 1,
   currencySymbol = '$',
@@ -287,13 +310,43 @@ export function TableVisualization({
   const [localSorts, setLocalSorts] = useState<SortConfig[] | null>(null);
   const effectiveSorts = onSortChange ? sorts : (localSorts ?? sorts);
 
-  // Apply the effective sort to the rows for display. Mixed-type safe: numbers
-  // compare numerically, everything else by locale string; null/undefined sink
-  // to the bottom regardless of direction (standard grid behaviour).
+  // ── Per-column view filter (Excel / Power BI AutoFilter) ──────────────────
+  // A pure client-side filter over the ALREADY-fetched rows: it narrows what
+  // the table shows, never re-queries and never touches the semantic/dashboard
+  // filter system. State is uncontrolled/local (ephemeral view state);
+  // `openFilterCol` tracks which header popover is open.
+  const [columnFilters, setColumnFilters] = useState<Record<string, TableColumnFilter>>({});
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+  // Numeric-column detection (a column with any numeric-parseable value) — kept
+  // on the FULL rows so the type is stable as the user filters.
+  const numericColumns = useMemo(
+    () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
+    [cols, rows],
+  );
+  const columnFilterTypes = useMemo<Record<string, TableFilterColumnType>>(() => {
+    const map: Record<string, TableFilterColumnType> = {};
+    for (const col of cols) map[col] = detectTableColumnType(rows, col, numericColumns.includes(col));
+    return map;
+  }, [cols, rows, numericColumns]);
+  const hasActiveColumnFilters = useMemo(
+    () => enableColumnFilters && Object.values(columnFilters).some(isTableColumnFilterActive),
+    [enableColumnFilters, columnFilters],
+  );
+  // rows → filteredRows (feeds sort, stats, summary, display). The full `rows`
+  // stay available for the "filtered from N" count and the checklist options.
+  const filteredRows = useMemo(() => {
+    if (!hasActiveColumnFilters) return rows;
+    return rows.filter((r) => rowMatchesAllTableFilters(r, columnFilters, columnFilterTypes));
+  }, [rows, columnFilters, columnFilterTypes, hasActiveColumnFilters]);
+
+  // Apply the effective sort to the (filtered) rows for display. Mixed-type
+  // safe: numbers compare numerically, everything else by locale string;
+  // null/undefined sink to the bottom regardless of direction.
   const sortedRows = useMemo(() => {
-    if (!effectiveSorts || effectiveSorts.length === 0) return rows;
+    if (!effectiveSorts || effectiveSorts.length === 0) return filteredRows;
     const ordered = [...effectiveSorts].sort((a, b) => a.index - b.index);
-    const arr = [...rows];
+    const arr = [...filteredRows];
     arr.sort((ra, rb) => {
       for (const s of ordered) {
         const va = ra?.[s.field];
@@ -313,16 +366,12 @@ export function TableVisualization({
       return 0;
     });
     return arr;
-  }, [rows, effectiveSorts]);
+  }, [filteredRows, effectiveSorts]);
 
   // Phase-B22 — during PDF export, render EVERY row (drop the 200-cap) so the
   // exporter captures the full table.
   const exporting = useExportMode();
   const displayRows = exporting ? sortedRows : sortedRows.slice(0, maxRows);
-  const numericColumns = useMemo(
-    () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
-    [cols, rows],
-  );
 
   useEffect(() => {
     liveColumnWidthsRef.current = liveColumnWidths;
@@ -435,15 +484,17 @@ export function TableVisualization({
 
     return cols.find((col) => !numericColumns.includes(col)) ?? '';
   }, [cols, numericColumns, summaryLabelColumn]);
+  // Heatmap / conditional stats + summaries compute over the FILTERED rows so
+  // the coloring and totals reflect exactly what the viewer sees (Excel parity).
   const heatmapStats = useMemo(
-    () => buildTableHeatmapStats(rows, heatmapRules),
-    [heatmapRules, rows],
+    () => buildTableHeatmapStats(filteredRows, heatmapRules),
+    [heatmapRules, filteredRows],
   );
   // Column stats for conditional rules that scale to the column (percentile,
   // percentage, data bars). Built once per (rows, rules) — see getCellStyle.
   const conditionalStats = useMemo(
-    () => buildConditionalStats(rows, conditionalFormatting),
-    [conditionalFormatting, rows],
+    () => buildConditionalStats(filteredRows, conditionalFormatting),
+    [conditionalFormatting, filteredRows],
   );
   const resolvedSummaryRows = useMemo<TableSummaryRowConfig[]>(() => {
     if (showSummaryRow === false) {
@@ -492,12 +543,12 @@ export function TableVisualization({
           return;
         }
 
-        totalRow[col] = calculateSummaryValue(rows, col, summaryRow.calculation ?? 'sum');
+        totalRow[col] = calculateSummaryValue(filteredRows, col, summaryRow.calculation ?? 'sum');
       });
 
       return totalRow;
     });
-  }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, rows]);
+  }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, filteredRows]);
 
   if (cols.length === 0 || rows.length === 0) {
     return (
@@ -573,6 +624,26 @@ export function TableVisualization({
     setActiveResizeColumn(column);
   };
 
+  // ── Column-filter handlers ────────────────────────────────────────────────
+  const openColumnFilter = (column: string, anchor: HTMLElement) => {
+    setFilterAnchorRect(anchor.getBoundingClientRect());
+    setOpenFilterCol((current) => (current === column ? null : column));
+  };
+  const updateColumnFilter = (column: string, next: TableColumnFilter) => {
+    setColumnFilters((prev) => ({ ...prev, [column]: next }));
+  };
+  const clearColumnFilter = (column: string) => {
+    setColumnFilters((prev) => {
+      const rest = { ...prev };
+      delete rest[column];
+      return rest;
+    });
+  };
+  const clearAllColumnFilters = () => {
+    setColumnFilters({});
+    setOpenFilterCol(null);
+  };
+
   const allColumnWidthsResolved = cols.every((col) => typeof liveColumnWidths[col] === 'number' && liveColumnWidths[col] > 0);
   const tableWidth = allColumnWidthsResolved
     ? cols.reduce((total, col) => total + liveColumnWidths[col], 0)
@@ -624,6 +695,28 @@ export function TableVisualization({
                         {lookupColumnLabel(col, columnLabels)}
                       </span>
                       {getSortIndicator(col)}
+                      {enableColumnFilters && (
+                        <button
+                          type="button"
+                          aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
+                          title="Filter column"
+                          className={clsx(
+                            "ml-0.5 shrink-0 rounded p-0.5 transition-colors",
+                            isTableColumnFilterActive(columnFilters[col])
+                              ? "text-brand"
+                              : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 hover:text-text-secondary",
+                            openFilterCol === col && "text-brand opacity-100",
+                          )}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openColumnFilter(col, event.currentTarget);
+                          }}
+                        >
+                          <FilterIcon
+                            className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
+                          />
+                        </button>
+                      )}
                     </div>
 
                     {enableColumnResize && (
@@ -765,14 +858,254 @@ export function TableVisualization({
             </tfoot>
           )}
         </table>
-      
-      {!exporting && rows.length > maxRows && (
-        <div className="px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
-          Showing {maxRows} of {rows.length} rows
-          {summaryRowsData.length > 0 ? ` | Summary uses all ${rows.length} rows` : ''}
+
+      {!exporting && (rows.length > maxRows || hasActiveColumnFilters) && (
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
+          <span>
+            Showing {displayRows.length} of {filteredRows.length}
+            {hasActiveColumnFilters ? ` (filtered from ${rows.length})` : ''} rows
+            {summaryRowsData.length > 0 ? ` | Summary uses ${filteredRows.length} row${filteredRows.length === 1 ? '' : 's'}` : ''}
+          </span>
+          {hasActiveColumnFilters && (
+            <button
+              type="button"
+              onClick={clearAllColumnFilters}
+              className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              <XIcon className="h-3 w-3" /> Clear all filters
+            </button>
+          )}
         </div>
       )}
+
+      {/* Column-filter popover — portal to <body> so the table's overflow clip
+          never truncates it. */}
+      {enableColumnFilters && openFilterCol && filterAnchorRect && (
+        <ColumnFilterPopover
+          key={openFilterCol}
+          label={lookupColumnLabel(openFilterCol, columnLabels)}
+          type={columnFilterTypes[openFilterCol] ?? 'text'}
+          filter={columnFilters[openFilterCol] ?? EMPTY_TABLE_COLUMN_FILTER}
+          distinctValues={distinctTableColumnValues(rows, openFilterCol)}
+          anchorRect={filterAnchorRect}
+          onChange={(next) => updateColumnFilter(openFilterCol, next)}
+          onClear={() => clearColumnFilter(openFilterCol)}
+          onClose={() => setOpenFilterCol(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Column-filter popover: a condition editor (operator + up to two typed inputs)
+ * AND a multi-select checklist of the column's distinct values. Rendered via a
+ * portal at the header icon's position so the table's `overflow-auto` can't clip
+ * it. Applies live — every change flows straight to the parent's `columnFilters`.
+ */
+function ColumnFilterPopover({
+  label,
+  type,
+  filter,
+  distinctValues,
+  anchorRect,
+  onChange,
+  onClear,
+  onClose,
+}: {
+  label: string;
+  type: TableFilterColumnType;
+  filter: TableColumnFilter;
+  distinctValues: string[];
+  anchorRect: DOMRect;
+  onChange: (next: TableColumnFilter) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [search, setSearch] = useState('');
+  const operators = operatorsForType(type);
+  const valueCount = operatorValueCount(filter.op);
+  const inputType = type === 'number' ? 'number' : type === 'date' ? 'date' : 'text';
+
+  // Close on outside-click or Escape.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const WIDTH = 288;
+  // Clamp within the viewport; prefer left-aligned to the icon, flip up if the
+  // popover would overflow the bottom edge.
+  const left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - WIDTH - 8));
+  const openUp = anchorRect.bottom + 360 > window.innerHeight && anchorRect.top > 360;
+  const top = openUp ? undefined : anchorRect.bottom + 6;
+  const bottom = openUp ? window.innerHeight - anchorRect.top + 6 : undefined;
+
+  const filtered = search.trim()
+    ? distinctValues.filter((v) => v.toLowerCase().includes(search.trim().toLowerCase()))
+    : distinctValues;
+  const selectedSet = new Set(filter.selected);
+  const toggleValue = (v: string) => {
+    const next = new Set(selectedSet);
+    if (next.has(v)) next.delete(v);
+    else next.add(v);
+    onChange({ ...filter, selected: Array.from(next) });
+  };
+  const allVisibleSelected = filtered.length > 0 && filtered.every((v) => selectedSet.has(v));
+  const toggleAllVisible = () => {
+    const next = new Set(selectedSet);
+    if (allVisibleSelected) filtered.forEach((v) => next.delete(v));
+    else filtered.forEach((v) => next.add(v));
+    onChange({ ...filter, selected: Array.from(next) });
+  };
+  const displayValue = (v: string) => (v === '' ? '(empty)' : v);
+  const active = isTableColumnFilterActive(filter);
+
+  return createPortal(
+    <div
+      ref={cardRef}
+      role="dialog"
+      aria-label={`Filter ${label}`}
+      className="fixed z-[1000] flex max-h-[70vh] flex-col rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl"
+      style={{ left, top, bottom, width: WIDTH }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-3 py-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-text-primary" title={label}>{label}</div>
+          <div className="text-[11px] uppercase tracking-wide text-text-quaternary">{type} filter</div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          className="rounded p-1 text-text-tertiary hover:bg-surface-3 hover:text-text-primary"
+          onClick={onClose}
+        >
+          <XIcon className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Condition */}
+      <div className="space-y-2 border-b border-[rgb(var(--border-line))] px-3 py-2.5">
+        <div className="text-[11px] font-medium text-text-tertiary">Condition</div>
+        <select
+          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm text-text-primary focus:border-brand focus:outline-none"
+          value={filter.op ?? ''}
+          onChange={(e) =>
+            onChange({ ...filter, op: (e.target.value || null) as TableFilterOperator | null })
+          }
+        >
+          <option value="">No condition</option>
+          {operators.map((op) => (
+            <option key={op.value} value={op.value}>{op.label}</option>
+          ))}
+        </select>
+        {valueCount >= 1 && (
+          <div className="flex items-center gap-1.5">
+            <input
+              type={inputType}
+              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm text-text-primary focus:border-brand focus:outline-none"
+              placeholder={valueCount === 2 ? 'From' : 'Value'}
+              value={filter.value1}
+              onChange={(e) => onChange({ ...filter, value1: e.target.value })}
+            />
+            {valueCount === 2 && (
+              <>
+                <span className="text-xs text-text-quaternary">–</span>
+                <input
+                  type={inputType}
+                  className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm text-text-primary focus:border-brand focus:outline-none"
+                  placeholder="To"
+                  value={filter.value2}
+                  onChange={(e) => onChange({ ...filter, value2: e.target.value })}
+                />
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Multi-select checklist */}
+      <div className="flex min-h-0 flex-1 flex-col px-3 py-2.5">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-text-tertiary">
+            Values{filter.selected.length > 0 ? ` (${filter.selected.length})` : ''}
+          </span>
+          <button
+            type="button"
+            className="text-[11px] font-medium text-brand hover:underline"
+            onClick={toggleAllVisible}
+          >
+            {allVisibleSelected ? 'Clear all' : 'Select all'}
+          </button>
+        </div>
+        <div className="relative mb-1.5">
+          <SearchIcon className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
+          <input
+            type="text"
+            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-sm text-text-primary focus:border-brand focus:outline-none"
+            placeholder="Search values…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-[rgb(var(--border-line))]">
+          {filtered.length === 0 ? (
+            <div className="px-2 py-3 text-center text-xs text-text-quaternary">No matching values</div>
+          ) : (
+            filtered.map((v) => (
+              <label
+                key={v}
+                className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm text-text-secondary hover:bg-surface-2"
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 shrink-0 accent-[rgb(var(--brand))]"
+                  checked={selectedSet.has(v)}
+                  onChange={() => toggleValue(v)}
+                />
+                <span className={clsx('truncate', v === '' && 'italic text-text-quaternary')} title={displayValue(v)}>
+                  {displayValue(v)}
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2">
+        <button
+          type="button"
+          disabled={!active}
+          className={clsx(
+            'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+            active ? 'text-text-secondary hover:bg-surface-3 hover:text-text-primary' : 'cursor-not-allowed text-text-quaternary',
+          )}
+          onClick={onClear}
+        >
+          Clear filter
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-hover"
+          onClick={onClose}
+        >
+          Done
+        </button>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
