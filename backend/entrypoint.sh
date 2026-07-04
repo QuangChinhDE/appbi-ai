@@ -63,6 +63,44 @@ done
 
 echo "==> PostgreSQL is up"
 
+# ── Ensure the pgvector extension before migrations ─────────────────────────
+# Several migrations run `CREATE EXTENSION IF NOT EXISTS vector`, which needs a
+# Postgres SUPERUSER to *install* the extension. On a managed DB whose app user
+# is not superuser this otherwise crash-loops with a deep stacktrace. Fail fast
+# with a clear, actionable message instead. If the extension already exists (an
+# admin installed it once), the IF NOT EXISTS calls become harmless no-ops.
+echo "==> Ensuring pgvector extension..."
+python - <<'PYEOF'
+import os, sys
+from sqlalchemy import create_engine, text
+eng = create_engine(os.environ["DATABASE_URL"])
+try:
+    with eng.connect() as c:
+        if c.execute(text("SELECT 1 FROM pg_extension WHERE extname='vector'")).scalar():
+            print("==> pgvector already installed."); sys.exit(0)
+        try:
+            c.execute(text("CREATE EXTENSION IF NOT EXISTS vector")); c.commit()
+            print("==> pgvector extension created.")
+        except Exception as e:
+            sys.stderr.write(
+                "\n" + "=" * 72 + "\n"
+                "FATAL: the 'vector' (pgvector) extension is required but this DB\n"
+                "user cannot create it and it is not installed yet.\n\n"
+                "Have a Postgres SUPERUSER run ONCE against this database:\n"
+                "    CREATE EXTENSION vector;\n"
+                "then re-run ./run.sh --recreate\n"
+                "(Managed PG: connect as the admin user, e.g. 'postgres'. If the\n"
+                " extension is unavailable server-side, install pgvector on the PG\n"
+                " server / enable it in the managed instance first.)\n"
+                + "=" * 72 + "\n\n"
+                f"underlying error: {e}\n")
+            sys.exit(1)
+except SystemExit:
+    raise
+except Exception as e:
+    print(f"==> WARNING: could not verify pgvector ({e}); continuing to migrations.")
+PYEOF
+
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 
