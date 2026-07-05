@@ -17,6 +17,7 @@ import { Modal } from '@/components/common/Modal';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useDatasets, useDataset } from '@/hooks/use-datasets';
+import { useI18n } from '@/providers/LanguageProvider';
 import { StatusPill, relativeTime, fmtNumber } from './ui';
 import {
   listMonitors, createMonitor, deleteMonitor, runMonitor, updateMonitor,
@@ -26,11 +27,11 @@ import {
 
 type CreateType = MonitorKind | 'anomaly';
 
-const KIND_META: Record<CreateType, { label: string; icon: typeof Clock; desc: string }> = {
-  freshness: { label: 'Độ tươi', icon: Clock, desc: 'Cảnh báo khi dữ liệu trễ so với nhịp kỳ vọng' },
-  volume: { label: 'Khối lượng', icon: BarChart3, desc: 'Bắt sụt/phình số dòng bất thường (auto-baseline)' },
-  schema: { label: 'Lược đồ', icon: GitBranch, desc: 'Phát hiện cột thêm/xoá/đổi kiểu' },
-  anomaly: { label: 'Bất thường (metric)', icon: Activity, desc: 'Z-score trên giá trị metric theo thời gian' },
+const KIND_META: Record<CreateType, { labelKey: string; icon: typeof Clock; descKey: string }> = {
+  freshness: { labelKey: 'observability.monitors.kind.freshness.label', icon: Clock, descKey: 'observability.monitors.kind.freshness.desc' },
+  volume: { labelKey: 'observability.monitors.kind.volume.label', icon: BarChart3, descKey: 'observability.monitors.kind.volume.desc' },
+  schema: { labelKey: 'observability.monitors.kind.schema.label', icon: GitBranch, descKey: 'observability.monitors.kind.schema.desc' },
+  anomaly: { labelKey: 'observability.monitors.kind.anomaly.label', icon: Activity, descKey: 'observability.monitors.kind.anomaly.desc' },
 };
 
 function tableColumns(table: any): string[] {
@@ -39,6 +40,7 @@ function tableColumns(table: any): string[] {
 }
 
 export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
+  const { t, locale } = useI18n();
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [metrics, setMetrics] = useState<AnomalyMetric[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,23 +69,23 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
 
   const onRunMonitor = async (m: Monitor) => {
     setRunningId(`m${m.id}`);
-    try { await runMonitor(m.id); await reload(); toast.success('Đã chạy kiểm tra'); }
-    catch { toast.error('Chạy kiểm tra thất bại'); }
+    try { await runMonitor(m.id); await reload(); toast.success(t('observability.monitors.toast.runSuccess')); }
+    catch { toast.error(t('observability.monitors.toast.runFailed')); }
     finally { setRunningId(null); }
   };
   const onDeleteMonitor = async (m: Monitor) => {
-    if (!confirm(`Xoá monitor "${m.name}"?`)) return;
-    try { await deleteMonitor(m.id); await reload(); } catch { toast.error('Xoá thất bại'); }
+    if (!confirm(t('observability.monitors.confirm.deleteMonitor', { name: m.name }))) return;
+    try { await deleteMonitor(m.id); await reload(); } catch { toast.error(t('observability.monitors.toast.deleteFailed')); }
   };
   const onToggleMonitor = async (m: Monitor) => {
-    try { await updateMonitor(m.id, { isActive: !m.isActive }); await reload(); } catch { toast.error('Cập nhật thất bại'); }
+    try { await updateMonitor(m.id, { isActive: !m.isActive }); await reload(); } catch { toast.error(t('observability.monitors.toast.updateFailed')); }
   };
   const onDeleteMetric = async (a: AnomalyMetric) => {
-    if (!confirm(`Xoá metric "${a.metric_column}"?`)) return;
-    try { await deleteAnomalyMetric(a.id); await reload(); } catch { toast.error('Xoá thất bại'); }
+    if (!confirm(t('observability.monitors.confirm.deleteMetric', { name: a.metric_column }))) return;
+    try { await deleteAnomalyMetric(a.id); await reload(); } catch { toast.error(t('observability.monitors.toast.deleteFailed')); }
   };
   const onToggleMetric = async (a: AnomalyMetric) => {
-    try { await toggleAnomalyMetric(a.id); await reload(); } catch { toast.error('Cập nhật thất bại'); }
+    try { await toggleAnomalyMetric(a.id); await reload(); } catch { toast.error(t('observability.monitors.toast.updateFailed')); }
   };
 
   const needle = q.trim().toLowerCase();
@@ -93,33 +95,33 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Input size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm monitor…" leadingIcon={<Search />} className="w-64" />
-        <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setCreating(true)}>Thêm monitor</Button>
+        <Input size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('observability.monitors.search')} leadingIcon={<Search />} className="w-64" />
+        <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setCreating(true)}>{t('observability.action.addMonitor')}</Button>
       </div>
 
       {loading ? (
-        <p className="py-10 text-center text-caption text-text-tertiary">Đang tải…</p>
+        <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>
       ) : (monitors.length === 0 && metrics.length === 0) ? (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 py-14 text-center">
           <Activity className="mx-auto mb-4 h-12 w-12 text-text-quaternary" />
-          <h3 className="mb-1 text-small font-strong text-text-primary">Chưa có monitor nào</h3>
-          <p className="mb-5 text-caption text-text-tertiary">Tạo monitor độ tươi, khối lượng, lược đồ hoặc bất thường để hệ thống tự giám sát mỗi ngày.</p>
-          <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setCreating(true)}>Thêm monitor</Button>
+          <h3 className="mb-1 text-small font-strong text-text-primary">{t('observability.monitors.empty.title')}</h3>
+          <p className="mb-5 text-caption text-text-tertiary">{t('observability.monitors.empty.body')}</p>
+          <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setCreating(true)}>{t('observability.action.addMonitor')}</Button>
         </div>
       ) : (
         <>
           {/* Native health monitors */}
           {fMonitors.length > 0 && (
-            <Section title="Sức khoẻ dữ liệu" subtitle="Độ tươi · Khối lượng · Lược đồ">
+            <Section title={t('observability.monitors.section.health.title')} subtitle={t('observability.monitors.section.health.subtitle')}>
               <table className="app-list-table w-full divide-y divide-[rgb(var(--border-line))]">
                 <thead className="bg-surface-2"><tr>
-                  <th className="app-list-header w-[30%]">Monitor</th>
-                  <th className="app-list-header">Loại</th>
-                  <th className="app-list-header">Bảng</th>
-                  <th className="app-list-header">Trạng thái</th>
-                  <th className="app-list-header">Giá trị</th>
-                  <th className="app-list-header">Kiểm tra cuối</th>
-                  <th className="app-list-header text-right">Hành động</th>
+                  <th className="app-list-header w-[30%]">{t('observability.monitors.header.monitor')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.type')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.table')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.status')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.value')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.lastCheck')}</th>
+                  <th className="app-list-header text-right">{t('observability.monitors.header.actions')}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-[rgb(var(--border-line))]">
                   {fMonitors.map((m) => {
@@ -127,16 +129,16 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
                     return (
                       <tr key={m.id} className={cn('hover:bg-surface-2', !m.isActive && 'opacity-50')}>
                         <td className="app-list-cell font-emphasis text-text-primary">{m.name}</td>
-                        <td className="app-list-cell"><span className="inline-flex items-center gap-1 text-caption text-text-secondary"><Meta.icon className="h-3.5 w-3.5" />{Meta.label}</span></td>
+                        <td className="app-list-cell"><span className="inline-flex items-center gap-1 text-caption text-text-secondary"><Meta.icon className="h-3.5 w-3.5" />{t(Meta.labelKey)}</span></td>
                         <td className="app-list-cell text-caption text-text-tertiary">{m.tableName ?? '—'}</td>
                         <td className="app-list-cell"><StatusPill status={m.lastStatus} /></td>
-                        <td className="app-list-cell text-caption text-text-tertiary">{monitorValueLabel(m)}</td>
-                        <td className="app-list-cell text-tiny text-text-quaternary">{relativeTime(m.lastCheckedAt)}</td>
+                        <td className="app-list-cell text-caption text-text-tertiary">{monitorValueLabel(m, t, locale)}</td>
+                        <td className="app-list-cell text-tiny text-text-quaternary">{relativeTime(m.lastCheckedAt, t, locale)}</td>
                         <td className="app-list-cell">
                           <div className="flex items-center justify-end gap-1.5">
-                            <IconBtn title="Chạy ngay" onClick={() => onRunMonitor(m)} loading={runningId === `m${m.id}`}><Play className="h-3.5 w-3.5" /></IconBtn>
-                            <IconBtn title={m.isActive ? 'Tạm dừng' : 'Bật'} onClick={() => onToggleMonitor(m)}><Power className={cn('h-3.5 w-3.5', m.isActive ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
-                            <IconBtn title="Xoá" onClick={() => onDeleteMonitor(m)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
+                            <IconBtn title={t('observability.action.runNow')} onClick={() => onRunMonitor(m)} loading={runningId === `m${m.id}`}><Play className="h-3.5 w-3.5" /></IconBtn>
+                            <IconBtn title={m.isActive ? t('observability.action.pause') : t('observability.action.enable')} onClick={() => onToggleMonitor(m)}><Power className={cn('h-3.5 w-3.5', m.isActive ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
+                            <IconBtn title={t('observability.action.delete')} onClick={() => onDeleteMonitor(m)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
                           </div>
                         </td>
                       </tr>
@@ -149,16 +151,16 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
 
           {/* Anomaly metrics */}
           {fMetrics.length > 0 && (
-            <Section title="Bất thường (Anomaly)" subtitle="Z-score tự học baseline trên giá trị metric">
+            <Section title={t('observability.monitors.section.anomaly.title')} subtitle={t('observability.monitors.section.anomaly.subtitle')}>
               <table className="app-list-table w-full divide-y divide-[rgb(var(--border-line))]">
                 <thead className="bg-surface-2"><tr>
-                  <th className="app-list-header w-[26%]">Metric</th>
-                  <th className="app-list-header">Tổng hợp</th>
-                  <th className="app-list-header">Cột thời gian</th>
-                  <th className="app-list-header">Ngưỡng z</th>
-                  <th className="app-list-header">Tần suất</th>
-                  <th className="app-list-header">Trạng thái</th>
-                  <th className="app-list-header text-right">Hành động</th>
+                  <th className="app-list-header w-[26%]">{t('observability.monitors.header.metric')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.aggregation')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.timeColumn')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.zThreshold')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.frequency')}</th>
+                  <th className="app-list-header">{t('observability.monitors.header.status')}</th>
+                  <th className="app-list-header text-right">{t('observability.monitors.header.actions')}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-[rgb(var(--border-line))]">
                   {fMetrics.map((a) => (
@@ -167,12 +169,12 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
                       <td className="app-list-cell text-caption text-text-tertiary uppercase">{a.aggregation}</td>
                       <td className="app-list-cell text-caption text-text-tertiary">{a.time_column ?? '—'}</td>
                       <td className="app-list-cell text-caption text-text-tertiary">{a.threshold_z_score}</td>
-                      <td className="app-list-cell text-caption text-text-tertiary">{a.check_frequency}</td>
-                      <td className="app-list-cell">{a.is_active ? <StatusPill status="ok" /> : <span className="text-tiny text-text-quaternary">Tạm dừng</span>}</td>
+                      <td className="app-list-cell text-caption text-text-tertiary">{frequencyLabel(a.check_frequency, t)}</td>
+                      <td className="app-list-cell">{a.is_active ? <StatusPill status="ok" /> : <span className="text-tiny text-text-quaternary">{t('observability.status.paused')}</span>}</td>
                       <td className="app-list-cell">
                         <div className="flex items-center justify-end gap-1.5">
-                          <IconBtn title={a.is_active ? 'Tạm dừng' : 'Bật'} onClick={() => onToggleMetric(a)}><Power className={cn('h-3.5 w-3.5', a.is_active ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
-                          <IconBtn title="Xoá" onClick={() => onDeleteMetric(a)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
+                          <IconBtn title={a.is_active ? t('observability.action.pause') : t('observability.action.enable')} onClick={() => onToggleMetric(a)}><Power className={cn('h-3.5 w-3.5', a.is_active ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
+                          <IconBtn title={t('observability.action.delete')} onClick={() => onDeleteMetric(a)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
                         </div>
                       </td>
                     </tr>
@@ -189,12 +191,17 @@ export function MonitorsTab({ datasetId }: { datasetId?: number } = {}) {
   );
 }
 
-function monitorValueLabel(m: Monitor): string {
+function monitorValueLabel(m: Monitor, t: (key: string, values?: Record<string, string | number>) => string, locale: string): string {
   if (m.lastValue == null) return '—';
-  if (m.kind === 'freshness') return `trễ ${m.lastValue}h`;
-  if (m.kind === 'volume') return `${fmtNumber(m.lastValue)} dòng`;
-  if (m.kind === 'schema') return `${m.lastValue} cột`;
+  if (m.kind === 'freshness') return t('observability.monitors.value.lagHours', { value: m.lastValue });
+  if (m.kind === 'volume') return t('observability.monitors.value.rows', { value: fmtNumber(m.lastValue, locale) });
+  if (m.kind === 'schema') return t('observability.monitors.value.columns', { value: m.lastValue });
   return String(m.lastValue);
+}
+
+function frequencyLabel(value: string, t: (key: string, values?: Record<string, string | number>) => string): string {
+  if (value === 'daily') return t('observability.frequency.daily');
+  return value;
 }
 
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -220,6 +227,7 @@ function IconBtn({ children, title, onClick, loading }: { children: React.ReactN
 
 // ── Create modal ──────────────────────────────────────────────────────────────
 function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: () => void; onCreated: () => void; lockedDatasetId?: number }) {
+  const { t } = useI18n();
   const [type, setType] = useState<CreateType>('freshness');
   const { data: datasets = [] } = useDatasets();
   const [datasetId, setDatasetId] = useState<number | null>(lockedDatasetId ?? null);
@@ -260,18 +268,18 @@ function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: 
         if (type === 'volume') { config.z_threshold = zThreshold; if (minRows) config.min_rows = Number(minRows); }
         await createMonitor({ dataset_table_id: tableId, kind: type, config });
       }
-      toast.success('Đã tạo monitor');
+      toast.success(t('observability.monitors.toast.createSuccess'));
       onCreated();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail ?? 'Tạo monitor thất bại');
+      toast.error(e?.response?.data?.detail ?? t('observability.monitors.toast.createFailed'));
     } finally { setSubmitting(false); }
   };
 
   return (
-    <Modal isOpen onClose={onClose} title="Thêm monitor" size="lg"
+    <Modal isOpen onClose={onClose} title={t('observability.monitors.modal.title')} size="lg"
       footer={<>
-        <Button variant="ghost" onClick={onClose}>Huỷ</Button>
-        <Button variant="primary" disabled={!canSubmit || submitting} onClick={submit} leadingIcon={submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}>Tạo</Button>
+        <Button variant="ghost" onClick={onClose}>{t('observability.action.cancel')}</Button>
+        <Button variant="primary" disabled={!canSubmit || submitting} onClick={submit} leadingIcon={submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}>{t('observability.action.create')}</Button>
       </>}>
       <div className="space-y-4">
         {/* type picker */}
@@ -283,24 +291,24 @@ function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: 
                 className={cn('flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors',
                   type === k ? 'border-brand bg-brand/10' : 'border-[rgb(var(--border-line))] hover:bg-surface-2')}>
                 <Meta.icon className={cn('h-4 w-4', type === k ? 'text-brand' : 'text-text-tertiary')} />
-                <span className="text-caption font-emphasis text-text-primary">{Meta.label}</span>
+                <span className="text-caption font-emphasis text-text-primary">{t(Meta.labelKey)}</span>
               </button>
             );
           })}
         </div>
-        <p className="text-tiny text-text-quaternary">{KIND_META[type].desc}</p>
+        <p className="text-tiny text-text-quaternary">{t(KIND_META[type].descKey)}</p>
 
         {/* dataset + table */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Dataset">
+          <Field label={t('observability.monitors.field.dataset')}>
             <NativeSelect value={datasetId ?? ''} disabled={!!lockedDatasetId} onChange={(v) => setDatasetId(v ? Number(v) : null)}>
-              <option value="">— Chọn dataset —</option>
+              <option value="">{t('observability.monitors.placeholder.selectDataset')}</option>
               {datasets.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </NativeSelect>
           </Field>
-          <Field label="Bảng">
+          <Field label={t('observability.monitors.field.table')}>
             <NativeSelect value={tableId ?? ''} disabled={!datasetId} onChange={(v) => setTableId(v ? Number(v) : null)}>
-              <option value="">— Chọn bảng —</option>
+              <option value="">{t('observability.monitors.placeholder.selectTable')}</option>
               {tables.map((t: any) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
             </NativeSelect>
           </Field>
@@ -309,13 +317,13 @@ function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: 
         {/* metric column (anomaly) */}
         {needsMetricCol && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Cột metric">
+            <Field label={t('observability.monitors.field.metricColumn')}>
               <NativeSelect value={column} disabled={!tableId} onChange={setColumn}>
-                <option value="">— Chọn cột —</option>
+                <option value="">{t('observability.monitors.placeholder.selectColumn')}</option>
                 {columns.map((c) => <option key={c} value={c}>{c}</option>)}
               </NativeSelect>
             </Field>
-            <Field label="Tổng hợp">
+            <Field label={t('observability.monitors.field.aggregation')}>
               <NativeSelect value={aggregation} onChange={setAggregation}>
                 {['sum', 'avg', 'count', 'count_distinct', 'min', 'max'].map((a) => <option key={a} value={a}>{a.toUpperCase()}</option>)}
               </NativeSelect>
@@ -325,9 +333,9 @@ function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: 
 
         {/* time column */}
         {needsTimeCol && (
-          <Field label="Cột thời gian">
+          <Field label={t('observability.monitors.field.timeColumn')}>
             <NativeSelect value={timeColumn} disabled={!tableId} onChange={setTimeColumn}>
-              <option value="">— Chọn cột thời gian —</option>
+              <option value="">{t('observability.monitors.placeholder.selectTimeColumn')}</option>
               {columns.map((c) => <option key={c} value={c}>{c}</option>)}
             </NativeSelect>
           </Field>
@@ -335,14 +343,14 @@ function CreateMonitorModal({ onClose, onCreated, lockedDatasetId }: { onClose: 
 
         {/* thresholds */}
         {type === 'freshness' && (
-          <Field label="Trễ tối đa (giờ)">
+          <Field label={t('observability.monitors.field.maxLagHours')}>
             <Input type="number" size="sm" value={maxLagHours} onChange={(e) => setMaxLagHours(Number(e.target.value))} />
           </Field>
         )}
         {(type === 'volume' || type === 'anomaly') && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Ngưỡng z-score"><Input type="number" step="0.5" size="sm" value={zThreshold} onChange={(e) => setZThreshold(Number(e.target.value))} /></Field>
-            {type === 'volume' && <Field label="Số dòng tối thiểu (tuỳ chọn)"><Input type="number" size="sm" value={minRows} onChange={(e) => setMinRows(e.target.value)} placeholder="vd: 1000" /></Field>}
+            <Field label={t('observability.monitors.field.zThreshold')}><Input type="number" step="0.5" size="sm" value={zThreshold} onChange={(e) => setZThreshold(Number(e.target.value))} /></Field>
+            {type === 'volume' && <Field label={t('observability.monitors.field.minRows')}><Input type="number" size="sm" value={minRows} onChange={(e) => setMinRows(e.target.value)} placeholder={t('observability.monitors.placeholder.minRows')} /></Field>}
           </div>
         )}
       </div>

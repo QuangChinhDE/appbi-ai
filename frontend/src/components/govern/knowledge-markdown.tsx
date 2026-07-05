@@ -67,12 +67,28 @@ export function Markdown({ source }: { source: string }) {
 }
 
 export const DOC_TYPES = ['overview', 'guide', 'domain', 'process', 'faq', 'article'];
-export const DOC_TYPE_LABEL: Record<string, string> = {
-  overview: 'Tổng quan', guide: 'Hướng dẫn', domain: 'Nghiệp vụ', process: 'Quy trình', faq: 'Hỏi đáp', article: 'Bài viết',
+export const DOC_TYPE_LABEL_KEY: Record<string, string> = {
+  overview: 'govern.docType.overview',
+  guide: 'govern.docType.guide',
+  domain: 'govern.docType.domain',
+  process: 'govern.docType.process',
+  faq: 'govern.docType.faq',
+  article: 'govern.docType.article',
 };
 export const STATUS_TONE: Record<string, string> = {
   Published: 'bg-success/10 text-success', Draft: 'bg-surface-2 text-text-tertiary', Archived: 'bg-danger/10 text-danger',
 };
+
+export function docTypeLabel(type: string, t: (key: string) => string): string {
+  const key = DOC_TYPE_LABEL_KEY[type];
+  return key ? t(key) : type;
+}
+
+export function statusLabel(status: string, t: (key: string) => string): string {
+  const key = `govern.status.${status}`;
+  const label = t(key);
+  return label === key ? status : label;
+}
 
 /** Human-readable target label for a managed metric (operator + value + unit). */
 export function managedTargetLabel(m: {

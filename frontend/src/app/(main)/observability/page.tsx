@@ -6,9 +6,9 @@
  *
  * ONE surface: a paginated, searchable per-dataset HEALTH list (open incidents ·
  * monitors · consumption). Global scorecard sits in ModuleOverview + a pillar
- * strip. Opening a dataset drills into its detail (Sự cố / Giám sát / Chất lượng
+ * strip. Opening a dataset drills into its detail (incidents / monitors / quality
  * / Lineage) via the shared Tabs component — exactly like Govern's metric detail.
- * Alert channels are managed in one modal (like Govern's "Từ điển & Nhãn").
+ * Alert channels are managed in one modal.
  */
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
@@ -28,6 +28,7 @@ import { useDataset } from '@/hooks/use-datasets';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { useUrlNav } from '@/hooks/use-url-nav';
 import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
+import { useI18n } from '@/providers/LanguageProvider';
 
 import { MonitorsTab } from '@/components/observability/MonitorsTab';
 import { IncidentsTab } from '@/components/observability/IncidentsTab';
@@ -40,16 +41,17 @@ import {
 } from '@/lib/observability';
 
 const DETAIL_TABS = [
-  { key: 'incidents', label: 'Sự cố', icon: <AlertTriangle className="h-4 w-4" /> },
-  { key: 'monitors', label: 'Giám sát', icon: <Activity className="h-4 w-4" /> },
-  { key: 'quality', label: 'Chất lượng', icon: <ShieldCheck className="h-4 w-4" /> },
-  { key: 'lineage', label: 'Lineage', icon: <GitBranch className="h-4 w-4" /> },
+  { key: 'incidents', labelKey: 'observability.detail.tab.incidents', icon: <AlertTriangle className="h-4 w-4" /> },
+  { key: 'monitors', labelKey: 'observability.detail.tab.monitors', icon: <Activity className="h-4 w-4" /> },
+  { key: 'quality', labelKey: 'observability.detail.tab.quality', icon: <ShieldCheck className="h-4 w-4" /> },
+  { key: 'lineage', labelKey: 'observability.detail.tab.lineage', icon: <GitBranch className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
 export default function ObservabilityPage() {
+  const { t } = useI18n();
   return (
-    <Suspense fallback={<div className="px-8 py-10 text-caption text-text-tertiary">Đang tải…</div>}>
+    <Suspense fallback={<div className="px-8 py-10 text-caption text-text-tertiary">{t('observability.loading')}</div>}>
       <ObservabilityModule />
     </Suspense>
   );
@@ -81,6 +83,7 @@ function DetailShell({ children }: { children: ReactNode }) {
 
 // ── The per-dataset health list (the whole Observability surface) ────────────
 function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
+  const { t, locale } = useI18n();
   const [overview, setOverview] = useState<ObservabilityOverview | null>(null);
   const [usage, setUsage] = useState<UsageRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,9 +104,13 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
     setScanning(true);
     try {
       const r = await runScan();
-      toast.success(`Đã quét: ${r.breached ?? 0} vi phạm · ${(r.quality_folded ?? 0) + (r.anomaly_folded ?? 0)} sự cố · ${r.alerts_sent ?? 0} cảnh báo gửi`);
+      toast.success(t('observability.toast.scanSuccess', {
+        breached: r.breached ?? 0,
+        folded: (r.quality_folded ?? 0) + (r.anomaly_folded ?? 0),
+        alerts: r.alerts_sent ?? 0,
+      }));
       await reload();
-    } catch { toast.error('Quét thất bại'); }
+    } catch { toast.error(t('observability.toast.scanFailed')); }
     finally { setScanning(false); }
   };
 
@@ -113,33 +120,33 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
   return (
     <>
       <PageListLayout
-        title="Observability"
-        description="Sức khoẻ & vòng đời dữ liệu trên mọi dataset — độ tươi, khối lượng, lược đồ, bất thường, chất lượng. Bấm một dataset để giám sát, xử lý sự cố và xem lineage ngay tại chỗ."
+        title={t('module.observability.title')}
+        description={t('observability.page.description')}
         overview={(
           <ModuleOverview
             stats={[
-              { label: 'Dataset giám sát', value: overview?.datasetsMonitored ?? 0, helper: 'Số dataset có monitor hoặc sự cố' },
-              { label: 'Sự cố đang mở', value: openCount, helper: 'Sự cố chưa xử lý trên mọi dataset' },
-              { label: 'MTTR (30 ngày)', value: overview?.mttrHours != null ? fmtDuration(overview.mttrHours) : '—', helper: 'Thời gian xử lý trung bình' },
-              { label: 'Đã xử lý (7 ngày)', value: inc?.resolved7d ?? 0, helper: 'Sự cố đã xử lý trong 7 ngày' },
+              { label: t('observability.page.stats.datasetsMonitored.label'), value: overview?.datasetsMonitored ?? 0, helper: t('observability.page.stats.datasetsMonitored.helper') },
+              { label: t('observability.page.stats.openIncidents.label'), value: openCount, helper: t('observability.page.stats.openIncidents.helper') },
+              { label: t('observability.page.stats.mttr30.label'), value: overview?.mttrHours != null ? fmtDuration(overview.mttrHours, t, locale) : '—', helper: t('observability.page.stats.mttr30.helper') },
+              { label: t('observability.page.stats.resolved7d.label'), value: inc?.resolved7d ?? 0, helper: t('observability.page.stats.resolved7d.helper') },
             ]}
           />
         )}
         action={(
           <div className="flex items-center gap-2">
-            <Button variant="secondary" leadingIcon={<Bell className="h-4 w-4" />} onClick={() => setChannelsOpen(true)}>Kênh cảnh báo</Button>
+            <Button variant="secondary" leadingIcon={<Bell className="h-4 w-4" />} onClick={() => setChannelsOpen(true)}>{t('observability.action.alertChannels')}</Button>
             <Button variant="primary" leadingIcon={scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} disabled={scanning} onClick={onScan}>
-              {scanning ? 'Đang quét…' : 'Quét ngay'}
+              {scanning ? t('observability.action.scanning') : t('observability.action.scanNow')}
             </Button>
           </div>
         )}
         isLoading={loading}
-        loadingText="Đang tải…"
-        searchPlaceholder="Tìm dataset…"
+        loadingText={t('observability.loading')}
+        searchPlaceholder={t('observability.searchDataset')}
         viewToggle={false}
         toolbarExtra={(
           <FilterTag tone="danger" active={onlyIssues} onClick={() => setOnlyIssues((v) => !v)}>
-            <AlertTriangle className="mr-1 h-3 w-3" /> Chỉ dataset có sự cố{openCount ? ` (${openCount})` : ''}
+            <AlertTriangle className="mr-1 h-3 w-3" /> {t('observability.filter.onlyIssues')}{openCount ? ` (${openCount})` : ''}
           </FilterTag>
         )}
       >
@@ -156,13 +163,15 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
               {usage.length === 0 ? (
                 <div className="py-16 text-center">
                   <ShieldCheck className="mx-auto mb-4 h-14 w-14 text-text-quaternary" />
-                  <h2 className="mb-2 text-small font-strong text-text-primary">Chưa có dataset nào</h2>
-                  <p className="text-caption text-text-tertiary">Tạo dataset trước, rồi quay lại đây để thiết lập giám sát.</p>
+                  <h2 className="mb-2 text-small font-strong text-text-primary">{t('observability.empty.noDatasets.title')}</h2>
+                  <p className="text-caption text-text-tertiary">{t('observability.empty.noDatasets.body')}</p>
                 </div>
               ) : rows.length === 0 ? (
                 <div className="flex h-48 flex-col items-center justify-center text-center">
                   <Search className="mb-2 h-8 w-8 text-text-quaternary" />
-                  <p className="text-caption text-text-tertiary">{onlyIssues ? 'Không có dataset nào đang có sự cố.' : <>Không có dataset khớp “<strong className="text-text-secondary">{filterText}</strong>”</>}</p>
+                  <p className="text-caption text-text-tertiary">
+                    {onlyIssues ? t('observability.empty.noIssueDatasets') : t('observability.empty.noDatasetMatches', { query: filterText })}
+                  </p>
                 </div>
               ) : (
                 <PaginatedCollection items={rows} viewMode="list" resetKey={`${filterText}|${onlyIssues}`}>
@@ -172,11 +181,11 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                         <div className="app-list-table-wrap">
                           <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                             <thead className="bg-surface-2"><tr>
-                              <th className="app-list-header w-[34%]">Dataset</th>
-                              <th className="app-list-header w-[12%]">Sự cố mở</th>
-                              <th className="app-list-header w-[12%]">Giám sát</th>
-                              <th className="app-list-header w-[18%]">Tiêu thụ</th>
-                              <th className="app-list-header w-[16%]">Làm mới</th>
+                              <th className="app-list-header w-[34%]">{t('observability.health.header.dataset')}</th>
+                              <th className="app-list-header w-[12%]">{t('observability.health.header.openIncidents')}</th>
+                              <th className="app-list-header w-[12%]">{t('observability.health.header.monitors')}</th>
+                              <th className="app-list-header w-[18%]">{t('observability.health.header.usage')}</th>
+                              <th className="app-list-header w-[16%]">{t('observability.health.header.refreshed')}</th>
                               <th className="app-list-header w-[64px] text-right" />
                             </tr></thead>
                             <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -189,7 +198,9 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                                       </span>
                                       <span className="min-w-0">
                                         <span className="app-list-text-main block text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{r.dataset}</span>
-                                        <span className="app-list-text-sub mt-0.5 block text-tiny text-text-quaternary">{r.tables} bảng · {fmtNumber(r.rows)} dòng{r.unused ? ' · chưa dùng' : ''}</span>
+                                        <span className="app-list-text-sub mt-0.5 block text-tiny text-text-quaternary">
+                                          {t('observability.health.rowTables', { count: r.tables })} · {t('observability.health.rowRows', { count: fmtNumber(r.rows, locale) })}{r.unused ? ` · ${t('observability.health.rowUnused')}` : ''}
+                                        </span>
                                       </span>
                                     </span>
                                   </td>
@@ -198,14 +209,14 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
                                       ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-danger"><AlertTriangle className="h-3.5 w-3.5" />{r.openIncidents}</span>
                                       : <span className="inline-flex items-center gap-1 text-caption text-success"><CheckCircle2 className="h-3.5 w-3.5" />0</span>}
                                   </td>
-                                  <td className="app-list-cell text-caption text-text-tertiary">{r.monitors} monitor</td>
+                                  <td className="app-list-cell text-caption text-text-tertiary">{t('observability.health.monitorCount', { count: r.monitors })}</td>
                                   <td className="app-list-cell">
                                     <span className="flex items-center gap-3 text-caption text-text-tertiary">
                                       <span className="inline-flex items-center gap-1"><BarChart3 className="h-3.5 w-3.5" />{r.chartCount}</span>
                                       <span className="inline-flex items-center gap-1"><LayoutDashboard className="h-3.5 w-3.5" />{r.dashboardCount}</span>
                                     </span>
                                   </td>
-                                  <td className="app-list-cell text-tiny text-text-quaternary"><Clock className="mr-1 inline h-3 w-3" />{relativeTime(r.lastRefresh)}</td>
+                                  <td className="app-list-cell text-tiny text-text-quaternary"><Clock className="mr-1 inline h-3 w-3" />{relativeTime(r.lastRefresh, t, locale)}</td>
                                   <td className="app-list-cell-tight text-right"><ChevronRight className="inline h-4 w-4 text-text-quaternary" /></td>
                                 </tr>
                               ))}
@@ -230,9 +241,10 @@ function HealthList({ onOpen }: { onOpen: (datasetId: number) => void }) {
 
 /** Compact 5-pillar health strip shown above the list. */
 function PillarStrip({ overview }: { overview: ObservabilityOverview }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-tiny font-emphasis uppercase tracking-wide text-text-quaternary">Sức khoẻ trụ cột:</span>
+      <span className="text-tiny font-emphasis uppercase tracking-wide text-text-quaternary">{t('observability.pillars.label')}</span>
       {overview.pillars.map((p) => (
         <span key={p.pillar} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-tiny',
           p.healthy ? 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary' : 'border-danger/40 bg-danger/5 text-danger')}>
@@ -244,8 +256,9 @@ function PillarStrip({ overview }: { overview: ObservabilityOverview }) {
   );
 }
 
-// ── Per-dataset detail (Sự cố / Giám sát / Chất lượng / Lineage) ─────────────
+// ── Per-dataset detail (incidents / monitors / quality / lineage) ────────────
 function DatasetDetail({ datasetId, onBack, nav }: { datasetId: number; onBack: () => void; nav: ReturnType<typeof useUrlNav> }) {
+  const { t } = useI18n();
   const { data, isLoading } = useDataset(datasetId);
   const canEdit = getResourcePermissions(data?.user_permission).canEdit;
   const tab = (nav.get('dt') as DetailTab) || 'incidents';
@@ -254,22 +267,22 @@ function DatasetDetail({ datasetId, onBack, nav }: { datasetId: number; onBack: 
   return (
     <div className="space-y-4 pb-8">
       <button onClick={onBack} className="inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-        <ChevronLeft className="h-3.5 w-3.5" /> Observability
+        <ChevronLeft className="h-3.5 w-3.5" /> {t('module.observability.title')}
       </button>
 
       <div className="flex flex-wrap items-center gap-2">
         <Database className="h-5 w-5 text-brand" />
-        <h1 className="text-h1 font-emphasis text-text-primary">{data?.name || 'Dataset'}</h1>
-        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">Observability</span>
+        <h1 className="text-h1 font-emphasis text-text-primary">{data?.name || t('observability.detail.datasetFallback')}</h1>
+        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{t('module.observability.title')}</span>
       </div>
 
-      <Tabs<DetailTab> variant="pill" value={tab} onChange={setTab} items={DETAIL_TABS.map((t) => ({ key: t.key, label: t.label, icon: t.icon }))} />
+      <Tabs<DetailTab> variant="pill" value={tab} onChange={setTab} items={DETAIL_TABS.map((item) => ({ key: item.key, label: t(item.labelKey), icon: item.icon }))} />
 
       <div className="pt-1">
         {tab === 'incidents' && <IncidentsTab datasetId={datasetId} showChannels={false} />}
         {tab === 'monitors' && <MonitorsTab datasetId={datasetId} />}
         {tab === 'quality' && (
-          isLoading ? <p className="py-10 text-center text-caption text-text-tertiary">Đang tải…</p>
+          isLoading ? <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>
             : data ? <DatasetQualityPanel datasetId={datasetId} tables={data.tables ?? []} canEdit={canEdit} />
             : <DetailError />
         )}
@@ -280,10 +293,11 @@ function DatasetDetail({ datasetId, onBack, nav }: { datasetId: number; onBack: 
 }
 
 function DetailError() {
+  const { t } = useI18n();
   return (
     <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 py-14 text-center">
-      <p className="text-small font-emphasis text-text-primary">Không tải được dataset</p>
-      <p className="mt-1 text-caption text-text-tertiary">Thử lại hoặc kiểm tra quyền truy cập dataset này.</p>
+      <p className="text-small font-emphasis text-text-primary">{t('observability.detail.loadFailedTitle')}</p>
+      <p className="mt-1 text-caption text-text-tertiary">{t('observability.detail.loadFailedBody')}</p>
     </div>
   );
 }

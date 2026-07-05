@@ -142,6 +142,20 @@ class FormField(BaseModel):
         "audio",      # voice note -> data:audio data URL
         "computed",   # readonly, value computed live from `formula`
         "status",     # colored lifecycle select (approval)
+        # ── Rich input types (AppSheet-parity) ──────────────────────────
+        "email",      # typed text, email validation + mailto: view
+        "phone",      # typed text, tel: view + numeric inputmode
+        "url",        # typed text, url validation + link view
+        "rich_text",  # markdown editor -> markdown string
+        "enum_list",  # multi-select chips -> JSON array (source = lookup)
+        "rating",     # star rating -> number
+        "slider",     # range slider -> number
+        "currency",   # money input -> number (raw), symbol via currency_code
+        "percent",    # percent input -> number (0-100)
+        "time",       # time-of-day -> "HH:MM"
+        "duration",   # h/m -> total minutes (number)
+        "color",      # color picker -> hex string
+        "video",      # short capture/upload -> data:video data URL
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -215,6 +229,30 @@ class FormField(BaseModel):
     )
     status_config: Optional[StatusConfig] = Field(
         default=None, description="widget=status only: the lifecycle states + approval gating.",
+    )
+    # ── Rich input-type config ───────────────────────────────────────────────
+    max_stars: Optional[int] = Field(
+        default=None, ge=1, le=10, description="widget=rating: number of stars (default 5).",
+    )
+    allow_half: Optional[bool] = Field(
+        default=None, description="widget=rating: allow half-star values.",
+    )
+    min_value: Optional[float] = Field(
+        default=None, description="widget=slider: minimum value (default 0).",
+    )
+    max_value: Optional[float] = Field(
+        default=None, description="widget=slider: maximum value (default 100).",
+    )
+    step: Optional[float] = Field(
+        default=None, gt=0, description="widget=slider: step increment (default 1).",
+    )
+    currency_code: Optional[str] = Field(
+        default=None, max_length=8,
+        description="widget=currency: ISO code / symbol shown (e.g. 'VND', '$').",
+    )
+    max_select: Optional[int] = Field(
+        default=None, ge=1, le=50,
+        description="widget=enum_list: max number of selected chips.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -477,12 +515,59 @@ class AuditConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ThemeBackground(BaseModel):
+    """Background for the app shell or login page. Images are stored as a
+    bounded ``data:`` URI (the FE compresses on upload) so they satisfy the
+    ``img-src 'self' data:`` CSP — external URLs are blocked in production."""
+
+    kind: Literal["color", "gradient", "image"] = "color"
+    color: Optional[str] = Field(default=None, max_length=32)
+    gradient_preset: Optional[str] = Field(default=None, max_length=48)
+    image_data: Optional[str] = Field(
+        default=None, description="data: URI (client-compressed, ~200KB cap)."
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ThemeCardStyle(BaseModel):
+    radius: Optional[Literal["none", "sm", "md", "lg", "xl"]] = None
+    shadow: Optional[Literal["none", "sm", "md"]] = None
+    border: Optional[bool] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ThemeLogin(BaseModel):
+    background: Optional[ThemeBackground] = None
+    tagline: Optional[str] = Field(default=None, max_length=240)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class BrandingConfig(BaseModel):
+    """Theme + branding for a workboard's public mini-app shell.
+
+    Superset "design system" config (AppSheet-parity): colors, dark mode,
+    background, font, card/header style, and a per-login override. Kept as
+    ``extra="ignore"`` (not forbid) because it is purely cosmetic — a stray
+    legacy key must never 422 an entire layout save.
+    """
+
     app_name: Optional[str] = None
     logo_url: Optional[str] = None
     primary_color: Optional[str] = Field(default=None, max_length=32)
     accent_color: Optional[str] = Field(default=None, max_length=32)
+    welcome_text: Optional[str] = None
+    # Mode drives the CSS-variable theme + ``data-theme`` on the shell root.
     theme: Literal["light", "dark", "auto"] = "auto"
+    background: Optional[ThemeBackground] = None
+    font_family: Optional[
+        Literal["system", "inter", "be-vietnam", "roboto", "serif", "mono"]
+    ] = None
+    card_style: Optional[ThemeCardStyle] = None
+    header_style: Optional[Literal["fill", "line", "minimal"]] = None
+    login: Optional[ThemeLogin] = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -674,10 +759,73 @@ class TableLookupColumn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TableRollupColumn(BaseModel):
+    """A read-only column that AGGREGATES child rows from a related table —
+    a reverse-reference roll-up ("order total = SUM of its line-items",
+    "records-per-plot = COUNT").
+
+    The inverse of :class:`TableLookupColumn`: instead of pulling one value
+    for a matching key, it gathers ALL child rows whose ``match_column_remote``
+    equals this row's ``match_column_local`` and reduces them with ``agg``.
+    Runtime fetches the child rows in one batched ``IN`` query (RLS of the
+    child table is NOT applied — the parent rows are already scoped) and
+    aggregates in Python, so no GROUP-BY transport is needed.
+
+    Incomplete config (blank columns / from_table_id=0) is skipped at runtime.
+    """
+
+    name: str = Field(..., min_length=1, max_length=120)
+    label: Optional[str] = Field(default=None, max_length=200)
+    from_table_id: int = Field(default=0, ge=0)
+    match_column_local: str = Field(default="", max_length=120)
+    match_column_remote: str = Field(default="", max_length=120)
+    agg: Literal["sum", "count", "avg", "min", "max"] = "count"
+    value_column: str = Field(
+        default="", max_length=120,
+        description="Child column to aggregate. Ignored for agg=count.",
+    )
+    format: Optional[Literal[
+        "text", "number", "integer", "currency", "percent", "date", "datetime"
+    ]] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FormatRule(BaseModel):
+    """Conditional formatting: tint a row (or specific columns) when a
+    row-local expression is truthy — AppSheet-style "format rules".
+
+    ``when`` uses the shared wb-expr grammar over the row's values
+    (including computed/lookup/rollup columns). Evaluated on the FE per row.
+    First matching rule wins per cell. ``columns`` empty = whole row.
+    """
+
+    when: str = Field(..., min_length=1, max_length=1000)
+    color: Literal["slate", "green", "amber", "red", "blue", "violet"] = "amber"
+    columns: List[str] = Field(
+        default_factory=list,
+        description="Columns to tint; empty = the whole row.",
+    )
+    icon: Optional[str] = Field(default=None, max_length=40, description="Optional emoji/marker prefix.")
+    label: Optional[str] = Field(default=None, max_length=80, description="Legend label for this rule.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TableColumnOption(BaseModel):
+    """A static option for a select / enum_list inline cell."""
+
+    label: str = Field(..., max_length=200)
+    value: Any = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableColumnMeta(BaseModel):
     """Per-column presentation metadata (label override, width, align,
-    format hint, merge flag). The runtime currently consumes label/format
-    from this map; width/align are FE-only hints.
+    format hint, merge flag) plus — for editable columns — the typed inline
+    editor (``input_type``) and its config. The runtime consumes label/format;
+    width/align are FE-only hints; input_type drives the inline cell control.
     """
 
     label: Optional[str] = Field(default=None, max_length=200)
@@ -687,6 +835,22 @@ class TableColumnMeta(BaseModel):
     ]] = None
     align: Optional[Literal["left", "center", "right"]] = None
     merge: Optional[bool] = None
+    # ── Typed inline editor (editable columns only) ──────────────────────
+    input_type: Optional[Literal[
+        "text", "number", "currency", "percent", "date", "datetime", "time",
+        "checkbox", "select", "enum_list", "rating", "color", "slider",
+    ]] = Field(
+        default=None,
+        description="Control used to edit this cell inline. None = plain text.",
+    )
+    options: Optional[List[TableColumnOption]] = Field(
+        default=None, description="Static options for input_type=select/enum_list.",
+    )
+    currency_code: Optional[str] = Field(default=None, max_length=8)
+    max_stars: Optional[int] = Field(default=None, ge=1, le=10)
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step: Optional[float] = Field(default=None, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -869,6 +1033,7 @@ class TableScreenSpec(BaseModel):
 
     computed_columns: List[TableComputedColumn] = Field(default_factory=list)
     lookup_columns: List[TableLookupColumn] = Field(default_factory=list)
+    rollup_columns: List[TableRollupColumn] = Field(default_factory=list)
     totals: Dict[str, Literal["sum", "avg", "min", "max", "count"]] = Field(
         default_factory=dict,
     )
@@ -912,6 +1077,10 @@ class TableScreenSpec(BaseModel):
     stat_tiles: List[StatTile] = Field(
         default_factory=list,
         description="KPI tiles shown above the table/gallery (aggregate a column across the loaded rows).",
+    )
+    format_rules: List[FormatRule] = Field(
+        default_factory=list,
+        description="Conditional formatting: tint rows/cells when a row-local expression is truthy.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -962,10 +1131,26 @@ class TableScreenSpec(BaseModel):
                 )
             lookup_names.append(name)
 
+        rollup_names: list[str] = []
+        for col in self.rollup_columns or []:
+            name = (col.name or "").strip()
+            if not name:
+                continue
+            if name in rollup_names:
+                raise ValueError(
+                    f"Roll-up column name '{name}' is used more than once."
+                )
+            if name in computed_names or name in lookup_names:
+                raise ValueError(
+                    f"Roll-up column '{name}' collides with a computed/lookup "
+                    f"column of the same name. Rename one."
+                )
+            rollup_names.append(name)
+
         # Visible DB columns = anything in ``columns`` that ISN'T a derived
         # name. Derived names ARE expected to appear in ``columns`` (the
         # user includes them in display order) — that's fine.
-        derived = set(computed_names) | set(lookup_names)
+        derived = set(computed_names) | set(lookup_names) | set(rollup_names)
         # `columns` may include both DB cols and derived names; we only
         # detect a shadow when the SAME name appears more than once in
         # ``columns`` itself.

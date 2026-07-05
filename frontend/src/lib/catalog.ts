@@ -428,6 +428,32 @@ export async function getDocVersion(docId: number, version: number): Promise<Kno
   return data;
 }
 
+// AI-drafted document: the backend reads the dataset's real model + sample +
+// metrics and writes a business doc (unsaved) for the user to review/edit.
+export interface KnowledgeDraft {
+  title: string;
+  summary: string;
+  body: string;
+  tags: string[];
+  space?: string;
+  related_dataset_ids?: number[];
+  related_dashboard_ids?: number[];
+}
+export async function aiDraftKnowledge(datasetId: number, dashboardId?: number | null): Promise<KnowledgeDraft> {
+  const { data } = await apiClient.post<KnowledgeDraft>('/catalog/govern/knowledge/ai-draft', {
+    dataset_id: datasetId,
+    dashboard_id: dashboardId ?? null,
+  });
+  return data;
+}
+
+export interface DatasetLite { id: number; name: string }
+export async function listDatasetsLite(): Promise<DatasetLite[]> {
+  const { data } = await apiClient.get<unknown>('/datasets/');
+  const arr = Array.isArray(data) ? data : ((data as { datasets?: unknown[]; items?: unknown[] })?.datasets ?? (data as { items?: unknown[] })?.items ?? []);
+  return (arr as { id: number; name: string }[]).map((d) => ({ id: d.id, name: d.name }));
+}
+
 /** Reverse lineage: knowledge docs that reference a given dashboard/dataset/term. */
 export async function assetDocs(
   assetType: 'dashboard' | 'dataset' | 'term',

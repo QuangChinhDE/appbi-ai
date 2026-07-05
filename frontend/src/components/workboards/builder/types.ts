@@ -40,7 +40,20 @@ export interface FormFieldSpec {
     | 'barcode'
     | 'audio'
     | 'computed'
-    | 'status';
+    | 'status'
+    | 'email'
+    | 'phone'
+    | 'url'
+    | 'rich_text'
+    | 'enum_list'
+    | 'rating'
+    | 'slider'
+    | 'currency'
+    | 'percent'
+    | 'time'
+    | 'duration'
+    | 'color'
+    | 'video';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -85,6 +98,14 @@ export interface FormFieldSpec {
     states?: Array<{ value: string; label?: string | null; color?: string | null }>;
     editable_by_roles?: string[];
   } | null;
+  // Rich input-type config.
+  max_stars?: number | null;
+  allow_half?: boolean | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  step?: number | null;
+  currency_code?: string | null;
+  max_select?: number | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -146,6 +167,29 @@ export interface TableLookupColumnSpec {
   format?: CellFormat | null;
 }
 
+export type TableRollupAgg = 'sum' | 'count' | 'avg' | 'min' | 'max';
+
+export interface TableRollupColumnSpec {
+  name: string;
+  label?: string | null;
+  from_table_id: number;
+  match_column_local: string;
+  match_column_remote: string;
+  agg?: TableRollupAgg;
+  value_column?: string | null;
+  format?: CellFormat | null;
+}
+
+export type FormatRuleColor = 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet';
+
+export interface FormatRuleSpec {
+  when: string;
+  color?: FormatRuleColor;
+  columns?: string[];
+  icon?: string | null;
+  label?: string | null;
+}
+
 export type TableTotalsKind = 'sum' | 'avg' | 'min' | 'max' | 'count';
 
 export interface TableColumnGroupSpec {
@@ -153,12 +197,35 @@ export interface TableColumnGroupSpec {
   columns: string[];
 }
 
+export type TableInputType =
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'percent'
+  | 'date'
+  | 'datetime'
+  | 'time'
+  | 'checkbox'
+  | 'select'
+  | 'enum_list'
+  | 'rating'
+  | 'color'
+  | 'slider';
+
 export interface TableColumnMetaSpec {
   label?: string | null;
   width_px?: number | null;
   format?: CellFormat | null;
   align?: 'left' | 'center' | 'right' | null;
   merge?: boolean | null;
+  /** Typed inline editor for an editable column. Undefined = plain text. */
+  input_type?: TableInputType | null;
+  options?: Array<{ label: string; value: unknown }> | null;
+  currency_code?: string | null;
+  max_stars?: number | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  step?: number | null;
 }
 
 export interface TableDetailPanelSpec {
@@ -183,6 +250,8 @@ export interface TableScreenSpecBuilt {
   default_values?: Record<string, unknown>;
   computed_columns?: TableComputedColumnSpec[];
   lookup_columns?: TableLookupColumnSpec[];
+  rollup_columns?: TableRollupColumnSpec[];
+  format_rules?: FormatRuleSpec[];
   totals?: Record<string, TableTotalsKind>;
   column_groups?: TableColumnGroupSpec[];
   group_by?: string[];
@@ -346,11 +415,41 @@ export interface ScreenGroupSpec {
   visible_for_roles?: string[];
 }
 
+export type ThemeMode = 'light' | 'dark' | 'auto';
+export type ThemeFont = 'system' | 'inter' | 'be-vietnam' | 'roboto' | 'serif' | 'mono';
+
+export interface ThemeBackgroundSpec {
+  kind: 'color' | 'gradient' | 'image';
+  color?: string | null;
+  gradient_preset?: string | null;
+  /** data: URI (client-compressed, ~200KB cap) — external URLs are CSP-blocked. */
+  image_data?: string | null;
+}
+
+export interface ThemeCardStyleSpec {
+  radius?: 'none' | 'sm' | 'md' | 'lg' | 'xl' | null;
+  shadow?: 'none' | 'sm' | 'md' | null;
+  border?: boolean | null;
+}
+
+export interface ThemeLoginSpec {
+  background?: ThemeBackgroundSpec | null;
+  tagline?: string | null;
+}
+
+/** Theme + branding superset (mirrors BE BrandingConfig / WorkspaceBranding). */
 export interface BrandingSpec {
   app_name?: string | null;
   logo_url?: string | null;
   primary_color?: string | null;
+  accent_color?: string | null;
   welcome_text?: string | null;
+  theme?: ThemeMode;
+  background?: ThemeBackgroundSpec | null;
+  font_family?: ThemeFont | null;
+  card_style?: ThemeCardStyleSpec | null;
+  header_style?: 'fill' | 'line' | 'minimal' | null;
+  login?: ThemeLoginSpec | null;
 }
 
 export interface AutoNumberConfigSpec {

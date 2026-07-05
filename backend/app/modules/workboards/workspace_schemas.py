@@ -14,6 +14,14 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Shared cosmetic theme models (colors/background/card/login) live in the
+# workboard schema layer; reused here so portal + shell theme identically.
+from app.modules.workboards.schemas import (
+    ThemeBackground,
+    ThemeCardStyle,
+    ThemeLogin,
+)
+
 
 # Access modes the public link supports.
 #   - "internal": only AppBI staff can open the workspace.
@@ -71,12 +79,26 @@ class WorkspaceMenuItem(BaseModel):
 
 
 class WorkspaceBranding(BaseModel):
+    """Theme + branding for the workspace portal (login + launcher menu).
+
+    Superset with the workboard-level ``BrandingConfig`` so the login page and
+    launcher can be themed the same way as the mini-app shell. ``extra="ignore"``
+    (cosmetic — a stray key must never break the public auth surface)."""
+
     app_name: Optional[str] = None
     logo_url: Optional[str] = None
     primary_color: Optional[str] = None
+    accent_color: Optional[str] = None
     welcome_text: Optional[str] = None
+    theme: Optional[Literal["light", "dark", "auto"]] = None
+    background: Optional[ThemeBackground] = None
+    font_family: Optional[
+        Literal["system", "inter", "be-vietnam", "roboto", "serif", "mono"]
+    ] = None
+    card_style: Optional[ThemeCardStyle] = None
+    login: Optional[ThemeLogin] = None
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 # ── API request/response schemas ──────────────────────────────────────────

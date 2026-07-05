@@ -16,7 +16,8 @@ import Link from 'next/link';
 import {
   BookOpen, Compass, Boxes, Workflow, HelpCircle, FileText, Sigma, LayoutDashboard, Database,
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight,
-  ExternalLink, AlertTriangle, Loader2, Library, Search, Upload,
+  ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
+  Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -28,13 +29,15 @@ import { Input, Textarea, Label, Select } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { useUrlNav } from '@/hooks/use-url-nav';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
-  listDocVersions, getDocVersion,
+  listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
-  type KnowledgeDocVersion,
+  type KnowledgeDocVersion, type DatasetLite,
 } from '@/lib/catalog';
-import { Markdown, DOC_TYPES, DOC_TYPE_LABEL, STATUS_TONE, managedTargetLabel } from './knowledge-markdown';
+import { AppModalShell } from '@/components/common/AppModalShell';
+import { Markdown, DOC_TYPES, STATUS_TONE, docTypeLabel, managedTargetLabel, statusLabel } from './knowledge-markdown';
 import { MetricFormModal } from './MetricForm';
 
 function errDetail(e: unknown): string | undefined {
@@ -77,17 +80,19 @@ const docIcon = (t: string) => DOC_TYPE_ICON[t] ?? <FileText className="h-4 w-4"
 const ASSET_ICON: Record<KnowledgeAsset['type'], ReactNode> = {
   dashboard: <LayoutDashboard className="h-4 w-4" />, dataset: <Database className="h-4 w-4" />, term: <TagIcon className="h-4 w-4" />,
 };
-const ASSET_LABEL: Record<KnowledgeAsset['type'], string> = { dashboard: 'Báo cáo', dataset: 'Dữ liệu', term: 'Thuật ngữ' };
 
 type MetricModalState = { machineName: string | null; homeDocId: number | null; onCreated?: (mn: string) => void };
 
 // ═══════════════════════════════════ Root ═══════════════════════════════════
 export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useUrlNav>; onOpenVocab?: () => void }) {
+  const { t } = useI18n();
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
   const [loading, setLoading] = useState(true);
   const [managed, setManaged] = useState<ManagedMetric[]>([]);
   const [metricModal, setMetricModal] = useState<MetricModalState | null>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [seed, setSeed] = useState<KnowledgeDocWrite | null>(null);  // AI-draft prefill for a new doc
 
   const docParam = nav.get('doc');
   const selId = docParam ? Number(docParam) : null;
@@ -96,25 +101,28 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   const loadList = useCallback(async () => {
     setLoading(true);
     try { const { docs: d, spaces: s } = await listKnowledge(); setDocs(d); setSpaces(s); }
-    catch { toast.error('Không tải được danh sách tài liệu'); }
+    catch { toast.error(t('govern.detail.listLoadFailed')); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
   const loadManaged = useCallback(() => { listManagedMetrics().then(setManaged).catch(() => {}); }, []);
   useEffect(() => { void loadList(); loadManaged(); }, [loadList, loadManaged]);
 
-  const openDoc = (id: number) => nav.set({ doc: String(id), m: null, dt: null });
-  const openList = () => nav.set({ doc: null, m: null, dt: null });
-  const startNew = () => nav.set({ doc: null, m: 'new' });
+  const openDoc = (id: number) => { setSeed(null); nav.set({ doc: String(id), m: null, dt: null }); };
+  const openList = () => { setSeed(null); nav.set({ doc: null, m: null, dt: null }); };
+  const startNew = () => { setSeed(null); nav.set({ doc: null, m: 'new' }); };
   const startEdit = () => nav.set({ m: 'edit' });
 
   const openMetric = (s: MetricModalState) => setMetricModal(s);
   const afterMetricChange = async () => { loadManaged(); };
 
+  // AI-drafted doc → open the editor pre-filled (as a new Draft) for review.
+  const onAiDrafted = (draft: KnowledgeDocWrite) => { setSeed({ ...draft, status: 'Draft' }); setAiOpen(false); nav.set({ doc: null, m: 'new' }); };
+
   let screen: ReactNode;
   if (mode === 'new' || (selId && mode === 'edit')) {
     screen = (
       <EditorScreen
-        docId={mode === 'edit' ? selId : null} managed={managed}
+        docId={mode === 'edit' ? selId : null} seed={mode === 'new' ? seed : null} managed={managed}
         onCancel={() => (selId ? openDoc(selId) : openList())}
         onSaved={(id) => { void loadList(); openDoc(id); }}
         onOpenMetric={openMetric}
@@ -132,13 +140,14 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   } else {
     screen = (
       <ListScreen docs={docs} spaces={spaces} loading={loading} managed={managed}
-        onOpen={openDoc} onNew={startNew} onOpenVocab={onOpenVocab} />
+        onOpen={openDoc} onNew={startNew} onOpenVocab={onOpenVocab} onAiWrite={() => setAiOpen(true)} />
     );
   }
 
   return (
     <>
       {screen}
+      {aiOpen && <AiWriteModal onClose={() => setAiOpen(false)} onDrafted={onAiDrafted} />}
       {metricModal && (
         <MetricFormModal
           machineName={metricModal.machineName}
@@ -154,10 +163,11 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
 }
 
 // ═════════════════════════════════ List ═════════════════════════════════════
-function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab }: {
+function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab, onAiWrite }: {
   docs: KnowledgeDoc[]; spaces: KnowledgeSpace[]; loading: boolean; managed: ManagedMetric[];
-  onOpen: (id: number) => void; onNew: () => void; onOpenVocab?: () => void;
+  onOpen: (id: number) => void; onNew: () => void; onOpenVocab?: () => void; onAiWrite: () => void;
 }) {
+  const { t } = useI18n();
   const [space, setSpace] = useState<string | null>(null);
 
   const linkedReports = useMemo(() => {
@@ -168,31 +178,32 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
 
   return (
     <PageListLayout
-      title="Cẩm nang tri thức"
-      description="Kho tài liệu mô tả toàn bộ hoạt động kinh doanh. Mỗi tài liệu gắn với chỉ số quản trị và báo cáo liên quan — mở một tài liệu để đọc chi tiết, xem chỉ số, liên kết và lịch sử phiên bản."
+      title={t('govern.page.title')}
+      description={t('govern.page.description')}
       overview={(
         <ModuleOverview
           stats={[
-            { label: 'Tài liệu', value: docs.length, helper: 'Tài liệu mô tả business đang có' },
-            { label: 'Chỉ số quản trị', value: managed.length, helper: 'KPI được định nghĩa trong tài liệu' },
-            { label: 'Báo cáo được mô tả', value: linkedReports, helper: 'Báo cáo được liên kết trong tài liệu' },
-            { label: 'Không gian', value: spaces.length, helper: 'Nhóm chủ đề tài liệu' },
+            { label: t('govern.stats.documents'), value: docs.length, helper: t('govern.stats.documentsHelper') },
+            { label: t('govern.stats.metrics'), value: managed.length, helper: t('govern.stats.metricsHelper') },
+            { label: t('govern.stats.reports'), value: linkedReports, helper: t('govern.stats.reportsHelper') },
+            { label: t('govern.stats.spaces'), value: spaces.length, helper: t('govern.stats.spacesHelper') },
           ]}
         />
       )}
       action={(
         <div className="flex items-center gap-2">
-          {onOpenVocab && <Button variant="secondary" leadingIcon={<Library className="h-4 w-4" />} onClick={onOpenVocab}>Từ điển & Nhãn</Button>}
-          <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>Tạo tài liệu</Button>
+          {onOpenVocab && <Button variant="secondary" leadingIcon={<Library className="h-4 w-4" />} onClick={onOpenVocab}>{t('govern.action.vocab')}</Button>}
+          <Button variant="secondary" leadingIcon={<Sparkles className="h-4 w-4" />} onClick={onAiWrite}>{t('govern.action.aiWrite')}</Button>
+          <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>
         </div>
       )}
       isLoading={loading}
-      loadingText="Đang tải tài liệu…"
-      searchPlaceholder="Tìm tài liệu, chủ đề, nhãn…"
+      loadingText={t('govern.loading')}
+      searchPlaceholder={t('govern.searchPlaceholder')}
       viewToggle={false}
       toolbarExtra={spaces.length > 0 ? (
         <div className="flex items-center gap-1.5">
-          <FilterTag tone="brand" active={space === null} onClick={() => setSpace(null)}>Tất cả</FilterTag>
+          <FilterTag tone="brand" active={space === null} onClick={() => setSpace(null)}>{t('govern.filter.all')}</FilterTag>
           {spaces.map((s) => (
             <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(s.space)}>
               {s.space} ({s.count})
@@ -211,9 +222,9 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
           return (
             <div className="py-16 text-center">
               <BookOpen className="mx-auto mb-4 h-14 w-14 text-text-quaternary" />
-              <h2 className="mb-2 text-small font-strong text-text-primary">Chưa có tài liệu nào</h2>
-              <p className="mb-4 text-caption text-text-tertiary">Bắt đầu ghi lại cách doanh nghiệp vận hành — mỗi tài liệu là một mảng nghiệp vụ.</p>
-              <Button variant="primary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>Tạo tài liệu</Button>
+              <h2 className="mb-2 text-small font-strong text-text-primary">{t('govern.empty.title')}</h2>
+              <p className="mb-4 text-caption text-text-tertiary">{t('govern.empty.body')}</p>
+              <Button variant="primary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>
             </div>
           );
         }
@@ -221,7 +232,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
           return (
             <div className="flex h-48 flex-col items-center justify-center text-center">
               <Search className="mb-2 h-8 w-8 text-text-quaternary" />
-              <p className="text-caption text-text-tertiary">Không có tài liệu khớp bộ lọc.</p>
+              <p className="text-caption text-text-tertiary">{t('govern.empty.noMatches')}</p>
             </div>
           );
         }
@@ -233,12 +244,12 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                   <div className="app-list-table-wrap">
                     <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                       <thead className="bg-surface-2"><tr>
-                        <th className="app-list-header w-[40%]">Tài liệu</th>
-                        <th className="app-list-header w-[14%]">Không gian</th>
-                        <th className="app-list-header w-[12%]">Loại</th>
-                        <th className="app-list-header w-[10%]">Chỉ số</th>
-                        <th className="app-list-header w-[10%]">Liên kết</th>
-                        <th className="app-list-header w-[12%]">Trạng thái</th>
+                        <th className="app-list-header w-[40%]">{t('govern.list.header.document')}</th>
+                        <th className="app-list-header w-[14%]">{t('govern.list.header.space')}</th>
+                        <th className="app-list-header w-[12%]">{t('govern.list.header.type')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.metrics')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.links')}</th>
+                        <th className="app-list-header w-[12%]">{t('govern.list.header.status')}</th>
                         <th className="app-list-header w-[56px] text-right" />
                       </tr></thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -258,7 +269,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                 </span>
                               </td>
                               <td className="app-list-cell"><span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{d.space}</span></td>
-                              <td className="app-list-cell text-caption text-text-tertiary">{DOC_TYPE_LABEL[d.doc_type] || d.doc_type}</td>
+                              <td className="app-list-cell text-caption text-text-tertiary">{docTypeLabel(d.doc_type, t)}</td>
                               <td className="app-list-cell">
                                 {d.related_metrics?.length
                                   ? <span className="inline-flex items-center gap-1 text-caption text-text-secondary"><Sigma className="h-3.5 w-3.5 text-text-quaternary" />{d.related_metrics.length}</span>
@@ -271,7 +282,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                               </td>
                               <td className="app-list-cell">
                                 <span className="inline-flex items-center gap-1.5">
-                                  <span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[d.status] || 'bg-surface-2 text-text-tertiary')}>{d.status}</span>
+                                  <span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[d.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(d.status, t)}</span>
                                   <span className="text-tiny text-text-quaternary">v{d.version}</span>
                                 </span>
                               </td>
@@ -304,10 +315,10 @@ function DetailShell({ children }: { children: ReactNode }) {
 
 // ═══════════════════════════════ Detail ═════════════════════════════════════
 const DETAIL_TABS = [
-  { key: 'noidung', label: 'Nội dung', icon: <FileText className="h-4 w-4" /> },
-  { key: 'chiso', label: 'Chỉ số', icon: <Sigma className="h-4 w-4" /> },
-  { key: 'lienket', label: 'Liên kết', icon: <LayoutDashboard className="h-4 w-4" /> },
-  { key: 'lichsu', label: 'Lịch sử', icon: <History className="h-4 w-4" /> },
+  { key: 'noidung', labelKey: 'govern.detail.tab.content', icon: <FileText className="h-4 w-4" /> },
+  { key: 'chiso', labelKey: 'govern.detail.tab.metrics', icon: <Sigma className="h-4 w-4" /> },
+  { key: 'lienket', labelKey: 'govern.detail.tab.links', icon: <LayoutDashboard className="h-4 w-4" /> },
+  { key: 'lichsu', labelKey: 'govern.detail.tab.history', icon: <History className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
@@ -339,6 +350,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   onOpenMetric: (s: MetricModalState) => void; onListChanged: () => Promise<void> | void;
   onOpenDoc: (id: number) => void;
 }) {
+  const { t } = useI18n();
   const [doc, setDoc] = useState<KnowledgeDoc | null>(null);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
@@ -350,15 +362,15 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
     setLoading(true);
     getKnowledgeDoc(docId)
       .then((d) => { if (on) setDoc(d); })
-      .catch(() => { if (on) { setDoc(null); toast.error('Không mở được tài liệu'); } })
+      .catch(() => { if (on) { setDoc(null); toast.error(t('govern.detail.openFailed')); } })
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
-  }, [docId, refresh]);
+  }, [docId, refresh, t]);
 
   const remove = async () => {
-    if (!doc || !window.confirm(`Xoá tài liệu "${doc.title}"?`)) return;
-    try { await deleteKnowledgeDoc(doc.id); toast.success('Đã xoá'); onDeleted(); }
-    catch { toast.error('Xoá thất bại'); }
+    if (!doc || !window.confirm(t('govern.detail.deleteConfirm', { name: doc.title }))) return;
+    try { await deleteKnowledgeDoc(doc.id); toast.success(t('govern.action.deleted')); onDeleted(); }
+    catch { toast.error(t('govern.action.deleteFailed')); }
   };
 
   // Define a NEW metric homed to this doc → append its token to the body & save.
@@ -369,9 +381,9 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
       onCreated: async (mn) => {
         try {
           const body = `${doc.body ?? ''}${(doc.body ?? '').trim() ? '\n\n' : ''}{{metric:${mn}}}`;
-          await upsertKnowledgeDoc(docToWrite(doc, { body, change_note: `Thêm chỉ số ${mn}` }));
+          await upsertKnowledgeDoc(docToWrite(doc, { body, change_note: t('govern.detail.metricChangeNote', { name: mn }) }));
           await onListChanged(); setRefresh((v) => v + 1);
-        } catch (e) { toast.error(errDetail(e) || 'Không gắn được chỉ số vào tài liệu'); }
+        } catch (e) { toast.error(errDetail(e) || t('govern.detail.attachMetricFailed')); }
       },
     });
   };
@@ -379,138 +391,131 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
     machineName, homeDocId: null, onCreated: undefined,
   });
 
-  if (loading) return <DetailShell><div className="flex h-64 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand" /></div></DetailShell>;
+  if (loading) return <div className="flex h-full items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand" /></div>;
   if (!doc) return (
-    <DetailShell>
-      <button onClick={onBack} className="mb-4 inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary"><ChevronLeft className="h-3.5 w-3.5" /> Cẩm nang tri thức</button>
+    <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
+      <button onClick={onBack} className="mb-4 inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary"><ChevronLeft className="h-3.5 w-3.5" /> {t('govern.detail.back')}</button>
       <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 py-14 text-center">
-        <p className="text-small font-emphasis text-text-primary">Không tải được tài liệu</p>
+        <p className="text-small font-emphasis text-text-primary">{t('govern.detail.loadFailed')}</p>
       </div>
-    </DetailShell>
+    </div>
   );
 
   const metrics = doc.metrics_on_page ?? [];
   const assets = doc.assets_on_page ?? [];
-  const items = DETAIL_TABS.map((t) => ({
-    key: t.key, icon: t.icon,
-    label: t.key === 'chiso' && metrics.length ? `${t.label} · ${metrics.length}`
-      : t.key === 'lienket' && assets.length ? `${t.label} · ${assets.length}` : t.label,
+  const related = doc.related_docs ?? [];
+  const items = DETAIL_TABS.map((tabItem) => ({
+    key: tabItem.key, icon: tabItem.icon,
+    label: tabItem.key === 'chiso' && metrics.length ? `${t('govern.detail.tab.metrics')} · ${metrics.length}`
+      : tabItem.key === 'lienket' && assets.length ? `${t('govern.detail.tab.links')} · ${assets.length}` : t(tabItem.labelKey),
   }));
 
   return (
-    <DetailShell>
-      <div className="space-y-4 pb-8">
+    <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
+      {/* compact top bar — breadcrumb + segmented tabs + actions (Dataset-style) */}
+      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
         <button onClick={onBack} className="inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ChevronLeft className="h-3.5 w-3.5" /> Cẩm nang tri thức
+          <ChevronLeft className="h-3.5 w-3.5" /> {t('govern.detail.back')}
         </button>
+        <span className="text-text-quaternary">/</span>
+        <span className="max-w-[38%] truncate text-caption font-emphasis text-text-primary">{doc.title}</span>
+        <div className="mx-1 h-5 w-px bg-surface-3" />
+        <SegmentedTabs items={items} value={tab} onChange={setTab} />
+        <div className="flex-1" />
+        <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>
+        <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>
+      </div>
 
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
+      {/* content — fills the full width/height (navigation lives on the list page) */}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-8 [scrollbar-gutter:stable]">
+        <div className="w-full">
+          <div className="mb-4">
             <div className="mb-1.5 flex flex-wrap items-center gap-2 text-tiny text-text-quaternary">
               <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-text-tertiary">{doc.space}</span>
-              <span>· {DOC_TYPE_LABEL[doc.doc_type] || doc.doc_type}</span>
-              <span className={cn('rounded-full px-2 py-0.5', STATUS_TONE[doc.status] || '')}>{doc.status}</span>
+              <span>· {docTypeLabel(doc.doc_type, t)}</span>
+              <span className={cn('rounded-full px-2 py-0.5', STATUS_TONE[doc.status] || '')}>{statusLabel(doc.status, t)}</span>
               <span>· v{doc.version}</span>
               {doc.owner && <span>· {doc.owner}</span>}
             </div>
             <div className="flex items-center gap-2">
-              <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand/10 text-brand">{doc.pinned ? <Pin className="h-4 w-4" /> : docIcon(doc.doc_type)}</span>
+              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">{doc.pinned ? <Pin className="h-4 w-4" /> : docIcon(doc.doc_type)}</span>
               <h1 className="text-h1 font-emphasis text-text-primary">{doc.title}</h1>
             </div>
-            {doc.summary && <p className="mt-1.5 max-w-2xl text-caption text-text-tertiary">{doc.summary}</p>}
+            {doc.summary && <p className="mt-1.5 max-w-3xl text-caption text-text-tertiary">{doc.summary}</p>}
           </div>
-          <div className="flex flex-shrink-0 gap-1.5">
-            <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>Sửa</Button>
-            <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>Xoá</Button>
-          </div>
-        </div>
 
-        <SegmentedTabs items={items} value={tab} onChange={setTab} />
+          {tab === 'noidung' && <ContentTab doc={doc} />}
+          {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
+          {tab === 'lienket' && <LinksTab doc={doc} />}
+          {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
 
-        <div className="grid gap-5 pt-1 lg:grid-cols-[minmax(0,1fr)_300px]">
-          <div className="min-w-0">
-            {tab === 'noidung' && <ContentTab doc={doc} />}
-            {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
-            {tab === 'lienket' && <LinksTab doc={doc} />}
-            {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
-          </div>
-          <InfoRail doc={doc} onTab={setTab} onOpenDoc={onOpenDoc} />
+          {tab === 'noidung' && related.length > 0 && (
+            <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3">
+              <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary"><BookOpen className="h-3.5 w-3.5" />{t('govern.detail.relatedDocs')}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {related.map((r) => (
+                  <button key={r.id} onClick={() => onOpenDoc(r.id)} className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-caption text-text-secondary hover:border-brand/50 hover:text-brand" title={r.shared_metrics.join(', ')}>
+                    <FileText className="h-3.5 w-3.5 text-text-quaternary" />{r.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
-    </DetailShell>
-  );
-}
-
-// Right-side properties rail — fills the detail width like Dataset/Explore's
-// second pane, with doc facts + quick links to the other tabs.
-function RailRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className="text-tiny text-text-quaternary">{label}</dt>
-      <dd className="min-w-0 truncate text-right text-caption text-text-secondary">{value}</dd>
     </div>
   );
 }
 
-function InfoRail({ doc, onTab, onOpenDoc }: { doc: KnowledgeDoc; onTab: (t: string) => void; onOpenDoc: (id: number) => void }) {
-  const metrics = doc.metrics_on_page ?? [];
-  const assets = doc.assets_on_page ?? [];
-  const related = doc.related_docs ?? [];
+// AI writes a business doc from a dataset — pick a dataset; the backend reads
+// its real model + a data sample + metrics and drafts a doc; the user reviews
+// and edits before saving.
+function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: (draft: KnowledgeDocWrite) => void }) {
+  const { t } = useI18n();
+  const [datasets, setDatasets] = useState<DatasetLite[]>([]);
+  const [dsId, setDsId] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { listDatasetsLite().then(setDatasets).catch(() => toast.error(t('govern.ai.loadDatasetsFailed'))); }, [t]);
+
+  const run = async () => {
+    if (!dsId) { toast.error(t('govern.ai.chooseDataset')); return; }
+    setBusy(true);
+    try {
+      const d = await aiDraftKnowledge(Number(dsId));
+      onDrafted({
+        title: d.title, summary: d.summary, body: d.body, space: d.space,
+        tags: d.tags ?? [], status: 'Draft', doc_type: 'domain', pinned: false,
+        related_dataset_ids: d.related_dataset_ids ?? [], related_dashboard_ids: d.related_dashboard_ids ?? [],
+        related_metrics: [], related_terms: [],
+      });
+    } catch (e) { toast.error(errDetail(e) || t('govern.ai.failed')); }
+    finally { setBusy(false); }
+  };
+
   return (
-    <aside className="space-y-3 lg:sticky lg:top-0 lg:self-start">
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <p className="mb-3 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">Thông tin</p>
-        <dl className="space-y-2.5">
-          <RailRow label="Không gian" value={doc.space} />
-          <RailRow label="Loại" value={DOC_TYPE_LABEL[doc.doc_type] || doc.doc_type} />
-          <RailRow label="Trạng thái" value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{doc.status}</span>} />
-          <RailRow label="Phiên bản" value={`v${doc.version}`} />
-          <RailRow label="Chủ sở hữu" value={doc.owner || '—'} />
-          {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
-        </dl>
+    <AppModalShell
+      onClose={onClose} title={t('govern.ai.title')} icon={<Sparkles className="h-4 w-4" />} maxWidthClass="max-w-lg"
+      footer={(
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{t('govern.action.cancel')}</Button>
+          <Button variant="primary" leadingIcon={busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} onClick={run} loading={busy} disabled={busy || !dsId}>
+            {busy ? t('govern.ai.busy') : t('govern.ai.submit')}
+          </Button>
+        </>
+      )}
+    >
+      <div className="space-y-3">
+        <p className="text-caption text-text-secondary">{t('govern.ai.description')}</p>
+        <div className="space-y-1.5">
+          <Label required>{t('govern.ai.dataset')}</Label>
+          <Select value={dsId} onChange={(e) => setDsId(e.target.value)} disabled={busy}>
+            <option value="">{t('govern.ai.datasetPlaceholder')}</option>
+            {datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </Select>
+        </div>
+        {busy && <p className="text-tiny text-text-quaternary">{t('govern.ai.busyHint')}</p>}
       </div>
-
-      {(metrics.length > 0 || assets.length > 0) && (
-        <div className="space-y-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
-          <button onClick={() => onTab('chiso')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-            <span className="flex items-center gap-2"><Sigma className="h-4 w-4 text-text-quaternary" />Chỉ số quản trị</span>
-            <span className="font-emphasis text-text-primary">{metrics.length}</span>
-          </button>
-          <button onClick={() => onTab('lienket')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-            <span className="flex items-center gap-2"><LayoutDashboard className="h-4 w-4 text-text-quaternary" />Báo cáo & dữ liệu</span>
-            <span className="font-emphasis text-text-primary">{assets.length}</span>
-          </button>
-        </div>
-      )}
-
-      {related.length > 0 && (
-        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-          <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
-            <BookOpen className="h-3.5 w-3.5" />Tài liệu liên quan
-          </p>
-          <p className="mb-2 text-tiny text-text-quaternary">Dùng chung chỉ số quản trị với tài liệu này.</p>
-          <div className="space-y-1">
-            {related.map((r) => (
-              <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2">
-                <span className="block truncate text-caption font-emphasis text-text-secondary hover:text-brand">{r.title}</span>
-                <span className="block truncate text-tiny text-text-quaternary">{r.space} · {r.shared_metrics.join(', ')}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {doc.related_terms.length > 0 && (
-        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-          <p className="mb-2 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">Thuật ngữ đi kèm</p>
-          <div className="flex flex-wrap gap-1.5">
-            {doc.related_terms.map((t) => (
-              <span key={t} className="inline-flex items-center gap-1 rounded bg-info/10 px-2 py-0.5 text-tiny text-info"><TagIcon className="h-3 w-3" />{t}</span>
-            ))}
-          </div>
-        </div>
-      )}
-    </aside>
+    </AppModalShell>
   );
 }
 
@@ -528,17 +533,18 @@ function resolveBody(doc: KnowledgeDoc): string {
 }
 
 function ContentTab({ doc }: { doc: KnowledgeDoc }) {
+  const { t } = useI18n();
   const missing = doc.missing_metric_tokens ?? [];
   return (
     <div className="min-w-0">
       {doc.body
         ? <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-6"><Markdown source={resolveBody(doc)} /></div>
-        : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">Tài liệu chưa có nội dung. Bấm “Sửa” để viết.</p>}
+        : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
 
       {missing.length > 0 && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-          <span>Có {missing.length} chỉ số được nhắc tới nhưng chưa tồn tại: {missing.map((t) => <code key={t} className="mx-0.5 font-mono">{t}</code>)} — mở tab <strong>Chỉ số</strong> để định nghĩa.</span>
+          <span>{t('govern.content.missingMetrics', { count: missing.length })} {missing.map((token) => <code key={token} className="mx-0.5 font-mono">{token}</code>)} — {t('govern.content.defineInMetricsTab')}</span>
         </div>
       )}
     </div>
@@ -546,27 +552,28 @@ function ContentTab({ doc }: { doc: KnowledgeDoc }) {
 }
 
 function MetricsTab({ doc, onDefine, onEdit }: { doc: KnowledgeDoc; onDefine: () => void; onEdit: (mn: string) => void }) {
+  const { t } = useI18n();
   const metrics = doc.metrics_on_page ?? [];
   return (
     <div className="min-w-0 space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-caption text-text-tertiary">Chỉ số quản trị được định nghĩa hoặc dùng lại trong tài liệu này.</p>
-        <Button size="sm" variant="primary" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={onDefine}>Định nghĩa chỉ số</Button>
+        <p className="text-caption text-text-tertiary">{t('govern.metrics.intro')}</p>
+        <Button size="sm" variant="primary" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={onDefine}>{t('govern.action.defineMetric')}</Button>
       </div>
       {metrics.length === 0 ? (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
           <Sigma className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
-          <p className="text-caption text-text-tertiary">Chưa có chỉ số nào. Bấm “Định nghĩa chỉ số” để tạo KPI lấy tài liệu này làm nguồn (SSOT).</p>
+          <p className="text-caption text-text-tertiary">{t('govern.metrics.empty')}</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
           <div className="app-list-table-wrap">
             <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
               <thead className="bg-surface-2"><tr>
-                <th className="app-list-header w-[46%]">Chỉ số</th>
-                <th className="app-list-header w-[20%]">Vai trò</th>
-                <th className="app-list-header w-[12%]">Đơn vị</th>
-                <th className="app-list-header w-[16%]">Mục tiêu</th>
+                <th className="app-list-header w-[46%]">{t('govern.metrics.header.metric')}</th>
+                <th className="app-list-header w-[20%]">{t('govern.metrics.header.role')}</th>
+                <th className="app-list-header w-[12%]">{t('govern.metrics.header.unit')}</th>
+                <th className="app-list-header w-[16%]">{t('govern.metrics.header.target')}</th>
                 <th className="app-list-header w-[48px] text-right" />
               </tr></thead>
               <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -583,8 +590,8 @@ function MetricsTab({ doc, onDefine, onEdit }: { doc: KnowledgeDoc; onDefine: ()
                     </td>
                     <td className="app-list-cell">
                       {m.is_source
-                        ? <span className="rounded-full bg-brand/10 px-2 py-0.5 text-tiny text-brand">Nguồn định nghĩa</span>
-                        : <span className="rounded-full bg-surface-3 px-2 py-0.5 text-tiny text-text-tertiary" title={m.home_doc_title || undefined}>↩ Dùng lại</span>}
+                        ? <span className="rounded-full bg-brand/10 px-2 py-0.5 text-tiny text-brand">{t('govern.metrics.sourceRole')}</span>
+                        : <span className="rounded-full bg-surface-3 px-2 py-0.5 text-tiny text-text-tertiary" title={m.home_doc_title || undefined}>↩ {t('govern.metrics.reusedRole')}</span>}
                     </td>
                     <td className="app-list-cell text-caption text-text-tertiary">{m.unit || '—'}</td>
                     <td className="app-list-cell text-caption text-text-tertiary">{managedTargetLabel(m)}</td>
@@ -601,12 +608,13 @@ function MetricsTab({ doc, onDefine, onEdit }: { doc: KnowledgeDoc; onDefine: ()
 }
 
 function LinksTab({ doc }: { doc: KnowledgeDoc }) {
+  const { t } = useI18n();
   const assets = doc.assets_on_page ?? [];
   if (assets.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
         <LayoutDashboard className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
-        <p className="text-caption text-text-tertiary">Chưa liên kết báo cáo/dữ liệu nào. Khi soạn thảo, chèn <code className="font-mono">{'{{dashboard:id}}'}</code> hoặc <code className="font-mono">{'{{dataset:id}}'}</code> vào nội dung.</p>
+        <p className="text-caption text-text-tertiary">{t('govern.links.empty')}</p>
       </div>
     );
   }
@@ -615,9 +623,9 @@ function LinksTab({ doc }: { doc: KnowledgeDoc }) {
       <div className="app-list-table-wrap">
         <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
           <thead className="bg-surface-2"><tr>
-            <th className="app-list-header w-[58%]">Tài nguyên</th>
-            <th className="app-list-header w-[22%]">Loại</th>
-            <th className="app-list-header w-[20%] text-right">Mở</th>
+            <th className="app-list-header w-[58%]">{t('govern.links.header.resource')}</th>
+            <th className="app-list-header w-[22%]">{t('govern.links.header.type')}</th>
+            <th className="app-list-header w-[20%] text-right">{t('govern.links.header.open')}</th>
           </tr></thead>
           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
             {assets.map((a) => (
@@ -629,14 +637,14 @@ function LinksTab({ doc }: { doc: KnowledgeDoc }) {
                       <span className="block truncate text-caption font-emphasis text-text-primary">{a.name || a.ref}</span>
                       {a.type === 'term' && a.definition
                         ? <span className="mt-0.5 block truncate text-tiny text-text-quaternary">{a.definition}</span>
-                        : !a.exists ? <span className="mt-0.5 block text-tiny text-danger">không tồn tại</span> : null}
+                        : !a.exists ? <span className="mt-0.5 block text-tiny text-danger">{t('govern.links.missing')}</span> : null}
                     </span>
                   </span>
                 </td>
-                <td className="app-list-cell"><span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{ASSET_LABEL[a.type]}</span></td>
+                <td className="app-list-cell"><span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{t(`govern.asset.${a.type}`)}</span></td>
                 <td className="app-list-cell-tight text-right">
                   {a.exists && a.open_path
-                    ? <Link href={a.open_path} className="inline-flex items-center gap-1 text-tiny text-brand hover:underline"><ExternalLink className="h-3 w-3" />Mở</Link>
+                    ? <Link href={a.open_path} className="inline-flex items-center gap-1 text-tiny text-brand hover:underline"><ExternalLink className="h-3 w-3" />{t('govern.action.open')}</Link>
                     : <span className="text-tiny text-text-quaternary">—</span>}
                 </td>
               </tr>
@@ -649,18 +657,19 @@ function LinksTab({ doc }: { doc: KnowledgeDoc }) {
 }
 
 function HistoryTab({ docId }: { docId: number }) {
+  const { t, locale } = useI18n();
   const [versions, setVersions] = useState<KnowledgeDocVersion[] | null>(null);
   const [viewV, setViewV] = useState<KnowledgeDocVersion | null>(null);
   useEffect(() => { let on = true; listDocVersions(docId).then((v) => { if (on) setVersions(v); }).catch(() => { if (on) setVersions([]); }); return () => { on = false; }; }, [docId]);
-  const viewVersion = async (n: number) => { try { setViewV(await getDocVersion(docId, n)); } catch { toast.error('Không tải được phiên bản'); } };
+  const viewVersion = async (n: number) => { try { setViewV(await getDocVersion(docId, n)); } catch { toast.error(t('govern.history.loadVersionFailed')); } };
 
   return (
     <div className="min-w-0">
-      <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary"><History className="h-3.5 w-3.5" /> Lịch sử phiên bản (đã khoá)</p>
+      <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary"><History className="h-3.5 w-3.5" /> {t('govern.history.title')}</p>
       {versions === null ? (
-        <p className="py-6 text-center text-caption text-text-tertiary">Đang tải…</p>
+        <p className="py-6 text-center text-caption text-text-tertiary">{t('govern.loading')}</p>
       ) : versions.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-8 text-center text-caption text-text-tertiary">Chưa có phiên bản nào được ghi. Mỗi lần lưu tài liệu sẽ tạo một bản khoá.</p>
+        <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-8 text-center text-caption text-text-tertiary">{t('govern.history.empty')}</p>
       ) : (
         <ul className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
           {versions.map((v) => (
@@ -668,9 +677,9 @@ function HistoryTab({ docId }: { docId: number }) {
               <div className="min-w-0">
                 <span className="font-strong text-text-primary">v{v.version}</span>
                 {v.change_note && <span className="ml-2 text-caption text-text-secondary">{v.change_note}</span>}
-                <span className="ml-2 text-tiny text-text-quaternary">{v.changed_by || 'hệ thống'} · {v.created_at ? new Date(v.created_at).toLocaleString('vi-VN') : ''}</span>
+                <span className="ml-2 text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? new Date(v.created_at).toLocaleString(locale) : ''}</span>
               </div>
-              <button onClick={() => viewVersion(v.version)} className="flex-shrink-0 text-caption text-brand hover:underline">Xem</button>
+              <button onClick={() => viewVersion(v.version)} className="flex-shrink-0 text-caption text-brand hover:underline">{t('govern.action.view')}</button>
             </li>
           ))}
         </ul>
@@ -678,10 +687,10 @@ function HistoryTab({ docId }: { docId: number }) {
       {viewV && (
         <div className="mt-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-caption font-strong text-text-primary">Nội dung v{viewV.version} (chỉ đọc)</span>
+            <span className="text-caption font-strong text-text-primary">{t('govern.history.readonlyTitle', { version: viewV.version })}</span>
             <button onClick={() => setViewV(null)} className="text-text-quaternary hover:text-text-secondary"><X className="h-3.5 w-3.5" /></button>
           </div>
-          {viewV.body ? <Markdown source={viewV.body} /> : <p className="text-caption text-text-tertiary">(trống)</p>}
+          {viewV.body ? <Markdown source={viewV.body} /> : <p className="text-caption text-text-tertiary">{t('govern.history.emptyBody')}</p>}
         </div>
       )}
     </div>
@@ -689,12 +698,49 @@ function HistoryTab({ docId }: { docId: number }) {
 }
 
 // ═══════════════════════════════ Editor ═════════════════════════════════════
-function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
-  docId: number | null; managed: ManagedMetric[];
+// Word-like formatting toolbar over the markdown editor (bold/italic/heading/
+// list/quote/code/link/table) — inserts markdown at the cursor.
+function FmtBtn({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button type="button" title={title} onClick={onClick}
+      className="flex h-7 w-7 items-center justify-center rounded text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary">
+      {children}
+    </button>
+  );
+}
+function MarkdownToolbar({ wrap, prefix, block }: {
+  wrap: (b: string, a: string, ph: string) => void; prefix: (p: string) => void; block: (b: string) => void;
+}) {
+  const { t } = useI18n();
+  const Div = () => <div className="mx-1 h-5 w-px bg-surface-3" />;
+  return (
+    <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-1">
+      <FmtBtn title={t('govern.toolbar.bold')} onClick={() => wrap('**', '**', t('govern.toolbar.sample.bold'))}><Bold className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.italic')} onClick={() => wrap('*', '*', t('govern.toolbar.sample.italic'))}><Italic className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.strike')} onClick={() => wrap('~~', '~~', t('govern.toolbar.sample.strike'))}><Strikethrough className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.code')} onClick={() => wrap('`', '`', 'code')}><Code className="h-3.5 w-3.5" /></FmtBtn>
+      <Div />
+      <FmtBtn title={t('govern.toolbar.h1')} onClick={() => prefix('# ')}><Heading1 className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.h2')} onClick={() => prefix('## ')}><Heading2 className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.h3')} onClick={() => prefix('### ')}><Heading3 className="h-3.5 w-3.5" /></FmtBtn>
+      <Div />
+      <FmtBtn title={t('govern.toolbar.list')} onClick={() => prefix('- ')}><List className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.orderedList')} onClick={() => prefix('1. ')}><ListOrdered className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.quote')} onClick={() => prefix('> ')}><Quote className="h-3.5 w-3.5" /></FmtBtn>
+      <Div />
+      <FmtBtn title={t('govern.toolbar.link')} onClick={() => wrap('[', '](https://)', t('govern.toolbar.sample.link'))}><Link2 className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.table')} onClick={() => block(t('govern.toolbar.tableBlock'))}><Table className="h-3.5 w-3.5" /></FmtBtn>
+    </div>
+  );
+}
+
+function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }: {
+  docId: number | null; seed?: KnowledgeDocWrite | null; managed: ManagedMetric[];
   onCancel: () => void; onSaved: (id: number) => void; onOpenMetric: (s: MetricModalState) => void;
 }) {
-  const [editing, setEditing] = useState<KnowledgeDocWrite | null>(docId ? null : newDoc());
-  const [tagsText, setTagsText] = useState('');
+  const { t } = useI18n();
+  const [editing, setEditing] = useState<KnowledgeDocWrite | null>(docId ? null : (seed ?? newDoc()));
+  const [tagsText, setTagsText] = useState((seed?.tags ?? []).join(', '));
   const [changeNote, setChangeNote] = useState('');
   const [loading, setLoading] = useState(!!docId);
   const [saving, setSaving] = useState(false);
@@ -709,8 +755,8 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
       const raw = await f.text();
       const text = /\.html?$/i.test(f.name) ? htmlToText(raw) : raw;
       setEditing((p) => (p ? { ...p, body: `${(p.body || '').trim() ? p.body!.trimEnd() + '\n\n' : ''}${text.trim()}` } : p));
-      toast.success(`Đã nhập nội dung từ “${f.name}”`);
-    } catch { toast.error('Không đọc được tệp'); }
+      toast.success(t('govern.editor.fileImported', { name: f.name }));
+    } catch { toast.error(t('govern.editor.fileReadFailed')); }
   };
 
   useEffect(() => {
@@ -718,10 +764,10 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
     let on = true; setLoading(true);
     getKnowledgeDoc(docId)
       .then((d) => { if (!on) return; setEditing(docToWrite(d)); setTagsText((d.tags ?? []).join(', ')); })
-      .catch(() => { if (on) toast.error('Không mở được tài liệu'); })
+      .catch(() => { if (on) toast.error(t('govern.detail.openFailed')); })
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
-  }, [docId]);
+  }, [docId, t]);
 
   const upd = (patch: Partial<KnowledgeDocWrite>) => setEditing((p) => (p ? { ...p, ...patch } : p));
 
@@ -738,14 +784,41 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
     });
   };
 
+  const [preview, setPreview] = useState(false);
+  // Word-like formatting — acts on the textarea selection; keeps markdown storage.
+  const editBody = (fn: (t: string, s: number, e: number) => { text: string; a: number; b: number }) => {
+    const el = bodyRef.current;
+    setEditing((p) => {
+      if (!p) return p;
+      const cur = p.body ?? '';
+      const s = el?.selectionStart ?? cur.length; const e = el?.selectionEnd ?? cur.length;
+      const r = fn(cur, s, e);
+      requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(r.a, r.b); } });
+      return { ...p, body: r.text };
+    });
+  };
+  const wrapFmt = (b: string, a: string, ph: string) => editBody((t, s, e) => {
+    const sel = t.slice(s, e) || ph;
+    return { text: t.slice(0, s) + b + sel + a + t.slice(e), a: s + b.length, b: s + b.length + sel.length };
+  });
+  const prefixFmt = (pfx: string) => editBody((t, s, e) => {
+    const ls = t.lastIndexOf('\n', s - 1) + 1;
+    return { text: t.slice(0, ls) + pfx + t.slice(ls), a: s + pfx.length, b: e + pfx.length };
+  });
+  const blockFmt = (blk: string) => editBody((t, s) => {
+    const pre = s > 0 && t[s - 1] !== '\n' ? '\n' : '';
+    const pos = s + pre.length + blk.length;
+    return { text: t.slice(0, s) + pre + blk + t.slice(s), a: pos, b: pos };
+  });
+
   const defineMetric = () => {
-    if (!editing?.id) { toast.error('Hãy lưu tài liệu trước khi định nghĩa chỉ số'); return; }
+    if (!editing?.id) { toast.error(t('govern.editor.saveBeforeMetric')); return; }
     onOpenMetric({ machineName: null, homeDocId: editing.id, onCreated: (mn) => insertToken(`{{metric:${mn}}}`) });
   };
 
   const save = async () => {
     if (!editing) return;
-    if (!editing.title.trim()) { toast.error('Tiêu đề không được để trống'); return; }
+    if (!editing.title.trim()) { toast.error(t('govern.editor.titleRequired')); return; }
     setSaving(true);
     try {
       const body: KnowledgeDocWrite = {
@@ -753,9 +826,9 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
         change_note: changeNote.trim() || undefined,
       };
       const r = await upsertKnowledgeDoc(body);
-      toast.success(editing.id ? `Đã cập nhật (v${r.version})` : 'Đã tạo tài liệu');
+      toast.success(editing.id ? t('govern.editor.updated', { version: r.version }) : t('govern.editor.created'));
       onSaved(r.id);
-    } catch (e) { toast.error(errDetail(e) || 'Lưu thất bại'); }
+    } catch (e) { toast.error(errDetail(e) || t('govern.editor.saveFailed')); }
     finally { setSaving(false); }
   };
 
@@ -767,30 +840,30 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
         {/* top bar: back + save actions (full width) */}
         <div className="flex items-center justify-between gap-3">
           <button onClick={onCancel} className="inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-            <ChevronLeft className="h-3.5 w-3.5" /> {editing.id ? 'Huỷ chỉnh sửa' : 'Huỷ tạo mới'}
+            <ChevronLeft className="h-3.5 w-3.5" /> {editing.id ? t('govern.action.cancelEdit') : t('govern.action.cancelNew')}
           </button>
           <div className="flex gap-2">
-            <Button variant="secondary" leadingIcon={<X className="h-4 w-4" />} onClick={onCancel} disabled={saving}>Huỷ</Button>
-            <Button variant="primary" leadingIcon={<Save className="h-4 w-4" />} onClick={save} loading={saving} disabled={saving}>{editing.id ? 'Lưu thay đổi' : 'Lưu tài liệu'}</Button>
+            <Button variant="secondary" leadingIcon={<X className="h-4 w-4" />} onClick={onCancel} disabled={saving}>{t('govern.action.cancel')}</Button>
+            <Button variant="primary" leadingIcon={<Save className="h-4 w-4" />} onClick={save} loading={saving} disabled={saving}>{editing.id ? t('govern.action.saveChanges') : t('govern.action.saveDocument')}</Button>
           </div>
         </div>
-        <h1 className="mb-4 mt-3 text-h1 font-emphasis text-text-primary">{editing.id ? 'Chỉnh sửa tài liệu' : 'Tạo tài liệu'}</h1>
+        <h1 className="mb-4 mt-3 text-h1 font-emphasis text-text-primary">{editing.id ? t('govern.editor.titleEdit') : t('govern.editor.titleNew')}</h1>
 
         <input ref={fileRef} type="file" accept=".md,.markdown,.txt,.html,.htm,text/plain,text/markdown,text/html" className="hidden" onChange={onImportFile} />
 
         {/* full-width 2-column: editor (left) + properties (right) */}
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="min-w-0 space-y-3">
-            <div className="space-y-1.5"><Label required>Tiêu đề</Label><Input value={editing.title} onChange={(e) => upd({ title: e.target.value })} placeholder="Vd: Tổng quan Báo cáo Doanh thu" /></div>
-            <div className="space-y-1.5"><Label>Tóm tắt</Label><Input value={editing.summary ?? ''} onChange={(e) => upd({ summary: e.target.value })} placeholder="Một dòng mô tả tài liệu này (cũng là đoạn AI Bot đọc)" /></div>
+            <div className="space-y-1.5"><Label required>{t('govern.editor.title')}</Label><Input value={editing.title} onChange={(e) => upd({ title: e.target.value })} placeholder={t('govern.editor.titlePlaceholder')} /></div>
+            <div className="space-y-1.5"><Label>{t('govern.editor.summary')}</Label><Input value={editing.summary ?? ''} onChange={(e) => upd({ summary: e.target.value })} placeholder={t('govern.editor.summaryPlaceholder')} /></div>
 
             {/* insert-token + import toolbar */}
             <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">Chèn vào nội dung</p>
+                <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.insertIntoContent')}</p>
                 <div className="flex items-center gap-2">
-                  <Button variant="secondary" size="xs" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => fileRef.current?.click()}>Nhập từ tệp</Button>
-                  <Button variant="primary" size="xs" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={defineMetric}>Định nghĩa chỉ số</Button>
+                  <Button variant="secondary" size="xs" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => fileRef.current?.click()}>{t('govern.action.importFile')}</Button>
+                  <Button variant="primary" size="xs" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={defineMetric}>{t('govern.action.defineMetric')}</Button>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -799,27 +872,42 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Nội dung (Markdown)</Label>
-              <Textarea ref={bodyRef} rows={28} className="font-mono text-[13px]" value={editing.body ?? ''} onChange={(e) => upd({ body: e.target.value })}
-                placeholder={'# Tiêu đề\n\nDùng **đậm**, *nghiêng*, `code`, [link](url), bảng…\n\nChèn thẻ: {{metric:slug}}, {{dashboard:12}}, {{dataset:5}}, {{term:glossary.term}}\n\nHoặc bấm “Nhập từ tệp” để đưa nội dung .md / .txt / .html vào đây rồi chỉnh sửa.'} />
+              <div className="flex items-center justify-between">
+                <Label>{t('govern.editor.content')}</Label>
+                <button type="button" onClick={() => setPreview((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-tiny text-text-tertiary hover:bg-surface-3 hover:text-text-primary">
+                  {preview ? <><Pencil className="h-3.5 w-3.5" />{t('govern.editor.compose')}</> : <><Eye className="h-3.5 w-3.5" />{t('govern.editor.preview')}</>}
+                </button>
+              </div>
+              {preview ? (
+                <div className="min-h-[420px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+                  {editing.body?.trim() ? <Markdown source={editing.body} /> : <p className="text-caption text-text-quaternary">{t('govern.editor.previewEmpty')}</p>}
+                </div>
+              ) : (
+                <>
+                  <MarkdownToolbar wrap={wrapFmt} prefix={prefixFmt} block={blockFmt} />
+                  <Textarea ref={bodyRef} rows={24} className="font-mono text-[13px]" value={editing.body ?? ''} onChange={(e) => upd({ body: e.target.value })}
+                    placeholder={t('govern.editor.bodyPlaceholder')} />
+                </>
+              )}
             </div>
           </div>
 
           {/* properties rail */}
           <aside className="space-y-4 lg:sticky lg:top-0 lg:self-start">
             <div className="space-y-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-              <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">Thuộc tính</p>
-              <div className="space-y-1.5"><Label>Không gian (space)</Label><Input value={editing.space ?? ''} onChange={(e) => upd({ space: e.target.value })} placeholder="Doanh thu, Vận hành…" /></div>
-              <div className="space-y-1.5"><Label>Loại</Label>
-                <Select value={editing.doc_type ?? 'article'} onChange={(e) => upd({ doc_type: e.target.value })}>{DOC_TYPES.map((t) => <option key={t} value={t}>{DOC_TYPE_LABEL[t]}</option>)}</Select>
+              <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.properties')}</p>
+              <div className="space-y-1.5"><Label>{t('govern.editor.space')}</Label><Input value={editing.space ?? ''} onChange={(e) => upd({ space: e.target.value })} placeholder={t('govern.editor.spacePlaceholder')} /></div>
+              <div className="space-y-1.5"><Label>{t('govern.editor.type')}</Label>
+                <Select value={editing.doc_type ?? 'article'} onChange={(e) => upd({ doc_type: e.target.value })}>{DOC_TYPES.map((type) => <option key={type} value={type}>{docTypeLabel(type, t)}</option>)}</Select>
               </div>
-              <div className="space-y-1.5"><Label>Trạng thái</Label>
-                <Select value={editing.status ?? 'Draft'} onChange={(e) => upd({ status: e.target.value as KnowledgeDoc['status'] })}>{['Draft', 'Published', 'Archived'].map((s) => <option key={s} value={s}>{s}</option>)}</Select>
+              <div className="space-y-1.5"><Label>{t('govern.editor.status')}</Label>
+                <Select value={editing.status ?? 'Draft'} onChange={(e) => upd({ status: e.target.value as KnowledgeDoc['status'] })}>{['Draft', 'Published', 'Archived'].map((s) => <option key={s} value={s}>{statusLabel(s, t)}</option>)}</Select>
               </div>
-              <div className="space-y-1.5"><Label>Chủ sở hữu</Label><Input value={editing.owner ?? ''} onChange={(e) => upd({ owner: e.target.value })} placeholder="Team / người phụ trách" /></div>
-              <label className="flex items-center gap-2 text-caption text-text-secondary"><input type="checkbox" checked={!!editing.pinned} onChange={(e) => upd({ pinned: e.target.checked })} className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" /> Ghim tài liệu</label>
-              <div className="space-y-1.5"><Label>Nhãn (tags, ngăn bởi phẩy)</Label><Input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="doanh thu, onboarding" /></div>
-              <div className="space-y-1.5"><Label>Ghi chú thay đổi</Label><Input value={changeNote} onChange={(e) => setChangeNote(e.target.value)} placeholder="Vd: nâng mục tiêu SLA lên 92%" /></div>
+              <div className="space-y-1.5"><Label>{t('govern.editor.owner')}</Label><Input value={editing.owner ?? ''} onChange={(e) => upd({ owner: e.target.value })} placeholder={t('govern.editor.ownerPlaceholder')} /></div>
+              <label className="flex items-center gap-2 text-caption text-text-secondary"><input type="checkbox" checked={!!editing.pinned} onChange={(e) => upd({ pinned: e.target.checked })} className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" /> {t('govern.editor.pinned')}</label>
+              <div className="space-y-1.5"><Label>{t('govern.editor.tags')}</Label><Input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder={t('govern.editor.tagsPlaceholder')} /></div>
+              <div className="space-y-1.5"><Label>{t('govern.editor.changeNote')}</Label><Input value={changeNote} onChange={(e) => setChangeNote(e.target.value)} placeholder={t('govern.editor.changeNotePlaceholder')} /></div>
             </div>
           </aside>
         </div>
@@ -829,6 +917,7 @@ function EditorScreen({ docId, managed, onCancel, onSaved, onOpenMetric }: {
 }
 
 function TokenInserter({ managed, insertToken }: { managed: ManagedMetric[]; insertToken: (t: string) => void }) {
+  const { t } = useI18n();
   const [pickMetric, setPickMetric] = useState('');
   const [dashId, setDashId] = useState('');
   const [dsId, setDsId] = useState('');
@@ -836,23 +925,23 @@ function TokenInserter({ managed, insertToken }: { managed: ManagedMetric[]; ins
   return (
     <>
       <div className="flex items-center gap-1.5">
-        <Select size="sm" className="w-48" value={pickMetric} onChange={(e) => setPickMetric(e.target.value)} aria-label="Chọn chỉ số">
-          <option value="">Chọn chỉ số…</option>
+        <Select size="sm" className="w-48" value={pickMetric} onChange={(e) => setPickMetric(e.target.value)} aria-label={t('govern.editor.metricSelectAria')}>
+          <option value="">{t('govern.editor.selectMetricPlaceholder')}</option>
           {managed.map((m) => <option key={m.machine_name} value={m.machine_name}>{m.name}</option>)}
         </Select>
-        <Button variant="secondary" size="sm" leadingIcon={<Sigma className="h-3.5 w-3.5" />} disabled={!pickMetric} onClick={() => insertToken(`{{metric:${pickMetric}}}`)}>Chỉ số có sẵn</Button>
+        <Button variant="secondary" size="sm" leadingIcon={<Sigma className="h-3.5 w-3.5" />} disabled={!pickMetric} onClick={() => insertToken(`{{metric:${pickMetric}}}`)}>{t('govern.editor.existingMetric')}</Button>
       </div>
       <div className="flex items-center gap-1.5">
-        <Input size="sm" className="w-24" value={dashId} onChange={(e) => setDashId(e.target.value)} placeholder="id báo cáo" />
-        <Button variant="secondary" size="sm" leadingIcon={<LayoutDashboard className="h-3.5 w-3.5" />} disabled={!dashId.trim()} onClick={() => { insertToken(`{{dashboard:${dashId.trim()}}}`); setDashId(''); }}>Báo cáo</Button>
+        <Input size="sm" className="w-24" value={dashId} onChange={(e) => setDashId(e.target.value)} placeholder={t('govern.editor.dashboardIdPlaceholder')} />
+        <Button variant="secondary" size="sm" leadingIcon={<LayoutDashboard className="h-3.5 w-3.5" />} disabled={!dashId.trim()} onClick={() => { insertToken(`{{dashboard:${dashId.trim()}}}`); setDashId(''); }}>{t('govern.editor.dashboard')}</Button>
       </div>
       <div className="flex items-center gap-1.5">
-        <Input size="sm" className="w-24" value={dsId} onChange={(e) => setDsId(e.target.value)} placeholder="id dữ liệu" />
-        <Button variant="secondary" size="sm" leadingIcon={<Database className="h-3.5 w-3.5" />} disabled={!dsId.trim()} onClick={() => { insertToken(`{{dataset:${dsId.trim()}}}`); setDsId(''); }}>Dữ liệu</Button>
+        <Input size="sm" className="w-24" value={dsId} onChange={(e) => setDsId(e.target.value)} placeholder={t('govern.editor.datasetIdPlaceholder')} />
+        <Button variant="secondary" size="sm" leadingIcon={<Database className="h-3.5 w-3.5" />} disabled={!dsId.trim()} onClick={() => { insertToken(`{{dataset:${dsId.trim()}}}`); setDsId(''); }}>{t('govern.editor.dataset')}</Button>
       </div>
       <div className="flex items-center gap-1.5">
         <Input size="sm" className="w-40" value={termFqn} onChange={(e) => setTermFqn(e.target.value)} placeholder="glossary.term" />
-        <Button variant="secondary" size="sm" leadingIcon={<TagIcon className="h-3.5 w-3.5" />} disabled={!termFqn.trim()} onClick={() => { insertToken(`{{term:${termFqn.trim()}}}`); setTermFqn(''); }}>Thuật ngữ</Button>
+        <Button variant="secondary" size="sm" leadingIcon={<TagIcon className="h-3.5 w-3.5" />} disabled={!termFqn.trim()} onClick={() => { insertToken(`{{term:${termFqn.trim()}}}`); setTermFqn(''); }}>{t('govern.editor.term')}</Button>
       </div>
     </>
   );

@@ -282,11 +282,3 @@ export async function testAlertChannel(id: number): Promise<{ ok: boolean; error
   return { ok: data.ok, error: data.error };
 }
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-export const PILLAR_LABEL: Record<Pillar, string> = {
-  freshness: 'Độ tươi', volume: 'Khối lượng', schema: 'Lược đồ',
-  distribution: 'Phân phối', quality: 'Chất lượng',
-};
-export const SEVERITY_LABEL: Record<Severity, string> = {
-  info: 'Thông tin', warning: 'Cảnh báo', critical: 'Nghiêm trọng',
-};

@@ -101,6 +101,20 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'audio', label: 'Ghi âm ghi chú' },
   { value: 'computed', label: 'Tính tự động (công thức)' },
   { value: 'status', label: 'Trạng thái / duyệt' },
+  // ── Rich input types ──────────────────────────────────────────────
+  { value: 'enum_list', label: 'Chọn nhiều (chips)' },
+  { value: 'rating', label: 'Đánh giá (sao)' },
+  { value: 'slider', label: 'Thanh trượt (slider)' },
+  { value: 'email', label: 'Email' },
+  { value: 'phone', label: 'Số điện thoại' },
+  { value: 'url', label: 'Đường dẫn (URL)' },
+  { value: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
+  { value: 'currency', label: 'Tiền tệ' },
+  { value: 'percent', label: 'Phần trăm (%)' },
+  { value: 'time', label: 'Giờ (time)' },
+  { value: 'duration', label: 'Khoảng thời gian' },
+  { value: 'color', label: 'Màu sắc' },
+  { value: 'video', label: 'Video (clip ngắn)' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -1233,7 +1247,10 @@ function FieldInspector({
         </Lbl>
       </CollapsibleGroup>
 
-      {(field.widget === 'select' || field.widget === 'lookup' || field.widget === 'map') && (
+      {(field.widget === 'select' ||
+        field.widget === 'lookup' ||
+        field.widget === 'map' ||
+        field.widget === 'enum_list') && (
         <CollapsibleGroup title={field.widget === 'map' ? 'Bản đồ / vùng' : 'Options'}>
           <LookupEditor field={field} tables={tables} onChange={onChange} />
         </CollapsibleGroup>
@@ -1243,8 +1260,99 @@ function FieldInspector({
         field.widget === 'number' ||
         field.widget === 'images' ||
         field.widget === 'image' ||
-        field.widget === 'status') && (
+        field.widget === 'status' ||
+        field.widget === 'rating' ||
+        field.widget === 'slider' ||
+        field.widget === 'currency' ||
+        field.widget === 'enum_list') && (
         <CollapsibleGroup title="Cấu hình widget">
+          {field.widget === 'rating' && (
+            <div className={BUILDER_GRID_2}>
+              <Lbl label="Số sao tối đa">
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={field.max_stars ?? 5}
+                  onChange={(event) =>
+                    onChange({ max_stars: Math.min(Math.max(Number(event.target.value) || 5, 1), 10) })
+                  }
+                  className={INPUT}
+                />
+              </Lbl>
+              <label className="mt-6 flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={!!field.allow_half}
+                  onChange={(event) => onChange({ allow_half: event.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Cho nửa sao
+              </label>
+            </div>
+          )}
+          {field.widget === 'slider' && (
+            <div className={BUILDER_GRID_4}>
+              <Lbl label="Min">
+                <input
+                  type="number"
+                  value={field.min_value ?? 0}
+                  onChange={(event) => onChange({ min_value: Number(event.target.value) })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Max">
+                <input
+                  type="number"
+                  value={field.max_value ?? 100}
+                  onChange={(event) => onChange({ max_value: Number(event.target.value) })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Bước (step)">
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={field.step ?? 1}
+                  onChange={(event) => onChange({ step: Number(event.target.value) || 1 })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Đơn vị">
+                <input
+                  value={field.unit || ''}
+                  onChange={(event) => onChange({ unit: event.target.value || null })}
+                  className={INPUT}
+                  placeholder="%"
+                />
+              </Lbl>
+            </div>
+          )}
+          {field.widget === 'currency' && (
+            <Lbl label="Mã / ký hiệu tiền tệ">
+              <input
+                value={field.currency_code || ''}
+                onChange={(event) => onChange({ currency_code: event.target.value || null })}
+                className={INPUT}
+                placeholder="VND"
+              />
+            </Lbl>
+          )}
+          {field.widget === 'enum_list' && (
+            <Lbl label="Số lựa chọn tối đa (bỏ trống = không giới hạn)">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={field.max_select ?? ''}
+                onChange={(event) =>
+                  onChange({ max_select: event.target.value ? Number(event.target.value) : null })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+          )}
           {field.widget === 'computed' && (
             <Lbl label="Công thức (VD: [san_luong] * [drc] / 100)">
               <input
@@ -1493,7 +1601,9 @@ function LookupEditor({
         )}
 
         {lookup.kind === 'dataset_table' &&
-          (field.widget === 'select' || field.widget === 'lookup') && (
+          (field.widget === 'select' ||
+            field.widget === 'lookup' ||
+            field.widget === 'enum_list') && (
             <>
               <Lbl label="Lọc theo field (cột form cha) — tùy chọn">
                 <input

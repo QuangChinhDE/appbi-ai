@@ -6,8 +6,15 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 
-import type { MiniAppLayoutSpec } from './types';
+import type {
+  MiniAppLayoutSpec,
+  BrandingSpec,
+  ThemeBackgroundSpec,
+  ThemeMode,
+  ThemeFont,
+} from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import { GRADIENT_PRESETS } from '@/lib/wb-theme';
 import type { Dataset } from '@/hooks/use-datasets';
 
 export default function AppSettingsEditor({
@@ -27,7 +34,6 @@ export default function AppSettingsEditor({
   onDatasetChange: (datasetId: number) => Promise<void> | void;
   onClose: () => void;
 }) {
-  const branding = layout.branding || {};
   const nav = layout.mini_app_nav;
   const [selectedDatasetId, setSelectedDatasetId] = useState(currentDatasetId);
 
@@ -84,63 +90,7 @@ export default function AppSettingsEditor({
             )}
           </section>
 
-          <section>
-            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Branding
-            </h3>
-            <div className="grid grid-cols-2 gap-3">
-              <Lbl label="App name">
-                <input
-                  value={branding.app_name || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...layout,
-                      branding: { ...branding, app_name: e.target.value },
-                    })
-                  }
-                  className={INPUT}
-                  placeholder="e.g. Production log"
-                />
-              </Lbl>
-              <Lbl label="Primary color (hex)">
-                <input
-                  value={branding.primary_color || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...layout,
-                      branding: { ...branding, primary_color: e.target.value },
-                    })
-                  }
-                  className={INPUT}
-                  placeholder="#2563eb"
-                />
-              </Lbl>
-              <Lbl label="Logo URL">
-                <input
-                  value={branding.logo_url || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...layout,
-                      branding: { ...branding, logo_url: e.target.value },
-                    })
-                  }
-                  className={INPUT}
-                />
-              </Lbl>
-              <Lbl label="Welcome text (login screen)">
-                <input
-                  value={branding.welcome_text || ''}
-                  onChange={(e) =>
-                    onChange({
-                      ...layout,
-                      branding: { ...branding, welcome_text: e.target.value },
-                    })
-                  }
-                  className={INPUT}
-                />
-              </Lbl>
-            </div>
-          </section>
+          <ThemeSection layout={layout} onChange={onChange} />
 
           <AutoNumberSection layout={layout} onChange={onChange} />
 
@@ -190,6 +140,334 @@ export default function AppSettingsEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+
+// ── Theme / design-system editor ────────────────────────────────────────
+
+const SECTION_H =
+  'mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary';
+
+/** Downscale + compress an uploaded image to a bounded data-URI (CSP-safe). */
+function compressImageToDataUri(file: File, maxKb = 200): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode failed'));
+      img.onload = () => {
+        const maxDim = 1600;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const s = maxDim / Math.max(width, height);
+          width = Math.round(width * s);
+          height = Math.round(height * s);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('no ctx'));
+        ctx.drawImage(img, 0, 0, width, height);
+        let q = 0.82;
+        let out = canvas.toDataURL('image/jpeg', q);
+        while (out.length / 1024 > maxKb && q > 0.3) {
+          q -= 0.12;
+          out = canvas.toDataURL('image/jpeg', q);
+        }
+        resolve(out);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function ColorField({
+  label,
+  value,
+  fallback,
+  onChange,
+}: {
+  label: string;
+  value?: string | null;
+  fallback: string;
+  onChange: (hex: string) => void;
+}) {
+  return (
+    <Lbl label={label}>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={value || fallback}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-8 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))] bg-transparent p-0.5"
+        />
+        <input
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          className={INPUT}
+          placeholder={fallback}
+        />
+      </div>
+    </Lbl>
+  );
+}
+
+function BackgroundEditor({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: ThemeBackgroundSpec | null;
+  onChange: (bg: ThemeBackgroundSpec | null) => void;
+}) {
+  const bg = value || { kind: 'color' as const };
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+  return (
+    <div className="rounded-md border border-[rgb(var(--border-line))] p-2">
+      <div className="grid grid-cols-2 gap-3">
+        <Lbl label={label}>
+          <select
+            value={bg.kind}
+            onChange={(e) =>
+              onChange({ ...bg, kind: e.target.value as ThemeBackgroundSpec['kind'] })
+            }
+            className={INPUT}
+          >
+            <option value="color">Màu đơn</option>
+            <option value="gradient">Gradient</option>
+            <option value="image">Ảnh nền</option>
+          </select>
+        </Lbl>
+        {bg.kind === 'color' && (
+          <ColorField
+            label="Màu nền"
+            value={bg.color}
+            fallback="#f1f5f9"
+            onChange={(hex) => onChange({ ...bg, color: hex })}
+          />
+        )}
+        {bg.kind === 'gradient' && (
+          <Lbl label="Kiểu gradient">
+            <select
+              value={bg.gradient_preset || 'ocean'}
+              onChange={(e) => onChange({ ...bg, gradient_preset: e.target.value })}
+              className={INPUT}
+            >
+              {Object.keys(GRADIENT_PRESETS).map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </Lbl>
+        )}
+      </div>
+      {bg.kind === 'gradient' && (
+        <div
+          className="mt-2 h-8 rounded"
+          style={{ backgroundImage: GRADIENT_PRESETS[bg.gradient_preset || 'ocean'] }}
+        />
+      )}
+      {bg.kind === 'image' && (
+        <div className="mt-2">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setUploadErr(null);
+              try {
+                const uri = await compressImageToDataUri(f, 200);
+                onChange({ ...bg, image_data: uri });
+              } catch {
+                setUploadErr('Không đọc được ảnh.');
+              }
+            }}
+            className="text-caption"
+          />
+          {uploadErr && <p className="mt-1 text-caption text-status-danger">{uploadErr}</p>}
+          {bg.image_data && (
+            <div
+              className="mt-2 h-16 rounded border border-[rgb(var(--border-line))]"
+              style={{
+                backgroundImage: `url(${bg.image_data})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+              }}
+            />
+          )}
+          <p className="mt-1 text-caption text-text-tertiary">
+            Ảnh được nén &amp; nhúng (~200KB) để hợp CSP. URL ngoài bị chặn.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThemeSection({
+  layout,
+  onChange,
+}: {
+  layout: MiniAppLayoutSpec;
+  onChange: (next: MiniAppLayoutSpec) => void;
+}) {
+  const branding: BrandingSpec = layout.branding || {};
+  const set = (patch: Partial<BrandingSpec>) =>
+    onChange({ ...layout, branding: { ...branding, ...patch } });
+  const card = branding.card_style || {};
+
+  return (
+    <>
+      <section>
+        <h3 className={SECTION_H}>Thương hiệu</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Lbl label="Tên app">
+            <input
+              value={branding.app_name || ''}
+              onChange={(e) => set({ app_name: e.target.value })}
+              className={INPUT}
+              placeholder="VD: Nhật ký sản xuất"
+            />
+          </Lbl>
+          <Lbl label="Logo URL">
+            <input
+              value={branding.logo_url || ''}
+              onChange={(e) => set({ logo_url: e.target.value })}
+              className={INPUT}
+            />
+          </Lbl>
+          <Lbl label="Lời chào (trang login)">
+            <input
+              value={branding.welcome_text || ''}
+              onChange={(e) => set({ welcome_text: e.target.value })}
+              className={INPUT}
+            />
+          </Lbl>
+          <Lbl label="Tagline login">
+            <input
+              value={branding.login?.tagline || ''}
+              onChange={(e) =>
+                set({ login: { ...(branding.login || {}), tagline: e.target.value } })
+              }
+              className={INPUT}
+            />
+          </Lbl>
+        </div>
+      </section>
+
+      <section>
+        <h3 className={SECTION_H}>Màu &amp; chế độ</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <ColorField
+            label="Màu chính"
+            value={branding.primary_color}
+            fallback="#2563eb"
+            onChange={(hex) => set({ primary_color: hex })}
+          />
+          <ColorField
+            label="Màu nhấn (accent)"
+            value={branding.accent_color}
+            fallback="#2563eb"
+            onChange={(hex) => set({ accent_color: hex })}
+          />
+          <Lbl label="Chế độ">
+            <select
+              value={branding.theme || 'auto'}
+              onChange={(e) => set({ theme: e.target.value as ThemeMode })}
+              className={INPUT}
+            >
+              <option value="auto">Tự động (theo máy)</option>
+              <option value="light">Sáng</option>
+              <option value="dark">Tối</option>
+            </select>
+          </Lbl>
+          <Lbl label="Phông chữ">
+            <select
+              value={branding.font_family || 'system'}
+              onChange={(e) => set({ font_family: e.target.value as ThemeFont })}
+              className={INPUT}
+            >
+              <option value="system">Hệ thống</option>
+              <option value="inter">Inter</option>
+              <option value="be-vietnam">Be Vietnam Pro</option>
+              <option value="roboto">Roboto</option>
+              <option value="serif">Serif</option>
+              <option value="mono">Mono</option>
+            </select>
+          </Lbl>
+        </div>
+      </section>
+
+      <section>
+        <h3 className={SECTION_H}>Nền app</h3>
+        <BackgroundEditor
+          label="Kiểu nền"
+          value={branding.background}
+          onChange={(bg) => set({ background: bg })}
+        />
+      </section>
+
+      <section>
+        <h3 className={SECTION_H}>Thẻ &amp; header</h3>
+        <div className="grid grid-cols-3 gap-3">
+          <Lbl label="Bo góc thẻ">
+            <select
+              value={card.radius || 'lg'}
+              onChange={(e) =>
+                set({ card_style: { ...card, radius: e.target.value as never } })
+              }
+              className={INPUT}
+            >
+              <option value="none">Không</option>
+              <option value="sm">Nhỏ</option>
+              <option value="md">Vừa</option>
+              <option value="lg">Lớn</option>
+              <option value="xl">Rất lớn</option>
+            </select>
+          </Lbl>
+          <Lbl label="Đổ bóng">
+            <select
+              value={card.shadow || 'sm'}
+              onChange={(e) =>
+                set({ card_style: { ...card, shadow: e.target.value as never } })
+              }
+              className={INPUT}
+            >
+              <option value="none">Không</option>
+              <option value="sm">Nhẹ</option>
+              <option value="md">Rõ</option>
+            </select>
+          </Lbl>
+          <Lbl label="Kiểu header">
+            <select
+              value={branding.header_style || 'line'}
+              onChange={(e) => set({ header_style: e.target.value as never })}
+              className={INPUT}
+            >
+              <option value="line">Viền dưới</option>
+              <option value="fill">Nền màu</option>
+              <option value="minimal">Tối giản</option>
+            </select>
+          </Lbl>
+        </div>
+      </section>
+
+      <section>
+        <h3 className={SECTION_H}>Nền trang login (tuỳ chọn)</h3>
+        <BackgroundEditor
+          label="Kiểu nền login"
+          value={branding.login?.background}
+          onChange={(bg) => set({ login: { ...(branding.login || {}), background: bg } })}
+        />
+      </section>
+    </>
   );
 }
 

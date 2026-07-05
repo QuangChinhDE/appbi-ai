@@ -11,11 +11,29 @@
  */
 import axios from 'axios';
 
+export interface ThemeBackgroundApi {
+  kind: 'color' | 'gradient' | 'image';
+  color?: string | null;
+  gradient_preset?: string | null;
+  image_data?: string | null;
+}
+
 export interface WorkspaceBranding {
   app_name?: string | null;
   logo_url?: string | null;
   primary_color?: string | null;
+  accent_color?: string | null;
   welcome_text?: string | null;
+  theme?: 'light' | 'dark' | 'auto';
+  background?: ThemeBackgroundApi | null;
+  font_family?: 'system' | 'inter' | 'be-vietnam' | 'roboto' | 'serif' | 'mono' | null;
+  card_style?: {
+    radius?: 'none' | 'sm' | 'md' | 'lg' | 'xl' | null;
+    shadow?: 'none' | 'sm' | 'md' | null;
+    border?: boolean | null;
+  } | null;
+  header_style?: 'fill' | 'line' | 'minimal' | null;
+  login?: { background?: ThemeBackgroundApi | null; tagline?: string | null } | null;
 }
 
 export interface WorkspaceMeta {
@@ -94,6 +112,8 @@ export interface AppShellResponse {
     description?: string | null;
   };
   branding: WorkspaceBranding;
+  /** Storage-aware media size ceiling (KB); FE pre-checks uploads against it. */
+  media_max_kb?: number;
   nav: AppShellNav;
   screens: AppShellScreenStub[];
   screen_groups?: AppShellScreenGroup[];
@@ -192,6 +212,23 @@ export interface TableScreenResponse {
       return_column: string;
       format?: string | null;
     }>;
+    rollup_columns?: Array<{
+      name: string;
+      label?: string | null;
+      from_table_id: number;
+      match_column_local: string;
+      match_column_remote: string;
+      agg?: 'sum' | 'count' | 'avg' | 'min' | 'max';
+      value_column?: string;
+      format?: string | null;
+    }>;
+    format_rules?: Array<{
+      when: string;
+      color: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet';
+      columns?: string[];
+      icon?: string | null;
+      label?: string | null;
+    }>;
     totals?: Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
     column_groups?: Array<{ label: string; columns: string[] }>;
     group_by?: string[];
@@ -203,6 +240,13 @@ export interface TableScreenResponse {
         format?: string | null;
         align?: 'left' | 'center' | 'right' | null;
         merge?: boolean | null;
+        input_type?: string | null;
+        options?: Array<{ label: string; value: unknown }> | null;
+        currency_code?: string | null;
+        max_stars?: number | null;
+        min_value?: number | null;
+        max_value?: number | null;
+        step?: number | null;
       }
     >;
     detail_panel?: {

@@ -12,22 +12,26 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import { relativeTime } from './ui';
 import {
   listAlertChannels, createAlertChannel, updateAlertChannel, deleteAlertChannel, testAlertChannel,
   type AlertChannel, type ChannelKind, type Severity,
 } from '@/lib/observability';
 
-const KIND_META: Record<ChannelKind, { label: string; icon: typeof Mail; placeholder: string }> = {
-  email: { label: 'Email', icon: Mail, placeholder: 'team@company.com' },
-  slack: { label: 'Slack', icon: Slack, placeholder: 'https://hooks.slack.com/services/...' },
-  webhook: { label: 'Webhook', icon: Webhook, placeholder: 'https://your-endpoint/observability' },
+const KIND_META: Record<ChannelKind, { labelKey: string; icon: typeof Mail; placeholderKey: string }> = {
+  email: { labelKey: 'observability.alertChannels.kind.email', icon: Mail, placeholderKey: 'observability.alertChannels.placeholder.email' },
+  slack: { labelKey: 'observability.alertChannels.kind.slack', icon: Slack, placeholderKey: 'observability.alertChannels.placeholder.slack' },
+  webhook: { labelKey: 'observability.alertChannels.kind.webhook', icon: Webhook, placeholderKey: 'observability.alertChannels.placeholder.webhook' },
 };
-const SEV_OPTS: { v: Severity; l: string }[] = [
-  { v: 'info', l: 'Từ Thông tin' }, { v: 'warning', l: 'Từ Cảnh báo' }, { v: 'critical', l: 'Chỉ Nghiêm trọng' },
+const SEV_OPTS: { v: Severity; labelKey: string }[] = [
+  { v: 'info', labelKey: 'observability.alertChannels.minSeverity.info' },
+  { v: 'warning', labelKey: 'observability.alertChannels.minSeverity.warning' },
+  { v: 'critical', labelKey: 'observability.alertChannels.minSeverity.critical' },
 ];
 
 export function AlertChannelsModal({ onClose }: { onClose: () => void }) {
+  const { t, locale } = useI18n();
   const [channels, setChannels] = useState<AlertChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -46,39 +50,39 @@ export function AlertChannelsModal({ onClose }: { onClose: () => void }) {
   useEffect(() => { reload(); }, [reload]);
 
   const onCreate = async () => {
-    if (!target.trim()) { toast.error('Nhập đích nhận (email / URL)'); return; }
+    if (!target.trim()) { toast.error(t('observability.alertChannels.targetRequired')); return; }
     setBusyId(-1);
     try {
-      await createAlertChannel({ kind, name: name.trim() || KIND_META[kind].label, target: target.trim(), min_severity: minSeverity });
+      await createAlertChannel({ kind, name: name.trim() || t(KIND_META[kind].labelKey), target: target.trim(), min_severity: minSeverity });
       setAdding(false); setName(''); setTarget('');
       await reload();
-      toast.success('Đã thêm kênh cảnh báo');
-    } catch (e: any) { toast.error(e?.response?.data?.detail ?? 'Thêm kênh thất bại'); }
+      toast.success(t('observability.alertChannels.createSuccess'));
+    } catch (e: any) { toast.error(e?.response?.data?.detail ?? t('observability.alertChannels.createFailed')); }
     finally { setBusyId(null); }
   };
   const onToggle = async (c: AlertChannel) => { setBusyId(c.id); try { await updateAlertChannel(c.id, { isActive: !c.isActive }); await reload(); } finally { setBusyId(null); } };
-  const onDelete = async (c: AlertChannel) => { if (!confirm(`Xoá kênh "${c.name}"?`)) return; setBusyId(c.id); try { await deleteAlertChannel(c.id); await reload(); } finally { setBusyId(null); } };
+  const onDelete = async (c: AlertChannel) => { if (!confirm(t('observability.alertChannels.deleteConfirm', { name: c.name }))) return; setBusyId(c.id); try { await deleteAlertChannel(c.id); await reload(); } finally { setBusyId(null); } };
   const onTest = async (c: AlertChannel) => {
     setBusyId(c.id);
     try {
       const r = await testAlertChannel(c.id);
-      r.ok ? toast.success('Đã gửi thử thành công') : toast.error(`Gửi thử thất bại: ${r.error ?? ''}`);
+      r.ok ? toast.success(t('observability.alertChannels.testSuccess')) : toast.error(t('observability.alertChannels.testFailed', { error: r.error ?? '' }));
       await reload();
     } finally { setBusyId(null); }
   };
 
   return (
-    <Modal isOpen onClose={onClose} title="Kênh cảnh báo" size="lg"
-      footer={<Button variant="ghost" onClick={onClose}>Đóng</Button>}>
+    <Modal isOpen onClose={onClose} title={t('observability.alertChannels.title')} size="lg"
+      footer={<Button variant="ghost" onClick={onClose}>{t('observability.action.close')}</Button>}>
       <div className="space-y-4">
         <p className="text-caption text-text-tertiary">
-          Khi có sự cố mới (theo mức độ tối thiểu), hệ thống gửi thông báo tới các kênh này. Email dùng SMTP đã cấu hình; Slack/Webhook gửi qua URL.
+          {t('observability.alertChannels.description')}
         </p>
 
         {loading ? (
-          <p className="py-6 text-center text-caption text-text-tertiary">Đang tải…</p>
+          <p className="py-6 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>
         ) : channels.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-4 py-8 text-center text-caption text-text-quaternary">Chưa có kênh nào.</div>
+          <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-4 py-8 text-center text-caption text-text-quaternary">{t('observability.alertChannels.empty')}</div>
         ) : (
           <ul className="divide-y divide-[rgb(var(--border-line))] rounded-lg border border-[rgb(var(--border-line))]">
             {channels.map((c) => {
@@ -89,17 +93,17 @@ export function AlertChannelsModal({ onClose }: { onClose: () => void }) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-caption font-emphasis text-text-primary">{c.name}</span>
-                      <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{SEV_OPTS.find((s) => s.v === c.minSeverity)?.l}</span>
+                      <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{t(SEV_OPTS.find((s) => s.v === c.minSeverity)?.labelKey ?? 'observability.alertChannels.minSeverity.warning')}</span>
                     </div>
                     <div className="truncate text-tiny text-text-quaternary">{c.target}</div>
                     {c.lastError
                       ? <div className="mt-0.5 inline-flex items-center gap-1 text-tiny text-danger"><AlertCircle className="h-3 w-3" />{c.lastError}</div>
-                      : c.lastSentAt && <div className="mt-0.5 inline-flex items-center gap-1 text-tiny text-success"><CheckCircle2 className="h-3 w-3" />gửi {relativeTime(c.lastSentAt)}</div>}
+                      : c.lastSentAt && <div className="mt-0.5 inline-flex items-center gap-1 text-tiny text-success"><CheckCircle2 className="h-3 w-3" />{t('observability.alertChannels.lastSent', { time: relativeTime(c.lastSentAt, t, locale) })}</div>}
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-1.5">
-                    <IconBtn title="Gửi thử" onClick={() => onTest(c)} loading={busyId === c.id}><Send className="h-3.5 w-3.5" /></IconBtn>
-                    <IconBtn title={c.isActive ? 'Tạm dừng' : 'Bật'} onClick={() => onToggle(c)}><Power className={cn('h-3.5 w-3.5', c.isActive ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
-                    <IconBtn title="Xoá" onClick={() => onDelete(c)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
+                    <IconBtn title={t('observability.action.test')} onClick={() => onTest(c)} loading={busyId === c.id}><Send className="h-3.5 w-3.5" /></IconBtn>
+                    <IconBtn title={c.isActive ? t('observability.action.pause') : t('observability.action.enable')} onClick={() => onToggle(c)}><Power className={cn('h-3.5 w-3.5', c.isActive ? 'text-success' : 'text-text-quaternary')} /></IconBtn>
+                    <IconBtn title={t('observability.action.delete')} onClick={() => onDelete(c)}><Trash2 className="h-3.5 w-3.5 text-danger" /></IconBtn>
                   </div>
                 </li>
               );
@@ -115,27 +119,27 @@ export function AlertChannelsModal({ onClose }: { onClose: () => void }) {
                 return (
                   <button key={k} onClick={() => setKind(k)}
                     className={cn('inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-caption', kind === k ? 'border-brand bg-brand/10 text-brand' : 'border-[rgb(var(--border-line))] text-text-tertiary')}>
-                    <Meta.icon className="h-3.5 w-3.5" />{Meta.label}
+                    <Meta.icon className="h-3.5 w-3.5" />{t(Meta.labelKey)}
                   </button>
                 );
               })}
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tên kênh (tuỳ chọn)" />
+              <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('observability.alertChannels.namePlaceholder')} />
               <select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value as Severity)}
                 className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-primary focus:border-brand focus:outline-none">
-                {SEV_OPTS.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
+                {SEV_OPTS.map((s) => <option key={s.v} value={s.v}>{t(s.labelKey)}</option>)}
               </select>
             </div>
-            <Input size="sm" value={target} onChange={(e) => setTarget(e.target.value)} placeholder={KIND_META[kind].placeholder} />
+            <Input size="sm" value={target} onChange={(e) => setTarget(e.target.value)} placeholder={t(KIND_META[kind].placeholderKey)} />
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setAdding(false)}>Huỷ</Button>
+              <Button variant="ghost" size="sm" onClick={() => setAdding(false)}>{t('observability.action.cancel')}</Button>
               <Button variant="primary" size="sm" disabled={busyId === -1} onClick={onCreate}
-                leadingIcon={busyId === -1 ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}>Thêm kênh</Button>
+                leadingIcon={busyId === -1 ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}>{t('observability.action.addChannel')}</Button>
             </div>
           </div>
         ) : (
-          <Button variant="secondary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)}>Thêm kênh cảnh báo</Button>
+          <Button variant="secondary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)}>{t('observability.alertChannels.addNew')}</Button>
         )}
       </div>
     </Modal>

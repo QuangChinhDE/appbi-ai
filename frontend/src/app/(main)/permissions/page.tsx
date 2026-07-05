@@ -4,14 +4,15 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Edit2, Trash2, UserX, Users, Search } from 'lucide-react';
 import { permissionsApi, usersApi } from '@/lib/api-client';
-import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
-import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
+import { extractApiError, validatePasswordStrength } from '@/lib/api-errors';
+import { authConfig, type AuthProvider } from '@/lib/auth-config';
 import { toast } from '@/lib/toast';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Input, Select, FieldGroup } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/common/Modal';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 
 /* ───────────── types ───────────── */
 
@@ -66,13 +67,15 @@ interface TeamRecord {
 
 /* ───────────── constants ───────────── */
 
-const MODULE_LABELS: Record<string, string> = {
-  data_sources:      'Data sources',
-  datasets:          'Datasets',
-  explore_charts:    'Explore + charts',
-  dashboards:        'Dashboards',
-  workboards:        'Workboards',
-  settings:          'Settings',
+const MODULE_LABEL_KEYS: Record<string, string> = {
+  data_sources: 'settings.module.data_sources',
+  datasets: 'settings.module.datasets',
+  explore_charts: 'settings.module.explore_charts',
+  dashboards: 'settings.module.dashboards',
+  workboards: 'settings.module.workboards',
+  govern: 'settings.module.govern',
+  observability: 'settings.module.observability',
+  settings: 'settings.module.settings',
 };
 
 const LEVEL_CLASSES: Record<string, string> = {
@@ -82,32 +85,68 @@ const LEVEL_CLASSES: Record<string, string> = {
   full: 'bg-info/10 text-info',
 };
 
-const LEVEL_LABELS: Record<string, string> = {
-  none: 'No access',
-  view: 'View',
-  edit: 'Edit',
-  full: 'Full',
+const LEVEL_LABEL_KEYS: Record<string, string> = {
+  none: 'settings.level.none',
+  view: 'settings.level.view',
+  edit: 'settings.level.edit',
+  full: 'settings.level.full',
+};
+
+const LEVEL_HELP_KEYS: Record<string, string> = {
+  none: 'settings.levelHelp.none',
+  view: 'settings.levelHelp.view',
+  edit: 'settings.levelHelp.edit',
+  full: 'settings.levelHelp.full',
 };
 
 const PRESETS = ['admin', 'editor', 'viewer', 'minimal'] as const;
-const PRESET_LABELS: Record<string, string> = {
-  admin: 'Admin (full)', editor: 'Editor', viewer: 'Viewer', minimal: 'Minimal',
+const PRESET_LABEL_KEYS: Record<string, string> = {
+  admin: 'settings.preset.admin',
+  editor: 'settings.preset.editor',
+  viewer: 'settings.preset.viewer',
+  minimal: 'settings.preset.minimal',
 };
+
+function moduleLabel(module: string, t: (key: string) => string): string {
+  const key = MODULE_LABEL_KEYS[module];
+  return key ? t(key) : module;
+}
+
+function levelLabel(level: string, t: (key: string) => string): string {
+  const key = LEVEL_LABEL_KEYS[level];
+  return key ? t(key) : level;
+}
+
+function levelHelp(level: string, t: (key: string) => string): string {
+  const key = LEVEL_HELP_KEYS[level];
+  return key ? t(key) : '';
+}
+
+function presetLabel(preset: string, t: (key: string) => string): string {
+  const key = PRESET_LABEL_KEYS[preset];
+  return key ? t(key) : preset;
+}
+
+function authMethodLabel(user: { auth_provider: AuthProvider; google_connected: boolean }, t: (key: string) => string): string {
+  if (user.auth_provider === 'password' && user.google_connected) return t('settings.auth.googlePassword');
+  return t(user.auth_provider === 'google' ? 'settings.auth.google' : 'settings.auth.password');
+}
 
 type Tab = 'matrix' | 'users' | 'teams' | 'presets';
 
 /* ═══════════ MAIN PAGE ═══════════ */
 
 export default function PermissionsPage() {
+  const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<Tab>('matrix');
 
   return (
     <div className="w-full px-8 py-6 max-w-[1400px]">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-h1 text-text-primary font-emphasis">Permissions</h1>
+        <h1 className="text-h1 text-text-primary font-emphasis">{t('settings.permissions.title')}</h1>
         <p className="text-caption text-text-tertiary mt-1">
-          Set per-module access level for each user
+          {t('settings.permissions.description')}
         </p>
       </div>
 
@@ -115,10 +154,10 @@ export default function PermissionsPage() {
       <div className="border-b border-[rgb(var(--border-line))] mb-6">
         <nav className="flex gap-6">
           {([
-            { key: 'matrix', label: 'Permission matrix' },
-            { key: 'users',  label: 'Users' },
-            { key: 'teams', label: 'Teams' },
-            { key: 'presets', label: 'Presets' },
+            { key: 'matrix', label: t('settings.tabs.matrix') },
+            { key: 'users',  label: t('settings.tabs.users') },
+            { key: 'teams', label: t('settings.tabs.teams') },
+            { key: 'presets', label: t('settings.tabs.presets') },
           ] as const).map((t) => (
             <button
               key={t.key}
@@ -148,6 +187,7 @@ export default function PermissionsPage() {
 /* ═══════════ MATRIX TAB ═══════════ */
 
 function MatrixTab() {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const [userQuery, setUserQuery] = useState('');
   const [pendingChanges, setPendingChanges] = useState<Record<string, Record<string, string>>>({});
@@ -162,9 +202,9 @@ function MatrixTab() {
       permissionsApi.updateUserPermissions(userId, permissions),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['permissions'] });
-      toast.success('Permissions saved');
+      toast.success(t('settings.matrix.saved'));
     },
-    onError: (err: any) => toast.error(extractApiError(err, 'Save failed')),
+    onError: (err: any) => toast.error(extractApiError(err, t('settings.matrix.saveFailed'))),
   });
 
   const presetMutation = useMutation({
@@ -173,9 +213,9 @@ function MatrixTab() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ['permissions'] });
       setPendingChanges((p) => { const n = { ...p }; delete n[vars.userId]; return n; });
-      toast.success(`Applied "${vars.preset}" preset`);
+      toast.success(t('settings.matrix.presetApplied', { preset: presetLabel(vars.preset, t) }));
     },
-    onError: (err: any) => toast.error(extractApiError(err, 'Preset failed')),
+    onError: (err: any) => toast.error(extractApiError(err, t('settings.matrix.presetFailed'))),
   });
 
   const setLevel = (userId: string, module: string, level: string) => {
@@ -197,7 +237,7 @@ function MatrixTab() {
 
   const handleResetAll = () => {
     setPendingChanges({});
-    toast.info('Changes discarded');
+    toast.info(t('settings.matrix.discarded'));
   };
 
   const pendingCount = Object.keys(pendingChanges).length;
@@ -224,12 +264,12 @@ function MatrixTab() {
             size="sm"
             value={userQuery}
             onChange={(e) => setUserQuery(e.target.value)}
-            placeholder="Search users by name or email…"
+            placeholder={t('settings.matrix.searchPlaceholder')}
             leadingIcon={<Search />}
           />
         </div>
         <span className="text-tiny text-text-quaternary">
-          Set each cell, or use <span className="font-emphasis text-text-tertiary">Quick set</span> to apply a preset to a whole row.
+          {t('settings.matrix.hintPrefix')} <span className="font-emphasis text-text-tertiary">{t('settings.matrix.quickSet')}</span> {t('settings.matrix.hintSuffix')}
         </span>
       </div>
 
@@ -239,15 +279,15 @@ function MatrixTab() {
           <thead>
             <tr className="border-b border-[rgb(var(--border-line))] bg-surface-2">
               <th className="text-left px-5 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary sticky left-0 bg-surface-2 min-w-[200px]">
-                User
+                {t('settings.matrix.header.user')}
               </th>
               {modules.map((m) => (
                 <th key={m} className="text-center px-3 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary min-w-[110px]">
-                  {MODULE_LABELS[m] || m}
+                  {moduleLabel(m, t)}
                 </th>
               ))}
               <th className="text-center px-3 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary min-w-[130px]">
-                Quick set
+                {t('settings.matrix.header.quickSet')}
               </th>
             </tr>
           </thead>
@@ -255,7 +295,7 @@ function MatrixTab() {
             {users.length === 0 ? (
               <tr>
                 <td colSpan={modules.length + 2} className="px-5 py-10 text-center text-caption text-text-tertiary">
-                  No users matching “{userQuery}”.
+                  {t('settings.matrix.noUsersMatch', { query: userQuery })}
                 </td>
               </tr>
             ) : users.map((user) => {
@@ -281,7 +321,7 @@ function MatrixTab() {
                         <div className="flex items-center gap-2">
                           <p className="font-emphasis text-text-primary truncate">{user.full_name}</p>
                           {isOwner && (
-                            <Badge variant="neutral" size="xs">Owner</Badge>
+                            <Badge variant="neutral" size="xs">{t('settings.users.owner')}</Badge>
                           )}
                         </div>
                         <p className="text-tiny text-text-quaternary truncate">{user.email}</p>
@@ -306,7 +346,7 @@ function MatrixTab() {
                         >
                           {allowed.map((lvl) => (
                             <option key={lvl} value={lvl}>
-                              {LEVEL_LABELS[lvl] || lvl}
+                            {levelLabel(lvl, t)}
                             </option>
                           ))}
                         </select>
@@ -321,12 +361,12 @@ function MatrixTab() {
                         const preset = e.target.value;
                         if (preset) presetMutation.mutate({ userId: user.user_id, preset });
                       }}
-                      title="Apply a preset to this user"
+                      title={t('settings.matrix.presetTitle')}
                       className="min-w-[110px] cursor-pointer appearance-none rounded-md bg-surface-2 px-3 py-1.5 text-center text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-3 focus-visible:shadow-focus-brand focus-visible:outline-none"
                     >
-                      <option value="">Preset…</option>
+                      <option value="">{t('settings.matrix.presetPlaceholder')}</option>
                       {PRESETS.map((p) => (
-                        <option key={p} value={p}>{PRESET_LABELS[p]}</option>
+                        <option key={p} value={p}>{presetLabel(p, t)}</option>
                       ))}
                     </select>
                   </td>
@@ -339,19 +379,14 @@ function MatrixTab() {
 
       {/* Legend */}
       <div className="flex flex-wrap items-center gap-4 mt-4 text-tiny text-text-tertiary">
-        {Object.entries(LEVEL_LABELS).map(([val, label]) => {
+        {Object.keys(LEVEL_LABEL_KEYS).map((val) => {
           const cls = LEVEL_CLASSES[val] || LEVEL_CLASSES.none;
           return (
             <div key={val} className="flex items-center gap-1.5">
               <span className={cn('inline-flex items-center px-2 py-0.5 rounded-md font-emphasis', cls)}>
-                {label}
+                {levelLabel(val, t)}
               </span>
-              <span>
-                {val === 'none' ? '— module hidden from the sidebar'
-                  : val === 'view' ? '— view own + shared, interact with filters'
-                  : val === 'edit' ? '— CRUD own, view shared, share with others'
-                  : '— CRUD everything, manage config'}
-              </span>
+              <span>— {levelHelp(val, t)}</span>
             </div>
           );
         })}
@@ -363,11 +398,11 @@ function MatrixTab() {
           <div className="flex items-center gap-3 rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2.5 shadow-lg">
             <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">
               <span className="h-2 w-2 rounded-full bg-warning" />
-              {pendingCount} user{pendingCount === 1 ? '' : 's'} with unsaved changes
+              {t(pendingCount === 1 ? 'settings.matrix.unsavedOne' : 'settings.matrix.unsaved', { count: pendingCount })}
             </span>
             <div className="h-4 w-px bg-[rgb(var(--border-line))]" />
             <Button variant="secondary" size="sm" onClick={handleResetAll} disabled={saveMutation.isPending}>
-              Discard
+              {t('settings.matrix.discard')}
             </Button>
             <Button
               variant="primary"
@@ -376,7 +411,7 @@ function MatrixTab() {
               disabled={saveMutation.isPending}
               loading={saveMutation.isPending}
             >
-              {saveMutation.isPending ? 'Saving…' : 'Save changes'}
+              {saveMutation.isPending ? t('settings.matrix.saving') : t('settings.common.saveChanges')}
             </Button>
           </div>
         </div>
@@ -388,6 +423,7 @@ function MatrixTab() {
 /* ═══════════ USERS TAB ═══════════ */
 
 function UsersTab() {
+  const { t, locale } = useI18n();
   const qc = useQueryClient();
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
@@ -408,9 +444,9 @@ function UsersTab() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['users'] });
       qc.invalidateQueries({ queryKey: ['permissions', 'teams'] });
-      toast.success('User deactivated');
+      toast.success(t('settings.users.deactivatedToast'));
     },
-    onError: (err: any) => toast.error(extractApiError(err, 'Failed')),
+    onError: (err: any) => toast.error(extractApiError(err, t('settings.users.failed'))),
   });
 
   const visibleUsers = users.filter((user) => {
@@ -427,11 +463,11 @@ function UsersTab() {
     <>
       <div className="flex flex-col gap-3 mb-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <p className="text-caption text-text-tertiary">{visibleUsers.length} of {users.length} users</p>
+          <p className="text-caption text-text-tertiary">{t('settings.users.count', { visible: visibleUsers.length, total: users.length })}</p>
           <div className="w-full sm:w-[260px]">
             <Select value={selectedTeamFilter} onChange={(e) => setSelectedTeamFilter(e.target.value)} disabled={isTeamsLoading}>
-              <option value="all">All teams</option>
-              <option value="unassigned">Unassigned users</option>
+              <option value="all">{t('settings.users.allTeams')}</option>
+              <option value="unassigned">{t('settings.users.unassignedUsers')}</option>
               {teams.map((team) => (
                 <option key={team.id} value={team.id}>{team.name}</option>
               ))}
@@ -444,27 +480,27 @@ function UsersTab() {
           leadingIcon={<Plus className="h-4 w-4" />}
           onClick={() => setShowInviteModal(true)}
         >
-          Add user
+          {t('settings.users.add')}
         </Button>
       </div>
 
       <div className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] overflow-hidden shadow-linear-sm">
         {(isLoading || isTeamsLoading) ? (
-          <div className="p-12 text-center text-text-quaternary">Loading…</div>
+          <div className="p-12 text-center text-text-quaternary">{t('settings.users.loading')}</div>
         ) : users.length === 0 ? (
-          <div className="p-12 text-center text-text-quaternary">No users found.</div>
+          <div className="p-12 text-center text-text-quaternary">{t('settings.users.empty')}</div>
         ) : visibleUsers.length === 0 ? (
-          <div className="p-12 text-center text-text-quaternary">No users match this team filter.</div>
+          <div className="p-12 text-center text-text-quaternary">{t('settings.users.noTeamMatch')}</div>
         ) : (
           <table className="w-full text-caption">
             <thead>
               <tr className="border-b border-[rgb(var(--border-line))] bg-surface-2">
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Name</th>
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Email</th>
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Teams</th>
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Login method</th>
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Status</th>
-                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Last login</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.name')}</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.email')}</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.teams')}</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.loginMethod')}</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.status')}</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">{t('settings.users.header.lastLogin')}</th>
                 <th className="px-6 py-3" />
               </tr>
             </thead>
@@ -492,31 +528,31 @@ function UsersTab() {
                           )}
                         </>
                       ) : (
-                        <span className="text-text-quaternary">Unassigned</span>
+                        <span className="text-text-quaternary">{t('settings.users.unassigned')}</span>
                       )}
                     </div>
                   </td>
                   <td className="px-6 py-3">
                     <Badge variant="neutral" size="sm">
-                      {getAuthMethodLabel(u.auth_provider, u.google_connected)}
+                      {authMethodLabel(u, t)}
                     </Badge>
                   </td>
                   <td className="px-6 py-3">
                     <Badge variant={u.status === 'active' ? 'success' : 'danger'} size="sm">
-                      {u.status}
+                      {t(`settings.common.status.${u.status}`)}
                     </Badge>
                   </td>
                   <td className="px-6 py-3 text-text-tertiary">
-                    {u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : 'Never'}
+                    {u.last_login_at ? new Date(u.last_login_at).toLocaleDateString(locale) : t('settings.common.never')}
                   </td>
                   <td className="px-6 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <IconButton aria-label="Edit user" variant="ghost" size="sm" onClick={() => setEditingUser(u)}>
+                      <IconButton aria-label={t('settings.users.editAria')} variant="ghost" size="sm" onClick={() => setEditingUser(u)}>
                         <Edit2 className="h-4 w-4" />
                       </IconButton>
                       {u.status === 'active' && (
                         <IconButton
-                          aria-label="Deactivate user"
+                          aria-label={t('settings.users.deactivateAria')}
                           variant="ghost"
                           size="sm"
                           onClick={() => deactivateMutation.mutate(u.id)}
@@ -566,6 +602,7 @@ function UsersTab() {
 /* ═══════════ TEAMS TAB ═══════════ */
 
 function TeamsTab() {
+  const { t, locale } = useI18n();
   const qc = useQueryClient();
   const [editingTeam, setEditingTeam] = useState<TeamRecord | null>(null);
   const [showTeamModal, setShowTeamModal] = useState(false);
@@ -585,9 +622,9 @@ function TeamsTab() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['permissions', 'teams'] });
       qc.invalidateQueries({ queryKey: ['users'] });
-      toast.success('Team deleted');
+      toast.success(t('settings.teams.deletedToast'));
     },
-    onError: (err: any) => toast.error(extractApiError(err, 'Failed to delete team.')),
+    onError: (err: any) => toast.error(extractApiError(err, t('settings.teams.deleteFailed'))),
   });
 
   const activeUsers = users.filter((user) => user.status === 'active');
@@ -611,9 +648,9 @@ function TeamsTab() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-h4 text-text-primary font-emphasis">Teams</h2>
+          <h2 className="text-h4 text-text-primary font-emphasis">{t('settings.teams.title')}</h2>
           <p className="text-caption text-text-tertiary mt-1 max-w-2xl">
-            Organize active users into reusable teams so Settings stays clean before wiring team-based sharing flows.
+            {t('settings.teams.description')}
           </p>
         </div>
         <Button
@@ -622,25 +659,25 @@ function TeamsTab() {
           leadingIcon={<Plus className="h-4 w-4" />}
           onClick={openCreateModal}
         >
-          Add team
+          {t('settings.teams.add')}
         </Button>
       </div>
 
       {(isTeamsLoading || isUsersLoading) ? (
         <div className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] p-12 text-center text-text-quaternary shadow-linear-sm">
-          Loading teams…
+          {t('settings.teams.loading')}
         </div>
       ) : teams.length === 0 ? (
         <div className="bg-surface-1 rounded-xl border border-dashed border-[rgb(var(--border-line))] p-12 text-center shadow-linear-sm">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-brand/10 text-brand">
             <Users className="h-5 w-5" />
           </div>
-          <h3 className="text-h5 text-text-primary font-emphasis">No teams configured yet</h3>
+          <h3 className="text-h5 text-text-primary font-emphasis">{t('settings.teams.emptyTitle')}</h3>
           <p className="mt-2 text-caption text-text-tertiary">
-            Create the first team and assign members directly from active users in the workspace.
+            {t('settings.teams.emptyBody')}
           </p>
           <div className="mt-5">
-            <Button variant="primary" size="md" onClick={openCreateModal}>Create first team</Button>
+            <Button variant="primary" size="md" onClick={openCreateModal}>{t('settings.teams.createFirst')}</Button>
           </div>
         </div>
       ) : (
@@ -654,18 +691,18 @@ function TeamsTab() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-h5 text-text-primary font-emphasis">{team.name}</h3>
-                    <Badge variant="neutral" size="sm">{team.member_count} member{team.member_count === 1 ? '' : 's'}</Badge>
+                    <Badge variant="neutral" size="sm">{t(team.member_count === 1 ? 'settings.teams.memberCountOne' : 'settings.teams.memberCount', { count: team.member_count })}</Badge>
                   </div>
                   <p className="mt-2 text-caption text-text-tertiary min-h-[2.75rem]">
-                    {team.description || 'No description yet.'}
+                    {team.description || t('settings.common.noDescription')}
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <IconButton aria-label="Edit team" variant="ghost" size="sm" onClick={() => openEditModal(team)}>
+                  <IconButton aria-label={t('settings.teams.editAria')} variant="ghost" size="sm" onClick={() => openEditModal(team)}>
                     <Edit2 className="h-4 w-4" />
                   </IconButton>
                   <IconButton
-                    aria-label="Delete team"
+                    aria-label={t('settings.teams.deleteAria')}
                     variant="ghost"
                     size="sm"
                     className="hover:text-danger"
@@ -686,16 +723,16 @@ function TeamsTab() {
                       </Badge>
                     ))}
                     {team.members.length > 6 && (
-                      <Badge variant="neutral" size="sm">+{team.members.length - 6} more</Badge>
+                      <Badge variant="neutral" size="sm">{t('settings.teams.moreMembers', { count: team.members.length - 6 })}</Badge>
                     )}
                   </>
                 ) : (
-                  <span className="text-caption text-text-quaternary">No members assigned yet.</span>
+                  <span className="text-caption text-text-quaternary">{t('settings.teams.noMembers')}</span>
                 )}
               </div>
 
               <div className="mt-4 text-tiny text-text-quaternary">
-                Updated {new Date(team.updated_at).toLocaleDateString()}
+                {t('settings.teams.updated', { date: new Date(team.updated_at).toLocaleDateString(locale) })}
               </div>
             </div>
           ))}
@@ -722,6 +759,7 @@ function TeamsTab() {
 /* ═══════════ PRESETS TAB ═══════════ */
 
 function PresetsTab() {
+  const { t } = useI18n();
   const { data: presets } = useQuery<{ presets: Record<string, Record<string, string>> }>({
     queryKey: ['permissions', 'presets'],
     queryFn: permissionsApi.getPresets,
@@ -732,22 +770,22 @@ function PresetsTab() {
   return (
     <div className="space-y-6">
       <p className="text-caption text-text-tertiary">
-        Presets are pre-defined permission sets that can be applied quickly from the Permission matrix tab.
+        {t('settings.presets.description')}
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {Object.entries(allPresets).map(([name, perms]) => (
           <div key={name} className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] p-5 shadow-linear-sm">
             <div className="flex items-center gap-2 mb-3">
-              <Badge variant="brand" size="md">{PRESET_LABELS[name] || name}</Badge>
+              <Badge variant="brand" size="md">{presetLabel(name, t)}</Badge>
             </div>
             <div className="flex flex-wrap gap-2">
               {Object.entries(perms).map(([mod, level]) => {
                 const cls = LEVEL_CLASSES[level] || LEVEL_CLASSES.none;
                 return (
                   <div key={mod} className="flex items-center gap-1 text-tiny">
-                    <span className="text-text-tertiary">{MODULE_LABELS[mod] || mod}:</span>
+                    <span className="text-text-tertiary">{moduleLabel(mod, t)}:</span>
                     <span className={cn('px-1.5 py-0.5 rounded font-emphasis', cls)}>
-                      {LEVEL_LABELS[level] || level}
+                      {levelLabel(level, t)}
                     </span>
                   </div>
                 );
@@ -771,15 +809,16 @@ function TeamAssignmentField({
   selectedTeamIds: string[];
   onToggle: (teamId: string) => void;
 }) {
+  const { t } = useI18n();
   const selectedTeams = selectedTeamIds
     .map((teamId) => availableTeams.find((team) => team.id === teamId))
     .filter((team): team is TeamRecord => Boolean(team));
 
   return (
-    <FieldGroup label="Teams" description="Assign this user to one or more pre-configured teams.">
+    <FieldGroup label={t('settings.assignment.label')} description={t('settings.assignment.description')}>
       {availableTeams.length === 0 ? (
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-quaternary">
-          No teams have been created yet. Create teams in the Teams tab first.
+          {t('settings.assignment.noTeams')}
         </div>
       ) : (
         <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-4 space-y-4">
@@ -789,7 +828,7 @@ function TeamAssignmentField({
                 <Badge key={team.id} variant="brand" size="sm">{team.name}</Badge>
               ))
             ) : (
-              <span className="text-caption text-text-quaternary">No team selected.</span>
+              <span className="text-caption text-text-quaternary">{t('settings.assignment.noneSelected')}</span>
             )}
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -813,7 +852,7 @@ function TeamAssignmentField({
                   />
                   <div className="min-w-0">
                     <div className="font-emphasis text-text-primary">{team.name}</div>
-                    <div className="text-caption text-text-tertiary">{team.description || 'No description'}</div>
+                    <div className="text-caption text-text-tertiary">{team.description || t('settings.assignment.noDescription')}</div>
                   </div>
                 </label>
               );
@@ -836,6 +875,7 @@ function InviteModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  const { t } = useI18n();
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [authProvider, setAuthProvider] = useState<AuthProvider>(
@@ -860,7 +900,7 @@ function InviteModal({
     if (authProvider === 'password') {
       const passwordError = validatePasswordStrength(password);
       if (passwordError) {
-        setError(passwordError);
+        setError(t('settings.invite.passwordHelp'));
         return;
       }
     }
@@ -873,10 +913,10 @@ function InviteModal({
         team_ids: selectedTeamIds,
         ...(authProvider === 'password' ? { password } : {}),
       });
-      toast.success(`User ${email} created`);
+      toast.success(t('settings.invite.createdToast', { email }));
       onSuccess();
     } catch (err: any) {
-      setError(extractApiError(err, 'Failed to create user.'));
+      setError(extractApiError(err, t('settings.invite.failed')));
     } finally { setLoading(false); }
   };
 
@@ -884,13 +924,13 @@ function InviteModal({
     <Modal
       isOpen
       onClose={onClose}
-      title="Add user"
+      title={t('settings.invite.title')}
       size="lg"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose}>{t('settings.common.cancel')}</Button>
           <Button variant="primary" type="submit" form="invite-user-form" disabled={loading} loading={loading}>
-            {loading ? 'Creating…' : 'Create'}
+            {loading ? t('settings.invite.creating') : t('settings.common.create')}
           </Button>
         </>
       }
@@ -899,34 +939,34 @@ function InviteModal({
         {error && (
           <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
         )}
-        <FieldGroup label="Full name" required>
+        <FieldGroup label={t('settings.invite.fullName')} required>
           <Input type="text" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
         </FieldGroup>
-        <FieldGroup label="Email" required>
+        <FieldGroup label={t('settings.invite.email')} required>
           <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </FieldGroup>
         {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
-          <FieldGroup label="Login method">
+          <FieldGroup label={t('settings.invite.loginMethod')}>
             <Select value={authProvider} onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}>
-              {authConfig.googleEnabled && <option value="google">Google</option>}
-              {authConfig.passwordEnabled && <option value="password">Password</option>}
+              {authConfig.googleEnabled && <option value="google">{t('settings.auth.google')}</option>}
+              {authConfig.passwordEnabled && <option value="password">{t('settings.auth.password')}</option>}
             </Select>
           </FieldGroup>
         )}
         {authProvider === 'password' ? (
-          <FieldGroup label="Password" required description={PASSWORD_REQUIREMENTS_TEXT}>
+          <FieldGroup label={t('settings.invite.password')} required description={t('settings.invite.passwordHelp')}>
             <Input
               type="password"
               required
               minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Min 8 characters"
+              placeholder={t('settings.invite.passwordPlaceholder')}
             />
           </FieldGroup>
         ) : (
           <div className="rounded-md border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-brand">
-            The user will sign in with Google using this email. No password is required.
+            {t('settings.invite.googleNotice')}
           </div>
         )}
         <TeamAssignmentField
@@ -950,6 +990,7 @@ function EditUserModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  const { t } = useI18n();
   const [userStatus, setUserStatus] = useState<UserStatus>(user.status);
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(user.teams.map((team) => team.id));
   const [error, setError] = useState('');
@@ -968,9 +1009,9 @@ function EditUserModal({
     setError(''); setLoading(true);
     try {
       await usersApi.update(user.id, { status: userStatus, team_ids: selectedTeamIds });
-      toast.success('User updated');
+      toast.success(t('settings.editUser.updatedToast'));
       onSuccess();
-    } catch (err: any) { setError(extractApiError(err, 'Failed')); }
+    } catch (err: any) { setError(extractApiError(err, t('settings.editUser.failed'))); }
     finally { setLoading(false); }
   };
 
@@ -978,13 +1019,13 @@ function EditUserModal({
     <Modal
       isOpen
       onClose={onClose}
-      title="Edit user"
+      title={t('settings.editUser.title')}
       size="lg"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose}>{t('settings.common.cancel')}</Button>
           <Button variant="primary" type="submit" form="edit-user-form" disabled={loading} loading={loading}>
-            {loading ? 'Saving…' : 'Save'}
+            {loading ? t('settings.common.saving') : t('settings.common.save')}
           </Button>
         </>
       }
@@ -994,10 +1035,10 @@ function EditUserModal({
         {error && (
           <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
         )}
-        <FieldGroup label="Status">
+        <FieldGroup label={t('settings.users.header.status')}>
           <Select value={userStatus} onChange={(e) => setUserStatus(e.target.value as UserStatus)}>
-            <option value="active">Active</option>
-            <option value="deactivated">Deactivated</option>
+            <option value="active">{t('settings.common.status.active')}</option>
+            <option value="deactivated">{t('settings.common.status.deactivated')}</option>
           </Select>
         </FieldGroup>
         <TeamAssignmentField
@@ -1021,6 +1062,7 @@ function TeamModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState(team?.name ?? '');
   const [description, setDescription] = useState(team?.description ?? '');
   const [memberSearch, setMemberSearch] = useState('');
@@ -1052,7 +1094,7 @@ function TeamModal({
     e.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError('Team name is required.');
+      setError(t('settings.teamModal.nameRequired'));
       return;
     }
 
@@ -1067,14 +1109,14 @@ function TeamModal({
 
       if (team) {
         await permissionsApi.updateTeam(team.id, payload);
-        toast.success(`Updated ${trimmedName}`);
+        toast.success(t('settings.teamModal.updatedToast', { name: trimmedName }));
       } else {
         await permissionsApi.createTeam(payload);
-        toast.success(`Created ${trimmedName}`);
+        toast.success(t('settings.teamModal.createdToast', { name: trimmedName }));
       }
       onSuccess();
     } catch (err: any) {
-      setError(extractApiError(err, 'Failed to save team.'));
+      setError(extractApiError(err, t('settings.teamModal.failed')));
     } finally {
       setLoading(false);
     }
@@ -1084,13 +1126,13 @@ function TeamModal({
     <Modal
       isOpen
       onClose={onClose}
-      title={team ? `Edit ${team.name}` : 'Create team'}
+      title={team ? t('settings.teamModal.editTitle', { name: team.name }) : t('settings.teamModal.createTitle')}
       size="lg"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose}>{t('settings.common.cancel')}</Button>
           <Button variant="primary" type="submit" form="team-form" disabled={loading} loading={loading}>
-            {loading ? 'Saving…' : team ? 'Save changes' : 'Create team'}
+            {loading ? t('settings.common.saving') : team ? t('settings.common.saveChanges') : t('settings.teamModal.createTitle')}
           </Button>
         </>
       }
@@ -1101,21 +1143,21 @@ function TeamModal({
         )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <FieldGroup label="Team name" required>
-            <Input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Commercial, Product, Leadership…" />
+          <FieldGroup label={t('settings.teamModal.teamName')} required>
+            <Input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder={t('settings.teamModal.teamNamePlaceholder')} />
           </FieldGroup>
-          <FieldGroup label="Description" description="Optional context for when this team should be used.">
-            <Input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Who belongs here and why" />
+          <FieldGroup label={t('settings.teamModal.description')} description={t('settings.teamModal.descriptionHint')}>
+            <Input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t('settings.teamModal.descriptionPlaceholder')} />
           </FieldGroup>
         </div>
 
-        <FieldGroup label="Assigned members" description="Only active users can be assigned to a team.">
+        <FieldGroup label={t('settings.teamModal.assignedMembers')} description={t('settings.teamModal.assignedMembersHint')}>
           <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-4 space-y-4">
             <Input
               type="text"
               value={memberSearch}
               onChange={(e) => setMemberSearch(e.target.value)}
-              placeholder="Filter by name or email"
+              placeholder={t('settings.teamModal.filterPlaceholder')}
             />
 
             <div className="flex flex-wrap gap-2 min-h-[2rem]">
@@ -1126,13 +1168,13 @@ function TeamModal({
                   </Badge>
                 ))
               ) : (
-                <span className="text-caption text-text-quaternary">No users selected.</span>
+                <span className="text-caption text-text-quaternary">{t('settings.teamModal.noUsersSelected')}</span>
               )}
             </div>
 
             <div className="max-h-72 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
               {filteredUsers.length === 0 ? (
-                <div className="px-4 py-6 text-center text-caption text-text-quaternary">No active users match this filter.</div>
+                <div className="px-4 py-6 text-center text-caption text-text-quaternary">{t('settings.teamModal.noActiveMatch')}</div>
               ) : (
                 filteredUsers.map((user) => {
                   const checked = selectedMemberIds.includes(user.id);

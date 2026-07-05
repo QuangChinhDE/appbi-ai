@@ -135,8 +135,8 @@ function useGuideProgress() {
         icon: LayoutDashboard,
         title: 'Compose dashboards',
         titleVi: 'Ghép dashboard',
-        summary: 'Assemble saved charts or imported pages into the final delivery.',
-        summaryVi: 'Ghép chart đã lưu hoặc page import thành dashboard bàn giao cuối cùng.',
+        summary: 'Assemble saved charts or imported pages, then use this layer as the analytical delivery surface.',
+        summaryVi: 'Ghép chart đã lưu hoặc page import, rồi dùng lớp này làm bề mặt bàn giao phân tích.',
         href: '/dashboards',
         ctaLabel: 'Open Dashboards',
         ctaLabelVi: 'Mở Dashboards',
@@ -166,70 +166,76 @@ function buildGuideTabs(nextRecommendedStep: GuideSetupStep | null, allDone: boo
       labelVi: 'Luồng hệ thống',
       icon: Sparkles,
       intro:
-        'Use this tab as the operating map for AppBI. The normal path is Data Sources -> Datasets -> Explore -> Dashboards, while Import HTML helps accelerate layout migration.',
+        'Use this tab as the operating map for the upgraded AppBI system. Build the BI foundation first, then turn it into dashboards, operational Workboards, governed definitions, and monitored data flows.',
       introVi:
-        'Dùng tab này như bản đồ vận hành AppBI. Luồng chuẩn là Data Sources -> Datasets -> Explore -> Dashboards; còn Import HTML giúp tăng tốc khi chuyển layout có sẵn.',
+        'Dùng tab này như bản đồ vận hành AppBI sau nâng cấp. Dựng nền BI trước, rồi biến nền đó thành dashboard, Workboard vận hành, định nghĩa Govern và luồng dữ liệu được Observability theo dõi.',
       note:
-        'Recommended order: stabilize the data model first, then save reusable charts, then compose dashboards or import external layouts.',
+        'Recommended order: stabilize source data and semantic models, publish reusable assets, then add Workboards, Govern, Observability, and Setup controls around the same trusted core.',
       noteVi:
-        'Thứ tự khuyến nghị: ổn định model dữ liệu trước, sau đó lưu chart dùng lại được, rồi mới ghép dashboard hoặc import layout ngoài.',
+        'Thứ tự khuyến nghị: ổn định nguồn dữ liệu và semantic model, publish asset dùng lại được, rồi đặt Workboard, Govern, Observability và Setup quanh cùng một lõi đáng tin.',
       sections: [
         {
-          title: 'Recommended module order',
-          titleVi: 'Thứ tự module khuyến nghị',
+          title: 'Recommended operating order',
+          titleVi: 'Thứ tự vận hành khuyến nghị',
           description:
-            'Most teams move through the same checkpoints before a dashboard is considered reliable enough to share.',
+            'Most teams still start with the BI spine, but the output is no longer only a dashboard. The same trusted model now powers apps, governance, and monitoring.',
           descriptionVi:
-            'Phần lớn team đều đi qua cùng một chuỗi checkpoint trước khi dashboard đủ ổn định để chia sẻ.',
+            'Phần lớn team vẫn bắt đầu từ xương sống BI, nhưng đầu ra không chỉ còn là dashboard. Cùng một model đáng tin sẽ nuôi app vận hành, governance và monitoring.',
           points: [
             'Start from Data Sources: verify the connection, inspect schemas, and sync only the tables you actually need.',
             'Move to Datasets: combine source tables, calculated tables, and a calendar table so your business logic lives in one place.',
             'Review the Quality and Model tabs before charting so joins, null handling, and date logic are already settled.',
-            'Create saved charts in Explore, then assemble them inside Dashboards for executives, operators, or drill-down audiences.',
+            'Create saved charts in Explore, then assemble dashboards for analysis and decision review.',
+            'Use Workboards for operational workflows, Govern for business definitions and KPI ownership, Observability for health/lineage/usage, and Setup for permissions, teams, API tokens, and language.',
           ],
           pointsVi: [
             'Bắt đầu từ Data Sources: kiểm tra kết nối, xem schema, và chỉ sync những bảng thực sự cần dùng.',
             'Chuyển sang Datasets: gom source table, calculated table và calendar table để business logic nằm gọn trong một nơi.',
             'Rà soát tab Quality và Model trước khi làm chart để join, xử lý null và logic thời gian đã ổn định.',
-            'Tạo chart đã lưu trong Explore rồi ghép vào Dashboards cho từng nhóm người dùng như executive, operator hoặc drill-down.',
+            'Tạo chart đã lưu trong Explore rồi ghép Dashboard cho phân tích và review quyết định.',
+            'Dùng Workboard cho workflow vận hành, Govern cho định nghĩa nghiệp vụ và ownership KPI, Observability cho health/lineage/usage, Setup cho quyền, nhóm, API token và ngôn ngữ.',
           ],
         },
         {
-          title: 'Three ways to ship output',
-          titleVi: 'Ba cách tạo đầu ra',
+          title: 'Choose the right output surface',
+          titleVi: 'Chọn đúng bề mặt đầu ra',
           description:
-            'AppBI currently supports a manual BI flow and an Import HTML flow. Choose based on where the starting asset already exists.',
+            'Pick the surface by the job the user needs to do: analysis, daily operation, governance, or troubleshooting.',
           descriptionVi:
-            'Hiện tại AppBI hỗ trợ luồng BI thủ công và luồng Import HTML. Chọn cách làm theo việc asset ban đầu đang nằm ở đâu.',
+            'Chọn bề mặt theo việc người dùng cần làm: phân tích, vận hành hằng ngày, quản trị định nghĩa hay xử lý sự cố.',
           points: [
-            'Manual BI flow: prepare the dataset, create charts in Explore, then place those charts into a dashboard page by page.',
-            'Import HTML flow: use this when the layout or chart plan already exists in HTML, either prepared manually or generated by Claude/MCP.',
-            'Do not use Import HTML as a substitute for weak data modeling. The dataset layer still decides whether filters and charts stay correct after import.',
+            'Use Dashboard when the goal is to read, compare, filter, share, or publish analytical pages.',
+            'Use Workboard when the goal is to capture or operate records, forms, documents, approvals, app users, webhooks, and workspace-specific workflows.',
+            'Use Govern when the goal is to define business terms, document metric logic, mark SSOT ownership, and keep auditable versions.',
+            'Use Observability when the goal is to monitor freshness, volume, schema, incidents, lineage, and usage.',
+            'Use Import HTML as an accelerator for dashboard layout migration, not as a replacement for clean Dataset/Explore modeling.',
           ],
           pointsVi: [
-            'Luồng BI thủ công: chuẩn bị dataset, tạo chart trong Explore rồi đặt các chart đó vào dashboard theo từng page.',
-            'Luồng Import HTML: dùng khi layout hoặc chart plan đã có sẵn ở HTML, do bạn làm tay hoặc do Claude/MCP sinh ra.',
-            'Không nên dùng Import HTML để bù cho data modeling yếu. Lớp dataset vẫn quyết định filter và chart có còn đúng sau import hay không.',
+            'Dùng Dashboard khi mục tiêu là đọc, so sánh, lọc, chia sẻ hoặc publish các page phân tích.',
+            'Dùng Workboard khi mục tiêu là nhập liệu hoặc vận hành record, form, document, approval, app user, webhook và workflow theo workspace.',
+            'Dùng Govern khi mục tiêu là định nghĩa thuật ngữ nghiệp vụ, ghi logic metric, đánh dấu SSOT và giữ lịch sử phiên bản có kiểm soát.',
+            'Dùng Observability khi mục tiêu là theo dõi freshness, volume, schema, incident, lineage và usage.',
+            'Dùng Import HTML như bộ tăng tốc migrate layout dashboard, không dùng để thay cho Dataset/Explore model sạch.',
           ],
         },
         {
-          title: 'Before sharing with users',
-          titleVi: 'Trước khi chia sẻ cho người dùng',
+          title: 'Before handing the system to users',
+          titleVi: 'Trước khi bàn giao hệ thống cho người dùng',
           description:
-            'A dashboard feels reliable when the supporting model, naming, and page structure are predictable.',
+            'The system is ready when the data model, reusable assets, permissions, governance notes, and monitoring signals all tell the same story.',
           descriptionVi:
-            'Dashboard chỉ thật sự đáng tin khi model, naming và cấu trúc page phía dưới nó đủ ổn định và dễ đoán.',
+            'Hệ thống sẵn sàng khi data model, asset dùng lại, phân quyền, ghi chú governance và tín hiệu monitoring cùng kể một câu chuyện nhất quán.',
           points: [
-            'Use business-readable names for datasets, charts, dashboard pages, and filters so the next editor understands your intent quickly.',
-            'Keep one overview page and one or more detail pages instead of mixing every metric into a single crowded dashboard.',
-            'Test the full filter path: dataset joins, chart aggregations, dashboard filters, and any public/share configuration before rollout.',
-            'If an issue is about grain or joins, fix Dataset first. If it is about encoding or aggregation, fix the chart. If it is about layout, fix the dashboard.',
+            'Use business-readable names for datasets, charts, dashboard pages, Workboard screens, Govern documents, filters, and teams.',
+            'Review permissions in Setup before rollout: module access, teams, user status, API tokens, and language preference should match the real operating model.',
+            'Test the full path: source sync, dataset joins, chart aggregation, dashboard filters, Workboard data entry, public/share settings, and monitor alerts.',
+            'Fix the owning layer: Dataset for grain/joins, Explore for encoding/aggregation, Dashboard for layout/share, Workboard for app flow, Govern for definitions, Observability for health signals.',
           ],
           pointsVi: [
-            'Dùng tên dễ hiểu theo nghiệp vụ cho dataset, chart, page dashboard và filter để người chỉnh sau nắm ý đồ nhanh hơn.',
-            'Nên có một page overview và một hoặc vài page detail, thay vì dồn mọi metric vào một dashboard quá đông.',
-            'Test toàn bộ đường đi của filter: join ở dataset, aggregation ở chart, filter ở dashboard và cấu hình share/public trước khi rollout.',
-            'Nếu lỗi nằm ở grain hoặc join thì sửa Dataset trước. Nếu lỗi ở encoding hoặc aggregation thì sửa chart. Nếu lỗi ở bố cục thì sửa dashboard.',
+            'Dùng tên dễ hiểu theo nghiệp vụ cho dataset, chart, page dashboard, screen Workboard, tài liệu Govern, filter và team.',
+            'Rà quyền trong Setup trước khi rollout: quyền module, team, trạng thái user, API token và ngôn ngữ phải khớp mô hình vận hành thật.',
+            'Test toàn bộ đường đi: sync nguồn, join dataset, aggregation chart, filter dashboard, nhập liệu Workboard, share/public và alert monitor.',
+            'Sửa đúng lớp sở hữu: Dataset cho grain/join, Explore cho encoding/aggregation, Dashboard cho layout/share, Workboard cho app flow, Govern cho định nghĩa, Observability cho tín hiệu sức khỏe.',
           ],
         },
       ],
@@ -402,12 +408,12 @@ function buildGuideTabs(nextRecommendedStep: GuideSetupStep | null, allDone: boo
           descriptionVi:
             'Luồng dashboard tốt nhất là luồng tái sử dụng chart, vì bạn chỉ cần sửa một visual gốc và mọi page phụ thuộc sẽ hưởng lợi ngay.',
           points: [
-            'Keep saved charts in Explore even if a dashboard is the final delivery. That gives you one source of truth for the visual logic.',
+            'Keep saved charts in Explore even when Dashboard, Workboard, or imported pages reuse them. That gives you one source of truth for the visual logic.',
             'When a dashboard card looks wrong, decide whether the problem belongs to the chart config or to the surrounding dashboard context before editing.',
             'Use chart reuse aggressively across overview pages, deep-dive pages, and AI-generated dashboards to keep the visual language consistent.',
           ],
           pointsVi: [
-            'Giữ chart đã lưu trong Explore kể cả khi dashboard mới là đầu ra cuối cùng. Như vậy bạn có một nguồn sự thật duy nhất cho visual logic.',
+            'Giữ chart đã lưu trong Explore kể cả khi Dashboard, Workboard hoặc page import tái sử dụng chúng. Như vậy bạn có một nguồn sự thật duy nhất cho visual logic.',
             'Khi một card trên dashboard trông sai, hãy quyết định lỗi nằm ở chart config hay ở bối cảnh dashboard xung quanh trước khi sửa.',
             'Tái sử dụng chart càng nhiều càng tốt giữa page overview, page deep-dive và dashboard do AI sinh ra để giữ ngôn ngữ trực quan nhất quán.',
           ],
@@ -831,8 +837,8 @@ function GuideDialog({
               </p>
               <p className="mt-1 text-caption text-text-tertiary">
                 {vi
-                  ? `${completedCount}/${setupSteps.length} checkpoint đã có dữ liệu. Mở từng tab để xem flow, Dataset, Chart, Dashboard và Import HTML.`
-                  : `${completedCount}/${setupSteps.length} checkpoints detected. Open each tab for the flow, Dataset, Chart, Dashboard, and Import HTML guides.`}
+                  ? `${completedCount}/${setupSteps.length} checkpoint nền đã có dữ liệu. Mở guide để xem flow BI, Workboard, Govern, Observability, Setup và Import HTML.`
+                  : `${completedCount}/${setupSteps.length} foundation checkpoints detected. Open the guide for BI, Workboard, Govern, Observability, Setup, and Import HTML flows.`}
               </p>
             </div>
             {allDone && (
@@ -883,7 +889,7 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
         <button
           onClick={handleDismiss}
           className="absolute right-2 top-2 z-10 rounded-md p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
-          aria-label="Dismiss"
+          aria-label={vi ? 'Đóng hướng dẫn' : 'Dismiss guide'}
         >
           <X className="h-4 w-4" />
         </button>
@@ -901,8 +907,8 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
             </h3>
             <p className="mt-0.5 text-caption text-text-tertiary">
               {vi
-                ? `${completedCount}/${steps.length} checkpoint đã hoàn thành — mở guide theo flow, Dataset, Chart, Dashboard và Import HTML`
-                : `${completedCount}/${steps.length} checkpoints completed — open the flow, Dataset, Chart, Dashboard, and Import HTML guides`}
+                ? `${completedCount}/${steps.length} checkpoint nền đã hoàn thành — mở guide cho flow BI, Workboard, Govern, Observability, Setup và Import HTML`
+                : `${completedCount}/${steps.length} foundation checkpoints completed — open the BI, Workboard, Govern, Observability, Setup, and Import HTML guide`}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-3">

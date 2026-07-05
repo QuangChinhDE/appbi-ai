@@ -265,7 +265,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                       </span>
                     )}
                   </div>
-                  <span>{language === 'vi' ? 'Thông báo' : 'Notifications'}</span>
+                  <span>{t('sidebar.user.notifications')}</span>
                 </button>
 
                 <div className="border-t border-[rgb(var(--border-line))] px-3 py-2.5">
@@ -306,7 +306,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   className="flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-secondary hover:bg-surface-2"
                 >
                   <KeyRound className="h-3.5 w-3.5 text-text-tertiary" />
-                  <span>{language === 'vi' ? 'Token API' : 'API tokens'}</span>
+                  <span>{t('sidebar.user.apiTokens')}</span>
                 </button>
                 <button
                   onClick={() => {
@@ -316,7 +316,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   className="flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-secondary hover:bg-surface-2"
                 >
                   <HelpCircle className="h-3.5 w-3.5 text-text-tertiary" />
-                  <span>{language === 'vi' ? 'Hướng dẫn sử dụng' : 'Getting started guide'}</span>
+                  <span>{t('sidebar.user.gettingStarted')}</span>
                 </button>
                 {user.has_password && user.auth_provider === 'password' ? (
                   <button
@@ -331,7 +331,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   </button>
                 ) : (
                   <div className="px-3 py-2 text-caption text-text-tertiary">
-                    {language === 'vi' ? 'Tài khoản này dùng đăng nhập Google.' : 'This account signs in with Google.'}
+                    {t('sidebar.user.googleAccount')}
                   </div>
                 )}
                 <button
@@ -378,7 +378,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         unreadCount={unreadCount}
         onMarkAllRead={markAllNotificationsRead}
         onClearAll={clearNotifications}
-        language={language}
       />
     </aside>
   );
@@ -391,7 +390,6 @@ function NotificationsModal({
   unreadCount,
   onMarkAllRead,
   onClearAll,
-  language,
 }: {
   open: boolean;
   onClose: () => void;
@@ -399,18 +397,9 @@ function NotificationsModal({
   unreadCount: number;
   onMarkAllRead: () => void;
   onClearAll: () => void;
-  language: 'en' | 'vi';
 }) {
+  const { t, locale } = useI18n();
   if (!open) return null;
-
-  const title = language === 'vi' ? 'Thông báo' : 'Notifications';
-  const description = language === 'vi'
-    ? 'Mọi thông báo trong app sẽ được lưu lại ở đây.'
-    : 'All app notifications are collected here.';
-  const emptyTitle = language === 'vi' ? 'Chưa có thông báo nào' : 'No notifications yet';
-  const emptyDescription = language === 'vi'
-    ? 'Khi bạn lưu, cập nhật, xóa hoặc chia sẻ, thông báo sẽ xuất hiện ở đây.'
-    : 'Save, update, delete, and share events will appear here.';
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] px-4 animate-fade-in">
@@ -426,12 +415,12 @@ function NotificationsModal({
               )}
             </div>
             <div>
-              <h2 className="text-small font-strong text-text-primary">{title}</h2>
-              <p className="text-caption text-text-tertiary">{description}</p>
+              <h2 className="text-small font-strong text-text-primary">{t('sidebar.notifications.title')}</h2>
+              <p className="text-caption text-text-tertiary">{t('sidebar.notifications.description')}</p>
             </div>
           </div>
           <IconButton
-            aria-label={language === 'vi' ? 'Đóng thông báo' : 'Close notifications'}
+            aria-label={t('sidebar.notifications.closeAria')}
             variant="ghost"
             size="sm"
             onClick={onClose}
@@ -442,9 +431,7 @@ function NotificationsModal({
 
         <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-2.5">
           <p className="text-caption text-text-secondary">
-            {language === 'vi'
-              ? `${notifications.length} thông báo${unreadCount > 0 ? `, ${unreadCount} chưa đọc` : ''}`
-              : `${notifications.length} notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+            {t(unreadCount > 0 ? 'sidebar.notifications.summaryUnread' : 'sidebar.notifications.summary', { count: notifications.length, unread: unreadCount })}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -454,7 +441,7 @@ function NotificationsModal({
               disabled={unreadCount === 0}
               leadingIcon={<CheckCheck className="h-3 w-3" />}
             >
-              {language === 'vi' ? 'Đọc hết' : 'Mark all read'}
+              {t('sidebar.notifications.markAllRead')}
             </Button>
             <Button
               size="xs"
@@ -464,7 +451,7 @@ function NotificationsModal({
               leadingIcon={<Trash2 className="h-3 w-3" />}
               className="text-danger hover:text-danger hover:bg-danger/8"
             >
-              {language === 'vi' ? 'Xóa hết' : 'Clear all'}
+              {t('sidebar.notifications.clearAll')}
             </Button>
           </div>
         </div>
@@ -473,8 +460,8 @@ function NotificationsModal({
           {notifications.length === 0 ? (
             <div className="flex h-full min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 text-center">
               <Bell className="mb-3 h-8 w-8 text-text-quaternary" />
-              <p className="text-small font-strong text-text-primary">{emptyTitle}</p>
-              <p className="mt-1 max-w-sm text-caption text-text-tertiary">{emptyDescription}</p>
+              <p className="text-small font-strong text-text-primary">{t('sidebar.notifications.emptyTitle')}</p>
+              <p className="mt-1 max-w-sm text-caption text-text-tertiary">{t('sidebar.notifications.emptyDescription')}</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -508,7 +495,7 @@ function NotificationsModal({
                           )}
                         </div>
                         <p className="mt-2 text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                          {formatNotificationTimestamp(notification.createdAt, language)}
+                          {formatNotificationTimestamp(notification.createdAt, locale, t)}
                         </p>
                       </div>
                     </div>
@@ -556,14 +543,14 @@ function getNotificationAppearance(level: AppNotificationLevel): {
   }
 }
 
-function formatNotificationTimestamp(createdAt: string, language: 'en' | 'vi') {
+function formatNotificationTimestamp(createdAt: string, locale: string, t: (key: string) => string) {
   const date = new Date(createdAt);
 
   if (Number.isNaN(date.getTime())) {
-    return language === 'vi' ? 'Không rõ thời gian' : 'Unknown time';
+    return t('sidebar.notifications.unknownTime');
   }
 
-  return new Intl.DateTimeFormat(language === 'vi' ? 'vi-VN' : 'en-US', {
+  return new Intl.DateTimeFormat(locale, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',

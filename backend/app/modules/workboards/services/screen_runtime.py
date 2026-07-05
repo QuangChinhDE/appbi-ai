@@ -24,6 +24,7 @@ Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 from __future__ import annotations
 
 import itertools
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
@@ -149,11 +150,26 @@ def _parse_locale_number(text: str) -> Optional[float]:
         return None
     # vi-VN: '.' groups thousands, ',' is the decimal mark. When a comma is
     # present it is the decimal point, so strip grouping dots then swap it for
-    # a dot. A lone dot (no comma) is thousands grouping ("1.000.000", "1.234").
+    # a dot.
     if "," in s:
         s = s.replace(".", "").replace(",", ".")
     elif "." in s:
-        s = s.replace(".", "")
+        # A lone dot is thousands grouping ONLY when it forms valid vi-VN
+        # groups: the first segment is 1-3 digits and every later segment is
+        # EXACTLY 3 digits ("1.000.000" -> 1000000, "1.234" -> 1234). A dot
+        # whose trailing segment isn't 3 digits is a decimal point, not
+        # grouping ("98.0" -> 98.0, "88.8" -> 88.8, "125.4" -> 125.4) — this
+        # is what a native numeric (Postgres/BQ) read back as a VARCHAR looks
+        # like, and must NOT be inflated ×10 into SUM/AVG.
+        parts = s.split(".")
+        is_grouping = (
+            len(parts) >= 2
+            and all(p.isdigit() for p in parts)
+            and 1 <= len(parts[0]) <= 3
+            and all(len(p) == 3 for p in parts[1:])
+        )
+        if is_grouping:
+            s = "".join(parts)
     try:
         val = float(s)
     except ValueError:
@@ -629,10 +645,39 @@ def _load_datasource(db: Session, table: DatasetTable) -> Optional[DataSource]:
     return db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
 
 
+# ── Media size ceilings (single source of truth) ──────────────────────────
+# Base64-into-JSONB media. Postgres JSONB is effectively unbounded, so we use
+# a documented app ceiling; Google Sheets caps a single CELL at ~50,000 chars
+# (base64 inflates 4/3 → ~35 KB safe). The effective cap is chosen per screen
+# by :func:`media_cap_kb` from the datasource kind — NOT hardcoded per widget.
+WORKBOARD_MEDIA_MAX_KB = 1024
+WORKBOARD_MEDIA_MAX_KB_SHEETS = 35
+# Every widget whose value is a base64 data-URI (or a JSON array of them) and
+# must be size-capped. Previously only {file, image} were capped, so images/
+# signature/audio silently bypassed the ceiling.
+_MEDIA_WIDGETS = {"file", "image", "images", "signature", "audio", "video"}
+
+
+def media_cap_kb(db: Session, workboard: Workboard, screen: Optional["Screen"] = None) -> int:
+    """Storage-aware media size ceiling in KB for a screen's writes."""
+    try:
+        table_id = getattr(screen, "table_id", None) or workboard.primary_table_id
+        table = _load_table(db, table_id) if table_id else None
+        ds = _load_datasource(db, table) if table else None
+        if ds is not None and getattr(ds, "type", None) is not None:
+            tval = ds.type.value if hasattr(ds.type, "value") else str(ds.type)
+            if tval == "google_sheets":
+                return WORKBOARD_MEDIA_MAX_KB_SHEETS
+    except Exception:  # pragma: no cover - defensive; fall back to safe default
+        pass
+    return WORKBOARD_MEDIA_MAX_KB
+
+
 def _apply_field_conditions(
     screen: Screen,
     values: Dict[str, Any],
     identity: CallerIdentity,
+    media_max_kb: int = WORKBOARD_MEDIA_MAX_KB,
 ) -> Dict[str, Any]:
     """Enforce field-level show_if / required_if / readonly_if at write time.
 
@@ -652,15 +697,10 @@ def _apply_field_conditions(
     }
     cleaned = dict(values or {})
     violations: List[str] = []
-    # Hard ceiling for inline file uploads (base64 stored in a cell). Workboards
-    # write to Google Sheets, where a single CELL is capped at 50,000 chars.
-    # base64 inflates by 4/3, so the safe content ceiling is ~36 KB
-    # (36*1024*4/3 ≈ 49,150 chars). A larger upload was silently truncated by
-    # the Sheets API → a corrupt/half image with no error. Cap at 35 KB so the
-    # data-URL header + base64 stays under the cell limit. Builder can set a
-    # stricter per-field cap via FormField.max_file_kb.
-    _HARD_FILE_KB_CAP = 35
-    _FILE_WIDGETS = {"file", "image"}
+    # Storage-aware hard ceiling for base64 media (see WORKBOARD_MEDIA_MAX_KB).
+    # ``media_max_kb`` is chosen per screen from the datasource kind; the builder
+    # can tighten it further per-field via FormField.max_file_kb.
+    _HARD_FILE_KB_CAP = int(media_max_kb or WORKBOARD_MEDIA_MAX_KB)
     # Pages whose ``show_if`` is falsy are skipped in the wizard — their fields
     # must NOT be required or written (mirror field-level show_if). Build the
     # set of hidden page ids once.
@@ -680,17 +720,33 @@ def _apply_field_conditions(
             # callers cannot override system columns such as generated PKs.
             cleaned.pop(col, None)
             continue
-        if getattr(field, "widget", None) in _FILE_WIDGETS:
+        if getattr(field, "widget", None) in _MEDIA_WIDGETS:
             raw_value = cleaned.get(col)
+            # A media cell is either a single data-URL string, or (images) a
+            # JSON array of data-URL strings — possibly still a JSON string.
+            parts: List[str] = []
             if isinstance(raw_value, str) and raw_value:
-                # Strip a leading data-URL header so length is the raw payload.
-                payload_for_size = (
-                    raw_value.split(",", 1)[1]
-                    if raw_value.startswith("data:") and "," in raw_value
-                    else raw_value
-                )
-                # Base64 expands by 4/3; size_kb ≈ len * 3 / 4 / 1024.
-                size_kb = (len(payload_for_size) * 3) // 4 // 1024
+                if raw_value.startswith("["):
+                    try:
+                        decoded = json.loads(raw_value)
+                        parts = [p for p in decoded if isinstance(p, str)]
+                    except (ValueError, TypeError):
+                        parts = [raw_value]
+                else:
+                    parts = [raw_value]
+            elif isinstance(raw_value, list):
+                parts = [p for p in raw_value if isinstance(p, str)]
+            if parts:
+                # Base64 expands by 4/3; size_kb ≈ len * 3 / 4 / 1024. Sum every
+                # item so a multi-image cell can't exceed the cell budget.
+                total_len = 0
+                for item in parts:
+                    total_len += len(
+                        item.split(",", 1)[1]
+                        if item.startswith("data:") and "," in item
+                        else item
+                    )
+                size_kb = (total_len * 3) // 4 // 1024
                 builder_cap = int(getattr(field, "max_file_kb", None) or 0)
                 effective_cap = (
                     min(builder_cap, _HARD_FILE_KB_CAP) if builder_cap > 0
@@ -704,6 +760,26 @@ def _apply_field_conditions(
                     )
                     cleaned.pop(col, None)
                     continue
+        # ── Type coercion for rich numeric / list widgets ──────────────
+        # The FE normally emits the storable form, but coerce defensively so a
+        # locale-formatted string ("1.234,5") or a JSON-array string can never
+        # land in a numeric/array column raw. Numbers reuse the vi-VN-aware
+        # parser (dot-decimal safe — see _parse_locale_number).
+        _widget = getattr(field, "widget", None)
+        if _widget in ("currency", "percent", "rating", "slider", "duration"):
+            _v = cleaned.get(col)
+            if isinstance(_v, str) and _v.strip() != "":
+                _n = _parse_locale_number(_v)
+                if _n is not None:
+                    cleaned[col] = _n
+        elif _widget == "enum_list":
+            # Store as a JSON STRING so a text/jsonb cell write never receives a
+            # Python list (the connector would emit a PG array literal → type
+            # mismatch). The FE already sends a JSON string; normalise a stray
+            # list defensively.
+            _v = cleaned.get(col)
+            if isinstance(_v, list):
+                cleaned[col] = json.dumps(_v, ensure_ascii=False)
         if getattr(field, "computed_from_dataset", None):
             # Field is auto-filled by a dataset-side transformation (calculated
             # column, lookup, etc.). The dataset is the source of truth, so any
@@ -896,7 +972,9 @@ def insert_screen_row(
             )
 
     if screen.kind == "form":
-        cleaned_pre = _apply_field_conditions(screen, values, identity)
+        cleaned_pre = _apply_field_conditions(
+            screen, values, identity, media_max_kb=media_cap_kb(db, workboard, screen)
+        )
     else:
         # Table: merge builder default_values (with placeholders) under
         # user values. Computed/lookup columns are never writeable from
@@ -972,7 +1050,9 @@ def update_screen_row(
         raise HTTPException(status_code=400, detail="Table screen has no spec.")
 
     if screen.kind == "form":
-        cleaned_pre = _apply_field_conditions(screen, values, identity)
+        cleaned_pre = _apply_field_conditions(
+            screen, values, identity, media_max_kb=media_cap_kb(db, workboard, screen)
+        )
     else:
         # Table: a column must be flagged in either the inline grid
         # ``editable_columns`` OR the detail panel's ``editable_columns``.
@@ -1176,6 +1256,9 @@ def fetch_table_row_for_panel(
     for lookup in table_spec.lookup_columns or []:
         if lookup.match_column_local in all_db_columns:
             extra_keys.append(lookup.match_column_local)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        if rollup.match_column_local in all_db_columns:
+            extra_keys.append(rollup.match_column_local)
 
     row_keys = list(dict.fromkeys([
         *(c for c in panel_columns if c in all_db_columns),
@@ -1183,11 +1266,15 @@ def fetch_table_row_for_panel(
     ]))
     row: Dict[str, Any] = {col: raw_row.get(col) for col in row_keys}
 
-    # Lookup resolution for this single row.
+    # Lookup + roll-up resolution for this single row.
     lookup_maps = _resolve_table_lookups(db, table_spec, [row])
+    rollup_maps = _resolve_table_rollups(db, table_spec, [row])
     for lookup in table_spec.lookup_columns or []:
         match_value = row.get(lookup.match_column_local)
         row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        match_value = row.get(rollup.match_column_local)
+        row[rollup.name] = rollup_maps.get(rollup.name, {}).get(match_value)
 
     # Per-row computed columns (cross-row aggregates degrade to single-row).
     if table_spec.computed_columns:
@@ -1309,6 +1396,108 @@ def _resolve_table_lookups(
                 continue
             mapping[key] = row.get(lookup.return_column)
         out[lookup.name] = mapping
+    return out
+
+
+def _resolve_table_rollups(
+    db: Session,
+    table_spec: Any,
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Dict[Any, Any]]:
+    """Reverse-reference roll-ups: aggregate child rows per parent key.
+
+    The inverse of :func:`_resolve_table_lookups`. For each roll-up column,
+    fetch ALL child rows whose ``match_column_remote`` is IN the page's parent
+    keys (one batched ``IN`` query, no GROUP-BY transport needed), bucket by
+    key and reduce with ``agg`` in Python. Returns
+    ``{rollup_name: {parent_key: aggregated_value}}``.
+
+    Child fetch is capped at 1000 rows (LiveQueryService clamp); a roll-up
+    over more child rows than that for the visible parents is approximate.
+    """
+    out: Dict[str, Dict[Any, Any]] = {}
+    rollups = list(getattr(table_spec, "rollup_columns", None) or [])
+    if not rollups or not rows:
+        return out
+
+    for rollup in rollups:
+        agg = (getattr(rollup, "agg", "count") or "count").lower()
+        needs_value = agg != "count"
+        if (
+            not rollup.from_table_id
+            or not rollup.match_column_local
+            or not rollup.match_column_remote
+            or (needs_value and not rollup.value_column)
+        ):
+            out[rollup.name] = {}
+            continue
+        local_col = rollup.match_column_local
+        distinct_values = list({
+            row.get(local_col) for row in rows if row.get(local_col) not in (None, "")
+        })
+        if not distinct_values:
+            out[rollup.name] = {}
+            continue
+        linked_table = _load_table(db, rollup.from_table_id)
+        linked_ds = _load_datasource(db, linked_table) if linked_table else None
+        if not linked_table or not linked_ds:
+            out[rollup.name] = {}
+            continue
+        try:
+            result = LiveQueryService.execute_preview_query(
+                linked_ds,
+                linked_table,
+                limit=1000,
+                offset=0,
+                filters=[
+                    {
+                        "field": rollup.match_column_remote,
+                        "operator": "in",
+                        "value": distinct_values,
+                    }
+                ],
+            )
+        except SheetsQuotaError:
+            raise _quota_503()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "Grid roll-up '%s' failed for from_table=%s",
+                rollup.name,
+                rollup.from_table_id,
+            )
+            out[rollup.name] = {}
+            continue
+
+        # Bucket child rows by parent key.
+        buckets: Dict[Any, List[Dict[str, Any]]] = {}
+        for child in result.get("rows") or []:
+            key = child.get(rollup.match_column_remote)
+            if key is None:
+                continue
+            buckets.setdefault(key, []).append(child)
+
+        mapping: Dict[Any, Any] = {}
+        for key, children in buckets.items():
+            if agg == "count":
+                mapping[key] = len(children)
+                continue
+            nums = [
+                n for n in (_coerce_total(c.get(rollup.value_column)) for c in children)
+                if n is not None
+            ]
+            if not nums:
+                mapping[key] = None
+            elif agg == "sum":
+                mapping[key] = sum(nums)
+            elif agg in ("avg", "average"):
+                mapping[key] = sum(nums) / len(nums)
+            elif agg == "min":
+                mapping[key] = min(nums)
+            elif agg == "max":
+                mapping[key] = max(nums)
+            else:
+                mapping[key] = None
+        out[rollup.name] = mapping
     return out
 
 
@@ -1472,7 +1661,8 @@ def render_table_screen(
 
     computed_names = {c.name for c in (table_spec.computed_columns or [])}
     lookup_names = {l.name for l in (table_spec.lookup_columns or [])}
-    if sort_column and sort_column in (computed_names | lookup_names):
+    rollup_names = {r.name for r in (getattr(table_spec, "rollup_columns", None) or [])}
+    if sort_column and sort_column in (computed_names | lookup_names | rollup_names):
         # Sorting by a derived column requires post-eval sort, which would
         # silently break pagination. Drop to default ordering.
         sort_column = None
@@ -1498,7 +1688,7 @@ def render_table_screen(
     selected_columns = [
         c
         for c in declared_columns
-        if c in all_db_columns or c in computed_names or c in lookup_names
+        if c in all_db_columns or c in computed_names or c in lookup_names or c in rollup_names
     ] or all_db_columns
 
     # PK columns stay in the row payload so the runtime can issue PATCH /
@@ -1507,6 +1697,9 @@ def render_table_screen(
     for lookup in table_spec.lookup_columns or []:
         if lookup.match_column_local in all_db_columns:
             row_keys.append(lookup.match_column_local)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        if rollup.match_column_local in all_db_columns:
+            row_keys.append(rollup.match_column_local)
     # Include any extra column referenced only by the detail panel so the
     # current-page rows already carry the data needed by the side panel.
     panel = table_spec.detail_panel
@@ -1527,12 +1720,16 @@ def render_table_screen(
         for row in (result.get("rows") or [])
     ]
 
-    # ── Lookup resolution ────────────────────────────────────────────
+    # ── Lookup + roll-up resolution ──────────────────────────────────
     lookup_maps = _resolve_table_lookups(db, table_spec, base_rows)
+    rollup_maps = _resolve_table_rollups(db, table_spec, base_rows)
     for row in base_rows:
         for lookup in table_spec.lookup_columns or []:
             match_value = row.get(lookup.match_column_local)
             row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
+        for rollup in getattr(table_spec, "rollup_columns", None) or []:
+            match_value = row.get(rollup.match_column_local)
+            row[rollup.name] = rollup_maps.get(rollup.name, {}).get(match_value)
 
     # ── Computed columns (JS sandbox, one pass) ──────────────────────
     # Each column compiles ONCE, then evaluates once per row. Compile
@@ -2035,6 +2232,7 @@ def render_app_shell(
     workboard: Workboard,
     identity: CallerIdentity,
     hidden_screen_ids: Optional[Set[str]] = None,
+    db: Optional[Session] = None,
 ) -> Dict[str, Any]:
     """Initial payload the public runtime fetches on entry to a workboard.
 
@@ -2088,6 +2286,9 @@ def render_app_shell(
             "description": workboard.description,
         },
         "branding": layout.branding.model_dump(),
+        "media_max_kb": (
+            media_cap_kb(db, workboard) if db is not None else WORKBOARD_MEDIA_MAX_KB
+        ),
         "nav": {
             **layout.mini_app_nav.model_dump(),
             "items": nav_items,

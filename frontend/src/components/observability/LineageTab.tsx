@@ -11,10 +11,12 @@ import { Database, GitBranch, BarChart3, LayoutDashboard, AlertTriangle, ArrowRi
 
 import { cn } from '@/lib/utils';
 import { useDatasets } from '@/hooks/use-datasets';
+import { useI18n } from '@/providers/LanguageProvider';
 import { fmtNumber } from './ui';
 import { getLineage, type Lineage, type LineageNode } from '@/lib/observability';
 
 export function LineageTab({ datasetId: fixedDatasetId }: { datasetId?: number } = {}) {
+  const { t, locale } = useI18n();
   const { data: datasets = [] } = useDatasets();
   const [datasetId, setDatasetId] = useState<number | null>(fixedDatasetId ?? null);
   const [lineage, setLineage] = useState<Lineage | null>(null);
@@ -49,68 +51,68 @@ export function LineageTab({ datasetId: fixedDatasetId }: { datasetId?: number }
         {!locked && (
           <select value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}
             className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-caption text-text-primary focus:border-brand focus:outline-none">
-            <option value="">— Chọn dataset —</option>
+            <option value="">{t('observability.lineage.selectDataset')}</option>
             {datasets.map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         )}
         {lineage?.impact && (
           <div className="flex items-center gap-2 text-caption text-text-tertiary">
-            <span className="inline-flex items-center gap-1"><BarChart3 className="h-3.5 w-3.5" />{lineage.impact.charts} biểu đồ</span>
-            <span className="inline-flex items-center gap-1"><LayoutDashboard className="h-3.5 w-3.5" />{lineage.impact.dashboards} dashboard</span>
+            <span className="inline-flex items-center gap-1"><BarChart3 className="h-3.5 w-3.5" />{t('observability.lineage.impactCharts', { count: lineage.impact.charts })}</span>
+            <span className="inline-flex items-center gap-1"><LayoutDashboard className="h-3.5 w-3.5" />{t('observability.lineage.impactDashboards', { count: lineage.impact.dashboards })}</span>
           </div>
         )}
       </div>
 
       {loading ? (
-        <p className="py-10 text-center text-caption text-text-tertiary">Đang tải…</p>
+        <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>
       ) : !lineage || !lineage.dataset ? (
-        <p className="py-10 text-center text-caption text-text-tertiary">Chọn một dataset để xem dòng dữ liệu.</p>
+        <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.lineage.selectPrompt')}</p>
       ) : (
         <>
           {/* Columnar lineage flow */}
           <div className="overflow-x-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
             <div className="flex min-w-[680px] items-stretch gap-2">
-              <LineageColumn title="Nguồn" icon={Database} nodes={cols.source} />
+              <LineageColumn title={t('observability.lineage.column.source')} icon={Database} nodes={cols.source} />
               <Arrow />
-              <LineageColumn title="Bảng" icon={GitBranch} nodes={cols.table} highlightIncidents />
+              <LineageColumn title={t('observability.lineage.column.table')} icon={GitBranch} nodes={cols.table} highlightIncidents />
               <Arrow />
-              <LineageColumn title="Biểu đồ" icon={BarChart3} nodes={cols.chart} />
+              <LineageColumn title={t('observability.lineage.column.chart')} icon={BarChart3} nodes={cols.chart} />
               <Arrow />
-              <LineageColumn title="Dashboard" icon={LayoutDashboard} nodes={cols.dashboard} />
+              <LineageColumn title={t('observability.lineage.column.dashboard')} icon={LayoutDashboard} nodes={cols.dashboard} />
             </div>
           </div>
 
           {/* Per-table impact */}
           <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
             <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
-              <h3 className="text-caption font-strong text-text-primary">Tác động theo bảng</h3>
-              <p className="text-tiny text-text-quaternary">Bảng lỗi ảnh hưởng tới biểu đồ/dashboard nào — ưu tiên sửa nơi lan rộng nhất.</p>
+              <h3 className="text-caption font-strong text-text-primary">{t('observability.lineage.impact.title')}</h3>
+              <p className="text-tiny text-text-quaternary">{t('observability.lineage.impact.subtitle')}</p>
             </div>
             <div className="overflow-x-auto">
               <table className="app-list-table w-full divide-y divide-[rgb(var(--border-line))]">
                 <thead className="bg-surface-2"><tr>
-                  <th className="app-list-header w-[28%]">Bảng</th>
-                  <th className="app-list-header">Nguồn</th>
-                  <th className="app-list-header">Dòng</th>
-                  <th className="app-list-header">Biểu đồ</th>
-                  <th className="app-list-header">Dashboard</th>
-                  <th className="app-list-header">Sự cố mở</th>
+                  <th className="app-list-header w-[28%]">{t('observability.lineage.header.table')}</th>
+                  <th className="app-list-header">{t('observability.lineage.header.source')}</th>
+                  <th className="app-list-header">{t('observability.lineage.header.rows')}</th>
+                  <th className="app-list-header">{t('observability.lineage.header.charts')}</th>
+                  <th className="app-list-header">{t('observability.lineage.header.dashboards')}</th>
+                  <th className="app-list-header">{t('observability.lineage.header.openIncidents')}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-[rgb(var(--border-line))]">
-                  {lineage.tables.map((t) => (
-                    <tr key={t.tableId} className={cn('hover:bg-surface-2', t.openIncidents > 0 && 'bg-danger/5')}>
-                      <td className="app-list-cell font-emphasis text-text-primary">{t.name}</td>
-                      <td className="app-list-cell text-caption text-text-tertiary">{t.source ?? '—'}</td>
-                      <td className="app-list-cell text-caption text-text-tertiary">{fmtNumber(t.rows)}</td>
-                      <td className="app-list-cell text-caption text-text-tertiary">{t.chartCount}</td>
+                  {lineage.tables.map((table) => (
+                    <tr key={table.tableId} className={cn('hover:bg-surface-2', table.openIncidents > 0 && 'bg-danger/5')}>
+                      <td className="app-list-cell font-emphasis text-text-primary">{table.name}</td>
+                      <td className="app-list-cell text-caption text-text-tertiary">{table.source ?? '—'}</td>
+                      <td className="app-list-cell text-caption text-text-tertiary">{fmtNumber(table.rows, locale)}</td>
+                      <td className="app-list-cell text-caption text-text-tertiary">{table.chartCount}</td>
                       <td className="app-list-cell">
-                        {t.dashboardCount === 0 ? <span className="text-tiny text-text-quaternary">—</span> : (
-                          <span className="text-caption text-text-tertiary" title={t.dashboards.map((d) => d.name).join(', ')}>{t.dashboardCount} dashboard</span>
+                        {table.dashboardCount === 0 ? <span className="text-tiny text-text-quaternary">—</span> : (
+                          <span className="text-caption text-text-tertiary" title={table.dashboards.map((d) => d.name).join(', ')}>{t('observability.lineage.dashboardCount', { count: table.dashboardCount })}</span>
                         )}
                       </td>
                       <td className="app-list-cell">
-                        {t.openIncidents > 0
-                          ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-danger"><AlertTriangle className="h-3.5 w-3.5" />{t.openIncidents}</span>
+                        {table.openIncidents > 0
+                          ? <span className="inline-flex items-center gap-1 text-caption font-emphasis text-danger"><AlertTriangle className="h-3.5 w-3.5" />{table.openIncidents}</span>
                           : <span className="text-tiny text-success">0</span>}
                       </td>
                     </tr>
@@ -132,6 +134,7 @@ function Arrow() {
 function LineageColumn({ title, icon: Icon, nodes, highlightIncidents }: {
   title: string; icon: typeof Database; nodes: LineageNode[]; highlightIncidents?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex-1">
       <div className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wide text-text-quaternary">
@@ -146,7 +149,7 @@ function LineageColumn({ title, icon: Icon, nodes, highlightIncidents }: {
               : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary')}>
             <div className="truncate" title={n.label}>{n.label}</div>
             {highlightIncidents && (n.openIncidents ?? 0) > 0 && (
-              <div className="mt-0.5 inline-flex items-center gap-1 text-tiny"><AlertTriangle className="h-3 w-3" />{n.openIncidents} sự cố</div>
+              <div className="mt-0.5 inline-flex items-center gap-1 text-tiny"><AlertTriangle className="h-3 w-3" />{t('observability.lineage.incidentCount', { count: n.openIncidents ?? 0 })}</div>
             )}
           </div>
         ))}

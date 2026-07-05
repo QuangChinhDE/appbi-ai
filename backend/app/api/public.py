@@ -1156,6 +1156,29 @@ if settings.WORKBOARDS_ENABLED:
         values = body.get("values") if isinstance(body, dict) else None
         if not isinstance(values, dict):
             raise HTTPException(status_code=400, detail="values is required.")
+        # Apply the SAME field-level guards as the app-user path (media size cap,
+        # valid_if, show_if, readonly/computed stripping). The legacy public link
+        # carries no screen_id, so resolve the workboard's form screen from the
+        # layout and validate against it (anonymous identity). Without this, this
+        # path bypassed every guard — oversized base64 + invalid rows slipped in.
+        from app.modules.workboards.services import screen_runtime as _sr
+        from app.modules.workboards.services.rls_service import CallerIdentity as _CI
+
+        try:
+            _layout = _sr.parse_layout(workboard)
+            _form_screen = next(
+                (s for s in _layout.screens if s.kind == "form" and s.form is not None),
+                None,
+            )
+        except Exception:  # pragma: no cover - defensive
+            _form_screen = None
+        if _form_screen is not None:
+            values = _sr._apply_field_conditions(
+                _form_screen,
+                values,
+                _CI(),
+                media_max_kb=_sr.media_cap_kb(db, workboard, _form_screen),
+            )
         try:
             result = WorkboardWriteService.insert_row(db, workboard, values, None)
         except WorkboardValidationError as exc:
@@ -1580,7 +1603,7 @@ if settings.WORKBOARDS_ENABLED:
         )
         identity = identity_from_app_user(app_user)
         return screen_runtime.render_app_shell(
-            wb, identity, hidden_screen_ids=_public_hidden_screen_ids(ws, wb)
+            wb, identity, hidden_screen_ids=_public_hidden_screen_ids(ws, wb), db=db
         )
 
 

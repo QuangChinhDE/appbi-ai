@@ -276,6 +276,27 @@ def govern_knowledge_upsert(
     return _run(lambda: GovernanceService.upsert_knowledge_doc(db, body.model_dump(), changed_by=who))
 
 
+class KnowledgeAIDraftReq(BaseModel):
+    dataset_id: int
+    dashboard_id: int | None = None
+
+
+@router.post("/govern/knowledge/ai-draft")
+def govern_knowledge_ai_draft(
+    body: KnowledgeAIDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """AI reads the dataset's real model + sample + metrics and drafts a business
+    document (unsaved). The user reviews/edits before saving."""
+    from app.services.dashboard_ai_bot.govern_ai_draft import draft_document
+    draft = draft_document(db, body.dataset_id, body.dashboard_id)
+    if draft is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI chưa soạn được tài liệu. Kiểm tra dataset tồn tại và đã cấu hình khoá AI (OPENAI/GEMINI/ANTHROPIC).",
+        )
+    return draft
+
+
 @router.delete("/govern/knowledge/{doc_id}")
 def govern_knowledge_delete(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     who = getattr(user, "email", None)

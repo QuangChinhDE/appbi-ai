@@ -64,6 +64,13 @@ import {
   savePublicSession,
 } from '@/lib/api/public';
 import { evaluateTruthy, evaluateExpr } from '@/lib/wb-expr';
+import {
+  themeVars,
+  backgroundStyle,
+  darkModeCss,
+  resolveMode,
+  type WbTheme,
+} from '@/lib/wb-theme';
 import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
 import { isNetworkError } from '@/lib/offline/sync';
 
@@ -343,6 +350,14 @@ export default function WorkspaceWorkboardPage() {
 
   const accent = shell.branding.primary_color || '#2563eb';
   const appName = shell.branding.app_name || shell.workboard.name;
+  // ── Theme (design system) ─────────────────────────────────────────────
+  const theme = shell.branding as WbTheme;
+  const mode = resolveMode(theme.theme);
+  setRuntimeMediaCap(shell.media_max_kb);
+  const rootThemeStyle = {
+    ...themeVars(theme, mode),
+    ...backgroundStyle(theme.background, 'var(--wb-bg)'),
+  };
 
   // ── Layout decision ───────────────────────────────────────────────────
   // Only a genuine PHONE (<768px) gets the mobile nav (bottom_nav | drawer).
@@ -358,7 +373,12 @@ export default function WorkspaceWorkboardPage() {
   const isBottomNav = isMobile && !isDrawer;
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50">
+    <div
+      className="wb-app flex min-h-screen flex-col bg-slate-50"
+      data-theme={mode}
+      style={rootThemeStyle}
+    >
+      <style>{darkModeCss()}</style>
       <Header
         appName={appName}
         accent={accent}
@@ -1981,6 +2001,82 @@ function Field({
             (field.lookup as Record<string, unknown> | undefined)?.basemap || 'satellite',
           )}
         />
+      ) : widget === 'email' || widget === 'phone' || widget === 'url' ? (
+        <input
+          type={widget === 'email' ? 'email' : widget === 'phone' ? 'tel' : 'url'}
+          inputMode={widget === 'phone' ? 'tel' : widget === 'email' ? 'email' : 'url'}
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={readonly}
+          required={required}
+          placeholder={placeholder || (widget === 'email' ? 'name@company.com' : widget === 'phone' ? '09xxxxxxxx' : 'https://…')}
+          className={baseInput}
+        />
+      ) : widget === 'time' ? (
+        <input
+          type="time"
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={readonly}
+          required={required}
+          className={baseInput}
+        />
+      ) : widget === 'color' ? (
+        <div className="flex items-center gap-2">
+          <input
+            type="color"
+            value={stringValue || '#2563eb'}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={readonly}
+            className="h-9 w-12 cursor-pointer rounded border border-slate-300 p-0.5 disabled:opacity-50"
+          />
+          <input
+            type="text"
+            value={stringValue}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={readonly}
+            placeholder="#2563eb"
+            className={baseInput}
+          />
+        </div>
+      ) : widget === 'currency' || widget === 'percent' ? (
+        <div className="flex items-center gap-2">
+          {widget === 'currency' && Boolean(field.currency_code) && (
+            <span className="shrink-0 text-sm text-slate-500">{String(field.currency_code)}</span>
+          )}
+          <input
+            type="number"
+            step="any"
+            value={stringValue}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChange(v === '' ? '' : Number(v));
+            }}
+            disabled={readonly}
+            required={required}
+            placeholder={placeholder}
+            className={baseInput}
+          />
+          {widget === 'percent' && <span className="shrink-0 text-sm text-slate-500">%</span>}
+        </div>
+      ) : widget === 'rating' ? (
+        <RatingField field={field} value={value} onChange={onChange} readonly={readonly} />
+      ) : widget === 'slider' ? (
+        <SliderField field={field} value={value} onChange={onChange} readonly={readonly} unit={unit} />
+      ) : widget === 'duration' ? (
+        <DurationField value={value} onChange={onChange} readonly={readonly} />
+      ) : widget === 'enum_list' ? (
+        <EnumListField
+          field={field}
+          options={effectiveOpts as LookupOption[]}
+          value={value}
+          onChange={onChange}
+          readonly={readonly}
+        />
+      ) : widget === 'rich_text' ? (
+        <RichTextField value={value} onChange={onChange} readonly={readonly} placeholder={placeholder} />
+      ) : widget === 'video' ? (
+        <VideoField field={field} value={value} onChange={onChange} readonly={readonly} />
       ) : (
         <input
           type="text"
@@ -2010,13 +2106,361 @@ function Field({
   );
 }
 
+// ── Rating widget (stars) ────────────────────────────────────────────────
+function RatingField({
+  field,
+  value,
+  onChange,
+  readonly,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+}) {
+  const max = Math.min(Math.max(Number(field.max_stars) || 5, 1), 10);
+  const current = Number(value) || 0;
+  return (
+    <div className="flex items-center gap-1">
+      {Array.from({ length: max }, (_, i) => {
+        const n = i + 1;
+        const filled = current >= n;
+        return (
+          <button
+            key={n}
+            type="button"
+            disabled={readonly}
+            onClick={() => onChange(current === n ? 0 : n)}
+            className="text-2xl leading-none transition disabled:cursor-default"
+            style={{ color: filled ? '#f59e0b' : '#cbd5e1' }}
+            aria-label={`${n} sao`}
+          >
+            {filled ? '★' : '☆'}
+          </button>
+        );
+      })}
+      {current > 0 && <span className="ml-2 text-sm text-slate-500">{current}/{max}</span>}
+    </div>
+  );
+}
+
+// ── Slider widget (range) ────────────────────────────────────────────────
+function SliderField({
+  field,
+  value,
+  onChange,
+  readonly,
+  unit,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+  unit: string;
+}) {
+  const min = Number.isFinite(Number(field.min_value)) ? Number(field.min_value) : 0;
+  const max = Number.isFinite(Number(field.max_value)) ? Number(field.max_value) : 100;
+  const step = Number(field.step) > 0 ? Number(field.step) : 1;
+  const current = value == null || value === '' ? min : Number(value);
+  return (
+    <div className="flex items-center gap-3">
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={current}
+        disabled={readonly}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-2 flex-1 cursor-pointer accent-[color:var(--wb-primary,#2563eb)]"
+      />
+      <span className="w-16 shrink-0 text-right text-sm font-medium text-slate-700">
+        {current}
+        {unit ? ` ${unit}` : ''}
+      </span>
+    </div>
+  );
+}
+
+// ── Duration widget (hours + minutes -> total minutes) ───────────────────
+function DurationField({
+  value,
+  onChange,
+  readonly,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+}) {
+  const total = Number(value) || 0;
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  const emit = (h: number, m: number) => onChange(Math.max(0, h) * 60 + Math.max(0, Math.min(59, m)));
+  const cls =
+    'w-16 rounded-md border border-slate-300 px-2 py-2 text-sm focus:border-slate-500 focus:outline-none disabled:bg-slate-100';
+  return (
+    <div className="flex items-center gap-2 text-sm text-slate-600">
+      <input
+        type="number"
+        min={0}
+        value={hours || ''}
+        disabled={readonly}
+        onChange={(e) => emit(Number(e.target.value) || 0, mins)}
+        className={cls}
+        placeholder="0"
+      />
+      <span>giờ</span>
+      <input
+        type="number"
+        min={0}
+        max={59}
+        value={mins || ''}
+        disabled={readonly}
+        onChange={(e) => emit(hours, Number(e.target.value) || 0)}
+        className={cls}
+        placeholder="0"
+      />
+      <span>phút</span>
+    </div>
+  );
+}
+
+// ── Enum-list widget (multi-select chips) ────────────────────────────────
+function EnumListField({
+  field,
+  options,
+  value,
+  onChange,
+  readonly,
+}: {
+  field: RuntimeField;
+  options: LookupOption[];
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+}) {
+  const selected: string[] = Array.isArray(value)
+    ? value.map((v) => String(v))
+    : typeof value === 'string' && value.startsWith('[')
+      ? (() => {
+          try {
+            return (JSON.parse(value) as unknown[]).map((v) => String(v));
+          } catch {
+            return [];
+          }
+        })()
+      : value
+        ? [String(value)]
+        : [];
+  const maxSel = Number(field.max_select) || 0;
+  const toggle = (val: string) => {
+    if (readonly) return;
+    let next: string[];
+    if (selected.includes(val)) {
+      next = selected.filter((s) => s !== val);
+    } else {
+      if (maxSel > 0 && selected.length >= maxSel) return;
+      next = [...selected, val];
+    }
+    // Store as a JSON STRING so it writes to a text/jsonb cell without the
+    // connector adapting a Python list to a PG array (type mismatch).
+    onChange(JSON.stringify(next));
+  };
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.length === 0 && (
+        <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
+      )}
+      {options.map((opt) => {
+        const val = String(opt.value);
+        const on = selected.includes(val);
+        return (
+          <button
+            key={val}
+            type="button"
+            disabled={readonly}
+            onClick={() => toggle(val)}
+            className={`rounded-full border px-3 py-1 text-sm transition ${
+              on
+                ? 'border-transparent text-white'
+                : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+            }`}
+            style={on ? { backgroundColor: 'var(--wb-primary, #2563eb)' } : undefined}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+      {maxSel > 0 && (
+        <span className="self-center text-xs text-slate-400">
+          {selected.length}/{maxSel}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Rich-text widget (lightweight markdown) ──────────────────────────────
+function mdToSafeHtml(md: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const lines = esc(md).split('\n');
+  const out: string[] = [];
+  let inList = false;
+  for (const raw of lines) {
+    let line = raw;
+    line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    line = line.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    line = line.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    if (/^\s*[-*]\s+/.test(raw)) {
+      if (!inList) {
+        out.push('<ul>');
+        inList = true;
+      }
+      out.push(`<li>${line.replace(/^\s*[-*]\s+/, '')}</li>`);
+    } else {
+      if (inList) {
+        out.push('</ul>');
+        inList = false;
+      }
+      out.push(line.trim() ? `<p>${line}</p>` : '');
+    }
+  }
+  if (inList) out.push('</ul>');
+  return out.join('');
+}
+
+function RichTextField({
+  value,
+  onChange,
+  readonly,
+  placeholder,
+}: {
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+  placeholder?: string;
+}) {
+  const text = value == null ? '' : String(value);
+  const [preview, setPreview] = useState(false);
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  const wrap = (before: string, after: string) => {
+    const el = ref.current;
+    if (!el) return;
+    const s = el.selectionStart;
+    const e = el.selectionEnd;
+    const sel = text.slice(s, e) || 'text';
+    onChange(text.slice(0, s) + before + sel + after + text.slice(e));
+  };
+  return (
+    <div className="rounded-md border border-slate-300">
+      <div className="flex items-center gap-1 border-b border-slate-200 px-2 py-1 text-sm">
+        <button type="button" disabled={readonly} onClick={() => wrap('**', '**')} className="rounded px-2 py-0.5 font-bold hover:bg-slate-100">B</button>
+        <button type="button" disabled={readonly} onClick={() => wrap('*', '*')} className="rounded px-2 py-0.5 italic hover:bg-slate-100">I</button>
+        <button type="button" disabled={readonly} onClick={() => wrap('\n- ', '')} className="rounded px-2 py-0.5 hover:bg-slate-100">• List</button>
+        <button type="button" disabled={readonly} onClick={() => wrap('[', '](https://)')} className="rounded px-2 py-0.5 hover:bg-slate-100">🔗</button>
+        <button
+          type="button"
+          onClick={() => setPreview((p) => !p)}
+          className={`ml-auto rounded px-2 py-0.5 hover:bg-slate-100 ${preview ? 'text-blue-600' : 'text-slate-500'}`}
+        >
+          {preview ? 'Sửa' : 'Xem'}
+        </button>
+      </div>
+      {preview ? (
+        <div
+          className="prose-sm max-w-none px-3 py-2 text-sm text-slate-700 [&_a]:text-blue-600 [&_a]:underline [&_ul]:list-disc [&_ul]:pl-5"
+          dangerouslySetInnerHTML={{ __html: mdToSafeHtml(text) }}
+        />
+      ) : (
+        <textarea
+          ref={ref}
+          value={text}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={readonly}
+          placeholder={placeholder || 'Hỗ trợ **đậm**, *nghiêng*, - danh sách, [link](url)'}
+          rows={4}
+          className="w-full resize-y px-3 py-2 text-sm focus:outline-none disabled:bg-slate-100"
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Video widget (capture/upload -> data URI) ────────────────────────────
+function VideoField({
+  field,
+  value,
+  onChange,
+  readonly,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readonly: boolean;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const maxKb = Math.min(Number(field.max_file_kb) || FILE_HARD_CAP_KB, FILE_HARD_CAP_KB);
+  const src = typeof value === 'string' && value.startsWith('data:video') ? value : null;
+  return (
+    <div className="space-y-2">
+      {src ? (
+        <div className="space-y-1">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video src={src} controls className="max-h-48 w-full rounded-md border border-slate-200" />
+          {!readonly && (
+            <button
+              type="button"
+              onClick={() => onChange('')}
+              className="text-xs text-rose-600 hover:underline"
+            >
+              Xoá video
+            </button>
+          )}
+        </div>
+      ) : (
+        <input
+          type="file"
+          accept="video/*"
+          capture="environment"
+          disabled={readonly}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            setError(null);
+            if (f.size / 1024 > maxKb) {
+              setError(`Video lớn hơn giới hạn ${maxKb} KB.`);
+              return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => onChange(reader.result as string);
+            reader.readAsDataURL(f);
+          }}
+          className="text-sm"
+        />
+      )}
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+      <p className="text-xs text-slate-400">
+        Tối đa {maxKb} KB — nên dùng clip ngắn (nguồn Postgres, không Google Sheets).
+      </p>
+    </div>
+  );
+}
+
 // ── File / image upload widget ───────────────────────────────────────────
 //
 // Stores the file as a base64 data URL directly in the row's JSONB cell.
 // Hard ceiling is 1 MB — anything bigger blows up the row payload + audit
 // log. Builder can lower this via FormField.max_file_kb.
 
-const FILE_HARD_CAP_KB = 1024;
+// Soft FE pre-check ceiling for base64 media. Defaults to the Postgres/JSONB
+// app cap; the shell overrides it (storage-aware — 35KB for Sheets) via
+// setRuntimeMediaCap() so the picker rejects oversize before the round-trip.
+// The BE remains the authoritative enforcer.
+let FILE_HARD_CAP_KB = 1024;
+function setRuntimeMediaCap(kb?: number) {
+  if (typeof kb === 'number' && kb > 0) FILE_HARD_CAP_KB = kb;
+}
 
 function FileUploadField({
   field,
@@ -3017,6 +3461,7 @@ function GalleryView({
   onOpen,
   panelEnabled,
   emptyMessage,
+  rowFormat,
 }: {
   rows: Array<Record<string, unknown>>;
   config: GalleryConfigView;
@@ -3024,6 +3469,7 @@ function GalleryView({
   onOpen: (row: Record<string, unknown>) => void;
   panelEnabled: boolean;
   emptyMessage?: string | null;
+  rowFormat?: (row: Record<string, unknown>) => { tone: string; icon?: string | null; label?: string | null } | null;
 }) {
   const groupCol = config.group_by_column || null;
   const perRow = Math.min(Math.max(Number(config.columns_per_row) || 3, 1), 6);
@@ -3080,12 +3526,15 @@ function GalleryView({
               const imgSrc = typeof img === 'string' && img.startsWith('data:image') ? img : null;
               const title = config.title_column ? row[config.title_column] : null;
               const subtitle = config.subtitle_column ? row[config.subtitle_column] : null;
+              const fmt = rowFormat?.(row) || null;
               return (
                 <button
                   type="button"
                   key={idx}
                   onClick={() => panelEnabled && onOpen(row)}
-                  className={`group flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white text-left transition ${
+                  className={`group flex flex-col overflow-hidden rounded-lg border bg-white text-left transition ${
+                    fmt ? `${fmt.tone} border-2` : 'border-slate-200'
+                  } ${
                     panelEnabled ? 'cursor-pointer hover:border-slate-300 hover:shadow-sm' : 'cursor-default'
                   }`}
                 >
@@ -3400,20 +3849,60 @@ function TableScreen({
   const requiredCols = useMemo(() => new Set(tv.required_columns || []), [tv.required_columns]);
   const computedSpecs = useMemo(() => tv.computed_columns || [], [tv.computed_columns]);
   const lookupSpecs = useMemo(() => tv.lookup_columns || [], [tv.lookup_columns]);
+  const rollupSpecs = useMemo(() => tv.rollup_columns || [], [tv.rollup_columns]);
+  const formatRules = useMemo(() => tv.format_rules || [], [tv.format_rules]);
   const totalsSpec = (tv.totals || {}) as Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
   const derivedCols = useMemo(
-    () => new Set([...computedSpecs.map((c) => c.name), ...lookupSpecs.map((l) => l.name)]),
-    [computedSpecs, lookupSpecs],
+    () =>
+      new Set([
+        ...computedSpecs.map((c) => c.name),
+        ...lookupSpecs.map((l) => l.name),
+        ...rollupSpecs.map((r) => r.name),
+      ]),
+    [computedSpecs, lookupSpecs, rollupSpecs],
   );
   const formatByCol = useMemo(() => {
     const out: Record<string, string | null> = {};
     for (const c of computedSpecs) out[c.name] = c.format ?? null;
     for (const l of lookupSpecs) out[l.name] = l.format ?? null;
+    for (const r of rollupSpecs) out[r.name] = r.format ?? null;
     for (const [name, meta] of Object.entries(tv.column_metadata || {})) {
       if (meta?.format && out[name] === undefined) out[name] = meta.format;
     }
     return out;
-  }, [computedSpecs, lookupSpecs, tv.column_metadata]);
+  }, [computedSpecs, lookupSpecs, rollupSpecs, tv.column_metadata]);
+  // Phase-19: conditional formatting. Evaluate each rule's ``when`` expr per
+  // row via the shared row-local expr engine (same one as show_if/valid_if).
+  // First matching rule wins. ``columns`` empty ⇒ tint whole row; otherwise
+  // only the named cells. Colours reuse the StatusField tone palette.
+  const rowFormat = useCallback(
+    (row: Record<string, unknown>): {
+      tone: string;
+      columns: Set<string> | null;
+      icon?: string | null;
+      label?: string | null;
+    } | null => {
+      for (const rule of formatRules) {
+        if (!rule.when) continue;
+        let hit = false;
+        try {
+          hit = evaluateTruthy(rule.when, { row, app_user: {}, shared: {} }, false);
+        } catch {
+          hit = false;
+        }
+        if (hit) {
+          return {
+            tone: STATUS_TONES[rule.color || 'amber'] || STATUS_TONES.amber,
+            columns: rule.columns && rule.columns.length > 0 ? new Set(rule.columns) : null,
+            icon: rule.icon,
+            label: rule.label,
+          };
+        }
+      }
+      return null;
+    },
+    [formatRules],
+  );
   const detailPanel = tv.detail_panel;
   const panelEnabled = !(detailPanel && detailPanel.enabled === false);
 
@@ -3972,6 +4461,7 @@ function TableScreen({
           onOpen={openDetailPanel}
           panelEnabled={panelEnabled}
           emptyMessage={tv.empty_state_message}
+          rowFormat={formatRules.length > 0 ? rowFormat : undefined}
         />
       ) : tv.display_mode === 'calendar' && tv.calendar_config ? (
         <CalendarView
@@ -4095,11 +4585,18 @@ function TableScreen({
             {rows.map((row, idx) => {
               const rowKey = tableRowKey(row, pkCols);
               const status = rowStatus[rowKey];
+              const fmt = rowFormat(row);
+              // Whole-row tint only when the rule targets no specific columns.
+              const rowTint = fmt && !fmt.columns ? fmt.tone : null;
               return (
                 <tr
                   key={`${rowKey}:${idx}`}
                   className={`border-b border-slate-100 ${
-                    status?.status === 'error' ? 'bg-red-50/40' : 'hover:bg-slate-50'
+                    status?.status === 'error'
+                      ? 'bg-red-50/40'
+                      : rowTint
+                        ? rowTint
+                        : 'hover:bg-slate-50'
                   } ${panelEnabled && pkCols.length > 0 ? 'cursor-pointer' : ''}`}
                   onClick={(event) => onRowClick(row, event)}
                 >
@@ -4110,25 +4607,33 @@ function TableScreen({
                     const editable = editableCols.has(c) && !derived;
                     const cellValue = row[c];
                     const format = formatByCol[c] ?? null;
+                    // Cell-scoped conditional format (rule named this column).
+                    const cellTint = fmt && fmt.columns?.has(c) ? fmt.tone : null;
                     return (
                       <td
                         key={c}
                         rowSpan={rowspan}
                         className={`px-3 py-1.5 align-top ${
-                          editable
-                            ? 'text-slate-900'
-                            : derived
-                              ? 'bg-indigo-50/30 text-slate-700'
-                              : 'text-slate-700'
+                          cellTint
+                            ? `${cellTint} font-medium`
+                            : editable
+                              ? 'text-slate-900'
+                              : derived
+                                ? 'bg-indigo-50/30 text-slate-700'
+                                : 'text-slate-700'
                         }`}
                       >
                         {editable ? (
                           <TableCellInput
                             value={cellValue}
                             onCommit={(next) => updateRowCell(rowKey, c, next)}
+                            meta={(tv.column_metadata || {})[c] as CellMeta}
                           />
                         ) : (
-                          <FormattedCell value={cellValue} format={format} />
+                          <span className="inline-flex items-center gap-1">
+                            {cellTint && fmt?.icon ? <span aria-hidden>{fmt.icon}</span> : null}
+                            <FormattedCell value={cellValue} format={format} />
+                          </span>
                         )}
                       </td>
                     );
@@ -4200,6 +4705,7 @@ function TableScreen({
                           value={ghost[c]}
                           placeholder={requiredCols.has(c) ? 'Required' : ''}
                           onCommit={(next) => setGhost((prev) => ({ ...prev, [c]: next }))}
+                          meta={(tv.column_metadata || {})[c] as CellMeta}
                         />
                       ) : derived ? (
                         // Computed cells preview after the row lands —
@@ -4503,15 +5009,10 @@ function DetailPanelBody({
               </dt>
               <dd className="col-span-2 text-sm text-slate-800">
                 {isEditable && !isDerived ? (
-                  <input
-                    value={draftValue == null ? '' : String(draftValue)}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        [col]: event.target.value === '' ? null : event.target.value,
-                      }))
-                    }
-                    className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+                  <TableCellInput
+                    value={draftValue}
+                    onCommit={(next) => setDraft((prev) => ({ ...prev, [col]: next }))}
+                    meta={detail.column_metadata?.[col] as CellMeta}
                   />
                 ) : (
                   <FormattedCell value={detail.row[col]} format={null} />
@@ -4537,13 +5038,138 @@ function DetailPanelBody({
 // blur / Enter. We keep a local draft so the user can type freely before
 // firing the autosave; if the parent updates the value externally (e.g.
 // after a reload) the draft is rehydrated.
+// Column-meta shape driving a typed inline cell (subset of TableColumnMetaSpec).
+type CellMeta = {
+  input_type?: string | null;
+  options?: Array<{ label: string; value: unknown }> | null;
+  currency_code?: string | null;
+  max_stars?: number | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  step?: number | null;
+} | null | undefined;
+
 function TableCellInput({
   value,
   onCommit,
   placeholder,
+  meta,
 }: {
   value: unknown;
   onCommit: (next: unknown) => void;
+  placeholder?: string;
+  meta?: CellMeta;
+}) {
+  const it = meta?.input_type || 'text';
+
+  // ── Typed controls that commit immediately ──────────────────────────
+  if (it === 'checkbox') {
+    return (
+      <input
+        type="checkbox"
+        checked={value === true || value === 'true' || value === 1 || value === '1'}
+        onChange={(e) => onCommit(e.target.checked)}
+        className="h-4 w-4 rounded border-slate-300"
+      />
+    );
+  }
+  if (it === 'color') {
+    return (
+      <input
+        type="color"
+        value={value ? String(value) : '#2563eb'}
+        onChange={(e) => onCommit(e.target.value)}
+        className="h-7 w-10 cursor-pointer rounded border border-slate-200 p-0.5"
+      />
+    );
+  }
+  if (it === 'rating') {
+    return (
+      <RatingField
+        field={{ max_stars: meta?.max_stars } as unknown as RuntimeField}
+        value={value}
+        onChange={onCommit}
+        readonly={false}
+      />
+    );
+  }
+  if (it === 'slider') {
+    return (
+      <SliderField
+        field={
+          {
+            min_value: meta?.min_value,
+            max_value: meta?.max_value,
+            step: meta?.step,
+          } as unknown as RuntimeField
+        }
+        value={value}
+        onChange={onCommit}
+        readonly={false}
+        unit=""
+      />
+    );
+  }
+  if (it === 'enum_list') {
+    return (
+      <EnumListField
+        field={{} as RuntimeField}
+        options={(meta?.options || []).map((o) => ({ label: o.label, value: o.value })) as LookupOption[]}
+        value={value}
+        onChange={onCommit}
+        readonly={false}
+      />
+    );
+  }
+  if (it === 'select') {
+    return (
+      <select
+        value={value == null ? '' : String(value)}
+        onChange={(e) => onCommit(e.target.value === '' ? null : e.target.value)}
+        className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+      >
+        <option value="">—</option>
+        {(meta?.options || []).map((o) => (
+          <option key={String(o.value)} value={String(o.value)}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  // ── Text-like typed inputs (commit on blur/Enter) ───────────────────
+  const numeric = it === 'number' || it === 'currency' || it === 'percent';
+  const htmlType =
+    it === 'date' ? 'date'
+    : it === 'datetime' ? 'datetime-local'
+    : it === 'time' ? 'time'
+    : numeric ? 'number'
+    : 'text';
+  return (
+    <TextCellInput
+      value={value}
+      onCommit={onCommit}
+      htmlType={htmlType}
+      numeric={numeric}
+      placeholder={placeholder || (meta?.currency_code ? String(meta.currency_code) : undefined)}
+    />
+  );
+}
+
+// Text/number/date-like inline cell — holds its own draft state (hooks live
+// here so TableCellInput's typed dispatch never calls hooks conditionally).
+function TextCellInput({
+  value,
+  onCommit,
+  htmlType,
+  numeric,
+  placeholder,
+}: {
+  value: unknown;
+  onCommit: (next: unknown) => void;
+  htmlType: string;
+  numeric: boolean;
   placeholder?: string;
 }) {
   const initial = value == null ? '' : String(value);
@@ -4561,12 +5187,14 @@ function TableCellInput({
   const commit = () => {
     if (draft === lastValueRef.current) return;
     lastValueRef.current = draft;
-    // Empty string → null so the backend writes NULL rather than ''.
-    onCommit(draft === '' ? null : draft);
+    if (draft === '') return onCommit(null);
+    onCommit(numeric ? Number(draft) : draft);
   };
 
   return (
     <input
+      type={htmlType}
+      step={numeric ? 'any' : undefined}
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
       onBlur={commit}

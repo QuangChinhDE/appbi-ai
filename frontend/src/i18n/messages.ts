@@ -311,9 +311,12 @@ import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
 import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
+import { governCatalog } from './catalog/govern';
 import { workboardsCatalog } from './catalog/workboards';
 import { datasourcesCatalog } from './catalog/datasources';
+import { observabilityCatalog } from './catalog/observability';
 import { publicCatalog } from './catalog/public';
+import { settingsCatalog } from './catalog/settings';
 import { sharedCatalog } from './catalog/shared';
 
 const moduleCatalogs: ModuleCatalog[] = [
@@ -324,9 +327,12 @@ const moduleCatalogs: ModuleCatalog[] = [
   dashboardsThemeCatalog,
   datasetsCatalog,
   exploreCatalog,
+  governCatalog,
   workboardsCatalog,
   datasourcesCatalog,
+  observabilityCatalog,
   publicCatalog,
+  settingsCatalog,
   sharedCatalog,
 ];
 
