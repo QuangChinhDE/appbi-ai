@@ -4,7 +4,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Settings2 } from 'lucide-react';
+import { AppModalShell } from '@/components/common/AppModalShell';
 
 import type {
   MiniAppLayoutSpec,
@@ -44,18 +45,14 @@ export default function AppSettingsEditor({
   const datasetChanged = selectedDatasetId !== currentDatasetId;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-sm">
-      <div className="w-full max-w-xl overflow-hidden rounded-xl bg-surface-1 shadow-xl">
-        <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-3">
-          <h2 className="text-body font-emphasis text-text-primary">App settings</h2>
-          <button
-            onClick={onClose}
-            className="rounded-md p-1 hover:bg-surface-2"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="space-y-4 px-5 py-4">
+    <AppModalShell
+      onClose={onClose}
+      title="App settings"
+      description="Giao diện · Dữ liệu nguồn · Auto-number · Điều hướng"
+      icon={<Settings2 className="h-4 w-4" />}
+      maxWidthClass="max-w-3xl"
+      bodyClassName="space-y-5 px-5 py-5"
+    >
           <section>
             <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
               Dataset
@@ -137,9 +134,7 @@ export default function AppSettingsEditor({
               </Lbl>
             </div>
           </section>
-        </div>
-      </div>
-    </div>
+    </AppModalShell>
   );
 }
 
