@@ -124,6 +124,23 @@ only the fields listed in the design guide are accepted.
 4. **Public links require the owner PIN rotated off the default** before
    `create_workboard_public_link` succeeds.
 
+## Hit an error while building? Want to extend the MCP?
+
+See **[MAINTAINERS.md](MAINTAINERS.md)** — the debug + upgrade guide:
+
+- **Mental model:** the AppBI backend is the single gatekeeper; this MCP is thin
+  tools + a design guide. Most "the MCP can't build X" issues are a *design-guide
+  gap*, not missing code (because `apply` sends `layout_json` straight through).
+- **Which layer failed** — MCP pre-check (`validate_workboard_bundle`) vs backend
+  gate (the `backend_error` envelope with a Pydantic field path in `detail`) vs
+  runtime (`audit_workboard` / smoke test) — and where each fix goes.
+- **The debugging loop** (reproduce with `validate`, read the 422 `detail`, curl
+  the backend with the same PAT, `APPBI_MCP_LOG_LEVEL=DEBUG`).
+- **The upgrade playbook** — 3 cases (document a backend-supported field · relax a
+  false pre-check · add a new tool) with exact edit locations, plus a
+  test-before-ship checklist.
+- A **common-errors → cause → fix** table.
+
 ## Files
 
 | File | Role |
