@@ -235,7 +235,7 @@ def infer_full_column_types(
     columns: Optional[Iterable[str]] = None,
     tolerance: float = 0.001,
     row_cap: Optional[int] = None,
-    min_non_null: int = 10,
+    min_non_null: int = 3,
     column_batch_size: int = DEFAULT_COLUMN_BATCH_SIZE,
 ) -> List[ColumnTypeSuggestion]:
     """Run a full-scan inference and return per-column suggestions.
@@ -243,6 +243,13 @@ def infer_full_column_types(
     Tolerance is the maximum fraction of non-null values allowed to fail the
     cast; default 0.1%. Columns that already have a user-set override are
     returned as suggestions but the caller decides whether to overwrite.
+
+    `min_non_null` (default 3) is the floor of non-null values a column needs
+    before we'll type it. It used to be 10, which silently left SMALL tables
+    untyped — very common for Google-Sheets reference/dimension tabs (a 5-row
+    `Lo` table stayed all-`string`, so its numeric/date columns never worked).
+    Because `tolerance` already requires ~ALL non-null values to cast cleanly, a
+    3+ row all-clean column is strong enough evidence; a 1-2 value column is not.
 
     The query batches columns to keep SELECT-list size sane on engines with
     column-count limits.

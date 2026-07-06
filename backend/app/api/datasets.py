@@ -3217,6 +3217,14 @@ def update_dataset_table(
         except Exception as exc:
             logger.warning("Column inference failed after updating table %s: %s", updated_table.id, exc)
 
+        # Re-run full-scan type detection after a schema refresh for sources whose
+        # per-import inference is sample-based/unreliable (Google Sheets, manual
+        # upload, derived_table). Without this a RE-SYNCED sheet re-infers every
+        # column as `string` and silently loses the number/date types — the exact
+        # gap behind "GG Sheet rất hay lỗi dữ liệu". Mirrors the table-created
+        # trigger; `apply_suggestions_to_table` never overwrites user-set types.
+        _enqueue_auto_type_detection_if_needed(background_tasks, updated_table)
+
     DescriptionPipelineService.enqueue_table_pipeline(
         background_tasks,
         db,
