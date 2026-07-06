@@ -39,7 +39,7 @@ import {
   HelpCircle,
   Loader2,
   MessageSquare,
-  Sparkles,
+  Wand2,
   Tag,
   User,
   X,
@@ -229,15 +229,17 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
         <div className="flex items-center gap-2">
           {/* Quick-regen button — visible in header so user doesn't need to open panel */}
           {canEdit && !isGenerating && (
+            /* Nested inside the collapsible-header <button>, so this must stay a
+               span — but it wears the SAME AI identity as AiButton (brand pill + wand). */
             <span
               role="button"
               tabIndex={0}
               onClick={(e) => { e.stopPropagation(); handleRegen(); }}
               onKeyDown={(e) => e.key === 'Enter' && (e.stopPropagation(), handleRegen())}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-brand hover:bg-brand/15"
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-brand/25 bg-brand/10 px-2 py-0.5 text-tiny font-medium text-brand transition-colors hover:border-brand/40 hover:bg-brand/20"
               title={t('explore.aiDescription.generateTitle')}
             >
-              <Sparkles className="h-3 w-3" />
+              <Wand2 className="h-3 w-3 flex-shrink-0" />
               {!hasContent ? t('explore.aiDescription.generate') : t('explore.aiDescription.regen')}
             </span>
           )}

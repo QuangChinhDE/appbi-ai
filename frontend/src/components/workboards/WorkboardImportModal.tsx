@@ -22,6 +22,7 @@ import { useDatasets, useDatasetTables } from '@/hooks/use-datasets';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useImportWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
+import { AiButton } from '@/components/ui/AiButton';
 import { FieldGroup, Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
@@ -691,17 +692,15 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                           <strong>{t('workboards.import.aiAutoMapTitle')}</strong>{' '}
                           {t('workboards.import.aiAutoMapDescription')}
                         </div>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          leadingIcon={<Sparkles className="h-3.5 w-3.5" />}
+                        <AiButton
+                          size="md"
                           loading={autoMapping}
-                          disabled={autoMapping || tablesLoading}
+                          disabled={tablesLoading}
                           onClick={handleAutoMap}
                           title={t('workboards.import.aiAutoMapButtonTitle')}
                         >
                           {t('workboards.import.aiAutoMapButton')}
-                        </Button>
+                        </AiButton>
                       </div>
 
                       <ImportMappingEditor

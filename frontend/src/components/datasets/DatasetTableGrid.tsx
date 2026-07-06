@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom';
 import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon, Wand2, Loader2 } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
 import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
+import { AiButton } from '@/components/ui/AiButton';
 import {
   type TableColumnFilter,
   type TableFilterColumnType,
@@ -1150,19 +1151,14 @@ export function DatasetTableGrid({
           </button>
         )}
         {onAutoDetectPreview && (
-          <button
+          <AiButton
             onClick={runAutoDetectPreview}
-            disabled={isAutoDetecting}
+            loading={isAutoDetecting}
             title={t('datasets.grid.autoDetectHint')}
-            /* Balanced accent: brand-tinted so it reads as an action + stands
-               out from the surface-2 footer, but not a solid/loud primary. */
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-brand/25 bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand transition-colors hover:bg-brand/20 hover:border-brand/40 disabled:cursor-not-allowed disabled:opacity-60"
+            className="ml-auto"
           >
-            {isAutoDetecting
-              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              : <Wand2 className="w-3.5 h-3.5" />}
-            {isAutoDetecting ? t('datasets.grid.autoDetecting') : t('datasets.grid.autoDetectTypes')}
-          </button>
+            {t('datasets.grid.autoDetectTypes')}
+          </AiButton>
         )}
       </div>
 

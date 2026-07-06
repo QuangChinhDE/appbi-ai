@@ -41,6 +41,7 @@ import {
 import type { DescriptionGenerationStatus, ChartDescription } from '@/hooks/useDescription';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
+import { AiButton } from '@/components/ui/AiButton';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -447,14 +448,14 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                   <br />
                   <span className="text-text-quaternary">{t('explore.aiDescription.reviewHelper')}</span>
                 </p>
-                <button
+                <AiButton
+                  size="md"
+                  className="shrink-0"
                   onClick={handleRegen}
-                  disabled={regenMut.isPending}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                  loading={regenMut.isPending}
                 >
-                  <Sparkles className="h-3.5 w-3.5" />
                   {hasContent ? t('explore.aiDescription.regenerate') : t('explore.aiDescription.generateTitle')}
-                </button>
+                </AiButton>
               </div>
             )}
           </div>

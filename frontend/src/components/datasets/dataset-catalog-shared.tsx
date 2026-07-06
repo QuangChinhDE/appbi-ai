@@ -27,6 +27,7 @@ import {
   type DatasetTable,
 } from '@/hooks/use-datasets';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { AiButton } from '@/components/ui/AiButton';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -683,15 +684,9 @@ export function TableNotesBar({
         )}
         <div className="flex-1" />
         {canEdit && onGenerateAi && (
-          <button
-            type="button"
-            onClick={onGenerateAi}
-            disabled={isGeneratingAi}
-            className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/15 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Sparkles className={`h-3 w-3 ${isGeneratingAi ? 'animate-spin' : ''}`} />
-            {isGeneratingAi ? 'Generating…' : 'AI'}
-          </button>
+          <AiButton onClick={onGenerateAi} loading={isGeneratingAi}>
+            AI
+          </AiButton>
         )}
         <button
           type="button"

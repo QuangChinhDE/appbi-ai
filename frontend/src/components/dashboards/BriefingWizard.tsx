@@ -14,6 +14,7 @@ import {
   type AiProvider,
 } from '@/lib/api/public';
 import { useI18n } from '@/providers/LanguageProvider';
+import { AiButton } from '@/components/ui/AiButton';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -442,12 +443,9 @@ function ProfileStep({
         >
           {t('dashboards.briefingWizard.back')}
         </button>
-        <button
-          onClick={onConfirm}
-          className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
-        >
-          {t('dashboards.briefingWizard.summarizeForMe')} <Sparkles className="h-3.5 w-3.5" />
-        </button>
+        <AiButton size="md" onClick={onConfirm}>
+          {t('dashboards.briefingWizard.summarizeForMe')}
+        </AiButton>
       </div>
     </div>
   );

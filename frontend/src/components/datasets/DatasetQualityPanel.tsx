@@ -49,6 +49,7 @@ import {
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import { AiButton } from '@/components/ui/AiButton';
 import { apiClient as api } from '@/lib/api-client';
 import { DatasetQualityReportModal } from '@/components/datasets/DatasetQualityReportModal';
 import { DatasetQualityScheduleModal } from '@/components/datasets/DatasetQualityScheduleModal';
@@ -1089,10 +1090,10 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
   }
 
   return (
-    <div className="rounded-2xl border border-purple-500/20 bg-purple-500/5 p-3">
+    <div className="rounded-2xl border border-brand/20 bg-brand/5 p-3">
       <div className="flex items-center gap-2 mb-2">
-        <Sparkles className="h-3.5 w-3.5 text-purple-500" />
-        <span className="text-xs font-semibold text-purple-700 dark:text-purple-400">{t('datasets.quality.ai.assist')}</span>
+        <Sparkles className="h-3.5 w-3.5 text-brand" />
+        <span className="text-xs font-semibold text-brand">{t('datasets.quality.ai.assist')}</span>
       </div>
       <div className="flex gap-2">
         <input
@@ -1101,19 +1102,16 @@ function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleGenerate(); } }}
           placeholder={t('datasets.quality.ai.placeholder')}
-          className="min-w-0 flex-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-xs focus:border-purple-500/50 focus:outline-none placeholder:text-text-quaternary"
+          className="min-w-0 flex-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-xs focus:border-brand/50 focus:outline-none placeholder:text-text-quaternary"
         />
-        <button
-          type="button"
+        <AiButton
+          size="md"
+          className="shrink-0"
           onClick={handleGenerate}
-          disabled={!description.trim() || !tableName || mutation.isPending}
-          className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
-        >
-          {mutation.isPending
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            : <Sparkles className="h-3.5 w-3.5" />
-          }
-        </button>
+          loading={mutation.isPending}
+          disabled={!description.trim() || !tableName}
+          aria-label={t('datasets.quality.ai.assist')}
+        />
       </div>
 
       {mutation.isError && (
@@ -2518,22 +2516,17 @@ function RuleEditorDrawer({
                         <Wand2 className="h-3.5 w-3.5" />
                         Templates
                       </button>
-                      <button
-                        type="button"
+                      <AiButton
+                        size="md"
                         onClick={() => {
                           setShowAiAssistant((v) => !v);
                           setShowIntentCards(false);
                           setShowBulkPicker(false);
                         }}
-                        className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                          showAiAssistant
-                            ? 'border-brand/40 bg-brand/10 text-brand'
-                            : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
-                        }`}
+                        className={showAiAssistant ? 'border-brand/40 bg-brand/20' : undefined}
                       >
-                        <Sparkles className="h-3.5 w-3.5" />
                         Suggest with AI
-                      </button>
+                      </AiButton>
                     </div>
                   )}
                 </div>

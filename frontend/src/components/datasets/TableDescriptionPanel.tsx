@@ -22,6 +22,7 @@ import {
 } from '@/hooks/useDescription';
 import type { DescriptionGenerationStatus } from '@/hooks/useDescription';
 import { toast } from '@/lib/toast';
+import { AiButton } from '@/components/ui/AiButton';
 
 interface Props {
   datasetId: number;
@@ -201,14 +202,9 @@ export function TableDescriptionPanel({ datasetId, tableId, canEdit }: Props) {
           <StatusBadge status={data.generation_status} />
         </div>
         {canEdit && (
-          <button
-            onClick={handleRegen}
-            disabled={isProcessing}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-brand/30 bg-brand/10 px-3 py-1.5 text-xs font-medium text-brand transition-colors hover:bg-brand/15 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Sparkles className={`h-3.5 w-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
-            {isProcessing ? 'Processing...' : 'Regenerate with AI'}
-          </button>
+          <AiButton size="md" onClick={handleRegen} loading={isProcessing}>
+            Regenerate with AI
+          </AiButton>
         )}
       </div>
 
