@@ -22,7 +22,7 @@ import {
   operatorsForType,
   operatorValueCount,
 } from '@/lib/tableColumnFilter';
-import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
+import type { NumberFormat, TableCellFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
   SortConfig,
@@ -36,6 +36,8 @@ import {
   getCellStyle,
   getHeatmapCellStyle,
   parseNumericCellValue,
+  isDateFormatKind,
+  formatDateCellValue,
 } from '@/lib/exploreAggregations';
 
 // Icon keys usable in conditional-formatting "icon" mode (Feature #4).
@@ -91,7 +93,7 @@ export interface TableVisualizationProps {
    * the semantic model's measure `format.kind` (buildSemanticFormatMap), so a
    * column declared as percent/currency at the dataset level formats itself.
    */
-  columnFormats?: Record<string, NumberFormat> | Map<string, NumberFormat>;
+  columnFormats?: Record<string, TableCellFormat> | Map<string, TableCellFormat>;
   /** Cross-highlight (PBI-parity): when set, rows whose dimension key is NOT in
    *  this set are dimmed (the selection's matching rows stay full opacity).
    *  Pass together with `rowDimKey` so both sides compute the key identically. */
@@ -274,7 +276,7 @@ export function TableVisualization({
   // declared percent/currency/number measure formats by THAT format; others
   // fall back to the table-wide `numberFormat`. Accepts qualified ("view.field")
   // or bare ("field") keys (tries both).
-  const getColumnFormat = (col: string): NumberFormat => {
+  const getColumnFormat = (col: string): TableCellFormat => {
     if (columnFormats) {
       const get = (k: string) =>
         columnFormats instanceof Map ? columnFormats.get(k) : columnFormats[k];
@@ -1165,11 +1167,13 @@ function calculateSummaryValue(
 function formatNumericCellValue(
   value: number,
   options: {
-    numberFormat?: NumberFormat;
+    numberFormat?: TableCellFormat;
     decimalPlaces?: number;
     currencySymbol?: string;
   },
 ): string {
+  // Only number formats reach here (formatCellValue intercepts date kinds); a
+  // stray date kind harmlessly falls through to the default toLocaleString.
   const format = options.numberFormat ?? 'auto';
   const decimalPlaces = options.decimalPlaces ?? 1;
   const currencySymbol = options.currencySymbol || '$';
@@ -1201,7 +1205,7 @@ function formatNumericCellValue(
 function formatCellValue(
   value: any,
   options: {
-    numberFormat?: NumberFormat;
+    numberFormat?: TableCellFormat;
     decimalPlaces?: number;
     currencySymbol?: string;
   } = {},
@@ -1216,6 +1220,13 @@ function formatCellValue(
 
   if (typeof value === 'boolean') {
     return value ? 'Yes' : 'No';
+  }
+
+  // A DATE column format wins first — so a date is ALWAYS rendered as a date,
+  // never mangled by the numeric branch below (e.g. a YYYYMMDD int → "20,240,324"
+  // or a numeric year → "2,024"). formatDateCellValue leaves non-dates as-is.
+  if (isDateFormatKind(options.numberFormat)) {
+    return formatDateCellValue(value, options.numberFormat);
   }
 
   const numericValue = parseNumericCellValue(value);

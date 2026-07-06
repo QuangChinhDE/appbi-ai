@@ -20,6 +20,7 @@ import type {
   DataLabelStyle,
   MetricConfig,
   NumberFormat,
+  TableCellFormat,
   SemanticLabelMap,
 } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig, normalizeRoleConfig } from './ExploreChartConfig';
@@ -29,7 +30,7 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
-import { resolveBenchmarkLines, applyKpiBenchmarkCalc } from '@/lib/exploreAggregations';
+import { resolveBenchmarkLines, applyKpiBenchmarkCalc, isDateFormatKind } from '@/lib/exploreAggregations';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useExportMode } from '@/lib/export-mode';
 import { applyCalculatedFields, buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
@@ -2047,7 +2048,7 @@ function ExploreChartInner({
   const effectiveColumnFormats = useMemo(() => {
     const overrides = style.tableColumnFormats;
     if (!formatMap && !overrides) return undefined;
-    const merged = new Map<string, NumberFormat>(formatMap ?? []);
+    const merged = new Map<string, TableCellFormat>(formatMap ?? []);
     if (overrides) {
       for (const [key, fmt] of Object.entries(overrides)) {
         if (fmt) merged.set(key, fmt);
@@ -2884,7 +2885,9 @@ function ExploreChartInner({
       if (type === 'MATRIX' || !primary || !effectiveColumnFormats || chartWideSet) return style;
       const fmt = effectiveColumnFormats.get(primary.field)
         ?? (primary.field.includes('.') ? effectiveColumnFormats.get(primary.field.split('.').slice(-1)[0]) : undefined);
-      return fmt ? { ...style, numberFormat: fmt } : style;
+      // Only a NUMBER format becomes the chart-wide numberFormat; a date-column
+      // kind is a table-only concern and never a series/axis format.
+      return fmt && !isDateFormatKind(fmt) ? { ...style, numberFormat: fmt } : style;
     })();
     return (
       <AdvancedExploreChart

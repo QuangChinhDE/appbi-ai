@@ -239,6 +239,92 @@ export function parseNumericCellValue(value: any): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * Per-column DATE display formats for the table. Kept SEPARATE from NumberFormat
+ * so a date column never gets number-formatted (the old bug: a date column's
+ * only format options were number ones, which no-op on an ISO string — so dates
+ * were unformattable). These values never collide with NumberFormat
+ * ('auto'|'number'|'compact'|'percent'|'currency').
+ */
+export type DateFormatKind =
+  | 'date_iso'    // 2024-03-24
+  | 'date_dmy'    // 24/03/2024
+  | 'date_mdy'    // 03/24/2024
+  | 'date_med'    // 24 Mar 2024
+  | 'date_long'   // 24 March 2024
+  | 'month_year'  // Mar 2024
+  | 'year'        // 2024
+  | 'datetime';   // 2024-03-24 14:30
+
+export const DATE_FORMAT_OPTIONS: Array<{ value: DateFormatKind; label: string }> = [
+  { value: 'date_iso', label: '2024-03-24' },
+  { value: 'date_dmy', label: '24/03/2024' },
+  { value: 'date_mdy', label: '03/24/2024' },
+  { value: 'date_med', label: '24 Mar 2024' },
+  { value: 'date_long', label: '24 March 2024' },
+  { value: 'month_year', label: 'Mar 2024' },
+  { value: 'year', label: '2024' },
+  { value: 'datetime', label: '2024-03-24 14:30' },
+];
+
+const _DATE_FORMAT_KINDS = new Set<string>(DATE_FORMAT_OPTIONS.map((o) => o.value));
+
+export function isDateFormatKind(value: unknown): value is DateFormatKind {
+  return typeof value === 'string' && _DATE_FORMAT_KINDS.has(value);
+}
+
+const _MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _MON_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const _p2 = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * Format a date-ish cell value per a DateFormatKind.
+ *
+ * Timezone-safe: ISO-ish strings (`YYYY-MM-DD`, `YYYY-MM`, `YYYY`, `YYYY-MM-DDThh:mm`)
+ * are parsed by REGEX and formatted from their literal Y/M/D parts — never routed
+ * through `new Date(...)`, which would shift a date-only value across midnight in
+ * non-UTC zones (the classic off-by-one). Only genuinely non-ISO values fall back
+ * to Date (read via UTC getters). A value that isn't a date at all is returned
+ * unchanged, so applying a date format to a stray column can't mangle it.
+ */
+export function formatDateCellValue(value: any, kind: DateFormatKind): string {
+  if (value === null || value === undefined || value === '') return '';
+  const raw = value instanceof Date ? value.toISOString() : String(value).trim();
+
+  let y: number, mo: number, d: number;
+  let hh: number | null = null;
+  let mi: number | null = null;
+
+  const m = raw.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?(?:[T ](\d{2}):(\d{2}))?/);
+  if (m) {
+    y = Number(m[1]);
+    mo = Number(m[2]);
+    d = m[3] ? Number(m[3]) : 1;
+    if (m[4]) { hh = Number(m[4]); mi = Number(m[5] ?? '0'); }
+  } else if (/^\d{8}$/.test(raw)) {
+    // YYYYMMDD integer date
+    y = Number(raw.slice(0, 4)); mo = Number(raw.slice(4, 6)); d = Number(raw.slice(6, 8));
+  } else {
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) return String(value); // not a date → leave as-is
+    y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+    hh = dt.getUTCHours(); mi = dt.getUTCMinutes();
+  }
+  if (mo < 1 || mo > 12) return String(value); // guard against non-date "YYYY-NN"
+
+  switch (kind) {
+    case 'date_dmy': return `${_p2(d)}/${_p2(mo)}/${y}`;
+    case 'date_mdy': return `${_p2(mo)}/${_p2(d)}/${y}`;
+    case 'date_med': return `${d} ${_MON_SHORT[mo - 1]} ${y}`;
+    case 'date_long': return `${d} ${_MON_LONG[mo - 1]} ${y}`;
+    case 'month_year': return `${_MON_SHORT[mo - 1]} ${y}`;
+    case 'year': return `${y}`;
+    case 'datetime': return `${y}-${_p2(mo)}-${_p2(d)}${hh !== null ? ` ${_p2(hh)}:${_p2(mi ?? 0)}` : ''}`;
+    case 'date_iso':
+    default: return `${y}-${_p2(mo)}-${_p2(d)}`;
+  }
+}
+
 export function buildTableHeatmapStats(
   rows: Record<string, any>[],
   rules: TableHeatmapRule[] | null,

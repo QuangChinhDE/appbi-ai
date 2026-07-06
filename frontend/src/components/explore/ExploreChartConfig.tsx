@@ -39,6 +39,7 @@ import {
   Info,
 } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
+import { DATE_FORMAT_OPTIONS, type DateFormatKind } from '@/lib/exploreAggregations';
 import { useI18n } from '@/providers/LanguageProvider';
 import type {
   ChartBenchmarkLineStyle,
@@ -72,6 +73,13 @@ export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' |
 export type TableLayoutMode = 'standard' | 'pivot';
 
 export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
+/**
+ * A per-column table cell format is EITHER a number format OR a date format
+ * (see DateFormatKind). The two value-spaces are disjoint, so a single string
+ * field carries both; the renderer branches on `isDateFormatKind`.
+ */
+export type TableCellFormat = NumberFormat | DateFormatKind;
+export type { DateFormatKind };
 /** Power-BI-style value-axis "Display units". */
 export type AxisDisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
@@ -324,7 +332,7 @@ export interface ChartStyleConfig {
    *  and the table-wide Number Format for that column only. Empty/absent =
    *  inherit (measure format → table-wide format). Lets DA format a % or money
    *  column at chart-build time without editing the dataset measure. */
-  tableColumnFormats?: Record<string, NumberFormat>;
+  tableColumnFormats?: Record<string, TableCellFormat>;
   // Display-only table header aliases. Raw column keys/data rows are unchanged.
   tableColumnLabels?: Record<string, string>;
   tableHyperlinkRules?: TableHyperlinkRule[];
@@ -1522,6 +1530,12 @@ function fieldDisplayMeta(c: Col): { label: string; view: string | null; typeLab
 function fieldSecondaryText(c: Col): string {
   const meta = fieldDisplayMeta(c);
   return `${meta.typeLabel} - ${fieldSourceLabel(c)}`;
+}
+
+function isDateType(c: Col): boolean {
+  return ['date', 'datetime', 'timestamp', 'timestamptz', 'datetimetz', 'time'].includes(
+    (c.type ?? '').toLowerCase(),
+  );
 }
 
 function isNumeric(c: Col): boolean {
@@ -3879,7 +3893,7 @@ export function ExploreChartConfig({
   };
 
   const tableColumnFormats = normalizedStyleConfig.tableColumnFormats ?? {};
-  const updateTableColumnFormat = (columnName: string, format: NumberFormat | '') => {
+  const updateTableColumnFormat = (columnName: string, format: TableCellFormat | '') => {
     const next = { ...tableColumnFormats };
     if (!format) delete next[columnName];
     else next[columnName] = format;
@@ -4406,16 +4420,27 @@ export function ExploreChartConfig({
                   </div>
                   <select
                     value={tableColumnFormats[column.name] ?? ''}
-                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
+                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as TableCellFormat | '')}
                     title={t('explore.config.columnNumberFormatTitle')}
                     className="w-[112px] shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-1 text-[11px]"
                   >
                     <option value="">{t('explore.config.default')}</option>
-                    <option value="auto">{t('explore.config.number')}</option>
-                    <option value="compact">{t('explore.config.compact')}</option>
-                    <option value="number">1,234</option>
-                    <option value="percent">{t('explore.config.percent')}</option>
-                    <option value="currency">{t('explore.config.currency')} {normalizedStyleConfig.currencySymbol || '$'}</option>
+                    {isDateType(column) ? (
+                      // Date columns get DATE display formats (not number formats,
+                      // which no-op on an ISO string) — fixes "can't format a date
+                      // column".
+                      DATE_FORMAT_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="auto">{t('explore.config.number')}</option>
+                        <option value="compact">{t('explore.config.compact')}</option>
+                        <option value="number">1,234</option>
+                        <option value="percent">{t('explore.config.percent')}</option>
+                        <option value="currency">{t('explore.config.currency')} {normalizedStyleConfig.currencySymbol || '$'}</option>
+                      </>
+                    )}
                   </select>
                   <button
                     type="button"

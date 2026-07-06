@@ -135,10 +135,10 @@ interface AdvancedExploreChartProps {
   /** Phase-15.13: same semantic label map used by ExploreChart; forwarded to
    *  TableVisualization when rendering MATRIX so headers humanise. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
-  /** Phase-16.x: per-column number format (field → percent/currency/number)
-   *  forwarded to MATRIX's TableVisualization so a percent/currency measure
-   *  formats in its own column. */
-  formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
+  /** Phase-16.x: per-column cell format (field → number OR date format)
+   *  forwarded to MATRIX's TableVisualization so a percent/currency measure —
+   *  or a date column — formats in its own column. */
+  formatMap?: Map<string, import('./ExploreChartConfig').TableCellFormat>;
 }
 
 interface NameValue {
