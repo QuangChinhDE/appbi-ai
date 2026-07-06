@@ -4,6 +4,9 @@ from __future__ import annotations
 # Core owns the shared FastMCP instance. Stage imports register tools.
 from appbi_wb_core import mcp  # noqa: F401
 
+# Setup: bootstrap_personal_access_token — works with no PAT so a fresh clone
+# can connect from inside the MCP before any other tool can authenticate.
+import appbi_wb_setup  # noqa: F401
 # Stage 0-2: source -> dataset -> data model (the full upstream journey).
 import appbi_wb_source  # noqa: F401
 import appbi_wb_dataset  # noqa: F401

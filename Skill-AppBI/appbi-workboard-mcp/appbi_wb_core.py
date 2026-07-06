@@ -32,25 +32,52 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def _normalize_api_base_url(raw: str) -> str:
-    base = str(raw or "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("APPBI_BASE_URL is required, for example http://localhost:8000")
+    # Default to the local backend so the server always imports — the token,
+    # not the URL, is the thing a fresh clone is missing. Override in .env.
+    base = str(raw or "").strip().rstrip("/") or "http://localhost:8000"
     if base.endswith("/api/v1"):
         return base
     return f"{base}/api/v1"
 
 
-def _read_required_pat() -> str:
+# How to fix a missing/placeholder PAT — surfaced at the exact moment a tool
+# first tries to authenticate, so a fresh clone is never left guessing.
+_PAT_HELP = (
+    "Get one WITHOUT leaving the MCP: call the bootstrap_personal_access_token "
+    "tool with an AppBI email + password. Or run the shipped helper once: "
+    "`python bootstrap_pat.py` (writes APPBI_PAT into .env), then restart. "
+    "Manual fallback: AppBI UI -> Settings -> Personal Access Tokens."
+)
+
+
+class MissingPATError(RuntimeError):
+    """Raised (lazily, on first authenticated call) when no usable PAT is set."""
+
+
+def _current_pat() -> str:
+    """Resolve the PAT fresh from the environment on every authenticated call.
+
+    Reading it lazily (instead of at import) lets the server start with no
+    token so the bootstrap_personal_access_token tool can mint one in-session;
+    once minted, that tool updates os.environ and this picks it up immediately.
+    """
     token = str(os.getenv("APPBI_PAT") or "").strip()
     if not token:
-        raise RuntimeError("APPBI_PAT is required")
-    if "replace_me" in token.lower() or token.lower() == "your_token_here":
-        raise RuntimeError("APPBI_PAT still contains a placeholder value")
+        raise MissingPATError(
+            "APPBI_PAT is not set - this is the token the MCP uses to "
+            f"authenticate to AppBI. {_PAT_HELP}"
+        )
+    if "replace_me" in token.lower() or token.lower() in {"your_token_here", "<your-token>"}:
+        raise MissingPATError(
+            "APPBI_PAT is still a placeholder, not a real token. " + _PAT_HELP
+        )
     return token
 
 
 APPBI_API_BASE_URL = _normalize_api_base_url(os.getenv("APPBI_BASE_URL", ""))
-APPBI_PAT = _read_required_pat()
+# Raw value at import time, for debugging only — never used to authenticate.
+# Requests always call _current_pat() so a freshly bootstrapped token is live.
+APPBI_PAT = str(os.getenv("APPBI_PAT") or "").strip()
 APPBI_TIMEOUT_SECONDS = float(os.getenv("APPBI_TIMEOUT_SECONDS", "120"))
 APPBI_VERIFY_TLS = _env_flag("APPBI_VERIFY_TLS", True)
 
@@ -74,6 +101,13 @@ A production-grade result is one coherent Workboard bundle (layout_json screens
 dataset and a sane relationship model.
 
 ## Canonical workflow
+
+STAGE -1 — Connect (only if not connected yet)
+   Run health_check. If it returns status "needs_pat" (or any tool returns it),
+   the MCP has no Personal Access Token. Call bootstrap_personal_access_token
+   with an AppBI email + password (user_confirmed=true after showing the plan).
+   It mints the token, connects this session immediately, and saves it to .env.
+   A PAT cannot mint itself — this is the one credential the user must provide.
 
 STAGE 0 — Source (only if no dataset exists yet)
    list_data_sources -> reuse a connected source if one fits.
@@ -209,6 +243,16 @@ def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
         async def wrapped(*args, **kwargs):
             try:
                 return await fn(*args, **kwargs)
+            except MissingPATError as exc:
+                logger.info("tool %s blocked: no PAT configured", fn.__name__)
+                return {
+                    "status": "needs_pat",
+                    "detail": str(exc),
+                    "claude_should": (
+                        "Call bootstrap_personal_access_token(email, password) to "
+                        "mint and install a PAT, then retry this tool."
+                    ),
+                }
             except BackendError as exc:
                 logger.info(
                     "tool %s backend error %s on %s %s",
@@ -252,7 +296,7 @@ async def _request(
     """Call the authenticated AppBI API and raise structured backend errors."""
     timeout = float(timeout_seconds or APPBI_TIMEOUT_SECONDS)
     headers = {
-        "Authorization": f"Bearer {APPBI_PAT}",
+        "Authorization": f"Bearer {_current_pat()}",
         "Accept": "application/json",
     }
     async with httpx.AsyncClient(
@@ -299,7 +343,7 @@ async def _multipart_request(
     """
     timeout = float(timeout_seconds or APPBI_TIMEOUT_SECONDS)
     headers = {
-        "Authorization": f"Bearer {APPBI_PAT}",
+        "Authorization": f"Bearer {_current_pat()}",
         "Accept": "application/json",
     }
     async with httpx.AsyncClient(
@@ -383,10 +427,13 @@ __all__ = [
     "APPBI_VERIFY_TLS",
     "BackendError",
     "Context",
+    "MissingPATError",
+    "ROOT",
     "_ALL_STAGES",
     "_backend_error_envelope",
     "_clamp_int",
     "_confirmation_required_for_destructive",
+    "_current_pat",
     "_drop_none",
     "_multipart_request",
     "_query_path",

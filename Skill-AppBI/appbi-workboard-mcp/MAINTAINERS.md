@@ -38,6 +38,23 @@ The only place a browser / `curl` / `DEBUG` log applies is **you, the human
 maintainer, on your own terminal** while editing the MCP (§3 marks those clearly).
 The AI building workboards must stay inside the tools above.
 
+### Connecting the MCP — the PAT (do this before anything else)
+The MCP authenticates with a **Personal Access Token**. A fresh clone has none,
+so `health_check` (and every other tool) returns `{"status":"needs_pat"}` until
+you supply one. A PAT **cannot mint itself** (creating it needs a logged-in
+account), so this is the one credential the user provides — it is *not* a "build
+outside the MCP" gap. Get it without hand-writing code:
+
+| Situation | Do this |
+|---|---|
+| AI already talking to the MCP | Call `bootstrap_personal_access_token(email, password)` → mints, connects the running session, writes `.env`. |
+| Human, first run in a terminal | `python bootstrap_pat.py` (or `bootstrap-pat.ps1` / `.sh`) → prompts + writes `.env`. |
+| Prefer the UI | AppBI → Settings → Personal Access Tokens → paste into `.env` as `APPBI_PAT=`. |
+
+The minting logic lives in `appbi_wb_patkit.py` (shared by the tool and the CLI);
+the tool is in `appbi_wb_setup.py`; `appbi_wb_core._current_pat()` resolves the
+token lazily so the server starts even with none configured.
+
 ### The reported "gaps" are mostly already covered
 A tester's notes listed missing capabilities; here is where each already lives —
 use these instead of reinventing them:

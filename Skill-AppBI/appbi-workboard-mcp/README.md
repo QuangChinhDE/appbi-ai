@@ -23,7 +23,7 @@ changes nothing until you confirm.
 ```powershell
 Set-Location D:\Appv2\appbi-ai\Skill-AppBI\appbi-workboard-mcp
 .\setup-mcp.ps1          # creates .venv, installs deps, seeds .env
-# edit .env -> APPBI_BASE_URL + APPBI_PAT
+.\bootstrap-pat.ps1      # mints your PAT and writes it into .env (see below)
 .\run-mcp.ps1            # launches the server (profile=all)
 ```
 
@@ -31,16 +31,35 @@ macOS / Linux:
 
 ```bash
 cd /path/to/appbi-workboard-mcp
-cp .env.example .env     # then edit APPBI_BASE_URL + APPBI_PAT
+cp .env.example .env     # set APPBI_BASE_URL if not http://localhost:8000
+./bootstrap-pat.sh       # mints your PAT and writes it into .env
 ./run-mcp.sh             # bootstraps .venv on first run
 ```
 
-The PAT (Personal Access Token, minted in AppBI) needs:
+## Get your PAT (the token that connects the MCP)
 
-- `datasources=edit` — discover and create Google Sheets / file sources.
-- `datasets=edit` — create datasets, tables, the relationship model.
-- `workboards=edit` — build workboards + app users + public links.
-- `workboards=full` — create/manage delivery workspaces.
+The MCP authenticates to AppBI with a **Personal Access Token (PAT)**. A PAT
+cannot mint itself (the call that creates it needs a logged-in account), so
+this is the one credential you supply once. Three ways, no hand-written code:
+
+1. **Shipped helper (recommended for first run).** `bootstrap-pat.ps1` /
+   `./bootstrap-pat.sh` (or `python bootstrap_pat.py`) asks for your AppBI
+   base URL, email and password, mints the token, and writes `APPBI_PAT` +
+   `APPBI_BASE_URL` into `.env`. Add `--print-only` to just print it.
+2. **From inside your MCP client.** If the server is already registered, call
+   the `bootstrap_personal_access_token` tool with an AppBI email + password —
+   it mints the PAT, connects the running session immediately, and saves it to
+   `.env`. (`health_check` returns `needs_pat` until you do.)
+3. **Manually.** AppBI UI → Settings → Personal Access Tokens → create one,
+   then paste it into `.env` as `APPBI_PAT=...`.
+
+The token needs these scopes (the helpers grant them for you):
+
+- `data_sources` — discover and create Google Sheets / file sources.
+- `datasets` — create datasets, tables, the relationship model.
+- `explore_charts` + `dashboards` — embedded dashboard screens.
+- `workboards` (**full**) — build workboards, app users, public links, and
+  create/manage delivery workspaces.
 
 ## Register in an MCP client
 
