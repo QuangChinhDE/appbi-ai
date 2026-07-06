@@ -5,9 +5,25 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Hash, Settings2, X, Trash2, Eye } from 'lucide-react';
+import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
+import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
+import {
+  type TableColumnFilter,
+  type TableFilterColumnType,
+  EMPTY_TABLE_COLUMN_FILTER,
+  isTableColumnFilterActive,
+  detectTableColumnType,
+  rowMatchesAllTableFilters,
+  distinctTableColumnValues,
+} from '@/lib/tableColumnFilter';
 import { useI18n } from '@/providers/LanguageProvider';
+
+// Map a dataset column's declared/overridden data type → the filter's type
+// family (else fall back to value-based sniffing). Keeps the filter's operators
+// aligned with the type the user set in the grid.
+const NUMERIC_DATA_TYPES = new Set(['number', 'integer', 'int', 'float', 'double', 'decimal', 'bigint', 'long']);
+const DATE_DATA_TYPES = new Set(['date', 'datetime', 'timestamp', 'timestamptz', 'datetimetz', 'time']);
 
 // ===================== Types =====================
 
@@ -606,6 +622,32 @@ export function DatasetTableGrid({
   const [activeFormatCol, setActiveFormatCol] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // ── Per-column data filter (Excel / Power BI AutoFilter) over the previewed
+  // rows. Pure client-side view filter — narrows which rows show, never
+  // re-queries. Multiple columns AND together. Shared popover + logic with the
+  // Explore chart table.
+  const [columnDataFilters, setColumnDataFilters] = useState<Record<string, TableColumnFilter>>({});
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+  const openColumnFilter = (name: string, anchor: HTMLElement) => {
+    setFilterAnchorRect(anchor.getBoundingClientRect());
+    setOpenFilterCol((cur) => (cur === name ? null : name));
+    setSummaryCol(null);
+    setActiveFormatCol(null);
+  };
+  const updateColumnDataFilter = (name: string, next: TableColumnFilter) =>
+    setColumnDataFilters((prev) => ({ ...prev, [name]: next }));
+  const clearColumnDataFilter = (name: string) =>
+    setColumnDataFilters((prev) => {
+      const rest = { ...prev };
+      delete rest[name];
+      return rest;
+    });
+  const clearAllDataFilters = () => {
+    setColumnDataFilters({});
+    setOpenFilterCol(null);
+  };
+
   // Initialise format state from DB on table change.
   // columnFormatsDb (full format) takes priority over typeOverrides (type only).
   useEffect(() => {
@@ -687,6 +729,32 @@ export function DatasetTableGrid({
       return formattedRow;
     });
   }, [rows, columns, columnFormats]);
+
+  // Filter type per column: prefer the declared/overridden data type, else sniff
+  // values. Distinct-value list + row matching reuse the shared filter engine.
+  const columnFilterTypes = useMemo<Record<string, TableFilterColumnType>>(() => {
+    const map: Record<string, TableFilterColumnType> = {};
+    for (const col of columns) {
+      const ov = (typeOverrides as Record<string, any> | undefined)?.[col.name];
+      const ovType = typeof ov === 'string' ? ov : ov?.type;
+      const declared = String(ovType || col.type || '').toLowerCase();
+      if (DATE_DATA_TYPES.has(declared)) map[col.name] = 'date';
+      else if (NUMERIC_DATA_TYPES.has(declared)) map[col.name] = 'number';
+      else map[col.name] = detectTableColumnType(rows, col.name, false);
+    }
+    return map;
+  }, [columns, rows, typeOverrides]);
+  const hasActiveDataFilters = useMemo(
+    () => Object.values(columnDataFilters).some(isTableColumnFilterActive),
+    [columnDataFilters],
+  );
+  // Keep the ORIGINAL row index so formatted-cell + row-number lookups stay
+  // aligned after filtering.
+  const filteredIndexedRows = useMemo(() => {
+    const indexed = rows.map((row, i) => ({ row, i }));
+    if (!hasActiveDataFilters) return indexed;
+    return indexed.filter(({ row }) => rowMatchesAllTableFilters(row, columnDataFilters, columnFilterTypes));
+  }, [rows, columnDataFilters, columnFilterTypes, hasActiveDataFilters]);
 
   // ---- Loading skeleton ----
   if (isLoading) {
@@ -811,6 +879,22 @@ export function DatasetTableGrid({
                       </div>
 
                       <div className="flex items-center gap-0.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openColumnFilter(column.name, e.currentTarget);
+                          }}
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-all shrink-0 ${
+                            isTableColumnFilterActive(columnDataFilters[column.name])
+                              ? 'opacity-100 text-brand bg-brand/15'
+                              : openFilterCol === column.name
+                              ? 'opacity-100 text-brand bg-brand/15'
+                              : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
+                          }`}
+                          title={t('datasets.grid.filterColumn')}
+                        >
+                          <FilterIcon className={`w-3.5 h-3.5 ${isTableColumnFilterActive(columnDataFilters[column.name]) ? 'fill-current' : ''}`} />
+                        </button>
                         {datasetId !== undefined && tableId !== undefined && (
                           <button
                             onClick={(e) => {
@@ -899,7 +983,7 @@ export function DatasetTableGrid({
           </thead>
 
           <tbody className="bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
-            {rows.map((row, rowIndex) => (
+            {filteredIndexedRows.map(({ row, i: rowIndex }) => (
               <tr key={rowIndex} className="hover:bg-surface-2 transition-colors">
                 <td className="w-16 px-4 py-3 text-sm text-text-quaternary border-r font-mono">{rowIndex + 1}</td>
                 {columns.map((column) => {
@@ -921,19 +1005,39 @@ export function DatasetTableGrid({
                 {!readOnly && onAddColumn && <td className="w-16 px-4 py-3 border-l" />}
               </tr>
             ))}
+            {hasActiveDataFilters && filteredIndexedRows.length === 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length + 1 + (!readOnly && onAddColumn ? 1 : 0)}
+                  className="px-4 py-8 text-center text-sm text-text-tertiary"
+                >
+                  {t('datasets.grid.filteredRows', { shown: 0, total: rows.length })}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
 
       <div className="border-t bg-surface-2 px-4 py-2 flex items-center gap-4">
         <p className="text-xs text-text-tertiary">
-          {t('datasets.grid.showingRows', { count: rows.length })}
+          {hasActiveDataFilters
+            ? t('datasets.grid.filteredRows', { shown: filteredIndexedRows.length, total: rows.length })
+            : t('datasets.grid.showingRows', { count: rows.length })}
         </p>
         {computedColSet.size > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-warning">
             <span className="inline-block w-2 h-2 rounded-full bg-warning/60" />
             {t('datasets.grid.computedColumnsCount', { count: computedColSet.size })}
           </span>
+        )}
+        {hasActiveDataFilters && (
+          <button
+            onClick={clearAllDataFilters}
+            className="text-xs text-text-quaternary hover:text-danger transition-colors"
+          >
+            {t('datasets.grid.clearAllFilters')}
+          </button>
         )}
         {Object.keys(columnFormats).length > 0 && (
           <button
@@ -944,6 +1048,22 @@ export function DatasetTableGrid({
           </button>
         )}
       </div>
+
+      {/* Column-filter popover — portal to <body> so the grid's overflow can't
+          clip it. */}
+      {openFilterCol && filterAnchorRect && (
+        <ColumnFilterPopover
+          key={openFilterCol}
+          label={openFilterCol}
+          type={columnFilterTypes[openFilterCol] ?? 'text'}
+          filter={columnDataFilters[openFilterCol] ?? EMPTY_TABLE_COLUMN_FILTER}
+          distinctValues={distinctTableColumnValues(rows, openFilterCol)}
+          anchorRect={filterAnchorRect}
+          onChange={(next) => updateColumnDataFilter(openFilterCol, next)}
+          onClear={() => clearColumnDataFilter(openFilterCol)}
+          onClose={() => setOpenFilterCol(null)}
+        />
+      )}
     </div>
   );
 }
