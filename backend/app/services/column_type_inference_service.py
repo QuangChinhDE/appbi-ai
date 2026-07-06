@@ -30,10 +30,34 @@ from app.services.type_override_service import (
 logger = get_logger(__name__)
 
 
-# Order matters: more specific types first. We pick the earliest type that
-# meets the tolerance, so "all values are integer-shaped" picks integer over
-# float even though both would technically satisfy.
-CANDIDATE_TYPES: Tuple[str, ...] = ("boolean", "integer", "float", "date", "datetime")
+# Order matters: we pick the EARLIEST candidate that meets the tolerance.
+# integer/float come BEFORE boolean so a numeric 0/1/7 column is typed
+# integer, not boolean (boolean only wins for genuine true/false/yes/no text) —
+# the old boolean-first order mis-typed count/flag columns as boolean, which
+# then can't be summed. date/datetime last (most specific text shapes).
+CANDIDATE_TYPES: Tuple[str, ...] = ("integer", "float", "boolean", "date", "datetime")
+
+# Non-ISO date string formats to PROBE — but ONLY in a bounded SECOND pass over
+# columns the basic pass left as `string` (see infer_full_column_types). Probing
+# these on every column blows the SELECT list up (~14 aggregates/col) and times
+# out big BigQuery tables, so the main pass stays ISO-only and cheap. Day-first
+# variants come first so an all-≤12 ambiguous date (01/07/2026) resolves
+# day-first (VN/EU). Tokens match the FE grid's DateFmt / type_override `format`.
+DATE_FORMAT_PROBES: Tuple[str, ...] = (
+    "DD/MM/YYYY", "MM/DD/YYYY", "YYYY/MM/DD", "DD-MM-YYYY", "MM-DD-YYYY",
+)
+
+
+def _candidate_probes(
+    candidate: str,
+    date_formats: Tuple[str, ...] = (),
+) -> List[Tuple[str, Optional[str]]]:
+    """(candidate_type, parse_format|None) probes for a candidate. `date` fans
+    out across `date_formats` (plus the ISO no-format probe) when provided; all
+    other candidates (incl. datetime) use a single ISO/no-format probe."""
+    if candidate == "date" and date_formats:
+        return [("date", None)] + [("date", fmt) for fmt in date_formats]
+    return [(candidate, None)]
 
 
 # Default scan caps per dialect. DuckDB/Sheets is local and free; BigQuery
@@ -57,11 +81,15 @@ class ColumnTypeSuggestion:
     invalid_count: int
     invalid_examples: List[str] = field(default_factory=list)
     skipped_reason: Optional[str] = None
+    # For date/datetime: the parse format that matched (e.g. "DD/MM/YYYY"), so
+    # the applied override is {type, format} and the conversion parses correctly.
+    parse_format: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "column": self.column,
             "suggested_type": self.suggested_type,
+            "parse_format": self.parse_format,
             "total_non_null": self.total_non_null,
             "invalid_count": self.invalid_count,
             "invalid_examples": self.invalid_examples,
@@ -77,6 +105,22 @@ def _build_count_expr(predicate: str, dialect: str) -> str:
     if dialect == "bigquery":
         return f"COUNTIF({predicate})"
     return f"SUM(CASE WHEN {predicate} THEN 1 ELSE 0 END)"
+
+
+# A date-SHAPED string (slash/dash separated). Used as a CHEAP gate before the
+# expensive PARSE_DATE format probes, so we only run those on columns that could
+# plausibly be dates — not every text/id column.
+_DATE_SHAPE_REGEX = r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$"
+
+
+def _regexp_contains(expr: str, pattern: str, dialect: str) -> str:
+    """Dialect-specific "expr matches regex pattern" (pattern has no quotes)."""
+    if dialect == "bigquery":
+        return f"REGEXP_CONTAINS({expr}, r'{pattern}')"
+    if dialect == "mysql":
+        return f"{expr} REGEXP '{pattern}'"
+    # duckdb + postgres
+    return f"{expr} ~ '{pattern}'"
 
 
 def _build_examples_expr(
@@ -130,9 +174,12 @@ def build_inference_query(
     base_query: str,
     columns: Iterable[str],
     dialect: str,
+    date_formats: Tuple[str, ...] = (),
 ) -> Tuple[str, List[Tuple[str, str, str]]]:
     """Build one SELECT that, for each (column, candidate_type), reports
     invalid_count and a few invalid_examples — plus total_non_null per column.
+    When `date_formats` is given, the `date` candidate also probes each format
+    (used by the bounded second pass over string-remaining columns).
 
     Returns: (sql, [(column, candidate_type, alias_prefix), ...]).
     """
@@ -154,18 +201,24 @@ def build_inference_query(
         )
         plan.append((col, "_total_non_null", non_null_alias))
 
+        pidx = 0
         for cand in CANDIDATE_TYPES:
-            invalid_predicate = _build_invalid_predicate(col, cand, dialect)
-            inv_alias = _alias("inv", idx, f"{cand}_cnt")
-            ex_alias = _alias("inv", idx, f"{cand}_ex")
-            select_parts.append(
-                f"{_build_count_expr(invalid_predicate, dialect)} AS {inv_alias}"
-            )
-            select_parts.append(
-                f"{_build_examples_expr(quoted_col, invalid_predicate, dialect, string_target)} AS {ex_alias}"
-            )
-            plan.append((col, cand, inv_alias))
-            plan.append((col, f"{cand}__examples", ex_alias))
+            for probe_type, probe_fmt in _candidate_probes(cand, date_formats):
+                invalid_predicate = _build_invalid_predicate(col, probe_type, dialect, parse_format=probe_fmt)
+                inv_alias = _alias("inv", idx, f"p{pidx}_cnt")
+                ex_alias = _alias("inv", idx, f"p{pidx}_ex")
+                # label encodes the parse format so _pick_best_type can pick the
+                # best variant AND surface which format matched.
+                label = probe_type if probe_fmt is None else f"{probe_type}§{probe_fmt}"
+                select_parts.append(
+                    f"{_build_count_expr(invalid_predicate, dialect)} AS {inv_alias}"
+                )
+                select_parts.append(
+                    f"{_build_examples_expr(quoted_col, invalid_predicate, dialect, string_target)} AS {ex_alias}"
+                )
+                plan.append((col, label, inv_alias))
+                plan.append((col, f"{label}__examples", ex_alias))
+                pidx += 1
 
     sql = (
         "SELECT\n  "
@@ -203,29 +256,41 @@ def _pick_best_type(
     column_stats: Dict[str, Any],
     tolerance: float,
     min_non_null: int,
-) -> Tuple[Optional[str], int, List[str], Optional[str]]:
-    """Pick the most specific candidate that meets the tolerance.
+) -> Tuple[Optional[str], Optional[str], int, List[str], Optional[str]]:
+    """Pick the earliest candidate that meets the tolerance.
 
-    Returns (suggested_type, invalid_count, examples, skipped_reason).
+    For date/datetime, each candidate has several probe VARIANTS (ISO + parse
+    formats); the best (lowest-invalid within tolerance) variant wins and its
+    parse format is returned so the conversion can parse dd/mm/yyyy etc.
+
+    Returns (suggested_type, parse_format, invalid_count, examples, skipped_reason).
     """
     total = int(column_stats.get("_total_non_null") or 0)
     if total < min_non_null:
-        return None, 0, [], "too_few_non_null_values"
+        return None, None, 0, [], "too_few_non_null_values"
 
-    best: Optional[Tuple[str, int, List[str]]] = None
     for cand in CANDIDATE_TYPES:
-        bucket = column_stats.get(cand)
-        if not bucket:
-            continue
-        invalid = int(bucket.get("invalid") or 0)
-        ratio = invalid / total if total else 1.0
-        if ratio <= tolerance:
-            best = (cand, invalid, list(bucket.get("examples") or []))
-            break
+        # Gather this candidate's variants: the exact bucket (ISO/no-format) and
+        # any `cand§format` probes. Insertion order = ISO first, then probe
+        # order, so a strict-less-than comparison keeps ISO/day-first on ties.
+        best: Optional[Tuple[Optional[str], int, List[str]]] = None
+        for key, bucket in column_stats.items():
+            if not isinstance(bucket, dict):
+                continue
+            if key == cand:
+                fmt: Optional[str] = None
+            elif key.startswith(cand + "§"):
+                fmt = key.split("§", 1)[1]
+            else:
+                continue
+            invalid = int(bucket.get("invalid") or 0)
+            ratio = invalid / total if total else 1.0
+            if ratio <= tolerance and (best is None or invalid < best[1]):
+                best = (fmt, invalid, list(bucket.get("examples") or []))
+        if best is not None:
+            return cand, best[0], best[1], best[2], None
 
-    if best is None:
-        return None, 0, [], "no_candidate_within_tolerance"
-    return best[0], best[1], best[2], None
+    return None, None, 0, [], "no_candidate_within_tolerance"
 
 
 def infer_full_column_types(
@@ -278,57 +343,97 @@ def infer_full_column_types(
     effective_cap = row_cap if row_cap is not None else DIALECT_ROW_CAPS.get(dialect)
     capped_query = _wrap_with_row_cap(base_query, effective_cap, dialect)
 
-    suggestions: List[ColumnTypeSuggestion] = []
-    for start in range(0, len(available_columns), column_batch_size):
-        batch = available_columns[start : start + column_batch_size]
-        sql, batch_plan = build_inference_query(capped_query, batch, dialect)
-        if not sql:
-            continue
-        try:
-            _, rows, _ = DataSourceConnectionService.execute_query(
-                ds_type,
-                datasource.config,
-                sql,
-                timeout_seconds=120,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Type inference batch failed for table id=%s batch=%d-%d: %s",
-                getattr(db_table, "id", "?"),
-                start,
-                start + len(batch),
-                exc,
-            )
-            for col in batch:
-                suggestions.append(
-                    ColumnTypeSuggestion(
-                        column=col,
-                        suggested_type=None,
-                        total_non_null=0,
-                        invalid_count=0,
-                        invalid_examples=[],
-                        skipped_reason="inference_query_failed",
+    def _run_pass(cols: List[str], date_formats: Tuple[str, ...]) -> Dict[str, ColumnTypeSuggestion]:
+        """Run inference over `cols` (batched); ISO-only unless date_formats given."""
+        out: Dict[str, ColumnTypeSuggestion] = {}
+        for start in range(0, len(cols), column_batch_size):
+            batch = cols[start : start + column_batch_size]
+            sql, batch_plan = build_inference_query(capped_query, batch, dialect, date_formats=date_formats)
+            if not sql:
+                continue
+            try:
+                _, rows, _ = DataSourceConnectionService.execute_query(
+                    ds_type, datasource.config, sql, timeout_seconds=120,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Type inference batch failed for table id=%s batch=%d-%d (date_formats=%s): %s",
+                    getattr(db_table, "id", "?"), start, start + len(batch), bool(date_formats), exc,
+                )
+                for col in batch:
+                    out[col] = ColumnTypeSuggestion(
+                        column=col, suggested_type=None, total_non_null=0,
+                        invalid_count=0, invalid_examples=[], skipped_reason="inference_query_failed",
                     )
-                )
-            continue
-        if not rows:
-            continue
-        parsed = _parse_row(rows[0], batch_plan)
-        for col in batch:
-            stats = parsed.get(col, {"_total_non_null": 0})
-            suggested, invalid, examples, reason = _pick_best_type(stats, tolerance, min_non_null)
-            suggestions.append(
-                ColumnTypeSuggestion(
-                    column=col,
-                    suggested_type=suggested,
+                continue
+            if not rows:
+                continue
+            parsed = _parse_row(rows[0], batch_plan)
+            for col in batch:
+                stats = parsed.get(col, {"_total_non_null": 0})
+                suggested, parse_format, invalid, examples, reason = _pick_best_type(stats, tolerance, min_non_null)
+                out[col] = ColumnTypeSuggestion(
+                    column=col, suggested_type=suggested, parse_format=parse_format,
                     total_non_null=int(stats.get("_total_non_null") or 0),
-                    invalid_count=invalid,
-                    invalid_examples=examples,
-                    skipped_reason=reason,
+                    invalid_count=invalid, invalid_examples=examples, skipped_reason=reason,
                 )
-            )
+        return out
 
-    return suggestions
+    def _date_ish_columns(cols: List[str]) -> List[str]:
+        """CHEAP regex gate: which of `cols` are date-SHAPED (nearly all non-null
+        values look like d/m/y or y-m-d). Only these get the expensive PARSE_DATE
+        format probes — so a wide table's text/id columns don't blow up the query
+        (the timeout we hit when probing every string column)."""
+        out: List[str] = []
+        for start in range(0, len(cols), column_batch_size):
+            batch = cols[start : start + column_batch_size]
+            parts: List[str] = []
+            aliases: List[Tuple[str, str, str]] = []
+            for idx, col in enumerate(batch):
+                quoted = _quote_identifier(col, dialect)
+                trimmed = _trimmed_string_expr(quoted, dialect)
+                nn_a = _alias("dish", idx, "nn")
+                hit_a = _alias("dish", idx, "hit")
+                parts.append(f"{_build_count_expr(f'{trimmed} IS NOT NULL', dialect)} AS {nn_a}")
+                shape = f"{trimmed} IS NOT NULL AND {_regexp_contains(trimmed, _DATE_SHAPE_REGEX, dialect)}"
+                parts.append(f"{_build_count_expr(shape, dialect)} AS {hit_a}")
+                aliases.append((col, nn_a, hit_a))
+            sql = "SELECT " + ", ".join(parts) + f"\nFROM (\n{capped_query}\n) AS _appbi_dish"
+            try:
+                _, rows, _ = DataSourceConnectionService.execute_query(
+                    ds_type, datasource.config, sql, timeout_seconds=120,
+                )
+            except Exception as exc:
+                logger.warning("Date-shape gate failed for table id=%s: %s", getattr(db_table, "id", "?"), exc)
+                continue
+            if not rows:
+                continue
+            row = rows[0]
+            for col, nn_a, hit_a in aliases:
+                nn = int(row.get(nn_a) or 0)
+                hit = int(row.get(hit_a) or 0)
+                if nn >= min_non_null and (nn - hit) / nn <= tolerance:
+                    out.append(col)
+        return out
+
+    # Pass 1 — cheap ISO-only detection over all columns.
+    by_col = _run_pass(available_columns, date_formats=())
+
+    # Pass 2 — non-ISO date strings (dd/mm/yyyy etc.) the main pass left as
+    # `string`. Gate with the cheap date-SHAPE regex first, then run the
+    # expensive PARSE_DATE format probes ONLY on the genuinely date-shaped
+    # columns (avoids the wide-table timeout from probing every text column).
+    date_probe_cols = [
+        col for col, sug in by_col.items()
+        if sug.suggested_type is None and sug.skipped_reason == "no_candidate_within_tolerance"
+    ]
+    date_ish = _date_ish_columns(date_probe_cols) if date_probe_cols else []
+    if date_ish:
+        for col, sug in _run_pass(date_ish, date_formats=DATE_FORMAT_PROBES).items():
+            if sug.suggested_type:  # upgraded string → date via a matched format
+                by_col[col] = sug
+
+    return [by_col[col] for col in available_columns if col in by_col]
 
 
 def apply_suggestions_to_table(
@@ -355,8 +460,15 @@ def apply_suggestions_to_table(
             continue
         if _ovr_type(existing.get(sug.column)) == sug.suggested_type:
             continue
-        merged[sug.column] = sug.suggested_type
-        applied[sug.column] = sug.suggested_type
+        # A date/datetime detected via a parse format is stored as {type, format}
+        # so the conversion parses dd/mm/yyyy etc. (build_safe_cast_sql reads the
+        # format); other types stay a plain type string.
+        if sug.parse_format:
+            merged[sug.column] = {"type": sug.suggested_type, "format": sug.parse_format}
+            applied[sug.column] = f"{sug.suggested_type} ({sug.parse_format})"
+        else:
+            merged[sug.column] = sug.suggested_type
+            applied[sug.column] = sug.suggested_type
 
     if applied:
         db_table.type_overrides = merged

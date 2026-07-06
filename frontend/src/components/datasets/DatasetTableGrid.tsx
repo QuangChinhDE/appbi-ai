@@ -5,7 +5,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon } from 'lucide-react';
+import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon, Wand2, Loader2 } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
 import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
 import {
@@ -49,6 +49,9 @@ export interface DatasetTableGridProps {
   columnFormatsDb?: Record<string, ColFormat>;
   /** Called when user applies a format so parent can persist to DB */
   onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => Promise<void> | void;
+  /** Full-scan auto-detect of column types → type_overrides (parent runs the
+   *  API + reloads). When set, a toolbar "Auto-detect types" button shows. */
+  onAutoDetectTypes?: () => Promise<void> | void;
   /** When set, enables the per-column summary popover (eye icon). */
   datasetId?: number | string;
   tableId?: number | string;
@@ -612,6 +615,7 @@ export function DatasetTableGrid({
   onEditColumn,
   columnFormatsDb,
   onColumnFormatChange,
+  onAutoDetectTypes,
   datasetId,
   tableId,
 }: DatasetTableGridProps) {
@@ -629,6 +633,16 @@ export function DatasetTableGrid({
   const [columnDataFilters, setColumnDataFilters] = useState<Record<string, TableColumnFilter>>({});
   const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
   const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
+  const runAutoDetectTypes = async () => {
+    if (!onAutoDetectTypes || isAutoDetecting) return;
+    setIsAutoDetecting(true);
+    try {
+      await onAutoDetectTypes();
+    } finally {
+      setIsAutoDetecting(false);
+    }
+  };
   const openColumnFilter = (name: string, anchor: HTMLElement) => {
     setFilterAnchorRect(anchor.getBoundingClientRect());
     setOpenFilterCol((cur) => (cur === name ? null : name));
@@ -1045,6 +1059,19 @@ export function DatasetTableGrid({
             className="text-xs text-text-quaternary hover:text-danger transition-colors"
           >
             {t('datasets.grid.clearAllFormats', { count: Object.keys(columnFormats).length })}
+          </button>
+        )}
+        {onAutoDetectTypes && (
+          <button
+            onClick={runAutoDetectTypes}
+            disabled={isAutoDetecting}
+            title={t('datasets.grid.autoDetectHint')}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isAutoDetecting
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Wand2 className="w-3.5 h-3.5" />}
+            {isAutoDetecting ? t('datasets.grid.autoDetecting') : t('datasets.grid.autoDetectTypes')}
           </button>
         )}
       </div>

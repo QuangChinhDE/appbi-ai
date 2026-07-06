@@ -696,18 +696,51 @@ export function useAddTableToDataset() {
 /**
  * Update a table
  */
+export interface AutoDetectTypesResult {
+  applied: Record<string, string>;
+  suggestions: Array<{
+    column: string;
+    suggested_type: string | null;
+    parse_format?: string | null;
+    skipped_reason?: string | null;
+  }>;
+}
+
+/**
+ * Full-scan auto-detection of column data types (integer/float/boolean/date +
+ * date parse-format) for a table, applied into `type_overrides`. Works for ANY
+ * source — the "cách dùng" for a BigQuery sql_query / Sheet whose columns landed
+ * as string/boolean. Caller should refetch the dataset + preview afterwards.
+ */
+export function useAutoDetectColumnTypes() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ datasetId, tableId }: { datasetId: number; tableId: number }) => {
+      const response = await api.post<AutoDetectTypesResult>(
+        `/datasets/${datasetId}/tables/${tableId}/auto-detect-types`,
+        { apply: true },
+      );
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+    },
+  });
+}
+
 export function useUpdateTable() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
-    mutationFn: async ({ 
-      datasetId, 
-      tableId, 
-      input 
-    }: { 
-      datasetId: number; 
-      tableId: number; 
-      input: UpdateTableInput 
+    mutationFn: async ({
+      datasetId,
+      tableId,
+      input
+    }: {
+      datasetId: number;
+      tableId: number;
+      input: UpdateTableInput
     }) => {
       const response = await api.put<DatasetTable>(
         `/datasets/${datasetId}/tables/${tableId}`,
