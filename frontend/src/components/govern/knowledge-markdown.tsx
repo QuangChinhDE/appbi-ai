@@ -42,8 +42,8 @@ export function Markdown({ source }: { source: string }) {
     const L = list;
     blocks.push(
       L.ordered
-        ? <ol key={k} className="my-2 ml-5 list-decimal space-y-1">{L.items.map((it, i) => <li key={i}>{renderInline(it, `${k}i${i}`)}</li>)}</ol>
-        : <ul key={k} className="my-2 ml-5 list-disc space-y-1">{L.items.map((it, i) => <li key={i}>{renderInline(it, `${k}i${i}`)}</li>)}</ul>,
+        ? <ol key={k} className="my-2.5 ml-5 list-decimal space-y-1.5 text-text-secondary marker:text-text-quaternary">{L.items.map((it, i) => <li key={i} className="pl-1 leading-relaxed">{renderInline(it, `${k}i${i}`)}</li>)}</ol>
+        : <ul key={k} className="my-2.5 ml-5 list-disc space-y-1.5 text-text-secondary marker:text-text-quaternary">{L.items.map((it, i) => <li key={i} className="pl-1 leading-relaxed">{renderInline(it, `${k}i${i}`)}</li>)}</ul>,
     );
     list = null;
   };
@@ -56,14 +56,17 @@ export function Markdown({ source }: { source: string }) {
     if (ul) { if (!list || list.ordered) { flushList(k); list = { ordered: false, items: [] }; } list!.items.push(ul[1]); return; }
     flushList(k);
     if (!line.trim()) return;
-    if (line.startsWith('### ')) blocks.push(<h3 key={k} className="mb-1 mt-4 text-small font-strong text-text-primary">{renderInline(line.slice(4), k)}</h3>);
-    else if (line.startsWith('## ')) blocks.push(<h2 key={k} className="mb-1.5 mt-5 text-base font-strong text-text-primary">{renderInline(line.slice(3), k)}</h2>);
-    else if (line.startsWith('# ')) blocks.push(<h1 key={k} className="mb-2 mt-2 text-h1 font-emphasis text-text-primary">{renderInline(line.slice(2), k)}</h1>);
-    else if (line.startsWith('> ')) blocks.push(<blockquote key={k} className="my-2 border-l-2 border-brand/50 pl-3 italic text-text-secondary">{renderInline(line.slice(2), k)}</blockquote>);
-    else blocks.push(<p key={k} className="my-1.5 leading-relaxed text-text-secondary">{renderInline(line, k)}</p>);
+    // Reading hierarchy on the SYSTEM type scale (app density: caption 13 /
+    // small 15): body = small(15), ### = small strong, ## = body(16) strong,
+    // # = h3(20). Clear steps without inflating the page vs the rest of the UI.
+    if (line.startsWith('### ')) blocks.push(<h3 key={k} className="mb-1 mt-5 text-small font-strong text-text-primary">{renderInline(line.slice(4), k)}</h3>);
+    else if (line.startsWith('## ')) blocks.push(<h2 key={k} className="mb-1.5 mt-7 text-body font-strong text-text-primary">{renderInline(line.slice(3), k)}</h2>);
+    else if (line.startsWith('# ')) blocks.push(<h1 key={k} className="mb-2 mt-5 text-h3 font-emphasis text-text-primary">{renderInline(line.slice(2), k)}</h1>);
+    else if (line.startsWith('> ')) blocks.push(<blockquote key={k} className="my-3 border-l-2 border-brand/50 pl-3.5 italic text-text-secondary">{renderInline(line.slice(2), k)}</blockquote>);
+    else blocks.push(<p key={k} className="my-2.5 leading-relaxed text-text-secondary">{renderInline(line, k)}</p>);
   });
   flushList('mdend');
-  return <div className="text-caption">{blocks}</div>;
+  return <div className="text-small [&>*:first-child]:mt-0">{blocks}</div>;
 }
 
 export const DOC_TYPES = ['overview', 'guide', 'domain', 'process', 'faq', 'article'];

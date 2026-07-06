@@ -25,7 +25,9 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Button } from '@/components/ui/Button';
+import { AiButton } from '@/components/ui/AiButton';
 import { Input, Textarea, Label, Select } from '@/components/ui/Input';
+import { Tabs } from '@/components/ui/Tabs';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { useUrlNav } from '@/hooks/use-url-nav';
@@ -193,7 +195,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       action={(
         <div className="flex items-center gap-2">
           {onOpenVocab && <Button variant="secondary" leadingIcon={<Library className="h-4 w-4" />} onClick={onOpenVocab}>{t('govern.action.vocab')}</Button>}
-          <Button variant="secondary" leadingIcon={<Sparkles className="h-4 w-4" />} onClick={onAiWrite}>{t('govern.action.aiWrite')}</Button>
+          <AiButton size="md" onClick={onAiWrite}>{t('govern.action.aiWrite')}</AiButton>
           <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>
         </div>
       )}
@@ -322,28 +324,6 @@ const DETAIL_TABS = [
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
-// Segmented tab control — same treatment as the Dataset detail tab bar.
-function SegmentedTabs({ items, value, onChange }: {
-  items: { key: string; label: string; icon?: ReactNode }[]; value: string; onChange: (k: string) => void;
-}) {
-  return (
-    <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-      {items.map((it) => (
-        <button
-          key={it.key}
-          onClick={() => onChange(it.key)}
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-caption font-emphasis transition-colors',
-            value === it.key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary hover:bg-surface-1',
-          )}
-        >
-          {it.icon}{it.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onListChanged, onOpenDoc }: {
   docId: number; nav: ReturnType<typeof useUrlNav>; managed: ManagedMetric[];
   onBack: () => void; onEdit: () => void; onDeleted: () => void;
@@ -354,6 +334,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const [doc, setDoc] = useState<KnowledgeDoc | null>(null);
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
+  const articleRef = useRef<HTMLDivElement>(null);
   const tab = (nav.get('dt') as DetailTab) || 'noidung';
   const setTab = (t: string) => nav.set({ dt: t });
 
@@ -410,58 +391,57 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
       : tabItem.key === 'lienket' && assets.length ? `${t('govern.detail.tab.links')} · ${assets.length}` : t(tabItem.labelKey),
   }));
 
+  // On-this-page outline (## / ### headings) → wayfinding in the context rail.
+  const toc = (doc.body || '').split('\n').reduce<{ level: number; text: string }[]>((acc, raw) => {
+    const m = raw.match(/^(#{1,3})\s+(.*)$/);
+    if (m) acc.push({ level: m[1].length, text: m[2].replace(/\{\{[^}]+\}\}/g, '').replace(/[*`]/g, '').trim() });
+    return acc;
+  }, []);
+  const jumpTo = (text: string) => {
+    const el = articleRef.current; if (!el) return;
+    const h = Array.from(el.querySelectorAll('h1,h2,h3')).find((n) => (n.textContent || '').trim() === text);
+    h?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
-    <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
-      {/* compact top bar — breadcrumb + segmented tabs + actions (Dataset-style) */}
-      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
-        <button onClick={onBack} className="inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ChevronLeft className="h-3.5 w-3.5" /> {t('govern.detail.back')}
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* ── Standard detail header bar — SAME chrome as Dataset/Explore detail:
+             h-11 strip, border-b, bg-surface-1: breadcrumb / tabs / actions ── */}
+      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm text-text-tertiary transition-colors hover:text-text-primary">
+          <ChevronLeft className="h-4 w-4" />
+          {t('govern.detail.back')}
         </button>
         <span className="text-text-quaternary">/</span>
-        <span className="max-w-[38%] truncate text-caption font-emphasis text-text-primary">{doc.title}</span>
+        <span className="max-w-[220px] truncate text-sm font-medium text-text-primary xl:max-w-[360px]">{doc.title}</span>
         <div className="mx-1 h-5 w-px bg-surface-3" />
-        <SegmentedTabs items={items} value={tab} onChange={setTab} />
+        <Tabs<DetailTab> size="sm" value={tab} onChange={setTab} items={items} />
         <div className="flex-1" />
         <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>
         <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>
       </div>
 
-      {/* content — fills the full width/height (navigation lives on the list page) */}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-8 [scrollbar-gutter:stable]">
-        <div className="w-full">
-          <div className="mb-4">
-            <div className="mb-1.5 flex flex-wrap items-center gap-2 text-tiny text-text-quaternary">
-              <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-text-tertiary">{doc.space}</span>
-              <span>· {docTypeLabel(doc.doc_type, t)}</span>
-              <span className={cn('rounded-full px-2 py-0.5', STATUS_TONE[doc.status] || '')}>{statusLabel(doc.status, t)}</span>
-              <span>· v{doc.version}</span>
-              {doc.owner && <span>· {doc.owner}</span>}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">{doc.pinned ? <Pin className="h-4 w-4" /> : docIcon(doc.doc_type)}</span>
-              <h1 className="text-h1 font-emphasis text-text-primary">{doc.title}</h1>
-            </div>
-            {doc.summary && <p className="mt-1.5 max-w-3xl text-caption text-text-tertiary">{doc.summary}</p>}
-          </div>
-
-          {tab === 'noidung' && <ContentTab doc={doc} />}
-          {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
-          {tab === 'lienket' && <LinksTab doc={doc} />}
-          {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
-
-          {tab === 'noidung' && related.length > 0 && (
-            <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3">
-              <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary"><BookOpen className="h-3.5 w-3.5" />{t('govern.detail.relatedDocs')}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {related.map((r) => (
-                  <button key={r.id} onClick={() => onOpenDoc(r.id)} className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-caption text-text-secondary hover:border-brand/50 hover:text-brand" title={r.shared_metrics.join(', ')}>
-                    <FileText className="h-3.5 w-3.5 text-text-quaternary" />{r.title}
-                  </button>
-                ))}
+      {/* content — reading surface: readable column + right context rail (fills
+          the width with document context, not stretched prose). Data tabs go full-width. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
+        {tab === 'noidung' ? (
+          <div className="flex gap-8 xl:gap-12">
+            <article ref={articleRef} className="min-w-0 flex-1">
+              <div className="max-w-[46rem]">
+                <DocHeader doc={doc} />
+                <ContentTab doc={doc} />
               </div>
-            </div>
-          )}
-        </div>
+            </article>
+            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} />
+          </div>
+        ) : (
+          <div className="w-full">
+            <DocHeader doc={doc} />
+            {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
+            {tab === 'lienket' && <LinksTab doc={doc} />}
+            {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -498,9 +478,10 @@ function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: 
       footer={(
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t('govern.action.cancel')}</Button>
-          <Button variant="primary" leadingIcon={busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} onClick={run} loading={busy} disabled={busy || !dsId}>
-            {busy ? t('govern.ai.busy') : t('govern.ai.submit')}
-          </Button>
+          {/* Stable size: label never changes while busy (spinner replaces the wand). */}
+          <AiButton size="md" onClick={run} loading={busy} disabled={!dsId}>
+            {t('govern.ai.submit')}
+          </AiButton>
         </>
       )}
     >
@@ -532,13 +513,117 @@ function resolveBody(doc: KnowledgeDoc): string {
   return body;
 }
 
+// ── Document header (eyebrow → title → lead summary) — clear entry hierarchy ──
+function DocHeader({ doc }: { doc: KnowledgeDoc }) {
+  const { t } = useI18n();
+  return (
+    <header className="mb-7 border-b border-[rgb(var(--border-line))] pb-5">
+      <div className="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-tiny">
+        <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-text-tertiary">{doc.space}</span>
+        <span className="text-text-quaternary">{docTypeLabel(doc.doc_type, t)}</span>
+        <span className={cn('rounded-full px-2 py-0.5', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>
+        <span className="text-text-quaternary">v{doc.version}</span>
+        {doc.owner && <span className="text-text-quaternary">· {doc.owner}</span>}
+      </div>
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">{doc.pinned ? <Pin className="h-4 w-4" /> : docIcon(doc.doc_type)}</span>
+        <h1 className="text-h2 font-emphasis leading-tight text-text-primary">{doc.title}</h1>
+      </div>
+      {doc.summary && <p className="mt-2.5 max-w-2xl text-small leading-relaxed text-text-tertiary">{doc.summary}</p>}
+    </header>
+  );
+}
+
+// ── Right context rail — properties, on-this-page outline, quick links, related.
+// DOCUMENT CONTEXT (not the doc list), using the horizontal space so prose keeps
+// a readable measure. ──
+function RailRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-tiny text-text-quaternary">{label}</dt>
+      <dd className="min-w-0 truncate text-right text-caption text-text-secondary">{value}</dd>
+    </div>
+  );
+}
+function RailCard({ title, icon, children }: { title: string; icon?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+      <p className="mb-3 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{icon}{title}</p>
+      {children}
+    </div>
+  );
+}
+function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJump }: {
+  doc: KnowledgeDoc;
+  toc: { level: number; text: string }[];
+  related: NonNullable<KnowledgeDoc['related_docs']>;
+  metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
+  assets: NonNullable<KnowledgeDoc['assets_on_page']>;
+  onTab: (tab: string) => void; onOpenDoc: (id: number) => void; onJump: (text: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <aside className="hidden w-72 shrink-0 flex-col gap-4 lg:flex xl:w-80">
+      <RailCard title="Thông tin">
+        <dl className="space-y-2.5">
+          <RailRow label="Không gian" value={doc.space} />
+          <RailRow label="Loại" value={docTypeLabel(doc.doc_type, t)} />
+          <RailRow label="Trạng thái" value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
+          <RailRow label="Phiên bản" value={`v${doc.version}`} />
+          <RailRow label="Chủ sở hữu" value={doc.owner || '—'} />
+          {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
+        </dl>
+      </RailCard>
+
+      {toc.length > 1 && (
+        <RailCard title="Mục trên trang">
+          <nav className="space-y-0.5">
+            {toc.map((h, i) => (
+              <button key={i} onClick={() => onJump(h.text)}
+                className={cn('block w-full truncate rounded px-2 py-1 text-left text-caption text-text-secondary transition-colors hover:bg-surface-2 hover:text-brand', h.level === 3 && 'pl-4 text-tiny')}>
+                {h.text}
+              </button>
+            ))}
+          </nav>
+        </RailCard>
+      )}
+
+      {(metrics.length > 0 || assets.length > 0) && (
+        <div className="space-y-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+          <button onClick={() => onTab('chiso')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+            <span className="flex items-center gap-2"><Sigma className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.metrics')}</span>
+            <span className="font-emphasis text-text-primary">{metrics.length}</span>
+          </button>
+          <button onClick={() => onTab('lienket')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+            <span className="flex items-center gap-2"><LayoutDashboard className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.links')}</span>
+            <span className="font-emphasis text-text-primary">{assets.length}</span>
+          </button>
+        </div>
+      )}
+
+      {related.length > 0 && (
+        <RailCard title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />}>
+          <div className="space-y-1">
+            {related.map((r) => (
+              <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={r.shared_metrics.join(', ')}>
+                <span className="block truncate text-caption font-emphasis text-text-secondary">{r.title}</span>
+                <span className="block truncate text-tiny text-text-quaternary">{r.shared_metrics.join(', ')}</span>
+              </button>
+            ))}
+          </div>
+        </RailCard>
+      )}
+    </aside>
+  );
+}
+
 function ContentTab({ doc }: { doc: KnowledgeDoc }) {
   const { t } = useI18n();
   const missing = doc.missing_metric_tokens ?? [];
   return (
     <div className="min-w-0">
       {doc.body
-        ? <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-6"><Markdown source={resolveBody(doc)} /></div>
+        ? <Markdown source={resolveBody(doc)} />
         : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
 
       {missing.length > 0 && (
@@ -835,20 +920,21 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
   if (loading || !editing) return <DetailShell><div className="flex h-64 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand" /></div></DetailShell>;
 
   return (
-    <DetailShell>
-      <div className="pb-10">
-        {/* top bar: back + save actions (full width) */}
-        <div className="flex items-center justify-between gap-3">
-          <button onClick={onCancel} className="inline-flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-            <ChevronLeft className="h-3.5 w-3.5" /> {editing.id ? t('govern.action.cancelEdit') : t('govern.action.cancelNew')}
-          </button>
-          <div className="flex gap-2">
-            <Button variant="secondary" leadingIcon={<X className="h-4 w-4" />} onClick={onCancel} disabled={saving}>{t('govern.action.cancel')}</Button>
-            <Button variant="primary" leadingIcon={<Save className="h-4 w-4" />} onClick={save} loading={saving} disabled={saving}>{editing.id ? t('govern.action.saveChanges') : t('govern.action.saveDocument')}</Button>
-          </div>
-        </div>
-        <h1 className="mb-4 mt-3 text-h1 font-emphasis text-text-primary">{editing.id ? t('govern.editor.titleEdit') : t('govern.editor.titleNew')}</h1>
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* ── Standard detail header bar (same chrome as Dataset/Explore) ── */}
+      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+        <button onClick={onCancel} className="flex items-center gap-1 text-sm text-text-tertiary transition-colors hover:text-text-primary">
+          <ChevronLeft className="h-4 w-4" />
+          {t('govern.detail.back')}
+        </button>
+        <span className="text-text-quaternary">/</span>
+        <span className="max-w-[320px] truncate text-sm font-medium text-text-primary">{editing.id ? t('govern.editor.titleEdit') : t('govern.editor.titleNew')}</span>
+        <div className="flex-1" />
+        <Button size="sm" variant="secondary" leadingIcon={<X className="h-3.5 w-3.5" />} onClick={onCancel} disabled={saving}>{t('govern.action.cancel')}</Button>
+        <Button size="sm" variant="primary" leadingIcon={<Save className="h-3.5 w-3.5" />} onClick={save} loading={saving} disabled={saving}>{editing.id ? t('govern.action.saveChanges') : t('govern.action.saveDocument')}</Button>
+      </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
         <input ref={fileRef} type="file" accept=".md,.markdown,.txt,.html,.htm,text/plain,text/markdown,text/html" className="hidden" onChange={onImportFile} />
 
         {/* full-width 2-column: editor (left) + properties (right) */}
@@ -912,7 +998,7 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
           </aside>
         </div>
       </div>
-    </DetailShell>
+    </div>
   );
 }
 
