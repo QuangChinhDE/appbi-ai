@@ -14,6 +14,50 @@ own machine.** README.md covers *using* it — this covers *debugging it* and
 
 ---
 
+## 0. Execution environment — you have NO browser (read this first)
+
+This MCP is driven by an AI inside an MCP client — **Claude Desktop, Codex, or
+Claude Code**. That AI **cannot open a browser, cannot run Playwright, and (in
+Claude Desktop) has no shell at all.** So:
+
+- ❌ **Never** try to "open the app in a browser", install Playwright, or write a
+  local `diagnose_*.py` script to mint a session/cookie. It won't work in the
+  client and it is **not needed** — the Workboard runtime is a plain HTTP API and
+  the MCP already drives it for you.
+- ✅ **Verify everything through MCP tools**, which call that HTTP API server-side:
+
+| You want to… | Use this tool (no browser) |
+|---|---|
+| "Open the app as a real user" and check screens render | `run_workboard_runtime_smoke_test(workspace_token, workboard_id, username, pin, screen_ids=[...])` — logs in over HTTP, reads menu + app shell + each screen, returns per-step `ok/status/data`. |
+| Check the app **without** an app-user PIN (as staff) | `create_workspace_preview_session(workspace_id, workboard_id)` — mints an admin preview session. |
+| Confirm a form actually **saves** + the row shows in the table | same smoke test with `form_screen_id`, `table_screen_id`, `insert_values={...}` → it submits one real row and re-reads the table (`inserted_visible: true`). Requires `user_confirmed=true`. |
+| See **why** a form said "Validation failed" (field-level) | read the failing `form_insert` step: `steps[].data.detail.violations` — the runtime returns `{message, violations:[...]}`, so the specific field messages are already there. |
+| Ship a usable app (not just a saved Workboard) | put a `workspace` block in the bundle (apply auto-creates the workspace, adds the Workboard to its menu, publishes) **or** call `deliver_workboard_to_workspace`. |
+
+The only place a browser / `curl` / `DEBUG` log applies is **you, the human
+maintainer, on your own terminal** while editing the MCP (§3 marks those clearly).
+The AI building workboards must stay inside the tools above.
+
+### The reported "gaps" are mostly already covered
+A tester's notes listed missing capabilities; here is where each already lives —
+use these instead of reinventing them:
+
+| Reported as missing | Reality |
+|---|---|
+| "No tool to ship the app / attach a workspace" | `apply` delivers `bundle.workspace` automatically; or `deliver_workboard_to_workspace`. |
+| "No runtime preview without login" | `create_workspace_preview_session`. |
+| "No Playwright MCP → had to install local Playwright" | Not needed — `run_workboard_runtime_smoke_test` is the browser-free equivalent (login + render + submit over HTTP). |
+| "Validator doesn't catch runtime errors" | `validate_workboard_bundle` is static (refs). For runtime validation, run the smoke test with `insert_values` and read `steps[].data.detail.violations`. |
+| "No end-to-end workspace / session / app-user / public-link management" | `deliver_workboard_to_workspace`, `create_workspace_preview_session`, `upsert_workboard_app_users`, `create/update/list/delete_workboard_public_link`, `run_workboard_runtime_smoke_test`. |
+| "Generic 'Validation failed', no field mapping" | The runtime already returns `violations` (per-field) — surface them from the smoke-test insert step. |
+
+**Genuinely not built yet (roadmap — don't fake it with a browser):** a one-shot
+"create miniapp from `dataset_id` + a prose brief" generator, and layout
+**rollback / version diff** (today `export_workboard` is the manual backup). If you
+need these, add a tool (§4 Case C).
+
+---
+
 ## 1. Architecture in one screen
 
 ```
@@ -96,35 +140,42 @@ The bundle applied but the app misbehaves. Verify with:
 
 ## 3. The debugging loop (do this when a build fails)
 
-1. **Reproduce cheaply.** Re-run just `validate_workboard_bundle(bundle)`. If it
-   returns errors, you never needed the backend — fix those first.
+### Track A — the AI *inside the MCP client* (tools only, no browser/shell)
+This is the loop the AI must follow. Every step is an MCP tool:
+
+1. **Reproduce cheaply.** Re-run `validate_workboard_bundle(bundle)`. Errors here
+   are reference problems you can fix without the backend — fix them first.
 2. **Read the envelope.** If `apply` returned `status: "backend_error"`, the
    `detail` **is** the answer — Pydantic names the offending `screens.N.field`.
-   Map that path back to the bundle.
+   Map it back to the bundle.
 3. **Confirm against the live contract.** Call `get_workboard_design_guide()` and
-   check the field under `screen_schema_reference`. If the field you sent is not
-   there, either you invented it (fix the bundle) or the backend added it and the
-   guide is stale (§4 Case A).
-4. **Reproduce against the backend directly** when `detail` is vague or it's a
-   500. Use the same PAT the MCP uses:
-   ```bash
-   # health / identity
-   curl -s -H "Authorization: Bearer $APPBI_PAT" $APPBI_BASE_URL/api/v1/auth/me
-   # replay the exact create the MCP does
-   curl -s -X POST -H "Authorization: Bearer $APPBI_PAT" \
-        -H "Content-Type: application/json" \
-        -d @bundle_workboard_body.json \
-        $APPBI_BASE_URL/api/v1/workboards/
-   ```
-   (`_workboard_create_body(bundle)` / `_workboard_update_body(bundle)` in
-   `appbi_wb_build.py` show the exact JSON shape sent.)
-5. **Turn up logging.** Set `APPBI_MCP_LOG_LEVEL=DEBUG` in `.env` and restart the
-   MCP; every tool logs the backend method/path/status on failure to stderr.
-6. **If you have the backend source**, the schema is the truth:
-   `backend/app/modules/workboards/schemas.py` — `LayoutJson`, `Screen`,
-   `FormField`, `TableScreenSpec`, `BrandingConfig`, `TableColumnMeta`, etc.
-   (all `model_config = ConfigDict(extra="forbid")`). If you don't have it, the
-   422 `detail` path + the design guide are enough.
+   check the field under `screen_schema_reference`. Not there → you invented it
+   (fix the bundle) or the backend added it and the guide is stale (§4 Case A).
+4. **Reproduce runtime failures with a tool, not a browser.** For "the form/app
+   errors at runtime", call `run_workboard_runtime_smoke_test(...)` — with
+   `insert_values` to exercise a real submit — and read the failing step's
+   `data` / `data.detail.violations`. For staff-side render checks use
+   `create_workspace_preview_session`. This replaces any browser/Playwright.
+5. **Post-apply integrity:** `audit_workboard(workboard_id)` for broken refs.
+
+### Track B — you, the human maintainer, on your own terminal
+Only when you are editing the MCP locally (you *do* have a shell here):
+
+- **Replay the exact backend call** when `detail` is vague or it's a 500:
+  ```bash
+  curl -s -H "Authorization: Bearer $APPBI_PAT" $APPBI_BASE_URL/api/v1/auth/me
+  curl -s -X POST -H "Authorization: Bearer $APPBI_PAT" -H "Content-Type: application/json" \
+       -d @bundle_workboard_body.json  $APPBI_BASE_URL/api/v1/workboards/
+  ```
+  (`_workboard_create_body` / `_workboard_update_body` in `appbi_wb_build.py` show
+  the exact JSON the MCP sends.)
+- **Turn up logging:** `APPBI_MCP_LOG_LEVEL=DEBUG` in `.env`, restart — every tool
+  logs backend method/path/status on failure to stderr.
+- **If you have the backend source**, the schema is the truth:
+  `backend/app/modules/workboards/schemas.py` — `LayoutJson`, `Screen`,
+  `FormField`, `TableScreenSpec`, `BrandingConfig`, `TableColumnMeta` (all
+  `extra="forbid"`). No backend source? The 422 `detail` path + the design guide
+  are enough.
 
 ### Common failures → cause → fix
 

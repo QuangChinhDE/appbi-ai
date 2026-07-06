@@ -105,12 +105,27 @@ STAGE 3 — Workboard
    /updates the workboard, publishes, upserts app users, stores webhooks, and
    links a workspace — all in one confirmation.
 
-STAGE 4 — Share & verify
-   audit_workboard for broken references. For a public form/view, use
-   create_workboard_public_link. For a full app behind app-user login, deliver
-   a workspace. Then run_workboard_runtime_smoke_test as a real app user.
+STAGE 4 — Ship & verify (always finish here — a saved Workboard is not a usable app)
+   To make it usable, either put a `workspace` block in the apply bundle (apply
+   auto-creates the workspace, adds the Workboard to its menu, and publishes) or
+   call deliver_workboard_to_workspace. Create app users with upsert_workboard_
+   app_users. For a public form/view use create_workboard_public_link.
+   VERIFY WITHOUT A BROWSER: run_workboard_runtime_smoke_test(workspace_token,
+   workboard_id, username, pin, screen_ids=[...]) logs in and renders every
+   screen over HTTP; pass form_screen_id + table_screen_id + insert_values to
+   submit a real row and confirm it lands (inserted_visible). To inspect as staff
+   without a PIN, create_workspace_preview_session. Finish with audit_workboard.
 
 ## Non-negotiable rules
+
+- YOU HAVE NO BROWSER. You are running inside an MCP client (Claude Desktop /
+  Codex / Claude Code). Never try to open the app in a browser, install or run
+  Playwright, or hand-write a script to mint a preview session — you cannot, and
+  you do not need to. The runtime is an HTTP API that the MCP already drives:
+  verify with run_workboard_runtime_smoke_test / create_workspace_preview_session.
+- Runtime "Validation failed" on a form? Do NOT guess. Call the smoke test with
+  insert_values and read the failing form_insert step's data.detail.violations —
+  it lists the exact field(s) that failed.
 
 - Bind every non-dashboard screen's table_id to an ATTACHED dataset table id
   (from inspect_dataset_for_workboard / list_dataset_tables), never a source

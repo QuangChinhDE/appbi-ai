@@ -883,8 +883,9 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "author ONE bundle: workboard + layout_json (screens) + app_users + webhooks + optional workspace",
             "test_screen_js for any computed column formula",
             "validate_workboard_bundle(bundle) and fix every error",
-            "apply_workboard_bundle(bundle, user_confirmed=true)",
-            "audit_workboard, then create_workboard_public_link and/or workspace, then run_workboard_runtime_smoke_test",
+            "apply_workboard_bundle(bundle, user_confirmed=true) — include a `workspace` block in the bundle so apply ships a usable app (workspace + menu + publish), not just a saved Workboard",
+            "audit_workboard for broken refs; add app users via upsert_workboard_app_users; create_workboard_public_link for a public form/view",
+            "VERIFY WITHOUT A BROWSER: run_workboard_runtime_smoke_test(workspace_token, workboard_id, username, pin, screen_ids, and form_screen_id+table_screen_id+insert_values to test a real submit) — it logs in + renders + submits over HTTP. On a form 'Validation failed', read the failing form_insert step's data.detail.violations for the exact field(s). Never use a browser/Playwright.",
         ],
         "bundle_contract": {
             "workboard": {
