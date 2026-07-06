@@ -60,7 +60,11 @@ layers:
   - id: fe_lib
     match: ["frontend/src/lib/**"]
     label: "Frontend lib (api clients, filters, utils)"
-    may_depend_on: ["fe_lib"]
+    # fe_types is a dependency-free CONTRACTS LEAF (it may_depend_on only itself),
+    # so every layer — including lib utils — may import shared types from it.
+    # (fe_stores/hooks/components/pages already allow it; fe_lib was the lone gap,
+    # which false-flagged any util that imports an interface from @/types/*.)
+    may_depend_on: ["fe_lib", "fe_types"]
 
   - id: fe_types
     match: ["frontend/src/types/**"]
