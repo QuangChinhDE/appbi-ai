@@ -228,7 +228,43 @@ interface ValidationResult {
   examples: string[];
 }
 
-function validateColumnValues(values: any[], formatType: FormatType): ValidationResult {
+const _MONTHS_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const _ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
+const _DATE_TOKENS: Array<[string, string]> = [
+  ['YYYY', '(\\d{4})'], ['MMM', '([A-Za-z]{3,})'], ['MM', '(\\d{1,2})'], ['DD', '(\\d{1,2})'],
+  ['HH', '(\\d{1,2})'], ['mm', '(\\d{1,2})'], ['ss', '(\\d{1,2})'],
+];
+
+/** Does `value` match the SELECTED date format (range-checked)? Mirrors the
+ *  backend PARSE_DATE branch so the warning reflects what conversion will
+ *  actually keep. Dates come in many shapes on Sheets — we validate against the
+ *  format the user picked, not JS `new Date()` (which mis-reads dd/mm and
+ *  rejects valid day-first dates like 31/07/2026). */
+function matchesDateFormat(value: string, fmt: string): boolean {
+  const order: string[] = [];
+  let pattern = '';
+  let i = 0;
+  while (i < fmt.length) {
+    const tok = _DATE_TOKENS.find(([t]) => fmt.startsWith(t, i));
+    if (tok) { pattern += tok[1]; order.push(tok[0]); i += tok[0].length; }
+    else { pattern += fmt[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); i++; }
+  }
+  const m = new RegExp('^' + pattern + '$').exec(value);
+  if (!m) return false;
+  let g = 1;
+  for (const t of order) {
+    const v = m[g++];
+    const n = Number(v);
+    if (t === 'MM' && (n < 1 || n > 12)) return false;
+    if (t === 'DD' && (n < 1 || n > 31)) return false;
+    if (t === 'HH' && (n < 0 || n > 23)) return false;
+    if ((t === 'mm' || t === 'ss') && (n < 0 || n > 59)) return false;
+    if (t === 'MMM' && !_MONTHS_ABBR.includes(v.slice(0, 3).toLowerCase())) return false;
+  }
+  return true;
+}
+
+function validateColumnValues(values: any[], formatType: FormatType, dateFormat: string): ValidationResult {
   if (formatType === 'default' || formatType === 'text') {
     return { valid: true, invalidCount: 0, total: values.length, examples: [] };
   }
@@ -241,18 +277,20 @@ function validateColumnValues(values: any[], formatType: FormatType): Validation
   const isInvalid = (v: any): boolean => {
     const s = String(v).trim();
     if (formatType === 'number' || formatType === 'currency' || formatType === 'percentage') {
-      return isNaN(parseFloat(s)) || !isFinite(Number(s.replace(',', '.')));
+      return isNaN(parseFloat(s)) || !isFinite(Number(s.replace(/,/g, '')));
     }
     if (formatType === 'date' || formatType === 'datetime') {
       if (s === '') return false;
-      const d = new Date(s);
-      return isNaN(d.getTime());
+      // Convertible if it matches the chosen format OR ISO (the backend's
+      // COALESCE(PARSE_DATE(fmt), CAST AS DATE/TIMESTAMP) fallback). Anything
+      // else genuinely won't parse → it's a real "will be blank" value.
+      return !(matchesDateFormat(s, dateFormat) || _ISO_DATE_RE.test(s));
     }
     return false;
   };
 
   const badValues = nonEmpty.filter(isInvalid);
-  const examples = badValues.slice(0, 3).map((v) => String(v));
+  const examples = Array.from(new Set(badValues.map((v) => String(v)))).slice(0, 4);
   return {
     valid: badValues.length === 0,
     invalidCount: badValues.length,
@@ -314,13 +352,18 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
   const upd = (partial: Partial<ColFormat>) => setDraft((prev) => ({ ...prev, ...partial }));
   const isDirty = JSON.stringify(draft) !== JSON.stringify(format);
 
-  // Validate current draft type against actual column data
+  // Validate current draft type against actual column data — for dates, against
+  // the CHOSEN format (+ ISO fallback), matching what the backend keeps.
   const validation = useMemo(
-    () => validateColumnValues(values, draft.formatType),
-    [values, draft.formatType]
+    () => validateColumnValues(values, draft.formatType, draft.dateFormat),
+    [values, draft.formatType, draft.dateFormat]
   );
 
-  const canApply = isDirty && validation.valid;
+  // WARN, don't BLOCK: a few unparseable values shouldn't stop the user setting
+  // the type — they'll be saved blank (the backend safe-casts them to NULL).
+  // Only hard-block when EVERY non-empty value fails (the type is just wrong).
+  const allInvalid = validation.total > 0 && validation.invalidCount === validation.total;
+  const canApply = isDirty && !allInvalid;
   const handleApply = async () => {
     if (!canApply || isSaving) return;
     setSaveError(null);
@@ -535,8 +578,11 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         {isDirty && !validation.valid && (
           <div className="rounded border border-warning/40 bg-warning/10 p-2 text-[10px] text-warning space-y-0.5">
             <p className="font-semibold">⚠️ {t('datasets.formatPanel.invalidCount', { count: validation.invalidCount, total: validation.total })}</p>
-            <p className="text-warning">{t('datasets.formatPanel.invalidTypePrefix')} <strong>{draft.formatType}</strong>.
-              {t('datasets.formatPanel.invalidTypeSuffix')}</p>
+            <p className="text-warning">
+              {allInvalid
+                ? <>{t('datasets.formatPanel.invalidTypePrefix')} <strong>{draft.formatType}</strong>. {t('datasets.formatPanel.invalidTypeSuffix')}</>
+                : t('datasets.formatPanel.invalidWillBlank')}
+            </p>
             {validation.examples.length > 0 && (
               <p className="font-mono text-[9px] text-warning break-all">
                 {t('datasets.formatPanel.examplePrefix')} {validation.examples.map((e) => `"${e}"`).join(', ')}
@@ -563,7 +609,13 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
               : 'bg-warning/15 text-warning cursor-not-allowed'
           }`}
         >
-          {!isDirty ? t('datasets.formatPanel.noChanges') : !validation.valid ? t('datasets.formatPanel.dataInvalid') : t('datasets.formatPanel.applyAndSave')}
+          {!isDirty
+            ? t('datasets.formatPanel.noChanges')
+            : allInvalid
+            ? t('datasets.formatPanel.dataInvalid')
+            : !validation.valid
+            ? t('datasets.formatPanel.applyAnyway')
+            : t('datasets.formatPanel.applyAndSave')}
         </button>
 
         {/* Reset */}
