@@ -3106,18 +3106,22 @@ def update_dataset_table(
 
         table_update.type_overrides = normalized_overrides
 
+    # A type-override change is NOT a schema change: it re-types EXISTING columns
+    # (keyed by name) and never adds/removes/renames any — the cast itself is
+    # validated separately by the type audit above. Including it here made a
+    # simple STRING→DATE re-infer the whole schema and (when that inference
+    # returned a different/empty set) flag EVERY column as "about to be dropped",
+    # firing a bogus "N semantic references … columns about to be deleted"
+    # cascade. Only source_query / transformations can actually change columns.
     schema_refresh_requested = any(
         value is not None
         for value in (
             table_update.source_query,
             table_update.transformations,
-            table_update.type_overrides,
         )
     )
 
-    if schema_refresh_requested and (
-        table_update.transformations is not None or table_update.type_overrides is not None
-    ):
+    if schema_refresh_requested and table_update.transformations is not None:
         validation_draft = _build_table_draft(db_table, table_update)
         validation_datasource = datasource
         if validation_datasource is None and getattr(validation_draft, "datasource_id", None) is not None:
