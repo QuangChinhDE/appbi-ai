@@ -696,35 +696,51 @@ export function useAddTableToDataset() {
 /**
  * Update a table
  */
+export interface AutoDetectSuggestion {
+  column: string;
+  suggested_type: string | null;
+  parse_format?: string | null;
+  total_non_null?: number;
+  invalid_count?: number;
+  invalid_examples?: string[];
+  skipped_reason?: string | null;
+}
 export interface AutoDetectTypesResult {
   applied: Record<string, string>;
-  suggestions: Array<{
-    column: string;
-    suggested_type: string | null;
-    parse_format?: string | null;
-    skipped_reason?: string | null;
-  }>;
+  suggestions: AutoDetectSuggestion[];
 }
 
 /**
  * Full-scan auto-detection of column data types (integer/float/boolean/date +
- * date parse-format) for a table, applied into `type_overrides`. Works for ANY
- * source — the "cách dùng" for a BigQuery sql_query / Sheet whose columns landed
- * as string/boolean. Caller should refetch the dataset + preview afterwards.
+ * date parse-format) for a table. 100% CODE (SQL cast-counting) — no AI ever
+ * reads the data. Writes into `type_overrides` (a CONFIG: raw data is never
+ * mutated, off-type values become NULL at query time, re-applied on every sync).
+ *
+ * `apply=false` is a DRY RUN: returns suggestions (incl. invalid_count/examples
+ * per column) so the UI can PREVIEW what will change + which rows become blank,
+ * before the user confirms. `tolerance` sets the majority threshold (fraction of
+ * values allowed to be off-type for the winning type; the button uses a
+ * majority value so "mostly date + a few off" → date, the rest NULLed).
+ * Works for ANY source, incl. BigQuery sql_query. Caller refetches after apply.
  */
 export function useAutoDetectColumnTypes() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ datasetId, tableId }: { datasetId: number; tableId: number }) => {
+    mutationFn: async ({
+      datasetId, tableId, apply = true, tolerance,
+    }: { datasetId: number; tableId: number; apply?: boolean; tolerance?: number }) => {
       const response = await api.post<AutoDetectTypesResult>(
         `/datasets/${datasetId}/tables/${tableId}/auto-detect-types`,
-        { apply: true },
+        { apply, ...(tolerance != null ? { tolerance } : {}) },
       );
       return response.data;
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
-      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+    onSuccess: (data, variables) => {
+      // Only invalidate when we actually applied (a dry-run changes nothing).
+      if (variables.apply !== false && Object.keys(data.applied || {}).length > 0) {
+        queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+        queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+      }
     },
   });
 }

@@ -5,6 +5,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon, Wand2, Loader2 } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
 import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
@@ -17,6 +18,7 @@ import {
   rowMatchesAllTableFilters,
   distinctTableColumnValues,
 } from '@/lib/tableColumnFilter';
+import type { AutoDetectTypesResult, AutoDetectSuggestion } from '@/hooks/use-datasets';
 import { useI18n } from '@/providers/LanguageProvider';
 
 // Map a dataset column's declared/overridden data type → the filter's type
@@ -49,9 +51,12 @@ export interface DatasetTableGridProps {
   columnFormatsDb?: Record<string, ColFormat>;
   /** Called when user applies a format so parent can persist to DB */
   onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => Promise<void> | void;
-  /** Full-scan auto-detect of column types → type_overrides (parent runs the
-   *  API + reloads). When set, a toolbar "Auto-detect types" button shows. */
-  onAutoDetectTypes?: () => Promise<void> | void;
+  /** Full-scan auto-detect of column types. `onAutoDetectPreview` is a DRY RUN
+   *  (returns suggestions incl. off-type row counts/examples) → the grid shows a
+   *  confirm modal → `onAutoDetectApply` persists + reloads. When preview is set,
+   *  a toolbar "Auto-detect types" button shows. */
+  onAutoDetectPreview?: () => Promise<AutoDetectTypesResult>;
+  onAutoDetectApply?: () => Promise<void> | void;
   /** When set, enables the per-column summary popover (eye icon). */
   datasetId?: number | string;
   tableId?: number | string;
@@ -667,7 +672,8 @@ export function DatasetTableGrid({
   onEditColumn,
   columnFormatsDb,
   onColumnFormatChange,
-  onAutoDetectTypes,
+  onAutoDetectPreview,
+  onAutoDetectApply,
   datasetId,
   tableId,
 }: DatasetTableGridProps) {
@@ -685,14 +691,44 @@ export function DatasetTableGrid({
   const [columnDataFilters, setColumnDataFilters] = useState<Record<string, TableColumnFilter>>({});
   const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
   const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
-  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
-  const runAutoDetectTypes = async () => {
-    if (!onAutoDetectTypes || isAutoDetecting) return;
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);   // preview (dry-run) in flight
+  const [isApplyingTypes, setIsApplyingTypes] = useState(false);
+  // Non-null → the confirm modal is open, holding the columns that will change.
+  const [autoDetectPlan, setAutoDetectPlan] = useState<AutoDetectSuggestion[] | null>(null);
+  const runAutoDetectPreview = async () => {
+    if (!onAutoDetectPreview || isAutoDetecting) return;
     setIsAutoDetecting(true);
     try {
-      await onAutoDetectTypes();
+      const result = await onAutoDetectPreview();
+      // Show only columns whose detected type DIFFERS from the current one.
+      const NUM = new Set(['integer', 'float', 'number', 'int', 'double', 'decimal', 'bigint', 'numeric', 'real']);
+      const norm = (t?: string | null) => {
+        const s = (t || '').toLowerCase();
+        return NUM.has(s) ? 'number' : (s === 'datetime' || s === 'timestamp') ? 'datetime' : s;
+      };
+      const currentOf = (name: string) => {
+        const ov = (typeOverrides as Record<string, any> | undefined)?.[name];
+        const ovt = typeof ov === 'string' ? ov : ov?.type;
+        return norm(ovt || columns.find((c) => c.name === name)?.type);
+      };
+      const changes = (result.suggestions || []).filter(
+        (s) => s.suggested_type && norm(s.suggested_type) !== currentOf(s.column),
+      );
+      setAutoDetectPlan(changes);
+    } catch {
+      setAutoDetectPlan(null);
     } finally {
       setIsAutoDetecting(false);
+    }
+  };
+  const confirmAutoDetect = async () => {
+    if (!onAutoDetectApply || isApplyingTypes) return;
+    setIsApplyingTypes(true);
+    try {
+      await onAutoDetectApply();
+      setAutoDetectPlan(null);
+    } finally {
+      setIsApplyingTypes(false);
     }
   };
   const openColumnFilter = (name: string, anchor: HTMLElement) => {
@@ -1113,12 +1149,14 @@ export function DatasetTableGrid({
             {t('datasets.grid.clearAllFormats', { count: Object.keys(columnFormats).length })}
           </button>
         )}
-        {onAutoDetectTypes && (
+        {onAutoDetectPreview && (
           <button
-            onClick={runAutoDetectTypes}
+            onClick={runAutoDetectPreview}
             disabled={isAutoDetecting}
             title={t('datasets.grid.autoDetectHint')}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-60"
+            /* Balanced accent: brand-tinted so it reads as an action + stands
+               out from the surface-2 footer, but not a solid/loud primary. */
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-brand/25 bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand transition-colors hover:bg-brand/20 hover:border-brand/40 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAutoDetecting
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1142,6 +1180,94 @@ export function DatasetTableGrid({
           onClear={() => clearColumnDataFilter(openFilterCol)}
           onClose={() => setOpenFilterCol(null)}
         />
+      )}
+
+      {/* Auto-detect PREVIEW / confirm modal — shows which columns will be typed
+          and which off-type rows become blank BEFORE applying. It's a config
+          (type_overrides), never a raw-data edit. */}
+      {autoDetectPlan !== null && createPortal(
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !isApplyingTypes && setAutoDetectPlan(null)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-4 w-4 text-brand" />
+                <h3 className="text-sm font-semibold text-text-primary">{t('datasets.grid.autoDetectPreviewTitle')}</h3>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                disabled={isApplyingTypes}
+                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-50"
+                onClick={() => setAutoDetectPlan(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              <p className="mb-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-[11px] leading-relaxed text-text-tertiary">
+                {t('datasets.grid.autoDetectConfigNote')}
+              </p>
+              {autoDetectPlan.length === 0 ? (
+                <p className="py-6 text-center text-sm text-text-tertiary">{t('datasets.grid.autoDetectNone')}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {autoDetectPlan.map((s) => {
+                    const bad = s.invalid_count ?? 0;
+                    const ex = (s.invalid_examples ?? []).slice(0, 3);
+                    return (
+                      <li key={s.column} className="rounded-md border border-[rgb(var(--border-line))] px-3 py-2">
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span className="truncate font-medium text-text-primary" title={s.column}>{s.column}</span>
+                          <span className="shrink-0 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-semibold text-brand">
+                            {s.suggested_type}{s.parse_format ? ` · ${s.parse_format}` : ''}
+                          </span>
+                        </div>
+                        {bad > 0 && (
+                          <div className="mt-1 text-[11px] text-warning">
+                            ⚠ {t('datasets.grid.autoDetectRowsToBlank', { count: bad })}
+                            {ex.length > 0 && (
+                              <span className="ml-1 font-mono text-text-quaternary">
+                                {t('datasets.formatPanel.examplePrefix')} {ex.map((e) => `"${e}"`).join(', ')}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-4 py-3">
+              <button
+                type="button"
+                disabled={isApplyingTypes}
+                onClick={() => setAutoDetectPlan(null)}
+                className="rounded-md border border-[rgb(var(--border-line))] px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+              >
+                {t('datasets.grid.autoDetectCancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isApplyingTypes || autoDetectPlan.length === 0}
+                onClick={confirmAutoDetect}
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isApplyingTypes && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {t('datasets.grid.autoDetectApplyBtn', { count: autoDetectPlan.length })}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

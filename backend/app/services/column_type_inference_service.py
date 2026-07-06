@@ -269,7 +269,20 @@ def _pick_best_type(
     if total < min_non_null:
         return None, None, 0, [], "too_few_non_null_values"
 
+    # integer ⊂ float: every integer is a valid float, so integer's invalids
+    # are a SUPERSET of float's. If float keeps STRICTLY more values (fewer
+    # invalids) and is within tolerance, the extra integer-invalids are real
+    # decimals — prefer float (lossless) over integer-that-nulls-the-decimals.
+    # e.g. a money column of 41093 ints + one "29.52" → float, not integer.
+    int_inv = int((column_stats.get("integer") or {}).get("invalid") or 0)
+    float_inv = int((column_stats.get("float") or {}).get("invalid") or 0)
+    prefer_float_over_integer = (
+        float_inv < int_inv and total > 0 and (float_inv / total) <= tolerance
+    )
+
     for cand in CANDIDATE_TYPES:
+        if cand == "integer" and prefer_float_over_integer:
+            continue  # let float win — don't null valid decimals as "outliers"
         # Gather this candidate's variants: the exact bucket (ISO/no-format) and
         # any `cand§format` probes. Insertion order = ISO first, then probe
         # order, so a strict-less-than comparison keeps ISO/day-first on ties.

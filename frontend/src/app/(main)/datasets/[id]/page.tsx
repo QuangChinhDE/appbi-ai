@@ -890,22 +890,27 @@ export default function DatasetDetailPage() {
     }
   };
 
-  // Full-scan auto-detect of column types (integer/float/boolean/date + parse
-  // format) → type_overrides, then reload so the grid + downstream reflect it.
-  // The "cách dùng" to re-type a BigQuery sql_query / Sheet table whose columns
-  // landed as string/boolean.
-  const handleAutoDetectTypes = async () => {
+  // Full-scan auto-detect of column types (100% code, no AI) → type_overrides
+  // (a CONFIG — raw data untouched, off-type values NULL at query time, re-applied
+  // on sync). MAJORITY threshold so "mostly date + a few off" → date. Two steps:
+  // PREVIEW (dry run) feeds a confirm modal in the grid; APPLY persists + reloads.
+  const AUTO_DETECT_TOLERANCE = 0.1; // allow ≤10% off-type for the winning type
+  const handleAutoDetectPreview = async () => {
+    if (!datasetId || !selectedTableId) return { applied: {}, suggestions: [] };
+    return autoDetectMutation.mutateAsync({
+      datasetId, tableId: selectedTableId, apply: false, tolerance: AUTO_DETECT_TOLERANCE,
+    });
+  };
+  const handleAutoDetectApply = async () => {
     if (!datasetId || !selectedTableId) return;
     try {
-      const result = await autoDetectMutation.mutateAsync({ datasetId, tableId: selectedTableId });
+      const result = await autoDetectMutation.mutateAsync({
+        datasetId, tableId: selectedTableId, apply: true, tolerance: AUTO_DETECT_TOLERANCE,
+      });
       await refetchDataset();
       await refetchPreview();
       const n = Object.keys(result.applied || {}).length;
-      if (n > 0) {
-        toast.success(t('datasets.grid.autoDetectApplied', { count: n }));
-      } else {
-        toast.success(t('datasets.grid.autoDetectNone'));
-      }
+      toast.success(n > 0 ? t('datasets.grid.autoDetectApplied', { count: n }) : t('datasets.grid.autoDetectNone'));
     } catch (error: any) {
       toast.error(extractDatasetErrorMessage(error, t('datasets.grid.autoDetectError'), selectedTable));
     }
@@ -1853,7 +1858,8 @@ export default function DatasetDetailPage() {
                     typeOverrides={(selectedTable as any)?.type_overrides}
                     columnFormatsDb={(selectedTable as any)?.column_formats}
                     onColumnFormatChange={handleColumnFormatChange}
-                    onAutoDetectTypes={resPerms.canEdit && !selectedTableIsGenerated ? handleAutoDetectTypes : undefined}
+                    onAutoDetectPreview={resPerms.canEdit && !selectedTableIsGenerated ? handleAutoDetectPreview : undefined}
+                    onAutoDetectApply={handleAutoDetectApply}
                     datasetId={datasetId ?? undefined}
                     tableId={selectedTableId ?? undefined}
                   />
