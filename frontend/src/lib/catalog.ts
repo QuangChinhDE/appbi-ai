@@ -465,10 +465,12 @@ export interface KnowledgeDraft {
   related_dataset_ids?: number[];
   related_dashboard_ids?: number[];
 }
-export async function aiDraftKnowledge(datasetId: number, dashboardId?: number | null): Promise<KnowledgeDraft> {
+export interface AiDraftReq { dataset_ids: number[]; dashboard_ids?: number[]; focus?: string }
+export async function aiDraftKnowledge(req: AiDraftReq): Promise<KnowledgeDraft> {
   const { data } = await apiClient.post<KnowledgeDraft>('/catalog/govern/knowledge/ai-draft', {
-    dataset_id: datasetId,
-    dashboard_id: dashboardId ?? null,
+    dataset_ids: req.dataset_ids,
+    dashboard_ids: req.dashboard_ids ?? [],
+    focus: req.focus ?? null,
   });
   return data;
 }

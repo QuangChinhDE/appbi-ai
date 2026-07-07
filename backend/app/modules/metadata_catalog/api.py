@@ -325,18 +325,26 @@ def govern_knowledge_upsert(
 
 
 class KnowledgeAIDraftReq(BaseModel):
-    dataset_id: int
-    dashboard_id: int | None = None
+    # A knowledge doc usually spans several sources — accept a list. `dataset_id`
+    # is kept for backward compatibility with older single-select callers.
+    dataset_ids: list[int] = []
+    dataset_id: int | None = None
+    dashboard_ids: list[int] = []
+    focus: str | None = None
 
 
 @router.post("/govern/knowledge/ai-draft")
 def govern_knowledge_ai_draft(
     body: KnowledgeAIDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """AI reads the dataset's real model + sample + metrics and drafts a business
-    document (unsaved). The user reviews/edits before saving."""
+    """AI reads the real model + sample + metrics of ONE OR MORE datasets (plus
+    optional dashboards and a focus) and drafts a business document (unsaved).
+    The user reviews/edits before saving."""
     from app.services.dashboard_ai_bot.govern_ai_draft import draft_document
-    draft = draft_document(db, body.dataset_id, body.dashboard_id)
+    ids = body.dataset_ids or ([body.dataset_id] if body.dataset_id else [])
+    if not ids:
+        raise HTTPException(status_code=422, detail="Chọn ít nhất một dataset.")
+    draft = draft_document(db, ids, body.dashboard_ids, body.focus)
     if draft is None:
         raise HTTPException(
             status_code=503,

@@ -510,6 +510,8 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const articleRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeHeading, setActiveHeading] = useState<string>('');
   const tab = (nav.get('dt') as DetailTab) || 'noidung';
   const setTab = (t: string) => nav.set({ dt: t });
 
@@ -522,6 +524,27 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
   }, [docId, refresh, t]);
+
+  // Scroll-spy: highlight the section currently being read in the on-this-page
+  // outline. Observes the article's headings against the scroll container.
+  useEffect(() => {
+    if (tab !== 'noidung') return;
+    const scroller = scrollRef.current;
+    const article = articleRef.current;
+    if (!scroller || !article) return;
+    const heads = Array.from(article.querySelectorAll('h1,h2,h3')) as HTMLElement[];
+    if (heads.length === 0) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const vis = entries.filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (vis[0]) setActiveHeading((vis[0].target.textContent || '').trim());
+      },
+      { root: scroller, rootMargin: '0px 0px -68% 0px', threshold: 0 },
+    );
+    heads.forEach((h) => io.observe(h));
+    return () => io.disconnect();
+  }, [tab, doc?.id, doc?.body]);
 
   const remove = async () => {
     if (!doc || !window.confirm(t('govern.detail.deleteConfirm', { name: doc.title }))) return;
@@ -598,16 +621,16 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
 
       {/* content — reading surface: readable column + right context rail (fills
           the width with document context, not stretched prose). Data tabs go full-width. */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
         {tab === 'noidung' ? (
-          <div className="flex gap-8 xl:gap-12">
+          <div className="flex items-start gap-8 xl:gap-12">
             <article ref={articleRef} className="min-w-0 flex-1">
               <div className="max-w-[46rem]">
                 <DocHeader doc={doc} />
                 <ContentTab doc={doc} />
               </div>
             </article>
-            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} onRefresh={() => setRefresh((v) => v + 1)} />
+            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} activeHeading={activeHeading} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} onRefresh={() => setRefresh((v) => v + 1)} />
           </div>
         ) : (
           <div className="w-full">
@@ -709,21 +732,27 @@ function GraphTab({ doc, onOpenDoc, onEditMetric }: {
   );
 }
 
-// AI writes a business doc from a dataset — pick a dataset; the backend reads
-// its real model + a data sample + metrics and drafts a doc; the user reviews
-// and edits before saving.
+// AI writes a business doc from ONE OR MORE datasets — a knowledge doc usually
+// spans several data sources, so this is a multi-select + an optional focus that
+// steers what the document should be about. The backend reads each source's real
+// model + sample + metrics and drafts a doc the user reviews before saving.
 function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: (draft: KnowledgeDocWrite) => void }) {
   const { t } = useI18n();
   const [datasets, setDatasets] = useState<DatasetLite[]>([]);
-  const [dsId, setDsId] = useState('');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [q, setQ] = useState('');
+  const [focus, setFocus] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { listDatasetsLite().then(setDatasets).catch(() => toast.error(t('govern.ai.loadDatasetsFailed'))); }, [t]);
 
+  const toggle = (id: number) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const filtered = datasets.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
+
   const run = async () => {
-    if (!dsId) { toast.error(t('govern.ai.chooseDataset')); return; }
+    if (selected.size === 0) { toast.error(t('govern.ai.chooseDataset')); return; }
     setBusy(true);
     try {
-      const d = await aiDraftKnowledge(Number(dsId));
+      const d = await aiDraftKnowledge({ dataset_ids: [...selected], focus: focus.trim() || undefined });
       onDrafted({
         title: d.title, summary: d.summary, body: d.body, space: d.space,
         tags: d.tags ?? [], status: 'Draft', doc_type: 'domain', pinned: false,
@@ -741,7 +770,7 @@ function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: 
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t('govern.action.cancel')}</Button>
           {/* Stable size: label never changes while busy (spinner replaces the wand). */}
-          <AiButton size="md" onClick={run} loading={busy} disabled={!dsId}>
+          <AiButton size="md" onClick={run} loading={busy} disabled={selected.size === 0}>
             {t('govern.ai.submit')}
           </AiButton>
         </>
@@ -750,11 +779,25 @@ function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: 
       <div className="space-y-3">
         <p className="text-caption text-text-secondary">{t('govern.ai.description')}</p>
         <div className="space-y-1.5">
-          <Label required>{t('govern.ai.dataset')}</Label>
-          <Select value={dsId} onChange={(e) => setDsId(e.target.value)} disabled={busy}>
-            <option value="">{t('govern.ai.datasetPlaceholder')}</option>
-            {datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </Select>
+          <Label required>{t('govern.ai.datasets')}</Label>
+          <Input size="sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('govern.ai.searchDatasets')} disabled={busy} />
+          <div className="max-h-56 divide-y divide-[rgb(var(--border-line))] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))]">
+            {filtered.length === 0
+              ? <p className="px-3 py-4 text-center text-tiny text-text-quaternary">{t('govern.ai.noDatasets')}</p>
+              : filtered.map((d) => (
+                <label key={d.id} className="flex cursor-pointer items-center gap-2.5 px-3 py-1.5 hover:bg-surface-2">
+                  <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} disabled={busy}
+                    className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" />
+                  <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{d.name}</span>
+                  {selected.has(d.id) && <span className="text-tiny text-brand">✓</span>}
+                </label>
+              ))}
+          </div>
+          {selected.size > 0 && <p className="text-tiny text-text-quaternary">{t('govern.ai.selectedCount', { count: selected.size })}</p>}
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('govern.ai.focus')}</Label>
+          <Textarea rows={2} value={focus} onChange={(e) => setFocus(e.target.value)} placeholder={t('govern.ai.focusPlaceholder')} disabled={busy} />
         </div>
         {busy && <p className="text-tiny text-text-quaternary">{t('govern.ai.busyHint')}</p>}
       </div>
@@ -862,12 +905,13 @@ function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () =>
   );
 }
 
-function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJump, onRefresh }: {
+function DetailRail({ doc, toc, related, metrics, assets, activeHeading, onTab, onOpenDoc, onJump, onRefresh }: {
   doc: KnowledgeDoc;
   toc: { level: number; text: string }[];
   related: NonNullable<KnowledgeDoc['related_docs']>;
   metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
   assets: NonNullable<KnowledgeDoc['assets_on_page']>;
+  activeHeading: string;
   onTab: (tab: string) => void; onOpenDoc: (id: number) => void; onJump: (text: string) => void;
   onRefresh: () => void;
 }) {
@@ -879,8 +923,31 @@ function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJu
     catch (e) { toast.error(errDetail(e) || t('govern.detail.verifyFailed')); }
     finally { setVerifyBusy(false); }
   };
+  // Sticky + independently scrollable so the reading aids stay in view as the
+  // article scrolls; "On this page" comes FIRST (it's the reading aid), with the
+  // section you're reading highlighted (scroll-spy).
   return (
-    <aside className="hidden w-72 shrink-0 flex-col gap-4 lg:flex xl:w-80">
+    <aside className="sticky top-0 hidden max-h-[calc(100vh-4.5rem)] w-72 shrink-0 flex-col gap-4 self-start overflow-y-auto pb-2 lg:flex xl:w-80 [scrollbar-gutter:stable]">
+      {toc.length > 1 && (
+        <RailCard title="Mục trên trang" icon={<List className="h-3.5 w-3.5" />}>
+          <nav className="space-y-0.5">
+            {toc.map((h, i) => {
+              const active = !!activeHeading && h.text === activeHeading;
+              return (
+                <button key={i} onClick={() => onJump(h.text)} aria-current={active ? 'true' : undefined}
+                  className={cn(
+                    'block w-full truncate rounded border-l-2 px-2 py-1 text-left text-caption transition-colors',
+                    active ? 'border-brand bg-brand/5 font-emphasis text-brand' : 'border-transparent text-text-secondary hover:bg-surface-2 hover:text-brand',
+                    h.level === 3 && 'pl-4 text-tiny',
+                  )}>
+                  {h.text}
+                </button>
+              );
+            })}
+          </nav>
+        </RailCard>
+      )}
+
       <AiContextCard doc={doc} onRefresh={onRefresh} />
 
       <RailCard title="Thông tin">
@@ -903,19 +970,6 @@ function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJu
           {t('govern.detail.verify')}
         </Button>
       </RailCard>
-
-      {toc.length > 1 && (
-        <RailCard title="Mục trên trang">
-          <nav className="space-y-0.5">
-            {toc.map((h, i) => (
-              <button key={i} onClick={() => onJump(h.text)}
-                className={cn('block w-full truncate rounded px-2 py-1 text-left text-caption text-text-secondary transition-colors hover:bg-surface-2 hover:text-brand', h.level === 3 && 'pl-4 text-tiny')}>
-                {h.text}
-              </button>
-            ))}
-          </nav>
-        </RailCard>
-      )}
 
       {(metrics.length > 0 || assets.length > 0) && (
         <div className="space-y-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
