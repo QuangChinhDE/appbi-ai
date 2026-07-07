@@ -542,10 +542,58 @@ class GovernanceService:
             "status": d.status, "version": d.version, "pinned": bool(d.pinned),
             "owner": d.owner, "provider": d.provider or "user",
             "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+            # Knowledge Hub metadata + AI section + usage telemetry
+            "business_domain": d.business_domain, "process_ref": d.process_ref,
+            "review_date": d.review_date.isoformat() if d.review_date else None,
+            "last_verified_at": d.last_verified_at.isoformat() if d.last_verified_at else None,
+            "importance": d.importance or "normal",
+            "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or [],
+            "view_count": int(d.view_count or 0),
+            "retrieval_count": int(d.retrieval_count or 0),
         }
         if include_body:
             out["body"] = d.body or ""
         return out
+
+    # ── AI-ready score (deterministic — no LLM) ─────────────────────────────
+    # A document is "AI ready" when it carries everything the RAG/bot pipeline
+    # and a new reader need. Each miss returns a machine key the FE turns into
+    # a concrete suggestion.
+    @staticmethod
+    def _ai_ready(d: GovernKnowledgeDoc, has_chunks: bool) -> dict[str, Any]:
+        import re as _re
+        from datetime import date, datetime, timedelta
+
+        body = d.body or ""
+        checks: list[tuple[str, int, bool]] = [
+            ("summary", 15, bool((d.summary or "").strip() or (d.ai_summary or "").strip())),
+            ("tags", 10, bool(d.tags)),
+            ("owner", 10, bool((d.owner or "").strip())),
+            ("headings", 15, len(_re.findall(r"^#{1,3}\s", body, _re.M)) >= 2),
+            ("links", 15, bool(_re.search(r"\{\{(metric|dashboard|dataset|term):[^}]+\}\}", body))),
+            ("context", 10, bool((d.business_domain or "").strip() or (d.process_ref or "").strip())),
+            ("review", 10, bool(
+                (d.review_date and d.review_date >= date.today())
+                or (d.last_verified_at and d.last_verified_at >= datetime.utcnow() - timedelta(days=90))
+            )),
+            ("embedded", 15, has_chunks),
+        ]
+        score = sum(w for _, w, ok in checks if ok)
+        return {"score": score, "missing": [k for k, _, ok in checks if not ok]}
+
+    @staticmethod
+    def _chunked_doc_ids(db: Session, doc_ids: list[int]) -> set[int]:
+        """Doc ids that have RAG chunk embeddings (raw table; best-effort)."""
+        if not doc_ids:
+            return set()
+        try:
+            rows = db.execute(
+                sa_text("SELECT DISTINCT doc_id FROM govern_doc_chunk WHERE doc_id = ANY(:ids) AND embedding IS NOT NULL"),
+                {"ids": doc_ids},
+            ).fetchall()
+            return {r[0] for r in rows}
+        except Exception:  # noqa: BLE001 — table may not exist pre-migration
+            return set()
 
     @staticmethod
     def list_knowledge_docs(
@@ -560,7 +608,13 @@ class GovernanceService:
         rows = q.order_by(
             GovernKnowledgeDoc.space, GovernKnowledgeDoc.position, GovernKnowledgeDoc.title
         ).all()
-        return [GovernanceService._doc_dict(d, include_body=False) for d in rows]
+        chunked = GovernanceService._chunked_doc_ids(db, [d.id for d in rows])
+        out = []
+        for d in rows:
+            item = GovernanceService._doc_dict(d, include_body=False)
+            item["ai_ready"] = GovernanceService._ai_ready(d, d.id in chunked)
+            out.append(item)
+        return out
 
     @staticmethod
     def knowledge_spaces(db: Session) -> list[dict[str, Any]]:
@@ -595,14 +649,23 @@ class GovernanceService:
         out["assets_on_page"] = [
             GovernanceService.resolve_asset(db, t, r) for (t, r) in sorted(asset_tokens_in(d.body))
         ]
-        # Related docs: OTHER docs that share ≥1 governed metric with this one —
-        # either co-using a metric, or reusing a metric this doc DEFINES. Lets a
-        # reader see, on open, the web of documents connected through metrics.
+        # Related docs — the knowledge-graph neighborhood. A doc is related when
+        # it shares: a governed metric (co-use or reuse of one this doc defines),
+        # a linked dashboard/dataset, or ≥2 tags. Each entry carries WHICH
+        # signals connect them so the reader sees the reason.
         try:
+            related: dict[int, dict[str, Any]] = {}
+
+            def entry(od: GovernKnowledgeDoc) -> dict[str, Any]:
+                return related.setdefault(od.id, {
+                    "id": od.id, "title": od.title, "space": od.space,
+                    "shared_metrics": [], "shared_dashboards": [], "shared_datasets": [], "shared_tags": [],
+                })
+
+            # 1) shared governed metrics
             used_ids = {u.metric_id for u in db.query(GovernMetricUsage.metric_id).filter(GovernMetricUsage.doc_id == d.id).all()}
             homed_ids = {m.id for m in db.query(GovernMetric.id).filter(GovernMetric.home_doc_id == d.id).all()}
             rel_ids = used_ids | homed_ids
-            related: dict[int, dict[str, Any]] = {}
             if rel_ids:
                 mname = {m.id: m.display_name for m in db.query(GovernMetric).filter(GovernMetric.id.in_(rel_ids)).all()}
                 usages = (
@@ -618,14 +681,67 @@ class GovernanceService:
                     od = docmap.get(u.doc_id)
                     if od is None:
                         continue
-                    e = related.setdefault(od.id, {"id": od.id, "title": od.title, "space": od.space, "shared_metrics": []})
                     nm = mname.get(u.metric_id)
+                    e = entry(od)
                     if nm and nm not in e["shared_metrics"]:
                         e["shared_metrics"].append(nm)
-            out["related_docs"] = sorted(related.values(), key=lambda r: -len(r["shared_metrics"]))
+
+            # 2) shared dashboards / datasets (via asset links)
+            my_links = db.query(GovernDocAssetLink).filter(
+                GovernDocAssetLink.doc_id == d.id,
+                GovernDocAssetLink.asset_type.in_(["dashboard", "dataset"]),
+            ).all()
+            if my_links:
+                keys = {(l.asset_type, l.asset_ref) for l in my_links}
+                others = db.query(GovernDocAssetLink).filter(
+                    GovernDocAssetLink.asset_type.in_(["dashboard", "dataset"]),
+                    GovernDocAssetLink.doc_id != d.id,
+                ).all()
+                match = [l for l in others if (l.asset_type, l.asset_ref) in keys]
+                oids = {l.doc_id for l in match}
+                docmap2 = {
+                    x.id: x for x in db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id.in_(oids)).all()
+                } if oids else {}
+                for l in match:
+                    od = docmap2.get(l.doc_id)
+                    if od is None:
+                        continue
+                    a = GovernanceService.resolve_asset(db, l.asset_type, l.asset_ref)
+                    label = (a or {}).get("name") or l.asset_ref
+                    e = entry(od)
+                    bucket = e["shared_dashboards"] if l.asset_type == "dashboard" else e["shared_datasets"]
+                    if label not in bucket:
+                        bucket.append(label)
+
+            # 3) ≥2 shared tags
+            my_tags = set(d.tags or [])
+            if len(my_tags) >= 2:
+                for od in db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id != d.id).all():
+                    common = my_tags & set(od.tags or [])
+                    if len(common) >= 2:
+                        e = entry(od)
+                        e["shared_tags"] = sorted(common)
+
+            def weight(r: dict[str, Any]) -> int:
+                return len(r["shared_metrics"]) * 3 + len(r["shared_dashboards"]) * 2 + len(r["shared_datasets"]) * 2 + (1 if r["shared_tags"] else 0)
+
+            out["related_docs"] = sorted(related.values(), key=lambda r: -weight(r))[:8]
         except Exception:  # noqa: BLE001
             out["related_docs"] = []
+        # AI-ready score for this doc (single chunk-existence check)
+        out["ai_ready"] = GovernanceService._ai_ready(d, d.id in GovernanceService._chunked_doc_ids(db, [d.id]))
         return out
+
+    @staticmethod
+    def _parse_date(v: Any):
+        """'YYYY-MM-DD' → date | None (tolerant)."""
+        if not v:
+            return None
+        try:
+            from datetime import date
+            return date.fromisoformat(str(v)[:10])
+        except Exception:  # noqa: BLE001
+            return None
 
     @staticmethod
     def upsert_knowledge_doc(db: Session, payload: dict[str, Any], *, changed_by: str | None = None) -> dict[str, Any]:
@@ -646,6 +762,11 @@ class GovernanceService:
             status=(payload.get("status") or "Draft"),
             pinned=bool(payload.get("pinned")),
             owner=payload.get("owner"),
+            # Knowledge Hub metadata
+            business_domain=(payload.get("business_domain") or None),
+            process_ref=(payload.get("process_ref") or None),
+            review_date=GovernanceService._parse_date(payload.get("review_date")),
+            importance=(payload.get("importance") or "normal"),
         )
         if doc_id:  # EDIT — bump version
             d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == int(doc_id)).first()
@@ -687,6 +808,12 @@ class GovernanceService:
             embed_doc(db, d)
         except Exception:  # noqa: BLE001
             db.rollback()
+        # AI summary + keywords (hash-gated the same way; user-editable output).
+        try:
+            from app.services.dashboard_ai_bot.govern_ai_summary import generate_summary
+            generate_summary(db, d)
+        except Exception:  # noqa: BLE001
+            db.rollback()
         return {"ok": True, "id": d.id, "version": d.version, "slug": d.slug}
 
     @staticmethod
@@ -717,6 +844,114 @@ class GovernanceService:
         db.commit()
         GovernanceService.log_change(db, "knowledge", str(doc_id), "delete", summary=f"xoá trang '{title}'", changed_by=changed_by)
         return {"ok": True}
+
+    @staticmethod
+    def verify_knowledge_doc(db: Session, doc_id: int, *, changed_by: str | None = None) -> dict[str, Any]:
+        """Owner attests the doc is still correct → refreshes the review clock."""
+        from datetime import datetime
+        d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        if d is None:
+            raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+        d.last_verified_at = datetime.utcnow()
+        GovernanceService._commit(db)
+        GovernanceService.log_change(db, "knowledge", d.slug or str(d.id), "verify",
+                                     summary=f"kiểm chứng trang '{d.title}'", changed_by=changed_by)
+        return {"ok": True, "last_verified_at": d.last_verified_at.isoformat()}
+
+    @staticmethod
+    def knowledge_insights(db: Session) -> dict[str, Any]:
+        """Knowledge-health lists for managers — all computable from data on hand."""
+        from datetime import date
+        docs = db.query(GovernKnowledgeDoc).all()
+        chunked = GovernanceService._chunked_doc_ids(db, [d.id for d in docs])
+
+        def ref(d: GovernKnowledgeDoc) -> dict[str, Any]:
+            return {"id": d.id, "title": d.title}
+
+        out: dict[str, Any] = {
+            "no_owner": [ref(d) for d in docs if not (d.owner or "").strip()][:8],
+            "no_summary": [ref(d) for d in docs if not ((d.summary or "").strip() or (d.ai_summary or "").strip())][:8],
+            "no_tags": [ref(d) for d in docs if not d.tags][:8],
+            "stale_review": [ref(d) for d in docs if d.review_date and d.review_date < date.today()][:8],
+            "not_embedded": [ref(d) for d in docs if d.id not in chunked][:8],
+            "most_viewed": [
+                {**ref(d), "count": int(d.view_count or 0)}
+                for d in sorted(docs, key=lambda x: -(x.view_count or 0)) if (d.view_count or 0) > 0
+            ][:8],
+            "most_retrieved": [
+                {**ref(d), "count": int(d.retrieval_count or 0)}
+                for d in sorted(docs, key=lambda x: -(x.retrieval_count or 0)) if (d.retrieval_count or 0) > 0
+            ][:8],
+        }
+        return out
+
+    @staticmethod
+    def govern_search(db: Session, q: str) -> dict[str, Any]:
+        """Search-everything inside the Knowledge Hub: documents + governed KPIs +
+        business terms + dashboards + datasets, grouped (≤5 per group). Keyword
+        first; documents also get a semantic top-up from RAG chunks when
+        embeddings are available (best-effort)."""
+        ql = (q or "").strip().lower()
+        out: dict[str, Any] = {"documents": [], "metrics": [], "terms": [], "dashboards": [], "datasets": []}
+        if not ql:
+            return out
+
+        def hit(*parts: Any) -> bool:
+            return any(ql in str(p or "").lower() for p in parts)
+
+        # Documents — keyword over title/summary/tags/keywords
+        docs = db.query(GovernKnowledgeDoc).all()
+        seen: set[int] = set()
+        for d in docs:
+            if hit(d.title, d.summary, d.ai_summary, " ".join(d.tags or []), " ".join(d.ai_keywords or [])):
+                out["documents"].append({"id": d.id, "name": d.title, "subtitle": d.space})
+                seen.add(d.id)
+            if len(out["documents"]) >= 5:
+                break
+        # Semantic top-up from chunk embeddings (skip silently when unavailable)
+        if len(out["documents"]) < 5:
+            try:
+                from app.services.embedding_service import EmbeddingService
+                qvec = EmbeddingService.generate_query_embedding(q) if EmbeddingService else None
+                if qvec is not None:
+                    rows = db.execute(
+                        sa_text(
+                            "SELECT c.doc_id, d.title, d.space FROM govern_doc_chunk c "
+                            "JOIN govern_knowledge_docs d ON d.id = c.doc_id "
+                            "WHERE c.embedding IS NOT NULL "
+                            f"ORDER BY c.embedding <=> '{qvec}'::vector LIMIT 6"
+                        )
+                    ).fetchall()
+                    for r in rows:
+                        if r[0] not in seen and len(out["documents"]) < 5:
+                            out["documents"].append({"id": r[0], "name": r[1], "subtitle": r[2]})
+                            seen.add(r[0])
+            except Exception:  # noqa: BLE001
+                pass
+
+        for m in db.query(GovernMetric).all():
+            if hit(m.display_name, m.definition, " ".join(m.synonyms or [])):
+                out["metrics"].append({"id": m.name, "name": m.display_name, "subtitle": m.definition or ""})
+            if len(out["metrics"]) >= 5:
+                break
+        for term in db.query(GlossaryTerm).all():
+            if hit(term.display_name, term.description, " ".join(term.synonyms or [])):
+                out["terms"].append({"id": term.fqn, "name": term.display_name, "subtitle": term.description or ""})
+            if len(out["terms"]) >= 5:
+                break
+        try:
+            from app.models.models import Dashboard
+            for dash in db.query(Dashboard).filter(Dashboard.name.ilike(f"%{q}%")).limit(5).all():
+                out["dashboards"].append({"id": dash.id, "name": dash.name, "subtitle": "", "open_path": f"/dashboards/{dash.id}"})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.models.dataset import Dataset
+            for ds in db.query(Dataset).filter(Dataset.name.ilike(f"%{q}%")).limit(5).all():
+                out["datasets"].append({"id": ds.id, "name": ds.name, "subtitle": "", "open_path": f"/datasets/{ds.id}"})
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
     @staticmethod
     def list_doc_versions(db: Session, doc_id: int) -> list[dict[str, Any]]:

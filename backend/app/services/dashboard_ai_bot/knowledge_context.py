@@ -317,7 +317,8 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                 if docs:
                     lines.append("• Tài liệu nghiệp vụ mô tả báo cáo này (Cẩm nang tri thức):")
                     for d in docs[:8]:
-                        raw = d.summary or re.sub(r"\{\{[^}]+\}\}", "", d.body or "")
+                        # blurb preference: human summary → AI summary → stripped body
+                        raw = d.summary or getattr(d, "ai_summary", None) or re.sub(r"\{\{[^}]+\}\}", "", d.body or "")
                         blurb = re.sub(r"[#>*`\n]+", " ", raw).strip()[:220]
                         lines.append(f"   - {d.title}: {blurb}")
     except Exception:  # noqa: BLE001

@@ -245,6 +245,11 @@ class KnowledgeDocWrite(BaseModel):
     pinned: bool | None = False
     owner: str | None = None
     change_note: str | None = None        # optional note recorded on the version snapshot
+    # Knowledge Hub metadata (AI-readable node + review workflow)
+    business_domain: str | None = None
+    process_ref: str | None = None
+    review_date: str | None = None        # "YYYY-MM-DD"
+    importance: str | None = None         # low|normal|high
 
 
 @router.get("/govern/knowledge")
@@ -260,12 +265,55 @@ def govern_knowledge_list(
     }
 
 
+@router.get("/govern/knowledge/insights")
+def govern_knowledge_insights(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Knowledge-health lists (missing owner/summary/tags, stale review, not
+    embedded) + most viewed / most retrieved — for knowledge managers."""
+    return GovernanceService.knowledge_insights(db)
+
+
+@router.get("/govern/search")
+def govern_search_everything(
+    q: str = Query(default=""), db: Session = Depends(get_db), _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Search everything inside the Knowledge Hub — documents, governed KPIs,
+    business terms, dashboards, datasets — grouped results."""
+    return GovernanceService.govern_search(db, q)
+
+
 @router.get("/govern/knowledge/{doc_id}")
 def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
     d = GovernanceService.get_knowledge_doc(db, doc_id)
     if d is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    # Usage telemetry (fire-and-forget): the doc was opened for reading.
+    try:
+        from sqlalchemy import text as _t
+        db.execute(_t("UPDATE govern_knowledge_docs SET view_count = COALESCE(view_count,0) + 1, last_viewed_at = NOW() WHERE id = :i"), {"i": doc_id})
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
     return d
+
+
+@router.post("/govern/knowledge/{doc_id}/verify")
+def govern_knowledge_verify(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Owner attests the document is still correct → refreshes the review clock."""
+    return _run(lambda: GovernanceService.verify_knowledge_doc(db, doc_id, changed_by=getattr(user, "email", None)))
+
+
+@router.post("/govern/knowledge/{doc_id}/ai-summary")
+def govern_knowledge_ai_summary(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Force-regenerate the AI summary/keywords for a document."""
+    from app.models.governance import GovernKnowledgeDoc
+    from app.services.dashboard_ai_bot.govern_ai_summary import generate_summary
+    d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    status = generate_summary(db, d, force=True)
+    if status not in ("generated", "unchanged"):
+        raise HTTPException(status_code=503, detail=f"AI chưa sinh được tóm tắt ({status}). Kiểm tra khoá AI.")
+    return {"ok": True, "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or []}
 
 
 @router.put("/govern/knowledge")

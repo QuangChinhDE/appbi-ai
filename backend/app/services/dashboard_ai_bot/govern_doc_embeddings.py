@@ -178,7 +178,20 @@ def retrieve_doc_chunks(db: Session, dashboard_id: int, question: str = "", k: i
             ),
             {"did": str(dashboard_id), "k": k},
         ).fetchall()
-        return [{"doc_id": r[0], "title": r[1], "content": r[2], "similarity": float(r[3])} for r in rows]
+        out = [{"doc_id": r[0], "title": r[1], "content": r[2], "similarity": float(r[3])} for r in rows]
+        # Usage telemetry: these docs were just pulled into an AI answer.
+        # Best-effort — analytics must never break retrieval.
+        try:
+            ids = sorted({r["doc_id"] for r in out})
+            if ids:
+                db.execute(
+                    text("UPDATE govern_knowledge_docs SET retrieval_count = COALESCE(retrieval_count,0) + 1 WHERE id = ANY(:ids)"),
+                    {"ids": ids},
+                )
+                db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+        return out
     except Exception:  # noqa: BLE001
         logger.warning("govern_doc_embeddings.retrieve_doc_chunks failed", exc_info=True)
         return []

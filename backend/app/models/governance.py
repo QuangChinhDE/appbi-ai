@@ -8,6 +8,7 @@ references already stored on measures (semantic_views.measures) keep resolving.
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -160,6 +161,20 @@ class GovernKnowledgeDoc(Base):
     # sha256(body)+embedding-model of the last body embedded into govern_doc_chunk;
     # lets a re-save with unchanged body skip embedding entirely (no wasted tokens).
     embedded_hash = Column(String(80), nullable=True)
+    # ── Knowledge Hub metadata (AI-readable node, review workflow) ─────────
+    business_domain = Column(String(120), nullable=True)   # e.g. "Bán hàng", "Vận hành"
+    process_ref = Column(String(160), nullable=True)       # business process this doc serves
+    review_date = Column(Date, nullable=True)              # next scheduled review
+    last_verified_at = Column(DateTime, nullable=True)     # owner pressed "verified"
+    importance = Column(String(12), nullable=False, default="normal")  # low|normal|high
+    # ── AI section: generated on save (hash-gated), user-editable ──────────
+    ai_summary = Column(Text, nullable=True)
+    ai_keywords = Column(JSON, nullable=True)              # [str]
+    ai_summary_hash = Column(String(80), nullable=True)    # sha256(model\nbody) of last gen
+    # ── usage telemetry (most viewed / most retrieved insights) ────────────
+    view_count = Column(Integer, nullable=False, default=0)
+    last_viewed_at = Column(DateTime, nullable=True)
+    retrieval_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
