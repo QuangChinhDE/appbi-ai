@@ -115,6 +115,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'duration', label: 'Khoảng thời gian' },
   { value: 'color', label: 'Màu sắc' },
   { value: 'video', label: 'Video (clip ngắn)' },
+  { value: 'qr', label: 'Mã QR (hiển thị / in tem)' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -390,6 +391,7 @@ export default function FormScreenEditor({
             tables={tables}
             pageOptions={pages}
             sectionOptions={sections}
+            allScreens={allScreens}
             onChange={(patch) => updateField(activeFieldIndex, patch)}
           />
         </BuilderInspectorPanel>
@@ -1106,6 +1108,7 @@ function FieldInspector({
   tables,
   pageOptions,
   sectionOptions,
+  allScreens,
   onChange,
 }: {
   field: FormFieldSpec;
@@ -1113,6 +1116,7 @@ function FieldInspector({
   tables: DatasetTableInfo[];
   pageOptions: FormPage[];
   sectionOptions: string[];
+  allScreens: ScreenSpec[];
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
   const sectionValue = field.section || '';
@@ -1264,6 +1268,8 @@ function FieldInspector({
         field.widget === 'rating' ||
         field.widget === 'slider' ||
         field.widget === 'currency' ||
+        field.widget === 'qr' ||
+        field.widget === 'barcode' ||
         field.widget === 'enum_list') && (
         <CollapsibleGroup title="Cấu hình widget">
           {field.widget === 'rating' && (
@@ -1400,6 +1406,76 @@ function FieldInspector({
           )}
           {field.widget === 'status' && (
             <StatusStatesEditor field={field} onChange={onChange} />
+          )}
+          {field.widget === 'qr' && (
+            <div className="space-y-2">
+              <Lbl label="Cột nguồn (giá trị mã hoá vào QR)">
+                <SingleColumnPicker
+                  sourceColumns={tableCols.map((c) => c.name)}
+                  value={field.qr_source_column || field.column}
+                  onChange={(next) => onChange({ qr_source_column: next || null })}
+                  clearable
+                />
+              </Lbl>
+              <Lbl label="Hoặc mẫu giá trị (ưu tiên) — {{app_url}}, [cột]">
+                <input
+                  value={field.qr_value_template || ''}
+                  onChange={(e) => onChange({ qr_value_template: e.target.value || null })}
+                  className={INPUT}
+                  placeholder="{{app_url}}?screen=capnhat_giao&don_hang_id=[don_hang_id]"
+                />
+              </Lbl>
+              <div className={BUILDER_GRID_2}>
+                <Lbl label="Kích thước (px)">
+                  <input
+                    type="number"
+                    min={48}
+                    max={1024}
+                    value={field.qr_size ?? 160}
+                    onChange={(e) => onChange({ qr_size: Number(e.target.value) || 160 })}
+                    className={INPUT}
+                  />
+                </Lbl>
+                <Lbl label="Chú thích dưới mã">
+                  <input
+                    value={field.qr_caption || ''}
+                    onChange={(e) => onChange({ qr_caption: e.target.value || null })}
+                    className={INPUT}
+                  />
+                </Lbl>
+              </div>
+            </div>
+          )}
+          {field.widget === 'barcode' && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">
+                Sau khi quét được mã, tự chuyển sang màn hình sau (để mở form cập nhật đã điền sẵn).
+              </p>
+              <Lbl label="Quét xong mở màn hình">
+                <select
+                  value={field.scan_go_to_screen || ''}
+                  onChange={(e) => onChange({ scan_go_to_screen: e.target.value || null })}
+                  className={INPUT}
+                >
+                  <option value="">— Không chuyển (chỉ lưu mã) —</option>
+                  {allScreens.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.title || s.id}
+                    </option>
+                  ))}
+                </select>
+              </Lbl>
+              {field.scan_go_to_screen && (
+                <Lbl label="Mang mã sang cột (ở màn hình đích)">
+                  <input
+                    value={field.scan_carry_as || ''}
+                    onChange={(e) => onChange({ scan_carry_as: e.target.value || null })}
+                    className={INPUT}
+                    placeholder={field.column}
+                  />
+                </Lbl>
+              )}
+            </div>
           )}
         </CollapsibleGroup>
       )}
@@ -1970,6 +2046,40 @@ function StatusStatesEditor({
           placeholder="vd: admin, quan_doc"
         />
       </Lbl>
+      {states.length > 0 && (
+        <div className="space-y-1.5 border-t border-[rgb(var(--border-line))] pt-2">
+          <div className="text-caption font-emphasis text-text-secondary">
+            Luồng chuyển hợp lệ (bỏ trống = cho chuyển tự do; máy chủ chặn bước sai)
+          </div>
+          {states.map((s) => {
+            const from = s.value;
+            const nexts = (cfg.allowed_transitions || {})[from] || [];
+            return (
+              <div key={from || Math.random()} className="flex items-center gap-2">
+                <span className="w-28 shrink-0 truncate text-xs text-text-secondary" title={from}>
+                  {s.label || from || '—'} →
+                </span>
+                <input
+                  value={nexts.join(', ')}
+                  onChange={(event) => {
+                    const list = event.target.value
+                      .split(',')
+                      .map((v) => v.trim())
+                      .filter(Boolean);
+                    const map = { ...(cfg.allowed_transitions || {}) };
+                    if (list.length) map[from] = list;
+                    else delete map[from];
+                    setCfg({ allowed_transitions: map });
+                  }}
+                  className={INPUT}
+                  placeholder="giá trị được phép chuyển tới (vd: dang_giao, huy)"
+                  disabled={!from}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

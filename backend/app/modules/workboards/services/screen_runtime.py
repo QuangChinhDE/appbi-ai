@@ -342,10 +342,12 @@ def _build_substitution_map(
     workboard: Workboard,
     *,
     app_user: Optional[Dict[str, Any]] = None,
+    shared: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     return {
         "app_user": dict(app_user or {}),
+        "shared": dict(shared or {}),
         "now": now.isoformat(),
         "today": now.date().isoformat(),
         "workboard": {"id": workboard.id, "name": workboard.name},
@@ -715,9 +717,10 @@ def _apply_field_conditions(
             # Field lives on a skipped page — drop any stale value, never require.
             cleaned.pop(col, None)
             continue
-        if getattr(field, "readonly", False):
-            # Static readonly fields are display-only. Drop submitted values so
-            # callers cannot override system columns such as generated PKs.
+        if getattr(field, "readonly", False) or getattr(field, "widget", None) == "qr":
+            # Static readonly fields — and the display-only `qr` widget — are
+            # never written. Drop submitted values so callers cannot override
+            # system columns such as generated PKs (or the QR's source column).
             cleaned.pop(col, None)
             continue
         if getattr(field, "widget", None) in _MEDIA_WIDGETS:
@@ -829,6 +832,90 @@ def _apply_field_conditions(
             detail={"message": "Validation failed", "violations": violations},
         )
     return cleaned
+
+
+def _status_fields(screen: Screen) -> List[Any]:
+    """Form fields with widget='status' that carry a StatusConfig."""
+    if screen.form is None:
+        return []
+    return [
+        f
+        for f in screen.form.fields
+        if getattr(f, "widget", None) == "status" and getattr(f, "status_config", None)
+    ]
+
+
+def _fetch_current_row(
+    db: Session, workboard: Workboard, screen: Screen, pk: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Load the row targeted by ``pk`` on the screen's table (pre-update
+    snapshot) so status-transition rules can compare previous -> new."""
+    if not pk or screen.table_id is None:
+        return None
+    table = _load_table(db, screen.table_id)
+    datasource = _load_datasource(db, table) if table else None
+    if not table or not datasource:
+        return None
+    filters = [{"field": k, "operator": "eq", "value": v} for k, v in pk.items()]
+    result = LiveQueryService.execute_preview_query(
+        datasource, table, limit=1, offset=0, filters=filters
+    )
+    rows = result.get("rows") or []
+    return rows[0] if rows else None
+
+
+def _enforce_status_rules(
+    status_fields: List[Any],
+    values: Dict[str, Any],
+    identity: CallerIdentity,
+    *,
+    previous_row: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Server-side status lifecycle guard.
+
+    The FE ``editable_by_roles`` gate is advisory only (bypassable via a
+    crafted API call), so re-check it here, plus the new ``allowed_transitions``
+    map. For each status field actually being written:
+      * ``editable_by_roles`` — the caller's role must be allowed to change it.
+      * ``allowed_transitions`` — the previous->new pair must be permitted
+        (only checked on update, where a previous value exists).
+    AppBI staff and the ``owner`` role bypass (same contract as RLS).
+    """
+    if not status_fields:
+        return
+    if not identity.is_app_user or is_owner_role(identity.role):
+        return
+    role = (identity.role or "").strip().lower()
+    for field in status_fields:
+        col = field.column
+        if col not in values:
+            continue  # not being written (e.g. RLS writable_columns stripped it)
+        new_s = "" if values.get(col) is None else str(values.get(col))
+        prev_raw = previous_row.get(col) if previous_row else None
+        prev_s = "" if prev_raw is None else str(prev_raw)
+        if previous_row is not None and new_s == prev_s:
+            continue  # unchanged — never blocked
+        cfg = field.status_config
+        editable_roles = [r.strip().lower() for r in (cfg.editable_by_roles or [])]
+        if editable_roles and role not in editable_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Vai trò của bạn không được phép đổi trạng thái '{field.label or col}'.",
+            )
+        transitions = cfg.allowed_transitions or {}
+        if transitions and previous_row is not None and prev_s:
+            allowed = transitions.get(prev_s)
+            if allowed is not None:
+                allowed_s = [str(x) for x in allowed]
+                if new_s not in allowed_s:
+                    nice = ", ".join(allowed_s) if allowed_s else "(trạng thái kết thúc)"
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"Không thể chuyển '{field.label or col}' từ '{prev_s}' "
+                            f"sang '{new_s}'. Cho phép: {nice}."
+                        ),
+                    )
 
 
 def _resolve_initial_values(
@@ -1005,6 +1092,9 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    if screen.kind == "form":
+        # Value-level status guard on top of RLS column masking (insert = no prev).
+        _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
     # Idempotency: claim the op_id BEFORE the data write (same transaction). A
     # replayed offline submit — or one whose success response was lost — hits
     # the PK conflict here and is treated as already-done, so it can never be
@@ -1082,6 +1172,13 @@ def update_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
     )
+    if screen.kind == "form":
+        # Value-level status guard: compare the previous row's status to the new
+        # value so allowed_transitions + editable_by_roles are enforced server-side.
+        _sf = _status_fields(screen)
+        if _sf:
+            _prev = _fetch_current_row(db, workboard, screen, pk)
+            _enforce_status_rules(_sf, cleaned, identity, previous_row=_prev)
 
     # Make sure the targeted row passes RLS before touching it.
     rls_filters, allowed = build_rls_filter(
@@ -2030,11 +2127,14 @@ def render_doc_screen(
     *,
     identity: CallerIdentity,
     app_user_payload: Optional[Dict[str, Any]] = None,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if screen.kind != "doc" or screen.doc is None:
         raise HTTPException(status_code=400, detail="Screen is not a doc.")
 
-    substitution = _build_substitution_map(workboard, app_user=app_user_payload)
+    substitution = _build_substitution_map(
+        workboard, app_user=app_user_payload, shared=shared_context
+    )
     rendered_blocks: List[Dict[str, Any]] = []
     screen_column_labels = screen.column_labels or {}
     for block in screen.doc.blocks:

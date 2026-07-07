@@ -117,6 +117,17 @@ class StatusConfig(BaseModel):
         default_factory=list,
         description="Roles allowed to change the status. Empty = anyone who can write the row.",
     )
+    allowed_transitions: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Optional lifecycle guard: from-value -> allowed to-values. When set, the "
+            "SERVER blocks any status change whose (previous -> new) pair is not listed "
+            "(an empty list for a value = terminal state). A value absent from the map "
+            "is unconstrained. Because status_config is per-field-per-screen, giving a "
+            "role its own screen with a narrower map yields per-role transitions "
+            "(e.g. the driver's form omits '-> Huỷ', the manager's form allows it)."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -156,6 +167,7 @@ class FormField(BaseModel):
         "duration",   # h/m -> total minutes (number)
         "color",      # color picker -> hex string
         "video",      # short capture/upload -> data:video data URL
+        "qr",         # display-only: render a QR from a column value / template (print label)
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -253,6 +265,33 @@ class FormField(BaseModel):
     max_select: Optional[int] = Field(
         default=None, ge=1, le=50,
         description="widget=enum_list: max number of selected chips.",
+    )
+    # ── QR display (widget='qr') — renders a QR image, never writes the column ──
+    qr_source_column: Optional[str] = Field(
+        default=None,
+        description="widget=qr: column whose current value is encoded. Defaults to this field's own `column`.",
+    )
+    qr_value_template: Optional[str] = Field(
+        default=None, max_length=1000,
+        description=(
+            "widget=qr: a template encoded instead of a single column, with [other_column] "
+            "placeholders (e.g. a deep-link URL). Takes precedence over qr_source_column."
+        ),
+    )
+    qr_size: Optional[int] = Field(
+        default=None, ge=48, le=1024, description="widget=qr: rendered size in px (default 160).",
+    )
+    qr_caption: Optional[str] = Field(
+        default=None, max_length=200, description="widget=qr: text printed under the code.",
+    )
+    # ── Scan -> navigate (widget='barcode') — jump to a screen carrying the code ─
+    scan_go_to_screen: Optional[str] = Field(
+        default=None,
+        description="widget=barcode: on a successful scan, navigate to this screen id (in-app scan-to-form).",
+    )
+    scan_carry_as: Optional[str] = Field(
+        default=None, max_length=255,
+        description="widget=barcode: column name the scanned value is carried under to scan_go_to_screen (default = this field's column).",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -489,6 +528,23 @@ class FooterBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class QrCodeBlock(BaseModel):
+    """A QR code rendered on a printable doc (e.g. a shipping label).
+
+    ``value`` is the string encoded — a static code or a placeholder such as
+    ``{{shared.ma_don}}`` / ``{{app_user.username}}`` resolved server-side at
+    render time. Pair it with a HeaderBlock/KvGridBlock to build a full label.
+    """
+
+    type: Literal["qr_code"]
+    value: str = ""
+    size: int = Field(default=180, ge=48, le=1024)
+    caption: Optional[str] = Field(default=None, max_length=200)
+    align: Literal["left", "center", "right"] = "center"
+
+    model_config = ConfigDict(extra="forbid")
+
+
 DocBlock = Union[
     HeaderBlock,
     KvGridBlock,
@@ -497,6 +553,7 @@ DocBlock = Union[
     SpacerBlock,
     SignatureBlock,
     FooterBlock,
+    QrCodeBlock,
 ]
 
 
@@ -831,7 +888,7 @@ class TableColumnMeta(BaseModel):
     label: Optional[str] = Field(default=None, max_length=200)
     width_px: Optional[int] = Field(default=None, ge=1, le=2000)
     format: Optional[Literal[
-        "text", "number", "integer", "currency", "percent", "date", "datetime"
+        "text", "number", "integer", "currency", "percent", "date", "datetime", "qr"
     ]] = None
     align: Optional[Literal["left", "center", "right"]] = None
     merge: Optional[bool] = None

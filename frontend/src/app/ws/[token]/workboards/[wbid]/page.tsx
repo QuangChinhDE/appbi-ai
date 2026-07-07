@@ -16,6 +16,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { QRCodeSVG } from 'qrcode.react';
 // Leaflet base stylesheet for the `map` form widget. Side-effect import (the
 // standard way to load Leaflet CSS under webpack) — dynamic import() of a CSS
 // path does not reliably inject styles and breaks TS module resolution.
@@ -38,6 +39,7 @@ import {
   Mic,
   MoreHorizontal,
   Plus,
+  Printer,
   RefreshCw,
   ScanLine,
   Send,
@@ -236,17 +238,35 @@ export default function WorkspaceWorkboardPage() {
           .catch(() => {
             if (alive) setSiblingApps(1);
           });
-        const hashScreen = (() => {
-          if (typeof window === 'undefined') return null;
-          const m = window.location.hash.match(/screen=([\w-]+)/);
-          return m ? m[1] : null;
+        // Deep-link: read BOTH the URL query (?screen=…&col=val) and the hash
+        // (#screen=…) so a scanned QR that encodes a full URL can open a
+        // specific screen AND prefill it. Everything other than `screen`
+        // becomes prefill seed — but buildInitial() only keeps keys that are
+        // real fields/PK on the destination, and RLS still governs the submit,
+        // so an attacker cannot seed protected columns.
+        const { deepScreen, seed } = (() => {
+          if (typeof window === 'undefined') return { deepScreen: null as string | null, seed: {} as Record<string, string> };
+          const out: Record<string, string> = {};
+          const collect = (qs: string) => {
+            try {
+              new URLSearchParams(qs).forEach((v, k) => { if (k && v !== '') out[k] = v; });
+            } catch { /* ignore malformed */ }
+          };
+          collect(window.location.search.replace(/^\?/, ''));
+          const hash = window.location.hash.replace(/^#/, '');
+          // hash may be "screen=x&y=z" (query-like) — parse the same way
+          collect(hash);
+          const screen = out.screen || null;
+          delete out.screen;
+          return { deepScreen: screen, seed: out };
         })();
-        // Only accept a hash-deeplink to a screen that is actually in the nav
-        // (in s.nav.items). An off-nav screen (show_in_nav=false) would render
-        // content with no matching nav entry — and would make TopTabs tier-1
-        // mis-highlight the first workspace — so fall through to the nav default.
-        if (hashScreen && s.nav.items.includes(hashScreen)) {
-          setActiveScreenId(hashScreen);
+        if (Object.keys(seed).length > 0) setShared((curr) => ({ ...curr, ...seed }));
+        const knownScreen = deepScreen && s.screens.some((sc) => sc.id === deepScreen);
+        // Deep-link may target an off-nav screen (e.g. a scan-only status form);
+        // the backend still enforces per-screen visibility/hidden/RLS, so accept
+        // any existing screen id here and fall back to the nav default otherwise.
+        if (knownScreen) {
+          setActiveScreenId(deepScreen as string);
         } else if (s.nav.items.length > 0) {
           setActiveScreenId(s.nav.items[0]);
         } else if (s.screens.length > 0) {
@@ -379,6 +399,17 @@ export default function WorkspaceWorkboardPage() {
       style={rootThemeStyle}
     >
       <style>{darkModeCss()}</style>
+      {/* Print isolation: when printLabel() runs it flags <body>, and only the
+          element marked .wb-print-target (a QR label / doc) stays visible. */}
+      <style>{`@media print {
+        body.wb-printing > * { visibility: hidden !important; }
+        body.wb-printing .wb-print-target,
+        body.wb-printing .wb-print-target * { visibility: visible !important; }
+        body.wb-printing .wb-print-target {
+          position: absolute !important; left: 0; top: 0; width: 100%;
+          box-shadow: none !important; border: none !important;
+        }
+      }`}</style>
       <Header
         appName={appName}
         accent={accent}
@@ -1098,6 +1129,7 @@ function ScreenContainer({
         workboardId={workboardId}
         accent={accent}
         shared={shared}
+        onNavigate={onNavigate}
         onSaved={(carry, nextScreen) => {
           if (nextScreen) onNavigate(nextScreen, carry);
           else setReloadKey((k) => k + 1);
@@ -1239,6 +1271,7 @@ function FormScreen({
   accent,
   shared,
   onSaved,
+  onNavigate,
 }: {
   spec: FormScreenResponse;
   token: string;
@@ -1246,6 +1279,7 @@ function FormScreen({
   accent: string;
   shared: Record<string, unknown>;
   onSaved: (carry: Record<string, unknown>, nextScreen?: string) => void;
+  onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
   const buildInitial = useCallback(() => {
     const merged: Record<string, unknown> = {};
@@ -1696,6 +1730,7 @@ function FormScreen({
                       value={values[col]}
                       evalCtx={evalCtx}
                       autoNumberSet={autoNumberSet}
+                      onNavigate={onNavigate}
                       onChange={(v) => {
                         setValues((curr) => ({ ...curr, [col]: v }));
                         if (isOcr)
@@ -1811,6 +1846,7 @@ function Field({
   onChange,
   evalCtx,
   autoNumberSet,
+  onNavigate,
 }: {
   field: RuntimeField;
   lookups: Record<string, LookupOption[]>;
@@ -1818,6 +1854,7 @@ function Field({
   onChange: (v: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
   autoNumberSet?: Set<string>;
+  onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
   const col = String(field.column);
   const widget = String(field.widget || 'text');
@@ -1972,7 +2009,9 @@ function Field({
       ) : widget === 'signature' ? (
         <SignatureField value={value} onChange={onChange} readonly={readonly} />
       ) : widget === 'barcode' ? (
-        <BarcodeField value={value} onChange={onChange} readonly={readonly} placeholder={placeholder} baseInput={baseInput} />
+        <BarcodeField value={value} onChange={onChange} readonly={readonly} placeholder={placeholder} baseInput={baseInput} field={field} onNavigate={onNavigate} />
+      ) : widget === 'qr' ? (
+        <QrField field={field} value={value} evalCtx={evalCtx} />
       ) : widget === 'audio' ? (
         <AudioField field={field} value={value} onChange={onChange} readonly={readonly} />
       ) : widget === 'computed' ? (
@@ -2844,6 +2883,91 @@ function SignatureField({
   );
 }
 
+// ── QR generation (widget='qr' / doc block 'qr_code') ────────────────────
+// The current mini-app base URL (origin + /ws/<token>/workboards/<wbid>). Used
+// so a QR can encode a deep-link back into THIS app without threading token/id.
+function qrAppBase(): string {
+  if (typeof window === 'undefined') return '';
+  return `${window.location.origin}${window.location.pathname}`;
+}
+
+// Resolve a QR value template: {{app_url}} -> this app's base; [column] -> a
+// value from the current row (form widget only). Non-URL codes pass through raw.
+function resolveQrTemplate(tpl: string, row?: Record<string, unknown>): string {
+  let out = tpl.replace(/\{\{\s*app_url\s*\}\}/g, qrAppBase());
+  if (row) {
+    out = out.replace(/\[([a-zA-Z0-9_]+)\]/g, (_m, col) => {
+      const v = row[col];
+      return v === undefined || v === null ? '' : String(v);
+    });
+  }
+  return out;
+}
+
+// Print the current label: hide the app chrome and print only the nearest
+// element flagged `.wb-print-target` (see the global print CSS at page root).
+function printLabel() {
+  if (typeof document === 'undefined') return;
+  const body = document.body;
+  body.classList.add('wb-printing');
+  const cleanup = () => {
+    body.classList.remove('wb-printing');
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup);
+  window.setTimeout(cleanup, 3000); // fallback if afterprint never fires
+  window.print();
+}
+
+// Display-only QR field. Encodes qr_value_template (with {{app_url}}/[col]) or
+// the value of qr_source_column (default = the field's own column).
+function QrField({
+  field,
+  value,
+  evalCtx,
+}: {
+  field: RuntimeField;
+  value: unknown;
+  evalCtx?: RuntimeEvalCtx;
+}) {
+  const size = typeof field.qr_size === 'number' ? field.qr_size : 160;
+  const caption = typeof field.qr_caption === 'string' ? field.qr_caption : '';
+  const template = typeof field.qr_value_template === 'string' ? field.qr_value_template : '';
+  const sourceCol =
+    typeof field.qr_source_column === 'string' && field.qr_source_column
+      ? field.qr_source_column
+      : String(field.column ?? '');
+  const row = (evalCtx?.row as Record<string, unknown>) || {};
+  let encoded = '';
+  if (template) {
+    encoded = resolveQrTemplate(template, row);
+  } else {
+    const raw = sourceCol in row ? row[sourceCol] : value;
+    encoded = raw === undefined || raw === null ? '' : String(raw);
+  }
+  return (
+    <div className="wb-print-target flex flex-col items-center gap-1.5 py-1">
+      {encoded ? (
+        <div className="rounded-md border border-slate-200 bg-white p-2">
+          <QRCodeSVG value={encoded} size={size} level="M" marginSize={2} />
+        </div>
+      ) : (
+        <div className="text-xs text-slate-400">Chưa có giá trị để tạo mã QR</div>
+      )}
+      {caption && <div className="text-center text-xs text-slate-600">{caption}</div>}
+      {encoded && (
+        <button
+          type="button"
+          onClick={printLabel}
+          className="print:hidden inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+        >
+          <Printer className="h-3.5 w-3.5" /> In tem
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Barcode / QR scan widget (widget='barcode') ──────────────────────────
 // Uses the native BarcodeDetector when available (Chrome/Android), always with
 // a manual-entry fallback. Value is the decoded string (tank/lot/badge code).
@@ -2853,12 +2977,16 @@ function BarcodeField({
   readonly,
   placeholder,
   baseInput,
+  field,
+  onNavigate,
 }: {
   value: unknown;
   onChange: (next: unknown) => void;
   readonly: boolean;
   placeholder: string;
   baseInput: string;
+  field?: RuntimeField;
+  onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2867,6 +2995,18 @@ function BarcodeField({
   const rafRef = useRef<number | null>(null);
   const stringValue = typeof value === 'string' ? value : '';
   const supported = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+  // Scan-to-form: when the field declares scan_go_to_screen, a decoded code
+  // navigates to that screen carrying the value (default under this column).
+  const scanTarget =
+    field && typeof field.scan_go_to_screen === 'string' && field.scan_go_to_screen
+      ? field.scan_go_to_screen
+      : null;
+  const carryAs =
+    (field && typeof field.scan_carry_as === 'string' && field.scan_carry_as
+      ? field.scan_carry_as
+      : field
+        ? String(field.column)
+        : '') || '';
 
   const stop = () => {
     setScanning(false);
@@ -2875,6 +3015,37 @@ function BarcodeField({
     streamRef.current = null;
   };
   useEffect(() => () => stop(), []);
+
+  // Route a decoded/entered code. Three cases, in order:
+  //  1) the code is a deep-link URL into this runtime (a scanned label sticker)
+  //     -> honor its screen + params, so the SAME QR works from an external
+  //     phone camera AND from an in-app scan;
+  //  2) the field declares scan_go_to_screen -> navigate carrying the value;
+  //  3) otherwise just store the code into the field.
+  const emit = (decoded: string) => {
+    const d = decoded.trim();
+    if (onNavigate && /^https?:\/\//i.test(d)) {
+      try {
+        const u = new URL(d);
+        const hashParams = new URLSearchParams(u.hash.replace(/^#/, ''));
+        const screen = u.searchParams.get('screen') || hashParams.get('screen');
+        if (screen) {
+          const carry: Record<string, unknown> = {};
+          u.searchParams.forEach((v, k) => { if (k !== 'screen') carry[k] = v; });
+          hashParams.forEach((v, k) => { if (k !== 'screen') carry[k] = v; });
+          onChange(d);
+          onNavigate(screen, carry);
+          return;
+        }
+      } catch { /* not a usable URL — fall through */ }
+    }
+    if (scanTarget && onNavigate && d) {
+      onChange(d);
+      onNavigate(scanTarget, carryAs ? { [carryAs]: d } : undefined);
+      return;
+    }
+    onChange(decoded);
+  };
 
   const scan = async () => {
     setError(null);
@@ -2893,8 +3064,9 @@ function BarcodeField({
         try {
           const codes = await detector.detect(v);
           if (codes && codes.length) {
-            onChange(String(codes[0].rawValue || ''));
+            const decoded = String(codes[0].rawValue || '');
             stop();
+            emit(decoded);
             return;
           }
         } catch { /* frame not ready */ }
@@ -2923,8 +3095,15 @@ function BarcodeField({
         <input
           value={stringValue}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            // Manual entry (or a keyboard-wedge USB scanner): Enter routes too.
+            if (e.key === 'Enter' && scanTarget) {
+              e.preventDefault();
+              emit(stringValue.trim());
+            }
+          }}
           disabled={readonly}
-          placeholder={placeholder || 'Mã (quét hoặc nhập tay)'}
+          placeholder={placeholder || (scanTarget ? 'Quét/nhập mã rồi Enter' : 'Mã (quét hoặc nhập tay)')}
           className={baseInput}
         />
         {!readonly && supported && !scanning && (
@@ -3378,6 +3557,15 @@ function FormattedCell({
     );
   }
   if (!format) return <CellDisplay value={value} />;
+  if (format === 'qr') {
+    const code = String(value);
+    return (
+      <span className="inline-flex flex-col items-center gap-0.5">
+        <QRCodeSVG value={code} size={64} level="M" marginSize={1} />
+        <span className="text-[10px] text-slate-500">{code}</span>
+      </span>
+    );
+  }
   const numeric = typeof value === 'number' ? value : Number(value);
   if (format === 'currency' && Number.isFinite(numeric)) {
     return (
@@ -5226,17 +5414,28 @@ function DocScreen({
   workboardId: number;
 }) {
   return (
-    <div className="w-full space-y-3 rounded-xl bg-white p-6 shadow-sm">
-      {(spec.blocks || []).map((b, i) => (
-        <DocBlock
-          key={i}
-          block={b}
-          token={token}
-          workboardId={workboardId}
-          screenId={spec.screen_id}
-          blockIndex={i}
-        />
-      ))}
+    <div className="w-full">
+      <div className="mb-2 flex justify-end print:hidden">
+        <button
+          type="button"
+          onClick={printLabel}
+          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+        >
+          <Printer className="h-4 w-4" /> In
+        </button>
+      </div>
+      <div className="wb-print-target w-full space-y-3 rounded-xl bg-white p-6 shadow-sm">
+        {(spec.blocks || []).map((b, i) => (
+          <DocBlock
+            key={i}
+            block={b}
+            token={token}
+            workboardId={workboardId}
+            screenId={spec.screen_id}
+            blockIndex={i}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -5348,6 +5547,29 @@ function DocBlock({
         <span>{String(block.left || '')}</span>
         <span>{String(block.center || '')}</span>
         <span>{String(block.right || '')}</span>
+      </div>
+    );
+  }
+  if (t === 'qr_code') {
+    // Server has already resolved {{shared.*}}/{{app_user.*}} into block.value.
+    // Resolve {{app_url}} on the client (needs origin+path) so a label can
+    // encode a deep-link back into this mini-app.
+    const encoded = resolveQrTemplate(String(block.value || ''));
+    const size = Number(block.size || 180);
+    const caption = block.caption ? String(block.caption) : '';
+    const align = (block.align as string) || 'center';
+    const justify =
+      align === 'left' ? 'justify-start' : align === 'right' ? 'justify-end' : 'justify-center';
+    return (
+      <div className={`my-2 flex ${justify}`}>
+        <div className="flex flex-col items-center gap-1.5">
+          {encoded ? (
+            <QRCodeSVG value={encoded} size={size} level="M" marginSize={2} />
+          ) : (
+            <div className="text-xs text-slate-400">Chưa có giá trị để tạo mã QR</div>
+          )}
+          {caption && <div className="text-center text-xs text-slate-600">{caption}</div>}
+        </div>
       </div>
     );
   }

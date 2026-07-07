@@ -1654,7 +1654,8 @@ if settings.WORKBOARDS_ENABLED:
             }
         if screen.kind == "doc":
             return screen_runtime.render_doc_screen(
-                db, wb, screen, identity=identity, app_user_payload=app_user
+                db, wb, screen, identity=identity, app_user_payload=app_user,
+                shared_context=shared_context,
             )
         if screen.kind == "dashboard":
             if screen.dashboard is None:

@@ -53,7 +53,8 @@ export interface FormFieldSpec {
     | 'time'
     | 'duration'
     | 'color'
-    | 'video';
+    | 'video'
+    | 'qr';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -97,6 +98,8 @@ export interface FormFieldSpec {
   status_config?: {
     states?: Array<{ value: string; label?: string | null; color?: string | null }>;
     editable_by_roles?: string[];
+    // Lifecycle guard enforced server-side: from-value -> allowed to-values.
+    allowed_transitions?: Record<string, string[]>;
   } | null;
   // Rich input-type config.
   max_stars?: number | null;
@@ -106,6 +109,14 @@ export interface FormFieldSpec {
   step?: number | null;
   currency_code?: string | null;
   max_select?: number | null;
+  // QR display (widget='qr').
+  qr_source_column?: string | null;
+  qr_value_template?: string | null;
+  qr_size?: number | null;
+  qr_caption?: string | null;
+  // Scan -> navigate (widget='barcode').
+  scan_go_to_screen?: string | null;
+  scan_carry_as?: string | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -288,7 +299,8 @@ export interface DocBlockSpec {
     | 'text'
     | 'spacer'
     | 'signature'
-    | 'footer';
+    | 'footer'
+    | 'qr_code';
   [key: string]: unknown;
 }
 
