@@ -69,12 +69,15 @@ export function Markdown({ source }: { source: string }) {
   return <div className="text-small [&>*:first-child]:mt-0">{blocks}</div>;
 }
 
-export const DOC_TYPES = ['overview', 'guide', 'domain', 'process', 'faq', 'article'];
+export const DOC_TYPES = ['overview', 'guide', 'domain', 'process', 'sop', 'report', 'ai_knowhow', 'faq', 'article'];
 export const DOC_TYPE_LABEL_KEY: Record<string, string> = {
   overview: 'govern.docType.overview',
   guide: 'govern.docType.guide',
   domain: 'govern.docType.domain',
   process: 'govern.docType.process',
+  sop: 'govern.docType.sop',
+  report: 'govern.docType.report',
+  ai_knowhow: 'govern.docType.ai_knowhow',
   faq: 'govern.docType.faq',
   article: 'govern.docType.article',
 };

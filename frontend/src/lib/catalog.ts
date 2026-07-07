@@ -349,8 +349,30 @@ export interface KnowledgeDoc {
   missing_metric_tokens?: string[];
   /** Resolved on GET one — asset embed tokens ({{dashboard|dataset|term:...}}). */
   assets_on_page?: KnowledgeAsset[];
-  /** Resolved on GET one — other docs sharing ≥1 governed metric with this one. */
-  related_docs?: { id: number; title: string; space: string; shared_metrics: string[] }[];
+  /** Resolved on GET one — the knowledge-graph neighborhood with reasons. */
+  related_docs?: RelatedDoc[];
+  // ── Knowledge Hub metadata + AI section + usage telemetry ──
+  business_domain?: string | null;
+  process_ref?: string | null;
+  review_date?: string | null;          // YYYY-MM-DD
+  last_verified_at?: string | null;
+  importance?: 'low' | 'normal' | 'high' | string;
+  ai_summary?: string | null;
+  ai_keywords?: string[];
+  view_count?: number;
+  retrieval_count?: number;
+  /** Deterministic AI-readiness score + machine keys of what's missing. */
+  ai_ready?: { score: number; missing: string[] };
+}
+
+export interface RelatedDoc {
+  id: number;
+  title: string;
+  space: string;
+  shared_metrics: string[];
+  shared_dashboards?: string[];
+  shared_datasets?: string[];
+  shared_tags?: string[];
 }
 
 export interface KnowledgeAsset {
@@ -383,6 +405,10 @@ export interface KnowledgeDocWrite {
   pinned?: boolean;
   owner?: string;
   change_note?: string;         // optional note recorded on the version snapshot
+  business_domain?: string;
+  process_ref?: string;
+  review_date?: string | null;  // YYYY-MM-DD
+  importance?: string;          // low|normal|high
 }
 
 export async function listKnowledge(params?: { space?: string; status?: string }): Promise<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }> {
@@ -444,6 +470,40 @@ export async function aiDraftKnowledge(datasetId: number, dashboardId?: number |
     dataset_id: datasetId,
     dashboard_id: dashboardId ?? null,
   });
+  return data;
+}
+
+// ── Knowledge Hub: search everything / insights / AI summary / verify ───────
+export interface SearchHit { id: number | string; name: string; subtitle?: string; open_path?: string }
+export interface GovernSearchResult {
+  documents: SearchHit[]; metrics: SearchHit[]; terms: SearchHit[]; dashboards: SearchHit[]; datasets: SearchHit[];
+}
+export async function governSearch(q: string): Promise<GovernSearchResult> {
+  const { data } = await apiClient.get<GovernSearchResult>('/catalog/govern/search', { params: { q } });
+  return {
+    documents: data.documents ?? [], metrics: data.metrics ?? [], terms: data.terms ?? [],
+    dashboards: data.dashboards ?? [], datasets: data.datasets ?? [],
+  };
+}
+
+export interface InsightRef { id: number; title: string; count?: number }
+export interface KnowledgeInsights {
+  no_owner: InsightRef[]; no_summary: InsightRef[]; no_tags: InsightRef[];
+  stale_review: InsightRef[]; not_embedded: InsightRef[];
+  most_viewed: InsightRef[]; most_retrieved: InsightRef[];
+}
+export async function knowledgeInsights(): Promise<KnowledgeInsights> {
+  const { data } = await apiClient.get<KnowledgeInsights>('/catalog/govern/knowledge/insights');
+  return data;
+}
+
+export async function regenAiSummary(docId: number): Promise<{ ai_summary: string; ai_keywords: string[] }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/ai-summary`);
+  return { ai_summary: data.ai_summary ?? '', ai_keywords: data.ai_keywords ?? [] };
+}
+
+export async function verifyDoc(docId: number): Promise<{ last_verified_at: string }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/verify`);
   return data;
 }
 

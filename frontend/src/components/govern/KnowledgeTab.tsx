@@ -18,6 +18,7 @@ import {
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight,
   ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
+  GitBranch, ShieldCheck, ArrowRight, Clock3, BookCheck, MessageCircleQuestion,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -34,12 +35,13 @@ import type { useUrlNav } from '@/hooks/use-url-nav';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
-  listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite,
+  listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
-  type KnowledgeDocVersion, type DatasetLite,
+  type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { Markdown, DOC_TYPES, STATUS_TONE, docTypeLabel, managedTargetLabel, statusLabel } from './knowledge-markdown';
+import { docTemplate } from './doc-templates';
 import { MetricFormModal } from './MetricForm';
 
 function errDetail(e: unknown): string | undefined {
@@ -68,6 +70,8 @@ function docToWrite(d: KnowledgeDoc, patch: Partial<KnowledgeDocWrite> = {}): Kn
     summary: d.summary ?? '', body: d.body ?? '', status: d.status, pinned: d.pinned, owner: d.owner ?? '',
     tags: d.tags ?? [], related_terms: d.related_terms ?? [], related_metrics: d.related_metrics ?? [],
     related_dashboard_ids: d.related_dashboard_ids ?? [], related_dataset_ids: d.related_dataset_ids ?? [],
+    business_domain: d.business_domain ?? '', process_ref: d.process_ref ?? '',
+    review_date: d.review_date ?? null, importance: d.importance ?? 'normal',
     ...patch,
   };
 }
@@ -75,8 +79,48 @@ function docToWrite(d: KnowledgeDoc, patch: Partial<KnowledgeDocWrite> = {}): Kn
 const DOC_TYPE_ICON: Record<string, ReactNode> = {
   overview: <Compass className="h-4 w-4" />, guide: <BookOpen className="h-4 w-4" />,
   domain: <Boxes className="h-4 w-4" />, process: <Workflow className="h-4 w-4" />,
+  sop: <BookCheck className="h-4 w-4" />, report: <LayoutDashboard className="h-4 w-4" />,
+  ai_knowhow: <MessageCircleQuestion className="h-4 w-4" />,
   faq: <HelpCircle className="h-4 w-4" />, article: <FileText className="h-4 w-4" />,
 };
+
+// ── AI-readiness helpers (shared by list + detail) ───────────────────────────
+function readyTone(score: number): string {
+  return score >= 80 ? 'bg-success/10 text-success' : score >= 50 ? 'bg-warning/10 text-warning' : 'bg-danger/10 text-danger';
+}
+const READY_HINT_KEY: Record<string, string> = {
+  summary: 'govern.ready.summary', tags: 'govern.ready.tags', owner: 'govern.ready.owner',
+  headings: 'govern.ready.headings', links: 'govern.ready.links', context: 'govern.ready.context',
+  review: 'govern.ready.review', embedded: 'govern.ready.embedded',
+};
+/** ~200 wpm reading time from a markdown body. */
+function readingMinutes(body: string | undefined | null): number {
+  const words = (body || '').trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(words / 200));
+}
+function relTime(iso: string | null | undefined, locale: string): string {
+  if (!iso) return '—';
+  // Backend timestamps are naive UTC — anchor them so local offsets don't shift.
+  const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(iso) ? iso : `${iso}Z`;
+  const dt = new Date(normalized).getTime();
+  const mins = Math.floor((Date.now() - dt) / 60000);
+  if (mins < 1) return locale === 'vi' ? 'vừa xong' : 'just now';
+  if (mins < 60) return locale === 'vi' ? `${mins} phút trước` : `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return locale === 'vi' ? `${hrs} giờ trước` : `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return locale === 'vi' ? `${days} ngày trước` : `${days}d ago`;
+  return new Date(normalized).toLocaleDateString(locale === 'vi' ? 'vi-VN' : 'en-US');
+}
+/** Compose the human "why related" line from the shared-signal buckets. */
+function relatedReason(r: RelatedDoc, t: (k: string) => string): string {
+  const parts: string[] = [];
+  if (r.shared_metrics?.length) parts.push(`${t('govern.related.sharedMetrics')}: ${r.shared_metrics.join(', ')}`);
+  if (r.shared_dashboards?.length) parts.push(`${t('govern.related.sharedDashboards')}: ${r.shared_dashboards.join(', ')}`);
+  if (r.shared_datasets?.length) parts.push(`${t('govern.related.sharedDatasets')}: ${r.shared_datasets.join(', ')}`);
+  if (r.shared_tags?.length) parts.push(`${t('govern.related.sharedTags')}: ${r.shared_tags.join(', ')}`);
+  return parts.join(' · ');
+}
 const docIcon = (t: string) => DOC_TYPE_ICON[t] ?? <FileText className="h-4 w-4" />;
 
 const ASSET_ICON: Record<KnowledgeAsset['type'], ReactNode> = {
@@ -142,7 +186,8 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   } else {
     screen = (
       <ListScreen docs={docs} spaces={spaces} loading={loading} managed={managed}
-        onOpen={openDoc} onNew={startNew} onOpenVocab={onOpenVocab} onAiWrite={() => setAiOpen(true)} />
+        onOpen={openDoc} onNew={startNew} onOpenVocab={onOpenVocab} onAiWrite={() => setAiOpen(true)}
+        onOpenMetric={(mn) => openMetric({ machineName: mn, homeDocId: null })} />
     );
   }
 
@@ -165,18 +210,63 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
 }
 
 // ═════════════════════════════════ List ═════════════════════════════════════
-function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab, onAiWrite }: {
+type HealthKey = 'noOwner' | 'noSummary' | 'staleReview' | 'notEmbedded' | 'mostViewed' | 'mostRetrieved';
+
+function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab, onAiWrite, onOpenMetric }: {
   docs: KnowledgeDoc[]; spaces: KnowledgeSpace[]; loading: boolean; managed: ManagedMetric[];
   onOpen: (id: number) => void; onNew: () => void; onOpenVocab?: () => void; onAiWrite: () => void;
+  onOpenMetric: (machineName: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [space, setSpace] = useState<string | null>(null);
+  const [health, setHealth] = useState<HealthKey | null>(null);
+  const [q, setQ] = useState('');
+  const [searchRes, setSearchRes] = useState<GovernSearchResult | null>(null);
 
-  const linkedReports = useMemo(() => {
-    const s = new Set<number>();
-    docs.forEach((d) => (d.related_dashboard_ids ?? []).forEach((x) => s.add(x)));
-    return s.size;
+  // Search-everything: debounce → grouped results panel above the table.
+  useEffect(() => {
+    const needle = q.trim();
+    if (needle.length < 2) { setSearchRes(null); return; }
+    const h = setTimeout(() => {
+      governSearch(needle).then(setSearchRes).catch(() => setSearchRes(null));
+    }, 300);
+    return () => clearTimeout(h);
+  }, [q]);
+
+  // Knowledge-health sets — computed from the list payload (ai_ready + counters).
+  const healthSets = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const ids = (pred: (d: KnowledgeDoc) => boolean) => new Set(docs.filter(pred).map((d) => d.id));
+    const top = (key: 'view_count' | 'retrieval_count') => new Set(
+      [...docs].filter((d) => (d[key] ?? 0) > 0).sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, 8).map((d) => d.id),
+    );
+    return {
+      noOwner: ids((d) => !(d.owner || '').trim()),
+      noSummary: ids((d) => !((d.summary || '').trim() || (d.ai_summary || '').trim())),
+      staleReview: ids((d) => !!d.review_date && d.review_date < today),
+      notEmbedded: ids((d) => (d.ai_ready?.missing ?? []).includes('embedded')),
+      mostViewed: top('view_count'),
+      mostRetrieved: top('retrieval_count'),
+    } as Record<HealthKey, Set<number>>;
   }, [docs]);
+
+  const avgReady = useMemo(() => {
+    const scores = docs.map((d) => d.ai_ready?.score ?? 0);
+    return scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+  }, [docs]);
+  const needsReview = useMemo(() => {
+    const s = new Set<number>([...healthSets.noOwner, ...healthSets.noSummary, ...healthSets.staleReview]);
+    return s.size;
+  }, [healthSets]);
+
+  const HEALTH_CHIPS: { key: HealthKey; label: string }[] = [
+    { key: 'noOwner', label: t('govern.insight.noOwner') },
+    { key: 'noSummary', label: t('govern.insight.noSummary') },
+    { key: 'staleReview', label: t('govern.insight.staleReview') },
+    { key: 'notEmbedded', label: t('govern.insight.notEmbedded') },
+    { key: 'mostViewed', label: t('govern.insight.mostViewed') },
+    { key: 'mostRetrieved', label: t('govern.insight.mostRetrieved') },
+  ];
 
   return (
     <PageListLayout
@@ -187,7 +277,8 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
           stats={[
             { label: t('govern.stats.documents'), value: docs.length, helper: t('govern.stats.documentsHelper') },
             { label: t('govern.stats.metrics'), value: managed.length, helper: t('govern.stats.metricsHelper') },
-            { label: t('govern.stats.reports'), value: linkedReports, helper: t('govern.stats.reportsHelper') },
+            { label: t('govern.stats.aiReady'), value: `${avgReady}%`, helper: t('govern.stats.aiReadyHelper') },
+            { label: t('govern.stats.needsReview'), value: needsReview, helper: t('govern.stats.needsReviewHelper') },
             { label: t('govern.stats.spaces'), value: spaces.length, helper: t('govern.stats.spacesHelper') },
           ]}
         />
@@ -201,24 +292,42 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       )}
       isLoading={loading}
       loadingText={t('govern.loading')}
-      searchPlaceholder={t('govern.searchPlaceholder')}
+      searchPlaceholder={t('govern.search.placeholder')}
+      searchValue={q}
+      onSearchValueChange={setQ}
       viewToggle={false}
-      toolbarExtra={spaces.length > 0 ? (
+      toolbarExtra={(
         <div className="flex items-center gap-1.5">
-          <FilterTag tone="brand" active={space === null} onClick={() => setSpace(null)}>{t('govern.filter.all')}</FilterTag>
+          <FilterTag tone="brand" active={space === null && health === null} onClick={() => { setSpace(null); setHealth(null); }}>{t('govern.filter.all')}</FilterTag>
           {spaces.map((s) => (
-            <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(s.space)}>
+            <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(space === s.space ? null : s.space)}>
               {s.space} ({s.count})
             </FilterTag>
           ))}
+          <div className="mx-1 h-4 w-px bg-surface-3" />
+          {HEALTH_CHIPS.map((c) => (
+            <FilterTag key={c.key} tone="warning" active={health === c.key} onClick={() => setHealth(health === c.key ? null : c.key)}>
+              {c.label} ({healthSets[c.key].size})
+            </FilterTag>
+          ))}
         </div>
-      ) : undefined}
+      )}
     >
       {({ filterText }) => {
         const needle = filterText.trim().toLowerCase();
-        const rows = docs.filter((d) =>
-          (space === null || d.space === space)
-          && (!needle || `${d.title} ${d.summary ?? ''} ${d.space} ${(d.tags ?? []).join(' ')}`.toLowerCase().includes(needle)));
+        const rows = docs
+          .filter((d) =>
+            (space === null || d.space === space)
+            && (health === null || healthSets[health].has(d.id))
+            && (!needle || `${d.title} ${d.summary ?? ''} ${d.ai_summary ?? ''} ${d.space} ${(d.tags ?? []).join(' ')} ${(d.ai_keywords ?? []).join(' ')}`.toLowerCase().includes(needle)))
+          .sort((a, b) => {
+            if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
+            return (b.updated_at || '').localeCompare(a.updated_at || '');
+          });
+
+        const searchPanel = q.trim().length >= 2 && searchRes ? (
+          <HubSearchPanel res={searchRes} q={q.trim()} onOpenDoc={onOpen} onOpenMetric={onOpenMetric} onOpenVocab={onOpenVocab} />
+        ) : null;
 
         if (docs.length === 0) {
           return (
@@ -232,31 +341,39 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
         }
         if (rows.length === 0) {
           return (
-            <div className="flex h-48 flex-col items-center justify-center text-center">
-              <Search className="mb-2 h-8 w-8 text-text-quaternary" />
-              <p className="text-caption text-text-tertiary">{t('govern.empty.noMatches')}</p>
+            <div className="space-y-3">
+              {searchPanel}
+              <div className="flex h-48 flex-col items-center justify-center text-center">
+                <Search className="mb-2 h-8 w-8 text-text-quaternary" />
+                <p className="text-caption text-text-tertiary">{t('govern.empty.noMatches')}</p>
+              </div>
             </div>
           );
         }
         return (
-          <PaginatedCollection items={rows} viewMode="list" resetKey={`${filterText}|${space ?? ''}`}>
+          <div className="space-y-3">
+          {searchPanel}
+          <PaginatedCollection items={rows} viewMode="list" resetKey={`${filterText}|${space ?? ''}|${health ?? ''}`}>
             {({ pageItems, pagination, hasFooter }) => (
               <div>
                 <div className={cn('border border-[rgb(var(--border-line))] bg-surface-1', hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl')}>
                   <div className="app-list-table-wrap">
                     <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                       <thead className="bg-surface-2"><tr>
-                        <th className="app-list-header w-[40%]">{t('govern.list.header.document')}</th>
-                        <th className="app-list-header w-[14%]">{t('govern.list.header.space')}</th>
-                        <th className="app-list-header w-[12%]">{t('govern.list.header.type')}</th>
-                        <th className="app-list-header w-[10%]">{t('govern.list.header.metrics')}</th>
-                        <th className="app-list-header w-[10%]">{t('govern.list.header.links')}</th>
-                        <th className="app-list-header w-[12%]">{t('govern.list.header.status')}</th>
-                        <th className="app-list-header w-[56px] text-right" />
+                        <th className="app-list-header w-[32%]">{t('govern.list.header.document')}</th>
+                        <th className="app-list-header w-[12%]">{t('govern.list.header.space')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.type')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.metrics')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.links')}</th>
+                        <th className="app-list-header w-[9%]">{t('govern.list.header.aiReady')}</th>
+                        <th className="app-list-header w-[11%]">{t('govern.list.header.status')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.updated')}</th>
+                        <th className="app-list-header w-[40px] text-right" />
                       </tr></thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                         {pageItems.map((d) => {
                           const links = (d.related_dashboard_ids?.length ?? 0) + (d.related_dataset_ids?.length ?? 0);
+                          const score = d.ai_ready?.score ?? 0;
                           return (
                             <tr key={d.id} className="cursor-pointer hover:bg-surface-2" onClick={() => onOpen(d.id)}>
                               <td className="app-list-cell">
@@ -266,7 +383,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                   </span>
                                   <span className="min-w-0">
                                     <span className="app-list-text-main block text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{d.title}</span>
-                                    {d.summary && <span className="app-list-text-sub mt-0.5 block text-tiny text-text-quaternary line-clamp-1">{d.summary}</span>}
+                                    {(d.summary || d.ai_summary) && <span className="app-list-text-sub mt-0.5 block text-tiny text-text-quaternary line-clamp-1">{d.summary || d.ai_summary}</span>}
                                   </span>
                                 </span>
                               </td>
@@ -283,11 +400,17 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                   : <span className="text-tiny text-text-quaternary">—</span>}
                               </td>
                               <td className="app-list-cell">
+                                <span className={cn('rounded-full px-2 py-0.5 text-tiny font-emphasis', readyTone(score))} title={(d.ai_ready?.missing ?? []).map((k) => t(READY_HINT_KEY[k] || k)).join(' · ')}>
+                                  {score}%
+                                </span>
+                              </td>
+                              <td className="app-list-cell">
                                 <span className="inline-flex items-center gap-1.5">
                                   <span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[d.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(d.status, t)}</span>
                                   <span className="text-tiny text-text-quaternary">v{d.version}</span>
                                 </span>
                               </td>
+                              <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language)}</td>
                               <td className="app-list-cell-tight text-right"><ChevronRight className="inline h-4 w-4 text-text-quaternary" /></td>
                             </tr>
                           );
@@ -300,9 +423,60 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
               </div>
             )}
           </PaginatedCollection>
+          </div>
         );
       }}
     </PageListLayout>
+  );
+}
+
+// ── Search-everything results panel (documents · KPIs · terms · dashboards · datasets) ──
+function HubSearchPanel({ res, q, onOpenDoc, onOpenMetric, onOpenVocab }: {
+  res: GovernSearchResult; q: string;
+  onOpenDoc: (id: number) => void; onOpenMetric: (machineName: string) => void; onOpenVocab?: () => void;
+}) {
+  const { t } = useI18n();
+  const total = res.documents.length + res.metrics.length + res.terms.length + res.dashboards.length + res.datasets.length;
+  const groups: { key: string; label: string; icon: ReactNode; items: { id: string | number; name: string; subtitle?: string; open_path?: string }[]; onPick?: (id: string | number, path?: string) => void }[] = [
+    { key: 'documents', label: t('govern.search.gDocuments'), icon: <FileText className="h-3.5 w-3.5" />, items: res.documents, onPick: (id) => onOpenDoc(Number(id)) },
+    { key: 'metrics', label: t('govern.search.gMetrics'), icon: <Sigma className="h-3.5 w-3.5" />, items: res.metrics, onPick: (id) => onOpenMetric(String(id)) },
+    { key: 'terms', label: t('govern.search.gTerms'), icon: <TagIcon className="h-3.5 w-3.5" />, items: res.terms, onPick: () => onOpenVocab?.() },
+    { key: 'dashboards', label: t('govern.search.gDashboards'), icon: <LayoutDashboard className="h-3.5 w-3.5" />, items: res.dashboards },
+    { key: 'datasets', label: t('govern.search.gDatasets'), icon: <Database className="h-3.5 w-3.5" />, items: res.datasets },
+  ];
+  return (
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+      {total === 0 ? (
+        <p className="px-1 py-2 text-caption text-text-tertiary">{t('govern.search.empty', { q })}</p>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {groups.filter((g) => g.items.length > 0).map((g) => (
+            <div key={g.key} className="min-w-0">
+              <p className="mb-1.5 flex items-center gap-1.5 px-1 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{g.icon}{g.label}</p>
+              <ul className="space-y-0.5">
+                {g.items.map((it) => {
+                  const inner = (
+                    <>
+                      <span className="block truncate text-caption text-text-secondary">{it.name}</span>
+                      {it.subtitle && <span className="block truncate text-tiny text-text-quaternary">{it.subtitle}</span>}
+                    </>
+                  );
+                  return (
+                    <li key={`${g.key}:${it.id}`}>
+                      {it.open_path ? (
+                        <Link href={it.open_path} className="block rounded-md px-1.5 py-1 hover:bg-surface-2">{inner}</Link>
+                      ) : (
+                        <button type="button" onClick={() => g.onPick?.(it.id, it.open_path)} className="block w-full rounded-md px-1.5 py-1 text-left hover:bg-surface-2">{inner}</button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -320,6 +494,7 @@ const DETAIL_TABS = [
   { key: 'noidung', labelKey: 'govern.detail.tab.content', icon: <FileText className="h-4 w-4" /> },
   { key: 'chiso', labelKey: 'govern.detail.tab.metrics', icon: <Sigma className="h-4 w-4" /> },
   { key: 'lienket', labelKey: 'govern.detail.tab.links', icon: <LayoutDashboard className="h-4 w-4" /> },
+  { key: 'dothi', labelKey: 'govern.detail.tab.graph', icon: <GitBranch className="h-4 w-4" /> },
   { key: 'lichsu', labelKey: 'govern.detail.tab.history', icon: <History className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
@@ -432,17 +607,104 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
                 <ContentTab doc={doc} />
               </div>
             </article>
-            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} />
+            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} onRefresh={() => setRefresh((v) => v + 1)} />
           </div>
         ) : (
           <div className="w-full">
             <DocHeader doc={doc} />
             {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
             {tab === 'lienket' && <LinksTab doc={doc} />}
+            {tab === 'dothi' && <GraphTab doc={doc} onOpenDoc={onOpenDoc} onEditMetric={editMetric} />}
             {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Knowledge-graph neighborhood (LineageTab-style: columns + arrows, no deps) ──
+function GraphNode({ icon, title, sub, tone, onClick, href }: {
+  icon: ReactNode; title: string; sub?: string; tone?: string; onClick?: () => void; href?: string;
+}) {
+  const inner = (
+    <span className="flex min-w-0 items-start gap-2">
+      <span className={cn('mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md', tone || 'bg-brand/10 text-brand')}>{icon}</span>
+      <span className="min-w-0">
+        <span className="block truncate text-caption font-emphasis text-text-primary">{title}</span>
+        {sub && <span className="block truncate text-tiny text-text-quaternary">{sub}</span>}
+      </span>
+    </span>
+  );
+  const cls = 'block w-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-2 text-left transition-colors hover:border-brand/40 hover:bg-surface-2';
+  if (href) return <Link href={href} className={cls}>{inner}</Link>;
+  if (onClick) return <button type="button" onClick={onClick} className={cls}>{inner}</button>;
+  return <div className={cls.replace(' hover:border-brand/40 hover:bg-surface-2', '')}>{inner}</div>;
+}
+
+function GraphTab({ doc, onOpenDoc, onEditMetric }: {
+  doc: KnowledgeDoc; onOpenDoc: (id: number) => void; onEditMetric: (machineName: string) => void;
+}) {
+  const { t } = useI18n();
+  const metrics = doc.metrics_on_page ?? [];
+  const assets = doc.assets_on_page ?? [];
+  const related = doc.related_docs ?? [];
+  if (metrics.length === 0 && assets.length === 0 && related.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
+        <GitBranch className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+        <p className="text-caption text-text-tertiary">{t('govern.graph.empty')}</p>
+      </div>
+    );
+  }
+  const col = 'flex-1 min-w-[220px] space-y-2';
+  const head = 'mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary';
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start gap-4">
+        <div className={col}>
+          <p className={head}><FileText className="h-3.5 w-3.5" />{t('govern.graph.thisDoc')}</p>
+          <GraphNode icon={docIcon(doc.doc_type)} title={doc.title} sub={doc.space} />
+        </div>
+        {metrics.length > 0 && (
+          <>
+            <ArrowRight className="mt-9 h-4 w-4 flex-shrink-0 text-text-quaternary" />
+            <div className={col}>
+              <p className={head}><Sigma className="h-3.5 w-3.5" />{t('govern.graph.kpis')}</p>
+              {metrics.map((m) => (
+                <GraphNode key={m.machine_name} icon={<Sigma className="h-3.5 w-3.5" />} title={m.name}
+                  sub={m.is_source ? t('govern.metrics.sourceRole') : t('govern.metrics.reusedRole')}
+                  onClick={() => onEditMetric(m.machine_name)} />
+              ))}
+            </div>
+          </>
+        )}
+        {assets.length > 0 && (
+          <>
+            <ArrowRight className="mt-9 h-4 w-4 flex-shrink-0 text-text-quaternary" />
+            <div className={col}>
+              <p className={head}><LayoutDashboard className="h-3.5 w-3.5" />{t('govern.graph.assets')}</p>
+              {assets.map((a) => (
+                <GraphNode key={`${a.type}:${a.ref}`}
+                  icon={a.type === 'dashboard' ? <LayoutDashboard className="h-3.5 w-3.5" /> : a.type === 'dataset' ? <Database className="h-3.5 w-3.5" /> : <TagIcon className="h-3.5 w-3.5" />}
+                  title={a.name || a.ref} sub={t(`govern.asset.${a.type}`)}
+                  href={a.exists && a.open_path ? a.open_path : undefined} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      {related.length > 0 && (
+        <div>
+          <p className={head}><BookOpen className="h-3.5 w-3.5" />{t('govern.graph.related')}</p>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {related.map((r) => (
+              <GraphNode key={r.id} icon={<FileText className="h-3.5 w-3.5" />} title={r.title}
+                sub={relatedReason(r, t)} onClick={() => onOpenDoc(r.id)} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -553,17 +815,74 @@ function RailCard({ title, icon, children }: { title: string; icon?: ReactNode; 
     </div>
   );
 }
-function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJump }: {
+// AI-context card — readiness score + what's missing + AI summary/keywords.
+function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => void }) {
+  const { t } = useI18n();
+  const [regenBusy, setRegenBusy] = useState(false);
+  const ready = doc.ai_ready ?? { score: 0, missing: [] };
+  const regen = async () => {
+    setRegenBusy(true);
+    try { await regenAiSummary(doc.id); toast.success(t('govern.aiCard.regenOk')); onRefresh(); }
+    catch (e) { toast.error(errDetail(e) || t('govern.aiCard.regenFailed')); }
+    finally { setRegenBusy(false); }
+  };
+  return (
+    <RailCard title={t('govern.aiCard.title')} icon={<Sparkles className="h-3.5 w-3.5" />}>
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <span className={cn('rounded-full px-2.5 py-0.5 text-caption font-emphasis', readyTone(ready.score))}>{ready.score}%</span>
+        <span className="text-tiny text-text-quaternary">{t('govern.aiCard.readingTime', { min: readingMinutes(doc.body) })}</span>
+      </div>
+      {ready.missing.length > 0 && (
+        <div className="mb-2.5 rounded-lg bg-surface-2 px-2.5 py-2">
+          <p className="mb-1 text-tiny font-emphasis text-text-tertiary">{t('govern.aiCard.missingTitle')}</p>
+          <ul className="space-y-0.5">
+            {ready.missing.map((k) => (
+              <li key={k} className="flex items-start gap-1.5 text-tiny text-text-secondary">
+                <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0 text-warning" />{t(READY_HINT_KEY[k] || k)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.aiCard.summary')}</p>
+        <AiButton size="xs" loading={regenBusy} onClick={regen}>{t('govern.aiCard.regen')}</AiButton>
+      </div>
+      {doc.ai_summary
+        ? <p className="text-tiny leading-relaxed text-text-secondary">{doc.ai_summary}</p>
+        : <p className="text-tiny text-text-quaternary">{t('govern.aiCard.noSummary')}</p>}
+      {(doc.ai_keywords ?? []).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {(doc.ai_keywords ?? []).map((k) => (
+            <span key={k} className="rounded bg-brand/10 px-1.5 py-0.5 text-tiny text-brand">{k}</span>
+          ))}
+        </div>
+      )}
+    </RailCard>
+  );
+}
+
+function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJump, onRefresh }: {
   doc: KnowledgeDoc;
   toc: { level: number; text: string }[];
   related: NonNullable<KnowledgeDoc['related_docs']>;
   metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
   assets: NonNullable<KnowledgeDoc['assets_on_page']>;
   onTab: (tab: string) => void; onOpenDoc: (id: number) => void; onJump: (text: string) => void;
+  onRefresh: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const doVerify = async () => {
+    setVerifyBusy(true);
+    try { await verifyDoc(doc.id); toast.success(t('govern.detail.verifyOk')); onRefresh(); }
+    catch (e) { toast.error(errDetail(e) || t('govern.detail.verifyFailed')); }
+    finally { setVerifyBusy(false); }
+  };
   return (
     <aside className="hidden w-72 shrink-0 flex-col gap-4 lg:flex xl:w-80">
+      <AiContextCard doc={doc} onRefresh={onRefresh} />
+
       <RailCard title="Thông tin">
         <dl className="space-y-2.5">
           <RailRow label="Không gian" value={doc.space} />
@@ -571,8 +890,18 @@ function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJu
           <RailRow label="Trạng thái" value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
           <RailRow label="Phiên bản" value={`v${doc.version}`} />
           <RailRow label="Chủ sở hữu" value={doc.owner || '—'} />
+          {doc.business_domain && <RailRow label={t('govern.detail.businessDomain')} value={doc.business_domain} />}
+          {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}
+          <RailRow label={t('govern.detail.importance')} value={t(`govern.importance.${doc.importance || 'normal'}`)} />
+          {doc.review_date && <RailRow label={t('govern.detail.reviewDate')} value={doc.review_date} />}
+          <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
+          <RailRow label={t('govern.detail.views')} value={doc.view_count ?? 0} />
+          <RailRow label={t('govern.detail.aiRetrievals')} value={doc.retrieval_count ?? 0} />
           {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
         </dl>
+        <Button size="sm" variant="secondary" className="mt-3 w-full" leadingIcon={<ShieldCheck className="h-3.5 w-3.5" />} loading={verifyBusy} onClick={doVerify}>
+          {t('govern.detail.verify')}
+        </Button>
       </RailCard>
 
       {toc.length > 1 && (
@@ -605,9 +934,9 @@ function DetailRail({ doc, toc, related, metrics, assets, onTab, onOpenDoc, onJu
         <RailCard title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />}>
           <div className="space-y-1">
             {related.map((r) => (
-              <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={r.shared_metrics.join(', ')}>
+              <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={relatedReason(r, t)}>
                 <span className="block truncate text-caption font-emphasis text-text-secondary">{r.title}</span>
-                <span className="block truncate text-tiny text-text-quaternary">{r.shared_metrics.join(', ')}</span>
+                <span className="block truncate text-tiny text-text-quaternary">{relatedReason(r, t)}</span>
               </button>
             ))}
           </div>
@@ -856,6 +1185,15 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
 
   const upd = (patch: Partial<KnowledgeDocWrite>) => setEditing((p) => (p ? { ...p, ...patch } : p));
 
+  // Changing the doc TYPE on an empty document inserts that type's markdown
+  // skeleton (KPI/domain, SOP, report, AI know-how) — structure without forms.
+  const changeType = (type: string) => setEditing((p) => {
+    if (!p) return p;
+    const empty = !(p.body || '').trim();
+    const tpl = docTemplate(type);
+    return { ...p, doc_type: type, body: empty && tpl ? tpl : p.body };
+  });
+
   const insertToken = (token: string) => {
     const el = bodyRef.current;
     setEditing((p) => {
@@ -985,12 +1323,22 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
               <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.properties')}</p>
               <div className="space-y-1.5"><Label>{t('govern.editor.space')}</Label><Input value={editing.space ?? ''} onChange={(e) => upd({ space: e.target.value })} placeholder={t('govern.editor.spacePlaceholder')} /></div>
               <div className="space-y-1.5"><Label>{t('govern.editor.type')}</Label>
-                <Select value={editing.doc_type ?? 'article'} onChange={(e) => upd({ doc_type: e.target.value })}>{DOC_TYPES.map((type) => <option key={type} value={type}>{docTypeLabel(type, t)}</option>)}</Select>
+                <Select value={editing.doc_type ?? 'article'} onChange={(e) => changeType(e.target.value)}>{DOC_TYPES.map((type) => <option key={type} value={type}>{docTypeLabel(type, t)}</option>)}</Select>
               </div>
               <div className="space-y-1.5"><Label>{t('govern.editor.status')}</Label>
                 <Select value={editing.status ?? 'Draft'} onChange={(e) => upd({ status: e.target.value as KnowledgeDoc['status'] })}>{['Draft', 'Published', 'Archived'].map((s) => <option key={s} value={s}>{statusLabel(s, t)}</option>)}</Select>
               </div>
               <div className="space-y-1.5"><Label>{t('govern.editor.owner')}</Label><Input value={editing.owner ?? ''} onChange={(e) => upd({ owner: e.target.value })} placeholder={t('govern.editor.ownerPlaceholder')} /></div>
+              <div className="space-y-1.5"><Label>{t('govern.editor.businessDomain')}</Label><Input value={editing.business_domain ?? ''} onChange={(e) => upd({ business_domain: e.target.value })} placeholder={t('govern.editor.businessDomainPlaceholder')} /></div>
+              <div className="space-y-1.5"><Label>{t('govern.editor.processRef')}</Label><Input value={editing.process_ref ?? ''} onChange={(e) => upd({ process_ref: e.target.value })} placeholder={t('govern.editor.processRefPlaceholder')} /></div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5"><Label>{t('govern.editor.reviewDate')}</Label><Input type="date" value={editing.review_date ?? ''} onChange={(e) => upd({ review_date: e.target.value || null })} /></div>
+                <div className="space-y-1.5"><Label>{t('govern.editor.importance')}</Label>
+                  <Select value={editing.importance ?? 'normal'} onChange={(e) => upd({ importance: e.target.value })}>
+                    {['low', 'normal', 'high'].map((v) => <option key={v} value={v}>{t(`govern.importance.${v}`)}</option>)}
+                  </Select>
+                </div>
+              </div>
               <label className="flex items-center gap-2 text-caption text-text-secondary"><input type="checkbox" checked={!!editing.pinned} onChange={(e) => upd({ pinned: e.target.checked })} className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" /> {t('govern.editor.pinned')}</label>
               <div className="space-y-1.5"><Label>{t('govern.editor.tags')}</Label><Input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder={t('govern.editor.tagsPlaceholder')} /></div>
               <div className="space-y-1.5"><Label>{t('govern.editor.changeNote')}</Label><Input value={changeNote} onChange={(e) => setChangeNote(e.target.value)} placeholder={t('govern.editor.changeNotePlaceholder')} /></div>
