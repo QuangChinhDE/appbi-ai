@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import require_full_access
 from app.models.dataset import Dataset
 from app.models.models import Chart, Dashboard, DataSource
+from app.models.governance import GovernKnowledgeDoc
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.modules.workboards.models import Workboard
@@ -15,6 +16,7 @@ _RESOURCE_MODEL_MAP = {
     ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
     ResourceType.DATASET: (Dataset, "datasets", "id"),
     ResourceType.WORKBOARD: (Workboard, "workboards", "id"),
+    ResourceType.KNOWLEDGE_DOC: (GovernKnowledgeDoc, "govern", "id"),
 }
 
 

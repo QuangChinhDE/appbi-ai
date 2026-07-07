@@ -27,6 +27,7 @@ from app.models.governance import (
     Glossary,
     GlossaryTerm,
 )
+from app.models.user import User
 
 # {{metric:slug}} embed token — how a knowledge doc references a managed metric.
 _METRIC_TOKEN_RE = re.compile(r"\{\{\s*metric:\s*([A-Za-z0-9_\-]+)\s*\}\}")
@@ -551,10 +552,37 @@ class GovernanceService:
             "view_count": int(d.view_count or 0),
             "retrieval_count": int(d.retrieval_count or 0),
             "published_version": d.published_version,
+            "owner_id": str(d.owner_id) if d.owner_id else None,
         }
         if include_body:
             out["body"] = d.body or ""
         return out
+
+    # ── Resource permission helpers (shared with the Dataset stack) ─────────
+    _LEVEL = {"none": 0, "view": 1, "edit": 2, "full": 3}
+
+    @staticmethod
+    def _doc_permission(db: Session, current_user, d: GovernKnowledgeDoc) -> str:
+        """Effective permission ('none'|'view'|'edit'|'full') of user on a doc."""
+        from app.core.dependencies import get_effective_permission
+        return get_effective_permission(db, current_user, d, "govern")
+
+    @staticmethod
+    def _require_doc(db: Session, current_user, d: GovernKnowledgeDoc, min_level: str) -> str:
+        eff = GovernanceService._doc_permission(db, current_user, d)
+        if GovernanceService._LEVEL.get(eff, 0) < GovernanceService._LEVEL.get(min_level, 0):
+            raise GovernanceError(403, "Bạn không có quyền thao tác trên tài liệu này.")
+        return eff
+
+    @staticmethod
+    def require_doc_access(db: Session, doc_id: int, current_user, min_level: str = "view") -> GovernKnowledgeDoc:
+        """Load a doc + enforce the caller has at least `min_level` on it."""
+        d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        if d is None:
+            raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+        if current_user is not None:
+            GovernanceService._require_doc(db, current_user, d, min_level)
+        return d
 
     # ── AI-ready score (deterministic — no LLM) ─────────────────────────────
     # A document is "AI ready" when it carries everything the RAG/bot pipeline
@@ -597,11 +625,20 @@ class GovernanceService:
             return set()
 
     @staticmethod
+    def _visible_docs_query(db: Session, current_user):
+        """Docs the user may see: owned + shared (+ everything for admins), via
+        the same resource-permission stack Datasets use."""
+        from app.core.permissions import _owned_or_shared
+        from app.models.resource_share import ResourceType
+        return _owned_or_shared(db, GovernKnowledgeDoc, ResourceType.KNOWLEDGE_DOC, current_user)
+
+    @staticmethod
     def list_knowledge_docs(
-        db: Session, space: str | None = None, status: str | None = None,
+        db: Session, current_user, space: str | None = None, status: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Lightweight (no body) list for the sidebar tree."""
-        q = db.query(GovernKnowledgeDoc)
+        """Lightweight (no body) list, scoped to docs the user owns / is shared."""
+        from app.core.permissions import stamp_owner_emails
+        q = GovernanceService._visible_docs_query(db, current_user)
         if space:
             q = q.filter(GovernKnowledgeDoc.space == space)
         if status:
@@ -610,28 +647,38 @@ class GovernanceService:
             GovernKnowledgeDoc.space, GovernKnowledgeDoc.position, GovernKnowledgeDoc.title
         ).all()
         chunked = GovernanceService._chunked_doc_ids(db, [d.id for d in rows])
+        stamp_owner_emails(db, rows)
         out = []
         for d in rows:
             item = GovernanceService._doc_dict(d, include_body=False)
             item["ai_ready"] = GovernanceService._ai_ready(d, d.id in chunked)
+            item["user_permission"] = GovernanceService._doc_permission(db, current_user, d)
+            item["owner_email"] = getattr(d, "owner_email", None)
             out.append(item)
         return out
 
     @staticmethod
-    def knowledge_spaces(db: Session) -> list[dict[str, Any]]:
-        """Top-level spaces with doc counts, for the hub landing."""
-        rows = db.query(GovernKnowledgeDoc).all()
+    def knowledge_spaces(db: Session, current_user) -> list[dict[str, Any]]:
+        """Top-level spaces with doc counts (scoped to visible docs)."""
+        rows = GovernanceService._visible_docs_query(db, current_user).all()
         agg: dict[str, int] = {}
         for d in rows:
             agg[d.space or "Chung"] = agg.get(d.space or "Chung", 0) + 1
         return [{"space": s, "count": n} for s, n in sorted(agg.items())]
 
     @staticmethod
-    def get_knowledge_doc(db: Session, doc_id: int) -> dict[str, Any] | None:
+    def get_knowledge_doc(db: Session, doc_id: int, current_user=None) -> dict[str, Any] | None:
         d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
         if d is None:
             return None
+        eff = "full"
+        if current_user is not None:
+            eff = GovernanceService._require_doc(db, current_user, d, "view")
         out = GovernanceService._doc_dict(d)
+        out["user_permission"] = eff
+        if d.owner_id:
+            u = db.query(User.email).filter(User.id == d.owner_id).first()
+            out["owner_email"] = u[0] if u else None
         # Resolve {{metric:slug}} embeds → live metric cards + provenance flag
         # (is_source = this doc IS the metric's home/definition, else "reused").
         slugs = metric_slugs_in(d.body)
@@ -745,7 +792,7 @@ class GovernanceService:
             return None
 
     @staticmethod
-    def upsert_knowledge_doc(db: Session, payload: dict[str, Any], *, changed_by: str | None = None) -> dict[str, Any]:
+    def upsert_knowledge_doc(db: Session, payload: dict[str, Any], *, changed_by: str | None = None, current_user=None) -> dict[str, Any]:
         title = require_name(payload.get("title"))
         doc_id = payload.get("id")
         fields = dict(
@@ -773,13 +820,17 @@ class GovernanceService:
             d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == int(doc_id)).first()
             if d is None:
                 raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+            if current_user is not None:
+                GovernanceService._require_doc(db, current_user, d, "edit")
             d.title = title
             for k, v in fields.items():
                 setattr(d, k, v)
             d.version = (d.version or 1) + 1
             action = "update"
-        else:  # CREATE
+        else:  # CREATE — the creator owns the doc (resource-level ownership)
             d = GovernKnowledgeDoc(title=title, slug=slugify(title, "doc"), version=1, provider="user", **fields)
+            if current_user is not None:
+                d.owner_id = current_user.id
             db.add(d)
             action = "create"
         # First publish only: saving as "Published" with nothing live yet adopts
@@ -824,10 +875,21 @@ class GovernanceService:
         return {"ok": True, "id": d.id, "version": d.version, "slug": d.slug}
 
     @staticmethod
-    def delete_knowledge_doc(db: Session, doc_id: int, *, changed_by: str | None = None) -> dict[str, Any]:
+    def delete_knowledge_doc(db: Session, doc_id: int, *, changed_by: str | None = None, current_user=None) -> dict[str, Any]:
         d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
         if d is None:
             return {"ok": True}
+        if current_user is not None:
+            GovernanceService._require_doc(db, current_user, d, "full")  # owner/admin only
+        # Also drop resource shares for this doc.
+        try:
+            from app.models.resource_share import ResourceShare, ResourceType
+            db.query(ResourceShare).filter(
+                ResourceShare.resource_type == ResourceType.KNOWLEDGE_DOC,
+                ResourceShare.resource_id == str(doc_id),
+            ).delete(synchronize_session=False)
+        except Exception:  # noqa: BLE001
+            pass
         title = d.title
         # Re-parent children to this doc's parent so the tree doesn't orphan.
         for child in db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.parent_id == doc_id).all():
@@ -853,12 +915,14 @@ class GovernanceService:
         return {"ok": True}
 
     @staticmethod
-    def verify_knowledge_doc(db: Session, doc_id: int, *, changed_by: str | None = None) -> dict[str, Any]:
+    def verify_knowledge_doc(db: Session, doc_id: int, *, changed_by: str | None = None, current_user=None) -> dict[str, Any]:
         """Owner attests the doc is still correct → refreshes the review clock."""
         from datetime import datetime
         d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
         if d is None:
             raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+        if current_user is not None:
+            GovernanceService._require_doc(db, current_user, d, "edit")
         d.last_verified_at = datetime.utcnow()
         GovernanceService._commit(db)
         GovernanceService.log_change(db, "knowledge", d.slug or str(d.id), "verify",
@@ -882,13 +946,15 @@ class GovernanceService:
         return doc.body or ""
 
     @staticmethod
-    def publish_version(db: Session, doc_id: int, version: int, change_note: str, *, changed_by: str | None = None) -> dict[str, Any]:
+    def publish_version(db: Session, doc_id: int, version: int, change_note: str, *, changed_by: str | None = None, current_user=None) -> dict[str, Any]:
         """Make a SPECIFIC version live. Records the change note on that version,
         points published_version at it, flips the doc to Published, and re-embeds
         the (now different) live body for RAG. The latest draft is unaffected."""
         d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
         if d is None:
             raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+        if current_user is not None:
+            GovernanceService._require_doc(db, current_user, d, "full")  # publish = owner/admin
         snap = (
             db.query(GovernKnowledgeDocVersion)
             .filter(GovernKnowledgeDocVersion.doc_id == doc_id, GovernKnowledgeDocVersion.version == version)
@@ -936,10 +1002,10 @@ class GovernanceService:
         return {"change_note": note}
 
     @staticmethod
-    def knowledge_insights(db: Session) -> dict[str, Any]:
-        """Knowledge-health lists for managers — all computable from data on hand."""
+    def knowledge_insights(db: Session, current_user) -> dict[str, Any]:
+        """Knowledge-health lists for managers — scoped to docs the user can see."""
         from datetime import date
-        docs = db.query(GovernKnowledgeDoc).all()
+        docs = GovernanceService._visible_docs_query(db, current_user).all()
         chunked = GovernanceService._chunked_doc_ids(db, [d.id for d in docs])
 
         def ref(d: GovernKnowledgeDoc) -> dict[str, Any]:
@@ -963,11 +1029,12 @@ class GovernanceService:
         return out
 
     @staticmethod
-    def govern_search(db: Session, q: str) -> dict[str, Any]:
+    def govern_search(db: Session, q: str, current_user) -> dict[str, Any]:
         """Search-everything inside the Knowledge Hub: documents + governed KPIs +
         business terms + dashboards + datasets, grouped (≤5 per group). Keyword
         first; documents also get a semantic top-up from RAG chunks when
-        embeddings are available (best-effort)."""
+        embeddings are available (best-effort). Documents are scoped to what the
+        user can see."""
         ql = (q or "").strip().lower()
         out: dict[str, Any] = {"documents": [], "metrics": [], "terms": [], "dashboards": [], "datasets": []}
         if not ql:
@@ -976,8 +1043,9 @@ class GovernanceService:
         def hit(*parts: Any) -> bool:
             return any(ql in str(p or "").lower() for p in parts)
 
-        # Documents — keyword over title/summary/tags/keywords
-        docs = db.query(GovernKnowledgeDoc).all()
+        # Documents — keyword over title/summary/tags/keywords (visible docs only)
+        docs = GovernanceService._visible_docs_query(db, current_user).all()
+        visible_ids = {d.id for d in docs}
         seen: set[int] = set()
         for d in docs:
             if hit(d.title, d.summary, d.ai_summary, " ".join(d.tags or []), " ".join(d.ai_keywords or [])):
@@ -1000,7 +1068,7 @@ class GovernanceService:
                         )
                     ).fetchall()
                     for r in rows:
-                        if r[0] not in seen and len(out["documents"]) < 5:
+                        if r[0] in visible_ids and r[0] not in seen and len(out["documents"]) < 5:
                             out["documents"].append({"id": r[0], "name": r[1], "subtitle": r[2]})
                             seen.add(r[0])
             except Exception:  # noqa: BLE001

@@ -365,6 +365,11 @@ export interface KnowledgeDoc {
   ai_ready?: { score: number; missing: string[] };
   /** Which version is live (RAG/public read it); may differ from the latest. */
   published_version?: number | null;
+  // ── Resource sharing / permissions (same model as Dataset) ──
+  owner_id?: string | null;
+  owner_email?: string | null;
+  /** Caller's effective permission on this doc: none|view|edit|full. */
+  user_permission?: string | null;
 }
 
 export interface RelatedDoc {

@@ -274,6 +274,7 @@ _MODEL_TO_RESOURCE_TYPE = {
     "Dashboard": ResourceType.DASHBOARD,
     "Dataset": ResourceType.DATASET,
     "Workboard": ResourceType.WORKBOARD,
+    "GovernKnowledgeDoc": ResourceType.KNOWLEDGE_DOC,
 }
 
 _MODEL_TO_MODULE = {
@@ -282,6 +283,7 @@ _MODEL_TO_MODULE = {
     "Dashboard": "dashboards",
     "Dataset": "datasets",
     "Workboard": "workboards",
+    "GovernKnowledgeDoc": "govern",
 }
 
 

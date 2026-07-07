@@ -18,7 +18,7 @@ import {
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
   ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
-  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion,
+  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -41,6 +41,8 @@ import {
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { ShareDialog } from '@/components/common/ShareDialog';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { Markdown, DOC_TYPES, STATUS_TONE, docTypeLabel, managedTargetLabel, statusLabel } from './knowledge-markdown';
 import { docTemplate } from './doc-templates';
 import { MetricFormModal } from './MetricForm';
@@ -140,6 +142,8 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   const [metricModal, setMetricModal] = useState<MetricModalState | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [seed, setSeed] = useState<KnowledgeDocWrite | null>(null);  // AI-draft prefill for a new doc
+  const [shareTarget, setShareTarget] = useState<{ id: number; title: string } | null>(null);
+  const onShare = (id: number, title: string) => setShareTarget({ id, title });
 
   const docParam = nav.get('doc');
   const selId = docParam ? Number(docParam) : null;
@@ -181,20 +185,23 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
         docId={selId} nav={nav} managed={managed}
         onBack={openList} onEdit={startEdit}
         onDeleted={() => { void loadList(); openList(); }}
-        onOpenMetric={openMetric} onListChanged={loadList} onOpenDoc={openDoc}
+        onOpenMetric={openMetric} onListChanged={loadList} onOpenDoc={openDoc} onShare={onShare}
       />
     );
   } else {
     screen = (
       <ListScreen docs={docs} spaces={spaces} loading={loading} managed={managed}
         onOpen={openDoc} onNew={startNew} onOpenVocab={onOpenVocab} onAiWrite={() => setAiOpen(true)}
-        onOpenMetric={(mn) => openMetric({ machineName: mn, homeDocId: null })} />
+        onOpenMetric={(mn) => openMetric({ machineName: mn, homeDocId: null })} onShare={onShare} />
     );
   }
 
   return (
     <>
       {screen}
+      {shareTarget && (
+        <ShareDialog resourceType="knowledge_doc" resourceId={shareTarget.id} resourceName={shareTarget.title} onClose={() => setShareTarget(null)} />
+      )}
       {aiOpen && <AiWriteModal onClose={() => setAiOpen(false)} onDrafted={onAiDrafted} />}
       {metricModal && (
         <MetricFormModal
@@ -213,10 +220,10 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
 // ═════════════════════════════════ List ═════════════════════════════════════
 type HealthKey = 'noOwner' | 'noSummary' | 'staleReview' | 'notEmbedded' | 'mostViewed' | 'mostRetrieved';
 
-function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab, onAiWrite, onOpenMetric }: {
+function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab, onAiWrite, onOpenMetric, onShare }: {
   docs: KnowledgeDoc[]; spaces: KnowledgeSpace[]; loading: boolean; managed: ManagedMetric[];
   onOpen: (id: number) => void; onNew: () => void; onOpenVocab?: () => void; onAiWrite: () => void;
-  onOpenMetric: (machineName: string) => void;
+  onOpenMetric: (machineName: string) => void; onShare: (id: number, title: string) => void;
 }) {
   const { t, language } = useI18n();
   const [space, setSpace] = useState<string | null>(null);
@@ -361,15 +368,15 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                   <div className="app-list-table-wrap">
                     <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                       <thead className="bg-surface-2"><tr>
-                        <th className="app-list-header w-[32%]">{t('govern.list.header.document')}</th>
-                        <th className="app-list-header w-[12%]">{t('govern.list.header.space')}</th>
-                        <th className="app-list-header w-[10%]">{t('govern.list.header.type')}</th>
-                        <th className="app-list-header w-[8%]">{t('govern.list.header.metrics')}</th>
-                        <th className="app-list-header w-[8%]">{t('govern.list.header.links')}</th>
+                        <th className="app-list-header w-[30%]">{t('govern.list.header.document')}</th>
+                        <th className="app-list-header w-[11%]">{t('govern.list.header.space')}</th>
+                        <th className="app-list-header w-[9%]">{t('govern.list.header.type')}</th>
+                        <th className="app-list-header w-[7%]">{t('govern.list.header.metrics')}</th>
+                        <th className="app-list-header w-[7%]">{t('govern.list.header.links')}</th>
                         <th className="app-list-header w-[9%]">{t('govern.list.header.aiReady')}</th>
-                        <th className="app-list-header w-[11%]">{t('govern.list.header.status')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.status')}</th>
                         <th className="app-list-header w-[10%]">{t('govern.list.header.updated')}</th>
-                        <th className="app-list-header w-[40px] text-right" />
+                        <th className="app-list-header w-[7%] text-right" />
                       </tr></thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                         {pageItems.map((d) => {
@@ -412,7 +419,20 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                 </span>
                               </td>
                               <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language)}</td>
-                              <td className="app-list-cell-tight text-right"><ChevronRight className="inline h-4 w-4 text-text-quaternary" /></td>
+                              <td className="app-list-cell-tight">
+                                <span className="flex items-center justify-end gap-0.5 whitespace-nowrap">
+                                  {getResourcePermissions(d.user_permission ?? undefined).canShare && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); onShare(d.id, d.title); }}
+                                      className="flex-shrink-0 rounded p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-brand"
+                                      title={t('shared.share.shareButton')} aria-label={t('shared.share.shareButton')}
+                                    >
+                                      <Share2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  <ChevronRight className="h-4 w-4 flex-shrink-0 text-text-quaternary" />
+                                </span>
+                              </td>
                             </tr>
                           );
                         })}
@@ -499,11 +519,11 @@ const DETAIL_TABS = [
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
-function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onListChanged, onOpenDoc }: {
+function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onListChanged, onOpenDoc, onShare }: {
   docId: number; nav: ReturnType<typeof useUrlNav>; managed: ManagedMetric[];
   onBack: () => void; onEdit: () => void; onDeleted: () => void;
   onOpenMetric: (s: MetricModalState) => void; onListChanged: () => Promise<void> | void;
-  onOpenDoc: (id: number) => void;
+  onOpenDoc: (id: number) => void; onShare: (id: number, title: string) => void;
 }) {
   const { t } = useI18n();
   const [doc, setDoc] = useState<KnowledgeDoc | null>(null);
@@ -584,6 +604,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const metrics = doc.metrics_on_page ?? [];
   const assets = doc.assets_on_page ?? [];
   const related = doc.related_docs ?? [];
+  const perms = getResourcePermissions(doc.user_permission ?? undefined);
   const items = DETAIL_TABS.map((tabItem) => ({
     key: tabItem.key, icon: tabItem.icon,
     label: tabItem.key === 'chiso' && metrics.length ? `${t('govern.detail.tab.metrics')} · ${metrics.length}`
@@ -625,8 +646,9 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
           onExitView={() => setViewingVersion(null)}
           onPublished={() => { setViewingVersion(null); setRefresh((v) => v + 1); onListChanged(); }}
         />
-        <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>
-        <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>
+        {perms.canShare && <Button size="sm" variant="secondary" leadingIcon={<Share2 className="h-3.5 w-3.5" />} onClick={() => onShare(doc.id, doc.title)}>{t('shared.share.shareButton')}</Button>}
+        {perms.canEdit && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
+        {perms.canDelete && <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>}
       </div>
 
       {/* content — docs-site 3-column reading surface: on-page outline (left) ·

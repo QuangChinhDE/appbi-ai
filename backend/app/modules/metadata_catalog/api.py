@@ -257,33 +257,33 @@ def govern_knowledge_list(
     space: str | None = Query(default=None),
     status: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     return {
-        "docs": GovernanceService.list_knowledge_docs(db, space, status),
-        "spaces": GovernanceService.knowledge_spaces(db),
+        "docs": GovernanceService.list_knowledge_docs(db, user, space, status),
+        "spaces": GovernanceService.knowledge_spaces(db, user),
     }
 
 
 @router.get("/govern/knowledge/insights")
-def govern_knowledge_insights(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def govern_knowledge_insights(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Knowledge-health lists (missing owner/summary/tags, stale review, not
     embedded) + most viewed / most retrieved — for knowledge managers."""
-    return GovernanceService.knowledge_insights(db)
+    return GovernanceService.knowledge_insights(db, user)
 
 
 @router.get("/govern/search")
 def govern_search_everything(
-    q: str = Query(default=""), db: Session = Depends(get_db), _: User = Depends(get_current_user),
+    q: str = Query(default=""), db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Search everything inside the Knowledge Hub — documents, governed KPIs,
     business terms, dashboards, datasets — grouped results."""
-    return GovernanceService.govern_search(db, q)
+    return GovernanceService.govern_search(db, q, user)
 
 
 @router.get("/govern/knowledge/{doc_id}")
-def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
-    d = GovernanceService.get_knowledge_doc(db, doc_id)
+def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    d = _run(lambda: GovernanceService.get_knowledge_doc(db, doc_id, user))
     if d is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
     # Usage telemetry (fire-and-forget): the doc was opened for reading.
@@ -299,17 +299,18 @@ def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), _: User = D
 @router.post("/govern/knowledge/{doc_id}/verify")
 def govern_knowledge_verify(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Owner attests the document is still correct → refreshes the review clock."""
-    return _run(lambda: GovernanceService.verify_knowledge_doc(db, doc_id, changed_by=getattr(user, "email", None)))
+    return _run(lambda: GovernanceService.verify_knowledge_doc(db, doc_id, changed_by=getattr(user, "email", None), current_user=user))
 
 
 @router.post("/govern/knowledge/{doc_id}/ai-summary")
-def govern_knowledge_ai_summary(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def govern_knowledge_ai_summary(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Force-regenerate the AI summary/keywords for a document."""
     from app.models.governance import GovernKnowledgeDoc
     from app.services.dashboard_ai_bot.govern_ai_summary import generate_summary
     d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
     if d is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    _run(lambda: GovernanceService._require_doc(db, user, d, "edit"))
     status = generate_summary(db, d, force=True)
     if status not in ("generated", "unchanged"):
         raise HTTPException(status_code=503, detail=f"AI chưa sinh được tóm tắt ({status}). Kiểm tra khoá AI.")
@@ -321,7 +322,7 @@ def govern_knowledge_upsert(
     body: KnowledgeDocWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     who = getattr(user, "email", None)
-    return _run(lambda: GovernanceService.upsert_knowledge_doc(db, body.model_dump(), changed_by=who))
+    return _run(lambda: GovernanceService.upsert_knowledge_doc(db, body.model_dump(), changed_by=who, current_user=user))
 
 
 class KnowledgeAIDraftReq(BaseModel):
@@ -356,7 +357,7 @@ def govern_knowledge_ai_draft(
 @router.delete("/govern/knowledge/{doc_id}")
 def govern_knowledge_delete(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     who = getattr(user, "email", None)
-    return _run(lambda: GovernanceService.delete_knowledge_doc(db, doc_id, changed_by=who))
+    return _run(lambda: GovernanceService.delete_knowledge_doc(db, doc_id, changed_by=who, current_user=user))
 
 
 @router.get("/govern/asset-docs")
@@ -372,13 +373,15 @@ def govern_asset_docs(
 
 
 @router.get("/govern/knowledge/{doc_id}/versions")
-def govern_knowledge_versions(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def govern_knowledge_versions(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Locked version history of a business document (evolution over time)."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
     return {"versions": GovernanceService.list_doc_versions(db, doc_id)}
 
 
 @router.get("/govern/knowledge/{doc_id}/versions/{version}")
-def govern_knowledge_version(doc_id: int, version: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def govern_knowledge_version(doc_id: int, version: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
     v = GovernanceService.get_doc_version(db, doc_id, version)
     if v is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy phiên bản.")
@@ -394,14 +397,14 @@ class PublishVersionReq(BaseModel):
 def govern_knowledge_publish(doc_id: int, body: PublishVersionReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Make a specific version LIVE (RAG/public reads it) with a required change
     note. The latest working draft is unaffected — v1 can stay live while v2 drafts."""
-    return _run(lambda: GovernanceService.publish_version(db, doc_id, body.version, body.change_note, changed_by=getattr(user, "email", None)))
+    return _run(lambda: GovernanceService.publish_version(db, doc_id, body.version, body.change_note, changed_by=getattr(user, "email", None), current_user=user))
 
 
 @router.post("/govern/knowledge/{doc_id}/versions/{version}/change-note-ai")
-def govern_knowledge_change_note_ai(doc_id: int, version: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+def govern_knowledge_change_note_ai(doc_id: int, version: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """AI drafts a short 'what changed' note by diffing this version against the
     previously-published/previous one (diff only — never the whole document)."""
-    return _run(lambda: GovernanceService.version_change_note_ai(db, doc_id, version))
+    return _run(lambda: (GovernanceService.require_doc_access(db, doc_id, user, "edit"), GovernanceService.version_change_note_ai(db, doc_id, version))[1])
 
 
 # ════════════════════════ GOVERN: METRICS (AppBI-native) ════════════════════

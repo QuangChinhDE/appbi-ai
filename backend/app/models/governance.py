@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -156,7 +157,8 @@ class GovernKnowledgeDoc(Base):
     status = Column(String(16), nullable=False, default="Draft")  # Draft | Published | Archived
     version = Column(Integer, nullable=False, default=1)
     pinned = Column(Boolean, nullable=False, default=False)  # highlight on the onboarding landing
-    owner = Column(String(128), nullable=True)
+    owner = Column(String(128), nullable=True)          # free-text label (person/team)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # resource owner (sharing/permissions)
     provider = Column(String(16), nullable=False, default="user")
     # sha256(body)+embedding-model of the last body embedded into govern_doc_chunk;
     # lets a re-save with unchanged body skip embedding entirely (no wasted tokens).
