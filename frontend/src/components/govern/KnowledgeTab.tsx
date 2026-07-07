@@ -15,10 +15,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type
 import Link from 'next/link';
 import {
   BookOpen, Compass, Boxes, Workflow, HelpCircle, FileText, Sigma, LayoutDashboard, Database,
-  Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight,
+  Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
   ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
-  GitBranch, ShieldCheck, ArrowRight, Clock3, BookCheck, MessageCircleQuestion,
+  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -36,6 +36,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
   listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
+  publishVersion, aiChangeNote,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
 } from '@/lib/catalog';
@@ -495,7 +496,6 @@ const DETAIL_TABS = [
   { key: 'chiso', labelKey: 'govern.detail.tab.metrics', icon: <Sigma className="h-4 w-4" /> },
   { key: 'lienket', labelKey: 'govern.detail.tab.links', icon: <LayoutDashboard className="h-4 w-4" /> },
   { key: 'dothi', labelKey: 'govern.detail.tab.graph', icon: <GitBranch className="h-4 w-4" /> },
-  { key: 'lichsu', labelKey: 'govern.detail.tab.history', icon: <History className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
@@ -512,6 +512,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const articleRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeHeading, setActiveHeading] = useState<string>('');
+  const [viewingVersion, setViewingVersion] = useState<KnowledgeDocVersion | null>(null);
   const tab = (nav.get('dt') as DetailTab) || 'noidung';
   const setTab = (t: string) => nav.set({ dt: t });
 
@@ -615,22 +616,39 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
         <div className="mx-1 h-5 w-px bg-surface-3" />
         <Tabs<DetailTab> size="sm" value={tab} onChange={setTab} items={items} />
         <div className="flex-1" />
+        {/* Compact versions control — expands a dropdown to view/publish a
+            version (no inline list cluttering the reading surface). */}
+        <VersionsDropdown
+          docId={doc.id} publishedVersion={doc.published_version ?? null} latestVersion={doc.version}
+          refreshKey={refresh} viewingVersion={viewingVersion?.version ?? null}
+          onView={async (n) => { try { setViewingVersion(await getDocVersion(doc.id, n)); scrollRef.current?.scrollTo({ top: 0 }); } catch { toast.error(t('govern.history.loadVersionFailed')); } }}
+          onExitView={() => setViewingVersion(null)}
+          onPublished={() => { setViewingVersion(null); setRefresh((v) => v + 1); onListChanged(); }}
+        />
         <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>
         <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>
       </div>
 
-      {/* content — reading surface: readable column + right context rail (fills
-          the width with document context, not stretched prose). Data tabs go full-width. */}
+      {/* content — docs-site 3-column reading surface: on-page outline (left) ·
+          content (center) · context rail (right). Fills the width edge-to-edge
+          (no side margins, no middle band); each panel gets its own room. Data
+          tabs go full-width. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
         {tab === 'noidung' ? (
-          <div className="flex items-start gap-8 xl:gap-12">
+          <div className="flex items-start gap-6 xl:gap-8">
+            <OnPageOutline toc={toc} activeHeading={activeHeading} onJump={jumpTo} />
+            {/* The document sits on a distinct white "page" (like Google Docs) so
+                its bounds read clearly against the canvas; it fills the center
+                column on normal screens (not a floating narrow block). */}
             <article ref={articleRef} className="min-w-0 flex-1">
-              <div className="max-w-[46rem]">
+              <div className="mx-auto w-full max-w-[54rem] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
                 <DocHeader doc={doc} />
-                <ContentTab doc={doc} />
+                {viewingVersion
+                  ? <VersionViewer doc={doc} version={viewingVersion} onClose={() => setViewingVersion(null)} />
+                  : <ContentTab doc={doc} />}
               </div>
             </article>
-            <DetailRail doc={doc} toc={toc} related={related} metrics={metrics} assets={assets} activeHeading={activeHeading} onTab={setTab} onOpenDoc={onOpenDoc} onJump={jumpTo} onRefresh={() => setRefresh((v) => v + 1)} />
+            <DetailRail doc={doc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onRefresh={() => setRefresh((v) => v + 1)} />
           </div>
         ) : (
           <div className="w-full">
@@ -638,7 +656,6 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
             {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
             {tab === 'lienket' && <LinksTab doc={doc} />}
             {tab === 'dothi' && <GraphTab doc={doc} onOpenDoc={onOpenDoc} onEditMetric={editMetric} />}
-            {tab === 'lichsu' && <HistoryTab docId={doc.id} />}
           </div>
         )}
       </div>
@@ -646,23 +663,56 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   );
 }
 
-// ── Knowledge-graph neighborhood (LineageTab-style: columns + arrows, no deps) ──
-function GraphNode({ icon, title, sub, tone, onClick, href }: {
-  icon: ReactNode; title: string; sub?: string; tone?: string; onClick?: () => void; href?: string;
+// ── Knowledge-graph neighborhood — a hero doc node + a left-spine tree of
+// clustered branches (KPIs / dashboards & data / related docs). Node cards are
+// styled like the Dataset "Data Model" canvas nodes for a consistent graph feel;
+// pure CSS connectors, zero dependencies. ──
+type GraphTone = 'brand' | 'info' | 'neutral';
+const TONE_MAP: Record<GraphTone, { dot: string; icon: string; grad: string }> = {
+  brand: { dot: 'bg-brand', icon: 'bg-brand/10 text-brand', grad: 'from-brand/[0.07]' },
+  info: { dot: 'bg-info', icon: 'bg-info/10 text-info', grad: 'from-info/[0.07]' },
+  neutral: { dot: 'bg-text-quaternary', icon: 'bg-surface-2 text-text-tertiary', grad: 'from-surface-2' },
+};
+
+function GraphRow({ icon, title, sub, tone, onClick, href }: {
+  icon: ReactNode; title: string; sub?: string; tone: GraphTone; onClick?: () => void; href?: string;
 }) {
   const inner = (
     <span className="flex min-w-0 items-start gap-2">
-      <span className={cn('mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md', tone || 'bg-brand/10 text-brand')}>{icon}</span>
+      <span className={cn('mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md', TONE_MAP[tone].icon)}>{icon}</span>
       <span className="min-w-0">
         <span className="block truncate text-caption font-emphasis text-text-primary">{title}</span>
         {sub && <span className="block truncate text-tiny text-text-quaternary">{sub}</span>}
       </span>
     </span>
   );
-  const cls = 'block w-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-2 text-left transition-colors hover:border-brand/40 hover:bg-surface-2';
+  const cls = 'block w-full px-3 py-2 text-left transition-colors hover:bg-surface-2';
   if (href) return <Link href={href} className={cls}>{inner}</Link>;
   if (onClick) return <button type="button" onClick={onClick} className={cls}>{inner}</button>;
-  return <div className={cls.replace(' hover:border-brand/40 hover:bg-surface-2', '')}>{inner}</div>;
+  return <div className="block w-full px-3 py-2 text-left">{inner}</div>;
+}
+
+// A canvas-style cluster card (gradient header + colored dot + count), hung off
+// the spine with a dot + elbow connector.
+function GraphCluster({ tone, icon, label, count, children }: {
+  tone: GraphTone; icon: ReactNode; label: string; count: number; children: ReactNode;
+}) {
+  return (
+    <div className="relative">
+      {/* connector to the spine: node dot + horizontal elbow */}
+      <span className={cn('absolute -left-[34px] top-[15px] hidden h-2.5 w-2.5 rounded-full border-2 border-surface-1 md:block', TONE_MAP[tone].dot)} />
+      <span className="absolute -left-[25px] top-5 hidden h-px w-[25px] bg-[rgb(var(--border-line))] md:block" />
+      <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+        <div className={cn('flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-gradient-to-r to-transparent px-3 py-2', TONE_MAP[tone].grad)}>
+          <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">
+            <span className={cn('flex h-4 w-4 items-center justify-center rounded', TONE_MAP[tone].icon)}>{icon}</span>{label}
+          </span>
+          <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{count}</span>
+        </div>
+        <div className="divide-y divide-[rgb(var(--border-line))]">{children}</div>
+      </div>
+    </div>
+  );
 }
 
 function GraphTab({ doc, onOpenDoc, onEditMetric }: {
@@ -680,54 +730,48 @@ function GraphTab({ doc, onOpenDoc, onEditMetric }: {
       </div>
     );
   }
-  const col = 'flex-1 min-w-[220px] space-y-2';
-  const head = 'mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary';
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start gap-4">
-        <div className={col}>
-          <p className={head}><FileText className="h-3.5 w-3.5" />{t('govern.graph.thisDoc')}</p>
-          <GraphNode icon={docIcon(doc.doc_type)} title={doc.title} sub={doc.space} />
-        </div>
+    <div className="max-w-3xl">
+      {/* Hero: this document */}
+      <div className="inline-flex items-center gap-3 rounded-xl border border-brand/30 bg-brand/[0.06] px-4 py-3 shadow-linear-sm">
+        <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand">{docIcon(doc.doc_type)}</span>
+        <span className="min-w-0">
+          <span className="block truncate text-small font-strong text-text-primary">{doc.title}</span>
+          <span className="block truncate text-tiny text-text-quaternary">{t('govern.graph.thisDoc')} · {doc.space}</span>
+        </span>
+      </div>
+      {/* trunk */}
+      <div className="ml-5 h-4 w-px bg-[rgb(var(--border-line))]" />
+      {/* spine + branches */}
+      <div className="relative ml-5 space-y-4 border-l-2 border-[rgb(var(--border-line))] pl-8">
         {metrics.length > 0 && (
-          <>
-            <ArrowRight className="mt-9 h-4 w-4 flex-shrink-0 text-text-quaternary" />
-            <div className={col}>
-              <p className={head}><Sigma className="h-3.5 w-3.5" />{t('govern.graph.kpis')}</p>
-              {metrics.map((m) => (
-                <GraphNode key={m.machine_name} icon={<Sigma className="h-3.5 w-3.5" />} title={m.name}
-                  sub={m.is_source ? t('govern.metrics.sourceRole') : t('govern.metrics.reusedRole')}
-                  onClick={() => onEditMetric(m.machine_name)} />
-              ))}
-            </div>
-          </>
+          <GraphCluster tone="brand" icon={<Sigma className="h-3 w-3" />} label={t('govern.graph.kpis')} count={metrics.length}>
+            {metrics.map((m) => (
+              <GraphRow key={m.machine_name} tone="brand" icon={<Sigma className="h-3.5 w-3.5" />} title={m.name}
+                sub={m.is_source ? t('govern.metrics.sourceRole') : t('govern.metrics.reusedRole')}
+                onClick={() => onEditMetric(m.machine_name)} />
+            ))}
+          </GraphCluster>
         )}
         {assets.length > 0 && (
-          <>
-            <ArrowRight className="mt-9 h-4 w-4 flex-shrink-0 text-text-quaternary" />
-            <div className={col}>
-              <p className={head}><LayoutDashboard className="h-3.5 w-3.5" />{t('govern.graph.assets')}</p>
-              {assets.map((a) => (
-                <GraphNode key={`${a.type}:${a.ref}`}
-                  icon={a.type === 'dashboard' ? <LayoutDashboard className="h-3.5 w-3.5" /> : a.type === 'dataset' ? <Database className="h-3.5 w-3.5" /> : <TagIcon className="h-3.5 w-3.5" />}
-                  title={a.name || a.ref} sub={t(`govern.asset.${a.type}`)}
-                  href={a.exists && a.open_path ? a.open_path : undefined} />
-              ))}
-            </div>
-          </>
+          <GraphCluster tone="info" icon={<LayoutDashboard className="h-3 w-3" />} label={t('govern.graph.assets')} count={assets.length}>
+            {assets.map((a) => (
+              <GraphRow key={`${a.type}:${a.ref}`} tone="info"
+                icon={a.type === 'dashboard' ? <LayoutDashboard className="h-3.5 w-3.5" /> : a.type === 'dataset' ? <Database className="h-3.5 w-3.5" /> : <TagIcon className="h-3.5 w-3.5" />}
+                title={a.name || a.ref} sub={t(`govern.asset.${a.type}`)}
+                href={a.exists && a.open_path ? a.open_path : undefined} />
+            ))}
+          </GraphCluster>
         )}
-      </div>
-      {related.length > 0 && (
-        <div>
-          <p className={head}><BookOpen className="h-3.5 w-3.5" />{t('govern.graph.related')}</p>
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {related.length > 0 && (
+          <GraphCluster tone="neutral" icon={<BookOpen className="h-3 w-3" />} label={t('govern.graph.related')} count={related.length}>
             {related.map((r) => (
-              <GraphNode key={r.id} icon={<FileText className="h-3.5 w-3.5" />} title={r.title}
+              <GraphRow key={r.id} tone="neutral" icon={<FileText className="h-3.5 w-3.5" />} title={r.title}
                 sub={relatedReason(r, t)} onClick={() => onOpenDoc(r.id)} />
             ))}
-          </div>
-        </div>
-      )}
+          </GraphCluster>
+        )}
+      </div>
     </div>
   );
 }
@@ -818,18 +862,11 @@ function resolveBody(doc: KnowledgeDoc): string {
   return body;
 }
 
-// ── Document header (eyebrow → title → lead summary) — clear entry hierarchy ──
+// ── Document header (title → lead summary). Metadata chips removed — that
+// context (space/type/status/version/owner) lives in the right rail. ──
 function DocHeader({ doc }: { doc: KnowledgeDoc }) {
-  const { t } = useI18n();
   return (
     <header className="mb-7 border-b border-[rgb(var(--border-line))] pb-5">
-      <div className="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-tiny">
-        <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-text-tertiary">{doc.space}</span>
-        <span className="text-text-quaternary">{docTypeLabel(doc.doc_type, t)}</span>
-        <span className={cn('rounded-full px-2 py-0.5', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>
-        <span className="text-text-quaternary">v{doc.version}</span>
-        {doc.owner && <span className="text-text-quaternary">· {doc.owner}</span>}
-      </div>
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">{doc.pinned ? <Pin className="h-4 w-4" /> : docIcon(doc.doc_type)}</span>
         <h1 className="text-h2 font-emphasis leading-tight text-text-primary">{doc.title}</h1>
@@ -850,11 +887,29 @@ function RailRow({ label, value }: { label: string; value: ReactNode }) {
     </div>
   );
 }
-function RailCard({ title, icon, children }: { title: string; icon?: ReactNode; children: ReactNode }) {
+// Rail card styled like a Dataset "Data Model" canvas node: a divider'd header
+// bar (icon + label) over a padded body. Optionally COLLAPSIBLE so secondary
+// panels can tuck away and only expand on demand (keeps the rail uncluttered).
+function RailCard({ title, icon, children, collapsible = false, defaultOpen = true }: {
+  title: string; icon?: ReactNode; children: ReactNode; collapsible?: boolean; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const headerBase = 'flex w-full items-center gap-1.5 bg-surface-2/50 px-3.5 py-2 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary';
+  if (!collapsible) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+        <p className={cn(headerBase, 'border-b border-[rgb(var(--border-line))]')}>{icon}{title}</p>
+        <div className="p-3.5">{children}</div>
+      </div>
+    );
+  }
   return (
-    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-      <p className="mb-3 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{icon}{title}</p>
-      {children}
+    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <button onClick={() => setOpen((o) => !o)} className={cn(headerBase, 'justify-between transition-colors hover:bg-surface-2', open && 'border-b border-[rgb(var(--border-line))]')}>
+        <span className="flex items-center gap-1.5">{icon}{title}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', !open && '-rotate-90')} />
+      </button>
+      {open && <div className="p-3.5">{children}</div>}
     </div>
   );
 }
@@ -905,14 +960,65 @@ function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () =>
   );
 }
 
-function DetailRail({ doc, toc, related, metrics, assets, activeHeading, onTab, onOpenDoc, onJump, onRefresh }: {
+// Left rail — on-page outline (TOC) with scroll-spy. Docs-site style: a thin
+// vertical rule with the section you're reading highlighted. Its own column so
+// it never competes with the right context rail for vertical space.
+function OnPageOutline({ toc, activeHeading, onJump }: {
+  toc: { level: number; text: string }[]; activeHeading: string; onJump: (text: string) => void;
+}) {
+  // Collapsible like the Google-Docs outline — folds to a slim icon so the
+  // reader can reclaim the width whenever they want (remembered per browser).
+  const [open, setOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem('appbi.govern.outline') !== '0';
+  });
+  const toggle = () => setOpen((o) => { try { window.localStorage.setItem('appbi.govern.outline', o ? '0' : '1'); } catch { /* ignore */ } return !o; });
+  if (toc.length <= 1) return null;
+  if (!open) {
+    return (
+      <div className="sticky top-0 hidden shrink-0 self-start pt-0.5 lg:block">
+        <button onClick={toggle} title="Mục trên trang"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-line))] text-text-tertiary transition-colors hover:bg-surface-2 hover:text-brand">
+          <List className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <aside className="sticky top-0 hidden max-h-[calc(100vh-4.5rem)] w-52 shrink-0 self-start overflow-y-auto py-1 lg:block [scrollbar-gutter:stable]">
+      <div className="mb-2 flex items-center justify-between gap-1 px-2">
+        <p className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
+          <List className="h-3.5 w-3.5" />Mục trên trang
+        </p>
+        <button onClick={toggle} title="Thu gọn" className="text-text-quaternary transition-colors hover:text-text-primary">
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <nav className="border-l border-[rgb(var(--border-line))]">
+        {toc.map((h, i) => {
+          const active = !!activeHeading && h.text === activeHeading;
+          return (
+            <button key={i} onClick={() => onJump(h.text)} aria-current={active ? 'true' : undefined}
+              className={cn(
+                '-ml-px block w-full truncate border-l-2 px-2.5 py-1 text-left text-caption transition-colors',
+                active ? 'border-brand font-emphasis text-brand' : 'border-transparent text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-primary',
+                h.level === 3 && 'pl-5 text-tiny',
+              )}>
+              {h.text}
+            </button>
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}
+
+function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh }: {
   doc: KnowledgeDoc;
-  toc: { level: number; text: string }[];
   related: NonNullable<KnowledgeDoc['related_docs']>;
   metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
   assets: NonNullable<KnowledgeDoc['assets_on_page']>;
-  activeHeading: string;
-  onTab: (tab: string) => void; onOpenDoc: (id: number) => void; onJump: (text: string) => void;
+  onTab: (tab: string) => void; onOpenDoc: (id: number) => void;
   onRefresh: () => void;
 }) {
   const { t, language } = useI18n();
@@ -923,34 +1029,14 @@ function DetailRail({ doc, toc, related, metrics, assets, activeHeading, onTab, 
     catch (e) { toast.error(errDetail(e) || t('govern.detail.verifyFailed')); }
     finally { setVerifyBusy(false); }
   };
-  // Sticky + independently scrollable so the reading aids stay in view as the
-  // article scrolls; "On this page" comes FIRST (it's the reading aid), with the
-  // section you're reading highlighted (scroll-spy).
+  // Sticky + independently scrollable so context stays in view as the article
+  // scrolls. The on-page outline lives in its own LEFT column, so this rail is
+  // free for AI readiness / info / links / related without clipping.
   return (
     <aside className="sticky top-0 hidden max-h-[calc(100vh-4.5rem)] w-72 shrink-0 flex-col gap-4 self-start overflow-y-auto pb-2 lg:flex xl:w-80 [scrollbar-gutter:stable]">
-      {toc.length > 1 && (
-        <RailCard title="Mục trên trang" icon={<List className="h-3.5 w-3.5" />}>
-          <nav className="space-y-0.5">
-            {toc.map((h, i) => {
-              const active = !!activeHeading && h.text === activeHeading;
-              return (
-                <button key={i} onClick={() => onJump(h.text)} aria-current={active ? 'true' : undefined}
-                  className={cn(
-                    'block w-full truncate rounded border-l-2 px-2 py-1 text-left text-caption transition-colors',
-                    active ? 'border-brand bg-brand/5 font-emphasis text-brand' : 'border-transparent text-text-secondary hover:bg-surface-2 hover:text-brand',
-                    h.level === 3 && 'pl-4 text-tiny',
-                  )}>
-                  {h.text}
-                </button>
-              );
-            })}
-          </nav>
-        </RailCard>
-      )}
-
       <AiContextCard doc={doc} onRefresh={onRefresh} />
 
-      <RailCard title="Thông tin">
+      <RailCard title="Thông tin" collapsible defaultOpen={false}>
         <dl className="space-y-2.5">
           <RailRow label="Không gian" value={doc.space} />
           <RailRow label="Loại" value={docTypeLabel(doc.doc_type, t)} />
@@ -985,7 +1071,7 @@ function DetailRail({ doc, toc, related, metrics, assets, activeHeading, onTab, 
       )}
 
       {related.length > 0 && (
-        <RailCard title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />}>
+        <RailCard title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />} collapsible defaultOpen={false}>
           <div className="space-y-1">
             {related.map((r) => (
               <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={relatedReason(r, t)}>
@@ -1124,44 +1210,145 @@ function LinksTab({ doc }: { doc: KnowledgeDoc }) {
   );
 }
 
-function HistoryTab({ docId }: { docId: number }) {
-  const { t, locale } = useI18n();
-  const [versions, setVersions] = useState<KnowledgeDocVersion[] | null>(null);
-  const [viewV, setViewV] = useState<KnowledgeDocVersion | null>(null);
-  useEffect(() => { let on = true; listDocVersions(docId).then((v) => { if (on) setVersions(v); }).catch(() => { if (on) setVersions([]); }); return () => { on = false; }; }, [docId]);
-  const viewVersion = async (n: number) => { try { setViewV(await getDocVersion(docId, n)); } catch { toast.error(t('govern.history.loadVersionFailed')); } };
-
+// Read-only banner + body when the reader is showing a PAST version instead of
+// the current working content.
+function VersionViewer({ doc, version, onClose }: { doc: KnowledgeDoc; version: KnowledgeDocVersion; onClose: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="min-w-0">
-      <p className="mb-2 flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary"><History className="h-3.5 w-3.5" /> {t('govern.history.title')}</p>
-      {versions === null ? (
-        <p className="py-6 text-center text-caption text-text-tertiary">{t('govern.loading')}</p>
-      ) : versions.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-8 text-center text-caption text-text-tertiary">{t('govern.history.empty')}</p>
-      ) : (
-        <ul className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
-          {versions.map((v) => (
-            <li key={v.version} className="flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-surface-2">
-              <div className="min-w-0">
-                <span className="font-strong text-text-primary">v{v.version}</span>
-                {v.change_note && <span className="ml-2 text-caption text-text-secondary">{v.change_note}</span>}
-                <span className="ml-2 text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? new Date(v.created_at).toLocaleString(locale) : ''}</span>
-              </div>
-              <button onClick={() => viewVersion(v.version)} className="flex-shrink-0 text-caption text-brand hover:underline">{t('govern.action.view')}</button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {viewV && (
-        <div className="mt-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-caption font-strong text-text-primary">{t('govern.history.readonlyTitle', { version: viewV.version })}</span>
-            <button onClick={() => setViewV(null)} className="text-text-quaternary hover:text-text-secondary"><X className="h-3.5 w-3.5" /></button>
+      <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2">
+        <span className="flex items-center gap-1.5 text-caption text-brand">
+          <History className="h-3.5 w-3.5" />
+          {t('govern.history.readonlyTitle', { version: version.version })}
+          {version.is_published && <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-tiny text-success">{t('govern.version.published')}</span>}
+        </span>
+        <button onClick={onClose} className="flex items-center gap-1 text-tiny text-text-tertiary hover:text-text-primary"><X className="h-3.5 w-3.5" />{t('govern.version.backToCurrent')}</button>
+      </div>
+      {version.body ? <Markdown source={version.body} /> : <p className="text-caption text-text-tertiary">{t('govern.history.emptyBody')}</p>}
+    </div>
+  );
+}
+
+// Compact versions control that lives in the header bar: a small button showing
+// the live version, expanding a dropdown to view any version, see live/latest
+// badges, and publish a chosen one — no inline list on the reading surface.
+function VersionsDropdown({ docId, publishedVersion, latestVersion, refreshKey, viewingVersion, onView, onExitView, onPublished }: {
+  docId: number; publishedVersion: number | null; latestVersion: number; refreshKey: number; viewingVersion: number | null;
+  onView: (n: number) => void; onExitView: () => void; onPublished: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [versions, setVersions] = useState<KnowledgeDocVersion[] | null>(null);
+  const [publishFor, setPublishFor] = useState<number | null>(null);
+  useEffect(() => {
+    if (!open && versions !== null) return;
+    let on = true;
+    listDocVersions(docId).then((v) => { if (on) setVersions(v); }).catch(() => { if (on) setVersions([]); });
+    return () => { on = false; };
+  }, [docId, refreshKey, open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn('inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-caption font-medium transition-colors',
+          open ? 'border-brand/40 bg-brand/10 text-brand' : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2')}
+        title={t('govern.version.title')}
+      >
+        <History className="h-3.5 w-3.5" />
+        <span>{t('govern.version.live')} v{publishedVersion ?? latestVersion}</span>
+        {latestVersion !== (publishedVersion ?? latestVersion) && <span className="rounded-full bg-warning/15 px-1.5 text-tiny text-warning">{t('govern.version.draftBadge')} v{latestVersion}</span>}
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <>
+          <button className="fixed inset-0 z-20 cursor-default" aria-hidden onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[70vh] w-[420px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+            <p className="flex items-center gap-1.5 border-b border-[rgb(var(--border-line))] bg-surface-2/50 px-3.5 py-2 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
+              <History className="h-3.5 w-3.5" />{t('govern.version.title')}
+            </p>
+            {versions === null ? (
+              <p className="px-3.5 py-5 text-center text-caption text-text-tertiary">{t('govern.loading')}</p>
+            ) : versions.length === 0 ? (
+              <p className="px-3.5 py-5 text-center text-caption text-text-tertiary">{t('govern.history.empty')}</p>
+            ) : (
+              <ul className="divide-y divide-[rgb(var(--border-line))]">
+                {versions.map((v) => {
+                  const isViewing = viewingVersion === v.version;
+                  return (
+                    <li key={v.version} className={cn('flex items-start justify-between gap-3 px-3.5 py-2.5', isViewing && 'bg-brand/5')}>
+                      <div className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-caption font-strong text-text-primary">v{v.version}</span>
+                          {v.is_published && <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-tiny font-emphasis text-success">{t('govern.version.published')}</span>}
+                          {v.is_latest && <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{t('govern.version.latest')}</span>}
+                        </span>
+                        {v.change_note && <span className="mt-0.5 block text-tiny text-text-secondary">{v.change_note}</span>}
+                        <span className="mt-0.5 block text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? relTime(v.created_at, locale) : ''}</span>
+                      </div>
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {isViewing
+                          ? <button onClick={() => { onExitView(); }} className="text-tiny text-text-tertiary hover:text-text-primary">{t('govern.version.backToCurrent')}</button>
+                          : <button onClick={() => { onView(v.version); setOpen(false); }} className="inline-flex items-center gap-1 text-tiny text-brand hover:underline"><Eye className="h-3 w-3" />{t('govern.action.view')}</button>}
+                        {!v.is_published && (
+                          <Button size="xs" variant="secondary" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => setPublishFor(v.version)}>{t('govern.version.publish')}</Button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-          {viewV.body ? <Markdown source={viewV.body} /> : <p className="text-caption text-text-tertiary">{t('govern.history.emptyBody')}</p>}
-        </div>
+        </>
+      )}
+      {publishFor != null && (
+        <PublishDialog docId={docId} version={publishFor} onClose={() => setPublishFor(null)}
+          onDone={() => { setPublishFor(null); setOpen(false); onPublished(); }} />
       )}
     </div>
+  );
+}
+
+// Publish a specific version — requires a short change note; an AiButton drafts
+// it from the DIFF (never the whole doc).
+function PublishDialog({ docId, version, onClose, onDone }: { docId: number; version: number; onClose: () => void; onDone: () => void }) {
+  const { t } = useI18n();
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const genNote = async () => {
+    setAiBusy(true);
+    try { setNote(await aiChangeNote(docId, version)); }
+    catch (e) { toast.error(errDetail(e) || t('govern.version.aiNoteFailed')); }
+    finally { setAiBusy(false); }
+  };
+  const doPublish = async () => {
+    if (!note.trim()) { toast.error(t('govern.version.noteRequired')); return; }
+    setBusy(true);
+    try { await publishVersion(docId, version, note.trim()); toast.success(t('govern.version.publishOk', { version })); onDone(); }
+    catch (e) { toast.error(errDetail(e) || t('govern.version.publishFailed')); }
+    finally { setBusy(false); }
+  };
+  return (
+    <AppModalShell
+      onClose={onClose} title={t('govern.version.publishTitle', { version })} icon={<Upload className="h-4 w-4" />} maxWidthClass="max-w-md"
+      footer={(
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{t('govern.action.cancel')}</Button>
+          <Button variant="primary" leadingIcon={<Upload className="h-4 w-4" />} loading={busy} disabled={busy || !note.trim()} onClick={doPublish}>{t('govern.version.publish')}</Button>
+        </>
+      )}
+    >
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <Label required>{t('govern.version.changeNote')}</Label>
+          <AiButton size="xs" loading={aiBusy} onClick={genNote}>{t('govern.version.aiNote')}</AiButton>
+        </div>
+        <Textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder={t('govern.version.changeNotePlaceholder')} autoFocus />
+        <p className="text-tiny text-text-quaternary">{t('govern.version.publishHint')}</p>
+      </div>
+    </AppModalShell>
   );
 }
 

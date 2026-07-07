@@ -385,6 +385,25 @@ def govern_knowledge_version(doc_id: int, version: int, db: Session = Depends(ge
     return v
 
 
+class PublishVersionReq(BaseModel):
+    version: int
+    change_note: str
+
+
+@router.post("/govern/knowledge/{doc_id}/publish")
+def govern_knowledge_publish(doc_id: int, body: PublishVersionReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Make a specific version LIVE (RAG/public reads it) with a required change
+    note. The latest working draft is unaffected — v1 can stay live while v2 drafts."""
+    return _run(lambda: GovernanceService.publish_version(db, doc_id, body.version, body.change_note, changed_by=getattr(user, "email", None)))
+
+
+@router.post("/govern/knowledge/{doc_id}/versions/{version}/change-note-ai")
+def govern_knowledge_change_note_ai(doc_id: int, version: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """AI drafts a short 'what changed' note by diffing this version against the
+    previously-published/previous one (diff only — never the whole document)."""
+    return _run(lambda: GovernanceService.version_change_note_ai(db, doc_id, version))
+
+
 # ════════════════════════ GOVERN: METRICS (AppBI-native) ════════════════════
 def _collect_accessible_metrics(db: Session, user: User) -> list[dict[str, Any]]:
     """

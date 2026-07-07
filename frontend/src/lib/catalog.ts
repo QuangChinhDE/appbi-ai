@@ -363,6 +363,8 @@ export interface KnowledgeDoc {
   retrieval_count?: number;
   /** Deterministic AI-readiness score + machine keys of what's missing. */
   ai_ready?: { score: number; missing: string[] };
+  /** Which version is live (RAG/public read it); may differ from the latest. */
+  published_version?: number | null;
 }
 
 export interface RelatedDoc {
@@ -442,6 +444,19 @@ export interface KnowledgeDocVersion {
   doc_type?: string | null;
   summary?: string | null;
   body?: string;
+  is_published?: boolean;
+  is_latest?: boolean;
+}
+
+/** Make a specific version live (RAG/public reads it); requires a change note. */
+export async function publishVersion(docId: number, version: number, changeNote: string): Promise<{ published_version: number }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/publish`, { version, change_note: changeNote });
+  return data;
+}
+/** AI drafts a short "what changed" note from the diff (never the whole doc). */
+export async function aiChangeNote(docId: number, version: number): Promise<string> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/versions/${version}/change-note-ai`);
+  return data.change_note ?? '';
 }
 
 export async function listDocVersions(docId: number): Promise<KnowledgeDocVersion[]> {

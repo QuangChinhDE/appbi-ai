@@ -75,7 +75,11 @@ def embed_doc(db, doc) -> str:
     `doc` is a GovernKnowledgeDoc ORM instance. Returns a short status string."""
     from app.services.embedding_service import EmbeddingService
     try:
-        body = (doc.body or "").strip()
+        # RAG serves the PUBLISHED (live) version's body — not the latest draft.
+        # So editing a new draft does NOT re-index; only publishing does.
+        from app.services.governance_service import GovernanceService
+        live_body = GovernanceService.published_body(db, doc)
+        body = (live_body or "").strip()
         model = settings.active_embedding_model
 
         # Archived or empty → drop chunks, clear hash (nothing to retrieve).
@@ -89,7 +93,7 @@ def embed_doc(db, doc) -> str:
         if doc.embedded_hash == h:
             return "unchanged"  # HASH-GATE — no embedding calls at all
 
-        chunks = chunk_doc(doc.body)
+        chunks = chunk_doc(body)
         if not chunks:
             return "empty"
 

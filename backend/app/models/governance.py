@@ -167,6 +167,10 @@ class GovernKnowledgeDoc(Base):
     review_date = Column(Date, nullable=True)              # next scheduled review
     last_verified_at = Column(DateTime, nullable=True)     # owner pressed "verified"
     importance = Column(String(12), nullable=False, default="normal")  # low|normal|high
+    # Version-level publishing: which version is LIVE (RAG/public reads it).
+    # null = nothing published yet. Independent of the latest working draft, so
+    # v1 can stay published while v2 is an in-progress draft.
+    published_version = Column(Integer, nullable=True)
     # ── AI section: generated on save (hash-gated), user-editable ──────────
     ai_summary = Column(Text, nullable=True)
     ai_keywords = Column(JSON, nullable=True)              # [str]

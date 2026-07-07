@@ -550,6 +550,7 @@ class GovernanceService:
             "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or [],
             "view_count": int(d.view_count or 0),
             "retrieval_count": int(d.retrieval_count or 0),
+            "published_version": d.published_version,
         }
         if include_body:
             out["body"] = d.body or ""
@@ -781,6 +782,12 @@ class GovernanceService:
             d = GovernKnowledgeDoc(title=title, slug=slugify(title, "doc"), version=1, provider="user", **fields)
             db.add(d)
             action = "create"
+        # First publish only: saving as "Published" with nothing live yet adopts
+        # this version as the live one. If a version is ALREADY published, a save
+        # leaves it untouched — the new version stays a draft until explicitly
+        # published from the versions panel (so v1 stays live while v2 is drafted).
+        if (d.status == "Published") and (d.published_version is None):
+            d.published_version = d.version
         GovernanceService._commit(db)
         GovernanceService.log_change(
             db, "knowledge", d.slug or str(d.id), action,
@@ -857,6 +864,76 @@ class GovernanceService:
         GovernanceService.log_change(db, "knowledge", d.slug or str(d.id), "verify",
                                      summary=f"kiểm chứng trang '{d.title}'", changed_by=changed_by)
         return {"ok": True, "last_verified_at": d.last_verified_at.isoformat()}
+
+    @staticmethod
+    def published_body(db: Session, doc: GovernKnowledgeDoc) -> str:
+        """The body that is LIVE for RAG/public: the published version's snapshot
+        if one is set, else the current working body (docs that never used
+        explicit publishing keep serving their latest)."""
+        if doc.published_version:
+            v = (
+                db.query(GovernKnowledgeDocVersion)
+                .filter(GovernKnowledgeDocVersion.doc_id == doc.id,
+                        GovernKnowledgeDocVersion.version == doc.published_version)
+                .first()
+            )
+            if v is not None:
+                return v.body or ""
+        return doc.body or ""
+
+    @staticmethod
+    def publish_version(db: Session, doc_id: int, version: int, change_note: str, *, changed_by: str | None = None) -> dict[str, Any]:
+        """Make a SPECIFIC version live. Records the change note on that version,
+        points published_version at it, flips the doc to Published, and re-embeds
+        the (now different) live body for RAG. The latest draft is unaffected."""
+        d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        if d is None:
+            raise GovernanceError(404, "Không tìm thấy trang tri thức.")
+        snap = (
+            db.query(GovernKnowledgeDocVersion)
+            .filter(GovernKnowledgeDocVersion.doc_id == doc_id, GovernKnowledgeDocVersion.version == version)
+            .first()
+        )
+        if snap is None:
+            raise GovernanceError(404, f"Không tìm thấy phiên bản v{version}.")
+        note = (change_note or "").strip()
+        if not note:
+            raise GovernanceError(422, "Cần ghi tóm tắt thay đổi khi xuất bản.")
+        snap.change_note = note[:512]
+        d.published_version = version
+        d.status = "Published"
+        GovernanceService._commit(db)
+        GovernanceService.log_change(db, "knowledge", d.slug or str(d.id), "publish",
+                                     summary=f"xuất bản v{version} trang '{d.title}': {note[:120]}", changed_by=changed_by)
+        # Re-embed the live body (published version) for RAG. Best-effort.
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
+            embed_doc(db, d)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+        return {"ok": True, "published_version": version}
+
+    @staticmethod
+    def version_change_note_ai(db: Session, doc_id: int, version: int) -> dict[str, Any]:
+        """Draft a 1-2 sentence 'what changed' note by diffing this version's body
+        against the previously-published (or previous) version — feeds the LLM the
+        DIFF only, never the whole document (token-safe for huge docs)."""
+        rows = (
+            db.query(GovernKnowledgeDocVersion)
+            .filter(GovernKnowledgeDocVersion.doc_id == doc_id)
+            .order_by(GovernKnowledgeDocVersion.version.desc())
+            .all()
+        )
+        cur = next((r for r in rows if r.version == version), None)
+        if cur is None:
+            raise GovernanceError(404, f"Không tìm thấy phiên bản v{version}.")
+        d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        base_v = d.published_version if (d and d.published_version and d.published_version != version) else None
+        prev = next((r for r in rows if r.version == base_v), None) if base_v else \
+            next((r for r in rows if r.version < version), None)
+        from app.services.dashboard_ai_bot.govern_ai_summary import summarize_change
+        note = summarize_change(prev.body if prev else "", cur.body or "", prev_label=f"v{prev.version}" if prev else "trước")
+        return {"change_note": note}
 
     @staticmethod
     def knowledge_insights(db: Session) -> dict[str, Any]:
@@ -961,10 +1038,15 @@ class GovernanceService:
             .order_by(GovernKnowledgeDocVersion.version.desc())
             .all()
         )
+        doc = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        pub = doc.published_version if doc else None
+        latest = max((r.version for r in rows), default=None)
         return [{
             "version": r.version, "title": r.title, "status": r.status,
             "change_note": r.change_note, "changed_by": r.changed_by,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "is_published": (r.version == pub),
+            "is_latest": (r.version == latest),
         } for r in rows]
 
     @staticmethod

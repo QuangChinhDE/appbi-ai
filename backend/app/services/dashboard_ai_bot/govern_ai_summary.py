@@ -19,6 +19,45 @@ def _hash(model: str, body: str) -> str:
     return hashlib.sha256(f"{model}\n{body}".encode("utf-8")).hexdigest()
 
 
+def summarize_change(prev_body: str, new_body: str, *, prev_label: str = "trước") -> str:
+    """Draft a 1-2 sentence Vietnamese 'what changed' note. Feeds the LLM ONLY a
+    unified DIFF of the two versions (capped) — never the full documents — so it
+    stays cheap even for very large docs. Falls back to a size-based blurb when
+    no AI key is configured."""
+    import difflib
+
+    prev = (prev_body or "").splitlines()
+    new = (new_body or "").splitlines()
+    diff = [l for l in difflib.unified_diff(prev, new, lineterm="", n=1)
+            if l and l[0] in "+-" and not l.startswith(("+++", "---"))]
+    if not diff:
+        return "Không có thay đổi nội dung so với bản trước."
+    added = sum(1 for l in diff if l[0] == "+")
+    removed = sum(1 for l in diff if l[0] == "-")
+    diff_text = "\n".join(diff)[:4000]  # cap — token-safe for huge docs
+
+    try:
+        from app.services.llm_client import LLMClient, _providers  # type: ignore
+        if not _providers():
+            return f"Cập nhật nội dung: thêm {added} dòng, bớt {removed} dòng so với bản {prev_label}."
+        result = LLMClient.complete_json(
+            (
+                "Đây là DIFF (unified; dòng '+' là thêm, '-' là bớt) giữa bản mới và bản "
+                f"{prev_label} của một tài liệu nghiệp vụ:\n\n{diff_text}\n\n"
+                "Tóm tắt NGẮN GỌN (1-2 câu tiếng Việt) những gì đã thay đổi, tập trung vào ý nghĩa "
+                "nghiệp vụ (không liệt kê từng dòng). Trả JSON: {\"note\": string}."
+            ),
+            system="Bạn tóm tắt thay đổi tài liệu ngắn gọn, đúng trọng tâm. Luôn trả JSON hợp lệ.",
+            max_tokens=200,
+        )
+        note = (result or {}).get("note") if isinstance(result, dict) else None
+        if note:
+            return str(note)[:400]
+    except Exception:  # noqa: BLE001
+        logger.warning("summarize_change failed", exc_info=True)
+    return f"Cập nhật nội dung: thêm {added} dòng, bớt {removed} dòng so với bản {prev_label}."
+
+
 def generate_summary(db, doc, *, force: bool = False) -> str:
     """(Re)generate doc.ai_summary + ai_keywords. Returns a short status string.
     `doc` is a GovernKnowledgeDoc ORM instance already persisted."""
