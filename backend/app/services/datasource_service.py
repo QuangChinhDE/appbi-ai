@@ -345,31 +345,60 @@ def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
     return f"{auth_mode}:{project_id}:{creds_fp}"
 
 
+def _bq_client_cache_hit(cache_key: str | None) -> bigquery.Client | None:
+    """Return a warm cached client for the key, or None if cold/expired/uncacheable."""
+    if cache_key is None:
+        return None
+    cached = _BQ_CLIENT_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
+        return cached[1]
+    return None
+
+
 def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
     project_id = str(config.get("project_id") or "").strip() or None
     cache_key = _bigquery_client_cache_key(config)
-    if cache_key is not None:
-        cached = _BQ_CLIENT_CACHE.get(cache_key)
-        now = time.time()
-        if cached and (now - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
-            # Warm reuse — the fast path Fix #5 protects (we no longer close()
-            # cached clients). Kept at DEBUG to avoid spamming INFO on every
-            # dry-run + query; the cold-build line below is the notable event.
-            logger.debug("[perf] bq client cache=HIT project=%s", project_id)
-            return cached[1]
-    # [perf] cold build: credential load + TLS handshake. Expensive; should be
-    # RARE per datasource (~once per 5-min TTL). A burst of these on one
-    # dashboard load means the cache isn't sticking — only expected when the
-    # key can't be derived (no project / no OAuth owner id).
-    _build_reason = "uncacheable(no project/owner)" if cache_key is None else "cold/expired"
-    logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
-    client = bigquery.Client(
-        credentials=_build_gcp_credentials(config),
-        project=project_id,
-    )
-    if cache_key is not None:
-        _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
-    return client
+
+    # Fast path (unlocked): a warm client, the overwhelmingly common case —
+    # served with zero lock contention. Fix #5 keeps cached clients open.
+    hit = _bq_client_cache_hit(cache_key)
+    if hit is not None:
+        logger.debug("[perf] bq client cache=HIT project=%s", project_id)
+        return hit
+
+    def _build() -> bigquery.Client:
+        # Re-check inside the flight: a burst of concurrent requests that all
+        # missed the cold cache serialise here; the LEADER builds + caches, and
+        # every waiter (which enters after the leader populated the cache) takes
+        # this hit instead of issuing its own credential-load + TLS handshake.
+        # This is the single_flight() contract (compute re-checks the cache).
+        warm = _bq_client_cache_hit(cache_key)
+        if warm is not None:
+            logger.debug("[perf] bq client cache=HIT(after-flight) project=%s", project_id)
+            return warm
+        # [perf] cold build: credential load + TLS handshake. Expensive; should be
+        # RARE per datasource (~once per 5-min TTL). A burst of these on one
+        # dashboard load means the cache isn't sticking — only expected when the
+        # key can't be derived (no project / no OAuth owner id).
+        _build_reason = "uncacheable(no project/owner)" if cache_key is None else "cold/expired"
+        logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
+        client = bigquery.Client(
+            credentials=_build_gcp_credentials(config),
+            project=project_id,
+        )
+        if cache_key is not None:
+            _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
+        return client
+
+    # Single-flight the cold build so a cache stampede (N concurrent cold-cache
+    # requests) collapses to ONE client build instead of N — the real source of
+    # the 17-26s outliers. Only when we have a key to dedup on; an uncacheable
+    # config (no project / no OAuth owner) has a distinct identity per call, so
+    # there is nothing to collapse — build directly (old behaviour).
+    if cache_key is None:
+        return _build()
+    from app.services import query_cache as _qc
+    return _qc.single_flight(f"bqclient::{cache_key}", _build)
 
 
 def _bq_client_is_cached(config: Dict[str, Any], client: "bigquery.Client") -> bool:
