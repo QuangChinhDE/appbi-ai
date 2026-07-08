@@ -60,6 +60,10 @@ services:
       AUTH_GOOGLE_AUTO_CREATE_USERS: ${AUTH_GOOGLE_AUTO_CREATE_USERS:-false}
       AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL: ${AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL:-}
       API_RELOAD: "false"
+      # uvicorn worker count (read by entrypoint.sh). Default 1 keeps prior
+      # behaviour; set WEB_CONCURRENCY in .env (run.sh syncs it from .env.example)
+      # to scale concurrent report serving.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       # Workboard module — bundled with the core stack.
       WORKBOARDS_ENABLED: ${WORKBOARDS_ENABLED:-true}
