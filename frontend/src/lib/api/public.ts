@@ -76,6 +76,25 @@ export const publicDashboardApi = {
     return res.data;
   },
 
+  // "1 request = 1 page": fetch data for MANY charts in ONE round-trip. Each
+  // item carries its own already-computed viewer filters (scope-bounded +
+  // cross-filter-merged by the caller), so the server result is byte-identical
+  // to N getChartData() calls — this is purely a transport + server-side
+  // concurrency win (kills N round-trips + the browser's per-host socket queue).
+  getChartsDataBatch: async (
+    token: string,
+    sessionToken: string | undefined,
+    items: Array<{ chart_id: number; filters?: BaseFilter[]; granularity?: string }>,
+  ): Promise<{ results: Array<{ chart_id: number; data?: any; error?: string; status?: number }> }> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(
+      `/public/dashboards/${token}/charts/data`,
+      { items },
+      { headers },
+    );
+    return res.data;
+  },
+
   getFilterDistinctValues: async (
     token: string,
     datasetId: number,

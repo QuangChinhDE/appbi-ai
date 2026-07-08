@@ -2673,6 +2673,96 @@ def get_public_chart_data(
         )
 
 
+class _PublicChartsBatchItem(BaseModel):
+    chart_id: int
+    # Viewer filters for THIS chart (already scope-bounded + cross-filter-merged
+    # by the FE, exactly like the single-chart endpoint's `filters` query param).
+    filters: list[dict] | None = None
+    granularity: str | None = None
+
+
+class _PublicChartsBatchBody(BaseModel):
+    items: list[_PublicChartsBatchItem]
+
+
+@router.post("/dashboards/{token}/charts/data")
+# "1 request = 1 page": one open/page-switch now sends ONE request for all its
+# tiles instead of N. Kept generous but bounded (a viewer flips pages a handful
+# of times per minute; each is one call here regardless of tile count).
+@_limiter.limit("120/minute")
+def get_public_charts_data_batch(
+    token: str,
+    request: Request,
+    body: _PublicChartsBatchBody,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Batch chart-data for a public link — the server side of "1 request = 1
+    page". Resolves the dashboard + link filters + snapshot TTL ONCE (vs once
+    per tile before), then fans the charts out server-side via
+    ``ChartService.get_charts_data_batch`` (own session/thread each). Returns
+    per-chart ``{chart_id, data | error, status}``; a bad/unauthorised-to-this-
+    dashboard tile is isolated and never fails the whole page. Each chart uses
+    the SAME merge + engine path as the single-chart endpoint, so results are
+    byte-identical."""
+    dash, public_filters, _, _chart_appearance = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    ttl = _resolve_public_snapshot_ttl(_chart_appearance)
+    valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+
+    items: list[dict] = []
+    not_found: list[int] = []
+    seen: set[int] = set()
+    for it in body.items:
+        cid = int(it.chart_id)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        if cid not in valid_ids:
+            not_found.append(cid)
+            continue
+        viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
+        combined_filters = _build_public_chart_filters(
+            dash, public_filters, viewer_filters,
+            context_for_log=f"chart_data_batch:{token}:{cid}",
+        )
+        _grain = str(it.granularity or "").strip().lower()
+        grain = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
+        items.append({
+            "chart_id": cid,
+            "extra_filters": combined_filters or None,
+            "filter_context": "dashboard",
+            "granularity_override": grain,
+            "snapshot_ttl_minutes": ttl,
+        })
+
+    # Serialize INSIDE each worker thread (session still open) so the Chart ORM
+    # in the result is copied into ChartDataResponse before the session closes —
+    # otherwise the request thread hits DetachedInstanceError on lazy attributes.
+    raw_results = ChartService.get_charts_data_batch(
+        items, serialize=lambda d: ChartDataResponse(**d),
+    )
+
+    results: list[dict] = []
+    for r in raw_results:
+        if r.get("ok"):
+            results.append({"chart_id": r["chart_id"], "data": r["data"]})
+        else:
+            results.append({
+                "chart_id": r["chart_id"],
+                "error": r.get("error"),
+                "status": r.get("status", 500),
+            })
+    for cid in not_found:
+        results.append({
+            "chart_id": cid,
+            "error": "Chart not found in this shared dashboard.",
+            "status": 404,
+        })
+    return {"results": results}
+
+
 
 # â”€â”€ Agentic AI Bot endpoints (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #

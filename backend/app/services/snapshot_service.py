@@ -389,6 +389,32 @@ def is_stale(as_of_ts: Optional[datetime], ttl_minutes: Optional[int]) -> bool:
 # triggers until the next TTL expiry (no polling / scheduler).
 _async_refresh_inflight: Dict[int, float] = {}
 _async_refresh_lock = threading.Lock()
+# Global ceiling on CONCURRENT background rebuilds across ALL datasets. Each
+# rebuild's extract-load pulls the whole table into Python then re-loads it (a
+# GIL-bound, RAM-heavy job that runs in-process). A public dashboard spanning K
+# datasets would otherwise fire K heavy rebuild threads at once — starving the
+# GIL so foreground /charts/{id}/data requests (which the viewer is waiting on)
+# stall and tiles "spin". Cap it so at most this many run together; skipped
+# datasets are picked up on the next trigger (TTL / watermark) — serve-stale
+# keeps them fast meanwhile, so nothing is lost by deferring.
+_MAX_CONCURRENT_REBUILDS = 1
+
+
+def _reserve_rebuild_slot(dataset_id: int) -> bool:
+    """Reserve a global rebuild slot for `dataset_id` under `_async_refresh_lock`.
+    Returns False (caller must NOT rebuild) when this dataset is already building
+    OR the global concurrency cap is reached. Caller frees the slot in `finally`
+    via `_async_refresh_inflight.pop`. MUST be called while holding the lock."""
+    if dataset_id in _async_refresh_inflight:
+        return False
+    if len(_async_refresh_inflight) >= _MAX_CONCURRENT_REBUILDS:
+        logger.info(
+            "[snapshot] rebuild cap %s reached; deferring dataset=%s (serve-stale meanwhile)",
+            _MAX_CONCURRENT_REBUILDS, dataset_id,
+        )
+        return False
+    _async_refresh_inflight[dataset_id] = time.time()
+    return True
 
 
 def trigger_async_refresh(dataset_id: int) -> None:
@@ -397,9 +423,8 @@ def trigger_async_refresh(dataset_id: int) -> None:
     if not dataset_id:
         return
     with _async_refresh_lock:
-        if dataset_id in _async_refresh_inflight:
+        if not _reserve_rebuild_slot(dataset_id):
             return
-        _async_refresh_inflight[dataset_id] = time.time()
 
     def _run() -> None:
         from app.core.database import SessionLocal
@@ -497,9 +522,8 @@ def schedule_source_change_check(dataset_id: int) -> None:
             if not _source_changed(db, dataset_id):
                 return
             with _async_refresh_lock:
-                if dataset_id in _async_refresh_inflight:
+                if not _reserve_rebuild_slot(dataset_id):
                     return
-                _async_refresh_inflight[dataset_id] = time.time()
             try:
                 refresh_all_for_dataset(db, dataset_id, force=True)
                 logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)

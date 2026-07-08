@@ -678,43 +678,57 @@ export default function PublicDashboardPage() {
       // the merge (link entries landed in the viewer_slicer layer AND the
       // link_locked/link_hidden layers), which was fragile and could let
       // the viewer-layer copy fight the authoritative link layer.
-      const entries = await runWithConcurrency(
-        targetCharts,
-        async (dashboardChart) => {
-          const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
-            ? appliedViewerFilters
-            : pageCrossFilterState
-              ? [...appliedViewerFilters, pageCrossFilterState.filter]
-              : appliedViewerFilters;
-          // "Filters on this page" (pageHiddenFilters) are the author's page
-          // SCOPE — a HARD BOUND. A viewer slicer on the same field may only
-          // narrow WITHIN that scope, never escape it. `applyScopeBound`
-          // intersects them (scope ∩ selection); an out-of-scope pick falls
-          // back to the scope instead of leaking data the page excluded.
-          // (Old code DROPPED the page filter when a same-field slicer was
-          // active → viewer could pick "Tablet" outside [Laptop,Charger,
-          // Headphones] and see 10M instead of the 303K page total.)
-          const requestFilters = applyScopeBound(baseViewerFilters, pageHiddenFiltersRef.current);
-          try {
-            const data = await publicDashboardApi.getChartData(
-              token,
-              dashboardChart.chart_id,
-              sessionToken,
-              requestFilters,
-              chartGrainsRef.current[dashboardChart.chart_id],
-            );
-            return { chartId: dashboardChart.chart_id, data, error: null as string | null };
-          } catch (err: any) {
-            return {
-              chartId: dashboardChart.chart_id,
-              data: null,
-              error: getErrorMessage(err),
-              status: err?.response?.status,
-            };
+      // "1 request = 1 page": compute each tile's viewer filters (same rules as
+      // before — cross-filter source/target + page-scope HARD BOUND via
+      // `applyScopeBound`, so a same-field slicer can only NARROW within the
+      // page scope, never escape it), then fetch ALL of them in ONE batch call.
+      // The server resolves dashboard+link+filters once and fans out the queries
+      // concurrently, so this is byte-identical to the old per-chart loop but
+      // without N round-trips / the browser's per-host socket queue.
+      const batchItems = targetCharts.map((dashboardChart) => {
+        const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
+          ? appliedViewerFilters
+          : pageCrossFilterState
+            ? [...appliedViewerFilters, pageCrossFilterState.filter]
+            : appliedViewerFilters;
+        return {
+          chart_id: dashboardChart.chart_id,
+          filters: applyScopeBound(baseViewerFilters, pageHiddenFiltersRef.current),
+          granularity: chartGrainsRef.current[dashboardChart.chart_id],
+        };
+      });
+
+      type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
+      let entries: BatchEntry[];
+      try {
+        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems);
+        const byId = new Map<number, { data?: any; error?: string; status?: number }>();
+        for (const r of resp.results || []) byId.set(r.chart_id, r);
+        entries = targetCharts.map((dc) => {
+          const r = byId.get(dc.chart_id);
+          if (r && r.data) return { chartId: dc.chart_id, data: r.data, error: null };
+          return {
+            chartId: dc.chart_id,
+            data: null,
+            error: r?.error || 'Could not load this chart.',
+            status: r?.status,
+          };
+        });
+      } catch (err: any) {
+        // A 401 means the whole (password-gated) link session expired — reauth,
+        // exactly like the old per-chart path did on a 401 entry.
+        if (err?.response?.status === 401) {
+          if (requestId === chartRequestIdRef.current) {
+            clearPublicSession(token);
+            setPageState('reauth');
           }
-        },
-        CHART_FETCH_CONCURRENCY,
-      );
+          return false;
+        }
+        // Whole-batch transport failure → mark every target tile errored so the
+        // page shows the error state instead of an infinite spinner.
+        const msg = getErrorMessage(err);
+        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, data: null, error: msg }));
+      }
 
       if (requestId !== chartRequestIdRef.current) {
         return false;
@@ -1082,7 +1096,7 @@ export default function PublicDashboardPage() {
   // biggest source of public-link slowness — a 3-page × 15-chart dashboard
   // fired 30 unused requests in the background on every open.
 
-  const handlePageSelect = useCallback(async (pageId: string) => {
+  const handlePageSelect = useCallback((pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
       return;
     }
@@ -1092,22 +1106,23 @@ export default function PublicDashboardPage() {
     }
 
     if (hasSettledPageCache(pageId)) {
+      // Fully-cached page → switch instantly and suppress the visibility
+      // effect's refetch (its tiles already hold data for the current filters).
       skipNextPageLoadRef.current = pageId;
       startTransition(() => setCurrentPageId(pageId));
       return;
     }
 
-    const storedSession = getPublicSession(token) ?? undefined;
-    setPendingPageId(pageId);
-    const ready = await fetchChartsForPage(pageId, storedSession, null);
-    setPendingPageId((current) => (current === pageId ? null : current));
-    if (!ready) {
-      return;
-    }
-
-    skipNextPageLoadRef.current = pageId;
+    // Not-yet-loaded page: switch IMMEDIATELY and let the lazy visibility effect
+    // fetch only this page's VISIBLE tiles — the exact path a first open uses.
+    // Previously we AWAITED a fetch of EVERY chart on the target page before
+    // switching, so a not-yet-visited page blocked on its slowest tile; and when
+    // a background snapshot rebuild was competing for the warehouse those tile
+    // queries stacked up, which read as "chuyển page rất lâu" the longer a
+    // session ran. Non-blocking switch keeps it snappy; do NOT set
+    // skipNextPageLoadRef here — we WANT the effect to run and load the tiles.
     startTransition(() => setCurrentPageId(pageId));
-  }, [activePageId, crossFilterState, fetchChartsForPage, hasSettledPageCache, pendingPageId, token]);
+  }, [activePageId, crossFilterState, hasSettledPageCache, pendingPageId]);
 
   if (!mounted || pageState === 'unknown' || loading) {
     return (
