@@ -202,6 +202,22 @@ class _SharedSqliteCache:
                     "CREATE INDEX IF NOT EXISTS idx_live_query_cache_updated_at "
                     "ON live_query_cache(updated_at)"
                 )
+                # Cross-process request coalescing: a leader marks a (ds, key) as
+                # in-flight before running the source query; concurrent callers
+                # (incl. OTHER workers — this table is the shared sqlite file) see
+                # the marker and wait for the leader's cached result instead of
+                # firing a duplicate warehouse query. `expires_at` self-heals if a
+                # leader dies without releasing.
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS live_query_inflight (
+                        datasource_id INTEGER NOT NULL,
+                        cache_key TEXT NOT NULL,
+                        expires_at REAL NOT NULL,
+                        PRIMARY KEY (datasource_id, cache_key)
+                    )
+                    """
+                )
             self._initialized = True
 
     def get(self, datasource_id: int, cache_key: str) -> Optional[Dict[str, Any]]:
@@ -270,6 +286,37 @@ class _SharedSqliteCache:
                 ),
             )
         self._cleanup_if_needed()
+
+    def try_claim_inflight(self, datasource_id: int, cache_key: str, ttl_seconds: float) -> bool:
+        """Atomically claim the (ds, key) in-flight slot. Returns True → THIS caller
+        is the leader (must run the query then call ``release_inflight``); False →
+        someone else is already computing (the caller should wait for the cache).
+        The PK conflict is what makes leader election atomic across processes
+        (sqlite serialises writers via the file lock). Expired markers (a dead
+        leader) are cleared first so they never block forever."""
+        self._ensure_initialized()
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM live_query_inflight WHERE datasource_id = ? AND cache_key = ? AND expires_at <= ?",
+                (int(datasource_id), cache_key, now),
+            )
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO live_query_inflight (datasource_id, cache_key, expires_at) VALUES (?, ?, ?)",
+                    (int(datasource_id), cache_key, now + float(ttl_seconds)),
+                )
+                return int(cursor.rowcount or 0) == 1
+            except sqlite3.IntegrityError:
+                return False  # another caller holds the slot
+
+    def release_inflight(self, datasource_id: int, cache_key: str) -> None:
+        self._ensure_initialized()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM live_query_inflight WHERE datasource_id = ? AND cache_key = ?",
+                (int(datasource_id), cache_key),
+            )
 
     def invalidate_datasource(self, datasource_id: int) -> int:
         self._ensure_initialized()
@@ -443,6 +490,90 @@ def set_cached(
             _log_shared_cache_failure("write", exc)
 
     logger.debug("Cache SET: ds=%d key=%s", datasource_id, key[:12])
+
+
+# Cross-process request coalescing (perf): when N viewers open the SAME report
+# at once, each tile's data request for a given (chart, filters, grain, snapshot)
+# is identical. Without coalescing, on a MULTI-WORKER deployment each worker runs
+# its own warehouse query (the in-process single_flight only dedups within ONE
+# process) — so the same query hits BigQuery up to `#workers` times and cost
+# scales with concurrency. These helpers elect ONE leader across ALL workers
+# (atomic sqlite marker in the shared cache file) to run the query; every other
+# caller waits for the leader's cached result. NEVER raises → falls back to
+# "everyone computes" (current behaviour) on any error.
+_INFLIGHT_TTL_SECONDS = 90.0
+_COALESCE_WAIT_TIMEOUT = 30.0   # >= slowest expected source query
+_COALESCE_POLL_INTERVAL = 0.25
+
+
+def begin_coalesced_compute(
+    datasource_id: int,
+    table_identifier: str,
+    chart_type: str,
+    role_config: dict,
+    filters: list,
+    *,
+    wait_timeout: float = _COALESCE_WAIT_TIMEOUT,
+    poll_interval: float = _COALESCE_POLL_INTERVAL,
+) -> tuple[Optional[Dict[str, Any]], bool]:
+    """Coalesce concurrent identical computes ACROSS workers. Call ONLY after a
+    cache miss. Returns ``(cached_result_or_None, is_leader)``:
+      • ``(None, True)``  → YOU are the leader: run the query, ``set_cached``,
+                            then call ``end_coalesced_compute`` with the same args.
+      • ``(result, False)`` → another worker already computed it; use ``result``
+                            (do NOT run the query, do NOT end).
+    A waiter polls the shared cache up to ``wait_timeout``; if the leader dies
+    (marker gone, still no cache) it takes over as leader; on timeout it also
+    takes over (best-effort, avoids hanging)."""
+    store = _get_shared_store()
+    if store is None:
+        # No shared store → no cross-process coordination possible; behave exactly
+        # as today (the in-process single_flight still dedups within this worker).
+        return None, True
+    key = _make_key(table_identifier, chart_type, role_config, filters)
+    try:
+        if store.try_claim_inflight(datasource_id, key, _INFLIGHT_TTL_SECONDS):
+            return None, True
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("inflight-claim", exc)
+        return None, True
+    # Someone else is computing → wait for their result.
+    deadline = time.monotonic() + max(float(wait_timeout), 0.0)
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        # Check the cache FIRST (leader writes cache, THEN releases the marker).
+        try:
+            result = get_cached(datasource_id, table_identifier, chart_type, role_config, filters)
+        except Exception:  # noqa: BLE001
+            result = None
+        if result is not None:
+            return result, False
+        # Still no cache — if the marker is now free, the leader died without
+        # writing; take over so this request isn't stuck behind a dead leader.
+        try:
+            if store.try_claim_inflight(datasource_id, key, _INFLIGHT_TTL_SECONDS):
+                return None, True
+        except Exception:  # noqa: BLE001
+            return None, True
+    return None, True  # timed out waiting → compute ourselves (rare)
+
+
+def end_coalesced_compute(
+    datasource_id: int,
+    table_identifier: str,
+    chart_type: str,
+    role_config: dict,
+    filters: list,
+) -> None:
+    """Release the in-flight marker after the leader has written the cache."""
+    store = _get_shared_store()
+    if store is None:
+        return
+    key = _make_key(table_identifier, chart_type, role_config, filters)
+    try:
+        store.release_inflight(datasource_id, key)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("inflight-release", exc)
 
 
 def invalidate_datasource(datasource_id: int) -> int:

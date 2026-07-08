@@ -2351,10 +2351,22 @@ def _execute_semantic_chart_runtime(
         if isinstance(cond, dict)
     ]
 
+    coalesce_leader = False
     if cache_enabled:
         cached = query_cache.get_cached(
             datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
         )
+        if cached is None:
+            # Cross-process request coalescing: on a multi-worker deployment N
+            # viewers of the SAME report each fire this identical query. Elect ONE
+            # leader across all workers to run it; everyone else waits for the
+            # leader's cached result instead of duplicating the warehouse scan
+            # (fixes cost scaling linearly with concurrent viewers). Returns a
+            # coalesced result (waiter) or flags us as the leader (must run + then
+            # end_coalesced_compute). Falls back to "compute" on any error.
+            cached, coalesce_leader = query_cache.begin_coalesced_compute(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+            )
         if cached is not None:
             # Phase-15.96 — `cache_filters` only contains filters that
             # made it past `_normalize_runtime_filters_for_chart`. Two
@@ -2601,6 +2613,11 @@ def _execute_semantic_chart_runtime(
         query_cache.set_cached(
             datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
         )
+        if coalesce_leader:
+            # Result is cached now → wake any workers waiting on this query.
+            query_cache.end_coalesced_compute(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+            )
 
     logger.info(
         "[perf] semantic chart EXECUTED (cache=MISS) chart_id=%s ds=%d ds_type=%s explore=%s "

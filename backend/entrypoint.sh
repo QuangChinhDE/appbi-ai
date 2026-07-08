@@ -188,5 +188,11 @@ PYEOF
 # every public-link request as coming from 127.0.0.1 on prod, and one
 # busy dashboard (e.g. an HTML-imported one with many tiles) exhausts
 # the shared rate-limit bucket, making chart data silently fail to load.
+# Multiple workers so one slow/heavy request (or a background snapshot rebuild)
+# can't block the whole app (single process = one GIL). Cross-worker request
+# coalescing + the shared sqlite cache (query_cache) keep concurrent identical
+# viewers from each hitting the warehouse. WEB_CONCURRENCY defaults to 1 (prior
+# behaviour) — set it (e.g. 4) on the VM to scale concurrent report viewing.
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    --workers "${WEB_CONCURRENCY:-1}" \
     --proxy-headers --forwarded-allow-ips="*"
