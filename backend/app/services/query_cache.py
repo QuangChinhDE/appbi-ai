@@ -258,9 +258,10 @@ class _SharedSqliteCache:
                 return None
             return payload if isinstance(payload, dict) else None
 
-    def set(self, datasource_id: int, cache_key: str, data: Dict[str, Any]) -> None:
+    def set(self, datasource_id: int, cache_key: str, data: Dict[str, Any], ttl_seconds: Optional[float] = None) -> None:
         self._ensure_initialized()
         now = time.time()
+        effective_ttl = float(ttl_seconds) if ttl_seconds is not None else self.ttl_seconds
         with self._connect() as conn:
             conn.execute(
                 """
@@ -281,7 +282,7 @@ class _SharedSqliteCache:
                     int(datasource_id),
                     cache_key,
                     _stable_json_dumps(data),
-                    now + self.ttl_seconds,
+                    now + effective_ttl,
                     now,
                 ),
             )
@@ -574,6 +575,82 @@ def end_coalesced_compute(
         store.release_inflight(datasource_id, key)
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("inflight-release", exc)
+
+
+# ── Public dashboard METADATA cache + coalescing ─────────────────────────────
+# GET /public/dashboards/{token} rebuilds a heavy structure per request (hydrate
+# every chart + resolve every dataset's semantic model + build the filter
+# inventory). It's the SAME for all viewers of a token and is the gate before any
+# tile loads, so N concurrent viewers each pay it. Cache the built response by
+# token (short TTL — structure changes are rare, and edits still appear within
+# the TTL) and coalesce concurrent builds across workers, exactly like chart
+# data. A negative sentinel namespace keeps these keys out of the per-datasource
+# space. NEVER raises → falls back to rebuilding.
+_PUBLIC_META_NS = -1
+_PUBLIC_META_TTL_SECONDS = 60.0
+
+
+def get_public_meta(token: str) -> Optional[Dict[str, Any]]:
+    store = _get_shared_store()
+    if store is None:
+        return None
+    try:
+        return store.get(_PUBLIC_META_NS, str(token))
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-read", exc)
+        return None
+
+
+def set_public_meta(token: str, data: Dict[str, Any]) -> None:
+    store = _get_shared_store()
+    if store is None:
+        return
+    try:
+        store.set(_PUBLIC_META_NS, str(token), data, ttl_seconds=_PUBLIC_META_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-write", exc)
+
+
+def begin_coalesced_public_meta(
+    token: str, *, wait_timeout: float = 15.0, poll_interval: float = 0.2
+) -> tuple[Optional[Dict[str, Any]], bool]:
+    """Coalesce concurrent metadata builds for one token across workers. Returns
+    ``(cached_or_None, is_leader)`` — same contract as ``begin_coalesced_compute``."""
+    store = _get_shared_store()
+    if store is None:
+        return None, True
+    key = str(token)
+    try:
+        if store.try_claim_inflight(_PUBLIC_META_NS, key, _INFLIGHT_TTL_SECONDS):
+            return None, True
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-claim", exc)
+        return None, True
+    deadline = time.monotonic() + max(float(wait_timeout), 0.0)
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        try:
+            result = store.get(_PUBLIC_META_NS, key)
+        except Exception:  # noqa: BLE001
+            result = None
+        if result is not None:
+            return result, False
+        try:
+            if store.try_claim_inflight(_PUBLIC_META_NS, key, _INFLIGHT_TTL_SECONDS):
+                return None, True
+        except Exception:  # noqa: BLE001
+            return None, True
+    return None, True
+
+
+def end_coalesced_public_meta(token: str) -> None:
+    store = _get_shared_store()
+    if store is None:
+        return
+    try:
+        store.release_inflight(_PUBLIC_META_NS, str(token))
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-release", exc)
 
 
 def invalidate_datasource(datasource_id: int) -> int:

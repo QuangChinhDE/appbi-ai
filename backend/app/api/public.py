@@ -899,6 +899,22 @@ def get_public_dashboard(
         db,
         session_token=x_public_session,
     )
+
+    # Perf: everything built below (hydrate every chart + resolve every dataset's
+    # semantic model + build the filter inventory) is IDENTICAL for all viewers
+    # of a token and is the GATE before any tile can load — so N concurrent
+    # viewers each rebuild it. Cache the built response by token (short TTL;
+    # structure edits still surface within the TTL) and coalesce concurrent
+    # builds across workers — the same mechanism as chart-data. Auth + the
+    # access-count bump already ran per-request in `_get_dashboard_by_token`.
+    from app.services import query_cache as _qc
+    _meta_cached = _qc.get_public_meta(token)
+    _meta_leader = False
+    if _meta_cached is None:
+        _meta_cached, _meta_leader = _qc.begin_coalesced_public_meta(token)
+    if _meta_cached is not None:
+        return _meta_cached
+
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
@@ -1042,7 +1058,22 @@ def get_public_dashboard(
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
     dash.public_link_appearance = safe_appearance
-    return dash
+
+    # Serialize the built structure to a plain dict, cache it by token, and wake
+    # any workers coalescing on this token. Returning the dict (validated by the
+    # response_model) is fine; on any serialization hiccup we fall back to the ORM
+    # and simply skip caching (correctness over the perf optimization).
+    from fastapi.encoders import jsonable_encoder as _jsonable_encoder
+    _meta_payload = None
+    try:
+        _meta_payload = _jsonable_encoder(DashboardResponse.model_validate(dash))
+    except Exception:
+        logger.debug("public dashboard meta serialize failed; returning ORM", exc_info=True)
+    if _meta_payload is not None:
+        _qc.set_public_meta(token, _meta_payload)
+    if _meta_leader:
+        _qc.end_coalesced_public_meta(token)
+    return _meta_payload if _meta_payload is not None else dash
 
 
 if settings.WORKBOARDS_ENABLED:
