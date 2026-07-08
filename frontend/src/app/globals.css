@@ -503,6 +503,50 @@
     opacity: 1;
   }
 
+  /* Dot-grid shown on the Canvas while editing — spacing aligns with the 8px
+     snap. backgroundSize is set inline by DashboardCanvas (depends on the
+     fit-to-width scale) so the dots track the rendered coordinate space. */
+  .canvas-dot-grid {
+    background-image: radial-gradient(circle, rgb(var(--text-quaternary) / 0.28) 1px, transparent 1.6px);
+    background-position: 0 0;
+  }
+
+  /* Full-width move header — the reliable grab target for a Canvas tile.
+     Hidden until the tile is hovered or selected (mirrors BI canvas tiles). */
+  .canvas-move-header {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .group:hover > .canvas-move-header,
+  .canvas-tile-selected > .canvas-move-header {
+    opacity: 1;
+  }
+  .canvas-move-grip {
+    width: 26px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgb(var(--brand) / 0.55);
+  }
+
+  /* Selected Canvas tile — brand ring + always-visible resize corners so the
+     user always knows which tile is active and can grab any corner. */
+  .canvas-tile-selected {
+    outline: 2px solid rgb(var(--brand));
+    outline-offset: 0;
+    border-radius: 10px;
+  }
+  .canvas-tile-selected .canvas-resize-handle::after {
+    opacity: 1;
+  }
+
+  /* Smart alignment guide — thin brand line drawn while dragging/resizing when
+     an edge/centre lines up with a sibling or the canvas edge. */
+  .canvas-align-guide {
+    position: absolute;
+    background: rgb(var(--brand));
+    box-shadow: 0 0 0 0.5px rgb(var(--brand) / 0.35);
+  }
+
   /* Drag preview ghost — applied while a grid item is being dragged */
   .react-grid-item.react-draggable-dragging {
     box-shadow: 0 12px 32px rgb(8 9 10 / 0.18), 0 0 0 1px rgb(var(--brand) / 0.4) !important;
