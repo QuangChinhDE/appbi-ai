@@ -1,19 +1,18 @@
 """
-Observability API — the unified module surface beyond Data Quality.
+Observability API — the dataset-health module surface beyond Data Quality.
+
+Monitors (freshness/volume/schema) run automatically via the daily scan and the
+manual /scan endpoint; there is no monitor-CRUD surface — checks are configured
+as Quality rules and their breaches fold into the unified incident feed.
 
 Endpoints (all dataset-access scoped):
-  GET    /observability/overview              cross-dataset 5-pillar scorecard
-  GET    /observability/monitors              list freshness/volume/schema monitors
-  POST   /observability/monitors              create a monitor
-  PATCH  /observability/monitors/{id}         update (config/severity/active)
-  DELETE /observability/monitors/{id}         delete
-  POST   /observability/monitors/{id}/run     run one monitor now
-  GET    /observability/monitors/{id}/checks  snapshot history (sparkline)
-  GET    /observability/incidents             unified incident feed
-  PATCH  /observability/incidents/{id}        lifecycle: acknowledge|resolve|reopen
-  GET    /observability/lineage?dataset_id=   source→table→chart→dashboard graph
-  GET    /observability/usage                 usage + resource footprint
-  POST   /observability/scan                  manual full scan (monitors + fold)
+  GET    /observability/overview                cross-dataset health scorecard
+  GET    /observability/incidents               unified incident feed
+  PATCH  /observability/incidents/{id}          lifecycle: acknowledge|resolve|reopen
+  GET    /observability/semantic-lineage        column/measure impact graph
+  GET    /observability/usage                   usage + resource footprint
+  POST   /observability/scan                    manual full scan (monitors + fold)
+  GET/POST/PATCH/DELETE /observability/alert-channels   email|slack|webhook dispatch
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -29,8 +28,8 @@ from app.models.resource_share import ResourceType
 from app.models.dataset import Dataset, DatasetTable
 from app.models.user import User
 from app.models.observability import (
-    ObservabilityMonitor, ObservabilityCheck, ObservabilityIncident,
-    ObservabilityAlertChannel, MONITOR_KINDS, ALERT_CHANNEL_KINDS,
+    ObservabilityIncident,
+    ObservabilityAlertChannel, ALERT_CHANNEL_KINDS,
 )
 from app.services.observability_service import ObservabilityService
 
@@ -50,35 +49,8 @@ def _require_dataset_access(db: Session, user: User, dataset_id: int) -> None:
 
 # ── schemas ─────────────────────────────────────────────────────────────────
 
-class MonitorCreate(BaseModel):
-    dataset_table_id: int
-    kind: str                      # freshness | volume | schema
-    name: Optional[str] = None
-    config: Dict[str, Any] = {}
-    severity: str = "warning"
-
-
-class MonitorUpdate(BaseModel):
-    name: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    severity: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
 class IncidentUpdate(BaseModel):
     action: str                    # acknowledge | resolve | reopen
-
-
-def _monitor_dict(m: ObservabilityMonitor) -> Dict[str, Any]:
-    t = m.dataset_table
-    return {
-        "id": m.id, "datasetId": m.dataset_id, "datasetTableId": m.dataset_table_id,
-        "tableName": (t.display_name or t.source_table_name) if t else None,
-        "kind": m.kind, "name": m.name, "config": m.config or {}, "severity": m.severity,
-        "isActive": m.is_active, "lastStatus": m.last_status, "lastValue": m.last_value,
-        "lastDetail": m.last_detail,
-        "lastCheckedAt": m.last_checked_at.isoformat() if m.last_checked_at else None,
-    }
 
 
 # ── overview ──────────────────────────────────────────────────────────────────
@@ -86,148 +58,6 @@ def _monitor_dict(m: ObservabilityMonitor) -> Dict[str, Any]:
 @router.get("/overview")
 def overview(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Dict[str, Any]:
     return ObservabilityService.get_overview(db, _accessible_dataset_ids(db, user))
-
-
-# ── monitors ────────────────────────────────────────────────────────────────
-
-@router.get("/monitors")
-def list_monitors(
-    dataset_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> List[Dict[str, Any]]:
-    ids = _accessible_dataset_ids(db, user)
-    if not ids:
-        return []
-    q = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.dataset_id.in_(ids))
-    if dataset_id is not None:
-        q = q.filter(ObservabilityMonitor.dataset_id == dataset_id)
-    return [_monitor_dict(m) for m in q.order_by(ObservabilityMonitor.id.desc()).all()]
-
-
-@router.post("/monitors", status_code=201)
-def create_monitor(
-    payload: MonitorCreate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
-) -> Dict[str, Any]:
-    if payload.kind not in MONITOR_KINDS:
-        raise HTTPException(status_code=422, detail=f"kind must be one of {MONITOR_KINDS}")
-    table = db.query(DatasetTable).filter(DatasetTable.id == payload.dataset_table_id).first()
-    if not table:
-        raise HTTPException(status_code=404, detail="Dataset table not found")
-    _require_dataset_access(db, user, table.dataset_id)
-
-    # Sensible defaults per kind if config omitted.
-    cfg = dict(payload.config or {})
-    if payload.kind == "freshness" and "max_lag_hours" not in cfg:
-        cfg["max_lag_hours"] = 24
-    if payload.kind == "volume" and "z_threshold" not in cfg:
-        cfg["z_threshold"] = 3.0
-
-    name = payload.name or f"{payload.kind.capitalize()} · {table.display_name or table.source_table_name or table.id}"
-    monitor = ObservabilityMonitor(
-        dataset_id=table.dataset_id, dataset_table_id=table.id, kind=payload.kind,
-        name=name, config=cfg, severity=payload.severity, owner_id=user.id,
-    )
-    db.add(monitor)
-    db.commit()
-    db.refresh(monitor)
-    # First run immediately so the user sees a result (also seeds schema baseline).
-    try:
-        ObservabilityService.run_monitor(monitor, db)
-        db.commit()
-        db.refresh(monitor)
-    except Exception:
-        db.rollback()
-    return _monitor_dict(monitor)
-
-
-@router.patch("/monitors/{monitor_id}")
-def update_monitor(
-    monitor_id: int, payload: MonitorUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
-) -> Dict[str, Any]:
-    monitor = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.id == monitor_id).first()
-    if not monitor:
-        raise HTTPException(status_code=404, detail="Monitor not found")
-    _require_dataset_access(db, user, monitor.dataset_id)
-    if payload.name is not None:
-        monitor.name = payload.name
-    if payload.config is not None:
-        monitor.config = payload.config
-    if payload.severity is not None:
-        monitor.severity = payload.severity
-    if payload.is_active is not None:
-        monitor.is_active = payload.is_active
-    db.commit()
-    db.refresh(monitor)
-    return _monitor_dict(monitor)
-
-
-@router.delete("/monitors/{monitor_id}", status_code=204)
-def delete_monitor(
-    monitor_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
-):
-    monitor = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.id == monitor_id).first()
-    if not monitor:
-        raise HTTPException(status_code=404, detail="Monitor not found")
-    _require_dataset_access(db, user, monitor.dataset_id)
-    # Resolve the monitor's open incidents first so deleting a monitor never
-    # leaves orphan incidents that no future scan can auto-resolve.
-    ObservabilityService.resolve_incidents(db, f"{monitor.kind}:monitor_{monitor.id}")
-    db.delete(monitor)
-    db.commit()
-
-
-@router.post("/monitors/{monitor_id}/run")
-def run_monitor_now(
-    monitor_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
-) -> Dict[str, Any]:
-    monitor = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.id == monitor_id).first()
-    if not monitor:
-        raise HTTPException(status_code=404, detail="Monitor not found")
-    _require_dataset_access(db, user, monitor.dataset_id)
-    result = ObservabilityService.run_monitor(monitor, db)
-    db.commit()
-    # A fresh breach on a manual run fires alerts too. Strip the ORM object
-    # from the JSON response.
-    created = result.pop("created_incident", None)
-    if created is not None:
-        try:
-            from app.services.observability_notifier import notify_new_incidents
-            notify_new_incidents(db, [created])
-        except Exception:
-            pass
-    return {"monitor": _monitor_dict(monitor), "result": result}
-
-
-@router.get("/monitors/{monitor_id}/checks")
-def monitor_checks(
-    monitor_id: int, limit: int = 60,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> List[Dict[str, Any]]:
-    monitor = db.query(ObservabilityMonitor).filter(ObservabilityMonitor.id == monitor_id).first()
-    if not monitor:
-        raise HTTPException(status_code=404, detail="Monitor not found")
-    _require_dataset_access(db, user, monitor.dataset_id)
-    checks = (
-        db.query(ObservabilityCheck)
-        .filter(ObservabilityCheck.monitor_id == monitor_id)
-        .order_by(ObservabilityCheck.checked_at.desc())
-        .limit(min(limit, 200)).all()
-    )
-    return [
-        {"checkedAt": c.checked_at.isoformat() if c.checked_at else None,
-         "value": c.value, "status": c.status}
-        for c in reversed(checks)
-    ]
 
 
 # ── incidents ─────────────────────────────────────────────────────────────────
@@ -293,14 +123,16 @@ def update_incident(
 
 # ── lineage + usage ───────────────────────────────────────────────────────────
 
-@router.get("/lineage")
-def lineage(
+@router.get("/semantic-lineage")
+def semantic_lineage(
     dataset_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
+    """Column- + measure-level lineage from the semantic model (joins, measure
+    deps, rule/incident coverage per column) for impact analysis."""
     _require_dataset_access(db, user, dataset_id)
-    return ObservabilityService.build_lineage(db, dataset_id)
+    return ObservabilityService.build_semantic_lineage(db, dataset_id)
 
 
 @router.get("/usage")

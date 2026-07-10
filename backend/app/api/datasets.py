@@ -81,7 +81,6 @@ from app.services.dataset_excel_export_service import (
     export_dataset_table_to_excel,
 )
 from app.core.logging import get_logger
-from app.services.runtime_modes import datasource_sync_enabled
 from app.services.schema_inference import infer_schema_from_sql
 from app.services.live_query_service import (
     LiveQueryService,
@@ -2790,46 +2789,13 @@ def add_table_to_dataset(
         if not db_table:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        if not datasource_sync_enabled() and db_table.datasource_id is not None:
+        if db_table.datasource_id is not None:
             db_table.query_mode = "live"
             db.commit()
             db.refresh(db_table)
 
-        # ── Auto-detect table size and set query_mode ──
-        if datasource_sync_enabled() and datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
-            try:
-                ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-                stn = db_table.source_table_name.strip().strip('"').strip("'")
-                if "." in stn:
-                    schema_name, tbl_name = stn.split(".", 1)
-                    schema_name = schema_name.strip('"').strip("'")
-                    tbl_name = tbl_name.strip('"').strip("'")
-                else:
-                    schema_name = "public" if ds_type == "postgresql" else ""
-                    tbl_name = stn
-
-                size_info = LiveQueryService.get_table_size_metadata(
-                    ds_type, datasource.config, schema_name, tbl_name,
-                )
-                if size_info.get("estimated_row_count") or size_info.get("estimated_size_bytes"):
-                    db_table.estimated_row_count = size_info.get("estimated_row_count")
-                    db_table.estimated_size_bytes = size_info.get("estimated_size_bytes")
-                    if LiveQueryService.should_use_live_mode(
-                        size_info.get("estimated_row_count"),
-                        size_info.get("estimated_size_bytes"),
-                    ):
-                        db_table.query_mode = "live"
-                        logger.info(
-                            "Table %s auto-set to live mode (rows=%s, bytes=%s)",
-                            db_table.source_table_name,
-                            size_info.get("estimated_row_count"),
-                            size_info.get("estimated_size_bytes"),
-                        )
-                    db.commit()
-                    db.refresh(db_table)
-            except Exception as e:
-                logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
-        elif datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
+        # ── Auto-detect table size (live-query metadata) ──
+        if datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
                 stn = db_table.source_table_name.strip().strip('"').strip("'")

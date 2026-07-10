@@ -1781,33 +1781,6 @@ class WorkboardResponse(WorkboardBase):
 # Row-level write payloads
 # ---------------------------------------------------------------------------
 
-class WorkboardRowPayload(BaseModel):
-    """Generic envelope for INSERT/UPDATE row submissions."""
-
-    values: Dict[str, Any] = Field(default_factory=dict)
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowUpdatePayload(WorkboardRowPayload):
-    """UPDATE/DELETE require row PK + optional optimistic-lock token."""
-
-    pk: Dict[str, Any] = Field(..., description="Primary key column → value")
-    lock_token: Optional[Any] = Field(
-        default=None,
-        description="Value of optimistic_lock_column captured when row was loaded.",
-    )
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowDeletePayload(BaseModel):
-    pk: Dict[str, Any] = Field(...)
-    lock_token: Optional[Any] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 # ---------------------------------------------------------------------------
 # App-user CRUD (Builder "Users" tab)
 # ---------------------------------------------------------------------------
@@ -1865,52 +1838,9 @@ class AppUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class AppUserBulkImport(BaseModel):
-    """Used by the import flow + the Users tab CSV uploader."""
-
-    users: List[Dict[str, Any]] = Field(default_factory=list)
-    skip_existing: bool = True
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardWriteResult(BaseModel):
-    """Standard envelope returned by row-write endpoints."""
-
-    action: Literal["insert", "update", "delete"]
-    row: Optional[Dict[str, Any]] = None
-    pk: Optional[Dict[str, Any]] = None
-    affected_rows: int = 0
-    warnings: List[Dict[str, Any]] = Field(default_factory=list)
-    submission_id: Optional[int] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 # ---------------------------------------------------------------------------
 # Runtime (table list) responses
 # ---------------------------------------------------------------------------
-
-class WorkboardRowsRequest(BaseModel):
-    """Filters + pagination for the list view."""
-
-    filters: List[Dict[str, Any]] = Field(default_factory=list)
-    page: int = Field(default=1, ge=1)
-    page_size: Optional[int] = Field(default=None, ge=1, le=500)
-    sort_column: Optional[str] = None
-    sort_direction: Optional[Literal["asc", "desc"]] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowsResponse(BaseModel):
-    columns: List[str] = Field(default_factory=list)
-    rows: List[Dict[str, Any]] = Field(default_factory=list)
-    total: Optional[int] = None
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
 
 # ---------------------------------------------------------------------------
 # Public links / public runtime
@@ -1944,19 +1874,6 @@ class WorkboardPublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-
-class WorkboardPublicAuthResponse(BaseModel):
-    session_token: str
-    expires_in: int
-
-
-class WorkboardPublicPayload(BaseModel):
-    workboard: Dict[str, Any]
-    link: WorkboardPublicLinkResponse
-    mode: Literal["form", "view"] = "form"
-    form: Optional[Dict[str, Any]] = None
-    rendered_view: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2095,22 +2012,3 @@ class WorkboardSyncRunDetailResponse(WorkboardSyncRunResponse):
     webhook_url: Optional[str] = None
     response_excerpt: Optional[Dict[str, Any]] = None
 
-
-class WorkboardSyncTriggerResponse(BaseModel):
-    """Response from POST .../sync.
-
-    A trigger may fan out to multiple webhooks; the response groups all
-    resulting run_ids under a single ``group_id`` so the frontend can
-    poll/cancel them together.
-    """
-
-    group_id: str
-    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)
-
-
-class WorkboardSyncGroupResponse(BaseModel):
-    """Polled status for a fan-out group (1+ webhook runs)."""
-
-    group_id: str
-    status: SyncRunStatus      # aggregate
-    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)

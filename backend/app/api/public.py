@@ -1077,165 +1077,6 @@ def get_public_dashboard(
 
 
 if settings.WORKBOARDS_ENABLED:
-    def _get_workboard_by_token(
-        token: str,
-        db: Session,
-        session_token: str | None = None,
-        *,
-        track_access: bool = True,
-    ):
-        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
-        if not workboard or not link:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if not bool(link.get("is_active", True)):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if link.get("password_hash"):
-            if not session_token or not _verify_public_session(session_token, token):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="This shared link requires a password.",
-                    headers={"X-Link-Password-Required": "true"},
-                )
-        if track_access:
-            touched = WorkboardPublicLinkService.touch_access(db, workboard, str(link.get("id")))
-            if touched:
-                link = touched
-        return workboard, link
-
-
-    @router.post("/workboards/{token}/auth")
-    @_limiter.limit("10/minute")
-    def auth_public_workboard_link(
-        token: str,
-        body: _PasswordBody,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
-        if not workboard or not link or not bool(link.get("is_active", True)):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if not link.get("password_hash"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This link does not require a password.")
-        if not WorkboardPublicLinkService.verify_password(link, body.password):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
-        return {"session_token": _create_public_session(token), "expires_in": PUBLIC_SESSION_SECONDS}
-
-
-    @router.get("/workboards/{token}")
-    @_limiter.limit("30/minute")
-    def get_public_workboard(
-        token: str,
-        request: Request,
-        db: Session = Depends(get_db),
-        x_public_session: str | None = Header(default=None),
-    ):
-        workboard, link = _get_workboard_by_token(
-            token,
-            db,
-            session_token=x_public_session,
-        )
-        # Mini-app contract: a public link is just an authenticated handle
-        # on a workboard. The FE consumes ``workboard.layout`` (screens[])
-        # and drives everything through the workspace screen endpoints.
-        payload = {
-            "workboard": {
-                "id": workboard.id,
-                "name": workboard.name,
-                "description": workboard.description,
-                "slug": workboard.slug,
-                "layout": _strip_ocr(workboard.layout_json or {}),
-            },
-            "link": {
-                "id": str(link.get("id")),
-                "name": str(link.get("name") or workboard.name),
-                "token": token,
-                "is_active": bool(link.get("is_active", True)),
-                "has_password": bool(link.get("password_hash")),
-                "access_count": int(link.get("access_count") or 0),
-                "last_accessed_at": link.get("last_accessed_at"),
-                "created_at": link.get("created_at"),
-                "updated_at": link.get("updated_at"),
-            },
-        }
-        return payload
-
-
-    @router.post("/workboards/{token}/submit")
-    @_limiter.limit("30/minute")
-    def submit_public_workboard_form(
-        token: str,
-        body: dict,
-        request: Request,
-        db: Session = Depends(get_db),
-        x_public_session: str | None = Header(default=None),
-    ):
-        workboard, link = _get_workboard_by_token(
-            token,
-            db,
-            session_token=x_public_session,
-            track_access=False,
-        )
-        values = body.get("values") if isinstance(body, dict) else None
-        if not isinstance(values, dict):
-            raise HTTPException(status_code=400, detail="values is required.")
-        # Apply the SAME field-level guards as the app-user path (media size cap,
-        # valid_if, show_if, readonly/computed stripping). The legacy public link
-        # carries no screen_id, so resolve the workboard's form screen from the
-        # layout and validate against it (anonymous identity). Without this, this
-        # path bypassed every guard — oversized base64 + invalid rows slipped in.
-        from app.modules.workboards.services import screen_runtime as _sr
-        from app.modules.workboards.services.rls_service import CallerIdentity as _CI
-
-        try:
-            _layout = _sr.parse_layout(workboard)
-            _form_screen = next(
-                (s for s in _layout.screens if s.kind == "form" and s.form is not None),
-                None,
-            )
-        except Exception:  # pragma: no cover - defensive
-            _form_screen = None
-        if _form_screen is not None:
-            values = _sr._apply_field_conditions(
-                _form_screen,
-                values,
-                _CI(),
-                media_max_kb=_sr.media_cap_kb(db, workboard, _form_screen),
-            )
-        try:
-            result = WorkboardWriteService.insert_row(db, workboard, values, None)
-        except WorkboardValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"message": str(exc), "violations": exc.violations},
-            ) from exc
-        except WorkboardWriteError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        return {
-            "action": "insert",
-            **result,
-        }
-
-
-    # â”€â”€ Workspace public endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    #
-    # Workspaces are the public face of a project's mini-app. End-users
-    # (workers, foremen, drivers) authenticate against the project's own
-    # employee table via `app_user_service.authenticate`, then drive a
-    # role-filtered menu of workboards. Cookie name is namespaced to the
-    # workspace token so multiple workspaces on the same domain don't
-    # clobber each other's sessions.
-
-    _WORKSPACE_COOKIE_PREFIX = "wbws_"  # final cookie: wbws_<short-hash-of-token>
-
     def _workspace_cookie_name(workspace_token: str) -> str:
         import hashlib
         digest = hashlib.sha256(workspace_token.encode("utf-8")).hexdigest()[:12]
@@ -2807,7 +2648,6 @@ def get_public_charts_data_batch(
     return {"results": results}
 
 
-
 # â”€â”€ Agentic AI Bot endpoints (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # These endpoints back the agentic flow built in
@@ -2910,7 +2750,6 @@ class _AiAgentChatBody(BaseModel):
     session_key: str | None = None
 
 
-
 class _AiBriefingGuessQuery(BaseModel):
     pass  # currently no body, just GET
 
@@ -2923,92 +2762,6 @@ class _AiBriefingBriefBody(BaseModel):
     # Same purpose as on _AiAgentChatBody: viewer slicer state so the recon
     # snapshot reflects the dashboard the user is actually looking at.
     viewer_filters: list[dict] | None = None
-
-
-@router.get("/dashboards/{token}/ai/dashboard.pdf")
-@_limiter.limit("10/minute")
-def get_dashboard_ai_pdf(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-):
-    """Render the dashboard as a multi-page PDF â€” one page per chart plus a
-    cover page. The user can download this and re-feed it into ANY LLM
-    (Claude, ChatGPT) for offline analysis â€” same data, "real images" the
-    way the user described.
-    """
-    from app.services.dashboard_ai_bot.thinking.advanced_tools import (
-        _detect_dim_idx, _detect_measure_idx,
-    )
-    from app.services.dashboard_ai_bot.thinking.chart_renderer import render_dashboard_pdf
-    from app.services.dashboard_ai_bot.tool_context import _fetch_chart_data, ToolContext
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-
-    # Same merge as every other public surface (see recon above) — the PDF must
-    # reflect the link's enforced scope, not the raw un-merged link filters.
-    combined_filters = _build_public_chart_filters(
-        dash, public_filters, [], context_for_log="ai_pdf",
-    )
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
-    payloads: list[dict] = []
-    for chart_id in sorted(ctx.allowed_chart_ids):
-        meta = ctx.chart_meta.get(chart_id, {})
-        try:
-            data = _fetch_chart_data(ctx, chart_id)
-        except Exception:
-            logger.warning("AI PDF: failed to load chart_id=%s", chart_id)
-            continue
-        cols = data["columns"]
-        rows = data["rows"][:200]
-        m_idx = _detect_measure_idx(cols, rows)
-        d_idx = _detect_dim_idx(cols, rows, m_idx, prefer_datetime=True)
-        ctype = (meta.get("chart_type") or "").lower()
-        role = "kpi" if any(h in ctype for h in ("kpi", "metric", "card", "number", "stat")) else (
-            "trend" if any(h in ctype for h in ("line", "area")) else (
-                "distribution" if any(h in ctype for h in ("pie", "donut")) else "breakdown"
-            )
-        )
-        payloads.append({
-            "chart_id": chart_id,
-            "chart_name": meta.get("name", f"Chart {chart_id}"),
-            "chart_type": meta.get("chart_type", ""),
-            "chart_role": role,
-            "columns": cols,
-            "rows": rows,
-            "dim_idx": d_idx,
-            "measure_idx": m_idx,
-        })
-
-    try:
-        pdf_bytes = render_dashboard_pdf(
-            dashboard_name=dash.name or "Dashboard",
-            chart_payloads=payloads,
-        )
-    except Exception:
-        logger.exception("AI PDF render failed for token=%s", token)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to render PDF.",
-        )
-
-    safe_name = (dash.name or "dashboard").replace(" ", "_")[:60]
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.pdf"',
-            "Cache-Control": "no-store",
-        },
-    )
 
 
 @router.get("/dashboards/{token}/ai/briefing/guess")
@@ -3371,51 +3124,6 @@ async def clear_ai_chat_session(
 
 
 # ── AI bot institutional memory (learned company knowledge) ──────────────────
-
-@router.get("/dashboards/{token}/ai/knowledge")
-@_limiter.limit("30/minute")
-async def list_ai_knowledge(
-    token: str,
-    request: Request,
-    include_retired: bool = Query(default=False),
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-):
-    """What the bot has LEARNED about this dashboard/company (validated +
-    candidate learnings). Gated behind ai_bot_enabled — same surface as chat."""
-    dash, _pf, _z, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-    from app.services.dashboard_ai_bot import knowledge as _kb
-    return {"items": _kb.list_knowledge(db, dashboard_id=dash.id, include_retired=include_retired)}
-
-
-@router.post("/dashboards/{token}/ai/knowledge/consolidate")
-@_limiter.limit("6/minute")
-async def consolidate_ai_knowledge(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-):
-    """Run the deterministic daily-reflection pass now (promote/decay/retire).
-    Also runs automatically each day via learning_scheduler."""
-    dash, _pf, _z, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-    from app.services.dashboard_ai_bot import knowledge as _kb
-    return _kb.consolidate(db, dashboard_id=dash.id)
-
 
 @router.post("/dashboards/{token}/ai/agent/chat")
 @_limiter.limit("20/minute")

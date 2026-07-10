@@ -8,7 +8,7 @@ from enum import Enum
 from uuid import UUID
 
 from app.schemas.datasource_config import validate_datasource_config
-from app.schemas.chart_config import ChartConfigBase, DashboardChartLayout, DashboardChartItem, DashboardLayoutUpdate
+from app.schemas.chart_config import DashboardChartLayout, DashboardChartItem, DashboardLayoutUpdate
 
 
 # Enums

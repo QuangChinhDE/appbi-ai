@@ -206,7 +206,6 @@ class Settings(BaseSettings):
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache
     LIVE_QUERY_SHARED_CACHE_DB_PATH: str = ""           # defaults to DATA_DIR/live_query_cache.sqlite3
     LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
-    ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode
 
     # ── SMTP / Email Notifications ──────────────────────────────────────
     # Used by: dataset quality scheduled runs -> email PDF report.

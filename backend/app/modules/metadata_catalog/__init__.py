@@ -1,13 +1,13 @@
 """
-metadata_catalog — AppBI's bridge to a HIDDEN OpenMetadata (OM) backend.
+metadata_catalog — AppBI's NATIVE Govern backend (its own Postgres).
 
 Responsibilities
 ----------------
-1. publisher : push AppBI metadata (datasources, tables, columns, PK/FK,
-   glossary, measures, lineage) INTO OM via its REST API.
-2. api       : proxy endpoints under /api/v1/catalog/* so the AppBI frontend
-   reads catalog/glossary/lineage WITHOUT ever talking to OM directly.
-   Users never learn OM exists.
+1. GovernanceService : AppBI's own CRUD over Postgres for Glossary (terms) and
+   Classification (tags). Metrics, Data Quality and Incidents come from AppBI's
+   semantic/quality engines; nothing depends on a third-party catalog server.
+2. api               : endpoints under /api/v1/catalog/* that power the AppBI
+   frontend's Govern module (Vocabulary + Metrics + Knowledge Hub).
 
 Safety
 ------

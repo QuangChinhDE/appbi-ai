@@ -10,7 +10,7 @@ the original draft so the user is never blocked by review.
 from __future__ import annotations
 
 import logging
-from typing import AsyncGenerator, Awaitable, Callable
+from typing import AsyncGenerator, Callable
 
 from app.services.dashboard_ai_bot.events import AgentEvent
 from app.services.dashboard_ai_bot.thinking.prompts import (
