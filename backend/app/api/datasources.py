@@ -82,7 +82,25 @@ def _restore_sensitive_config_fields(
 
     restored = dict(config or {})
     stored = dict(existing_config or {})
+
+    # When the auth MODE changes (e.g. BigQuery Service Account -> Google OAuth,
+    # or vice-versa) the previous mode's credential is IRRELEVANT to the new one.
+    # Rehydrating a blanked field would then carry a stale Service-Account JSON
+    # into an OAuth config (or an old OAuth owner into an SA config), leaving an
+    # inconsistent credential the user can't see — so the datasource keeps
+    # connecting with the OLD key. On an auth-mode switch, do NOT restore the
+    # GCP credential fields; the user supplies the new mode's credential fresh.
+    new_auth = str((config or {}).get("auth_mode") or "").strip().lower()
+    old_auth = str((existing_config or {}).get("auth_mode") or "").strip().lower()
+    auth_mode_changed = bool(new_auth) and bool(old_auth) and new_auth != old_auth
+    _GCP_CRED_FIELDS = {
+        "credentials_json", "service_account_json", "google_oauth_user_id",
+        "private_key", "client_secret",
+    }
+
     for field in _SENSITIVE_FIELDS:
+        if auth_mode_changed and field in _GCP_CRED_FIELDS:
+            continue  # switching auth mode -> require the new credential, don't inherit the old
         if restored.get(field, None) in ("", None, MASKED_PLACEHOLDER) and stored.get(field):
             restored[field] = stored[field]
     return restored
@@ -340,9 +358,13 @@ def update_data_source(
     if not ds:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
     require_edit_access(db, current_user, ds, "data_sources")
+    # Snapshot the OLD (stored) config before we mutate it — used to evict the
+    # cached BigQuery client for the PREVIOUS credential once the update lands.
+    old_config = dict(ds.config or {})
     try:
         next_type = data_source_update.type.value if data_source_update.type is not None else ds.type.value
-        if data_source_update.config is not None:
+        config_changed = data_source_update.config is not None
+        if config_changed:
             restored_config = _restore_sensitive_config_fields(
                 data_source_update.config,
                 ds.config,
@@ -357,6 +379,17 @@ def update_data_source(
         if data_source is not None:
             data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
             stamp_owner_emails(db, [data_source])
+        # Credential/config may have changed -> drop the warm BigQuery client(s)
+        # for BOTH the old and new config so the very next query (Source ->
+        # Dataset -> Explore -> Dashboard all share this cache) rebuilds with the
+        # NEW key instead of reusing the client built from the OLD one (which
+        # would otherwise linger up to the 5-min client-cache TTL).
+        if config_changed:
+            try:
+                from app.services.datasource_service import evict_bigquery_client_cache
+                evict_bigquery_client_cache(old_config, (data_source.config if data_source else {}))
+            except Exception:
+                logger.debug("bq client cache eviction after update failed", exc_info=True)
         return data_source
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

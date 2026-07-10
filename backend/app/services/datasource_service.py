@@ -418,6 +418,50 @@ def _bq_client_is_cached(config: Dict[str, Any], client: "bigquery.Client") -> b
     return bool(cached and cached[1] is client)
 
 
+def evict_bigquery_client_cache(*configs: Dict[str, Any]) -> int:
+    """Drop cached BigQuery client(s) so the NEXT query rebuilds with fresh
+    credentials. Call this after a datasource's credential/config CHANGES — the
+    whole Source→Dataset→Explore→Dashboard chain resolves the datasource live and
+    builds its client through this one cache, so evicting here makes a key change
+    take effect immediately instead of the warm client (built from the OLD key)
+    lingering up to the 5-min TTL. Pass the config(s) whose entries to drop (e.g.
+    the pre- AND post-update config, since an auth-mode switch changes the key);
+    pass none to clear ALL. NEVER raises.
+
+    Per-process: with multiple uvicorn workers only the worker handling the update
+    is evicted synchronously. Other workers self-correct because the cache key is
+    derived from the credential (SA creds fingerprint / OAuth owner) — a real key
+    change yields a new cache key there too — bounded by the TTL for same-key
+    changes (e.g. OAuth re-auth)."""
+    try:
+        if configs:
+            keys = []
+            for cfg in configs:
+                try:
+                    k = _bigquery_client_cache_key(cfg)
+                except Exception:
+                    k = None
+                if k:
+                    keys.append(k)
+        else:
+            keys = list(_BQ_CLIENT_CACHE.keys())
+        evicted = 0
+        for k in keys:
+            entry = _BQ_CLIENT_CACHE.pop(k, None)
+            if entry is not None:
+                evicted += 1
+                try:
+                    entry[1].close()
+                except Exception:  # noqa: BLE001 — closing a torn-down client is best-effort
+                    pass
+        if evicted:
+            logger.info("[bq] evicted %d cached client(s) after datasource change", evicted)
+        return evicted
+    except Exception:  # noqa: BLE001 — cache eviction must never break an update
+        logger.debug("evict_bigquery_client_cache failed", exc_info=True)
+        return 0
+
+
 _TRAILING_ROW_LIMIT_RE = re.compile(
     r"(?:\bLIMIT\s+\d+\s*(?:OFFSET\s+\d+\s*)?|\bOFFSET\s+\d+\s+LIMIT\s+\d+\s*|\bFETCH\s+FIRST\s+\d+\s+ROWS?\s+ONLY)\s*$",
     re.IGNORECASE | re.DOTALL,
