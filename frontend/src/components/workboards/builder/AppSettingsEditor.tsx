@@ -4,12 +4,13 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { Database, FileText, Hash, Monitor, Palette, Settings2, Smartphone } from 'lucide-react';
 import { AppModalShell } from '@/components/common/AppModalShell';
 
 import type {
   MiniAppLayoutSpec,
   BrandingSpec,
+  PrintTemplateSpec,
   ThemeBackgroundSpec,
   ThemeMode,
   ThemeFont,
@@ -50,13 +51,15 @@ export default function AppSettingsEditor({
       title="App settings"
       description="Giao diện · Dữ liệu nguồn · Auto-number · Điều hướng"
       icon={<Settings2 className="h-4 w-4" />}
-      maxWidthClass="max-w-3xl"
+      maxWidthClass="max-w-5xl"
       bodyClassName="space-y-5 px-5 py-5"
     >
-          <section>
-            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Dataset
-            </h3>
+          <MiniAppSettingsPreview layout={layout} />
+
+          <SettingsPanel
+            title="Dataset"
+            icon={<Database className="h-4 w-4" />}
+          >
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
               <Lbl label="Active dataset">
                 <select
@@ -85,55 +88,74 @@ export default function AppSettingsEditor({
                 Screens currently pointing to tables outside the new dataset will be cleared so you can map them again.
               </p>
             )}
-          </section>
+          </SettingsPanel>
 
-          <ThemeSection layout={layout} onChange={onChange} />
+          <SettingsPanel
+            title="Brand & theme"
+            icon={<Palette className="h-4 w-4" />}
+          >
+            <ThemeSection layout={layout} onChange={onChange} />
+          </SettingsPanel>
 
-          <AutoNumberSection layout={layout} onChange={onChange} />
+          <SettingsPanel
+            title="Documents"
+            icon={<FileText className="h-4 w-4" />}
+          >
+            <PrintTemplateSection layout={layout} onChange={onChange} />
+          </SettingsPanel>
 
-          <section>
-            <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Navigation
-            </h3>
-            <div className="grid grid-cols-2 gap-3">
-              <Lbl label="Layout mobile">
-                <select
+          <SettingsPanel
+            title="Automation"
+            icon={<Hash className="h-4 w-4" />}
+          >
+            <AutoNumberSection layout={layout} onChange={onChange} />
+          </SettingsPanel>
+
+          <SettingsPanel
+            title="Navigation"
+            icon={<Smartphone className="h-4 w-4" />}
+          >
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
+                  <Smartphone className="h-4 w-4" />
+                  Mobile
+                </div>
+                <SegmentedControl
                   value={nav.mobile_kind}
-                  onChange={(e) =>
+                  onChange={(mobile_kind) =>
                     onChange({
                       ...layout,
-                      mini_app_nav: {
-                        ...nav,
-                        mobile_kind: e.target.value as 'bottom_nav' | 'drawer',
-                      },
+                      mini_app_nav: { ...nav, mobile_kind },
                     })
                   }
-                  className={INPUT}
-                >
-                  <option value="bottom_nav">Bottom nav (5 tabs)</option>
-                  <option value="drawer">Drawer (slide-out sidebar)</option>
-                </select>
-              </Lbl>
-              <Lbl label="Layout desktop">
-                <select
+                  options={[
+                    { value: 'bottom_nav', label: 'Bottom nav' },
+                    { value: 'drawer', label: 'Drawer' },
+                  ]}
+                />
+              </div>
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
+                  <Monitor className="h-4 w-4" />
+                  Desktop
+                </div>
+                <SegmentedControl
                   value={nav.desktop_kind}
-                  onChange={(e) =>
+                  onChange={(desktop_kind) =>
                     onChange({
                       ...layout,
-                      mini_app_nav: {
-                        ...nav,
-                        desktop_kind: e.target.value as 'sidebar' | 'top_tabs',
-                      },
+                      mini_app_nav: { ...nav, desktop_kind },
                     })
                   }
-                  className={INPUT}
-                >
-                  <option value="sidebar">Left sidebar</option>
-                  <option value="top_tabs">Top tabs</option>
-                </select>
-              </Lbl>
+                  options={[
+                    { value: 'sidebar', label: 'Sidebar' },
+                    { value: 'top_tabs', label: 'Top tabs' },
+                  ]}
+                />
+              </div>
             </div>
-          </section>
+          </SettingsPanel>
     </AppModalShell>
   );
 }
@@ -143,6 +165,152 @@ export default function AppSettingsEditor({
 
 const SECTION_H =
   'mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary';
+
+function cx(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(' ');
+}
+
+function SettingsPanel({
+  icon,
+  title,
+  children,
+  className,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section
+      className={cx(
+        'rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-4',
+        className,
+      )}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        {icon ? (
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-brand/10 text-brand">
+            {icon}
+          </span>
+        ) : null}
+        <h3 className="text-caption font-emphasis text-text-primary">{title}</h3>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: Array<{
+    value: T;
+    label: string;
+    icon?: React.ReactNode;
+  }>;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={cx(
+              'flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-left text-caption transition-colors',
+              active
+                ? 'border-brand/40 bg-brand/10 text-brand'
+                : 'border-[rgb(var(--border-line))] bg-surface-0 text-text-secondary hover:border-brand/30 hover:text-text-primary',
+            )}
+          >
+            {option.icon ? <span className="shrink-0">{option.icon}</span> : null}
+            <span className="font-medium">{option.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MiniAppSettingsPreview({ layout }: { layout: MiniAppLayoutSpec }) {
+  const branding = layout.branding || {};
+  const primary = branding.primary_color || '#2563eb';
+  const accent = branding.accent_color || primary;
+  const appName = branding.app_name || 'Mini app';
+  const logoSrc = branding.logo_data || branding.logo_url;
+  const wideLogo = branding.logo_layout === 'wide';
+  const visibleScreens = (layout.screens || []).filter((screen) => screen.show_in_nav !== false);
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+      <div
+        className="flex min-h-24 items-end justify-between gap-4 px-4 py-4"
+        style={{
+          background:
+            branding.background?.kind === 'gradient'
+              ? GRADIENT_PRESETS[branding.background.gradient_preset || 'ocean']
+              : branding.background?.kind === 'color'
+                ? branding.background.color || '#f8fafc'
+                : `linear-gradient(135deg, ${primary}, ${accent})`,
+        }}
+      >
+        <div className="min-w-0">
+          <div className="inline-flex rounded-md bg-white/90 px-2 py-1 text-tiny font-emphasis uppercase tracking-wider text-slate-600">
+            Preview
+          </div>
+          <h3 className="mt-2 truncate text-body font-strong text-white drop-shadow-sm">
+            {appName}
+          </h3>
+        </div>
+        <div
+          className={`flex h-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/90 p-1 text-sm font-strong text-slate-700 shadow-sm ${
+            wideLogo ? 'w-24' : 'w-10'
+          }`}
+        >
+          {logoSrc ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logoSrc} alt="" className="h-full w-full object-contain" />
+          ) : (
+            appName.slice(0, 1).toUpperCase()
+          )}
+        </div>
+      </div>
+      <div className="grid gap-3 p-4 sm:grid-cols-3">
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Screens
+          </div>
+          <div className="mt-1 text-body font-strong text-text-primary">
+            {visibleScreens.length}
+          </div>
+        </div>
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Mobile
+          </div>
+          <div className="mt-1 truncate text-caption font-medium text-text-primary">
+            {layout.mini_app_nav.mobile_kind === 'drawer' ? 'Drawer' : 'Bottom nav'}
+          </div>
+        </div>
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Desktop
+          </div>
+          <div className="mt-1 truncate text-caption font-medium text-text-primary">
+            {layout.mini_app_nav.desktop_kind === 'top_tabs' ? 'Top tabs' : 'Sidebar'}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /** Downscale + compress an uploaded image to a bounded data-URI (CSP-safe). */
 function compressImageToDataUri(file: File, maxKb = 200): Promise<string> {
@@ -306,6 +474,88 @@ function BackgroundEditor({
   );
 }
 
+function PrintTemplateSection({
+  layout,
+  onChange,
+}: {
+  layout: MiniAppLayoutSpec;
+  onChange: (next: MiniAppLayoutSpec) => void;
+}) {
+  const pt: PrintTemplateSpec = layout.print_template || {};
+  const [logoErr, setLogoErr] = useState<string | null>(null);
+  const set = (patch: Partial<PrintTemplateSpec>) =>
+    onChange({ ...layout, print_template: { ...pt, ...patch } });
+  return (
+    <section>
+      <h3 className={SECTION_H}>Mẫu in / Letterhead (phiếu &amp; báo cáo)</h3>
+      <p className="mb-2 text-caption text-text-tertiary">
+        Hiện ở đầu mọi tài liệu khi bấm <b>In</b> hoặc <b>Xuất Excel</b> — cấu hình 1 lần, dùng cho tất cả phiếu/báo cáo.
+      </p>
+      <label className="mb-2 flex items-center gap-2 text-caption text-text-secondary">
+        <input
+          type="checkbox"
+          checked={pt.enabled !== false}
+          onChange={(e) => set({ enabled: e.target.checked })}
+        />
+        Bật letterhead
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <Lbl label="Tên công ty">
+          <input value={pt.company_name || ''} onChange={(e) => set({ company_name: e.target.value })} className={INPUT} placeholder="VD: Công ty ABC" />
+        </Lbl>
+        <Lbl label="Mã số thuế">
+          <input value={pt.tax_code || ''} onChange={(e) => set({ tax_code: e.target.value })} className={INPUT} />
+        </Lbl>
+        <Lbl label="Địa chỉ">
+          <input value={pt.address || ''} onChange={(e) => set({ address: e.target.value })} className={INPUT} />
+        </Lbl>
+        <Lbl label="Hotline">
+          <input value={pt.hotline || ''} onChange={(e) => set({ hotline: e.target.value })} className={INPUT} />
+        </Lbl>
+        <Lbl label="Email">
+          <input value={pt.email || ''} onChange={(e) => set({ email: e.target.value })} className={INPUT} />
+        </Lbl>
+        <Lbl label="Website">
+          <input value={pt.website || ''} onChange={(e) => set({ website: e.target.value })} className={INPUT} />
+        </Lbl>
+        <Lbl label="Ghi chú chân trang">
+          <input value={pt.footer_note || ''} onChange={(e) => set({ footer_note: e.target.value })} className={INPUT} />
+        </Lbl>
+        <ColorField
+          label="Màu nhấn letterhead"
+          value={pt.accent_color}
+          fallback="#0f766e"
+          onChange={(hex) => set({ accent_color: hex })}
+        />
+      </div>
+      <div className="mt-2">
+        <Lbl label="Logo (tải ảnh — nhúng, hợp CSP)">
+          <input
+            type="file"
+            accept="image/*"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setLogoErr(null);
+              try {
+                set({ logo_data: await compressImageToDataUri(f, 120) });
+              } catch {
+                setLogoErr('Không đọc được ảnh.');
+              }
+            }}
+            className="text-caption"
+          />
+        </Lbl>
+        {logoErr && <p className="mt-1 text-caption text-status-danger">{logoErr}</p>}
+        {pt.logo_data && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={pt.logo_data} alt="logo" className="mt-1 h-12 rounded object-contain" />
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ThemeSection({
   layout,
   onChange,
@@ -317,6 +567,8 @@ function ThemeSection({
   const set = (patch: Partial<BrandingSpec>) =>
     onChange({ ...layout, branding: { ...branding, ...patch } });
   const card = branding.card_style || {};
+  const [logoErr, setLogoErr] = useState<string | null>(null);
+  const logoPreview = branding.logo_data || branding.logo_url || '';
 
   return (
     <>
@@ -338,6 +590,60 @@ function ThemeSection({
               className={INPUT}
             />
           </Lbl>
+          <Lbl label="Kiểu logo header">
+            <select
+              value={branding.logo_layout || 'mark'}
+              onChange={(e) => set({ logo_layout: e.target.value as 'mark' | 'wide' })}
+              className={INPUT}
+            >
+              <option value="mark">Biểu tượng vuông</option>
+              <option value="wide">Logo ngang</option>
+            </select>
+          </Lbl>
+          <div className="col-span-2 rounded-lg border border-[rgb(var(--border-line))] bg-[rgb(var(--surface-subtle))] p-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <Lbl label="Upload logo app (nhúng, hợp CSP)">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setLogoErr(null);
+                    try {
+                      set({ logo_data: await compressImageToDataUri(f, 120) });
+                    } catch {
+                      setLogoErr('Không đọc được ảnh.');
+                    }
+                  }}
+                  className="text-caption"
+                />
+              </Lbl>
+              {logoPreview && (
+                <div
+                  className={`flex h-11 items-center justify-center overflow-hidden rounded-lg bg-white p-1 ring-1 ring-[rgb(var(--border-line))] ${
+                    branding.logo_layout === 'wide' ? 'w-28' : 'w-11'
+                  }`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={logoPreview} alt="logo preview" className="h-full w-full object-contain" />
+                </div>
+              )}
+              {branding.logo_data && (
+                <button
+                  type="button"
+                  onClick={() => set({ logo_data: null })}
+                  className="rounded-md border border-[rgb(var(--border-line))] bg-[rgb(var(--surface-base))] px-2 py-1 text-caption text-text-secondary hover:bg-[rgb(var(--surface-hover))]"
+                >
+                  Xóa logo upload
+                </button>
+              )}
+            </div>
+            {logoErr && <p className="mt-1 text-caption text-status-danger">{logoErr}</p>}
+            <p className="mt-2 text-caption text-text-tertiary">
+              Logo vuông phù hợp icon app; logo ngang phù hợp thương hiệu dạng banner. Banner in/PDF nên đặt ở mục Letterhead bên dưới.
+            </p>
+          </div>
           <Lbl label="Lời chào (trang login)">
             <input
               value={branding.welcome_text || ''}

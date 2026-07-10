@@ -247,6 +247,38 @@ export interface TableDetailPanelSpec {
   sections?: Record<string, string[]>;
 }
 
+export interface PosCartHeaderInputSpec {
+  column: string;
+  label: string;
+  kind?: 'text' | 'select' | 'date';
+  options?: string[];
+  default?: string | null;
+  required?: boolean;
+  write_to_line?: boolean;
+}
+
+export interface PosCartConfigSpec {
+  barcode_column: string;
+  quantity_column: string;
+  catalog_table_id: number;
+  catalog_match_column: string;
+  catalog_label_column?: string | null;
+  catalog_price_column?: string | null;
+  catalog_copy?: Record<string, string>;
+  amount_column?: string | null;
+  header_inputs?: PosCartHeaderInputSpec[];
+  order_id_column?: string | null;
+  order_id_prefix?: string;
+  date_column?: string | null;
+  header_screen_id?: string | null;
+  submit_label?: string;
+  after_submit_screen?: string | null;
+  after_submit_carry?: string[];
+  allow_manual_search?: boolean;
+  catalog_group_column?: string | null;
+  empty_hint?: string | null;
+}
+
 export interface TableScreenSpecBuilt {
   columns: string[];
   editable_columns?: string[];
@@ -289,6 +321,9 @@ export interface TableScreenSpecBuilt {
     format?: string | null;
     unit?: string | null;
   }>;
+  /** Supermarket-style batch scan cart. When set, the runtime renders a POS
+   * interface instead of the grid. None/undefined = ordinary table. */
+  pos_cart?: PosCartConfigSpec | null;
 }
 
 export interface DocBlockSpec {
@@ -453,6 +488,8 @@ export interface ThemeLoginSpec {
 export interface BrandingSpec {
   app_name?: string | null;
   logo_url?: string | null;
+  logo_data?: string | null;
+  logo_layout?: 'mark' | 'wide' | null;
   primary_color?: string | null;
   accent_color?: string | null;
   welcome_text?: string | null;
@@ -472,6 +509,19 @@ export interface AutoNumberConfigSpec {
   start_at?: number;
 }
 
+export interface PrintTemplateSpec {
+  enabled?: boolean;
+  company_name?: string | null;
+  address?: string | null;
+  tax_code?: string | null;
+  hotline?: string | null;
+  email?: string | null;
+  website?: string | null;
+  logo_data?: string | null;
+  footer_note?: string | null;
+  accent_color?: string | null;
+}
+
 export interface MiniAppLayoutSpec {
   screens: ScreenSpec[];
   mini_app_nav: MiniAppNavSpec;
@@ -480,6 +530,8 @@ export interface MiniAppLayoutSpec {
   auto_number_columns?: AutoNumberConfigSpec[];
   /** Named workspaces (screen groups). Empty = flat nav (legacy). */
   screen_groups?: ScreenGroupSpec[];
+  /** Reusable letterhead for doc print + Excel export. */
+  print_template?: PrintTemplateSpec;
   [key: string]: unknown;
 }
 

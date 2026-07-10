@@ -17,6 +17,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
+import jsQR from 'jsqr';
 // Leaflet base stylesheet for the `map` form widget. Side-effect import (the
 // standard way to load Leaflet CSS under webpack) — dynamic import() of a CSS
 // path does not reliably inject styles and breaks TS module resolution.
@@ -55,6 +56,7 @@ import {
   DashboardScreenResponse,
   DocScreenResponse,
   FormScreenResponse,
+  PrintTemplate,
   ScreenResponse,
   TableRowDetailResponse,
   TableScreenResponse,
@@ -402,6 +404,40 @@ export default function WorkspaceWorkboardPage() {
       {/* Print isolation: when printLabel() runs it flags <body>, and only the
           element marked .wb-print-target (a QR label / doc) stays visible. */}
       <style>{`@media print {
+        html, body {
+          background: #fff !important;
+        }
+        .wb-app {
+          display: block !important;
+          min-height: auto !important;
+          background: #fff !important;
+        }
+        .wb-app > header,
+        .wb-app > nav,
+        .wb-app > .flex > aside {
+          display: none !important;
+        }
+        .wb-app > .flex {
+          display: block !important;
+        }
+        .wb-app main {
+          display: block !important;
+          width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        .wb-print-target {
+          width: 100% !important;
+          margin: 0 !important;
+          border: 0 !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+          background: #fff !important;
+        }
+        .wb-print-target * {
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
         body.wb-printing > * { visibility: hidden !important; }
         body.wb-printing .wb-print-target,
         body.wb-printing .wb-print-target * { visibility: visible !important; }
@@ -414,6 +450,8 @@ export default function WorkspaceWorkboardPage() {
         appName={appName}
         accent={accent}
         logoUrl={shell.branding.logo_url}
+        logoData={shell.branding.logo_data}
+        logoLayout={shell.branding.logo_layout}
         token={token}
         workboardId={workboardId}
         showBackToMenu={(siblingApps ?? 1) > 1}
@@ -437,7 +475,7 @@ export default function WorkspaceWorkboardPage() {
         />
       )}
 
-      <div className="flex flex-1">
+      <div className="flex min-w-0 flex-1">
         {isSidebar && (
           <Sidebar
             items={navItems}
@@ -448,7 +486,7 @@ export default function WorkspaceWorkboardPage() {
           />
         )}
         <main
-          className={`flex-1 ${isBottomNav ? 'pb-20' : 'pb-6'} px-4 pt-4 sm:px-6`}
+          className={`min-w-0 flex-1 ${isBottomNav ? 'pb-20' : 'pb-6'} px-3 pt-3 sm:px-6 sm:pt-4`}
         >
           {activeScreenId ? (
             <ScreenContainer
@@ -585,6 +623,8 @@ function Header({
   appName,
   accent,
   logoUrl,
+  logoData,
+  logoLayout,
   token,
   workboardId,
   showBackToMenu = false,
@@ -594,12 +634,16 @@ function Header({
   appName: string;
   accent: string;
   logoUrl?: string | null;
+  logoData?: string | null;
+  logoLayout?: 'mark' | 'wide' | null;
   token: string;
   workboardId: number;
   showBackToMenu?: boolean;
   onLogout: () => void;
   onBackToMenu: () => void;
 }) {
+  const logoSrc = logoData || logoUrl;
+  const wideLogo = logoLayout === 'wide';
   return (
     <header
       className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur"
@@ -616,12 +660,14 @@ function Header({
           </button>
         )}
         <div
-          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg"
-          style={{ backgroundColor: logoUrl ? 'transparent' : accent }}
+          className={`flex h-9 shrink-0 items-center justify-center overflow-hidden rounded-lg ${
+            wideLogo ? 'w-20 bg-white p-1 ring-1 ring-slate-200' : 'w-9'
+          }`}
+          style={{ backgroundColor: logoSrc ? undefined : accent }}
         >
-          {logoUrl ? (
+          {logoSrc ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={logoUrl} alt="" className="h-full w-full object-contain" />
+            <img src={logoSrc} alt="" className="h-full w-full object-contain" />
           ) : (
             <Factory className="h-4 w-4 text-white" />
           )}
@@ -932,8 +978,9 @@ function BottomNav({
   accent: string;
 }) {
   const [showMore, setShowMore] = useState(false);
-  // Show at most 4 primary items + "More" button when there are > 5 items
-  const MAX_VISIBLE = items.length > 5 ? 4 : 5;
+  // Four primary items keeps touch targets readable on small phones; the rest
+  // live in the More sheet instead of squeezing labels into tiny columns.
+  const MAX_VISIBLE = items.length > 4 ? 4 : items.length;
   const visible = items.slice(0, MAX_VISIBLE);
   const overflow = items.slice(MAX_VISIBLE);
   const hasOverflow = overflow.length > 0;
@@ -1137,6 +1184,17 @@ function ScreenContainer({
       />
     );
   }
+  if (data.kind === 'table' && data.table_view?.pos_cart) {
+    return (
+      <PosCartScreen
+        spec={data}
+        token={token}
+        workboardId={workboardId}
+        accent={accent}
+        onNavigate={onNavigate}
+      />
+    );
+  }
   if (data.kind === 'table') {
     return (
       <TableScreen
@@ -1158,7 +1216,15 @@ function ScreenContainer({
     );
   }
   if (data.kind === 'doc') {
-    return <DocScreen spec={data} token={token} workboardId={workboardId} />;
+    return (
+      <DocScreen
+        spec={data}
+        token={token}
+        workboardId={workboardId}
+        shared={shared}
+        accent={accent}
+      />
+    );
   }
   if (data.kind === 'dashboard') {
     return <DashboardScreen spec={data} />;
@@ -2993,8 +3059,9 @@ function BarcodeField({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stringValue = typeof value === 'string' ? value : '';
-  const supported = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+  const supported = cameraScanAvailable();
   // Scan-to-form: when the field declares scan_go_to_screen, a decoded code
   // navigates to that screen carrying the value (default under this column).
   const scanTarget =
@@ -3050,32 +3117,29 @@ function BarcodeField({
   const scan = async () => {
     setError(null);
     try {
-      /* eslint-disable @typescript-eslint/no-explicit-any */
-      const Detector = (window as any).BarcodeDetector;
-      const detector = new Detector();
+      const detector = makeBarcodeDetector();
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
       streamRef.current = stream;
       setScanning(true);
       const v = videoRef.current!;
       v.srcObject = stream;
+      v.setAttribute('playsinline', 'true');
       await v.play();
       const tick = async () => {
         if (!streamRef.current) return;
-        try {
-          const codes = await detector.detect(v);
-          if (codes && codes.length) {
-            const decoded = String(codes[0].rawValue || '');
-            stop();
-            emit(decoded);
-            return;
-          }
-        } catch { /* frame not ready */ }
+        const decoded = await decodeVideoFrame(v, canvas, detector);
+        if (decoded) {
+          stop();
+          emit(decoded);
+          return;
+        }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
-      /* eslint-enable @typescript-eslint/no-explicit-any */
     } catch {
-      setError('Không mở được camera — nhập tay bên dưới.');
+      setError('Không mở được camera — cấp quyền camera hoặc nhập tay bên dưới.');
       stop();
     }
   };
@@ -3980,6 +4044,577 @@ function CalendarView({
   );
 }
 
+// ── POS scan-cart screen ───────────────────────────────────────────────────
+// Supermarket checkout flow: scan a barcode (phone camera) → the product
+// resolves from the attached catalog and lands in an on-screen list with an
+// editable quantity → press Submit to persist EVERY line at once via the
+// screen's bulk-insert endpoint. Nothing is written until submit. On success
+// the operator is routed to a printable receipt (doc screen).
+function posToNum(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const n = Number(String(value ?? '').replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// A camera is usable whenever getUserMedia exists in a secure context
+// (https or localhost). We never gate the "Scan" button on the native
+// BarcodeDetector — Windows Chrome/Firefox/Safari lack it, so we fall back to
+// jsQR (pure-JS QR decoder) which runs everywhere.
+function cameraScanAvailable(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === 'function'
+  );
+}
+
+// One scan pass over a <video> frame. Prefers the native BarcodeDetector
+// (fast, decodes QR + 1D barcodes); otherwise decodes QR from the pixels with
+// jsQR. Returns the decoded string, or '' if nothing was found this frame.
+async function decodeVideoFrame(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  detector: { detect: (v: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>> } | null,
+): Promise<string> {
+  if (detector) {
+    try {
+      const codes = await detector.detect(video);
+      if (codes && codes.length) return String(codes[0].rawValue || '').trim();
+    } catch {
+      /* frame not ready */
+    }
+    return '';
+  }
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  if (!w || !h) return '';
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return '';
+  ctx.drawImage(video, 0, 0, w, h);
+  try {
+    const img = ctx.getImageData(0, 0, w, h);
+    const res = jsQR(img.data, w, h, { inversionAttempts: 'attemptBoth' });
+    return res && res.data ? String(res.data).trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function makeBarcodeDetector(): { detect: (v: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>> } | null {
+  if (typeof window === 'undefined' || !('BarcodeDetector' in window)) return null;
+  try {
+    return new (window as any).BarcodeDetector({
+      formats: ['qr_code', 'code_128', 'ean_13', 'ean_8', 'code_39', 'code_93', 'itf', 'upc_a', 'upc_e'],
+    });
+  } catch {
+    try {
+      return new (window as any).BarcodeDetector();
+    } catch {
+      return null;
+    }
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+function posTwoDigit(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+type PosLine = {
+  code: string;
+  label: string;
+  price: number;
+  qty: number;
+  row: Record<string, unknown>;
+};
+
+function PosCartScreen({
+  spec,
+  token,
+  workboardId,
+  accent,
+  onNavigate,
+}: {
+  spec: TableScreenResponse;
+  token: string;
+  workboardId: number;
+  accent: string;
+  onNavigate: (screenId: string, carry?: Record<string, unknown>) => void;
+}) {
+  const cfg = spec.table_view?.pos_cart as NonNullable<
+    NonNullable<TableScreenResponse['table_view']>['pos_cart']
+  >;
+  const catalog = spec.pos_catalog || null;
+
+  const headerInputs = useMemo(() => cfg?.header_inputs || [], [cfg]);
+  const [header, setHeader] = useState<Record<string, string>>(() => {
+    const seed: Record<string, string> = {};
+    for (const h of cfg?.header_inputs || []) seed[h.column] = h.default ?? '';
+    return seed;
+  });
+  const [lines, setLines] = useState<PosLine[]>([]);
+  const [manual, setManual] = useState('');
+  const [search, setSearch] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastScanRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const scanSupported = cameraScanAvailable();
+
+  const matchCol = catalog?.match_column || cfg?.catalog_match_column || '';
+  const labelCol = catalog?.label_column || cfg?.catalog_label_column || '';
+  const priceCol = catalog?.price_column || cfg?.catalog_price_column || '';
+
+  const catalogByCode = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>();
+    for (const row of catalog?.rows || []) {
+      const key = String(row[matchCol] ?? '').trim();
+      if (key) map.set(key.toUpperCase(), row);
+    }
+    return map;
+  }, [catalog, matchCol]);
+
+  const resolveRow = useCallback(
+    (code: string): Record<string, unknown> | null =>
+      catalogByCode.get(code.trim().toUpperCase()) || null,
+    [catalogByCode],
+  );
+
+  const addByCode = useCallback(
+    (rawCode: string) => {
+      const code = rawCode.trim();
+      if (!code) return;
+      const row = resolveRow(code);
+      setLines((prev) => {
+        const idx = prev.findIndex((l) => l.code.toUpperCase() === code.toUpperCase());
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
+          return next;
+        }
+        return [
+          ...prev,
+          {
+            code,
+            label: row && labelCol ? String(row[labelCol] ?? code) : code,
+            price: row && priceCol ? posToNum(row[priceCol]) : 0,
+            qty: 1,
+            row: row || {},
+          },
+        ];
+      });
+    },
+    [resolveRow, labelCol, priceCol],
+  );
+
+  const stopScan = useCallback(() => {
+    setScanning(false);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  }, []);
+  useEffect(() => () => stopScan(), [stopScan]);
+
+  const startScan = useCallback(async () => {
+    setScanError(null);
+    try {
+      const detector = makeBarcodeDetector();
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
+      setScanning(true);
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      v.setAttribute('playsinline', 'true');
+      await v.play();
+      const tick = async () => {
+        if (!streamRef.current) return;
+        const decoded = await decodeVideoFrame(v, canvas, detector);
+        if (decoded) {
+          // Debounce: the camera fires the same code many frames/sec — accept a
+          // repeat of the SAME code only after 1.2s so one physical scan = +1.
+          const now = Date.now();
+          if (!(decoded === lastScanRef.current.code && now - lastScanRef.current.at < 1200)) {
+            lastScanRef.current = { code: decoded, at: now };
+            addByCode(decoded);
+          }
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch {
+      setScanError('Không mở được camera — cấp quyền camera cho trang, hoặc nhập/tìm mã bên dưới.');
+      stopScan();
+    }
+  }, [addByCode, stopScan]);
+
+  const setQty = (code: string, qty: number) =>
+    setLines((prev) =>
+      prev.map((l) => (l.code === code ? { ...l, qty: Math.max(1, qty) } : l)),
+    );
+  const removeLine = (code: string) =>
+    setLines((prev) => prev.filter((l) => l.code !== code));
+
+  const grandQty = lines.reduce((s, l) => s + l.qty, 0);
+  const grandAmount = lines.reduce((s, l) => s + l.qty * l.price, 0);
+
+  const searchHits = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    if (!q || !cfg?.allow_manual_search) return [];
+    return (catalog?.rows || [])
+      .filter((row) => {
+        const code = String(row[matchCol] ?? '');
+        const name = labelCol ? String(row[labelCol] ?? '') : '';
+        return `${code} ${name}`.toUpperCase().includes(q);
+      })
+      .slice(0, 8);
+  }, [search, catalog, matchCol, labelCol, cfg]);
+
+  const genOrderId = useCallback(() => {
+    const d = new Date();
+    const ymd = `${d.getFullYear()}${posTwoDigit(d.getMonth() + 1)}${posTwoDigit(d.getDate())}`;
+    const hms = `${posTwoDigit(d.getHours())}${posTwoDigit(d.getMinutes())}${posTwoDigit(d.getSeconds())}`;
+    return `${cfg?.order_id_prefix || 'PN'}-${ymd}-${hms}`;
+  }, [cfg]);
+
+  const submit = useCallback(async () => {
+    setError(null);
+    for (const h of headerInputs) {
+      if (h.required && !String(header[h.column] ?? '').trim()) {
+        setError(`Thiếu "${h.label}".`);
+        return;
+      }
+    }
+    if (lines.length === 0) {
+      setError('Chưa quét sản phẩm nào.');
+      return;
+    }
+    setSubmitting(true);
+    stopScan();
+    const orderId = cfg?.order_id_column ? genOrderId() : null;
+    const today = new Date().toISOString().slice(0, 10);
+    const ctx: Record<string, unknown> = { ...header };
+    if (cfg?.order_id_column && orderId) ctx[cfg.order_id_column] = orderId;
+    if (cfg?.date_column) ctx[cfg.date_column] = today;
+
+    const rows = lines.map((l) => {
+      const r: Record<string, unknown> = {};
+      r[cfg.barcode_column] = l.code;
+      r[cfg.quantity_column] = l.qty;
+      for (const [lineCol, catCol] of Object.entries(cfg.catalog_copy || {})) {
+        r[lineCol] = l.row[catCol] ?? '';
+      }
+      if (cfg.amount_column) r[cfg.amount_column] = Math.round(l.qty * l.price);
+      for (const h of headerInputs) {
+        if (h.write_to_line === false) continue;
+        r[h.column] = header[h.column] ?? '';
+      }
+      if (cfg.order_id_column && orderId) r[cfg.order_id_column] = orderId;
+      if (cfg.date_column) r[cfg.date_column] = today;
+      return r;
+    });
+
+    try {
+      // Phiếu HEADER row first (khi cấu hình header_screen_id) — giữ bảng
+      // DonHang đồng bộ để "Tất cả phiếu" hiển thị phiếu lập từ POS.
+      if (cfg.header_screen_id) {
+        await workspaceApi.insertScreenRow(
+          token,
+          workboardId,
+          cfg.header_screen_id,
+          { ...ctx },
+        );
+      }
+      const res = await workspaceApi.bulkInsertScreenRows(
+        token,
+        workboardId,
+        spec.screen_id,
+        rows,
+      );
+      if (res.failure > 0) {
+        const first = res.results.find((x) => !x.ok);
+        setError(`Lưu ${res.success}/${res.total} dòng. Lỗi: ${first?.error || 'không rõ'}.`);
+        setSubmitting(false);
+        return;
+      }
+      // Success — clear cart then route to the printable receipt.
+      setLines([]);
+      setSubmitting(false);
+      if (cfg.after_submit_screen) {
+        const carry: Record<string, unknown> = {};
+        for (const col of cfg.after_submit_carry || []) {
+          if (col in ctx) carry[col] = ctx[col];
+        }
+        onNavigate(cfg.after_submit_screen, carry);
+      }
+    } catch (e) {
+      setError(isNetworkError(e) ? 'Mất mạng — thử lại khi có kết nối.' : 'Không lưu được phiếu.');
+      setSubmitting(false);
+    }
+  }, [cfg, header, headerInputs, lines, genOrderId, stopScan, token, workboardId, spec.screen_id, onNavigate]);
+
+  if (!cfg) return null;
+
+  const inputCls =
+    'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200';
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-4">
+      {/* Header inputs (Loại / Kho / Người…) — captured once per phiếu */}
+      {headerInputs.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 rounded-xl bg-white p-4 shadow-sm sm:grid-cols-2">
+          {headerInputs.map((h) => (
+            <label key={h.column} className="block space-y-1">
+              <span className="text-xs font-medium text-slate-500">
+                {h.label}
+                {h.required && <span className="text-rose-500"> *</span>}
+              </span>
+              {h.kind === 'select' ? (
+                <select
+                  value={header[h.column] ?? ''}
+                  onChange={(e) => setHeader((p) => ({ ...p, [h.column]: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="">— Chọn —</option>
+                  {(h.options || []).map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type={h.kind === 'date' ? 'date' : 'text'}
+                  value={header[h.column] ?? ''}
+                  onChange={(e) => setHeader((p) => ({ ...p, [h.column]: e.target.value }))}
+                  className={inputCls}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* Scanner + manual add */}
+      <div className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+        {scanning && (
+          <div className="space-y-1">
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <video ref={videoRef} className="h-56 w-full rounded-lg border border-slate-300 bg-black object-cover" />
+            <button type="button" onClick={stopScan} className="text-xs text-rose-600 hover:underline">
+              Dừng quét
+            </button>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <input
+            value={manual}
+            onChange={(e) => setManual(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && manual.trim()) {
+                e.preventDefault();
+                addByCode(manual);
+                setManual('');
+              }
+            }}
+            placeholder="Quét hoặc nhập mã hàng rồi Enter"
+            className={inputCls}
+          />
+          {scanSupported && !scanning && (
+            <button
+              type="button"
+              onClick={startScan}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white"
+              style={{ backgroundColor: accent }}
+            >
+              <ScanLine className="h-4 w-4" /> Quét
+            </button>
+          )}
+        </div>
+        {scanError && <p className="text-xs text-rose-600">{scanError}</p>}
+
+        {cfg.allow_manual_search && (
+          <div className="space-y-1.5">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Tìm sản phẩm theo tên / mã…"
+              className={inputCls}
+            />
+            {searchHits.length > 0 && (
+              <div className="divide-y divide-slate-100 overflow-hidden rounded-lg border border-slate-200">
+                {searchHits.map((row) => {
+                  const code = String(row[matchCol] ?? '');
+                  const name = labelCol ? String(row[labelCol] ?? '') : '';
+                  return (
+                    <button
+                      key={code}
+                      type="button"
+                      onClick={() => {
+                        addByCode(code);
+                        setSearch('');
+                      }}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    >
+                      <span className="truncate">
+                        <span className="font-medium text-slate-700">{code}</span>
+                        {name && <span className="text-slate-500"> — {name}</span>}
+                      </span>
+                      <Plus className="h-4 w-4 shrink-0 text-slate-400" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Cart lines */}
+      <div className="overflow-hidden rounded-xl bg-white shadow-sm">
+        <div
+          className="flex items-center justify-between border-b border-slate-100 px-4 py-3"
+          style={{ backgroundColor: `${accent}0D` }}
+        >
+          <div>
+            <span className="text-sm font-semibold text-slate-800">Danh sách quét</span>
+            <p className="mt-0.5 text-xs text-slate-500 sm:hidden">
+              Kiểm tra số lượng trước khi lưu phiếu
+            </p>
+          </div>
+          <span
+            className="rounded-full px-2.5 py-1 text-xs font-semibold"
+            style={{ backgroundColor: `${accent}18`, color: accent }}
+          >
+            {lines.length} mặt hàng · SL {grandQty}
+          </span>
+        </div>
+        {lines.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-slate-400">
+            {cfg.empty_hint || 'Quét mã để thêm sản phẩm vào danh sách.'}
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {lines.map((l) => (
+              <li key={l.code} className="px-4 py-3 sm:flex sm:items-center sm:gap-3">
+                <div className="flex min-w-0 items-start justify-between gap-3 sm:flex-1">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-semibold leading-snug text-slate-900 sm:truncate">
+                      {l.label}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600">
+                        {l.code}
+                      </span>
+                      {l.price > 0 && (
+                        <span>{l.price.toLocaleString('vi-VN')} ₫ / đơn vị</span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeLine(l.code)}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-rose-500 hover:bg-rose-50 sm:hidden"
+                    aria-label="Xóa sản phẩm"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-3 sm:mt-0 sm:shrink-0 sm:justify-end">
+                  <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setQty(l.code, l.qty - 1)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-white"
+                    >
+                      –
+                    </button>
+                    <input
+                      type="number"
+                      value={l.qty}
+                      min={1}
+                      onChange={(e) => setQty(l.code, posToNum(e.target.value))}
+                      className="h-8 w-12 rounded-md border border-slate-200 bg-white px-1 text-center text-sm font-semibold"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setQty(l.code, l.qty + 1)}
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-slate-600 hover:bg-white"
+                    >
+                      +
+                    </button>
+                  </div>
+                  {l.price > 0 && (
+                    <div className="min-w-[112px] text-right">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 sm:hidden">
+                        Thành tiền
+                      </p>
+                      <p className="text-sm font-bold text-slate-900">
+                        {(l.qty * l.price).toLocaleString('vi-VN')} ₫
+                      </p>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeLine(l.code)}
+                    className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-rose-500 hover:bg-rose-50 sm:flex"
+                    aria-label="Xóa sản phẩm"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {grandAmount > 0 && (
+          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50 px-4 py-3">
+            <span className="text-sm font-semibold text-slate-700">Tổng tiền</span>
+            <span className="text-lg font-bold text-slate-950">
+              {grandAmount.toLocaleString('vi-VN')} ₫
+            </span>
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          {error}
+        </div>
+      )}
+
+      {/* Submit — nothing is saved until here */}
+      <div className="sticky bottom-3 z-10">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={submitting || lines.length === 0}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-base font-semibold text-white shadow-lg disabled:opacity-50"
+          style={{ backgroundColor: accent }}
+        >
+          {submitting ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : (
+            <Printer className="h-5 w-5" />
+          )}
+          {cfg.submit_label || 'Lưu phiếu'}
+          {lines.length > 0 && !submitting && <span className="opacity-90">({lines.length})</span>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TableScreen({
   spec,
   token,
@@ -4532,7 +5167,7 @@ function TableScreen({
   };
 
   return (
-    <div className="w-full rounded-xl bg-white shadow-sm">
+    <div className="w-full min-w-0 overflow-hidden rounded-xl bg-white shadow-sm">
       {spec.description && (
         <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-500">
           {spec.description}
@@ -4554,7 +5189,7 @@ function TableScreen({
               if (filter.kind === 'date_range' || filter.kind === 'number_range') {
                 const type = filter.kind === 'date_range' ? 'date' : 'number';
                 return (
-                  <div key={key} className="grid grid-cols-2 gap-2 md:col-span-2">
+                  <div key={key} className="grid gap-2 sm:grid-cols-2 md:col-span-2">
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-slate-600">
                         {label} from
@@ -4605,29 +5240,29 @@ function TableScreen({
               );
             })}
           </div>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
             <button
               type="submit"
               disabled={filterLoading}
-              className="rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              className="w-full rounded-md px-3 py-2 text-sm font-medium text-white disabled:opacity-60 sm:w-auto sm:py-1.5"
               style={{ backgroundColor: accent }}
             >
-              {filterLoading ? 'Loading...' : 'Apply filters'}
+              {filterLoading ? 'Đang lọc...' : 'Áp dụng bộ lọc'}
             </button>
             <button
               type="button"
               onClick={() => void reloadRows({})}
               disabled={filterLoading || Object.keys(filterValues).length === 0}
-              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 disabled:opacity-50"
+              className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 disabled:opacity-50 sm:w-auto sm:py-1.5"
             >
-              Clear
+              Xóa lọc
             </button>
           </div>
         </form>
       )}
 
       {Array.isArray(current.stat_tiles) && current.stat_tiles.length > 0 && (
-        <div className="grid gap-2 px-1 py-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid min-w-0 gap-2 px-2 py-2 sm:grid-cols-2 lg:grid-cols-4">
           {current.stat_tiles.map((tile, i) => (
             <div key={i} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
               <div className="truncate text-xs text-slate-500">{tile.label}</div>
@@ -4662,8 +5297,8 @@ function TableScreen({
           onAddOnDate={(d) => openCreatePanel({ [tv.calendar_config!.date_column]: d })}
         />
       ) : (
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="max-w-full overflow-x-auto overscroll-x-contain">
+        <table className="min-w-max w-full text-sm">
           <thead>
             {columnGroups.length > 0 ? (
               <tr className="border-b border-slate-200 bg-slate-100">
@@ -5088,9 +5723,9 @@ function TableScreen({
       )}
 
       {panelRowKey && (panelEnabled || panelMode === 'create') && (
-        <div className="fixed inset-0 z-40 flex">
-          <div className="flex-1 bg-black/30" onClick={closeDetailPanel} />
-          <aside className="flex h-full w-full max-w-md flex-col border-l border-slate-200 bg-white shadow-2xl">
+        <div className="fixed inset-0 z-40 flex bg-black/30 sm:bg-transparent">
+          <div className="hidden flex-1 bg-black/30 sm:block" onClick={closeDetailPanel} />
+          <aside className="flex h-full w-full flex-col bg-white shadow-2xl sm:max-w-md sm:border-l sm:border-slate-200">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-900">
                 {panelMode === 'create'
@@ -5123,12 +5758,12 @@ function TableScreen({
               ) : null}
             </div>
             {panelDetail && (panelDetail.editable_columns || []).length > 0 && (
-              <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
+              <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
                 <button
                   type="button"
                   onClick={panelMode === 'create' ? closeDetailPanel : () => setPanelDraft({})}
                   disabled={panelSaving}
-                  className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 sm:w-auto sm:py-1.5"
                 >
                   {panelMode === 'create' ? 'Huỷ' : 'Huỷ thay đổi'}
                 </button>
@@ -5136,7 +5771,7 @@ function TableScreen({
                   type="button"
                   onClick={() => void savePanelDraft()}
                   disabled={panelSaving || (panelMode === 'edit' && Object.keys(panelDraft).length === 0)}
-                  className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                  className="w-full rounded-md px-3 py-2 text-xs font-medium text-white disabled:opacity-50 sm:w-auto sm:py-1.5"
                   style={{ backgroundColor: accent }}
                 >
                   {panelSaving ? 'Đang lưu...' : panelMode === 'create' ? 'Thêm' : 'Lưu'}
@@ -5186,7 +5821,7 @@ function DetailPanelBody({
           const draftValue = col in draft ? draft[col] : detail.row[col];
           const label = detail.column_labels?.[col] || col;
           return (
-            <div key={col} className="grid grid-cols-3 gap-3">
+            <div key={col} className="grid grid-cols-1 gap-1 sm:grid-cols-3 sm:gap-3">
               <dt className="text-xs font-medium text-slate-600">
                 {label}
                 {isDerived ? (
@@ -5195,7 +5830,7 @@ function DetailPanelBody({
                   </span>
                 ) : null}
               </dt>
-              <dd className="col-span-2 text-sm text-slate-800">
+              <dd className="text-sm text-slate-800 sm:col-span-2">
                 {isEditable && !isDerived ? (
                   <TableCellInput
                     value={draftValue}
@@ -5404,37 +6039,241 @@ function TextCellInput({
 
 // ── Doc screen (consumes merges + footer_row) ───────────────────────────
 
+// Reusable letterhead atop every printable document — company logo + name +
+// address, set up once in App Settings (print_template). Part of the
+// .wb-print-target so it prints/PDFs with the doc.
+function PrintLetterhead({ template }: { template: PrintTemplate }) {
+  const accent = template.accent_color || '#0f766e';
+  const lines = [
+    template.address ? `Địa chỉ: ${template.address}` : null,
+    template.tax_code ? `MST: ${template.tax_code}` : null,
+    template.hotline ? `Hotline: ${template.hotline}` : null,
+    template.email || null,
+    template.website || null,
+  ].filter(Boolean) as string[];
+  if (!template.company_name && lines.length === 0 && !template.logo_data) return null;
+  return (
+    <div
+      className="mb-4 flex items-center gap-4 border-b-2 pb-3"
+      style={{ borderColor: accent }}
+    >
+      {template.logo_data && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={template.logo_data} alt="logo" className="h-14 w-14 shrink-0 rounded object-contain" />
+      )}
+      <div className="min-w-0">
+        {template.company_name && (
+          <p className="text-sm font-bold uppercase leading-tight" style={{ color: accent }}>
+            {template.company_name}
+          </p>
+        )}
+        {lines.map((l) => (
+          <p key={l} className="text-[11px] leading-tight text-slate-500">
+            {l}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DocExportButton({
+  token,
+  workboardId,
+  screenId,
+  blockIndex,
+  blockTitle,
+  shared,
+  compactLabel,
+  variant = 'toolbar',
+}: {
+  token: string;
+  workboardId: number;
+  screenId: string;
+  blockIndex: number;
+  blockTitle?: string | null;
+  shared?: Record<string, unknown>;
+  compactLabel?: boolean;
+  variant?: 'toolbar' | 'floating';
+}) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExport = async () => {
+    if (exporting) return;
+    setExportError(null);
+    setExporting(true);
+    try {
+      const { blob, filename } = await workspaceApi.exportDocBlockExcel(
+        token,
+        workboardId,
+        screenId,
+        blockIndex,
+        shared,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: unknown) {
+      const apiError = err as ApiErrorLike;
+      if (err instanceof Error && err.message) {
+        setExportError(err.message);
+      } else {
+        setExportError(
+          typeof apiError.response?.data?.detail === 'string'
+            ? apiError.response.data.detail
+            : 'Không xuất được Excel.',
+        );
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const label = compactLabel
+    ? 'Excel'
+    : blockTitle
+      ? `Excel: ${blockTitle}`
+      : 'Xuất Excel';
+  const floating = variant === 'floating';
+
+  return (
+    <span className={floating ? 'inline-flex' : 'inline-flex min-w-0 flex-col items-start gap-1'}>
+      <button
+        type="button"
+        onClick={onExport}
+        disabled={exporting}
+        className={
+          floating
+            ? 'inline-flex h-11 items-center justify-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60'
+            : 'inline-flex h-9 items-center justify-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60'
+        }
+        title={blockTitle ? `Xuất Excel: ${blockTitle}` : 'Xuất Excel'}
+      >
+        {exporting ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Download className="h-4 w-4" />
+        )}
+        <span>{exporting ? 'Đang xuất…' : label}</span>
+      </button>
+      {exportError && (
+        <span className="max-w-xs text-xs text-rose-600">{exportError}</span>
+      )}
+    </span>
+  );
+}
+
 function DocScreen({
   spec,
   token,
   workboardId,
+  shared,
+  accent,
 }: {
   spec: DocScreenResponse;
   token: string;
   workboardId: number;
+  shared?: Record<string, unknown>;
+  accent: string;
 }) {
+  const exportableBlocks = (spec.blocks || [])
+    .map((block, index) => ({
+      block,
+      index,
+      title: typeof block.title === 'string' ? block.title : null,
+    }))
+    .filter(({ block }) => block.type === 'data_table' && block.allow_export_excel);
+  const hasDocActions = true;
+
   return (
-    <div className="w-full">
-      <div className="mb-2 flex justify-end print:hidden">
-        <button
-          type="button"
-          onClick={printLabel}
-          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
-        >
-          <Printer className="h-4 w-4" /> In
-        </button>
+    <div className="w-full min-w-0 pb-16 md:pb-0">
+      <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white/90 px-3 py-2 shadow-sm print:hidden">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Tài liệu
+          </p>
+          <h2 className="truncate text-sm font-semibold text-slate-800">
+            {spec.title}
+          </h2>
+        </div>
+        <div className="hidden items-center gap-1 rounded-full border border-slate-200 bg-slate-50/80 p-1 md:flex">
+          <button
+            type="button"
+            onClick={printLabel}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            <Printer className="h-4 w-4" /> In
+          </button>
+          {exportableBlocks.map(({ index, title }) => (
+            <DocExportButton
+              key={index}
+              token={token}
+              workboardId={workboardId}
+              screenId={spec.screen_id}
+              blockIndex={index}
+              blockTitle={exportableBlocks.length > 1 ? title : null}
+              shared={shared}
+              compactLabel={exportableBlocks.length <= 1}
+            />
+          ))}
+        </div>
       </div>
-      <div className="wb-print-target w-full space-y-3 rounded-xl bg-white p-6 shadow-sm">
-        {(spec.blocks || []).map((b, i) => (
-          <DocBlock
-            key={i}
-            block={b}
-            token={token}
-            workboardId={workboardId}
-            screenId={spec.screen_id}
-            blockIndex={i}
-          />
-        ))}
+      {hasDocActions && (
+        <div
+          className="fixed right-3 z-40 flex items-center gap-1 rounded-full border border-slate-200 bg-white/95 p-1 shadow-xl backdrop-blur md:hidden print:hidden"
+          style={{ bottom: 'calc(5.25rem + env(safe-area-inset-bottom))' }}
+        >
+          <button
+            type="button"
+            onClick={printLabel}
+            className="inline-flex h-11 items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-white shadow-sm"
+            style={{ backgroundColor: accent }}
+          >
+            <Printer className="h-4 w-4" /> In
+          </button>
+          {exportableBlocks.map(({ index, title }) => (
+            <DocExportButton
+              key={index}
+              token={token}
+              workboardId={workboardId}
+              screenId={spec.screen_id}
+              blockIndex={index}
+              blockTitle={exportableBlocks.length > 1 ? title : null}
+              shared={shared}
+              compactLabel={exportableBlocks.length <= 1}
+              variant="floating"
+            />
+          ))}
+        </div>
+      )}
+      <div className="max-w-full overflow-x-auto overscroll-x-contain pb-2 print:overflow-visible print:pb-0">
+        <div className="wb-print-target w-full min-w-0 space-y-3 rounded-xl bg-white p-4 shadow-sm sm:p-6 print:w-full">
+          {spec.print_template && spec.print_template.enabled !== false && (
+            <PrintLetterhead template={spec.print_template} />
+          )}
+          {(spec.blocks || []).map((b, i) => (
+            <DocBlock
+              key={i}
+              block={b}
+              token={token}
+              workboardId={workboardId}
+              screenId={spec.screen_id}
+              blockIndex={i}
+              shared={shared}
+            />
+          ))}
+          {spec.print_template?.footer_note && (
+            <p className="mt-4 border-t border-slate-200 pt-2 text-center text-[11px] italic text-slate-400">
+              {spec.print_template.footer_note}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -5446,12 +6285,14 @@ function DocBlock({
   workboardId,
   screenId,
   blockIndex,
+  shared,
 }: {
   block: Record<string, unknown>;
   token: string;
   workboardId: number;
   screenId: string;
   blockIndex: number;
+  shared?: Record<string, unknown>;
 }) {
   const t = String(block.type || '');
   if (t === 'header') {
@@ -5518,6 +6359,7 @@ function DocBlock({
         workboardId={workboardId}
         screenId={screenId}
         blockIndex={blockIndex}
+        shared={shared}
       />
     );
   }
@@ -5707,12 +6549,14 @@ function BlockSyncControls({
   workboardId,
   screenId,
   blockIndex,
+  shared,
 }: {
   triggers: SyncTriggerSpec[];
   token: string;
   workboardId: number;
   screenId: string;
   blockIndex: number;
+  shared?: Record<string, unknown>;
 }) {
   const [busyTriggerId, setBusyTriggerId] = useState<string | null>(null);
   const [groupId, setGroupId] = useState<string | null>(null);
@@ -5778,6 +6622,7 @@ function BlockSyncControls({
         screenId,
         blockIndex,
         trigger.id,
+        shared,
       );
       setGroupId(result.group_id);
       setRuns(
@@ -5917,12 +6762,14 @@ function DocDataTable({
   workboardId,
   screenId,
   blockIndex,
+  shared,
 }: {
   block: Record<string, unknown>;
   token: string;
   workboardId: number;
   screenId: string;
   blockIndex: number;
+  shared?: Record<string, unknown>;
 }) {
   const data = (block.data as Record<string, unknown>) || {};
   const cols = (data.columns as string[]) || [];
@@ -5939,7 +6786,7 @@ function DocDataTable({
     columnLabels,
   );
   const title = block.title ? String(block.title) : null;
-  const allowExport = Boolean(block.allow_export_excel);
+  const allowExport = false;
   const syncTriggers = (Array.isArray(block.sync_triggers)
     ? (block.sync_triggers as SyncTriggerSpec[])
     : []
@@ -5957,6 +6804,7 @@ function DocDataTable({
         workboardId,
         screenId,
         blockIndex,
+        shared,
       );
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -5968,6 +6816,10 @@ function DocDataTable({
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err: unknown) {
       const apiError = err as ApiErrorLike;
+      if (err instanceof Error && err.message) {
+        setExportError(err.message);
+        return;
+      }
       setExportError(
         typeof apiError.response?.data?.detail === 'string'
           ? apiError.response.data.detail
@@ -5989,47 +6841,67 @@ function DocDataTable({
     for (let off = 1; off < span; off++) hidden.add(`${start + off}:${col}`);
   }
 
+  // Per-column number formatting from the block's column_metadata, so the
+  // on-screen (and printed) document matches the templated Excel.
+  const metaByCol = (block.column_metadata as Record<string, { format?: string | null }>) || {};
+  const NUMERIC_FMT = new Set(['currency', 'number', 'integer', 'percent']);
+  const isNumericCol = (c: string) => NUMERIC_FMT.has(String(metaByCol[c]?.format || ''));
+  const fmtDocCell = (c: string, v: unknown): string => {
+    const f = String(metaByCol[c]?.format || '');
+    if (v == null || v === '') return '';
+    if (NUMERIC_FMT.has(f)) {
+      const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+      if (!Number.isFinite(n)) return String(v);
+      if (f === 'currency') return `${n.toLocaleString('vi-VN')} ₫`;
+      if (f === 'integer') return Math.round(n).toLocaleString('vi-VN');
+      if (f === 'percent') return `${(n * 100).toLocaleString('vi-VN', { maximumFractionDigits: 1 })}%`;
+      return n.toLocaleString('vi-VN', { maximumFractionDigits: 4 });
+    }
+    return String(v);
+  };
+
   return (
     <div>
-      {(title || allowExport || syncTriggers.length > 0) && (
-        <div className="mb-1 flex items-start justify-between gap-2">
-          <h3 className="text-sm font-semibold text-slate-800">{title || ''}</h3>
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
-              {allowExport && (
-                <button
-                  type="button"
-                  onClick={onExport}
-                  disabled={exporting}
-                  className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  title="Tải Excel"
-                >
-                  {exporting ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Download className="h-3.5 w-3.5" />
-                  )}
-                  <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
-                </button>
+      {title && (
+        <h3 className="mb-1 text-sm font-semibold text-slate-800">{title}</h3>
+      )}
+      {syncTriggers.length > 0 && (
+        // Interactive actions — kept OUT of the printed document (print:hidden)
+        // and laid out as one tidy toolbar rather than a cramped stack.
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-2 py-1.5 print:hidden">
+          {allowExport && (
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={exporting}
+              className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Tải Excel theo biểu mẫu"
+            >
+              {exporting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
               )}
-            </div>
-            {syncTriggers.length > 0 && (
-              <BlockSyncControls
-                triggers={syncTriggers}
-                token={token}
-                workboardId={workboardId}
-                screenId={screenId}
-                blockIndex={blockIndex}
-              />
-            )}
-          </div>
+              <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
+            </button>
+          )}
+          {syncTriggers.length > 0 && (
+            <BlockSyncControls
+              triggers={syncTriggers}
+              token={token}
+              workboardId={workboardId}
+              screenId={screenId}
+              blockIndex={blockIndex}
+              shared={shared}
+            />
+          )}
         </div>
       )}
       {exportError && (
         <p className="mb-2 text-xs text-rose-600">{exportError}</p>
       )}
-      <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="w-full border-collapse text-sm">
+      <div className="max-w-full overflow-x-auto overscroll-x-contain rounded-lg border border-slate-200">
+        <table className="min-w-max w-full border-collapse text-sm">
           <thead>
             {headerRows.map((row, rowIndex) => (
               <tr key={rowIndex} className="bg-slate-100">
@@ -6057,10 +6929,10 @@ function DocDataTable({
                       key={c}
                       rowSpan={span}
                       className={`border border-slate-200 px-3 py-1.5 text-slate-700 ${
-                        span ? 'bg-slate-50 align-middle font-medium' : ''
-                      }`}
+                        isNumericCol(c) ? 'text-right tabular-nums' : ''
+                      } ${span ? 'bg-slate-50 align-middle font-medium' : ''}`}
                     >
-                      {row[c] == null ? '' : String(row[c])}
+                      {fmtDocCell(c, row[c])}
                     </td>
                   );
                 })}
@@ -6074,14 +6946,21 @@ function DocDataTable({
                   {cols.map((c, ci) => {
                     const v = (fr.values as Record<string, unknown>)[c];
                     const isLabelCell = v == null && ci === 0 && fr.label;
+                    const numeric = isNumericCol(c);
                     return (
                       <td
                         key={c}
                         className={`border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 ${
-                          frIdx === 0 ? 'border-t-2 border-t-slate-400' : ''
-                        }`}
+                          numeric ? 'text-right tabular-nums' : ''
+                        } ${frIdx === 0 ? 'border-t-2 border-t-slate-400' : ''}`}
                       >
-                        {isLabelCell ? String(fr.label) : formatTotal(v)}
+                        {isLabelCell
+                          ? String(fr.label)
+                          : v == null
+                            ? ''
+                            : numeric
+                              ? fmtDocCell(c, v)
+                              : formatTotal(v)}
                       </td>
                     );
                   })}

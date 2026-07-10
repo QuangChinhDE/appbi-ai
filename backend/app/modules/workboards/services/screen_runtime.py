@@ -647,6 +647,79 @@ def _load_datasource(db: Session, table: DatasetTable) -> Optional[DataSource]:
     return db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
 
 
+def _resolve_read_target(db: Session, table: DatasetTable) -> tuple[Optional[DataSource], Any]:
+    """Resolve the ``(datasource, query_table)`` pair used to READ a screen's rows.
+
+    Physical / ``sql_query`` tables read directly against their own datasource.
+    Derived (calculated) tables and the generated Date table have no
+    ``datasource_id`` of their own — they reference sibling tables through
+    ``dataset_table_<id>`` aliases. Route those through
+    :func:`build_live_proxy_table_for_dataset_table`, which returns a live proxy
+    (``source_kind='sql_query'`` carrying the fully-inlined CTE SQL) plus the
+    underlying datasource. This lets a workboard ``table`` / ``doc`` screen
+    render an aggregated or cross-table result exactly like the dataset preview
+    does — including on a Google Sheets source, where the proxy SQL reads every
+    referenced tab into DuckDB within a single query. Read-only by nature; write
+    paths never call this (a derived table isn't editable).
+    """
+    if table is None:
+        return None, None
+    from app.services.dataset_table_sql_service import (
+        is_derived_table,
+        build_live_proxy_table_for_dataset_table,
+    )
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+
+    if is_derived_table(table) or is_generated_calendar_table(table):
+        from app.models.dataset import Dataset
+
+        dataset_obj = (
+            db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+        )
+        if dataset_obj is not None:
+            try:
+                return build_live_proxy_table_for_dataset_table(db, dataset_obj, table)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "workboard: derived-table proxy resolve failed for table %s: %s",
+                    getattr(table, "id", None),
+                    exc,
+                )
+                return None, None
+    return _load_datasource(db, table), table
+
+
+def _resolve_pos_catalog(db: Session, pos_cart: Any) -> Dict[str, Any]:
+    """Load the product master for a POS scan-cart screen.
+
+    Returns ``{match_column, label_column, price_column, group_column, rows}``.
+    The catalog is reference data (products) shared by every operator, so no RLS
+    is applied. Rows are read via :func:`_resolve_read_target` so the catalog may
+    itself be a physical, sql or derived table. Never raises — a missing catalog
+    degrades to an empty list (the scanner then just stores raw codes).
+    """
+    empty = {
+        "match_column": getattr(pos_cart, "catalog_match_column", None),
+        "label_column": getattr(pos_cart, "catalog_label_column", None),
+        "price_column": getattr(pos_cart, "catalog_price_column", None),
+        "group_column": getattr(pos_cart, "catalog_group_column", None),
+        "rows": [],
+    }
+    try:
+        catalog = _load_table(db, getattr(pos_cart, "catalog_table_id", 0))
+        datasource, query_table = _resolve_read_target(db, catalog) if catalog else (None, None)
+        if not catalog or not datasource or query_table is None:
+            return empty
+        result = LiveQueryService.execute_preview_query(
+            datasource, query_table, limit=_TOTALS_ROW_CAP, offset=0, filters=[]
+        )
+        empty["rows"] = result.get("rows") or []
+        return empty
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("workboard: POS catalog resolve failed: %s", exc)
+        return empty
+
+
 # ── Media size ceilings (single source of truth) ──────────────────────────
 # Base64-into-JSONB media. Postgres JSONB is effectively unbounded, so we use
 # a documented app ceiling; Google Sheets caps a single CELL at ~50,000 chars
@@ -1738,8 +1811,8 @@ def render_table_screen(
     table_spec = screen.table
 
     table = _load_table(db, screen.table_id)
-    datasource = _load_datasource(db, table) if table else None
-    if not table or not datasource:
+    datasource, query_table = _resolve_read_target(db, table) if table else (None, None)
+    if not table or not datasource or query_table is None:
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
     rls_filters, allowed = build_rls_filter(
@@ -1771,7 +1844,7 @@ def render_table_screen(
     # cached + materialised into DuckDB). _TOTALS_ROW_CAP bounds worst case.
     result = LiveQueryService.execute_preview_query(
         datasource,
-        table,
+        query_table,
         limit=_TOTALS_ROW_CAP + 1,
         offset=0,
         filters=merged,
@@ -1879,7 +1952,7 @@ def render_table_screen(
     column_groups = _normalize_column_groups(selected_columns, table_spec.column_groups)
     merges = _compute_merges(page_rows, list(table_spec.group_by or []), selected_columns)
 
-    return {
+    payload = {
         "columns": selected_columns,
         "primary_key_columns": pk_cols,
         "rows": page_rows,
@@ -1894,6 +1967,11 @@ def render_table_screen(
         "merges": merges,
         "column_labels": screen.column_labels or {},
     }
+    # POS scan-cart screens carry the resolved product catalog so the FE
+    # scanner resolves codes → {name, unit, price} instantly, client-side.
+    if getattr(table_spec, "pos_cart", None) is not None:
+        payload["pos_catalog"] = _resolve_pos_catalog(db, table_spec.pos_cart)
+    return payload
 
 
 # ── Doc screen ────────────────────────────────────────────────────────────
@@ -2141,7 +2219,8 @@ def render_doc_screen(
         payload = block.model_dump()
         if isinstance(block, DataTableBlock):
             payload["data"] = _resolve_doc_data_block(
-                db, workboard, screen, block, identity=identity
+                db, workboard, screen, block,
+                identity=identity, shared_context=shared_context,
             )
         # Inject screen-level column_labels so frontend can show friendly names
         if screen_column_labels and not payload.get("column_labels"):
@@ -2156,7 +2235,25 @@ def render_doc_screen(
         "page": screen.doc.page.model_dump(),
         "blocks": rendered_blocks,
         "context": substitution,
+        "print_template": _doc_print_template(workboard),
     }
+
+
+def _doc_print_template(workboard: Workboard) -> Optional[Dict[str, Any]]:
+    """The reusable letterhead for doc print/export, read from the layout.
+
+    Stored under ``layout_json.print_template`` (LayoutJson ignores it as an
+    extra key, so it round-trips as a plain dict). Returns None when unset or
+    disabled so the FE simply omits the letterhead band.
+    """
+    try:
+        raw = getattr(workboard, "layout_json", None) or {}
+        pt = raw.get("print_template") if isinstance(raw, dict) else None
+        if isinstance(pt, dict) and pt.get("enabled", True):
+            return pt
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return None
 
 
 def _resolve_doc_data_block(
@@ -2166,6 +2263,7 @@ def _resolve_doc_data_block(
     block: DataTableBlock,
     *,
     identity: CallerIdentity,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # Doc blocks default to ``primary`` (the screen's table) but also
     # support ``lookup:<table_id>`` so a single doc screen can join over
@@ -2181,8 +2279,8 @@ def _resolve_doc_data_block(
         return {"columns": [], "rows": []}
 
     table = _load_table(db, table_id)
-    datasource = _load_datasource(db, table) if table else None
-    if not table or not datasource:
+    datasource, query_table = _resolve_read_target(db, table) if table else (None, None)
+    if not table or not datasource or query_table is None:
         return {"columns": [], "rows": []}
 
     filters: List[Dict[str, Any]] = []
@@ -2197,8 +2295,22 @@ def _resolve_doc_data_block(
             return {"columns": [], "rows": []}
         filters = filters + rls_filters
 
+    # Context filters bind a column to a runtime shared-context value so a
+    # per-record document (a printable phiếu) shows ONLY that record. A
+    # required binding whose value is missing yields NO rows (never a full
+    # dump); an optional one is simply skipped.
+    shared = shared_context or {}
+    for cf in getattr(block, "context_filters", None) or []:
+        raw = shared.get(cf.from_shared)
+        present = raw is not None and not (isinstance(raw, str) and not raw.strip())
+        if not present:
+            if cf.required:
+                return {"columns": [], "rows": []}
+            continue
+        filters = filters + [{"field": cf.column, "operator": "eq", "value": raw}]
+
     result = LiveQueryService.execute_preview_query(
-        datasource, table, limit=block.max_rows, offset=0, filters=filters
+        datasource, query_table, limit=block.max_rows, offset=0, filters=filters
     )
     all_columns: List[str] = result.get("columns") or []
     rows: List[Dict[str, Any]] = result.get("rows") or []
@@ -2277,12 +2389,14 @@ def export_doc_data_block_to_excel(
     block_index: int,
     *,
     identity: CallerIdentity,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> tuple[bytes, str]:
     """Render the *displayed* table of a doc ``data_table`` block to XLSX.
 
     Returns ``(content, filename)``. Only blocks with
-    ``allow_export_excel=True`` are exportable; the same RLS as on-screen
-    rendering applies because we go through :func:`_resolve_doc_data_block`.
+    ``allow_export_excel=True`` are exportable; the same RLS + shared-context
+    filters as on-screen rendering apply because we go through
+    :func:`_resolve_doc_data_block`.
     """
     if screen.kind != "doc" or screen.doc is None:
         raise HTTPException(status_code=400, detail="Screen is not a doc.")
@@ -2295,35 +2409,210 @@ def export_doc_data_block_to_excel(
     if not block.allow_export_excel:
         raise HTTPException(status_code=403, detail="Excel export is disabled for this block.")
 
-    data = _resolve_doc_data_block(db, workboard, screen, block, identity=identity)
+    data = _resolve_doc_data_block(
+        db, workboard, screen, block,
+        identity=identity, shared_context=shared_context,
+    )
     columns: List[str] = data.get("columns") or []
     rows: List[Dict[str, Any]] = data.get("rows") or []
 
-    # Reuse the dataset exporter so cell coercion stays consistent.
-    from app.services.dataset_excel_export_service import (
-        export_dataset_table_to_excel,
-        sanitize_excel_sheet_title,
+    content = _build_templated_excel(
+        workboard=workboard,
+        screen=screen,
+        block=block,
+        columns=columns,
+        rows=rows,
+        column_labels=data.get("column_labels") or {},
+        shared_context=shared_context or {},
     )
-
-    def _fetch_page(_limit: int, offset: int) -> Dict[str, Any]:
-        if offset == 0:
-            return {"columns": columns, "rows": rows}
-        return {"columns": columns, "rows": []}
-
-    sheet_title = sanitize_excel_sheet_title(
-        block.title or screen.title or f"block_{block_index + 1}"
-    )
-    result = export_dataset_table_to_excel(
-        _fetch_page,
-        sheet_title=sheet_title,
-        page_size=max(len(rows), 1),
-        max_rows=max(len(rows), 1),
-    )
-    # Compose a filename like "workboard-slug__screen-id__block-2.xlsx".
     safe_screen = re.sub(r"[^A-Za-z0-9_.-]+", "_", screen.id) or "screen"
     safe_wb = re.sub(r"[^A-Za-z0-9_.-]+", "_", workboard.slug or workboard.name or "workboard")
     filename = f"{safe_wb}__{safe_screen}__block-{block_index + 1}.xlsx"
-    return result.content, filename
+    return content, filename
+
+
+_XLSX_NUMFMT = {
+    "currency": '#,##0 "₫"',
+    "number": "#,##0.####",
+    "integer": "#,##0",
+    "percent": "0.0%",
+}
+
+
+def _build_templated_excel(
+    *,
+    workboard: Workboard,
+    screen: Screen,
+    block: DataTableBlock,
+    columns: List[str],
+    rows: List[Dict[str, Any]],
+    column_labels: Dict[str, str],
+    shared_context: Dict[str, Any],
+) -> bytes:
+    """Build a letterhead-templated XLSX for a doc data_table.
+
+    Layout: company letterhead (from the reusable print_template) → report
+    title → export date + carried filters → an optional grouped header row
+    (``column_groups``) → the styled table with per-column number formats →
+    a bold totals row (``block.totals``). This is the "Excel có sẵn biểu mẫu"
+    output — matches the on-screen document.
+    """
+    import io
+    from datetime import datetime as _dt
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    pt = _doc_print_template(workboard) or {}
+    accent = str(pt.get("accent_color") or "0F766E").lstrip("#") or "0F766E"
+
+    meta_by_col = {k: v for k, v in (block.column_metadata or {}).items()}
+
+    def _label(col: str) -> str:
+        m = meta_by_col.get(col)
+        if m is not None and getattr(m, "label", None):
+            return str(m.label)
+        return column_labels.get(col) or col
+
+    def _fmt(col: str) -> Optional[str]:
+        m = meta_by_col.get(col)
+        return str(getattr(m, "format", None)) if m is not None and getattr(m, "format", None) else None
+
+    numeric_formats = {"currency", "number", "integer", "percent"}
+
+    def _num(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        s = re.sub(r"[^0-9.\-]", "", str(value))
+        try:
+            return float(s) if s not in ("", "-", ".") else None
+        except ValueError:
+            return None
+
+    ncols = max(len(columns), 1)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (re.sub(r"[\[\]\*/\\?:]", " ", (block.title or screen.title or "Báo cáo"))[:31]) or "Báo cáo"
+
+    thin = Side(style="thin", color="D1D5DB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    accent_fill = PatternFill("solid", fgColor=accent)
+    head_font = Font(bold=True, color="FFFFFF", size=11)
+
+    r = 1
+
+    def _merge_line(text: str, *, bold=False, size=11, color="111827", align="left"):
+        nonlocal r
+        ws.cell(r, 1, text)
+        cell = ws.cell(r, 1)
+        cell.font = Font(bold=bold, size=size, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        if ncols > 1:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+        r += 1
+
+    # ── Letterhead ──────────────────────────────────────────────────
+    if pt.get("company_name"):
+        _merge_line(str(pt["company_name"]), bold=True, size=14, color=accent)
+    sub_bits: List[str] = []
+    if pt.get("address"):
+        sub_bits.append(f"Địa chỉ: {pt['address']}")
+    if pt.get("tax_code"):
+        sub_bits.append(f"MST: {pt['tax_code']}")
+    if pt.get("hotline"):
+        sub_bits.append(f"Hotline: {pt['hotline']}")
+    if pt.get("email"):
+        sub_bits.append(pt["email"])
+    for line in sub_bits:
+        _merge_line(line, size=10, color="6B7280")
+    if pt.get("company_name") or sub_bits:
+        r += 1  # spacer
+
+    # ── Report title + meta ─────────────────────────────────────────
+    _merge_line(str(block.title or screen.title or "Báo cáo").upper(), bold=True, size=13, align="center")
+    _merge_line(f"Ngày xuất: {_dt.now():%d/%m/%Y %H:%M}", size=9, color="6B7280", align="center")
+    carried = [f"{k}: {v}" for k, v in (shared_context or {}).items() if v not in (None, "")]
+    if carried:
+        _merge_line(" · ".join(carried), size=9, color="6B7280", align="center")
+    r += 1  # spacer
+
+    # ── Optional grouped header (column_groups) ─────────────────────
+    groups = list(block.column_groups or [])
+    if groups:
+        col_pos = {c: i for i, c in enumerate(columns)}
+        for g in groups:
+            gcols = [c for c in (g.columns or []) if c in col_pos]
+            if not gcols:
+                continue
+            idxs = sorted(col_pos[c] for c in gcols)
+            start, end = idxs[0] + 1, idxs[-1] + 1
+            cell = ws.cell(r, start, g.label or "")
+            cell.font = head_font
+            cell.fill = accent_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+            if end > start:
+                ws.merge_cells(start_row=r, start_column=start, end_row=r, end_column=end)
+                for cc in range(start, end + 1):
+                    ws.cell(r, cc).border = border
+                    ws.cell(r, cc).fill = accent_fill
+        r += 1
+
+    # ── Table header row ────────────────────────────────────────────
+    header_row = r
+    for j, col in enumerate(columns):
+        cell = ws.cell(r, j + 1, _label(col))
+        cell.font = head_font
+        cell.fill = accent_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    r += 1
+
+    # ── Data rows ───────────────────────────────────────────────────
+    for row in rows:
+        for j, col in enumerate(columns):
+            fmt = _fmt(col)
+            raw = row.get(col)
+            cell = ws.cell(r, j + 1)
+            if fmt in numeric_formats:
+                num = _num(raw)
+                cell.value = num
+                cell.number_format = _XLSX_NUMFMT.get(fmt, "#,##0")
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.value = "" if raw is None else str(raw)
+                cell.alignment = Alignment(horizontal="left")
+            cell.border = border
+        r += 1
+
+    # ── Totals row ──────────────────────────────────────────────────
+    total_cols = set(block.totals or [])
+    if total_cols and rows:
+        for j, col in enumerate(columns):
+            cell = ws.cell(r, j + 1)
+            cell.font = Font(bold=True)
+            cell.border = border
+            if j == 0:
+                cell.value = "TỔNG"
+            elif col in total_cols:
+                cell.value = sum((_num(row.get(col)) or 0) for row in rows)
+                cell.number_format = _XLSX_NUMFMT.get(_fmt(col) or "integer", "#,##0")
+                cell.alignment = Alignment(horizontal="right")
+        r += 1
+
+    # ── Column widths ───────────────────────────────────────────────
+    for j, col in enumerate(columns):
+        header_len = len(_label(col))
+        sample = max((len(str(row.get(col) or "")) for row in rows[:50]), default=0)
+        width = min(max(header_len + 2, sample + 2, 10), 42)
+        ws.column_dimensions[get_column_letter(j + 1)].width = width
+    ws.freeze_panes = ws.cell(header_row + 1, 1)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ── Public app shell payload ──────────────────────────────────────────────

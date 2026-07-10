@@ -455,11 +455,36 @@ class DataTableSyncTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DataTableContextFilter(BaseModel):
+    """Filter a doc data_table by a value carried in the runtime shared context.
+
+    When a row action (or a POS submit) navigates to a doc screen carrying e.g.
+    ``ma_don``, that value lands in the shared context. Binding it here makes a
+    per-record document — a printable phiếu — show ONLY that record's rows
+    instead of every row the viewer can see.
+    """
+
+    column: str = Field(..., min_length=1, description="data_table column to filter.")
+    from_shared: str = Field(
+        ..., min_length=1, description="Key in the shared context that supplies the match value."
+    )
+    required: bool = Field(
+        default=True,
+        description="When the shared value is absent: True → show no rows; False → skip this filter.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
         default="primary",
         description="`primary` (the screen's bound table) or `lookup:<table_id>`",
+    )
+    context_filters: List[DataTableContextFilter] = Field(
+        default_factory=list,
+        description="Filter rows by runtime shared-context values (for per-record docs like a printable phiếu).",
     )
     columns: List[str] = Field(default_factory=list)
     column_groups: List[DataTableColumnGroup] = Field(default_factory=list)
@@ -613,6 +638,8 @@ class BrandingConfig(BaseModel):
 
     app_name: Optional[str] = None
     logo_url: Optional[str] = None
+    logo_data: Optional[str] = None
+    logo_layout: Optional[Literal["mark", "wide"]] = None
     primary_color: Optional[str] = Field(default=None, max_length=32)
     accent_color: Optional[str] = Field(default=None, max_length=32)
     welcome_text: Optional[str] = None
@@ -1026,6 +1053,82 @@ class StatTile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PosCartHeaderInput(BaseModel):
+    """One header field captured ONCE per POS submit and written onto EVERY
+    line row (denormalised), e.g. Loại phiếu / Kho / Người giao/nhận."""
+
+    column: str = Field(..., min_length=1, description="Header/line column key.")
+    label: str = Field(..., min_length=1, max_length=80)
+    kind: Literal["text", "select", "date"] = "text"
+    options: List[str] = Field(
+        default_factory=list, description="Choices when kind='select'."
+    )
+    default: Optional[str] = None
+    required: bool = False
+    write_to_line: bool = Field(
+        default=True,
+        description=(
+            "True → the value is written onto every saved line. False → captured "
+            "and carried to the receipt only (metadata that is not a line column, "
+            "e.g. Người giao when lines live in a detail table)."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PosCartConfig(BaseModel):
+    """Supermarket-style batch scan cart on a ``table`` screen.
+
+    When present the runtime renders a point-of-sale interface instead of the
+    editable grid: scan a barcode (phone camera) → the product is resolved from
+    a catalog table and appended to an on-screen list with an editable quantity
+    → press *Submit* to persist EVERY line at once through the screen's
+    bulk-insert endpoint. Nothing touches the datasource until submit — exactly
+    like a checkout scanner. A phiếu id is generated per submit and, optionally,
+    the user is routed to a printable doc screen (the receipt).
+
+    The read side attaches the resolved catalog rows as ``pos_catalog`` so the
+    scanner resolves codes instantly client-side (no per-scan round trip).
+    """
+
+    barcode_column: str = Field(..., min_length=1, description="Line column that stores the scanned code.")
+    quantity_column: str = Field(..., min_length=1, description="Line column for the quantity.")
+    catalog_table_id: int = Field(..., description="Dataset table id of the product master.")
+    catalog_match_column: str = Field(..., min_length=1, description="Catalog column matched against the scanned code.")
+    catalog_label_column: Optional[str] = Field(default=None, description="Product-name column in the catalog.")
+    catalog_price_column: Optional[str] = Field(default=None, description="Unit-price column in the catalog.")
+    catalog_copy: Dict[str, str] = Field(
+        default_factory=dict,
+        description="line_column -> catalog_column values copied onto every appended line.",
+    )
+    amount_column: Optional[str] = Field(default=None, description="Line column set to quantity × unit price.")
+    header_inputs: List[PosCartHeaderInput] = Field(default_factory=list)
+    order_id_column: Optional[str] = Field(default=None, description="Line column for the generated phiếu id.")
+    order_id_prefix: str = Field(default="PN", max_length=12)
+    date_column: Optional[str] = Field(default=None, description="Line column auto-set to today's date.")
+    header_screen_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Screen id (bound to the phiếu HEADER table, usually hidden from nav) "
+            "that receives ONE row per submit with the header values (phiếu id, "
+            "loại, kho, người giao, ngày). Keeps the header table in sync so "
+            "phiếu lists show POS-created phiếu. None = lines only."
+        ),
+    )
+    submit_label: str = Field(default="Lưu phiếu", max_length=40)
+    after_submit_screen: Optional[str] = Field(default=None, description="Doc screen opened after a successful save (the receipt).")
+    after_submit_carry: List[str] = Field(
+        default_factory=list,
+        description="Header/line columns carried to after_submit_screen (e.g. the generated phiếu id).",
+    )
+    allow_manual_search: bool = Field(default=True, description="Show a searchable catalog picker beside the scanner.")
+    catalog_group_column: Optional[str] = Field(default=None, description="Optional catalog column used to group the picker.")
+    empty_hint: Optional[str] = Field(default=None, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -1138,6 +1241,15 @@ class TableScreenSpec(BaseModel):
     format_rules: List[FormatRule] = Field(
         default_factory=list,
         description="Conditional formatting: tint rows/cells when a row-local expression is truthy.",
+    )
+    pos_cart: Optional[PosCartConfig] = Field(
+        default=None,
+        description=(
+            "Turns this table screen into a supermarket-style batch scan cart: "
+            "scan → on-screen line list → one Submit persists all lines via "
+            "bulk-insert. The read side attaches the resolved product catalog as "
+            "``pos_catalog``. None = ordinary editable/read-only grid."
+        ),
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -1552,6 +1664,29 @@ class ScreenGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PrintTemplate(BaseModel):
+    """Reusable letterhead applied to EVERY doc screen's print + Excel export.
+
+    Set up once in App Settings; the runtime auto-renders it as a header band
+    atop each document (logo + company + address) and the Excel exporter
+    prepends the same details as styled header rows. This is the "mẫu in được
+    setup trước" — one config, consistent phiếu / báo cáo output.
+    """
+
+    enabled: bool = True
+    company_name: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=300)
+    tax_code: Optional[str] = Field(default=None, max_length=60)
+    hotline: Optional[str] = Field(default=None, max_length=80)
+    email: Optional[str] = Field(default=None, max_length=120)
+    website: Optional[str] = Field(default=None, max_length=120)
+    logo_data: Optional[str] = Field(default=None, description="Logo as a data: URI (CSP-safe; external URLs blocked).")
+    footer_note: Optional[str] = Field(default=None, max_length=300)
+    accent_color: Optional[str] = Field(default=None, description="Hex for the letterhead accent rule.")
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -1568,6 +1703,8 @@ class LayoutJson(BaseModel):
     # Named groups of screens (UI: "Workspace"). Empty = flat nav (today's
     # behaviour). Additive + backward-compatible; see ScreenGroup.
     screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)
+    # Reusable print letterhead for doc screens (print + Excel export).
+    print_template: Optional[PrintTemplate] = None
 
     # ignore unknown future fields rather than erroring out clients
     model_config = ConfigDict(extra="ignore")

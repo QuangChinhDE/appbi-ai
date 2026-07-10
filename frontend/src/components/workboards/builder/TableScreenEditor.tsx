@@ -29,6 +29,7 @@ import {
   PencilLine,
   Plus,
   Rows3,
+  ScanLine,
   Settings2,
   Sigma,
   Palette,
@@ -62,6 +63,8 @@ import type {
   TableScreenSpecBuilt,
   TableTotalsKind,
   TableFilterSpec,
+  PosCartConfigSpec,
+  PosCartHeaderInputSpec,
   ScreenSpec,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
@@ -93,6 +96,7 @@ type ActiveItem =
   | 'detail_panel'
   | 'empty'
   | 'display'
+  | 'pos_cart'
   | 'format_rules'
   | `filter:${number}`
   | `computed:${number}`
@@ -825,6 +829,204 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               placeholder="e.g. No matching rows. Tap + to add one."
             />
           </Lbl>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'pos_cart') {
+      const pos = (tableSpec.pos_cart || null) as PosCartConfigSpec | null;
+      const ownCols = (tables.find((t) => t.id === screen.table_id)?.columns || []).map((c) => c.name);
+      const catCols = pos
+        ? (tables.find((t) => t.id === pos.catalog_table_id)?.columns || []).map((c) => c.name)
+        : [];
+      const setPos = (patch: Partial<PosCartConfigSpec>) =>
+        updateTable({ pos_cart: { ...(pos as PosCartConfigSpec), ...patch } });
+      const ColSel = ({
+        value,
+        onPick,
+        cols,
+        allowBlank = true,
+      }: {
+        value?: string | null;
+        onPick: (v: string) => void;
+        cols: string[];
+        allowBlank?: boolean;
+      }) => (
+        <select value={value || ''} onChange={(e) => onPick(e.target.value)} className={INPUT}>
+          {allowBlank && <option value="">— chọn cột —</option>}
+          {cols.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+          {value && !cols.includes(value) && <option value={value}>{value} (tự nhập)</option>}
+        </select>
+      );
+      const hdr = pos?.header_inputs || [];
+      const setHdr = (next: PosCartHeaderInputSpec[]) => setPos({ header_inputs: next });
+      const copyPairs = Object.entries(pos?.catalog_copy || {});
+      const setCopy = (pairs: [string, string][]) =>
+        setPos({ catalog_copy: Object.fromEntries(pairs.filter(([k]) => k)) });
+      return (
+        <BuilderInspectorPanel
+          icon={<ScanLine className="h-4 w-4" />}
+          title="Chế độ POS — quét → giỏ → 1 lần lưu"
+          subtitle="Quét mã (camera) dồn vào 1 danh sách như máy tính tiền siêu thị; bấm Lưu mới ghi tất cả xuống dữ liệu 1 lần rồi mở phiếu để in."
+        >
+          <div className="space-y-3">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={!!pos}
+                onChange={(e) =>
+                  updateTable({
+                    pos_cart: e.target.checked
+                      ? {
+                          barcode_column: '',
+                          quantity_column: '',
+                          catalog_table_id: 0,
+                          catalog_match_column: '',
+                          catalog_copy: {},
+                          header_inputs: [],
+                          order_id_prefix: 'PN',
+                          submit_label: 'Lưu & In phiếu',
+                          allow_manual_search: true,
+                        }
+                      : null,
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span className="text-caption text-text-secondary">
+                <span className="font-emphasis text-text-primary">Bật chế độ POS quét</span>
+                <span className="ml-1 text-text-tertiary">
+                  — thay lưới bảng bằng giao diện quét mã + giỏ hàng.
+                </span>
+              </span>
+            </label>
+
+            {pos && (
+              <>
+                <Lbl label="Bảng danh mục sản phẩm (catalog)">
+                  <select
+                    value={pos.catalog_table_id || 0}
+                    onChange={(e) => setPos({ catalog_table_id: Number(e.target.value) })}
+                    className={INPUT}
+                  >
+                    <option value={0}>— chọn bảng —</option>
+                    {tables.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </Lbl>
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Cột mã khớp (trong catalog)">
+                    <ColSel value={pos.catalog_match_column} cols={catCols} onPick={(v) => setPos({ catalog_match_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột tên hàng (catalog)">
+                    <ColSel value={pos.catalog_label_column} cols={catCols} onPick={(v) => setPos({ catalog_label_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột đơn giá (catalog)">
+                    <ColSel value={pos.catalog_price_column} cols={catCols} onPick={(v) => setPos({ catalog_price_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột mã trên dòng (ghi xuống)">
+                    <ColSel value={pos.barcode_column} cols={ownCols} onPick={(v) => setPos({ barcode_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột số lượng (dòng)">
+                    <ColSel value={pos.quantity_column} cols={ownCols} onPick={(v) => setPos({ quantity_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột thành tiền (dòng)">
+                    <ColSel value={pos.amount_column} cols={ownCols} onPick={(v) => setPos({ amount_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột số phiếu (sinh tự động)">
+                    <ColSel value={pos.order_id_column} cols={ownCols} onPick={(v) => setPos({ order_id_column: v })} />
+                  </Lbl>
+                  <Lbl label="Tiền tố số phiếu">
+                    <input value={pos.order_id_prefix || ''} onChange={(e) => setPos({ order_id_prefix: e.target.value })} className={INPUT} placeholder="PN" />
+                  </Lbl>
+                  <Lbl label="Cột ngày (dòng)">
+                    <ColSel value={pos.date_column} cols={ownCols} onPick={(v) => setPos({ date_column: v })} />
+                  </Lbl>
+                </div>
+
+                <div className="rounded-md border border-border-subtle p-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-caption font-emphasis text-text-primary">Cột catalog → cột dòng</span>
+                    <BuilderIconButton title="Thêm" onClick={() => setCopy([...(copyPairs as [string, string][]), ['', '']])}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </BuilderIconButton>
+                  </div>
+                  {copyPairs.length === 0 && (
+                    <p className="text-tiny text-text-tertiary">Sao chép tên hàng/ĐVT/đơn giá từ catalog xuống mỗi dòng.</p>
+                  )}
+                  {copyPairs.map(([lineCol, catCol], i) => (
+                    <div key={i} className="mb-1 flex items-center gap-1">
+                      <ColSel value={lineCol} cols={ownCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [v, catCol]; setCopy(p); }} />
+                      <span className="text-text-tertiary">←</span>
+                      <ColSel value={catCol} cols={catCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [lineCol, v]; setCopy(p); }} />
+                      <BuilderIconButton title="Xoá" variant="danger" onClick={() => setCopy((copyPairs as [string, string][]).filter((_, idx) => idx !== i))}>
+                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                      </BuilderIconButton>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-md border border-border-subtle p-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-caption font-emphasis text-text-primary">Trường đầu phiếu (nhập 1 lần)</span>
+                    <BuilderIconButton title="Thêm" onClick={() => setHdr([...hdr, { column: '', label: '', kind: 'text', options: [], required: false, write_to_line: true }])}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </BuilderIconButton>
+                  </div>
+                  {hdr.map((h, i) => (
+                    <div key={i} className="mb-2 space-y-1 rounded border border-border-subtle p-1.5">
+                      <div className={BUILDER_GRID_2}>
+                        <ColSel value={h.column} cols={ownCols} onPick={(v) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, column: v } : x)))} />
+                        <input value={h.label} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))} className={INPUT} placeholder="Nhãn (vd: Loại phiếu)" />
+                        <select value={h.kind || 'text'} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, kind: e.target.value as 'text' | 'select' | 'date' } : x)))} className={INPUT}>
+                          <option value="text">Văn bản</option>
+                          <option value="select">Chọn</option>
+                          <option value="date">Ngày</option>
+                        </select>
+                        <input value={(h.options || []).join(', ')} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, options: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)))} className={INPUT} placeholder="Lựa chọn: A, B, C" />
+                      </div>
+                      <div className="flex items-center gap-3 text-tiny">
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={!!h.required} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, required: e.target.checked } : x)))} /> Bắt buộc</label>
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={h.write_to_line !== false} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, write_to_line: e.target.checked } : x)))} /> Ghi vào dòng</label>
+                        <BuilderIconButton title="Xoá" variant="danger" onClick={() => setHdr(hdr.filter((_, idx) => idx !== i))}>
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Nút Lưu (nhãn)">
+                    <input value={pos.submit_label || ''} onChange={(e) => setPos({ submit_label: e.target.value })} className={INPUT} placeholder="Lưu & In phiếu" />
+                  </Lbl>
+                  <Lbl label="Mở màn sau khi lưu (id)">
+                    <input value={pos.after_submit_screen || ''} onChange={(e) => setPos({ after_submit_screen: e.target.value })} className={INPUT} placeholder="vd: phieu_nhap" />
+                  </Lbl>
+                  <Lbl label="Màn ghi header phiếu (id)">
+                    <input value={pos.header_screen_id || ''} onChange={(e) => setPos({ header_screen_id: e.target.value })} className={INPUT} placeholder="vd: don_header (ghi 1 dòng vào bảng phiếu)" />
+                  </Lbl>
+                  <Lbl label="Mang theo cột (dấu phẩy)">
+                    <input value={(pos.after_submit_carry || []).join(', ')} onChange={(e) => setPos({ after_submit_carry: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="ma_don, loai, ma_kho" />
+                  </Lbl>
+                  <Lbl label="Gợi ý khi giỏ trống">
+                    <input value={pos.empty_hint || ''} onChange={(e) => setPos({ empty_hint: e.target.value })} className={INPUT} />
+                  </Lbl>
+                </div>
+                <label className="flex items-center gap-2 text-caption text-text-secondary">
+                  <input type="checkbox" checked={pos.allow_manual_search !== false} onChange={(e) => setPos({ allow_manual_search: e.target.checked })} />
+                  Cho tìm sản phẩm bằng ô tìm kiếm (ngoài quét mã)
+                </label>
+              </>
+            )}
+          </div>
         </BuilderInspectorPanel>
       );
     }
@@ -2175,6 +2377,13 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               }`}
               active={activeItem === 'behaviour'}
               onClick={() => setActiveItem('behaviour')}
+            />
+            <BuilderNavigatorItem
+              icon={<ScanLine className="h-3.5 w-3.5" />}
+              label="Chế độ POS (quét → giỏ)"
+              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+              active={activeItem === 'pos_cart'}
+              onClick={() => setActiveItem('pos_cart')}
             />
             <BuilderNavigatorItem
               icon={<Rows3 className="h-3.5 w-3.5" />}

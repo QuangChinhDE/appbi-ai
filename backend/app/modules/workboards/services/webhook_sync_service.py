@@ -139,6 +139,7 @@ def trigger_sync(
     *,
     identity: CallerIdentity,
     app_user_payload: Optional[Dict[str, Any]] = None,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[WorkboardSyncRun]]:
     """Create one ``WorkboardSyncRun`` per resolved webhook and schedule
     its background worker. Returns ``(group_id, [runs])``.
@@ -222,6 +223,7 @@ def trigger_sync(
         run_ids=[r.run_id for r in runs],
         app_user_payload=app_user_payload,
         appbi_user_id=identity.appbi_user_id,
+        shared_context=shared_context,
     )
     return group_id, runs
 
@@ -236,6 +238,7 @@ def _schedule_runs(
     run_ids: List[str],
     app_user_payload: Optional[Dict[str, Any]],
     appbi_user_id: Optional[str],
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Dispatch background workers based on the trigger's run_mode."""
     try:
@@ -257,6 +260,7 @@ def _schedule_runs(
                         block_index=block_index,
                         app_user_payload=app_user_payload,
                         appbi_user_id=appbi_user_id,
+                        shared_context=shared_context,
                     )
                     for wh, rid in pairs
                 ],
@@ -272,6 +276,7 @@ def _schedule_runs(
                     block_index=block_index,
                     app_user_payload=app_user_payload,
                     appbi_user_id=appbi_user_id,
+                    shared_context=shared_context,
                 )
                 if (
                     trigger.stop_chain_on_error
@@ -325,6 +330,7 @@ async def _execute_run(
     block_index: int,
     app_user_payload: Optional[Dict[str, Any]],
     appbi_user_id: Optional[str],
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Run one webhook end-to-end and return the terminal status."""
     db = SessionLocal()
@@ -377,9 +383,11 @@ async def _execute_run(
         db.commit()
         started_perf = time.perf_counter()
 
-        # Resolve the data through the same path as the on-screen render.
+        # Resolve the data through the same path as the on-screen render —
+        # including the shared-context filter, so a per-phiếu webhook carries
+        # only that phiếu's rows (not the viewer's whole RLS set).
         data = screen_runtime._resolve_doc_data_block(
-            db, wb, screen, block, identity=identity
+            db, wb, screen, block, identity=identity, shared_context=shared_context,
         )
         columns: List[str] = data.get("columns") or []
         column_labels: Dict[str, str] = data.get("column_labels") or {}

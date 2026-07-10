@@ -15,7 +15,20 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Copy, Eye, EyeOff, Loader2, Power, PowerOff, Share2 } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  Eye,
+  EyeOff,
+  Globe2,
+  Loader2,
+  Palette,
+  Power,
+  PowerOff,
+  Share2,
+  ShieldCheck,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
@@ -218,19 +231,95 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
     );
   };
 
+  const branding = (fullWb?.layout_json?.branding || {}) as {
+    app_name?: string | null;
+    primary_color?: string | null;
+    accent_color?: string | null;
+    logo_url?: string | null;
+    logo_data?: string | null;
+    logo_layout?: 'mark' | 'wide' | null;
+    welcome_text?: string | null;
+    login?: { tagline?: string | null } | null;
+  };
+  const brandName = branding.app_name || workboard.name || slug || 'Mini app';
+  const primaryColor = branding.primary_color || '#2563eb';
+  const accentColor = branding.accent_color || primaryColor;
+  const logoSrc = branding.logo_data || branding.logo_url;
+  const visibleCount = screens.filter((s) => !hidden.includes(s.id)).length;
+
   return (
     <Modal
       isOpen
       onClose={onClose}
       title={t('workboards.share.title')}
-      size="md"
+      size="xl"
       footer={<Button variant="ghost" size="sm" onClick={onClose}>{t('workboards.share.close')}</Button>}
     >
       <div className="space-y-4">
-        <p className="text-caption text-text-secondary">
-          {t('workboards.share.descriptionPrefix')} <strong>{t('workboards.share.oneLink')}</strong>{' '}
-          {t('workboards.share.descriptionSuffix')}
-        </p>
+        <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+          <div
+            className="flex flex-wrap items-end justify-between gap-4 px-4 py-4"
+            style={{
+              background: `linear-gradient(135deg, ${primaryColor}, ${accentColor})`,
+            }}
+          >
+            <div className="min-w-0 text-white">
+              <div className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2 py-1 text-tiny font-emphasis uppercase tracking-wider">
+                <Globe2 className="h-3.5 w-3.5" />
+                Public app delivery
+              </div>
+              <h3 className="truncate text-body font-strong">{brandName}</h3>
+              <p className="mt-1 max-w-xl text-caption text-white/85">
+                {branding.login?.tagline || branding.welcome_text || 'Link đăng nhập bằng PIN cho người dùng ngoài AppBI.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg bg-white/92 px-3 py-2 text-slate-700 shadow-sm">
+              {logoSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoSrc}
+                  alt=""
+                  className={`${branding.logo_layout === 'wide' ? 'h-8 w-16' : 'h-8 w-8'} rounded object-contain`}
+                />
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded-md text-sm font-strong text-white" style={{ backgroundColor: primaryColor }}>
+                  {brandName.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+              <div className="text-caption font-medium">Enterprise-ready</div>
+            </div>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-3">
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Status
+              </div>
+              <div className="mt-1 text-caption font-medium text-text-primary">
+                {primary ? (primary.is_active === false ? t('workboards.share.inactiveStatus') : t('workboards.share.activeStatus')) : 'Not public'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                Screens visible
+              </div>
+              <div className="mt-1 text-caption font-medium text-text-primary">
+                {visibleCount}/{screens.length || 0}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                <Palette className="h-3.5 w-3.5" />
+                Branding
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: primaryColor }} />
+                <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: accentColor }} />
+                <span className="text-caption text-text-secondary">App settings</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {!slug && (
           <div className="rounded-md border border-warning/20 bg-warning/5 p-3 text-caption text-warning">

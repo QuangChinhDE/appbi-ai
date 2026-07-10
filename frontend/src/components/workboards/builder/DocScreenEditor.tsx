@@ -955,6 +955,20 @@ function DataTableEditor({
         />
       </BuilderCollapsibleAdvanced>
 
+      {/* Context filters — bind a column to a carried runtime value so a
+          per-record document (a printable phiếu) shows only that record. */}
+      <BuilderCollapsibleAdvanced
+        title="Lọc theo ngữ cảnh"
+        description="Chỉ hiện dòng của bản ghi được mở (vd: lọc theo ma_don mang sang từ nút/POS) — để in đúng 1 phiếu."
+        defaultOpen={Array.isArray(block.context_filters) && (block.context_filters as unknown[]).length > 0}
+      >
+        <ContextFiltersEditor
+          filters={(block.context_filters as Array<Record<string, unknown>> | undefined) || []}
+          columns={tableCols.map((c) => c.name)}
+          onChange={(next) => onChange({ context_filters: next })}
+        />
+      </BuilderCollapsibleAdvanced>
+
       {/* Advanced export. */}
       <BuilderCollapsibleAdvanced
         title="Export"
@@ -991,6 +1005,74 @@ function DataTableEditor({
 
       {/* Hidden column type hints only used to pre-fill defaults above. */}
       <ColumnTypeWarnings selected={selectedColumns} typesByName={columnTypeByName} />
+    </div>
+  );
+}
+
+function ContextFiltersEditor({
+  filters,
+  columns,
+  onChange,
+}: {
+  filters: Array<Record<string, unknown>>;
+  columns: string[];
+  onChange: (next: Array<Record<string, unknown>>) => void;
+}) {
+  const update = (idx: number, patch: Record<string, unknown>) =>
+    onChange(filters.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  return (
+    <div className="space-y-2">
+      {filters.length === 0 && (
+        <p className="text-tiny text-text-tertiary">
+          Chưa có bộ lọc. Thêm để giới hạn dòng theo giá trị mang sang (vd: cột <code>ma_don</code> = giá trị <code>ma_don</code>).
+        </p>
+      )}
+      {filters.map((f, i) => (
+        <div key={i} className="flex items-center gap-1">
+          <select
+            value={String(f.column ?? '')}
+            onChange={(e) => update(i, { column: e.target.value })}
+            className={INPUT}
+          >
+            <option value="">— cột —</option>
+            {columns.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            {Boolean(f.column) && !columns.includes(String(f.column)) && (
+              <option value={String(f.column)}>{String(f.column)}</option>
+            )}
+          </select>
+          <span className="text-text-tertiary">=</span>
+          <input
+            value={String(f.from_shared ?? '')}
+            onChange={(e) => update(i, { from_shared: e.target.value })}
+            className={INPUT}
+            placeholder="khoá mang sang (vd: ma_don)"
+          />
+          <label className="flex shrink-0 items-center gap-1 text-tiny text-text-secondary">
+            <input
+              type="checkbox"
+              checked={f.required !== false}
+              onChange={(e) => update(i, { required: e.target.checked })}
+            />
+            bắt buộc
+          </label>
+          <BuilderIconButton
+            onClick={() => onChange(filters.filter((_, idx) => idx !== i))}
+            title="Xoá"
+            variant="danger"
+          >
+            <Trash2 className="h-3.5 w-3.5 text-danger" />
+          </BuilderIconButton>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...filters, { column: '', from_shared: '', required: true }])}
+        className="inline-flex items-center gap-1 text-caption text-text-secondary hover:text-text-primary"
+      >
+        <Plus className="h-3.5 w-3.5" /> Thêm bộ lọc
+      </button>
     </div>
   );
 }

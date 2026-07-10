@@ -16,7 +16,7 @@
  *                                                    screens/reports viewed at least once
  *   - everything else                             -> network (untouched)
  */
-const VERSION = 'appbi-pwa-v3';
+const VERSION = 'appbi-pwa-v4';
 const STATIC_CACHE = `${VERSION}-static`;
 const PAGE_CACHE = `${VERSION}-pages`;
 const RSC_CACHE = `${VERSION}-rsc`;
@@ -96,6 +96,10 @@ const isRsc = (req) => {
 
 const isPublicApiGet = (req, u) => req.method === 'GET' && u.pathname.startsWith('/api/v1/public/');
 
+// File downloads (export.xlsx, .pdf, …) — bypass the SW entirely.
+const isDownload = (u) =>
+  /\.(xlsx|xls|csv|pdf|docx|zip)$/i.test(u.pathname) || /\/export(\.[a-z0-9]+)?$/i.test(u.pathname);
+
 // RSC and HTML share a URL → give RSC its own normalized cache key (path only,
 // dropping the volatile _rsc cache-buster) so client-nav hits offline.
 const rscKey = (u) => `${u.origin}${u.pathname}__swrsc`;
@@ -149,6 +153,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (url.origin !== self.location.origin) return;
+
+  // Binary downloads (Excel / PDF exports) must NEVER be served from or written
+  // to the cache — a cached/partial binary reopens as a corrupt "not a real
+  // file" error. Pass them straight to the network, untouched by the SW.
+  if (request.method === 'GET' && isDownload(url)) return;
 
   if (isStatic(url)) {
     event.respondWith(cacheFirst(request, STATIC_CACHE));

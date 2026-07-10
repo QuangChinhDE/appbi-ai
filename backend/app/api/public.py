@@ -1748,6 +1748,7 @@ if settings.WORKBOARDS_ENABLED:
         block_index: int,
         request: Request,
         db: Session = Depends(get_db),
+        shared: str | None = Query(default=None, description="JSON-encoded shared_context"),
     ):
         """Stream a doc data_table block as XLSX (opt-in per block)."""
         ws = _load_workspace_or_404(db, token)
@@ -1760,8 +1761,16 @@ if settings.WORKBOARDS_ENABLED:
         screen = screen_runtime.get_screen(layout, screen_id)
         if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        shared_context: dict | None = None
+        if shared:
+            try:
+                shared_context = json.loads(shared)
+                if not isinstance(shared_context, dict):
+                    shared_context = None
+            except Exception:
+                shared_context = None
         content, filename = screen_runtime.export_doc_data_block_to_excel(
-            db, wb, screen, block_index, identity=identity
+            db, wb, screen, block_index, identity=identity, shared_context=shared_context,
         )
         from urllib.parse import quote
         return Response(
@@ -1815,6 +1824,9 @@ if settings.WORKBOARDS_ENABLED:
         trigger_id = (body or {}).get("trigger_id")
         if not isinstance(trigger_id, str) or not trigger_id:
             raise HTTPException(status_code=400, detail="trigger_id is required")
+        shared_ctx = (body or {}).get("shared")
+        if not isinstance(shared_ctx, dict):
+            shared_ctx = None
 
         try:
             group_id, runs = _sync_svc.trigger_sync(
@@ -1825,6 +1837,7 @@ if settings.WORKBOARDS_ENABLED:
                 trigger_id,
                 identity=identity,
                 app_user_payload=app_user,
+                shared_context=shared_ctx,
             )
         except _sync_svc.WebhookSyncError as exc:
             raise HTTPException(status_code=400, detail=str(exc))

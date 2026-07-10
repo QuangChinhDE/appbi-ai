@@ -21,6 +21,8 @@ export interface ThemeBackgroundApi {
 export interface WorkspaceBranding {
   app_name?: string | null;
   logo_url?: string | null;
+  logo_data?: string | null;
+  logo_layout?: 'mark' | 'wide' | null;
   primary_color?: string | null;
   accent_color?: string | null;
   welcome_text?: string | null;
@@ -165,6 +167,38 @@ export interface OcrExtractResult {
   raw?: Record<string, unknown>;
 }
 
+export interface PosCartHeaderInput {
+  column: string;
+  label: string;
+  kind?: 'text' | 'select' | 'date';
+  options?: string[];
+  default?: string | null;
+  required?: boolean;
+  write_to_line?: boolean;
+}
+
+export interface PosCartConfig {
+  barcode_column: string;
+  quantity_column: string;
+  catalog_table_id: number;
+  catalog_match_column: string;
+  catalog_label_column?: string | null;
+  catalog_price_column?: string | null;
+  catalog_copy?: Record<string, string>;
+  amount_column?: string | null;
+  header_inputs?: PosCartHeaderInput[];
+  order_id_column?: string | null;
+  order_id_prefix?: string;
+  date_column?: string | null;
+  header_screen_id?: string | null;
+  submit_label?: string;
+  after_submit_screen?: string | null;
+  after_submit_carry?: string[];
+  allow_manual_search?: boolean;
+  catalog_group_column?: string | null;
+  empty_hint?: string | null;
+}
+
 export interface TableScreenResponse {
   screen_id: string;
   kind: 'table';
@@ -271,7 +305,15 @@ export interface TableScreenResponse {
       color_column?: string | null;
     } | null;
     stat_tiles?: Array<{ label: string; column: string; agg?: string; format?: string | null; unit?: string | null }>;
+    pos_cart?: PosCartConfig | null;
   };
+  pos_catalog?: {
+    match_column?: string | null;
+    label_column?: string | null;
+    price_column?: string | null;
+    group_column?: string | null;
+    rows: Array<Record<string, unknown>>;
+  } | null;
   totals_row?: Record<string, unknown> | null;
   stat_tiles?: Array<{ label: string; value: unknown; format?: string | null; unit?: string | null }>;
   column_groups?: Array<{ label: string; columns: string[] }>;
@@ -292,6 +334,19 @@ export interface TableRowDetailResponse {
   lookup_columns: Array<Record<string, unknown>>;
 }
 
+export interface PrintTemplate {
+  enabled?: boolean;
+  company_name?: string | null;
+  address?: string | null;
+  tax_code?: string | null;
+  hotline?: string | null;
+  email?: string | null;
+  website?: string | null;
+  logo_data?: string | null;
+  footer_note?: string | null;
+  accent_color?: string | null;
+}
+
 export interface DocScreenResponse {
   screen_id: string;
   kind: 'doc';
@@ -299,6 +354,7 @@ export interface DocScreenResponse {
   page?: Record<string, unknown> | null;
   blocks: DocBlockRendered[];
   context?: Record<string, unknown>;
+  print_template?: PrintTemplate | null;
 }
 
 export interface DashboardScreenResponse {
@@ -324,6 +380,49 @@ const client = axios.create({
   baseURL: '/api/v1',
   withCredentials: true,
 });
+
+const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+async function blobToErrorMessage(blob: Blob): Promise<string | null> {
+  try {
+    const text = await blob.text();
+    if (!text.trim()) return null;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) {
+        return typeof parsed.detail === 'string'
+          ? parsed.detail
+          : JSON.stringify(parsed.detail);
+      }
+      if (parsed?.message) return String(parsed.message);
+    } catch {
+      // Not JSON. Fall through to a short text/html preview.
+    }
+    return text.replace(/\s+/g, ' ').trim().slice(0, 220);
+  } catch {
+    return null;
+  }
+}
+
+async function assertXlsxBlob(blob: Blob): Promise<void> {
+  if (!blob || blob.size === 0) {
+    throw new Error('File Excel tải về đang rỗng.');
+  }
+  const signature = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  const isZip =
+    signature[0] === 0x50 &&
+    signature[1] === 0x4b &&
+    signature[2] === 0x03 &&
+    signature[3] === 0x04;
+  if (isZip) return;
+
+  const serverMessage = await blobToErrorMessage(blob);
+  throw new Error(
+    serverMessage ||
+      'Máy chủ không trả về file XLSX hợp lệ. Vui lòng thử xuất lại.',
+  );
+}
 
 export const workspaceApi = {
   async getMeta(token: string): Promise<{ workspace: WorkspaceMeta }> {
@@ -505,11 +604,41 @@ export const workspaceApi = {
     workboardId: number,
     screenId: string,
     blockIndex: number,
+    sharedContext?: Record<string, unknown>,
   ): Promise<{ blob: Blob; filename: string }> {
-    const r = await client.get(
-      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/export.xlsx`,
-      { responseType: 'blob' },
-    );
+    const params: Record<string, string> = {};
+    if (sharedContext && Object.keys(sharedContext).length > 0) {
+      params.shared = JSON.stringify(sharedContext);
+    }
+    let r;
+    try {
+      r = await client.get(
+        `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/export.xlsx`,
+        { responseType: 'blob', params, headers: { 'Cache-Control': 'no-store' } },
+      );
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.data instanceof Blob) {
+        const message = await blobToErrorMessage(err.response.data);
+        throw new Error(message || 'Không xuất được Excel.');
+      }
+      throw err;
+    }
+    // Guard: if the server (or a stale cache) returned a non-spreadsheet body
+    // (JSON/HTML error), surface it instead of saving a corrupt ".xlsx".
+    const rawBlob = r.data as Blob;
+    const blobType = String(rawBlob?.type || '');
+    if (blobType && !blobType.includes('spreadsheet') && !blobType.includes('octet-stream')) {
+      let msg = 'Xuất Excel lỗi — máy chủ trả về nội dung không hợp lệ.';
+      try {
+        const text = await (r.data as Blob).text();
+        const parsed = JSON.parse(text);
+        if (parsed?.detail) msg = String(parsed.detail);
+      } catch {
+        /* keep default */
+      }
+      throw new Error(msg);
+    }
+    await assertXlsxBlob(rawBlob);
     const disposition = String(r.headers['content-disposition'] || '');
     let filename = `export-${screenId}-block-${blockIndex + 1}.xlsx`;
     const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -523,7 +652,15 @@ export const workspaceApi = {
     } else if (asciiMatch) {
       filename = asciiMatch[1];
     }
-    return { blob: r.data as Blob, filename };
+    // Re-wrap with the canonical spreadsheet MIME so the saved file always
+    // opens as Excel regardless of what the transport tagged the blob.
+    return {
+      blob:
+        blobType === XLSX_MIME
+          ? rawBlob
+          : new Blob([rawBlob], { type: XLSX_MIME }),
+      filename,
+    };
   },
 
   async triggerBlockSync(
@@ -532,6 +669,7 @@ export const workspaceApi = {
     screenId: string,
     blockIndex: number,
     triggerId: string,
+    sharedContext?: Record<string, unknown>,
   ): Promise<{
     group_id: string;
     runs: Array<{
@@ -541,9 +679,13 @@ export const workspaceApi = {
       webhook_name?: string | null;
     }>;
   }> {
+    const body: Record<string, unknown> = { trigger_id: triggerId };
+    if (sharedContext && Object.keys(sharedContext).length > 0) {
+      body.shared = sharedContext;
+    }
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/sync`,
-      { trigger_id: triggerId },
+      body,
     );
     return r.data;
   },
