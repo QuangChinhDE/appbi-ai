@@ -1,14 +1,9 @@
 /**
  * Catalog client — talks ONLY to AppBI's /api/v1/catalog/* proxy.
  * Native AppBI backend (its own Postgres) — no third-party catalog server.
- * Powers the Govern + Observability modules.
+ * Powers the Govern module (Vocabulary + Metrics + Knowledge Hub).
  */
 import { apiClient } from './api-client';
-
-export interface CatalogStatus {
-  enabled: boolean;
-  connected: boolean;
-}
 
 // ── Govern ────────────────────────────────────────────────────────────────
 export interface Glossary {
@@ -74,83 +69,11 @@ export interface Metric {
   glossaryTerms?: VocabRef[];
   tags?: VocabRef[];
 }
-export interface MetricPatch {
-  view_id: number;
-  name: string;
-  label?: string;
-  description?: string;
-  glossary_terms?: VocabRef[];
-  tags?: VocabRef[];
-}
-export interface VocabUsageMetric {
-  name: string;
-  label: string;
-  type: string;
-  dataset?: string | null;
-  dataset_id?: number | null;
-  table?: string | null;
-  view_id?: number;
-  table_id?: number | null;
-}
-export interface VocabUsage {
-  fqn: string;
-  metrics: VocabUsageMetric[];
-  count: number;
-}
 export interface MetricsLibrary {
   metrics: Metric[];
   total: number;
   datasets: number;
   conflicts: number;
-}
-export interface MetricVariants {
-  name: string;
-  count: number;
-  distinctDefinitions: number;
-  variants: Metric[];
-}
-export interface MetricUsageChart { id: number; name: string; chartType?: string | null; dashboardIds: number[]; }
-export interface MetricUsageDashboard { id: number; name: string; }
-export interface MetricUsage {
-  charts: MetricUsageChart[];
-  dashboards: MetricUsageDashboard[];
-  chartCount: number;
-  dashboardCount: number;
-}
-
-// ── Observability ───────────────────────────────────────────────────────────
-export interface DataQualitySummary {
-  total: number;
-  success: number;
-  failed: number;
-  aborted: number;
-  successRate: number;
-}
-export interface DataQualityTest {
-  name: string;
-  fqn: string;
-  status: string;
-  entity?: string | null;
-}
-export interface Incident {
-  id?: string;
-  testCase?: string | null;
-  severity?: string | null;
-  status?: string | null;
-  assignee?: string | null;
-  timestamp?: number | null;
-}
-export interface Alert {
-  name: string;
-  fqn: string;
-  description?: string | null;
-  enabled: boolean;
-  alertType?: string | null;
-}
-
-export async function getCatalogStatus(): Promise<CatalogStatus> {
-  const { data } = await apiClient.get<CatalogStatus>('/catalog/status');
-  return data;
 }
 
 // ── Glossary CRUD (OM-backed) ───────────────────────────────────────────────
@@ -199,22 +122,6 @@ export async function deleteTag(fqn: string): Promise<void> {
 export async function getMetrics(): Promise<MetricsLibrary> {
   const { data } = await apiClient.get<MetricsLibrary>('/catalog/govern/metrics');
   return { metrics: data.metrics ?? [], total: data.total ?? 0, datasets: data.datasets ?? 0, conflicts: data.conflicts ?? 0 };
-}
-
-export async function getMetricVariants(name: string): Promise<MetricVariants> {
-  const { data } = await apiClient.get<MetricVariants>('/catalog/govern/metric-variants', { params: { name } });
-  return { name: data.name, count: data.count ?? 0, distinctDefinitions: data.distinctDefinitions ?? 0, variants: data.variants ?? [] };
-}
-
-export async function getMetricUsage(tableId: number, name: string): Promise<MetricUsage> {
-  const { data } = await apiClient.get<MetricUsage>('/catalog/govern/metric-usage', {
-    params: { table_id: tableId, name },
-  });
-  return data;
-}
-
-export async function updateMetric(patch: MetricPatch): Promise<void> {
-  await apiClient.patch('/catalog/govern/metric', patch);
 }
 
 // ── Managed Metrics (metrics quản trị doanh nghiệp) — AUTHORED KPIs ──────────
@@ -288,16 +195,6 @@ export interface ManagedMetricWrite {
   status?: 'Draft' | 'Approved' | 'Deprecated';
 }
 
-export interface GovernChangeEntry {
-  id: number;
-  entity_type: string;
-  entity_fqn: string;
-  action: string;
-  summary?: string | null;
-  changed_by?: string | null;
-  created_at?: string | null;
-}
-
 export async function listManagedMetrics(params?: { category?: string; status?: string }): Promise<ManagedMetric[]> {
   const { data } = await apiClient.get<{ metrics: ManagedMetric[] }>('/catalog/govern/managed-metrics', { params });
   return data.metrics ?? [];
@@ -316,11 +213,6 @@ export async function upsertManagedMetric(body: ManagedMetricWrite): Promise<{ m
 
 export async function deleteManagedMetric(name: string): Promise<void> {
   await apiClient.delete(`/catalog/govern/managed-metric/${encodeURIComponent(name)}`);
-}
-
-export async function getGovernChangeLog(params?: { entity_type?: string; entity_fqn?: string; limit?: number }): Promise<GovernChangeEntry[]> {
-  const { data } = await apiClient.get<{ entries: GovernChangeEntry[] }>('/catalog/govern/change-log', { params });
-  return data.entries ?? [];
 }
 
 // ── Knowledge Hub (Cẩm nang tri thức) ───────────────────────────────────────
@@ -495,7 +387,7 @@ export async function aiDraftKnowledge(req: AiDraftReq): Promise<KnowledgeDraft>
   return data;
 }
 
-// ── Knowledge Hub: search everything / insights / AI summary / verify ───────
+// ── Knowledge Hub: search everything / AI summary / verify ──────────────────
 export interface SearchHit { id: number | string; name: string; subtitle?: string; open_path?: string }
 export interface GovernSearchResult {
   documents: SearchHit[]; metrics: SearchHit[]; terms: SearchHit[]; dashboards: SearchHit[]; datasets: SearchHit[];
@@ -506,17 +398,6 @@ export async function governSearch(q: string): Promise<GovernSearchResult> {
     documents: data.documents ?? [], metrics: data.metrics ?? [], terms: data.terms ?? [],
     dashboards: data.dashboards ?? [], datasets: data.datasets ?? [],
   };
-}
-
-export interface InsightRef { id: number; title: string; count?: number }
-export interface KnowledgeInsights {
-  no_owner: InsightRef[]; no_summary: InsightRef[]; no_tags: InsightRef[];
-  stale_review: InsightRef[]; not_embedded: InsightRef[];
-  most_viewed: InsightRef[]; most_retrieved: InsightRef[];
-}
-export async function knowledgeInsights(): Promise<KnowledgeInsights> {
-  const { data } = await apiClient.get<KnowledgeInsights>('/catalog/govern/knowledge/insights');
-  return data;
 }
 
 export async function regenAiSummary(docId: number): Promise<{ ai_summary: string; ai_keywords: string[] }> {
@@ -534,78 +415,4 @@ export async function listDatasetsLite(): Promise<DatasetLite[]> {
   const { data } = await apiClient.get<unknown>('/datasets/');
   const arr = Array.isArray(data) ? data : ((data as { datasets?: unknown[]; items?: unknown[] })?.datasets ?? (data as { items?: unknown[] })?.items ?? []);
   return (arr as { id: number; name: string }[]).map((d) => ({ id: d.id, name: d.name }));
-}
-
-/** Reverse lineage: knowledge docs that reference a given dashboard/dataset/term. */
-export async function assetDocs(
-  assetType: 'dashboard' | 'dataset' | 'term',
-  assetRef: string | number,
-): Promise<KnowledgeDocRef[]> {
-  const { data } = await apiClient.get<{ docs: KnowledgeDocRef[] }>('/catalog/govern/asset-docs', {
-    params: { asset_type: assetType, asset_ref: String(assetRef) },
-  });
-  return data.docs ?? [];
-}
-
-/** Reverse lineage: metrics that have a given glossary term / classification tag attached. */
-export async function getVocabUsage(fqn: string): Promise<VocabUsage> {
-  const { data } = await apiClient.get<VocabUsage>('/catalog/govern/vocab-usage', { params: { fqn } });
-  return { fqn: data.fqn, metrics: data.metrics ?? [], count: data.count ?? 0 };
-}
-
-export async function getDataQuality(): Promise<{ summary: DataQualitySummary; tests: DataQualityTest[] }> {
-  const { data } = await apiClient.get<{ summary: DataQualitySummary; tests: DataQualityTest[] }>(
-    '/catalog/observability/data-quality',
-  );
-  return data;
-}
-export async function listIncidents(): Promise<Incident[]> {
-  const { data } = await apiClient.get<{ incidents: Incident[] }>('/catalog/observability/incidents');
-  return data.incidents ?? [];
-}
-export async function listAlerts(): Promise<Alert[]> {
-  const { data } = await apiClient.get<{ alerts: Alert[] }>('/catalog/observability/alerts');
-  return data.alerts ?? [];
-}
-
-// ── AppBI-native Data Quality rollup (the real engine, surfaced org-wide) ────
-export interface QualityDatasetRow {
-  dataset_id: number;
-  dataset: string;
-  owner?: string | null;
-  score?: number | null;
-  totalRules: number;
-  enabledRules: number;
-  coveredTables: number;
-  passed: number;
-  failed: number;
-  lastRunStatus?: string | null;
-  lastRunAt?: string | null;
-}
-export interface QualityIncident {
-  dataset_id: number;
-  dataset: string;
-  table?: string | null;
-  column?: string | null;
-  rule: string;
-  dimension: string;
-  severity: string;
-  rowsFailed?: number | null;
-  error?: boolean;
-  lastRunAt?: string | null;
-}
-export interface QualityOverview {
-  summary: { datasets: number; totalRules: number; enabledRules: number; passed: number; failed: number; incidents: number; avgScore?: number | null };
-  datasets: QualityDatasetRow[];
-  incidents: QualityIncident[];
-  candidates: { dataset_id: number; dataset: string }[];
-}
-export async function getQualityOverview(): Promise<QualityOverview> {
-  const { data } = await apiClient.get<QualityOverview>('/catalog/observability/quality-overview');
-  return {
-    summary: data.summary ?? { datasets: 0, totalRules: 0, enabledRules: 0, passed: 0, failed: 0, incidents: 0, avgScore: null },
-    datasets: data.datasets ?? [],
-    incidents: data.incidents ?? [],
-    candidates: data.candidates ?? [],
-  };
 }

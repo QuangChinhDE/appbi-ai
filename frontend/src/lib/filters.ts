@@ -1257,19 +1257,6 @@ export function resolveEffectiveFilterSet(args: {
 }
 
 /**
- * Get default operator for a filter type
- */
-export function getDefaultOperator(type: FilterType): FilterOperator {
-  switch (type) {
-    case 'date': return 'between';
-    case 'dropdown': return 'in';
-    case 'number': return 'eq';
-    case 'text': return 'contains';
-    default: return 'eq';
-  }
-}
-
-/**
  * Compute [startDate, endDate] range for a date preset (YYYY-MM-DD strings).
  * Returns ['', ''] for 'custom'.
  */

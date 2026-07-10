@@ -12,9 +12,6 @@
 import axios from 'axios';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
-import type {
-  WorkboardPublicPayload,
-} from '@/lib/api/workboards';
 
 // NEXT_PUBLIC_API_URL is baked as '/api/v1' (relative) so it works on any domain.
 // Next.js rewrites or nginx proxy the requests to the backend.
@@ -116,22 +113,6 @@ export const publicDashboardApi = {
         },
       },
     );
-    return res.data;
-  },
-};
-
-export const publicWorkboardApi = {
-  auth: async (
-    token: string,
-    password: string,
-  ): Promise<{ session_token: string; expires_in: number }> => {
-    const res = await publicClient.post(`/public/workboards/${token}/auth`, { password });
-    return res.data;
-  },
-
-  get: async (token: string, sessionToken?: string): Promise<WorkboardPublicPayload> => {
-    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
-    const res = await publicClient.get(`/public/workboards/${token}`, { headers });
     return res.data;
   },
 };
@@ -376,42 +357,6 @@ export async function fetchAiRecon(
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
   const res = await publicClient.get(`/public/dashboards/${token}/ai/recon`, { headers });
   return res.data as AiRecon;
-}
-
-/**
- * Build the URL of the AI-generated PDF for this dashboard. The user can
- * download it and re-feed it into any LLM (Claude, ChatGPT) — same data
- * the way they'd hand a printed report to a human analyst.
- */
-export function buildAiDashboardPdfUrl(token: string, sessionToken?: string): string {
-  const base = `${API_BASE}/public/dashboards/${token}/ai/dashboard.pdf`;
-  if (!sessionToken) return base;
-  // Session token must travel via header for security, so we expose a
-  // separate fetch helper rather than a query string.
-  return base;
-}
-
-export async function downloadAiDashboardPdf(
-  token: string,
-  sessionToken?: string,
-  filename = 'dashboard.pdf',
-): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  const res = await fetch(buildAiDashboardPdfUrl(token), { headers });
-  if (!res.ok) throw new Error(`PDF ${res.status}`);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
 }
 
 /**

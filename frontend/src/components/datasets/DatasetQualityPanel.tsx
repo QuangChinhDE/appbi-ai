@@ -144,6 +144,7 @@ const DQ_DIMENSIONS: {
     ruleTypes: [
       { value: 'cross_column', label: 'Same-table SQL Expression', level: 'table', hint: 'Write any SQL boolean expression. A row FAILS when the expression is FALSE. Can reference any column in the selected table — great for conditional business rules (e.g. status=\'fully_received\' implies income_value = receivable + received).' },
       { value: 'cross_table', label: 'Cross-table Join Expression', level: 'table', hint: 'Join the selected table to another table, then evaluate a SQL boolean expression using aliases src and ref.' },
+      { value: 'schema_drift', label: 'Schema Drift', level: 'table', hint: 'Captures a baseline of the table columns on first run, then fails when columns are added, removed, or retyped. Edit/re-save the rule to reset the baseline after an intended schema change.' },
     ],
   },
   {
