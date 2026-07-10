@@ -20,6 +20,7 @@ from app.models.governance import (
     ClassificationTag,
     GovernChangeLog,
     GovernDocAssetLink,
+    GovernDocLink,
     GovernKnowledgeDoc,
     GovernKnowledgeDocVersion,
     GovernMetric,
@@ -41,6 +42,21 @@ def metric_slugs_in(body: str | None) -> set[str]:
 
 def asset_tokens_in(body: str | None) -> set[tuple[str, str]]:
     return {(m.group(1), m.group(2)) for m in _ASSET_TOKEN_RE.finditer(body or "")}
+
+
+# Obsidian-style doc↔doc wikilink: [[Doc Title]] or [[Doc Title|alias]].
+_WIKILINK_RE = re.compile(r"\[\[([^\]|\n]+?)(?:\|([^\]\n]+?))?\]\]")
+
+
+def wikilinks_in(body: str | None) -> list[tuple[str, str | None]]:
+    """Ordered (target, alias|None) pairs from [[...]] wikilinks in the body."""
+    out: list[tuple[str, str | None]] = []
+    for m in _WIKILINK_RE.finditer(body or ""):
+        target = (m.group(1) or "").strip()
+        alias = (m.group(2) or "").strip() or None
+        if target:
+            out.append((target, alias))
+    return out
 
 
 class GovernanceError(Exception):
@@ -468,6 +484,88 @@ class GovernanceService:
         db.commit()
 
     @staticmethod
+    def _doc_title_index(db: Session) -> dict[str, int]:
+        """Lowercased title (and slug) → doc id, for resolving [[wikilinks]]."""
+        idx: dict[str, int] = {}
+        for d in db.query(GovernKnowledgeDoc.id, GovernKnowledgeDoc.title, GovernKnowledgeDoc.slug).all():
+            if d.slug:
+                idx.setdefault(str(d.slug).strip().lower(), d.id)
+            if d.title:
+                idx[str(d.title).strip().lower()] = d.id  # title wins over slug
+        return idx
+
+    @staticmethod
+    def resolve_wikilinks(db: Session, body: str | None) -> list[dict[str, Any]]:
+        """Resolve each [[target]] to a doc card (for the reader). Preserves the
+        raw target + alias so the FE can replace the exact literal in the body."""
+        pairs = wikilinks_in(body)
+        if not pairs:
+            return []
+        idx = GovernanceService._doc_title_index(db)
+        titles = {d.id: d.title for d in db.query(GovernKnowledgeDoc.id, GovernKnowledgeDoc.title).all()}
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str | None]] = set()
+        for target, alias in pairs:
+            if (target, alias) in seen:
+                continue
+            seen.add((target, alias))
+            doc_id = idx.get(target.strip().lower())
+            out.append({
+                "target": target, "alias": alias,
+                "doc_id": doc_id, "title": titles.get(doc_id) if doc_id else None,
+                "exists": doc_id is not None,
+            })
+        return out
+
+    @staticmethod
+    def sync_doc_links(db: Session, doc_id: int, body: str | None) -> None:
+        """Reconcile a doc's [[wikilink]] edges → govern_doc_links (resolved, by
+        id; self-links ignored)."""
+        idx = GovernanceService._doc_title_index(db)
+        desired: set[int] = set()
+        for target, _alias in wikilinks_in(body):
+            tid = idx.get(target.strip().lower())
+            if tid and tid != doc_id:
+                desired.add(tid)
+        existing = {l.to_doc_id: l for l in db.query(GovernDocLink).filter(GovernDocLink.from_doc_id == doc_id).all()}
+        for tid in desired - set(existing):
+            db.add(GovernDocLink(from_doc_id=doc_id, to_doc_id=tid))
+        for tid in set(existing) - desired:
+            db.delete(existing[tid])
+        db.commit()
+
+    @staticmethod
+    def knowledge_graph(db: Session, current_user) -> dict[str, Any]:
+        """Whole-hub knowledge graph (Obsidian graph view): visible docs as nodes,
+        with EXPLICIT [[wikilink]] edges + implicit shared-KPI edges."""
+        docs = GovernanceService._visible_docs_query(db, current_user).all()
+        ids = {d.id for d in docs}
+        nodes = [{"id": d.id, "title": d.title, "space": d.space, "doc_type": d.doc_type} for d in docs]
+        edges: list[dict[str, Any]] = []
+        seen: set[tuple[int, int, str]] = set()
+
+        def add(a: int, b: int, kind: str):
+            key = (min(a, b), max(a, b), kind)
+            if a != b and a in ids and b in ids and key not in seen:
+                seen.add(key)
+                edges.append({"from": a, "to": b, "type": kind})
+
+        # Explicit wikilink edges (directed, but drawn undirected in the graph).
+        for l in db.query(GovernDocLink).all():
+            add(l.from_doc_id, l.to_doc_id, "link")
+        # Implicit shared-governed-KPI edges (docs co-using the same metric).
+        by_metric: dict[int, set[int]] = {}
+        for mid, did in db.query(GovernMetricUsage.metric_id, GovernMetricUsage.doc_id).all():
+            if did in ids:
+                by_metric.setdefault(mid, set()).add(did)
+        for dset in by_metric.values():
+            dl = sorted(dset)
+            for i in range(len(dl)):
+                for j in range(i + 1, len(dl)):
+                    add(dl[i], dl[j], "metric")
+        return {"nodes": nodes, "edges": edges}
+
+    @staticmethod
     def resolve_asset(db: Session, asset_type: str, asset_ref: str) -> dict[str, Any]:
         """Minimal card for an embedded asset (name + open target + existence)."""
         try:
@@ -776,6 +874,18 @@ class GovernanceService:
             out["related_docs"] = sorted(related.values(), key=lambda r: -weight(r))[:8]
         except Exception:  # noqa: BLE001
             out["related_docs"] = []
+        # [[wikilinks]] this doc points at (resolved for the reader) + BACKLINKS
+        # (docs that explicitly link here — the Obsidian "linked mentions").
+        try:
+            out["wikilinks_on_page"] = GovernanceService.resolve_wikilinks(db, d.body)
+        except Exception:  # noqa: BLE001
+            out["wikilinks_on_page"] = []
+        try:
+            back_ids = [l.from_doc_id for l in db.query(GovernDocLink.from_doc_id).filter(GovernDocLink.to_doc_id == d.id).all()]
+            backs = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id.in_(back_ids)).all() if back_ids else []
+            out["backlinks"] = [{"id": b.id, "title": b.title, "space": b.space} for b in backs]
+        except Exception:  # noqa: BLE001
+            out["backlinks"] = []
         # AI-ready score for this doc (single chunk-existence check)
         out["ai_ready"] = GovernanceService._ai_ready(d, d.id in GovernanceService._chunked_doc_ids(db, [d.id]))
         return out
@@ -849,6 +959,7 @@ class GovernanceService:
         # and which reporting assets (dashboards/datasets/terms) it links.
         GovernanceService.sync_doc_metric_usage(db, d.id, d.body)
         GovernanceService.sync_doc_asset_links(db, d.id, d.body)
+        GovernanceService.sync_doc_links(db, d.id, d.body)  # [[wikilinks]] → graph edges
         # Lock an immutable snapshot of this version (history / evolution).
         try:
             db.add(GovernKnowledgeDocVersion(
@@ -900,6 +1011,8 @@ class GovernanceService:
         from app.models.governance import GovernDocAssetLink as _Link
         db.query(_Link).filter(_Link.doc_id == doc_id).delete(synchronize_session=False)
         db.query(GovernMetricUsage).filter(GovernMetricUsage.doc_id == doc_id).delete(synchronize_session=False)
+        # Wikilink edges in BOTH directions (this doc's out-links + others' backlinks to it).
+        db.query(GovernDocLink).filter((GovernDocLink.from_doc_id == doc_id) | (GovernDocLink.to_doc_id == doc_id)).delete(synchronize_session=False)
         db.query(GovernKnowledgeDocVersion).filter(GovernKnowledgeDocVersion.doc_id == doc_id).delete(synchronize_session=False)
         # Drop RAG chunk embeddings for this doc (raw table, no ORM model).
         try:

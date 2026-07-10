@@ -257,6 +257,10 @@ export interface KnowledgeDoc {
   ai_ready?: { score: number; missing: string[] };
   /** Which version is live (RAG/public read it); may differ from the latest. */
   published_version?: number | null;
+  /** [[wikilinks]] this doc points at, resolved for the reader. */
+  wikilinks_on_page?: { target: string; alias?: string | null; doc_id: number | null; title: string | null; exists: boolean }[];
+  /** Docs that explicitly [[link]] to this one (Obsidian backlinks). */
+  backlinks?: { id: number; title: string; space: string }[];
   // ── Resource sharing / permissions (same model as Dataset) ──
   owner_id?: string | null;
   owner_email?: string | null;
@@ -403,6 +407,15 @@ export async function governSearch(q: string): Promise<GovernSearchResult> {
 export async function regenAiSummary(docId: number): Promise<{ ai_summary: string; ai_keywords: string[] }> {
   const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/ai-summary`);
   return { ai_summary: data.ai_summary ?? '', ai_keywords: data.ai_keywords ?? [] };
+}
+
+// Whole-hub knowledge graph (Obsidian-style): docs + [[wikilink]]/shared-KPI edges.
+export interface GraphNode { id: number; title: string; space: string; doc_type: string }
+export interface GraphEdge { from: number; to: number; type: 'link' | 'metric' }
+export interface KnowledgeGraph { nodes: GraphNode[]; edges: GraphEdge[] }
+export async function governGraph(): Promise<KnowledgeGraph> {
+  const { data } = await apiClient.get<KnowledgeGraph>('/catalog/govern/graph');
+  return { nodes: data.nodes ?? [], edges: data.edges ?? [] };
 }
 
 export async function verifyDoc(docId: number): Promise<{ last_verified_at: string }> {

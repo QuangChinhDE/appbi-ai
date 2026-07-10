@@ -34,9 +34,13 @@ def _body_hash(model: str, body: str) -> str:
 
 
 def chunk_doc(body: str | None) -> list[str]:
-    """Split a markdown body into ~850-char chunks on paragraph boundaries, with
-    embed tokens stripped (they're structural refs, not prose)."""
-    cleaned = _TOKEN_RE.sub("", body or "").strip()
+    """Split a markdown body into ~850-char chunks on paragraph boundaries. Embed
+    tokens ({{…}}) are stripped (structural refs, not prose); [[wikilinks]] keep
+    their readable text ([[A|B]]→B, [[A]]→A) so the AI reads the authored
+    relationship as words."""
+    text = re.sub(r"\[\[([^\]|\n]+?)\|([^\]\n]+?)\]\]", r"\2", body or "")
+    text = re.sub(r"\[\[([^\]\n]+?)\]\]", r"\1", text)
+    cleaned = _TOKEN_RE.sub("", text).strip()
     if not cleaned:
         return []
     blocks = [b.strip() for b in re.split(r"\n\s*\n", cleaned) if b.strip()]

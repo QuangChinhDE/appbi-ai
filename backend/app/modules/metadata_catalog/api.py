@@ -281,6 +281,13 @@ def govern_search_everything(
     return GovernanceService.govern_search(db, q, user)
 
 
+@router.get("/govern/graph")
+def govern_knowledge_graph(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Whole-hub knowledge graph (Obsidian-style): visible docs + [[wikilink]] and
+    shared-KPI edges."""
+    return GovernanceService.knowledge_graph(db, user)
+
+
 @router.get("/govern/knowledge/{doc_id}")
 def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     d = _run(lambda: GovernanceService.get_knowledge_doc(db, doc_id, user))

@@ -18,7 +18,7 @@ import {
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
   ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
-  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2,
+  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2, Info, Network,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -36,9 +36,9 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
   listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
-  publishVersion, aiChangeNote,
+  publishVersion, aiChangeNote, governGraph,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
-  type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
+  type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc, type KnowledgeGraph, type GraphNode,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -174,6 +174,7 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
     screen = (
       <EditorScreen
         docId={mode === 'edit' ? selId : null} seed={mode === 'new' ? seed : null} managed={managed}
+        allDocs={docs.map((d) => ({ id: d.id, title: d.title }))}
         onCancel={() => (selId ? openDoc(selId) : openList())}
         onSaved={(id) => { void loadList(); openDoc(id); }}
         onOpenMetric={openMetric}
@@ -217,6 +218,85 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   );
 }
 
+// ── Obsidian-style whole-hub knowledge graph (force-directed, pure SVG) ──────
+function GlobalGraph({ onOpen }: { onOpen: (id: number) => void }) {
+  const { t } = useI18n();
+  const [g, setG] = useState<KnowledgeGraph | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
+  useEffect(() => { governGraph().then(setG).catch(() => setG({ nodes: [], edges: [] })); }, []);
+
+  const layout = useMemo(() => {
+    const W = 1000, H = 680;
+    type Placed = GraphNode & { x: number; y: number; deg: number };
+    if (!g || g.nodes.length === 0) return { W, H, nodes: [] as Placed[], edges: [] as { from: number; to: number; type: string }[] };
+    const N = g.nodes.length;
+    const p = g.nodes.map((n, i) => ({ x: W / 2 + Math.cos((2 * Math.PI * i) / N) * 240, y: H / 2 + Math.sin((2 * Math.PI * i) / N) * 240, vx: 0, vy: 0 }));
+    const idx = new Map(g.nodes.map((n, i) => [n.id, i]));
+    const E = g.edges.map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined]).filter((e): e is [number, number] => e[0] != null && e[1] != null);
+    const deg = new Array(N).fill(0); E.forEach(([a, b]) => { deg[a]++; deg[b]++; });
+    for (let it = 0; it < 260; it++) {
+      const cool = Math.max(0.05, 1 - it / 300);
+      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+        const dx = p[i].x - p[j].x, dy = p[i].y - p[j].y; const d2 = dx * dx + dy * dy || 0.01; const d = Math.sqrt(d2);
+        const rep = 11000 / d2; const fx = (dx / d) * rep, fy = (dy / d) * rep;
+        p[i].vx += fx; p[i].vy += fy; p[j].vx -= fx; p[j].vy -= fy;
+      }
+      for (const [a, b] of E) {
+        const dx = p[b].x - p[a].x, dy = p[b].y - p[a].y; const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const f = (d - 160) * 0.02; const fx = (dx / d) * f, fy = (dy / d) * f;
+        p[a].vx += fx; p[a].vy += fy; p[b].vx -= fx; p[b].vy -= fy;
+      }
+      for (let i = 0; i < N; i++) {
+        p[i].vx += (W / 2 - p[i].x) * 0.003; p[i].vy += (H / 2 - p[i].y) * 0.003;
+        p[i].x += p[i].vx * cool * 0.4; p[i].y += p[i].vy * cool * 0.4;
+        p[i].vx *= 0.85; p[i].vy *= 0.85;
+      }
+    }
+    return { W, H, nodes: g.nodes.map((n, i) => ({ ...n, x: p[i].x, y: p[i].y, deg: deg[i] })), edges: g.edges };
+  }, [g]);
+
+  const posById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout]);
+  const connected = (id: number) => hover == null || hover === id || layout.edges.some((e) => (e.from === hover && e.to === id) || (e.to === hover && e.from === id));
+
+  if (!g) return <div className="py-16 text-center text-caption text-text-tertiary">{t('govern.loading')}</div>;
+  if (g.nodes.length === 0) return (
+    <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-16 text-center">
+      <Network className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+      <p className="text-caption text-text-tertiary">{t('govern.graph.emptyGlobal')}</p>
+    </div>
+  );
+  return (
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+      <svg viewBox={`0 0 ${layout.W} ${layout.H}`} className="h-[72vh] w-full" preserveAspectRatio="xMidYMid meet">
+        {layout.edges.map((e, i) => {
+          const a = posById.get(e.from), b = posById.get(e.to); if (!a || !b) return null;
+          const dim = hover != null && !(e.from === hover || e.to === hover);
+          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+            stroke={e.type === 'link' ? 'rgb(var(--brand))' : 'rgb(var(--border-strong))'}
+            strokeWidth={e.type === 'link' ? 1.6 : 1} strokeDasharray={e.type === 'metric' ? '4 4' : undefined}
+            opacity={dim ? 0.12 : (e.type === 'link' ? 0.55 : 0.35)} />;
+        })}
+        {layout.nodes.map((n) => {
+          const r = Math.min(16, 6 + n.deg * 1.6); const on = connected(n.id);
+          return (
+            <g key={n.id} transform={`translate(${n.x},${n.y})`} className="cursor-pointer" opacity={on ? 1 : 0.25}
+              onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)} onClick={() => onOpen(n.id)}>
+              <circle r={r} fill="rgb(var(--brand))" fillOpacity={0.85} stroke="rgb(var(--surface-1))" strokeWidth={2} />
+              <text y={r + 12} textAnchor="middle" className="pointer-events-none fill-[rgb(var(--text-secondary))] text-[11px]"
+                style={{ fontWeight: hover === n.id ? 600 : 400 }}>{n.title.length > 26 ? n.title.slice(0, 25) + '…' : n.title}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="flex items-center gap-4 px-2 py-1 text-tiny text-text-quaternary">
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-brand" />{t('govern.graph.edgeLink')}</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 border-t border-dashed border-[rgb(var(--border-strong))]" />{t('govern.graph.edgeMetric')}</span>
+        <span className="ml-auto">{t('govern.graph.hint')}</span>
+      </div>
+    </div>
+  );
+}
+
 // ═════════════════════════════════ List ═════════════════════════════════════
 type HealthKey = 'noOwner' | 'noSummary' | 'staleReview' | 'notEmbedded' | 'mostViewed' | 'mostRetrieved';
 
@@ -230,6 +310,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
   const [health, setHealth] = useState<HealthKey | null>(null);
   const [q, setQ] = useState('');
   const [searchRes, setSearchRes] = useState<GovernSearchResult | null>(null);
+  const [view, setView] = useState<'list' | 'graph'>('list');
 
   // Search-everything: debounce → grouped results panel above the table.
   useEffect(() => {
@@ -306,6 +387,11 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       viewToggle={false}
       toolbarExtra={(
         <div className="flex items-center gap-1.5">
+          <Tabs<'list' | 'graph'> size="sm" value={view} onChange={setView} items={[
+            { key: 'list', icon: <List className="h-3.5 w-3.5" />, label: t('govern.view.list') },
+            { key: 'graph', icon: <Network className="h-3.5 w-3.5" />, label: t('govern.view.graph') },
+          ]} />
+          <div className="mx-1 h-4 w-px bg-surface-3" />
           <FilterTag tone="brand" active={space === null && health === null} onClick={() => { setSpace(null); setHealth(null); }}>{t('govern.filter.all')}</FilterTag>
           {spaces.map((s) => (
             <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(space === s.space ? null : s.space)}>
@@ -322,6 +408,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       )}
     >
       {({ filterText }) => {
+        if (view === 'graph') return <GlobalGraph onOpen={onOpen} />;
         const needle = filterText.trim().toLowerCase();
         const rows = docs
           .filter((d) =>
@@ -667,7 +754,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
                 <DocHeader doc={doc} />
                 {viewingVersion
                   ? <VersionViewer doc={doc} version={viewingVersion} onClose={() => setViewingVersion(null)} />
-                  : <ContentTab doc={doc} />}
+                  : <ContentTab doc={doc} onDocLink={onOpenDoc} />}
               </div>
             </article>
             <DetailRail doc={doc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onRefresh={() => setRefresh((v) => v + 1)} />
@@ -871,7 +958,9 @@ function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: 
   );
 }
 
-/** Replace {{…}} tokens INLINE with readable links/chips so prose reads naturally. */
+/** Replace {{…}} tokens + [[wikilinks]] INLINE with readable links/chips so prose
+ * reads naturally. Wikilinks use the "govern:doc:<id>" href scheme the Markdown
+ * renderer turns into in-app navigation (or a muted chip when unresolved). */
 function resolveBody(doc: KnowledgeDoc): string {
   let body = doc.body ?? '';
   for (const m of doc.metrics_on_page ?? []) body = body.split(`{{metric:${m.machine_name}}}`).join(`**📈 ${m.name}**`);
@@ -880,6 +969,12 @@ function resolveBody(doc: KnowledgeDoc): string {
     const label = a.name || a.ref;
     const rep = a.exists && a.open_path ? `[${icon} ${label}](${a.open_path})` : `**${icon} ${label}**`;
     body = body.split(`{{${a.type}:${a.ref}}}`).join(rep);
+  }
+  for (const w of doc.wikilinks_on_page ?? []) {
+    const literal = w.alias ? `[[${w.target}|${w.alias}]]` : `[[${w.target}]]`;
+    const label = (w.alias || w.title || w.target).replace(/[[\]]/g, '');
+    const rep = w.exists && w.doc_id != null ? `[${label}](govern:doc:${w.doc_id})` : `[${label}](govern:miss)`;
+    body = body.split(literal).join(rep);
   }
   return body;
 }
@@ -1104,17 +1199,30 @@ function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh
           </div>
         </RailCard>
       )}
+
+      {(doc.backlinks ?? []).length > 0 && (
+        <RailCard title={t('govern.backlinks.title')} icon={<Link2 className="h-3.5 w-3.5" />} collapsible defaultOpen={false}>
+          <div className="space-y-1">
+            {(doc.backlinks ?? []).map((b) => (
+              <button key={b.id} onClick={() => onOpenDoc(b.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2">
+                <span className="block truncate text-caption font-emphasis text-text-secondary">{b.title}</span>
+                <span className="block truncate text-tiny text-text-quaternary">{b.space}</span>
+              </button>
+            ))}
+          </div>
+        </RailCard>
+      )}
     </aside>
   );
 }
 
-function ContentTab({ doc }: { doc: KnowledgeDoc }) {
+function ContentTab({ doc, onDocLink }: { doc: KnowledgeDoc; onDocLink?: (id: number) => void }) {
   const { t } = useI18n();
   const missing = doc.missing_metric_tokens ?? [];
   return (
     <div className="min-w-0">
       {doc.body
-        ? <Markdown source={resolveBody(doc)} />
+        ? <Markdown source={resolveBody(doc)} onDocLink={onDocLink} />
         : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
 
       {missing.length > 0 && (
@@ -1385,8 +1493,9 @@ function FmtBtn({ title, onClick, children }: { title: string; onClick: () => vo
     </button>
   );
 }
-function MarkdownToolbar({ wrap, prefix, block }: {
+function MarkdownToolbar({ wrap, prefix, block, onWikilink, onCallout }: {
   wrap: (b: string, a: string, ph: string) => void; prefix: (p: string) => void; block: (b: string) => void;
+  onWikilink: () => void; onCallout: () => void;
 }) {
   const { t } = useI18n();
   const Div = () => <div className="mx-1 h-5 w-px bg-surface-3" />;
@@ -1404,18 +1513,22 @@ function MarkdownToolbar({ wrap, prefix, block }: {
       <FmtBtn title={t('govern.toolbar.list')} onClick={() => prefix('- ')}><List className="h-3.5 w-3.5" /></FmtBtn>
       <FmtBtn title={t('govern.toolbar.orderedList')} onClick={() => prefix('1. ')}><ListOrdered className="h-3.5 w-3.5" /></FmtBtn>
       <FmtBtn title={t('govern.toolbar.quote')} onClick={() => prefix('> ')}><Quote className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.callout')} onClick={onCallout}><Info className="h-3.5 w-3.5" /></FmtBtn>
       <Div />
       <FmtBtn title={t('govern.toolbar.link')} onClick={() => wrap('[', '](https://)', t('govern.toolbar.sample.link'))}><Link2 className="h-3.5 w-3.5" /></FmtBtn>
+      <FmtBtn title={t('govern.toolbar.wikilink')} onClick={onWikilink}><FileText className="h-3.5 w-3.5" /></FmtBtn>
       <FmtBtn title={t('govern.toolbar.table')} onClick={() => block(t('govern.toolbar.tableBlock'))}><Table className="h-3.5 w-3.5" /></FmtBtn>
     </div>
   );
 }
 
-function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }: {
+function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpenMetric }: {
   docId: number | null; seed?: KnowledgeDocWrite | null; managed: ManagedMetric[];
+  allDocs: { id: number; title: string }[];
   onCancel: () => void; onSaved: (id: number) => void; onOpenMetric: (s: MetricModalState) => void;
 }) {
   const { t } = useI18n();
+  const [wikiQuery, setWikiQuery] = useState<string | null>(null);  // open [[…]] autocomplete
   const [editing, setEditing] = useState<KnowledgeDocWrite | null>(docId ? null : (seed ?? newDoc()));
   const [tagsText, setTagsText] = useState((seed?.tags ?? []).join(', '));
   const [changeNote, setChangeNote] = useState('');
@@ -1496,6 +1609,27 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
     const pos = s + pre.length + blk.length;
     return { text: t.slice(0, s) + pre + blk + t.slice(s), a: pos, b: pos };
   });
+  // Obsidian authoring: [[wikilink]] autocomplete + callout skeleton.
+  const onBodyChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value; const caret = e.target.selectionStart ?? val.length;
+    upd({ body: val });
+    const m = val.slice(0, caret).match(/\[\[([^\]\n]*)$/);  // open [[ with no closing ]] yet
+    setWikiQuery(m ? m[1] : null);
+  };
+  const insertWikilink = () => { insertToken('[[]]'); const el = bodyRef.current; requestAnimationFrame(() => { if (el) { const p = (el.selectionStart ?? 2) - 2; el.setSelectionRange(p, p); } }); setWikiQuery(''); };
+  const insertCallout = () => blockFmt('> [!note] \n> ');
+  const pickWiki = (title: string) => {
+    const el = bodyRef.current; const val = editing?.body ?? ''; const caret = el?.selectionStart ?? val.length;
+    const m = val.slice(0, caret).match(/\[\[([^\]\n]*)$/);
+    const start = m ? caret - m[0].length : caret;
+    const insert = `[[${title}]]`;
+    const next = val.slice(0, start) + insert + val.slice(caret);
+    setEditing((p) => (p ? { ...p, body: next } : p)); setWikiQuery(null);
+    requestAnimationFrame(() => { if (el) { el.focus(); const pos = start + insert.length; el.setSelectionRange(pos, pos); } });
+  };
+  const wikiMatches = wikiQuery === null ? [] : allDocs
+    .filter((d) => d.id !== editing?.id && (!wikiQuery.trim() || d.title.toLowerCase().includes(wikiQuery.trim().toLowerCase())))
+    .slice(0, 6);
 
   const defineMetric = () => {
     if (!editing?.id) { toast.error(t('govern.editor.saveBeforeMetric')); return; }
@@ -1572,8 +1706,23 @@ function EditorScreen({ docId, seed, managed, onCancel, onSaved, onOpenMetric }:
                 </div>
               ) : (
                 <>
-                  <MarkdownToolbar wrap={wrapFmt} prefix={prefixFmt} block={blockFmt} />
-                  <Textarea ref={bodyRef} rows={24} className="font-mono text-[13px]" value={editing.body ?? ''} onChange={(e) => upd({ body: e.target.value })}
+                  <MarkdownToolbar wrap={wrapFmt} prefix={prefixFmt} block={blockFmt} onWikilink={insertWikilink} onCallout={insertCallout} />
+                  {wikiQuery !== null && (
+                    <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-brand/30 bg-brand/[0.06] px-2.5 py-1.5">
+                      <span className="text-tiny font-emphasis text-brand">{t('govern.editor.wikilinkPick')}</span>
+                      {wikiMatches.length === 0
+                        ? <span className="text-tiny text-text-quaternary">{t('govern.editor.wikilinkNoMatch')}</span>
+                        : wikiMatches.map((d) => (
+                          <button key={d.id} type="button" onClick={() => pickWiki(d.title)}
+                            className="max-w-[220px] truncate rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-tiny text-text-secondary hover:border-brand/50 hover:text-brand">
+                            {d.title}
+                          </button>
+                        ))}
+                      <button type="button" onClick={() => setWikiQuery(null)} className="ml-auto text-tiny text-text-quaternary hover:text-text-primary">✕</button>
+                    </div>
+                  )}
+                  <Textarea ref={bodyRef} rows={24} className="font-mono text-[13px]" value={editing.body ?? ''} onChange={onBodyChange}
+                    onKeyDown={(e) => { if (e.key === 'Escape' && wikiQuery !== null) setWikiQuery(null); }}
                     placeholder={t('govern.editor.bodyPlaceholder')} />
                 </>
               )}

@@ -130,6 +130,21 @@ class GovernDocAssetLink(Base):
     __table_args__ = (UniqueConstraint("doc_id", "asset_type", "asset_ref", name="uq_doc_asset_link"),)
 
 
+class GovernDocLink(Base):
+    """Explicit doc↔doc wikilink ([[Doc Title]], Obsidian-style). Resolved to a
+    target doc id at save time and stored as a directed edge, so the hub is a
+    real navigable/AI-traversable knowledge graph (backlinks + graph view).
+    Stored by id → survives a later title rename. Auto-synced on save."""
+    __tablename__ = "govern_doc_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    from_doc_id = Column(Integer, nullable=False, index=True)
+    to_doc_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (UniqueConstraint("from_doc_id", "to_doc_id", name="uq_govern_doc_link"),)
+
+
 class GovernKnowledgeDoc(Base):
     """A knowledge article/page — the heart of the Knowledge Hub (Cẩm nang tri
     thức). Rich narrative TEXT that captures how the business/report works so a
