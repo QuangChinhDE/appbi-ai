@@ -23,6 +23,8 @@ import {
   LogOut,
   KeyRound,
   Shield,
+  Settings,
+  Users,
   HelpCircle,
   Info,
   Trash2,
@@ -49,22 +51,57 @@ interface NavItem {
   module?: string;
 }
 
+interface NavGroup {
+  /** Section eyebrow; omit for the standalone top group (Overview). */
+  labelKey?: string;
+  items: NavItem[];
+}
+
 interface SidebarProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
 }
 
-const ALL_NAV_ITEMS: NavItem[] = [
-  { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
-  { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
-  { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
-  { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
-  { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
-  { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
-  { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
-  { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
-  { labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-4 w-4" />, module: 'settings' },
+// Modules grouped by what the user is doing, instead of one flat list.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    items: [
+      { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
+    ],
+  },
+  {
+    labelKey: 'sidebar.group.build',
+    items: [
+      { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
+      { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
+      { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
+      { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
+    ],
+  },
+  {
+    labelKey: 'sidebar.group.operate',
+    items: [
+      { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
+    ],
+  },
+  {
+    labelKey: 'sidebar.group.intelligence',
+    items: [
+      { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
+    ],
+  },
+  {
+    labelKey: 'sidebar.group.trust',
+    items: [
+      { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
+    ],
+  },
 ];
+
+// Settings lives behind a gear icon + modal, not a persistent nav row.
+const SETTINGS_ITEM: NavItem = {
+  labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-4 w-4" />, module: 'settings',
+};
 
 function getInitials(name: string): string {
   return name
@@ -81,6 +118,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -118,10 +156,11 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   }, [showUserMenu]);
 
   const perms = permData?.permissions;
-  const visibleItems = ALL_NAV_ITEMS.filter((item) => {
-    if (item.module) return hasPermission(perms, item.module, 'view');
-    return true;
-  });
+  const canSee = (item: NavItem) => (item.module ? hasPermission(perms, item.module, 'view') : true);
+  const visibleGroups = NAV_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter(canSee) }))
+    .filter((group) => group.items.length > 0);
+  const canSettings = canSee(SETTINGS_ITEM);
 
   const isActive = (href: string) => {
     if (href === '/explore') return pathname.startsWith('/explore');
@@ -170,36 +209,49 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         )}
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-1">
-        <ul className="space-y-0.5">
-          {visibleItems.map((item) => {
-            const active = isActive(item.href);
-            const label = t(item.labelKey);
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={cn(
-                    'group flex items-center rounded-md transition-colors',
-                    isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
-                    active
-                      ? 'bg-surface-2 text-text-primary'
-                      : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
-                  )}
-                  title={isCollapsed ? label : undefined}
-                >
-                  <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
-                    {item.icon}
-                  </span>
-                  {!isCollapsed && (
-                    <span className="text-caption font-emphasis truncate">{label}</span>
-                  )}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+      {/* Nav — grouped by what the user is doing */}
+      <nav className={cn('flex-1 overflow-y-auto px-2 py-2', isCollapsed ? 'space-y-1.5' : 'space-y-3')}>
+        {visibleGroups.map((group, gi) => (
+          <div key={group.labelKey ?? `group-${gi}`}>
+            {group.labelKey && (
+              isCollapsed ? (
+                gi > 0 && <div className="mx-auto mb-1.5 h-px w-6 bg-[rgb(var(--border-line))]" aria-hidden="true" />
+              ) : (
+                <p className="px-2.5 pb-1 pt-0.5 text-[10px] font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                  {t(group.labelKey)}
+                </p>
+              )
+            )}
+            <ul className="space-y-0.5">
+              {group.items.map((item) => {
+                const active = isActive(item.href);
+                const label = t(item.labelKey);
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        'group flex items-center rounded-md transition-colors',
+                        isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
+                        active
+                          ? 'bg-surface-2 text-text-primary'
+                          : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                      )}
+                      title={isCollapsed ? label : undefined}
+                    >
+                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
+                        {item.icon}
+                      </span>
+                      {!isCollapsed && (
+                        <span className="text-caption font-emphasis truncate">{label}</span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
 
       {/* Bottom: user + collapse */}
@@ -346,6 +398,27 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
           </div>
         )}
 
+        {canSettings && (
+          <div className="px-2 pt-2">
+            <button
+              onClick={() => setShowSettings(true)}
+              className={cn(
+                'group flex w-full items-center rounded-md h-8 transition-colors',
+                'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                isCollapsed ? 'justify-center' : 'px-2.5 gap-2',
+              )}
+              title={isCollapsed ? t('sidebar.nav.settings') : undefined}
+            >
+              <span className="flex-shrink-0 text-text-tertiary group-hover:text-text-secondary">
+                <Settings className="h-4 w-4" />
+              </span>
+              {!isCollapsed && (
+                <span className="text-caption font-emphasis truncate">{t('sidebar.nav.settings')}</span>
+              )}
+            </button>
+          </div>
+        )}
+
         <div className="p-2">
           <button
             onClick={onToggleCollapse}
@@ -379,7 +452,79 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         onMarkAllRead={markAllNotificationsRead}
         onClearAll={clearNotifications}
       />
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        onGoPermissions={() => {
+          setShowSettings(false);
+          router.push(SETTINGS_ITEM.href);
+        }}
+      />
     </aside>
+  );
+}
+
+function SettingsModal({
+  open,
+  onClose,
+  onGoPermissions,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onGoPermissions: () => void;
+}) {
+  const { t } = useI18n();
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] px-4 animate-fade-in"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-md overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg animate-slide-up"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-[rgb(var(--border-line))] px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-brand/10 p-2 text-brand">
+              <Settings className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-small font-strong text-text-primary">{t('sidebar.nav.settings')}</h2>
+              <p className="text-caption text-text-tertiary">{t('sidebar.settings.description')}</p>
+            </div>
+          </div>
+          <IconButton aria-label={t('common.close')} variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </IconButton>
+        </div>
+
+        <div className="p-4">
+          <button
+            onClick={onGoPermissions}
+            className="group flex w-full items-center gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 px-4 py-3 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
+          >
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+              <Users className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-caption font-emphasis text-text-primary">{t('sidebar.settings.permissions')}</p>
+              <p className="truncate text-tiny text-text-tertiary">{t('sidebar.settings.permissionsDesc')}</p>
+            </div>
+            <ChevronRight className="h-4 w-4 flex-shrink-0 text-text-quaternary group-hover:text-text-secondary" />
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
