@@ -1,5 +1,7 @@
 # AppBI
 
+<img width="1491" height="1055" alt="image" src="https://github.com/user-attachments/assets/6b771ec2-1eac-4b78-a180-dacdba0097ed" />
+
 > A governed business-intelligence platform where **AI is the output**.
 
 AppBI is more than a dashboard builder. Every layer — data sources, the semantic
