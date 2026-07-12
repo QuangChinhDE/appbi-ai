@@ -802,3 +802,236 @@ def observability_alerts(db: Session = Depends(get_db), user: User = Depends(get
                 "alertType": "Quality · score",
             })
     return {"alerts": alerts, "total": len(alerts)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Intelligence modules — teach-the-AI knowledge (rules / playbooks / verified
+# Q&A / instructions) + governance spine (single review inbox, caveats, AI data
+# scope, provenance cockpit). All additive; the AI bot consumes Approved only.
+# ═════════════════════════════════════════════════════════════════════════════
+from app.services.governance_ai_service import GovernanceAIService  # noqa: E402
+
+
+class RuleWrite(BaseModel):
+    id: int | None = None
+    name: str
+    condition_text: str
+    conclusion_text: str
+    exceptions_text: str | None = None
+    applies_to: list[dict[str, Any]] = []
+    owner: str | None = None
+    status: str | None = None
+
+
+class PlaybookWrite(BaseModel):
+    id: int | None = None
+    name: str
+    trigger_text: str
+    steps: list[str] = []
+    dim_priority: list[str] = []
+    expected_output: str | None = None
+    linked_metrics: list[str] = []
+    owner: str | None = None
+    status: str | None = None
+
+
+class QAWrite(BaseModel):
+    id: int | None = None
+    question: str
+    trigger_phrases: list[str] = []
+    answer_md: str
+    chart_id: int | None = None
+    dashboard_id: int | None = None
+    playbook_id: int | None = None
+    as_test: bool = True
+    owner: str | None = None
+    status: str | None = None
+
+
+class InstructionWrite(BaseModel):
+    scope: str = "global"
+    scope_id: int | None = None
+    content_md: str
+
+
+class CaveatWrite(BaseModel):
+    id: int | None = None
+    dataset_id: int | None = None
+    title: str
+    content: str
+    always_inject: bool = True
+    owner: str | None = None
+
+
+class ScopeWrite(BaseModel):
+    excluded_columns: list[str] = []
+    excluded_measures: list[str] = []
+
+
+class ReviewItemWrite(BaseModel):
+    entity_type: str
+    entity_id: int | None = None
+    action: str = "suggest"
+    title: str
+    payload: dict[str, Any] | None = None
+    evidence: str | None = None
+    confidence: float | None = None
+
+
+class ReviewResolve(BaseModel):
+    note: str | None = None
+
+
+# ── Rules ────────────────────────────────────────────────────────────────────
+@router.get("/govern/rules")
+def govern_rules(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"rules": GovernanceAIService.list_rules(db)}
+
+
+@router.put("/govern/rules")
+def govern_rules_upsert(body: RuleWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_rule(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/rules/{rule_id}")
+def govern_rules_delete(rule_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_rule(db, rule_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Playbooks ────────────────────────────────────────────────────────────────
+@router.get("/govern/playbooks")
+def govern_playbooks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"playbooks": GovernanceAIService.list_playbooks(db)}
+
+
+@router.put("/govern/playbooks")
+def govern_playbooks_upsert(body: PlaybookWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_playbook(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/playbooks/{playbook_id}")
+def govern_playbooks_delete(playbook_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_playbook(db, playbook_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Verified Q&A ─────────────────────────────────────────────────────────────
+@router.get("/govern/qa")
+def govern_qa(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"qa": GovernanceAIService.list_qa(db)}
+
+
+@router.put("/govern/qa")
+def govern_qa_upsert(body: QAWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_qa(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/qa/{qa_id}")
+def govern_qa_delete(qa_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_qa(db, qa_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Certify (in-context; ALWAYS writes the single review ledger) ─────────────
+@router.post("/govern/certify/{entity_type}/{entity_id}")
+def govern_certify(entity_type: str, entity_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.certify(db, entity_type, entity_id, changed_by=who))
+
+
+# ── AI Instructions ──────────────────────────────────────────────────────────
+@router.get("/govern/instructions")
+def govern_instructions(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"instructions": GovernanceAIService.list_instructions(db)}
+
+
+@router.put("/govern/instructions")
+def govern_instructions_create(body: InstructionWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.create_instruction_version(db, body.model_dump(), changed_by=who))
+
+
+# ── Data caveats ─────────────────────────────────────────────────────────────
+@router.get("/govern/caveats")
+def govern_caveats(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"caveats": GovernanceAIService.list_caveats(db)}
+
+
+@router.put("/govern/caveats")
+def govern_caveats_upsert(body: CaveatWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_caveat(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/caveats/{caveat_id}")
+def govern_caveats_delete(caveat_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_caveat(db, caveat_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── AI data scope ────────────────────────────────────────────────────────────
+@router.get("/govern/ai-scope/{dataset_id}")
+def govern_ai_scope_get(dataset_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    scope = GovernanceAIService.get_scope(db, dataset_id)
+    scope["fields"] = GovernanceAIService.scope_fields(db, dataset_id)
+    return scope
+
+
+@router.put("/govern/ai-scope/{dataset_id}")
+def govern_ai_scope_put(dataset_id: int, body: ScopeWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.put_scope(db, dataset_id, body.model_dump(), changed_by=who))
+
+
+# ── Review inbox (single ledger) ─────────────────────────────────────────────
+@router.get("/govern/review-items")
+def govern_review_items(
+    status: str = Query(default="pending"),
+    entity_type: str | None = Query(default=None),
+    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {
+        "items": GovernanceAIService.list_review_items(db, status=status, entity_type=entity_type),
+        "pending": GovernanceAIService.review_count(db),
+    }
+
+
+@router.get("/govern/review-items/count")
+def govern_review_count(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"pending": GovernanceAIService.review_count(db)}
+
+
+@router.post("/govern/review-items")
+def govern_review_create(body: ReviewItemWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.create_review_item(db, body.model_dump(), created_by=who))
+
+
+@router.post("/govern/review-items/{item_id}/approve")
+def govern_review_approve(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    note = body.note if body else None
+    return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=True, resolved_by=who, note=note))
+
+
+@router.post("/govern/review-items/{item_id}/reject")
+def govern_review_reject(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    note = body.note if body else None
+    return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=False, resolved_by=who, note=note))
+
+
+# ── Cockpit overview ─────────────────────────────────────────────────────────
+@router.get("/govern/intelligence/overview")
+def govern_intelligence_overview(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return GovernanceAIService.intelligence_overview(db)
+
+
+@router.post("/govern/managed-metric/{name}/certify")
+def govern_metric_certify(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.certify_metric_by_name(db, name, changed_by=who))

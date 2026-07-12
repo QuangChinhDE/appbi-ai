@@ -429,3 +429,225 @@ export async function listDatasetsLite(): Promise<DatasetLite[]> {
   const arr = Array.isArray(data) ? data : ((data as { datasets?: unknown[]; items?: unknown[] })?.datasets ?? (data as { items?: unknown[] })?.items ?? []);
   return (arr as { id: number; name: string }[]).map((d) => ({ id: d.id, name: d.name }));
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Intelligence modules — teach-the-AI knowledge (rules / playbooks / verified
+// Q&A / AI instructions) + governance spine (single review inbox, data caveats,
+// AI data scope, provenance cockpit). Mirrors /catalog/govern/* endpoints.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export type IntelStatus = 'Draft' | 'Approved' | 'Deprecated';
+
+export interface GovernRule {
+  id: number;
+  name: string;
+  condition_text: string;
+  conclusion_text: string;
+  exceptions_text?: string | null;
+  applies_to: { kind: string; ref: string; label?: string }[];
+  status: IntelStatus;
+  version: number;
+  owner?: string | null;
+  updated_at?: string | null;
+}
+
+export interface GovernPlaybook {
+  id: number;
+  name: string;
+  trigger_text: string;
+  steps: string[];
+  dim_priority: string[];
+  expected_output?: string | null;
+  linked_metrics: string[];
+  status: IntelStatus;
+  version: number;
+  owner?: string | null;
+  run_count: number;
+  last_run_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface GovernQA {
+  id: number;
+  question: string;
+  trigger_phrases: string[];
+  answer_md: string;
+  chart_id?: number | null;
+  dashboard_id?: number | null;
+  playbook_id?: number | null;
+  status: IntelStatus;
+  as_test: boolean;
+  owner?: string | null;
+  use_count: number;
+  last_used_at?: string | null;
+  version: number;
+  updated_at?: string | null;
+}
+
+export interface GovernInstruction {
+  id: number;
+  scope: 'global' | 'dataset' | 'dashboard';
+  scope_id?: number | null;
+  content_md: string;
+  version: number;
+  status: 'active' | 'archived';
+  eval_pass_rate?: number | null;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface GovernCaveat {
+  id: number;
+  dataset_id?: number | null;
+  title: string;
+  content: string;
+  always_inject: boolean;
+  status: string;
+  owner?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ReviewItem {
+  id: number;
+  entity_type: string;
+  entity_id?: number | null;
+  action: 'suggest' | 'certify' | 'recertify' | 'flag' | 'retire';
+  title: string;
+  payload?: Record<string, unknown> | null;
+  evidence?: string | null;
+  confidence?: number | null;
+  source: 'ai' | 'user' | 'system';
+  status: 'pending' | 'approved' | 'rejected';
+  note?: string | null;
+  created_by?: string | null;
+  resolved_by?: string | null;
+  created_at?: string | null;
+  resolved_at?: string | null;
+}
+
+export interface IntelligenceOverview {
+  readiness: number;
+  coverage: Record<string, { approved: number; total: number }>;
+  pending_reviews: number;
+  flagged: number;
+  answers_30d: number;
+  top_used: { kind: string; name: string; count: number }[];
+  ungrounded_questions: string[];
+  unbound_metrics: { id: number; name: string; display_name: string; binding: string; status: string }[];
+  lifecycle: { draft: number; approved: number; deprecated: number; pending_suggestions: number };
+}
+
+// ── Rules ─────────────────────────────────────────────────────────────────
+export async function listRules(): Promise<GovernRule[]> {
+  const { data } = await apiClient.get<{ rules: GovernRule[] }>('/catalog/govern/rules');
+  return data.rules ?? [];
+}
+export async function upsertRule(body: Partial<GovernRule>): Promise<GovernRule> {
+  const { data } = await apiClient.put<GovernRule>('/catalog/govern/rules', body);
+  return data;
+}
+export async function deleteRule(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/rules/${id}`);
+}
+
+// ── Playbooks ─────────────────────────────────────────────────────────────
+export async function listPlaybooks(): Promise<GovernPlaybook[]> {
+  const { data } = await apiClient.get<{ playbooks: GovernPlaybook[] }>('/catalog/govern/playbooks');
+  return data.playbooks ?? [];
+}
+export async function upsertPlaybook(body: Partial<GovernPlaybook>): Promise<GovernPlaybook> {
+  const { data } = await apiClient.put<GovernPlaybook>('/catalog/govern/playbooks', body);
+  return data;
+}
+export async function deletePlaybook(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/playbooks/${id}`);
+}
+
+// ── Verified Q&A ──────────────────────────────────────────────────────────
+export async function listQA(): Promise<GovernQA[]> {
+  const { data } = await apiClient.get<{ qa: GovernQA[] }>('/catalog/govern/qa');
+  return data.qa ?? [];
+}
+export async function upsertQA(body: Partial<GovernQA>): Promise<GovernQA> {
+  const { data } = await apiClient.put<GovernQA>('/catalog/govern/qa', body);
+  return data;
+}
+export async function deleteQA(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/qa/${id}`);
+}
+
+// ── Certify (in-context; writes the single review ledger) ────────────────
+export async function certifyEntity(entityType: 'metric' | 'rule' | 'playbook' | 'qa', id: number): Promise<unknown> {
+  const { data } = await apiClient.post(`/catalog/govern/certify/${entityType}/${id}`);
+  return data;
+}
+
+// ── AI Instructions ───────────────────────────────────────────────────────
+export async function listInstructions(): Promise<GovernInstruction[]> {
+  const { data } = await apiClient.get<{ instructions: GovernInstruction[] }>('/catalog/govern/instructions');
+  return data.instructions ?? [];
+}
+export async function createInstructionVersion(body: { scope: string; scope_id?: number | null; content_md: string }): Promise<GovernInstruction> {
+  const { data } = await apiClient.put<GovernInstruction>('/catalog/govern/instructions', body);
+  return data;
+}
+
+// ── Data caveats ──────────────────────────────────────────────────────────
+export async function listCaveats(): Promise<GovernCaveat[]> {
+  const { data } = await apiClient.get<{ caveats: GovernCaveat[] }>('/catalog/govern/caveats');
+  return data.caveats ?? [];
+}
+export async function upsertCaveat(body: Partial<GovernCaveat>): Promise<GovernCaveat> {
+  const { data } = await apiClient.put<GovernCaveat>('/catalog/govern/caveats', body);
+  return data;
+}
+export async function deleteCaveat(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/caveats/${id}`);
+}
+
+// ── AI data scope ─────────────────────────────────────────────────────────
+export interface AIScope {
+  dataset_id: number;
+  excluded_columns: string[];
+  excluded_measures: string[];
+  fields?: {
+    measures: { name: string; label: string; kind: string }[];
+    columns: { name: string }[];
+  };
+}
+export async function getAIScope(datasetId: number): Promise<AIScope> {
+  const { data } = await apiClient.get<AIScope>(`/catalog/govern/ai-scope/${datasetId}`);
+  return data;
+}
+export async function putAIScope(datasetId: number, body: { excluded_columns: string[]; excluded_measures: string[] }): Promise<AIScope> {
+  const { data } = await apiClient.put<AIScope>(`/catalog/govern/ai-scope/${datasetId}`, body);
+  return data;
+}
+
+// ── Review inbox (single ledger) ──────────────────────────────────────────
+export async function listReviewItems(params?: { status?: string; entity_type?: string }): Promise<{ items: ReviewItem[]; pending: number }> {
+  const { data } = await apiClient.get<{ items: ReviewItem[]; pending: number }>('/catalog/govern/review-items', { params });
+  return { items: data.items ?? [], pending: data.pending ?? 0 };
+}
+export async function reviewCount(): Promise<number> {
+  const { data } = await apiClient.get<{ pending: number }>('/catalog/govern/review-items/count');
+  return data.pending ?? 0;
+}
+export async function createReviewItem(body: Partial<ReviewItem>): Promise<ReviewItem> {
+  const { data } = await apiClient.post<ReviewItem>('/catalog/govern/review-items', body);
+  return data;
+}
+export async function approveReviewItem(id: number, note?: string): Promise<ReviewItem & { created_entity?: unknown }> {
+  const { data } = await apiClient.post(`/catalog/govern/review-items/${id}/approve`, { note: note ?? null });
+  return data;
+}
+export async function rejectReviewItem(id: number, note?: string): Promise<ReviewItem> {
+  const { data } = await apiClient.post(`/catalog/govern/review-items/${id}/reject`, { note: note ?? null });
+  return data;
+}
+
+// ── Cockpit overview ──────────────────────────────────────────────────────
+export async function intelligenceOverview(): Promise<IntelligenceOverview> {
+  const { data } = await apiClient.get<IntelligenceOverview>('/catalog/govern/intelligence/overview');
+  return data;
+}

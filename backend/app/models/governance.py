@@ -240,6 +240,170 @@ class GovernChangeLog(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Intelligence modules — the knowledge types that TEACH the AI how to analyze
+# (rules / playbooks / verified Q&A / instructions), plus the governance spine
+# that keeps them trustworthy (single review ledger, caveats, AI data scope,
+# per-answer provenance). All AUTHORED data; the bot only consumes Approved.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class GovernRule(Base):
+    """A business rule the AI must respect: condition → conclusion (+exceptions).
+    MUST be bound via applies_to so retrieval is scoped to the question's data
+    instead of injecting every rule into every turn."""
+    __tablename__ = "govern_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    condition_text = Column(Text, nullable=False)      # "Doanh thu giảm >10% YoY"
+    conclusion_text = Column(Text, nullable=False)     # "cảnh báo + phân rã theo bang"
+    exceptions_text = Column(Text, nullable=True)      # "Black Friday, Tết"
+    # [{kind: metric|dataset|column, ref: "<machine name / id>", label}] — retrieval binding
+    applies_to = Column(JSON, nullable=False, default=list)
+    status = Column(String(24), nullable=False, default="Draft")  # Draft | Approved | Deprecated
+    version = Column(Integer, nullable=False, default=1)
+    owner = Column(String(128), nullable=True)
+    provider = Column(String(16), nullable=False, default="user")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class GovernPlaybook(Base):
+    """How the AI should analyze a situation: trigger → ordered steps →
+    expected output, with dimension priorities and bound metrics. The bot runs
+    the business's OWN analysis recipe instead of improvising one."""
+    __tablename__ = "govern_playbooks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    trigger_text = Column(Text, nullable=False)        # when to run (prose condition)
+    steps = Column(JSON, nullable=False, default=list)  # [str] ordered analysis steps
+    dim_priority = Column(JSON, nullable=False, default=list)  # [str] dimension names in priority order
+    expected_output = Column(Text, nullable=True)      # what a good answer looks like
+    linked_metrics = Column(JSON, nullable=False, default=list)  # [govern_metric machine name]
+    status = Column(String(24), nullable=False, default="Draft")
+    version = Column(Integer, nullable=False, default=1)
+    owner = Column(String(128), nullable=True)
+    run_count = Column(Integer, nullable=False, default=0)
+    last_run_at = Column(DateTime, nullable=True)
+    provider = Column(String(16), nullable=False, default="user")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class GovernVerifiedQA(Base):
+    """An author-approved answer pinned to trigger phrases. When a user question
+    matches, the bot must anchor on this answer (and cite the pinned chart)
+    instead of free-generating. Approved rows double as regression tests."""
+    __tablename__ = "govern_verified_qa"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question = Column(String(512), nullable=False)
+    trigger_phrases = Column(JSON, nullable=False, default=list)  # [str] lowercase match phrases
+    answer_md = Column(Text, nullable=False)
+    chart_id = Column(Integer, nullable=True)          # pinned visual (optional)
+    dashboard_id = Column(Integer, nullable=True, index=True)  # null = applies to all dashboards
+    playbook_id = Column(Integer, nullable=True)       # answer = "run this playbook"
+    status = Column(String(24), nullable=False, default="Draft")
+    as_test = Column(Boolean, nullable=False, default=True)  # export as regression golden case
+    owner = Column(String(128), nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+    last_used_at = Column(DateTime, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    provider = Column(String(16), nullable=False, default="user")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class GovernAIInstruction(Base):
+    """Versioned AI instructions — system-level steering, scoped Global →
+    Dataset → Dashboard (injected in that order; the legacy per-public-link
+    note stays as a final override during migration). Admin-owned CONFIG, not
+    ordinary knowledge: one active row per (scope, scope_id)."""
+    __tablename__ = "govern_ai_instructions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String(16), nullable=False, default="global")  # global | dataset | dashboard
+    scope_id = Column(Integer, nullable=True, index=True)         # dataset_id / dashboard_id
+    content_md = Column(Text, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    status = Column(String(16), nullable=False, default="active")  # active | archived
+    eval_pass_rate = Column(Float, nullable=True)   # recorded when an eval gated this version
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class GovernReviewItem(Base):
+    """THE single review ledger. Every approval in the Intelligence group —
+    AI suggestions, in-context certifies, re-certifies on binding drift,
+    flagged answers, retires — is a row here, so "what is pending and who
+    approved what" always has one answer."""
+    __tablename__ = "govern_review_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String(24), nullable=False, index=True)  # metric|term|rule|playbook|qa|instruction|doc|caveat
+    entity_id = Column(Integer, nullable=True)
+    action = Column(String(24), nullable=False, default="suggest")  # suggest|certify|recertify|flag|retire
+    title = Column(String(512), nullable=False)
+    payload = Column(JSON, nullable=True)        # proposed content (entity fields) for suggest-type items
+    evidence = Column(Text, nullable=True)       # why AI/user proposed it
+    confidence = Column(Float, nullable=True)    # AI confidence 0..1 (null for human actions)
+    source = Column(String(16), nullable=False, default="user")  # ai | user | system
+    status = Column(String(16), nullable=False, default="pending", index=True)  # pending|approved|rejected
+    note = Column(String(512), nullable=True)
+    created_by = Column(String(128), nullable=True)
+    resolved_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class GovernDataCaveat(Base):
+    """Data caveat the AI must ALWAYS see for a dataset (freshness, grain/fan-out
+    traps, quality gaps). Injected unconditionally — RAG similarity would miss
+    these ("revenue this month?" never retrieves "data loads T+1")."""
+    __tablename__ = "govern_data_caveats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, nullable=True, index=True)   # null = every dataset
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    always_inject = Column(Boolean, nullable=False, default=True)
+    status = Column(String(24), nullable=False, default="Approved")
+    owner = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class GovernAIScope(Base):
+    """AI data scope per dataset (Power-BI "AI data schema" parity): columns /
+    measures the bot must NOT see. Default (no row) = everything allowed, so
+    existing dashboards keep working untouched."""
+    __tablename__ = "govern_ai_scope"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, nullable=False, unique=True, index=True)
+    excluded_columns = Column(JSON, nullable=False, default=list)   # ["column_name", ...]
+    excluded_measures = Column(JSON, nullable=False, default=list)  # [semantic measure/dimension name]
+    updated_by = Column(String(128), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class GovernAnswerProvenance(Base):
+    """Which knowledge was INJECTED for one bot answer — the provenance store
+    behind "AI đang dùng gì". Written best-effort per turn; powers the cockpit
+    and "questions with no knowledge backing" analytics."""
+    __tablename__ = "govern_answer_provenance"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dashboard_id = Column(Integer, nullable=True, index=True)
+    question = Column(String(512), nullable=True)
+    # [{kind: metric|term|doc|rule|playbook|qa|caveat|instruction, ref, name}]
+    refs = Column(JSON, nullable=False, default=list)
+    grounded = Column(Boolean, nullable=False, default=True)  # False = nothing authored matched
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+
 class Classification(Base):
     __tablename__ = "classifications"
 

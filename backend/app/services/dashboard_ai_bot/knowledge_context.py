@@ -167,6 +167,18 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
     except Exception:  # noqa: BLE001
         pass
 
+    # AI data scope (Intelligence): drop columns/measures the business excluded.
+    # No scope row = everything allowed, so existing dashboards are untouched.
+    try:
+        from app.services.governance_ai_service import GovernanceAIService
+        ex_cols, ex_measures = GovernanceAIService.scope_exclusions(db, dataset_ids)
+        if ex_cols:
+            out["columns"] = [c for c in out["columns"] if _fold(c.get("name") or "") not in ex_cols]
+        if ex_measures:
+            out["measures"] = [m for m in out["measures"] if _fold(str(m.get("name") or "")) not in ex_measures]
+    except Exception:  # noqa: BLE001
+        logger.warning("knowledge_context: ai-scope filter failed", exc_info=True)
+
     # de-dup + cap aliases / questions
     out["aliases"] = list(dict.fromkeys(out["aliases"]))[:_MAX_ALIASES]
     out["common_questions"] = list(dict.fromkeys(out["common_questions"]))[:_MAX_QUESTIONS]
@@ -185,7 +197,12 @@ def _semantic_fields(db: Session, dataset_ids: set[int]) -> list[dict]:
     except Exception:  # noqa: BLE001
         return []
     try:
-        views = db.query(SemanticView).filter(SemanticView.dataset_id.in_(dataset_ids)).all()
+        # SemanticView binds per dataset TABLE (no dataset_id column) — resolve
+        # the dataset scope through DatasetTable. (Previously filtered on a
+        # nonexistent column, so this source silently never injected.)
+        from app.models.dataset import DatasetTable as _DT
+        table_ids = [t.id for t in db.query(_DT.id).filter(_DT.dataset_id.in_(dataset_ids)).all()]
+        views = db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(table_ids or [-1])).all()
     except Exception:  # noqa: BLE001
         return []
     for v in views:
@@ -249,12 +266,16 @@ def format_block(assembled: dict) -> str:
     return "\n".join(lines)
 
 
-def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") -> str:
+def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") -> tuple[str, list[dict]]:
     """Authoritative Govern knowledge for the AI to REUSE: managed KPIs (defined
     by the business) bound to this dashboard's data, + knowledge docs that
     describe this report. This is the payoff of the Knowledge Foundation — the
-    bot answers from human-authored definitions, not guesses. Best-effort."""
+    bot answers from human-authored definitions, not guesses. Best-effort.
+
+    Returns (rendered block, provenance refs) so each answer can record WHICH
+    knowledge grounded it (the "AI đang dùng gì" store)."""
     lines: list[str] = []
+    refs: list[dict] = []
     try:
         from app.models.governance import GovernMetric, GovernDocAssetLink, GovernKnowledgeDoc
         from app.models.dataset import DatasetTable
@@ -285,6 +306,7 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                 )
                 owner = f" · Chủ sở hữu: {m.owner}" if m.owner else ""
                 lines.append(f"   - {m.display_name}{unit}: {m.definition or ''}{how}{tgt}{owner}")
+                refs.append({"kind": "metric", "ref": m.name, "name": m.display_name})
 
         # Knowledge docs describing this report. PREFER embedding retrieval (RAG):
         # pull the passages most relevant to the question from the full doc bodies.
@@ -298,9 +320,14 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
 
         if rag_chunks:
             lines.append("• Trích đoạn tài liệu nghiệp vụ liên quan nhất tới câu hỏi (Cẩm nang tri thức):")
+            seen_docs: set[str] = set()
             for c in rag_chunks:
                 passage = re.sub(r"\s+", " ", c.get("content") or "").strip()[:420]
                 lines.append(f"   - [{c.get('title')}] {passage}")
+                title = str(c.get("title") or "")
+                if title and title not in seen_docs:
+                    seen_docs.add(title)
+                    refs.append({"kind": "doc", "ref": str(c.get("doc_id") or title), "name": title})
         else:
             links = (
                 db.query(GovernDocAssetLink)
@@ -321,14 +348,120 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                         raw = d.summary or getattr(d, "ai_summary", None) or re.sub(r"\{\{[^}]+\}\}", "", d.body or "")
                         blurb = re.sub(r"[#>*`\n]+", " ", raw).strip()[:220]
                         lines.append(f"   - {d.title}: {blurb}")
+                        refs.append({"kind": "doc", "ref": str(d.id), "name": d.title})
     except Exception:  # noqa: BLE001
         logger.warning("knowledge_context: govern managed block failed", exc_info=True)
     if not lines:
-        return ""
+        return "", refs
     return (
         "═══ 🏛 TRI THỨC QUẢN TRỊ DOANH NGHIỆP (Govern — nguồn chính thống) ═══\n"
         + "\n".join(lines)
-    )
+    ), refs
+
+
+def _intelligence_blocks(db: Session, dashboard_id: int, question: str = "") -> tuple[list[str], list[dict]]:
+    """Teach-the-AI knowledge (Intelligence modules): scoped AI instructions,
+    verified Q&A pinning, business rules, playbooks and always-inject data
+    caveats. Everything Approved-only, everything best-effort — a failure here
+    must NEVER break a bot turn."""
+    parts: list[str] = []
+    refs: list[dict] = []
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.governance import GovernMetric
+        from app.services.governance_ai_service import GovernanceAIService as AIS
+
+        tids = set(dashboard_table_ids(db, dashboard_id))
+        dsids: set[int] = set()
+        if tids:
+            for t in db.query(DatasetTable).filter(DatasetTable.id.in_(tids)).all():
+                if t.dataset_id:
+                    dsids.add(t.dataset_id)
+
+        # 1) AI instructions — Global → Dataset → Dashboard (steering, first).
+        try:
+            instr = AIS.active_instructions(db, dsids, dashboard_id)
+            if instr:
+                scope_label = {"global": "Toàn hệ thống", "dataset": "Bộ dữ liệu", "dashboard": "Dashboard"}
+                lines = ["═══ 🧭 CHỈ DẪN AI (quản trị cấu hình — TUÂN THỦ khi phân tích) ═══"]
+                for i in instr:
+                    body = re.sub(r"\s+\n", "\n", (i.content_md or "").strip())[:1500]
+                    lines.append(f"• [{scope_label.get(i.scope, i.scope)} · v{i.version}]\n{body}")
+                    refs.append({"kind": "instruction", "ref": f"{i.scope}:{i.scope_id or 0}", "name": f"Chỉ dẫn AI {i.scope} v{i.version}"})
+                parts.append("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: instructions block failed", exc_info=True)
+
+        # 2) Verified Q&A — trigger match pins the approved answer.
+        try:
+            qa = AIS.qa_match(db, dashboard_id, question)
+            if qa is not None:
+                lines = [
+                    "═══ ✅ HỎI-ĐÁP ĐÃ CHỨNG THỰC (khớp câu hỏi này — PHẢI neo câu trả lời vào đây) ═══",
+                    f"• Câu hỏi chuẩn: {qa.question}",
+                    f"• Đáp án đã duyệt: {qa.answer_md[:1200]}",
+                ]
+                if qa.chart_id:
+                    lines.append(f"• Visual đã ghim: chart:{qa.chart_id} — TRÍCH DẪN chart này trong câu trả lời.")
+                lines.append("Trình bày lại theo ngữ cảnh nếu cần, nhưng KHÔNG mâu thuẫn với đáp án đã duyệt.")
+                parts.append("\n".join(lines))
+                refs.append({"kind": "qa", "ref": str(qa.id), "name": qa.question[:120]})
+                AIS.bump_qa_use(qa.id)
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: verified-qa block failed", exc_info=True)
+
+        # 3) Rules + playbooks bound to this dashboard's metrics.
+        try:
+            metric_names: set[str] = set()
+            for m in db.query(GovernMetric).filter(GovernMetric.status == "Approved").all():
+                matched = (m.dataset_id in dsids) or (m.dataset_table_id in tids)
+                if not matched and m.measure_ref:
+                    # Field metrics commonly bind via "dataset_table_<id>.<measure>"
+                    # strings instead of the id columns — and in practice that id
+                    # may be either a dataset_table id OR the dataset id. Honor both.
+                    ref_tbl = re.match(r"dataset_table_(\d+)\.", str(m.measure_ref))
+                    if ref_tbl:
+                        ref_id = int(ref_tbl.group(1))
+                        if ref_id in tids or ref_id in dsids:
+                            matched = True
+                if matched:
+                    metric_names.add(m.name)
+                    if m.display_name:
+                        metric_names.add(m.display_name)
+            rules, playbooks = AIS.guidance_for(db, dsids, metric_names)
+            if rules:
+                lines = ["═══ 📏 QUY TẮC NGHIỆP VỤ (đã chứng thực — áp dụng khi kết luận) ═══"]
+                for r in rules:
+                    exc = f" · Ngoại lệ: {r.exceptions_text}" if r.exceptions_text else ""
+                    lines.append(f"• {r.name}: NẾU {r.condition_text} THÌ {r.conclusion_text}{exc}")
+                    refs.append({"kind": "rule", "ref": str(r.id), "name": r.name})
+                parts.append("\n".join(lines))
+            if playbooks:
+                lines = ["═══ 📋 PLAYBOOK PHÂN TÍCH (cách doanh nghiệp muốn AI phân tích) ═══"]
+                for p in playbooks:
+                    steps = " → ".join(str(s) for s in (p.steps or [])[:6])
+                    dims = f" · Ưu tiên chiều: {', '.join(p.dim_priority)}" if p.dim_priority else ""
+                    outp = f" · Output mong đợi: {p.expected_output}" if p.expected_output else ""
+                    lines.append(f"• {p.name} (khi {p.trigger_text}): {steps}{dims}{outp}")
+                    refs.append({"kind": "playbook", "ref": str(p.id), "name": p.name})
+                parts.append("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: guidance block failed", exc_info=True)
+
+        # 4) Data caveats — ALWAYS injected (RAG similarity would miss these).
+        try:
+            caveats = AIS.caveats_for(db, dsids)
+            if caveats:
+                lines = ["═══ ⚠ LƯU Ý DỮ LIỆU (luôn áp dụng cho dữ liệu này) ═══"]
+                for c in caveats:
+                    lines.append(f"• {c.title}: {c.content[:400]}")
+                    refs.append({"kind": "caveat", "ref": str(c.id), "name": c.title})
+                parts.append("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: caveats block failed", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("knowledge_context: intelligence blocks failed", exc_info=True)
+    return parts, refs
 
 
 def build_knowledge_context_block(db: Session, *, dashboard_id: int, question: str = "") -> str:
@@ -336,12 +469,22 @@ def build_knowledge_context_block(db: Session, *, dashboard_id: int, question: s
     dictionary + semantic) + INSTITUTIONAL MEMORY (learned/taught). Generic;
     graceful. This unifies the platform's knowledge sources for the bot."""
     parts: list[str] = []
-    # Govern-authored knowledge (managed KPIs + knowledge docs) FIRST — the
+    prov_refs: list[dict] = []
+    # Intelligence steering (instructions / verified Q&A / rules / playbooks /
+    # caveats) FIRST — configuration + certified answers outrank everything.
+    try:
+        intel_parts, intel_refs = _intelligence_blocks(db, dashboard_id, question)
+        parts.extend(intel_parts)
+        prov_refs.extend(intel_refs)
+    except Exception:  # noqa: BLE001
+        logger.warning("knowledge_context: intelligence blocks failed", exc_info=True)
+    # Govern-authored knowledge (managed KPIs + knowledge docs) — the
     # authoritative, human-curated layer the AI should reuse before anything.
     try:
-        govern = _govern_managed_block(db, dashboard_id, question)
+        govern, govern_refs = _govern_managed_block(db, dashboard_id, question)
         if govern:
             parts.append(govern)
+        prov_refs.extend(govern_refs)
     except Exception:  # noqa: BLE001
         logger.warning("knowledge_context: govern block failed", exc_info=True)
     try:
@@ -360,4 +503,13 @@ def build_knowledge_context_block(db: Session, *, dashboard_id: int, question: s
             parts.append(mem)
     except Exception:  # noqa: BLE001
         logger.warning("knowledge_context: memory block failed", exc_info=True)
+    # Provenance — record what grounded this turn (best-effort, own session).
+    try:
+        if question:
+            from app.services.governance_ai_service import GovernanceAIService
+            GovernanceAIService.record_provenance(
+                dashboard_id, question, prov_refs, grounded=bool(prov_refs),
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("knowledge_context: provenance record failed", exc_info=True)
     return "\n\n".join(parts)

@@ -219,7 +219,8 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
 }
 
 // ── Obsidian-style whole-hub knowledge graph (force-directed, pure SVG) ──────
-function GlobalGraph({ onOpen }: { onOpen: (id: number) => void }) {
+// Exported: also rendered by the Intelligence cockpit (Sẵn sàng AI → Đồ thị).
+export function GlobalGraph({ onOpen }: { onOpen: (id: number) => void }) {
   const { t } = useI18n();
   const [g, setG] = useState<KnowledgeGraph | null>(null);
   const [hover, setHover] = useState<number | null>(null);
