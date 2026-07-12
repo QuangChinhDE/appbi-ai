@@ -17,7 +17,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { MetricFormModal } from '@/components/govern/MetricForm';
-import { Panel, EmptyHint, StatusBadge } from '@/components/intelligence/shared';
+import { Panel, EmptyHint, StatusBadge, useCanAuthor } from '@/components/intelligence/shared';
 import {
   listManagedMetrics, intelligenceOverview, certifyEntity, listCaveats, upsertCaveat, deleteCaveat,
   listDatasetsLite, type ManagedMetric, type GovernCaveat, type DatasetLite,
@@ -29,6 +29,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 
 export function SemanticsPage() {
   const { t } = useI18n();
+  const canAuthor = useCanAuthor();
   const [tab, setTab] = useState<'metrics' | 'caveats'>('metrics');
   const [metrics, setMetrics] = useState<ManagedMetric[]>([]);
   const [unbound, setUnbound] = useState<Record<string, string>>({});
@@ -84,7 +85,7 @@ export function SemanticsPage() {
       searchPlaceholder={t('intel.sem.search')}
       viewToggle={false}
       isLoading={loading}
-      action={(
+      action={canAuthor ? (
         <div className="flex items-center gap-2">
           {tab === 'metrics' ? (
             <Button variant="primary" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setMetricModal({ open: true, machineName: null })}>
@@ -96,7 +97,7 @@ export function SemanticsPage() {
             </Button>
           )}
         </div>
-      )}
+      ) : undefined}
       overview={(
         <ModuleOverview stats={[
           { label: t('intel.sem.statCertified'), value: `${approvedCount}/${metrics.length}` },
@@ -194,14 +195,14 @@ export function SemanticsPage() {
                 </span>
               )}
               sub={c.dataset_id ? `${t('intel.sem.dataset')} #${c.dataset_id}` : t('intel.sem.allDatasets')}
-              action={(
+              action={canAuthor ? (
                 <div className="flex items-center gap-1">
                   <Button size="xs" variant="ghost" onClick={() => setCaveatModal(c)}>{t('intel.common.edit')}</Button>
                   <Button size="xs" variant="ghost" className="text-danger hover:text-danger" onClick={async () => {
                     await deleteCaveat(c.id); toast.success(t('intel.sem.caveatDeleted')); reload();
                   }}><Trash2 className="h-3 w-3" /></Button>
                 </div>
-              )}
+              ) : undefined}
             >
               <p className="text-caption leading-relaxed text-text-secondary">{c.content}</p>
             </Panel>

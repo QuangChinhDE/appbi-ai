@@ -22,7 +22,7 @@ import { Input, Label, Textarea } from '@/components/ui/Input';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import { Panel, EmptyHint, StatusBadge } from '@/components/intelligence/shared';
+import { Panel, EmptyHint, StatusBadge, useCanAuthor } from '@/components/intelligence/shared';
 import {
   listPlaybooks, upsertPlaybook, deletePlaybook,
   listRules, upsertRule, deleteRule,
@@ -40,6 +40,7 @@ type GuidanceTab = 'playbooks' | 'rules' | 'qa' | 'scope' | 'instructions';
 
 export function GuidancePage() {
   const { t } = useI18n();
+  const canAuthor = useCanAuthor();
   const search = useSearchParams();
   const initial = (search.get('tab') as GuidanceTab) || 'playbooks';
   const [tab, setTab] = useState<GuidanceTab>(
@@ -70,6 +71,10 @@ export function GuidancePage() {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
+  // Non-tech reviewers don't see the admin-only tabs (data scope / instructions).
+  useEffect(() => {
+    if (!canAuthor && (tab === 'scope' || tab === 'instructions')) setTab('playbooks');
+  }, [canAuthor, tab]);
 
   const certify = async (kind: 'rule' | 'playbook' | 'qa', id: number, name: string) => {
     try {
@@ -103,20 +108,20 @@ export function GuidancePage() {
       searchable={false}
       viewToggle={false}
       isLoading={loading}
-      action={createAction}
+      action={canAuthor ? createAction : undefined}
       overview={<ModuleOverview stats={stats} />}
       toolbarExtra={(
         <Tabs
           size="sm"
           value={tab}
-          onChange={(k) => setTab(k)}
+          onChange={(k) => setTab(k as GuidanceTab)}
           items={[
             { key: 'playbooks', label: 'Playbooks', icon: <BookMarked className="h-3.5 w-3.5" /> },
             { key: 'rules', label: t('intel.guid.tabRules'), icon: <Scale className="h-3.5 w-3.5" /> },
             { key: 'qa', label: t('intel.guid.tabQA'), icon: <MessageSquareQuote className="h-3.5 w-3.5" /> },
             { key: 'scope', label: t('intel.guid.tabScope'), icon: <SlidersHorizontal className="h-3.5 w-3.5" /> },
             { key: 'instructions', label: t('intel.guid.tabInstr'), icon: <ListChecks className="h-3.5 w-3.5" /> },
-          ]}
+          ].filter((it) => canAuthor || (it.key !== 'scope' && it.key !== 'instructions'))}
         />
       )}
     >
@@ -147,7 +152,7 @@ export function GuidancePage() {
                     {t('intel.sem.certify')}
                   </Button>
                 )}
-                <Button size="xs" variant="ghost" onClick={() => setPbModal(p)}>{t('intel.common.edit')}</Button>
+                {canAuthor && <Button size="xs" variant="ghost" onClick={() => setPbModal(p)}>{t('intel.common.edit')}</Button>}
                 <span className="ml-auto text-tiny text-text-quaternary">v{p.version}</span>
               </div>
             </Panel>
@@ -231,7 +236,7 @@ export function GuidancePage() {
                     {t('intel.sem.certify')}
                   </Button>
                 )}
-                <Button size="xs" variant="ghost" onClick={() => setQaModal(x)}>{t('intel.common.edit')}</Button>
+                {canAuthor && <Button size="xs" variant="ghost" onClick={() => setQaModal(x)}>{t('intel.common.edit')}</Button>}
                 <span className="ml-auto inline-flex items-center gap-2 text-tiny text-text-quaternary">
                   {x.as_test && <Badge variant="info" size="xs">{t('intel.guid.asTest')}</Badge>}
                   {t('intel.guid.used')} {x.use_count}×

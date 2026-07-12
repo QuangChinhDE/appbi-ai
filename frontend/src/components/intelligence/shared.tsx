@@ -9,7 +9,20 @@ import React from 'react';
 
 import { Badge } from '@/components/ui/Badge';
 import { useI18n } from '@/providers/LanguageProvider';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { IntelStatus } from '@/lib/catalog';
+
+/**
+ * Two-layer access for the Intelligence group:
+ *   "soạn" (author: create / edit / delete / scope / instructions) → needs
+ *   `govern:edit`; "duyệt" (approve / certify) stays open to anyone with
+ *   `govern:view`. So a non-tech reviewer sees review surfaces without the
+ *   authoring depth, while stewards get the full toolset.
+ */
+export function useCanAuthor(): boolean {
+  const { data } = usePermissions();
+  return hasPermission(data?.permissions, 'govern', 'edit');
+}
 
 /** Lifecycle badge — one vocabulary for every knowledge type. */
 export function StatusBadge({ status }: { status: IntelStatus | string }) {

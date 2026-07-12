@@ -81,12 +81,7 @@ const NAV_GROUPS: NavGroup[] = [
       { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
       { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
       { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
-    ],
-  },
-  {
-    labelKey: 'sidebar.group.operate',
-    items: [
-      { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
+      { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
     ],
   },
   {
@@ -95,16 +90,17 @@ const NAV_GROUPS: NavGroup[] = [
     labelKey: 'sidebar.group.intelligence',
     items: [
       { labelKey: 'sidebar.nav.intelligence', href: '/intelligence', icon: <Gauge className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'govern' },
-      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
     ],
   },
   {
-    labelKey: 'sidebar.group.trust',
+    // Operate lives last — day-to-day action apps built on top of everything above.
+    labelKey: 'sidebar.group.operate',
     items: [
-      { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
+      { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
     ],
   },
 ];

@@ -128,7 +128,7 @@ export function IntelligenceOverviewPage() {
           <Panel
             title={(
               <span className="inline-flex items-center gap-1.5">
-                <Badge variant="brand" size="xs"><Sparkles className="h-2.5 w-2.5" /> Provenance</Badge>
+                <Badge variant="brand" size="xs"><Sparkles className="h-2.5 w-2.5" /></Badge>
                 {t('intel.overview.topUsed')}
               </span>
             )}
@@ -152,9 +152,20 @@ export function IntelligenceOverviewPage() {
           {/* Attention */}
           <Panel title={t('intel.overview.attention')} sub={t('intel.overview.attentionSub')}>
             <div className="space-y-0.5">
-              {ov && ov.unbound_metrics.map((m) => (
+              {ov && ov.unbound_metrics.length > 2 ? (
+                <Link href="/semantics" className="group flex items-start gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-caption font-emphasis text-text-primary group-hover:text-brand">
+                      {ov.unbound_metrics.length} {t('intel.overview.unboundMany')}
+                    </span>
+                    <span className="block text-tiny text-text-tertiary">{t('intel.overview.unboundManySub')}</span>
+                  </span>
+                  <ArrowRight className="mt-1 h-3.5 w-3.5 flex-shrink-0 text-text-quaternary" />
+                </Link>
+              ) : (ov && ov.unbound_metrics.map((m) => (
                 <Link key={m.id} href="/semantics" className="group flex items-start gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-danger" />
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
                   <span className="min-w-0 flex-1">
                     <span className="block text-caption font-emphasis text-text-primary group-hover:text-brand">
                       {t('intel.overview.unboundMetric')}: {m.display_name}
@@ -165,7 +176,7 @@ export function IntelligenceOverviewPage() {
                   </span>
                   <ArrowRight className="mt-1 h-3.5 w-3.5 flex-shrink-0 text-text-quaternary" />
                 </Link>
-              ))}
+              )))}
               {ov && ov.pending_reviews > 0 && (
                 <Link href="/ai-inbox" className="group flex items-start gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
                   <Inbox className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-brand" />
