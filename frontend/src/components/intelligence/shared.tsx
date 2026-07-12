@@ -5,9 +5,12 @@
  * ngữ / Hướng dẫn AI / Đề xuất AI). Kept deliberately tiny: everything visual
  * rides on the existing design system (Badge/Button/Tabs/PageListLayout).
  */
-import React from 'react';
+import React, { useState } from 'react';
+import { Wand2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/Badge';
+import { AiButton } from '@/components/ui/AiButton';
+import { Textarea } from '@/components/ui/Input';
 import { useI18n } from '@/providers/LanguageProvider';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { IntelStatus } from '@/lib/catalog';
@@ -68,6 +71,39 @@ export function CoverageBar({ approved, total }: { approved: number; total: numb
   return (
     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
       <div className="h-full rounded-full bg-brand transition-[width]" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/**
+ * "✨ AI soạn" panel — the non-tech on-ramp shared by every create modal.
+ * User writes a natural-language prompt; onCompose runs the AI draft and the
+ * caller fills the form fields for the user to review/edit before saving.
+ */
+export function AiComposePanel({ placeholder, loading, onCompose }: {
+  placeholder: string;
+  loading: boolean;
+  onCompose: (prompt: string) => void | Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [prompt, setPrompt] = useState('');
+  return (
+    <div className="space-y-2 rounded-lg border border-brand/25 bg-brand/[0.05] p-3">
+      <div className="flex items-center gap-1.5 text-tiny font-emphasis text-brand">
+        <Wand2 className="h-3.5 w-3.5" /> {t('intel.ai.composeTitle')}
+      </div>
+      <Textarea
+        rows={2}
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder={placeholder}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <AiButton size="sm" loading={loading} disabled={!prompt.trim()} onClick={() => onCompose(prompt.trim())}>
+          {t('intel.ai.compose')}
+        </AiButton>
+        <span className="text-tiny text-text-quaternary">{t('intel.ai.reviewHint')}</span>
+      </div>
     </div>
   );
 }

@@ -700,6 +700,83 @@ class GovernanceAIService:
             },
         }
 
+    # ═══ AI compose (prompt → structured draft; user reviews inline) ══════════
+    @staticmethod
+    def ai_draft(db: Session, entity_type: str, prompt: str, dataset_id: int | None = None) -> dict[str, Any]:
+        """Draft an Intelligence entity from a natural-language prompt. Returns a
+        field dict the create modal fills in for the user to review/edit — the
+        best on-ramp for non-tech authors. Grounded on real metric machine names
+        so pickers resolve. Uses the shared LLMClient (OpenAI→Gemini→Anthropic)."""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise GovernanceError(422, "Thiếu mô tả để AI soạn.")
+        from app.services.llm_client import LLMClient
+
+        metrics = [{"machine_name": m.name, "display": m.display_name}
+                   for m in db.query(GovernMetric).order_by(GovernMetric.display_name).all()][:80]
+        metrics_hint = "; ".join(f"{m['display']} [{m['machine_name']}]" for m in metrics) or "(chưa có chỉ số nào)"
+        dims_hint = ""
+        if dataset_id:
+            try:
+                fields = GovernanceAIService.scope_fields(db, dataset_id)
+                dims = [f["name"] for f in fields.get("measures", []) if f.get("kind") == "dimension"]
+                if dims:
+                    dims_hint = "; ".join(dims[:40])
+            except Exception:  # noqa: BLE001
+                pass
+
+        specs: dict[str, str] = {
+            "rule": (
+                'Soạn một QUY TẮC nghiệp vụ để AI tuân theo khi phân tích.\n'
+                'Trả JSON keys: {"name": tên ngắn gọn, "condition_text": "điều kiện (khi/nếu...)", '
+                '"conclusion_text": "kết luận hoặc hành động (thì...)", "exceptions_text": chuỗi hoặc null, '
+                '"applies_to": [{"kind":"metric","ref":"<machine_name TRONG danh sách>","label":"<tên hiển thị>"}]}.\n'
+                f'Chỉ số có sẵn (chỉ chọn cái liên quan, ref phải khớp machine_name): {metrics_hint}'
+            ),
+            "playbook": (
+                'Soạn một PLAYBOOK phân tích — công thức các bước AI làm khi gặp tình huống.\n'
+                'Trả JSON keys: {"name": string, "trigger_text": "khi nào chạy", "steps": [chuỗi,...] các bước theo thứ tự, '
+                '"dim_priority": [chuỗi,...] tên chiều ưu tiên, "expected_output": string, '
+                '"linked_metrics": ["<machine_name>",...]}.\n'
+                f'Chỉ số có sẵn: {metrics_hint}'
+                + (f'\nChiều có sẵn (dùng cho dim_priority): {dims_hint}' if dims_hint else '')
+            ),
+            "qa": (
+                'Soạn một HỎI-ĐÁP CHUẨN — câu hỏi + đáp án đã duyệt để AI neo vào.\n'
+                'Trả JSON keys: {"question": string, "trigger_phrases": [chuỗi,...] các cách người dùng hay hỏi '
+                '(viết thường, bỏ dấu câu), "answer_md": "đáp án ngắn gọn, chính xác"}.'
+            ),
+            "caveat": (
+                'Soạn một LƯU Ý DỮ LIỆU mà AI phải luôn nhớ (độ tươi, grain, bẫy fan-out, chất lượng...).\n'
+                'Trả JSON keys: {"title": tiêu đề ngắn, "content": "nội dung lưu ý"}.'
+            ),
+            "metric": (
+                'Soạn định nghĩa một CHỈ SỐ (KPI).\n'
+                'Trả JSON keys: {"name": string, "definition": string, "formula": "công thức/biểu thức", '
+                '"unit": string, "grain": "daily|weekly|monthly|quarterly|yearly|point_in_time", '
+                '"direction": "up_good|down_good|neutral", "synonyms": [chuỗi,...]}.'
+            ),
+        }
+        spec = specs.get(entity_type)
+        if spec is None:
+            raise GovernanceError(422, f"Không hỗ trợ AI soạn cho loại: {entity_type}")
+
+        system = ("Bạn là trợ lý quản trị tri thức cho một nền tảng BI. "
+                  "Luôn trả về DUY NHẤT một JSON hợp lệ, không kèm giải thích hay markdown. "
+                  "Viết nội dung bằng tiếng Việt, ngắn gọn và chính xác.")
+        full = f"{spec}\n\nMÔ TẢ CỦA NGƯỜI DÙNG:\n{prompt}\n\nCHỈ trả về JSON."
+        result = LLMClient.complete_json(full, system=system, max_tokens=1200)
+        if not isinstance(result, dict):
+            raise GovernanceError(503, "Chưa cấu hình khóa AI (OPENAI/GEMINI/ANTHROPIC) hoặc AI không phản hồi.")
+
+        valid = {m["machine_name"] for m in metrics}
+        if entity_type == "rule" and isinstance(result.get("applies_to"), list):
+            result["applies_to"] = [a for a in result["applies_to"]
+                                    if isinstance(a, dict) and a.get("ref") in valid][:8]
+        if entity_type == "playbook" and isinstance(result.get("linked_metrics"), list):
+            result["linked_metrics"] = [r for r in result["linked_metrics"] if r in valid][:8]
+        return {"entity_type": entity_type, "draft": result}
+
     # ═══ Bot-injection helpers (called from knowledge_context; all fail-open) ═
     @staticmethod
     def active_instructions(db: Session, dataset_ids: set[int], dashboard_id: int | None) -> list[GovernAIInstruction]:

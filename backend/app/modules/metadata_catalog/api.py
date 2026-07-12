@@ -1035,3 +1035,16 @@ def govern_intelligence_overview(db: Session = Depends(get_db), _: User = Depend
 def govern_metric_certify(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     who = getattr(user, "email", None)
     return _run(lambda: GovernanceAIService.certify_metric_by_name(db, name, changed_by=who))
+
+
+class AiDraftReq(BaseModel):
+    entity_type: str          # rule | playbook | qa | caveat | metric
+    prompt: str
+    dataset_id: int | None = None
+
+
+@router.post("/govern/ai-draft")
+def govern_intel_ai_draft(body: AiDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """AI-compose an Intelligence entity from a natural-language prompt.
+    Returns a draft the create modal fills in for the user to review/edit."""
+    return _run(lambda: GovernanceAIService.ai_draft(db, body.entity_type, body.prompt, body.dataset_id))

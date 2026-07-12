@@ -16,19 +16,20 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
+import { AiButton } from '@/components/ui/AiButton';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs } from '@/components/ui/Tabs';
 import { Input, Label, Textarea } from '@/components/ui/Input';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import { Panel, EmptyHint, StatusBadge, useCanAuthor } from '@/components/intelligence/shared';
+import { Panel, EmptyHint, StatusBadge, useCanAuthor, AiComposePanel } from '@/components/intelligence/shared';
 import {
   listPlaybooks, upsertPlaybook, deletePlaybook,
   listRules, upsertRule, deleteRule,
   listQA, upsertQA, deleteQA,
   certifyEntity, listInstructions, createInstructionVersion,
-  getAIScope, putAIScope, listDatasetsLite, listManagedMetrics,
+  getAIScope, putAIScope, listDatasetsLite, listManagedMetrics, aiDraftEntity,
   type GovernPlaybook, type GovernRule, type GovernQA, type GovernInstruction,
   type AIScope, type DatasetLite, type ManagedMetric,
 } from '@/lib/catalog';
@@ -393,6 +394,26 @@ function RuleModal({ rule, metrics, onClose, onSaved, onDelete }: {
   const [exceptions, setExceptions] = useState(rule?.exceptions_text ?? '');
   const [applies, setApplies] = useState<string[]>((rule?.applies_to ?? []).map((a) => a.ref));
   const [saving, setSaving] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const runAiDraft = async (p: string) => {
+    setAiLoading(true);
+    try {
+      const d = await aiDraftEntity('rule', p);
+      if (typeof d.name === 'string') setName(d.name);
+      if (typeof d.condition_text === 'string') setCondition(d.condition_text);
+      if (typeof d.conclusion_text === 'string') setConclusion(d.conclusion_text);
+      if (typeof d.exceptions_text === 'string') setExceptions(d.exceptions_text);
+      if (Array.isArray(d.applies_to)) {
+        setApplies((d.applies_to as { ref?: string }[]).map((a) => a.ref).filter((x): x is string => !!x));
+      }
+      toast.success(t('intel.ai.drafted'), { description: t('intel.ai.reviewHint') });
+    } catch (e) {
+      toast.error(extractApiError(e, t('intel.ai.failed')));
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -435,6 +456,7 @@ function RuleModal({ rule, metrics, onClose, onSaved, onDelete }: {
       )}
     >
       <div className="space-y-3">
+        <AiComposePanel placeholder={t('intel.ai.rulePromptPh')} loading={aiLoading} onCompose={runAiDraft} />
         <div className="flex flex-col gap-1.5">
           <Label required>{t('intel.guid.ruleName')}</Label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('intel.guid.ruleNamePh')} />

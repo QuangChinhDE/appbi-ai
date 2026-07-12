@@ -651,3 +651,14 @@ export async function intelligenceOverview(): Promise<IntelligenceOverview> {
   const { data } = await apiClient.get<IntelligenceOverview>('/catalog/govern/intelligence/overview');
   return data;
 }
+
+// ── AI compose: prompt → structured draft the create modal fills in ─────────
+export async function aiDraftEntity(
+  entityType: 'rule' | 'playbook' | 'qa' | 'caveat' | 'metric',
+  prompt: string,
+  datasetId?: number,
+): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post<{ draft: Record<string, unknown> }>(
+    '/catalog/govern/ai-draft', { entity_type: entityType, prompt, dataset_id: datasetId ?? null });
+  return data.draft ?? {};
+}
