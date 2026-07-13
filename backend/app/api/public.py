@@ -1077,6 +1077,13 @@ def get_public_dashboard(
 
 
 if settings.WORKBOARDS_ENABLED:
+    # Prefix for the per-workspace session cookie; final name is
+    # ``wbws_<short-hash-of-token>`` (see _workspace_cookie_name). Must be a
+    # module-level constant so the login/logout paths can resolve it —
+    # omitting it raises ``NameError: _WORKSPACE_COOKIE_PREFIX is not defined``
+    # AFTER auth succeeds, surfacing to the user as a false "Đăng nhập thất bại".
+    _WORKSPACE_COOKIE_PREFIX = "wbws_"
+
     def _workspace_cookie_name(workspace_token: str) -> str:
         import hashlib
         digest = hashlib.sha256(workspace_token.encode("utf-8")).hexdigest()[:12]
