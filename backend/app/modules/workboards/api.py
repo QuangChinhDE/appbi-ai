@@ -615,7 +615,12 @@ def audit_workboard(
                 for c in (table_spec.get("lookup_columns") or [])
                 if isinstance(c, dict) and c.get("name")
             }
-            valid_table_cols = cols | computed_names | lookup_names
+            rollup_names = {
+                str(c.get("name") or "").strip()
+                for c in (table_spec.get("rollup_columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            }
+            valid_table_cols = cols | computed_names | lookup_names | rollup_names
             for col in table_spec.get("columns") or []:
                 if col and col not in valid_table_cols:
                     _add(
