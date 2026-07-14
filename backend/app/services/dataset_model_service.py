@@ -1681,6 +1681,95 @@ def _sync_dataset_model_structure(
     }
 
 
+def get_dataset_semantic_fields(db: Session, dataset_id: int) -> List[dict]:
+    """Model-OPTIONAL accessor: the semantic measures/dimensions a dataset exposes,
+    resolved through DatasetTable → SemanticView WITHOUT requiring a SemanticModel
+    row (unlike ``get_dataset_model``, whose ``if not model: return None`` is why
+    callers used to bypass it).
+
+    Single read for the field-enumeration that governance (AI-scope editor,
+    metric-binding field lists) and the AI knowledge-context assembler each used
+    to hand-roll — so a SemanticView shape change lands in ONE place. Returns
+    ``[{name, label, description, kind}]`` with kind ∈ {"measure","dimension"};
+    label falls back to name; description may be None. Best-effort (empty on error)."""
+    fields: List[dict] = []
+    try:
+        table_ids = [
+            t.id for t in db.query(DatasetTable.id)
+            .filter(DatasetTable.dataset_id == dataset_id).all()
+        ]
+        if not table_ids:
+            return fields
+        views = (
+            db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_(table_ids))
+            .all()
+        )
+        for v in views:
+            for kind, coll in (("measure", v.measures or []), ("dimension", v.dimensions or [])):
+                if not isinstance(coll, list):
+                    continue
+                for f in coll:
+                    if isinstance(f, dict) and f.get("name"):
+                        fields.append({
+                            "name": f.get("name"),
+                            "label": f.get("label") or f.get("name"),
+                            "description": f.get("description"),
+                            "kind": kind,
+                        })
+    except Exception:  # noqa: BLE001
+        logger.warning("get_dataset_semantic_fields failed dataset_id=%s", dataset_id, exc_info=True)
+    return fields
+
+
+def semantic_field_names(view) -> set:
+    """Folded (lowercased) set of a SemanticView's measure + dimension names.
+    Shared primitive for binding resolution — the single place that knows how to
+    read field names off a view's measures/dimensions dicts."""
+    out: set = set()
+    for coll in ((getattr(view, "measures", None) or []), (getattr(view, "dimensions", None) or [])):
+        if not isinstance(coll, list):
+            continue
+        for f in coll:
+            if isinstance(f, dict) and f.get("name"):
+                out.add(str(f["name"]).strip().lower())
+    return out
+
+
+def resolve_measure_binding(db: Session, measure_ref: Optional[str]) -> str:
+    """THE single resolver: does a governed metric's ``measure_ref`` resolve against
+    the live semantic model? Returns 'ok' | 'unbound' | 'unresolved' |
+    'validation_error'. Ref forms: "<view>.<measure>" (view = SemanticView name /
+    sql_table_name, e.g. "dataset_table_111.gmv") or a bare measure name.
+
+    FAIL-CLOSED: a resolver crash returns 'validation_error' (never 'ok') so a
+    metric can't certify on the strength of a broken validator. Governance calls
+    THIS instead of hand-rolling its own SemanticView walk (semantic-contract
+    backbone — one resolution boundary, not per-module re-implementations)."""
+    if not measure_ref:
+        return "unbound"
+    try:
+        ref = str(measure_ref).strip().lower()
+        tbl_token, _, mname = ref.rpartition(".")
+        mname = mname or ref
+        views = db.query(SemanticView).all()
+        if tbl_token:
+            scoped = [
+                v for v in views
+                if (v.sql_table_name or "").strip().lower() == tbl_token
+                or (v.name or "").strip().lower() == tbl_token
+            ]
+            if scoped:
+                views = scoped
+        for v in views:
+            if mname in semantic_field_names(v):
+                return "ok"
+        return "unresolved"
+    except Exception:  # noqa: BLE001
+        logger.warning("resolve_measure_binding failed ref=%s", measure_ref, exc_info=True)
+        return "validation_error"
+
+
 def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     """
     Get the full semantic model for a dataset.

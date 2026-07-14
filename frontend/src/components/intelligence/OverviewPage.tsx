@@ -124,7 +124,8 @@ export function IntelligenceOverviewPage() {
             <p className="mt-3 text-tiny text-text-quaternary">{t('intel.overview.coverageNote')}</p>
           </Panel>
 
-          {/* Provenance — what the AI is actually using */}
+          {/* Provenance — knowledge SUPPLIED to the AI as grounding (injected into
+              the prompt; context provided, not necessarily cited in the answer). */}
           <Panel
             title={(
               <span className="inline-flex items-center gap-1.5">

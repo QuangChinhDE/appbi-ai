@@ -139,13 +139,14 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
         if t.auto_description:
             out["datasets"].append({"name": t.display_name, "description": str(t.auto_description)[:300]})
 
-    # Govern glossary (domain vocabulary) — approved terms, ranked by question.
+    # Govern glossary (domain vocabulary) — AI-eligible terms only, ranked by question.
     try:
         from app.models.governance import GlossaryTerm
+        from app.services.governance_ai_service import GovernanceAIService as _AIS
         terms = db.query(GlossaryTerm).all()
         scored = []
         for term in terms:
-            if (term.status or "").lower() == "deprecated":
+            if not _AIS.is_ai_eligible("term", term.status):
                 continue
             syn = term.synonyms if isinstance(term.synonyms, list) else []
             blob = f"{term.display_name} {term.description or ''} {' '.join(syn)}"
@@ -188,40 +189,26 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
 
 def _semantic_fields(db: Session, dataset_ids: set[int]) -> list[dict]:
     """Measure/dimension label+description from the semantic model, if present.
-    Best-effort — schema differences across versions must never break a turn."""
+    Uses the shared model-optional accessor (the single semantic-field resolver)
+    and keeps only fields carrying BOTH a label and a description — the bot only
+    benefits from described fields. Best-effort; never breaks a turn."""
     if not dataset_ids:
         return []
     fields: list[dict] = []
     try:
-        from app.models.semantic import SemanticView  # type: ignore
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        # SemanticView binds per dataset TABLE (no dataset_id column) — resolve
-        # the dataset scope through DatasetTable. (Previously filtered on a
-        # nonexistent column, so this source silently never injected.)
-        from app.models.dataset import DatasetTable as _DT
-        table_ids = [t.id for t in db.query(_DT.id).filter(_DT.dataset_id.in_(dataset_ids)).all()]
-        views = db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(table_ids or [-1])).all()
-    except Exception:  # noqa: BLE001
-        return []
-    for v in views:
-        for coll_attr in ("measures", "dimensions"):
-            coll = getattr(v, coll_attr, None) or []
-            if not isinstance(coll, list):
-                continue
-            for m in coll:
-                if not isinstance(m, dict):
-                    continue
-                label = m.get("label") or m.get("name")
-                desc = m.get("description")
-                if label and desc:
+        from app.services.dataset_model_service import get_dataset_semantic_fields
+        for did in dataset_ids:
+            for f in get_dataset_semantic_fields(db, did):
+                desc = f.get("description")
+                if f.get("label") and desc:
                     fields.append({
-                        "name": m.get("name"),
-                        "label": label,
+                        "name": f.get("name"),
+                        "label": f.get("label"),
                         "description": str(desc)[:250],
-                        "kind": coll_attr[:-1],
+                        "kind": f.get("kind"),
                     })
+    except Exception:  # noqa: BLE001
+        pass
     return fields[:60]
 
 
@@ -279,6 +266,7 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
     try:
         from app.models.governance import GovernMetric, GovernDocAssetLink, GovernKnowledgeDoc
         from app.models.dataset import DatasetTable
+        from app.services.governance_ai_service import GovernanceAIService as _AIS
 
         tids = set(dashboard_table_ids(db, dashboard_id))
         dsids: set[int] = set()
@@ -288,8 +276,11 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
                     dsids.add(t.dataset_id)
 
         # Managed KPIs bound to this dashboard's datasets/tables (authoritative).
+        # AI-eligible ONLY (Approved) — an unreviewed Draft definition must never
+        # be injected as "ĐỊNH NGHĨA CHÍNH THỐNG". Single policy: AI_ELIGIBLE_STATUS.
         metrics = [
-            m for m in db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
+            m for m in db.query(GovernMetric)
+            .filter(GovernMetric.status == _AIS.AI_ELIGIBLE_STATUS["metric"]).all()
             if (m.dataset_id in dsids) or (m.dataset_table_id in tids)
         ]
         if metrics:
@@ -338,7 +329,8 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
             if doc_ids:
                 docs = (
                     db.query(GovernKnowledgeDoc)
-                    .filter(GovernKnowledgeDoc.id.in_(doc_ids), GovernKnowledgeDoc.status == "Published")
+                    .filter(GovernKnowledgeDoc.id.in_(doc_ids),
+                            GovernKnowledgeDoc.status == _AIS.AI_ELIGIBLE_STATUS["doc"])
                     .all()
                 )
                 if docs:
@@ -413,7 +405,7 @@ def _intelligence_blocks(db: Session, dashboard_id: int, question: str = "") -> 
         # 3) Rules + playbooks bound to this dashboard's metrics.
         try:
             metric_names: set[str] = set()
-            for m in db.query(GovernMetric).filter(GovernMetric.status == "Approved").all():
+            for m in db.query(GovernMetric).filter(GovernMetric.status == AIS.AI_ELIGIBLE_STATUS["metric"]).all():
                 matched = (m.dataset_id in dsids) or (m.dataset_table_id in tids)
                 if not matched and m.measure_ref:
                     # Field metrics commonly bind via "dataset_table_<id>.<measure>"

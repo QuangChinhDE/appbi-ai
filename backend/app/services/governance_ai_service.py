@@ -3,7 +3,9 @@
 Everything here follows the same shape as GovernanceService (static methods on
 a stateless class, GovernanceError for API-friendly failures) and the same
 philosophy as knowledge_context.py: AUTHORED data in, generic reads out, and
-the AI only ever consumes Approved rows.
+the AI only ever consumes rows eligible per AI_ELIGIBLE_STATUS (one policy,
+enforced at every injection site — per-type: Approved for metrics/terms/rules/
+playbooks/QA, Published for docs, active for instructions, Approved for caveats).
 
 Governance invariant (the "single ledger"): every approval-shaped action —
 an AI suggestion approved in the inbox, an in-context "Chứng thực" on an
@@ -66,6 +68,34 @@ def _check_status(status: str | None) -> str:
 
 
 class GovernanceAIService:
+    # ═══ AI-consumption eligibility — THE single policy ══════════════════════
+    # One matrix, one place: what lifecycle status makes each knowledge type
+    # eligible to reach the AI bot. Trust pillar — an unreviewed DEFINITION must
+    # never be injected as authoritative. It is per-type because each type has
+    # its own lifecycle vocabulary (metrics/terms/rules/playbooks/QA certify to
+    # "Approved"; docs "Published"; instructions "active"; caveats default
+    # "Approved"). EVERY injection site MUST consult this instead of hand-rolling
+    # a status filter — previously scattered as `!= "Deprecated"` (metrics,
+    # glossary, caveats) vs `== "Approved"` (rules/playbooks/QA), which silently
+    # leaked Draft metrics/terms into the bot as authoritative definitions.
+    AI_ELIGIBLE_STATUS: dict[str, str] = {
+        "metric": "Approved",
+        "term": "Approved",
+        "rule": "Approved",
+        "playbook": "Approved",
+        "qa": "Approved",
+        "doc": "Published",
+        "instruction": "active",
+        "caveat": "Approved",
+    }
+
+    @staticmethod
+    def is_ai_eligible(entity_type: str, status: str | None) -> bool:
+        """Single gate: may a row of this type reach the AI bot? Unknown type or
+        non-matching status → False (fail-closed)."""
+        want = GovernanceAIService.AI_ELIGIBLE_STATUS.get(entity_type)
+        return want is not None and (status or "") == want
+
     # ═══ serializers ════════════════════════════════════════════════════════
     @staticmethod
     def _rule(r: GovernRule) -> dict[str, Any]:
@@ -315,7 +345,13 @@ class GovernanceAIService:
             raise GovernanceError(404, "Không tìm thấy chỉ số")
         binding = GovernanceAIService.metric_binding_status(db, m)
         if binding != "ok":
-            raise GovernanceError(422, "Chứng thực yêu cầu binding trỏ tới measure hợp lệ — hãy gắn measure trước.")
+            msg = {
+                "unbound": "Chứng thực yêu cầu gắn measure — chỉ số này chưa có binding.",
+                "unresolved": "Binding không khớp measure nào trong mô hình ngữ nghĩa — kiểm tra lại measure_ref.",
+                "validation_error": "Không kiểm chứng được binding (lỗi khi resolve mô hình ngữ nghĩa) — "
+                                    "kiểm tra semantic model rồi thử lại; KHÔNG chứng thực khi chưa kiểm chứng được.",
+            }.get(binding, "Chứng thực yêu cầu binding trỏ tới measure hợp lệ — hãy gắn measure trước.")
+            raise GovernanceError(422, msg)
         m.status = "Approved"
         m.version = (m.version or 1) + 1
         GovernanceAIService._ledger(db, entity_type="metric", entity_id=m.id, action="certify",
@@ -333,40 +369,12 @@ class GovernanceAIService:
 
     @staticmethod
     def metric_binding_status(db: Session, m: GovernMetric) -> str:
-        """'ok' | 'unbound' | 'unresolved' — does measure_ref resolve against the
-        live semantic model? Refs come as "<view>.<measure>" (view = the
-        SemanticView name / sql_table_name, e.g. "dataset_table_111.gmv") or as
-        a bare measure name. String ref today; this validator prevents silent rot."""
-        if not m.measure_ref:
-            return "unbound"
-        try:
-            from app.models.semantic import SemanticView
-            ref = (m.measure_ref or "").strip().lower()
-            tbl_token, _, mname = ref.rpartition(".")
-            mname = mname or ref
-
-            def field_names(view) -> set[str]:
-                out: set[str] = set()
-                for coll in (view.measures or []), (view.dimensions or []):
-                    for f in coll:
-                        if isinstance(f, dict) and f.get("name"):
-                            out.add(str(f["name"]).strip().lower())
-                return out
-
-            views = db.query(SemanticView).all()
-            if tbl_token:
-                scoped = [v for v in views
-                          if (v.sql_table_name or "").strip().lower() == tbl_token
-                          or (v.name or "").strip().lower() == tbl_token]
-                if scoped:
-                    views = scoped
-            for v in views:
-                if mname in field_names(v):
-                    return "ok"
-            return "unresolved"
-        except Exception:  # noqa: BLE001
-            logger.warning("metric_binding_status failed", exc_info=True)
-            return "ok"  # fail-open: never block on validator errors
+        """Thin wrapper over the single semantic binding resolver (semantic-contract
+        backbone). Returns 'ok' | 'unbound' | 'unresolved' | 'validation_error'
+        (fail-closed). The resolution logic lives ONCE in dataset_model_service —
+        governance no longer hand-rolls its own SemanticView walk."""
+        from app.services.dataset_model_service import resolve_measure_binding
+        return resolve_measure_binding(db, m.measure_ref)
 
     # ═══ AI Instructions (versioned, scoped) ═════════════════════════════════
     @staticmethod
@@ -452,8 +460,11 @@ class GovernanceAIService:
         row = db.query(GovernAIScope).filter(GovernAIScope.dataset_id == dataset_id).first()
         return {
             "dataset_id": dataset_id,
+            "scope_mode": (getattr(row, "scope_mode", None) if row else None) or "allow_all_except",
             "excluded_columns": (row.excluded_columns if row else []) or [],
             "excluded_measures": (row.excluded_measures if row else []) or [],
+            "allowed_columns": (getattr(row, "allowed_columns", None) if row else []) or [],
+            "allowed_measures": (getattr(row, "allowed_measures", None) if row else []) or [],
         }
 
     @staticmethod
@@ -462,12 +473,22 @@ class GovernanceAIService:
         if row is None:
             row = GovernAIScope(dataset_id=dataset_id)
             db.add(row)
+        mode = str(payload.get("scope_mode") or "allow_all_except")
+        if mode not in ("allow_all_except", "deny_all_except"):
+            mode = "allow_all_except"
+        row.scope_mode = mode
         row.excluded_columns = [str(c) for c in (payload.get("excluded_columns") or [])]
         row.excluded_measures = [str(m) for m in (payload.get("excluded_measures") or [])]
+        row.allowed_columns = [str(c) for c in (payload.get("allowed_columns") or [])]
+        row.allowed_measures = [str(m) for m in (payload.get("allowed_measures") or [])]
         row.updated_by = changed_by
-        GovernanceAIService._log(db, "ai_scope", f"scope.{dataset_id}", "update",
-                                 f"Phạm vi dữ liệu AI: ẩn {len(row.excluded_columns)} cột, {len(row.excluded_measures)} measure",
-                                 changed_by)
+        summary = (
+            f"Phạm vi dữ liệu AI [{mode}]: "
+            + (f"chỉ cho phép {len(row.allowed_columns)} cột, {len(row.allowed_measures)} measure"
+               if mode == "deny_all_except"
+               else f"ẩn {len(row.excluded_columns)} cột, {len(row.excluded_measures)} measure")
+        )
+        GovernanceAIService._log(db, "ai_scope", f"scope.{dataset_id}", "update", summary, changed_by)
         db.commit()
         return GovernanceAIService.get_scope(db, dataset_id)
 
@@ -478,14 +499,13 @@ class GovernanceAIService:
         measures: list[dict[str, Any]] = []
         columns: list[dict[str, Any]] = []
         try:
-            from app.models.dataset import DatasetTable as _DT
-            from app.models.semantic import SemanticView
-            table_ids = [t.id for t in db.query(_DT).filter(_DT.dataset_id == dataset_id).all()]
-            for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(table_ids or [-1])).all():
-                for kind, coll in (("measure", v.measures or []), ("dimension", v.dimensions or [])):
-                    for f in coll:
-                        if isinstance(f, dict) and f.get("name"):
-                            measures.append({"name": f.get("name"), "label": f.get("label") or f.get("name"), "kind": kind})
+            # Single semantic-field resolver (model-optional) — no longer hand-rolls
+            # the DatasetTable→SemanticView walk (see [[semantic dispersion]] fix).
+            from app.services.dataset_model_service import get_dataset_semantic_fields
+            measures = [
+                {"name": f["name"], "label": f["label"], "kind": f["kind"]}
+                for f in get_dataset_semantic_fields(db, dataset_id)
+            ]
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -652,7 +672,6 @@ class GovernanceAIService:
         }
         approved_sum = sum(c["approved"] for c in coverage.values())
         total_sum = sum(c["total"] for c in coverage.values())
-        readiness = round(approved_sum / total_sum * 100) if total_sum else 0
 
         pending = GovernanceAIService.review_count(db)
         flagged = _count(GovernReviewItem, GovernReviewItem.status == "pending",
@@ -675,6 +694,26 @@ class GovernanceAIService:
                 if isinstance(ref, dict) and ref.get("name"):
                     key = (str(ref.get("kind") or "?"), str(ref["name"]))
                     agg[key] = agg.get(key, 0) + 1
+        # ── Weighted readiness — binding health of the trust spine dominates, so
+        # "many approved docs, zero bound metrics" can't score high like the old
+        # flat approved/total did. Components with no data drop out and the rest
+        # renormalize. Sub-scores returned for the cockpit breakdown.
+        approved_metric_ct = len(metrics_approved)
+        ok_bound_ct = sum(1 for u in unbound if u["status"] == "Approved" and u["binding"] == "ok")
+        grounded_ct = sum(1 for p in prov_rows if p.grounded)
+        _comps: list[tuple[str, float, int]] = []
+        if approved_metric_ct:
+            _comps.append(("binding_health", ok_bound_ct / approved_metric_ct * 100, 40))
+        if total_sum:
+            _comps.append(("approved_coverage", approved_sum / total_sum * 100, 35))
+        if prov_rows:
+            _comps.append(("grounded_rate", grounded_ct / len(prov_rows) * 100, 25))
+        _wsum = sum(w for _, _, w in _comps)
+        readiness = round(sum(s * w for _, s, w in _comps) / _wsum) if _wsum else 0
+        readiness_components = [
+            {"key": k, "score": round(s), "weight": w} for k, s, w in _comps
+        ]
+
         top_used = [
             {"kind": k, "name": n, "count": c}
             for (k, n), c in sorted(agg.items(), key=lambda kv: -kv[1])[:8]
@@ -685,6 +724,7 @@ class GovernanceAIService:
                 seen_q.append(q)
         return {
             "readiness": readiness,
+            "readiness_components": readiness_components,
             "coverage": coverage,
             "pending_reviews": pending,
             "flagged": flagged,
@@ -780,7 +820,7 @@ class GovernanceAIService:
     # ═══ Bot-injection helpers (called from knowledge_context; all fail-open) ═
     @staticmethod
     def active_instructions(db: Session, dataset_ids: set[int], dashboard_id: int | None) -> list[GovernAIInstruction]:
-        q = db.query(GovernAIInstruction).filter(GovernAIInstruction.status == "active")
+        q = db.query(GovernAIInstruction).filter(GovernAIInstruction.status == GovernanceAIService.AI_ELIGIBLE_STATUS["instruction"])
         rows = q.all()
         out = []
         for r in rows:
@@ -799,7 +839,7 @@ class GovernanceAIService:
         """Approved rules/playbooks whose bindings overlap this dashboard's data."""
         folded_metrics = {_fold(m) for m in metric_names}
         rules: list[GovernRule] = []
-        for r in db.query(GovernRule).filter(GovernRule.status == "Approved").all():
+        for r in db.query(GovernRule).filter(GovernRule.status == GovernanceAIService.AI_ELIGIBLE_STATUS["rule"]).all():
             for a in (r.applies_to or []):
                 if not isinstance(a, dict):
                     continue
@@ -812,7 +852,7 @@ class GovernanceAIService:
                     rules.append(r)
                     break
         playbooks: list[GovernPlaybook] = []
-        for p in db.query(GovernPlaybook).filter(GovernPlaybook.status == "Approved").all():
+        for p in db.query(GovernPlaybook).filter(GovernPlaybook.status == GovernanceAIService.AI_ELIGIBLE_STATUS["playbook"]).all():
             linked = {_fold(str(x)) for x in (p.linked_metrics or [])}
             if linked & folded_metrics:
                 playbooks.append(p)
@@ -822,21 +862,49 @@ class GovernanceAIService:
     def caveats_for(db: Session, dataset_ids: set[int]) -> list[GovernDataCaveat]:
         rows = (
             db.query(GovernDataCaveat)
-            .filter(GovernDataCaveat.always_inject.is_(True), GovernDataCaveat.status != "Deprecated")
+            .filter(GovernDataCaveat.always_inject.is_(True),
+                    GovernDataCaveat.status == GovernanceAIService.AI_ELIGIBLE_STATUS["caveat"])
             .all()
         )
         return [c for c in rows if c.dataset_id is None or c.dataset_id in dataset_ids][:8]
 
     @staticmethod
+    def _row_denied(db: Session, row: GovernAIScope) -> tuple[set[str], set[str]]:
+        """Effective (denied_columns, denied_measures) for ONE scope row, honoring
+        scope_mode. This is the ONLY place allow/deny diverges — the caller (bot
+        data-gate) stays a single path that just asks "is this field denied?".
+          • allow_all_except (default, deny-LIST): denied = the excluded lists.
+          • deny_all_except  (allow-LIST): denied = EVERY known field of the dataset
+            MINUS the allowed lists — so a newly-added column is hidden by default
+            (PII/finance safety)."""
+        mode = (getattr(row, "scope_mode", None) or "allow_all_except")
+        if mode == "deny_all_except":
+            allowed_c = {_fold(str(c)) for c in (getattr(row, "allowed_columns", None) or [])}
+            allowed_m = {_fold(str(m)) for m in (getattr(row, "allowed_measures", None) or [])}
+            fields = GovernanceAIService.scope_fields(db, row.dataset_id)
+            all_m = {_fold(str(f["name"])) for f in fields.get("measures", [])
+                     if f.get("kind") == "measure" and f.get("name")}
+            all_c = ({_fold(str(c["name"])) for c in fields.get("columns", []) if c.get("name")}
+                     | {_fold(str(f["name"])) for f in fields.get("measures", [])
+                        if f.get("kind") == "dimension" and f.get("name")})
+            return all_c - allowed_c, all_m - allowed_m
+        return ({_fold(str(c)) for c in (row.excluded_columns or [])},
+                {_fold(str(m)) for m in (row.excluded_measures or [])})
+
+    @staticmethod
     def scope_exclusions(db: Session, dataset_ids: set[int]) -> tuple[set[str], set[str]]:
+        """EFFECTIVE denied (columns, measures) across the given datasets — the one
+        resolver the bot data-gate consumes. Union of each scope row's effective
+        denied set (allow/deny handled per-row in _row_denied, so this stays a
+        single mode-agnostic path)."""
         cols: set[str] = set()
         measures: set[str] = set()
         if not dataset_ids:
             return cols, measures
-        rows = db.query(GovernAIScope).filter(GovernAIScope.dataset_id.in_(dataset_ids)).all()
-        for r in rows:
-            cols |= {_fold(str(c)) for c in (r.excluded_columns or [])}
-            measures |= {_fold(str(m)) for m in (r.excluded_measures or [])}
+        for r in db.query(GovernAIScope).filter(GovernAIScope.dataset_id.in_(dataset_ids)).all():
+            dc, dm = GovernanceAIService._row_denied(db, r)
+            cols |= dc
+            measures |= dm
         return cols, measures
 
     @staticmethod
@@ -846,7 +914,7 @@ class GovernanceAIService:
         fq = _fold(question)
         if not fq:
             return None
-        rows = db.query(GovernVerifiedQA).filter(GovernVerifiedQA.status == "Approved").all()
+        rows = db.query(GovernVerifiedQA).filter(GovernVerifiedQA.status == GovernanceAIService.AI_ELIGIBLE_STATUS["qa"]).all()
         best: GovernVerifiedQA | None = None
         for r in rows:
             if r.dashboard_id and dashboard_id and r.dashboard_id != dashboard_id:

@@ -34,45 +34,58 @@ async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("Data directory: %s", settings.data_dir_path)
 
-    # Anomaly detection daily scheduler (Phase 4)
-    from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
-    anomaly_scheduler_startup()
+    # Background schedulers + one-shot sync reaper. With WEB_CONCURRENCY>1 each
+    # uvicorn worker runs its own lifespan, so these are gated behind a single-
+    # runner election — otherwise every job (anomaly / dataset-quality / AI-
+    # learning / token-cleanup) fires once per worker. See scheduler_leader.
+    from app.services.scheduler_leader import is_scheduler_leader
+    if is_scheduler_leader():
+        # Anomaly detection daily scheduler (Phase 4)
+        from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
+        anomaly_scheduler_startup()
 
-    # Dataset Quality automation scheduler
-    from app.services.dataset_quality_scheduler import startup as quality_scheduler_startup
-    quality_scheduler_startup()
+        # Dataset Quality automation scheduler
+        from app.services.dataset_quality_scheduler import startup as quality_scheduler_startup
+        quality_scheduler_startup()
 
-    # AI bot institutional-memory daily reflection (curate learned knowledge)
-    from app.services.dashboard_ai_bot.learning_scheduler import startup as ai_learning_startup
-    ai_learning_startup()
+        # AI bot institutional-memory daily reflection (curate learned knowledge)
+        from app.services.dashboard_ai_bot.learning_scheduler import startup as ai_learning_startup
+        ai_learning_startup()
 
-    # Periodic cleanup of expired revoked tokens
-    from app.services.token_cleanup import schedule_token_cleanup
-    schedule_token_cleanup()
+        # Periodic cleanup of expired revoked tokens
+        from app.services.token_cleanup import schedule_token_cleanup
+        schedule_token_cleanup()
 
-    # Reclaim workboard webhook sync runs left running from a previous
-    # process — without this they'd be stuck in "running" forever.
-    try:
-        from app.modules.workboards.services.webhook_sync_service import (
-            reap_stuck_sync_runs,
-        )
-        reap_stuck_sync_runs()
-    except Exception as exc:  # pragma: no cover — best-effort startup hook
-        logging.getLogger(__name__).warning(
-            "Failed to reap stuck workboard sync runs on startup: %s", exc
+        # Reclaim workboard webhook sync runs left running from a previous
+        # process — without this they'd be stuck in "running" forever.
+        try:
+            from app.modules.workboards.services.webhook_sync_service import (
+                reap_stuck_sync_runs,
+            )
+            reap_stuck_sync_runs()
+        except Exception as exc:  # pragma: no cover — best-effort startup hook
+            logging.getLogger(__name__).warning(
+                "Failed to reap stuck workboard sync runs on startup: %s", exc
+            )
+    else:
+        logging.getLogger(__name__).info(
+            "Not the scheduler leader — background schedulers skipped in this worker."
         )
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
-    from app.services.anomaly_scheduler import shutdown as anomaly_scheduler_shutdown
-    anomaly_scheduler_shutdown()
+    # Only the leader started them (memoized election → same answer here).
+    from app.services.scheduler_leader import is_scheduler_leader
+    if is_scheduler_leader():
+        from app.services.anomaly_scheduler import shutdown as anomaly_scheduler_shutdown
+        anomaly_scheduler_shutdown()
 
-    from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
-    quality_scheduler_shutdown()
+        from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
+        quality_scheduler_shutdown()
 
-    from app.services.dashboard_ai_bot.learning_scheduler import shutdown as ai_learning_shutdown
-    ai_learning_shutdown()
+        from app.services.dashboard_ai_bot.learning_scheduler import shutdown as ai_learning_shutdown
+        ai_learning_shutdown()
 
 
 # Disable Swagger UI / ReDoc / OpenAPI schema in production to prevent

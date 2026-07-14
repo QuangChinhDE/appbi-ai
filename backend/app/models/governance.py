@@ -383,8 +383,14 @@ class GovernAIScope(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, nullable=False, unique=True, index=True)
-    excluded_columns = Column(JSON, nullable=False, default=list)   # ["column_name", ...]
+    # allow_all_except (default, deny-LIST) | deny_all_except (allow-LIST). The mode
+    # is DATA: the bot gate stays one path ("is field denied?"); only the way the
+    # denied set is computed differs (see GovernanceAIService._row_denied).
+    scope_mode = Column(String(24), nullable=False, default="allow_all_except")
+    excluded_columns = Column(JSON, nullable=False, default=list)   # ["column_name", ...] (allow_all_except)
     excluded_measures = Column(JSON, nullable=False, default=list)  # [semantic measure/dimension name]
+    allowed_columns = Column(JSON, nullable=True)   # allow-LIST (deny_all_except): everything else hidden
+    allowed_measures = Column(JSON, nullable=True)
     updated_by = Column(String(128), nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

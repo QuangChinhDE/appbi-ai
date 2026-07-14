@@ -621,8 +621,13 @@ function ScopeTab() {
   const [datasets, setDatasets] = useState<DatasetLite[]>([]);
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const [scope, setScope] = useState<AIScope | null>(null);
-  const [exCols, setExCols] = useState<Set<string>>(new Set());
-  const [exMeasures, setExMeasures] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<'allow_all_except' | 'deny_all_except'>('allow_all_except');
+  // Track what the AI CAN see (checked = visible). Mode is DATA: it only changes
+  // how this maps to persistence — deny-list (excluded_*) vs allow-list
+  // (allowed_*, default-deny). The checkbox meaning + the enforcing gate are one
+  // path regardless of mode.
+  const [visMeasures, setVisMeasures] = useState<Set<string>>(new Set());
+  const [visCols, setVisCols] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -636,8 +641,19 @@ function ScopeTab() {
     if (datasetId == null) return;
     getAIScope(datasetId).then((s) => {
       setScope(s);
-      setExCols(new Set(s.excluded_columns));
-      setExMeasures(new Set(s.excluded_measures));
+      const m = s.scope_mode === 'deny_all_except' ? 'deny_all_except' : 'allow_all_except';
+      setMode(m);
+      const allM = (s.fields?.measures ?? []).map((x) => x.name);
+      const allC = (s.fields?.columns ?? []).map((x) => x.name);
+      if (m === 'deny_all_except') {
+        setVisMeasures(new Set(s.allowed_measures ?? []));
+        setVisCols(new Set(s.allowed_columns ?? []));
+      } else {
+        const exM = new Set(s.excluded_measures);
+        const exC = new Set(s.excluded_columns);
+        setVisMeasures(new Set(allM.filter((n) => !exM.has(n))));
+        setVisCols(new Set(allC.filter((n) => !exC.has(n))));
+      }
     }).catch(() => setScope(null));
   }, [datasetId]);
 
@@ -651,7 +667,12 @@ function ScopeTab() {
     if (datasetId == null) return;
     setSaving(true);
     try {
-      await putAIScope(datasetId, { excluded_columns: [...exCols], excluded_measures: [...exMeasures] });
+      const allM = (scope?.fields?.measures ?? []).map((x) => x.name);
+      const allC = (scope?.fields?.columns ?? []).map((x) => x.name);
+      const body = mode === 'deny_all_except'
+        ? { scope_mode: mode, allowed_measures: [...visMeasures], allowed_columns: [...visCols], excluded_measures: [], excluded_columns: [] }
+        : { scope_mode: mode, excluded_measures: allM.filter((n) => !visMeasures.has(n)), excluded_columns: allC.filter((n) => !visCols.has(n)), allowed_measures: [], allowed_columns: [] };
+      await putAIScope(datasetId, body);
       toast.success(t('intel.guid.scopeSaved'), { description: t('intel.guid.scopeSavedDesc') });
     } catch (err) {
       toast.error(extractApiError(err, t('intel.common.saveFailed')));
@@ -661,6 +682,8 @@ function ScopeTab() {
   };
 
   const fields = scope?.fields;
+  const totalM = fields?.measures.length ?? 0;
+  const totalC = fields?.columns.length ?? 0;
   return (
     <div className="max-w-3xl space-y-3 pb-8">
       <Panel title={t('intel.guid.scopeTitle')} sub={t('intel.guid.scopeSub')}>
@@ -673,11 +696,23 @@ function ScopeTab() {
             {datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
           <Badge variant="brand" size="xs">
-            {fields ? `${(fields.measures.length - exMeasures.size)}/${fields.measures.length} ${t('intel.guid.scopeMeasures')} · ${(fields.columns.length - exCols.size)}/${fields.columns.length} ${t('intel.guid.scopeColumns')}` : '—'}
+            {fields ? `${visMeasures.size}/${totalM} ${t('intel.guid.scopeMeasures')} · ${visCols.size}/${totalC} ${t('intel.guid.scopeColumns')}` : '—'}
           </Badge>
           <Button size="sm" variant="primary" className="ml-auto" loading={saving} onClick={save} leadingIcon={<CheckCircle2 className="h-3.5 w-3.5" />}>
             {t('intel.common.save')}
           </Button>
+        </div>
+        <div className="mb-3 inline-flex rounded-lg border border-[rgb(var(--border-line))] p-0.5">
+          {(['allow_all_except', 'deny_all_except'] as const).map((mo) => (
+            <button
+              key={mo}
+              type="button"
+              onClick={() => setMode(mo)}
+              className={`rounded-md px-2.5 py-1 text-tiny font-emphasis transition-colors ${mode === mo ? 'bg-brand text-white' : 'text-text-tertiary hover:text-text-primary'}`}
+            >
+              {t(mo === 'allow_all_except' ? 'intel.guid.scopeModeDeny' : 'intel.guid.scopeModeAllow')}
+            </button>
+          ))}
         </div>
         {fields && (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -686,7 +721,7 @@ function ScopeTab() {
               <div className="max-h-72 space-y-0.5 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] p-2">
                 {fields.measures.map((m) => (
                   <label key={m.name} className="flex items-center gap-2 rounded px-1.5 py-1 text-caption text-text-secondary hover:bg-surface-2">
-                    <input type="checkbox" className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" checked={!exMeasures.has(m.name)} onChange={() => toggle(exMeasures, setExMeasures, m.name)} />
+                    <input type="checkbox" className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" checked={visMeasures.has(m.name)} onChange={() => toggle(visMeasures, setVisMeasures, m.name)} />
                     <span className="min-w-0 flex-1 truncate">{m.label}</span>
                     <span className="text-tiny text-text-quaternary">{m.kind}</span>
                   </label>
@@ -699,7 +734,7 @@ function ScopeTab() {
               <div className="max-h-72 space-y-0.5 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] p-2">
                 {fields.columns.map((c) => (
                   <label key={c.name} className="flex items-center gap-2 rounded px-1.5 py-1 text-caption text-text-secondary hover:bg-surface-2">
-                    <input type="checkbox" className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" checked={!exCols.has(c.name)} onChange={() => toggle(exCols, setExCols, c.name)} />
+                    <input type="checkbox" className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))]" checked={visCols.has(c.name)} onChange={() => toggle(visCols, setVisCols, c.name)} />
                     <span className="min-w-0 flex-1 truncate font-mono text-tiny">{c.name}</span>
                   </label>
                 ))}
@@ -708,7 +743,7 @@ function ScopeTab() {
             </div>
           </div>
         )}
-        <p className="mt-3 text-tiny text-text-quaternary">{t('intel.guid.scopeNote')}</p>
+        <p className="mt-3 text-tiny text-text-quaternary">{t(mode === 'deny_all_except' ? 'intel.guid.scopeNoteAllow' : 'intel.guid.scopeNote')}</p>
       </Panel>
     </div>
   );

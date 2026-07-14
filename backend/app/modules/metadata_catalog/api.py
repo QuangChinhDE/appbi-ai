@@ -864,8 +864,11 @@ class CaveatWrite(BaseModel):
 
 
 class ScopeWrite(BaseModel):
+    scope_mode: str = "allow_all_except"  # allow_all_except (deny-list) | deny_all_except (allow-list)
     excluded_columns: list[str] = []
     excluded_measures: list[str] = []
+    allowed_columns: list[str] = []
+    allowed_measures: list[str] = []
 
 
 class ReviewItemWrite(BaseModel):

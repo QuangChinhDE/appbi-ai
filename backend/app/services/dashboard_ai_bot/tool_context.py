@@ -223,6 +223,11 @@ class ToolContext:
     # {id, name, chart_ids}. Charts repeat across pages, so a flat chart list
     # loses this structure — surface it so the bot reads/overviews by flow.
     pages: list[dict[str, Any]] = field(default_factory=list)
+    # AI data-scope enforcement (Intelligence "Phạm vi dữ liệu AI"): per-turn
+    # precompute. chart_id → block reason (chart exposes an excluded field), and
+    # chart_id → folded excluded field-name set (post-fetch column backstop).
+    ai_scope_blocked: dict[int, str] = field(default_factory=dict)
+    chart_excluded: dict[int, set] = field(default_factory=dict)
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -231,12 +236,14 @@ class ToolContext:
     ) -> "ToolContext":
         allowed: set[int] = set()
         meta: dict[int, dict[str, Any]] = {}
+        tbl_by_chart: dict[int, Any] = {}
         # chart_id → ordered list of page ids it appears on (from tile layout).
         page_charts: dict[str, list[int]] = {}
         for dc in dashboard.dashboard_charts or []:
             if not dc.chart_id or not dc.chart:
                 continue
             allowed.add(dc.chart_id)
+            tbl_by_chart[dc.chart_id] = getattr(dc.chart, "dataset_table_id", None)
             layout = dc.layout if isinstance(dc.layout, dict) else {}
             _pid = layout.get("page") or layout.get("pageId")
             if _pid:
@@ -283,6 +290,62 @@ class ToolContext:
                 "chart_ids": cids,
             })
 
+        # ── AI data-scope enforcement (fail-closed DATA gate, not prompt-only) ──
+        # If a chart exposes a field the business excluded from the AI for that
+        # chart's dataset, the bot is BLOCKED from fetching its rows. This is the
+        # access-control half that the prompt-context redaction (knowledge_context)
+        # does not provide. Best-effort precompute: any failure leaves scope OPEN
+        # (never breaks a turn) — redaction still applies. Charts with no scope
+        # row are untouched (empty exclusions), so existing dashboards keep working.
+        ai_scope_blocked: dict[int, str] = {}
+        chart_excluded: dict[int, set] = {}
+        try:
+            from app.services.governance_ai_service import GovernanceAIService, _fold
+            from app.models.dataset import DatasetTable
+
+            tbl_ids = {t for t in tbl_by_chart.values() if t}
+            ds_by_tbl: dict[Any, int] = {}
+            if tbl_ids:
+                for row in (
+                    db.query(DatasetTable.id, DatasetTable.dataset_id)
+                    .filter(DatasetTable.id.in_(tbl_ids)).all()
+                ):
+                    if row[1]:
+                        ds_by_tbl[row[0]] = row[1]
+            excl_by_ds: dict[int, tuple[set, set]] = {}
+            for dsid in set(ds_by_tbl.values()):
+                excl_by_ds[dsid] = GovernanceAIService.scope_exclusions(db, {dsid})
+            for cid, tbl in tbl_by_chart.items():
+                dsid = ds_by_tbl.get(tbl) if tbl else None
+                if dsid is None:
+                    continue
+                ex_cols, ex_meas = excl_by_ds.get(dsid, (set(), set()))
+                if not ex_cols and not ex_meas:
+                    continue
+                chart_excluded[cid] = ex_cols | ex_meas
+                fields = meta.get(cid, {}).get("fields") or {}
+                hit = None
+                for m in (fields.get("measures") or []):
+                    seg = _fold(str(m.get("field") or "").split(".")[-1])
+                    if seg and (seg in ex_meas or seg in ex_cols):
+                        hit = m.get("label") or seg
+                        break
+                if not hit:
+                    for d in (fields.get("dimensions") or []):
+                        seg = _fold(str(d.get("field") or "").split(".")[-1])
+                        if seg and (seg in ex_cols or seg in ex_meas):
+                            hit = d.get("label") or seg
+                            break
+                if hit:
+                    ai_scope_blocked[cid] = (
+                        f'Chỉ số/cột "{hit}" nằm ngoài phạm vi dữ liệu AI được phép xem '
+                        f"(quản trị đã loại khỏi phạm vi AI). Không thể đọc dữ liệu biểu đồ này."
+                    )
+        except Exception:  # noqa: BLE001
+            logger.warning("dashboard_ai_bot ai-scope precompute failed", exc_info=True)
+            ai_scope_blocked = {}
+            chart_excluded = {}
+
         return cls(
             db=db,
             dashboard=dashboard,
@@ -290,6 +353,8 @@ class ToolContext:
             allowed_chart_ids=allowed,
             chart_meta=meta,
             pages=pages,
+            ai_scope_blocked=ai_scope_blocked,
+            chart_excluded=chart_excluded,
         )
 
     def assert_chart_in_scope(self, chart_id: int) -> None:
@@ -332,6 +397,12 @@ def _fetch_chart_data(
     Returns ``{columns: list[str], rows: list[list], filters_applied: list[dict]}``.
     """
     ctx.assert_chart_in_scope(chart_id)
+
+    # AI data-scope gate (fail-closed): a chart exposing an excluded field is
+    # blocked BEFORE any SQL runs. Precomputed in from_dashboard.
+    _blocked = ctx.ai_scope_blocked.get(chart_id)
+    if _blocked:
+        raise ToolError(_blocked)
 
     merged: list[dict] = []
     for f in ctx.public_filters:
@@ -390,6 +461,16 @@ def _fetch_chart_data(
         return float(v) if isinstance(v, _Decimal) else v
 
     rows = [[_norm(v) for v in r] for r in rows]
+
+    # AI data-scope backstop: even if the chart config didn't reveal it, a
+    # RETURNED column matching an excluded name for this chart's dataset must not
+    # leak to the bot. Fail-closed on the actual result shape.
+    _excluded = ctx.chart_excluded.get(chart_id)
+    if _excluded and columns:
+        from app.services.governance_ai_service import _fold as _f
+        leak = next((c for c in columns if _f(str(c).split(".")[-1]) in _excluded), None)
+        if leak is not None:
+            raise ToolError(f'Cột "{leak}" nằm ngoài phạm vi dữ liệu AI được phép xem.')
 
     payload = {
         "columns": columns,

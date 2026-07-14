@@ -606,20 +606,31 @@ export async function deleteCaveat(id: number): Promise<void> {
 }
 
 // ── AI data scope ─────────────────────────────────────────────────────────
+export type AIScopeMode = 'allow_all_except' | 'deny_all_except';
 export interface AIScope {
   dataset_id: number;
+  scope_mode?: AIScopeMode;
   excluded_columns: string[];
   excluded_measures: string[];
+  allowed_columns?: string[];
+  allowed_measures?: string[];
   fields?: {
     measures: { name: string; label: string; kind: string }[];
     columns: { name: string }[];
   };
 }
+export interface AIScopeWrite {
+  scope_mode: AIScopeMode;
+  excluded_columns: string[];
+  excluded_measures: string[];
+  allowed_columns: string[];
+  allowed_measures: string[];
+}
 export async function getAIScope(datasetId: number): Promise<AIScope> {
   const { data } = await apiClient.get<AIScope>(`/catalog/govern/ai-scope/${datasetId}`);
   return data;
 }
-export async function putAIScope(datasetId: number, body: { excluded_columns: string[]; excluded_measures: string[] }): Promise<AIScope> {
+export async function putAIScope(datasetId: number, body: AIScopeWrite): Promise<AIScope> {
   const { data } = await apiClient.put<AIScope>(`/catalog/govern/ai-scope/${datasetId}`, body);
   return data;
 }
