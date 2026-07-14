@@ -2,7 +2,8 @@
 SQLAlchemy models for the BI application.
 """
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -239,6 +240,10 @@ class DashboardPublicLink(Base):
     dashboard_id = Column(Integer, ForeignKey("dashboards.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     token = Column(String(64), nullable=False, unique=True, index=True)
+    # Canonical hash of (dashboard_id + locked filters) for embed-API managed
+    # links. Lets the M2M endpoint dedupe "1 filter set = 1 link" via a partial
+    # unique index (source='embed_api'). Null for user/workboard links.
+    filter_hash = Column(String(64), nullable=True, index=True)
     filters_config = Column(JSON, nullable=True, default=list)
     appearance_config = Column(JSON, nullable=True, default=dict)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -417,3 +422,75 @@ class SyncJob(Base):
 
     # Relationships
     data_source = relationship("DataSource", back_populates="sync_jobs")
+
+
+# ---------------------------------------------------------------------------
+# Embedding integration (machine-to-machine) — see embed_link_service.py
+# ---------------------------------------------------------------------------
+
+class IntegrationClient(Base):
+    """A trusted external system (e.g. software A) allowed to mint embed links
+    via HMAC-signed requests to POST /api/v1/integrations/embed/resolve.
+
+    Auth model: HMAC request signing. `secret_enc` is the shared secret stored
+    ENCRYPTED (reversible, Fernet) — NOT hashed — because the server must
+    recompute the request signature. The raw secret is shown to the operator
+    exactly once at creation.
+    """
+    __tablename__ = "integration_clients"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    key_id = Column(String(64), nullable=False, unique=True, index=True)
+    secret_enc = Column(String(512), nullable=False)
+    name = Column(String(255), nullable=False)
+
+    # Authorization scope
+    allowed_dashboards = Column(JSON, nullable=True, default=list)  # [] / null = any dashboard
+    allowed_ips = Column(JSON, nullable=True, default=list)         # [] / null = any IP
+    allowed_origins = Column(JSON, nullable=True, default=list)     # for embed CSP frame-ancestors (future)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+    max_ttl_seconds = Column(Integer, nullable=False, default=3600, server_default="3600")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class EmbedGrant(Base):
+    """A short-lived, rotating opaque token exposed in an iframe URL.
+
+    Resolves to a managed DashboardPublicLink (the stable "1 filter = 1 link"
+    anchor) WITHOUT exposing that link's own token. Only the SHA-256 hash of the
+    256-char token is stored; the raw token is returned once. Rotation: each
+    /resolve call mints a fresh grant, so a leaked capability URL dies at expiry
+    and concurrent viewers each hold an independent token.
+    """
+    __tablename__ = "embed_grants"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    link_id = Column(Integer, ForeignKey("dashboard_public_links.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    client_id = Column(UUID(as_uuid=True), ForeignKey("integration_clients.id", ondelete="SET NULL"), nullable=True)
+
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class IntegrationNonce(Base):
+    """Replay-protection store for HMAC request nonces. A (client_id, nonce)
+    pair may be used once inside the timestamp window; the unique constraint
+    makes a replayed request fail on insert. Rows are pruned after expiry."""
+    __tablename__ = "integration_nonces"
+    __table_args__ = (
+        UniqueConstraint("client_id", "nonce", name="uq_integration_nonce_client_nonce"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    client_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    nonce = Column(String(128), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

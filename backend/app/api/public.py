@@ -34,6 +34,7 @@ from app.services.dashboard_ai_bot.public_link_config import (
     sanitize_report_context_note,
     web_search_enabled,
 )
+from app.services.embed_link_service import resolve_embed_grant_link
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
@@ -804,6 +805,28 @@ def _get_dashboard_by_token(
 ) -> tuple[Dashboard, list[dict], str | None, dict]:
     """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
     Returns (dashboard, filters_config_for_this_link, link_name, appearance_config)."""
+    # Embed-grant tokens (from the M2M /integrations/embed/resolve endpoint)
+    # resolve to a managed link WITHOUT exposing that link's own token. Purely
+    # additive: normal public/share tokens never start with the grant prefix, so
+    # the entire block below is unchanged for them. Grants carry their own
+    # expiry/revocation (checked in resolve_embed_grant_link); they are gated by
+    # the HMAC endpoint, not by a viewer password.
+    grant_link = resolve_embed_grant_link(token, db)
+    if grant_link is not None:
+        dash = (
+            db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == grant_link.dashboard_id)
+            .first()
+        )
+        if not dash:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
+        if track_access:
+            grant_link.access_count = (grant_link.access_count or 0) + 1
+            grant_link.last_accessed_at = datetime.now(timezone.utc)
+            db.commit()
+        return dash, grant_link.filters_config or [], grant_link.name, grant_link.appearance_config or {}
+
     # Try new multi-link table first
     link = db.query(DashboardPublicLink).filter(
         DashboardPublicLink.token == token,
@@ -1077,6 +1100,13 @@ def get_public_dashboard(
 
 
 if settings.WORKBOARDS_ENABLED:
+    # Prefix for the per-workspace session cookie; final name is
+    # ``wbws_<short-hash-of-token>`` (see _workspace_cookie_name). Must be a
+    # module-level constant so the login/logout paths can resolve it —
+    # omitting it raises ``NameError: _WORKSPACE_COOKIE_PREFIX is not defined``
+    # AFTER auth succeeds, surfacing to the user as a false "Đăng nhập thất bại".
+    _WORKSPACE_COOKIE_PREFIX = "wbws_"
+
     def _workspace_cookie_name(workspace_token: str) -> str:
         import hashlib
         digest = hashlib.sha256(workspace_token.encode("utf-8")).hexdigest()[:12]
