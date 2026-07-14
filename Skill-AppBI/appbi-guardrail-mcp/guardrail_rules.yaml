@@ -200,6 +200,15 @@ features:
     invariants: [agg_default_auto, sum_over_string_gate]
     required_tests: [measure_render, galaxy_golden, golden_sql]
 
+  - id: snapshot_materialization
+    label: "BigQuery snapshot materialization (perf #5): build / redirect / TTL / freshness"
+    files:
+      - backend/app/services/snapshot_service.py
+      - backend/app/services/datasource_service.py
+    keywords: [snapshot, materializ, appbi_snapshots, ttl, "as of", "so tinh den", "số tính đến", freshness, "serve-stale", "extract-load", build_table_snapshot, "data as of"]
+    invariants: [snapshot_all_or_nothing_redirect, snapshot_sa_isolation, snapshot_fingerprint_drift_guard]
+    required_tests: [galaxy_golden, distinct_cascade_bq, filter_matrix]
+
   - id: auth_permissions
     label: "Auth / permissions"
     files: [backend/app/api/auth.py, backend/app/api/permissions.py, backend/app/core/dependencies.py, frontend/src/lib/auth.ts, frontend/src/hooks/use-permissions.ts]
@@ -335,6 +344,48 @@ invariants:
       `_filter_type_family`) so a numeric column vs a STRING slicer value doesn't emit
       `year BETWEEN '2023' AND '2024'` → BigQuery 400. Removing it re-breaks numeric filters on BQ.
     tests: [galaxy_golden, filter_matrix, golden_sql]
+
+  # GROUNDED (verified _snapshot_ref_for_view x5 in engine, _resolve_chart_snapshot_overrides
+  # in chart_service). Guards the snapshot redirect + all-or-nothing resolver.
+  - id: snapshot_all_or_nothing_redirect
+    label: "Snapshot redirect + all-or-nothing resolver must remain (perf #5)"
+    scope: ["backend/app/services/semantic_query_engine.py", "backend/app/services/chart_service.py"]
+    removed_patterns: ['_snapshot_ref_for_view', '_resolve_chart_snapshot_overrides']
+    severity: high
+    message: >
+      Charts read snapshots via `_snapshot_ref_for_view` (engine FROM-operand redirect)
+      only when `_resolve_chart_snapshot_overrides` says the dataset is fully eligible
+      (all-or-nothing → never mixes SA-only snapshot tables with source tables in one
+      query). Removing either drops the perf redirect or risks a mixed-credential query.
+    tests: [galaxy_golden, filter_matrix]
+
+  # GROUNDED (verified snapshot_query_config + load_bigquery_snapshot in datasource_service).
+  - id: snapshot_sa_isolation
+    label: "Two-account isolation: read cred extracts, write SA loads/reads snapshot"
+    scope: ["backend/app/services/datasource_service.py"]
+    removed_patterns: ['snapshot_query_config', 'load_bigquery_snapshot']
+    severity: high
+    message: >
+      Snapshot build is extract-load: the datasource read cred EXTRACTS
+      (`extract_bigquery_for_snapshot`), the write SA LOADS + is the only identity on the
+      SA-only snapshot dataset (`load_bigquery_snapshot` / `snapshot_query_config`). Removing
+      these collapses the isolation model (SA would need to read source, or user would read
+      the SA-only dataset).
+    tests: [galaxy_golden]
+
+  # GROUNDED (verified invalidate_stale_fingerprints in snapshot_service; called from
+  # _sync_dataset_model_safely). Guards schema-drift correctness.
+  - id: snapshot_fingerprint_drift_guard
+    label: "Model/table edit must invalidate drifted snapshots (never read column-mismatched)"
+    scope: ["backend/app/services/snapshot_service.py"]
+    removed_patterns: ['invalidate_stale_fingerprints']
+    severity: high
+    message: >
+      After a model/table edit, `invalidate_stale_fingerprints` drops any snapshot whose
+      fingerprint no longer matches the current table definition (called from
+      `_sync_dataset_model_safely`). Removing it lets the resolver serve a stale-logic or
+      column-mismatched snapshot until the next rebuild — silent wrong numbers / 400s.
+    tests: [galaxy_golden, filter_matrix]
 
   - id: distinct_strict_no_showall
     label: "Distinct cascade must stay strict (no show-all fallback)"

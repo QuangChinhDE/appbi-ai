@@ -23,7 +23,7 @@ if [[ ! -f .env ]]; then
 fi
 
 if grep -qE '^APPBI_PAT=\s*$' .env || grep -qi 'replace_me' .env; then
-    echo "APPBI_PAT in .env is empty or still a placeholder. Edit .env first." >&2
+    echo "APPBI_PAT in .env is empty or still a placeholder. Run ./bootstrap-pat.sh to mint one (or set APPBI_PAT manually)." >&2
     exit 1
 fi
 

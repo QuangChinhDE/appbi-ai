@@ -126,6 +126,8 @@ def _validate_lookup(
             lookup.get("geometry_column"),
             lookup.get("lat_column"),
             lookup.get("lng_column"),
+            # cascading select: remote match column
+            lookup.get("filter_column"),
         ]
         missing = [
             str(column) for column in expected
@@ -242,6 +244,19 @@ def _validate_screen_columns(
                     location=f"screen '{screen_id}' form.fields[{index}]",
                     errors=errors,
                 )
+            # widget=qr: qr_source_column (when set) must be a real column on this
+            # table. qr_value_template / scan_carry_as reference columns/screens
+            # resolved elsewhere and are left to the backend gate.
+            qr_src = field.get("qr_source_column")
+            if isinstance(qr_src, str) and qr_src.strip():
+                _add_column_issues(
+                    refs=[qr_src],
+                    columns=columns,
+                    allowed=set(),
+                    location=f"screen '{screen_id}' form.fields[{index}].qr_source_column",
+                    errors=errors,
+                    warnings=warnings,
+                )
         return
     if kind == "doc":
         _validate_doc_blocks(
@@ -259,7 +274,7 @@ def _validate_screen_columns(
     spec = screen.get("table") if isinstance(screen.get("table"), dict) else {}
     derived = {
         str(row.get("name"))
-        for key in ("computed_columns", "lookup_columns")
+        for key in ("computed_columns", "lookup_columns", "rollup_columns")
         for row in spec.get(key) or []
         if isinstance(row, dict) and row.get("name")
     }
@@ -308,6 +323,25 @@ def _validate_screen_columns(
                         f"screen '{screen_id}' table.gallery_config.{key} '{col}' "
                         f"must be listed in table.columns."
                     )
+    if spec.get("display_mode") == "calendar":
+        cal = spec.get("calendar_config")
+        if not isinstance(cal, dict):
+            errors.append(
+                f"screen '{screen_id}' table: display_mode='calendar' requires calendar_config."
+            )
+        else:
+            if not (isinstance(cal.get("date_column"), str) and cal.get("date_column").strip()):
+                errors.append(
+                    f"screen '{screen_id}' table.calendar_config.date_column is required."
+                )
+            declared = set(str(c) for c in (spec.get("columns") or []))
+            for key in ("date_column", "title_column", "color_column"):
+                col = cal.get(key)
+                if isinstance(col, str) and col and col not in declared:
+                    errors.append(
+                        f"screen '{screen_id}' table.calendar_config.{key} '{col}' "
+                        f"must be listed in table.columns."
+                    )
     for index, lookup in enumerate(spec.get("lookup_columns") or []):
         if not isinstance(lookup, dict):
             errors.append(f"screen '{screen_id}' table.lookup_columns[{index}] must be an object.")
@@ -332,6 +366,76 @@ def _validate_screen_columns(
             columns=remote,
             allowed=set(),
             location=f"screen '{screen_id}' lookup remote table {foreign_id}",
+            errors=errors,
+            warnings=warnings,
+        )
+
+    for index, rollup in enumerate(spec.get("rollup_columns") or []):
+        if not isinstance(rollup, dict):
+            errors.append(f"screen '{screen_id}' table.rollup_columns[{index}] must be an object.")
+            continue
+        foreign_id = rollup.get("from_table_id")
+        if not isinstance(foreign_id, int) or foreign_id not in tables:
+            errors.append(
+                f"screen '{screen_id}' table.rollup_columns[{index}].from_table_id is not attached."
+            )
+            continue
+        agg = rollup.get("agg") or "count"
+        if agg not in ("sum", "count", "avg", "min", "max"):
+            errors.append(
+                f"screen '{screen_id}' table.rollup_columns[{index}].agg '{agg}' "
+                f"must be one of sum|count|avg|min|max."
+            )
+        remote = _columns(tables[foreign_id])
+        _add_column_issues(
+            refs=[rollup.get("match_column_local")],
+            columns=columns,
+            allowed=derived,
+            location=f"screen '{screen_id}' rollup local",
+            errors=errors,
+            warnings=warnings,
+        )
+        remote_refs = [rollup.get("match_column_remote")]
+        # value_column is required + must exist for every agg except count.
+        if agg != "count":
+            value_column = rollup.get("value_column")
+            if not (isinstance(value_column, str) and value_column.strip()):
+                errors.append(
+                    f"screen '{screen_id}' table.rollup_columns[{index}].value_column "
+                    f"is required for agg='{agg}'."
+                )
+            else:
+                remote_refs.append(value_column)
+        _add_column_issues(
+            refs=remote_refs,
+            columns=remote,
+            allowed=set(),
+            location=f"screen '{screen_id}' rollup remote table {foreign_id}",
+            errors=errors,
+            warnings=warnings,
+        )
+
+    for index, rule in enumerate(spec.get("format_rules") or []):
+        if not isinstance(rule, dict):
+            errors.append(f"screen '{screen_id}' table.format_rules[{index}] must be an object.")
+            continue
+        when = rule.get("when")
+        if not (isinstance(when, str) and when.strip()):
+            errors.append(
+                f"screen '{screen_id}' table.format_rules[{index}].when is required."
+            )
+        color = rule.get("color") or "amber"
+        if color not in ("slate", "green", "amber", "red", "blue", "violet"):
+            errors.append(
+                f"screen '{screen_id}' table.format_rules[{index}].color '{color}' "
+                f"must be one of slate|green|amber|red|blue|violet."
+            )
+        # Columns named by a rule must be visible (regular or derived).
+        _add_column_issues(
+            refs=list(rule.get("columns") or []),
+            columns=columns,
+            allowed=derived,
+            location=f"screen '{screen_id}' format_rules[{index}]",
             errors=errors,
             warnings=warnings,
         )
@@ -686,16 +790,28 @@ _SCREEN_SCHEMA_REFERENCE = {
         "pages": "[{id>=1, title, description?, show_if?}] for multi-step forms; FormField.page places a field",
         "sections": "[str] section headings within a page",
         "ocr": "{enabled, provider, model, hint} photo-to-fields (BYOK api_key)",
+        "geo_stamp_column": "optional: FE captures device GPS at submit and writes 'lat,lng' into this column (anti-fraud geo-audit).",
     },
     "form_field": {
         "column": "required db column",
-        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map",
+        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map|geopoint|images|signature|barcode|audio|computed|status|email|phone|url|rich_text|enum_list|rating|slider|currency|percent|time|duration|color|video|qr",
         "required/readonly/default/help_text/placeholder/label": "presentation",
-        "lookup": "LookupConfig when widget=lookup/select/map",
+        "lookup": "LookupConfig when widget=lookup/select/map/enum_list",
         "map_widget": "widget=map: tap a polygon/point on a satellite basemap to pick a value. Options + geometry come from a dataset_table lookup (set lookup.geometry_column). Selected value is a plain string (the value_column) — behaves like select for required/valid_if/carry.",
-        "show_if/required_if/readonly_if": "expressions over [other_column]",
-        "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message",
-        "max_file_kb": "widget=file/image only; hard BE ceiling 1024 KB (base64 into JSONB)",
+        "field_widgets": "geopoint=capture device GPS 'lat,lng'; images=multiple photos (JSON array of data URLs, max_items, capture_only); signature=hand-drawn PNG; barcode=QR/Barcode scan (native BarcodeDetector + manual fallback; set scan_go_to_screen to jump to a form on scan); audio=voice memo data URL; computed=readonly value from `formula` (stored on submit); status=colored lifecycle select (status_config); qr=DISPLAY-ONLY QR image (never writes; print a label).",
+        "qr_widget": "widget=qr renders a QR from qr_source_column's value (default=this field's column) OR qr_value_template. Template supports [other_column] (row value) and {{app_url}} (this mini-app's base URL) — e.g. a deep-link '{{app_url}}?screen=capnhat&don_hang_id=[don_hang_id]'. Config: qr_source_column, qr_value_template, qr_size(48-1024,default160), qr_caption. The field's `column` must still be a real db column (it is never written). A print button prints just the label.",
+        "scan_to_form": "widget=barcode: scan_go_to_screen (destination screen id) + scan_carry_as (column the scanned value is carried under; default=this field's column). On a successful scan the runtime navigates there carrying the value, prefilling a same-named field. If the scanned code is itself a deep-link URL (from a printed qr label), its screen+params are honoured instead — so one QR works from an external phone camera AND an in-app scan.",
+        "rich_field_widgets": "email/phone/url=typed text (validation + tappable view); rich_text=markdown editor (stores markdown); enum_list=multi-select chips (source=lookup, stores JSON array, max_select); rating=stars->number (max_stars, allow_half); slider=range->number (min_value/max_value/step, unit); currency=money->number raw (currency_code shown); percent=% ->number (0-100); time=HH:MM; duration=h/m -> total minutes (number); color=hex string; video=short clip data:video URL (counts against max_file_kb; Postgres not Sheets).",
+        "rich_field_config": "rating: max_stars(1-10), allow_half; slider: min_value, max_value, step, unit; currency: currency_code (e.g. 'VND','$'); enum_list: max_select + lookup source.",
+        "cascading_select": "widget=select/lookup/enum_list: set lookup.filter_by_field (another field's column) + lookup.filter_column (remote match column) to narrow options by the parent field's value.",
+        "capture_only": "widget=image/images: force live camera (no gallery pick).",
+        "max_items": "widget=images: max photo count (1-20).",
+        "unit": "widget=number/computed/slider: unit suffix (e.g. 'kg', '%').",
+        "formula": "widget=computed: arithmetic over [col], e.g. '[san_luong] * [drc] / 100'.",
+        "status_config": "widget=status: {states:[{value,label,color: slate|green|amber|red|blue|violet}], editable_by_roles:[roles allowed to change it], allowed_transitions:{from_value:[allowed_to_values]}}. editable_by_roles AND allowed_transitions are ENFORCED SERVER-SIDE (not just FE): a role not listed, or a from->to not in the map, gets 403 on write. allowed_transitions is per-field-per-screen, so give each role its own screen for role-specific transitions (driver form omits '->Huỷ', manager form allows it).",
+        "show_if/required_if/readonly_if": "wb-expr over [other_column]; supports AND/OR/NOT, comparisons, and funcs CONCAT/UPPER/LOWER/TRIM/LEN/LEFT/RIGHT/CONTAINS/ISBLANK/MOD/POWER/YEAR/MONTH/DAY",
+        "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message. Same grammar/funcs as show_if.",
+        "max_file_kb": "widget=file/image/images/signature/audio/video; storage-aware BE ceiling — 1024 KB (Postgres/JSONB) or ~35 KB (Google Sheets cell); base64 into a cell.",
     },
     "lookup_config": {
         "kind": "static | dataset_table",
@@ -705,6 +821,7 @@ _SCREEN_SCHEMA_REFERENCE = {
         "geometry_column": "widget=map only: column holding a GeoJSON Polygon/MultiPolygon string per row (drawn on the map)",
         "lat_column/lng_column": "widget=map only: optional centroid columns; used as a marker fallback when a row has no geometry",
         "basemap": "widget=map only: satellite (default) | streets | light",
+        "filter_by_field/filter_column": "cascading select: narrow options where filter_column (remote) == the value of filter_by_field (another form field's column)",
     },
     "table_spec": {
         "columns": "display order; may include computed/lookup column names",
@@ -714,25 +831,39 @@ _SCREEN_SCHEMA_REFERENCE = {
         "filters": "[{column, kind: text|select|date_range|number_range, label?}]",
         "page_size/default_sort_column/default_sort_direction": "paging + sort",
         "computed_columns": "[{name, label?, formula (JS body), format?}] — JS sandbox; test with test_screen_js",
-        "lookup_columns": "[{name, from_table_id, match_column_local, match_column_remote, return_column, format?}] relational VLOOKUP",
+        "lookup_columns": "[{name, from_table_id, match_column_local, match_column_remote, return_column, format?}] relational VLOOKUP (one value from a parent)",
+        "rollup_columns": "[{name, from_table_id, match_column_local, match_column_remote, agg: sum|count|avg|min|max, value_column (child col; required unless agg=count), format?}] reverse-reference AGGREGATE of child rows (e.g. records-per-plot=count, total-yield=sum). Batched IN-fetch, aggregated server-side. Add name to `columns` to show it.",
+        "format_rules": "[{when (wb-expr over {{row.col}}; supports AND/OR/CONCAT/YEAR/MONTH/DAY/LEN/LEFT/RIGHT/CONTAINS/MOD/POWER/UPPER/LOWER/TRIM/ISBLANK), color: slate|green|amber|red|blue|violet, columns? (empty=whole row), icon?, label?}] AppSheet-style conditional formatting; first matching rule wins; applied on table grid + gallery cards.",
         "totals": "{column: sum|avg|min|max|count} footer aggregates",
         "group_by": "[col] merge repeated cells (must NOT be in editable_columns)",
         "column_groups": "multi-level header spanning contiguous columns",
         "row_actions": "[ScreenAction] per-row navigate+carry",
         "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
-        "display_mode": "table (default) | gallery — gallery renders rows as image cards instead of a grid (same query/RLS/filters/detail_panel)",
+        "display_mode": "table (default) | gallery | calendar — same query/RLS/filters/detail_panel, different render",
         "gallery_config": "required when display_mode=gallery: {image_column (data:image column, REQUIRED + must be in columns), title_column?, subtitle_column?, group_by_column? (section per value, e.g. a date), columns_per_row? 1-6}. All named columns must be listed in `columns`.",
-        "required_columns/default_values/column_metadata/empty_state_message": "extras",
+        "calendar_config": "required when display_mode=calendar: {date_column (REQUIRED, places rows on a month grid), title_column? (chip label), color_column? (tints chips)}. All named columns must be listed in `columns`.",
+        "stat_tiles": "[{label, column, agg: sum|avg|min|max|count, unit?, format?}] KPI cards above the grid, computed across the loaded (RLS-filtered) rows.",
+        "pos_cart": "Supermarket-style batch scan cart on a table screen (needs allow_add_row=true + >=1 editable_column so bulk-insert is allowed). When set, the runtime shows a POS UI instead of the grid: scan a barcode (phone camera) -> resolve product from a catalog table -> line list with editable qty -> ONE Submit bulk-inserts every line, then opens a printable receipt. {barcode_column (line col storing the scanned code), quantity_column, catalog_table_id (product master dataset table id), catalog_match_column (catalog col matched to the scan), catalog_label_column?, catalog_price_column?, catalog_copy:{line_col: catalog_col} (values copied onto each line), amount_column? (=qty*price), header_inputs:[{column, label, kind: text|select|date, options?, default?, required?, write_to_line? (false=carry to receipt only, not a line column)}] captured once per submit, order_id_column? + order_id_prefix (generated phiếu id), date_column?, header_screen_id? (screen bound to the phiếu HEADER table, usually hidden from nav — receives ONE row per submit with the header values so phiếu lists stay in sync), submit_label?, after_submit_screen? (doc screen opened after save) + after_submit_carry:[col], allow_manual_search?, empty_hint?}. Read side attaches resolved catalog as `pos_catalog`.",
+        "column_metadata": "{col: {label?, width_px?, format?, align?, merge?, input_type?, options?, currency_code?, max_stars?, min_value?, max_value?, step?}} — format: text|number|integer|currency|percent|date|datetime|qr (qr renders the cell value as a small QR image, e.g. a product/order code). input_type gives an EDITABLE column a typed inline cell: text|number|currency|percent|date|datetime|time|checkbox|select|enum_list|rating|color|slider (select/enum_list use static `options:[{label,value}]`). Applies in grid + detail-panel edit.",
+        "required_columns/default_values/empty_state_message": "extras",
     },
     "doc_spec": {
         "page": "{size: A4|A3|Letter, orientation, margin_mm}",
-        "blocks": "ordered: header | kv_grid | data_table | text | spacer | signature | footer",
+        "blocks": "ordered: header | kv_grid | data_table | text | spacer | signature | footer | qr_code",
+        "qr_code_block": {
+            "type": "qr_code",
+            "value": "string encoded — static, or {{shared.col}}/{{app_user.x}} (resolved server-side), or {{app_url}} (this app's base, resolved client-side). Build a deep-link label: '{{app_url}}?screen=capnhat_giao&don_hang_id={{shared.id}}' carried in via a table row_action.",
+            "size": "48-1024 (default 180)",
+            "caption": "optional text under the code",
+            "align": "left | center | right",
+        },
         "data_table_block": {
             "type": "data_table",
             "source": "'primary' or 'lookup:<table_id>'",
             "columns": "[col]",
             "allow_export_excel": "Excel export button",
             "pivot/unpivot/column_groups/totals": "report-table shaping",
+            "context_filters": "[{column, from_shared, required?}] filter rows by a value carried in the runtime shared context (from a row_action carry or a POS after_submit). Makes a per-record document (a printable phiếu) show ONLY that record — e.g. {column: 'ma_don', from_shared: 'ma_don'}. required=true (default): missing shared value -> no rows; false -> skip the filter.",
             "sync_triggers": "[{id, label, webhook_ids:[bundle webhook id], run_mode, visible_for_roles}]",
         },
     },
@@ -751,10 +882,11 @@ _SCREEN_SCHEMA_REFERENCE = {
     "layout_top_level": {
         "screens": "[Screen]",
         "mini_app_nav": "{desktop_kind: sidebar|top_tabs, mobile_kind: bottom_nav|drawer, items: [screen_id]}",
-        "branding": "{app_name, theme, ...}",
+        "branding": "Theme+branding (design system): {app_name, logo_url, primary_color (hex), accent_color (hex), welcome_text, theme: light|dark|auto, background: {kind: color|gradient|image, color? (hex), gradient_preset? (ocean|sunset|forest|dusk|dawn|peach|grape|mint), image_data? (data: URI — external URLs are CSP-blocked, so upload not link)}, font_family: system|inter|be-vietnam|roboto|serif|mono, card_style: {radius: none|sm|md|lg|xl, shadow: none|sm|md, border: bool}, header_style: fill|line|minimal, login: {background: {same as background}, tagline}}. Drives CSS vars + dark mode across the public shell AND portal login. Set primary_color = brand color; theme='dark' for a dark app; background gradient for a polished look.",
         "audit": "AuditConfig (created/updated tracking columns)",
         "auto_number_columns": "[{column, pattern 'PO-{YYYY}{MM}{DD}-{N:4}', reset, padding, start_at}]",
         "screen_groups": "[{id, label, icon?, screen_ids:[id], visible_for_roles}] nav grouping (UI: Workspace)",
+        "print_template": "Reusable letterhead applied to EVERY doc screen's print + Excel export (set once in App Settings). {enabled, company_name, address, tax_code, hotline, email, website, logo_data (data: URI), footer_note, accent_color (hex)}. The runtime auto-renders it atop each document (logo + company + address) and the Excel exporter prepends it + a report title + carried filters as styled header rows above a formatted table. Make a printable báo cáo/phiếu = a DOC screen with a data_table block (allow_export_excel=true; column_metadata.format currency/integer for clean numbers).",
     },
     "screen_action": {
         "id/label": "required",
@@ -776,8 +908,9 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "author ONE bundle: workboard + layout_json (screens) + app_users + webhooks + optional workspace",
             "test_screen_js for any computed column formula",
             "validate_workboard_bundle(bundle) and fix every error",
-            "apply_workboard_bundle(bundle, user_confirmed=true)",
-            "audit_workboard, then create_workboard_public_link and/or workspace, then run_workboard_runtime_smoke_test",
+            "apply_workboard_bundle(bundle, user_confirmed=true) — include a `workspace` block in the bundle so apply ships a usable app (workspace + menu + publish), not just a saved Workboard",
+            "audit_workboard for broken refs; add app users via upsert_workboard_app_users; create_workboard_public_link for a public form/view",
+            "VERIFY WITHOUT A BROWSER: run_workboard_runtime_smoke_test(workspace_token, workboard_id, username, pin, screen_ids, and form_screen_id+table_screen_id+insert_values to test a real submit) — it logs in + renders + submits over HTTP. On a form 'Validation failed', read the failing form_insert step's data.detail.violations for the exact field(s). Never use a browser/Playwright.",
         ],
         "bundle_contract": {
             "workboard": {
@@ -805,6 +938,18 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "editable_columns is the only inline-edit switch; never list a computed/lookup column there.",
             "Map picker: widget='map' on a form field + lookup.kind=dataset_table with geometry_column (GeoJSON per row). The picked value is the value_column string; add it to after_submit.carry to feed the next screen. Geometry table needs a GeoJSON column (Polygon/MultiPolygon).",
             "Gallery: a table screen with display_mode='gallery' + gallery_config. image_column (a data:image column) and every other gallery column MUST also be in table.columns. group_by_column buckets cards into sections (e.g. a capture-date column). Great as the 'view saved photos' screen after an image-upload form.",
+            "Field-work widgets: geopoint (GPS 'lat,lng'), images (multi-photo, capture_only for anti-fraud), signature, barcode (QR/scan), audio (voice memo), computed (live formula, stored on submit), status (colored approval select). Media widgets store base64 in JSONB and ride the offline queue like image/file.",
+            "Approval / status lifecycle: widget=status with status_config.editable_by_roles (who may change it) + allowed_transitions ({from:[to]}) — BOTH enforced server-side now (403 on a bad role or illegal from->to). Because status_config is per-field-per-screen, give each role its own update screen for role-specific transitions.",
+            "QR labels + scan-to-form (logistics/warehouse): (1) print a label = a doc screen with a qr_code block whose value is a deep-link '{{app_url}}?screen=<update_screen>&<pk>={{shared.<pk>}}', reached by a table row_action that carries the pk. Scanning it with any phone camera opens the update form prefilled (the workspace runtime reads screen+params from the URL). (2) in-app scan = a form with a widget=barcode field + scan_go_to_screen/scan_carry_as to jump to the update form carrying the scanned code. Same QR works both ways. Deep-linked target screens may be show_in_nav=false.",
+            "KPI + cascading: table.stat_tiles show aggregates above the grid; lookup.filter_by_field + filter_column make a select depend on an earlier field (e.g. plot -> rows).",
+            "Calendar: a table screen with display_mode='calendar' + calendar_config.date_column places rows on a month grid (title_column = chip label, color_column tints). date_column MUST be in table.columns. Same query/RLS/filters/detail-panel as the grid.",
+            "Roll-up (reverse reference): table.rollup_columns aggregate a CHILD table up to each parent row (e.g. on a plots table, count/sum records from a measurements table where measurements.plot_id == plots.id). agg=count needs no value_column; sum/avg/min/max need value_column. Add the roll-up name to table.columns to display it; it can also feed totals and format_rules.",
+            "Conditional formatting: table.format_rules tint a row (or named columns) when a wb-expr is truthy — e.g. when='{{row.san_luong}} < 100' color='red' to flag low yield. First matching rule wins; renders on both the grid and gallery cards. Rules can reference computed/lookup/rollup columns.",
+            "Typed inline cells: give an EDITABLE table column the right inline control via column_metadata[col].input_type = number|currency|percent|date|datetime|time|checkbox|select|enum_list|rating|color|slider (default text). select/enum_list need column_metadata[col].options=[{label,value}] (static); rating uses max_stars; slider uses min_value/max_value/step; currency uses currency_code. The column MUST be in editable_columns. Works in the grid, the ghost add-row, and the detail panel.",
+            "Rich form widgets: prefer a typed widget over plain text — email/phone/url (validated + tappable), rich_text (Markdown notes), enum_list (multi-select tags; source=lookup; stores a JSON array string; max_select), rating (satisfaction/priority stars), slider (0-100 progress etc.), currency (money → raw number; set currency_code), percent, time (HH:MM), duration (h/m → minutes), color (hex). Numeric widgets store numbers; enum_list stores a JSON-array string; keep the target column type compatible.",
+            "Theming (design system): set layout_json.branding to brand the whole mini-app + login — primary_color/accent_color, theme (light|dark|auto), background (color|gradient|image), font_family, card_style, header_style, login.tagline. Images must be uploaded data: URIs (external URLs are CSP-blocked). One branding block styles both the app shell and the portal login page.",
+            "Screen groups (Workspaces) + RBAC: layout_json.screen_groups=[{id,label,icon?,screen_ids[],visible_for_roles}] gives the left nav sections; a screen's visible_for_roles limits which roles SEE the screen (RBAC), while rls limits which ROWS they see (RLS) — combine both so each role gets exactly its screens + its data.",
+            "Web Push (runtime, no bundle field): once published over HTTPS, end users tap the in-app '🔔 Thông báo' button to subscribe; the system pushes a notification when a record they can see is updated. Nothing to author in the bundle — it's automatic on the published portal.",
             "Doc data_table sync_triggers[].webhook_ids must match bundle.webhooks ids; webhooks bind to a doc screen_id.",
             "RLS/visible_for_roles roles must match app_user roles; owner bypasses RLS but keep user/admin explicit.",
             "Validate computed-column JS with test_screen_js before apply.",
@@ -821,7 +966,16 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
                 "owner_pin": "246810",
             },
             "layout_json": {
-                "branding": {"app_name": "Inventory Demo", "theme": "light"},
+                "branding": {
+                    "app_name": "Inventory Demo",
+                    "primary_color": "#1d4ed8",
+                    "accent_color": "#0ea5e9",
+                    "theme": "light",
+                    "font_family": "inter",
+                    "background": {"kind": "gradient", "gradient_preset": "dawn"},
+                    "card_style": {"radius": "lg", "shadow": "sm"},
+                    "login": {"tagline": "Inventory operations portal"},
+                },
                 "mini_app_nav": {
                     "desktop_kind": "sidebar",
                     "mobile_kind": "bottom_nav",
@@ -858,13 +1012,26 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
                         "primary_key_columns": ["id"],
                         "visible_for_roles": ["owner", "admin", "user"],
                         "table": {
-                            "columns": ["date", "product_id", "qty", "amount"],
-                            "editable_columns": ["qty"],
+                            "columns": ["date", "product_id", "qty", "status", "amount"],
+                            "editable_columns": ["qty", "status"],
                             "filters": [{"column": "date", "kind": "date_range"}],
                             "computed_columns": [{
                                 "name": "amount", "label": "Amount",
                                 "formula": "return Number(row.qty || 0) * Number(row.unit_price || 0);",
                             }],
+                            "stat_tiles": [
+                                {"label": "Rows", "column": "id", "agg": "count"},
+                                {"label": "Total qty", "column": "qty", "agg": "sum"},
+                            ],
+                            "format_rules": [
+                                {"when": "{{row.qty}} < 1", "color": "red", "columns": ["qty"], "label": "Out of stock"},
+                            ],
+                            "column_metadata": {
+                                "status": {"label": "Status", "input_type": "select",
+                                           "options": [{"label": "Open", "value": "open"},
+                                                       {"label": "Done", "value": "done"}]},
+                                "amount": {"label": "Amount", "format": "currency"},
+                            },
                         },
                     },
                     {

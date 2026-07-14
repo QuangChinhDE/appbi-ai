@@ -22,7 +22,7 @@ if (-not (Test-Path $envPath)) {
 
 $envContent = Get-Content $envPath -Raw
 if ($envContent -match 'APPBI_PAT\s*=\s*$' -or $envContent -match 'replace_me') {
-    Write-Error 'APPBI_PAT in .env is empty or still a placeholder. Edit .env first.'
+    Write-Error 'APPBI_PAT in .env is empty or still a placeholder. Run .\bootstrap-pat.ps1 to mint one (or set APPBI_PAT manually).'
     exit 1
 }
 

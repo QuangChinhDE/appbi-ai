@@ -23,7 +23,7 @@ changes nothing until you confirm.
 ```powershell
 Set-Location D:\Appv2\appbi-ai\Skill-AppBI\appbi-workboard-mcp
 .\setup-mcp.ps1          # creates .venv, installs deps, seeds .env
-# edit .env -> APPBI_BASE_URL + APPBI_PAT
+.\bootstrap-pat.ps1      # mints your PAT and writes it into .env (see below)
 .\run-mcp.ps1            # launches the server (profile=all)
 ```
 
@@ -31,16 +31,35 @@ macOS / Linux:
 
 ```bash
 cd /path/to/appbi-workboard-mcp
-cp .env.example .env     # then edit APPBI_BASE_URL + APPBI_PAT
+cp .env.example .env     # set APPBI_BASE_URL if not http://localhost:8000
+./bootstrap-pat.sh       # mints your PAT and writes it into .env
 ./run-mcp.sh             # bootstraps .venv on first run
 ```
 
-The PAT (Personal Access Token, minted in AppBI) needs:
+## Get your PAT (the token that connects the MCP)
 
-- `datasources=edit` — discover and create Google Sheets / file sources.
-- `datasets=edit` — create datasets, tables, the relationship model.
-- `workboards=edit` — build workboards + app users + public links.
-- `workboards=full` — create/manage delivery workspaces.
+The MCP authenticates to AppBI with a **Personal Access Token (PAT)**. A PAT
+cannot mint itself (the call that creates it needs a logged-in account), so
+this is the one credential you supply once. Three ways, no hand-written code:
+
+1. **Shipped helper (recommended for first run).** `bootstrap-pat.ps1` /
+   `./bootstrap-pat.sh` (or `python bootstrap_pat.py`) asks for your AppBI
+   base URL, email and password, mints the token, and writes `APPBI_PAT` +
+   `APPBI_BASE_URL` into `.env`. Add `--print-only` to just print it.
+2. **From inside your MCP client.** If the server is already registered, call
+   the `bootstrap_personal_access_token` tool with an AppBI email + password —
+   it mints the PAT, connects the running session immediately, and saves it to
+   `.env`. (`health_check` returns `needs_pat` until you do.)
+3. **Manually.** AppBI UI → Settings → Personal Access Tokens → create one,
+   then paste it into `.env` as `APPBI_PAT=...`.
+
+The token needs these scopes (the helpers grant them for you):
+
+- `data_sources` — discover and create Google Sheets / file sources.
+- `datasets` — create datasets, tables, the relationship model.
+- `explore_charts` + `dashboards` — embedded dashboard screens.
+- `workboards` (**full**) — build workboards, app users, public links, and
+  create/manage delivery workspaces.
 
 ## Register in an MCP client
 
@@ -123,6 +142,23 @@ only the fields listed in the design guide are accepted.
    backend does not auto-generate one, and workspace menus key by slug.
 4. **Public links require the owner PIN rotated off the default** before
    `create_workboard_public_link` succeeds.
+
+## Hit an error while building? Want to extend the MCP?
+
+See **[MAINTAINERS.md](MAINTAINERS.md)** — the debug + upgrade guide:
+
+- **Mental model:** the AppBI backend is the single gatekeeper; this MCP is thin
+  tools + a design guide. Most "the MCP can't build X" issues are a *design-guide
+  gap*, not missing code (because `apply` sends `layout_json` straight through).
+- **Which layer failed** — MCP pre-check (`validate_workboard_bundle`) vs backend
+  gate (the `backend_error` envelope with a Pydantic field path in `detail`) vs
+  runtime (`audit_workboard` / smoke test) — and where each fix goes.
+- **The debugging loop** (reproduce with `validate`, read the 422 `detail`, curl
+  the backend with the same PAT, `APPBI_MCP_LOG_LEVEL=DEBUG`).
+- **The upgrade playbook** — 3 cases (document a backend-supported field · relax a
+  false pre-check · add a new tool) with exact edit locations, plus a
+  test-before-ship checklist.
+- A **common-errors → cause → fix** table.
 
 ## Files
 

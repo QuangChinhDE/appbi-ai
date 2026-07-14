@@ -41,7 +41,8 @@ else {
 
 Write-Host ''
 Write-Host 'Next steps:' -ForegroundColor Cyan
-Write-Host '  1. Edit .env: set APPBI_BASE_URL and APPBI_PAT (a Personal Access Token).'
-Write-Host '     The PAT needs: datasources=edit, datasets=edit, workboards=edit (+ full for workspaces).'
-Write-Host '  2. Run:  .\run-mcp.ps1            (full journey, profile=all)'
+Write-Host '  1. Set APPBI_BASE_URL in .env if it is not http://localhost:8000.'
+Write-Host '  2. Mint your PAT (the connect token):  .\bootstrap-pat.ps1'
+Write-Host '     (asks for AppBI email/password, writes APPBI_PAT into .env).'
+Write-Host '  3. Run:  .\run-mcp.ps1            (full journey, profile=all)'
 Write-Host '     Or register it in your MCP client config (see README.md).'
