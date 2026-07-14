@@ -292,22 +292,39 @@ def refresh_dashboard_snapshots(
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
 
+    dataset_ids = _dashboard_dataset_ids(db, dash)
+    if not dataset_ids:
+        return {"ok": True, "status": "idle", "datasets": [], "building": False, "as_of": None}
+    # ASYNC: kick a background rebuild and return immediately instead of building
+    # inside this request. A big/multi-table rebuild used to run synchronously —
+    # blowing past nginx's 120s API timeout (backend budgets 280s/table) so the
+    # viewer saw a timeout while the backend kept churning. The client now shows
+    # "đang làm mới…" and polls /snapshots/info (building flag) for completion.
+    started = snapshot_service.start_manual_refresh(list(dataset_ids))
+    ts = _dashboard_snapshot_as_of(db, dash)  # current (pre-rebuild) freshness
+    return {
+        "ok": True,
+        "status": "started",
+        "datasets": list(dataset_ids),
+        "started": started,
+        "building": snapshot_service.datasets_rebuilding(list(dataset_ids)),
+        "as_of": ts.isoformat() if ts else None,
+    }
+
+
+def _dashboard_dataset_ids(db: Session, dash) -> set:
+    """Dataset ids behind a dashboard's charts — used for snapshot refresh and
+    the 'building' freshness poll."""
+    from app.models.dataset import DatasetTable
     charts = [dc.chart for dc in (dash.dashboard_charts or []) if dc.chart is not None]
-    table_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
-    if not table_ids:
-        return {"ok": True, "datasets": [], "as_of": None}
-    dataset_ids = {
+    base_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
+    if not base_ids:
+        return set()
+    return {
         t.dataset_id
-        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(table_ids))).all()
+        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(base_ids))).all()
         if t.dataset_id
     }
-    results, as_ofs = [], []
-    for ds_id in dataset_ids:
-        r = snapshot_service.refresh_all_for_dataset(db, ds_id, force=True)
-        results.append({"dataset_id": ds_id, **r})
-        if r.get("as_of"):
-            as_ofs.append(r["as_of"])
-    return {"ok": True, "datasets": results, "as_of": (min(as_ofs) if as_ofs else None)}
 
 
 def _dashboard_snapshot_as_of(db: Session, dash) -> Optional[Any]:
@@ -355,8 +372,14 @@ def get_dashboard_snapshot_info(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
+    from app.services import snapshot_service
     ts = _dashboard_snapshot_as_of(db, dash)
-    return {"as_of": ts.isoformat() if ts else None, "mode": "snapshot" if ts else "live"}
+    building = snapshot_service.datasets_rebuilding(list(_dashboard_dataset_ids(db, dash)))
+    return {
+        "as_of": ts.isoformat() if ts else None,
+        "mode": "snapshot" if ts else "live",
+        "building": building,
+    }
 
 
 @router.post("/import-html/analyze", response_model=DashboardHtmlImportAnalyzeResponse)

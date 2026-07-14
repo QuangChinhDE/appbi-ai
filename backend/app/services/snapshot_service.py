@@ -536,3 +536,71 @@ def schedule_source_change_check(dataset_id: int) -> None:
             db.close()
 
     threading.Thread(target=_run, name=f"snap-wmcheck-{dataset_id}", daemon=True).start()
+
+
+def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
+    """Manual "Refresh data": rebuild the given datasets' snapshots in the
+    BACKGROUND and return immediately, so the HTTP request never blocks on a long
+    extract-load. This fixes the sync-refresh-in-request problem (a big rebuild
+    used to run inside the POST, blowing past nginx's 120s while backend kept
+    going to 280s/table and the viewer saw a timeout even though it was still
+    building). Rebuilds SEQUENTIALLY in ONE thread — the extract-load holds a
+    whole table in RAM, so one-at-a-time keeps peak memory bounded on a small VM
+    (do NOT parallelise here until the build is moved server-side). Marks each
+    dataset in the SAME in-flight registry the auto-refresh uses, so a concurrent
+    TTL/watermark rebuild won't double-build, and the client can poll
+    ``datasets_rebuilding`` for a "đang làm mới…" indicator. NEVER raises. Returns
+    the dataset ids actually claimed (those not already rebuilding)."""
+    ids: List[int] = []
+    seen = set()
+    for d in dataset_ids or []:
+        try:
+            di = int(d)
+        except (TypeError, ValueError):
+            continue
+        if di and di not in seen:
+            seen.add(di)
+            ids.append(di)
+    if not ids:
+        return []
+    with _async_refresh_lock:
+        claimed = [d for d in ids if d not in _async_refresh_inflight]
+        for d in claimed:
+            _async_refresh_inflight[d] = time.time()
+    if not claimed:
+        return []
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            for d in claimed:
+                try:
+                    refresh_all_for_dataset(db, d, force=True)
+                    logger.info("[snapshot] manual refresh done dataset=%s", d)
+                except Exception:  # noqa: BLE001 — one dataset's failure must not block the rest
+                    logger.warning("[snapshot] manual refresh failed dataset=%s", d, exc_info=True)
+                finally:
+                    # Release each dataset as it finishes so freshness polling
+                    # reflects real progress instead of flipping only at the end.
+                    with _async_refresh_lock:
+                        _async_refresh_inflight.pop(d, None)
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, name="snap-manual-refresh", daemon=True).start()
+    return claimed
+
+
+def datasets_rebuilding(dataset_ids: List[int]) -> bool:
+    """True if ANY of the given datasets currently has a snapshot rebuild in
+    flight (manual or auto). Drives the client's "đang làm mới…" poll after an
+    async refresh so the UI knows when the rebuild has actually finished."""
+    with _async_refresh_lock:
+        for d in dataset_ids or []:
+            try:
+                if int(d) in _async_refresh_inflight:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
