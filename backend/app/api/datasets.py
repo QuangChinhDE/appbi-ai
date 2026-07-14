@@ -2394,8 +2394,21 @@ def refresh_dataset_snapshots(
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
-    return {"ok": True, **result}
+    # ASYNC: kick a background rebuild and return immediately (see
+    # snapshot_service.start_manual_refresh) so a large extract-load never blocks
+    # the request past nginx's 120s API timeout. Client polls freshness/building.
+    started = snapshot_service.start_manual_refresh([dataset_id])
+    ts = snapshot_service.as_of(
+        db,
+        [t.id for t in dataset_obj.tables] if getattr(dataset_obj, "tables", None) else [],
+    )
+    return {
+        "ok": True,
+        "status": "started",
+        "started": started,
+        "building": snapshot_service.datasets_rebuilding([dataset_id]),
+        "as_of": ts.isoformat() if ts else None,
+    }
 
 
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
