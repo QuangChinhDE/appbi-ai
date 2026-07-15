@@ -17,7 +17,7 @@ import { Tabs } from '@/components/ui/Tabs';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GlobalGraph } from '@/components/govern/KnowledgeTab';
-import { Panel, EmptyHint, CoverageBar } from '@/components/intelligence/shared';
+import { Panel, EmptyHint, CoverageBar, useCanAuthor } from '@/components/intelligence/shared';
 import { intelligenceOverview, createReviewItem, type IntelligenceOverview } from '@/lib/catalog';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -40,6 +40,7 @@ const KIND_LABEL_KEY: Record<string, string> = {
 export function IntelligenceOverviewPage() {
   const { t } = useI18n();
   const router = useRouter();
+  const canAuthor = useCanAuthor();  // propose = a write (creates a review item) → edit only
   const [ov, setOv] = useState<IntelligenceOverview | null>(null);
   const [tab, setTab] = useState<'board' | 'graph'>('board');
   const [proposed, setProposed] = useState<Set<string>>(new Set());
@@ -202,9 +203,11 @@ export function IntelligenceOverviewPage() {
                 {ov.ungrounded_questions.map((q) => (
                   <div key={q} className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-1.5 first:border-t-0">
                     <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">“{q}”</span>
-                    <Button size="xs" variant="secondary" disabled={proposed.has(q)} onClick={() => propose(q)}>
-                      {proposed.has(q) ? t('intel.overview.proposed') : t('intel.overview.propose')}
-                    </Button>
+                    {canAuthor && (
+                      <Button size="xs" variant="secondary" disabled={proposed.has(q)} onClick={() => propose(q)}>
+                        {proposed.has(q) ? t('intel.overview.proposed') : t('intel.overview.propose')}
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>

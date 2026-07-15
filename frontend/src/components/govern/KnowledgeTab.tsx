@@ -43,6 +43,7 @@ import {
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { Markdown, DOC_TYPES, STATUS_TONE, docTypeLabel, managedTargetLabel, statusLabel } from './knowledge-markdown';
 import { docTemplate } from './doc-templates';
 import { MetricFormModal } from './MetricForm';
@@ -307,6 +308,10 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
   onOpenMetric: (machineName: string) => void; onShare: (id: number, title: string) => void;
 }) {
   const { t, language } = useI18n();
+  // Module-level authoring gate: creating / AI-writing a doc is a WRITE (now
+  // govern:edit at the backend). Per-doc edit/share stay resource-gated below.
+  const { data: permData } = usePermissions();
+  const canAuthor = hasPermission(permData?.permissions, 'govern', 'edit');
   const [space, setSpace] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthKey | null>(null);
   const [q, setQ] = useState('');
@@ -376,8 +381,8 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       action={(
         <div className="flex items-center gap-2">
           {onOpenVocab && <Button variant="secondary" leadingIcon={<Library className="h-4 w-4" />} onClick={onOpenVocab}>{t('govern.action.vocab')}</Button>}
-          <AiButton size="md" onClick={onAiWrite}>{t('govern.action.aiWrite')}</AiButton>
-          <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>
+          {canAuthor && <AiButton size="md" onClick={onAiWrite}>{t('govern.action.aiWrite')}</AiButton>}
+          {canAuthor && <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>}
         </div>
       )}
       isLoading={loading}
@@ -431,7 +436,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
               <BookOpen className="mx-auto mb-4 h-14 w-14 text-text-quaternary" />
               <h2 className="mb-2 text-small font-strong text-text-primary">{t('govern.empty.title')}</h2>
               <p className="mb-4 text-caption text-text-tertiary">{t('govern.empty.body')}</p>
-              <Button variant="primary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>
+              {canAuthor && <Button variant="primary" size="sm" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>}
             </div>
           );
         }

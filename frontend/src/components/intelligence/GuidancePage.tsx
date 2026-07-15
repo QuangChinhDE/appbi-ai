@@ -148,7 +148,7 @@ export function GuidancePage() {
                 )}
               </div>
               <div className="mt-3 flex items-center gap-1.5 border-t border-[rgb(var(--border-line))] pt-2.5">
-                {p.status !== 'Approved' && (
+                {canAuthor && p.status !== 'Approved' && (
                   <Button size="xs" variant="secondary" leadingIcon={<ShieldCheck className="h-3 w-3" />} onClick={() => certify('playbook', p.id, p.name)}>
                     {t('intel.sem.certify')}
                   </Button>
@@ -196,7 +196,7 @@ export function GuidancePage() {
                     </td>
                     <td className="app-list-cell"><StatusBadge status={r.status} /></td>
                     <td className="app-list-cell-tight text-right" onClick={(e) => e.stopPropagation()}>
-                      {r.status !== 'Approved' && (
+                      {canAuthor && r.status !== 'Approved' && (
                         <Button size="xs" variant="secondary" leadingIcon={<ShieldCheck className="h-3 w-3" />} onClick={() => certify('rule', r.id, r.name)}>
                           {t('intel.sem.certify')}
                         </Button>
@@ -232,7 +232,7 @@ export function GuidancePage() {
                 </div>
               </div>
               <div className="mt-3 flex items-center gap-1.5 border-t border-[rgb(var(--border-line))] pt-2.5">
-                {x.status !== 'Approved' && (
+                {canAuthor && x.status !== 'Approved' && (
                   <Button size="xs" variant="secondary" leadingIcon={<ShieldCheck className="h-3 w-3" />} onClick={() => certify('qa', x.id, x.question)}>
                     {t('intel.sem.certify')}
                   </Button>

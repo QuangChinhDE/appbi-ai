@@ -13,12 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_edit_access
+from app.core.dependencies import get_current_user, require_edit_access, require_permission
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import Chart, Dashboard, Dataset, DatasetTable
 from app.models.resource_share import ResourceShare, ResourceType
@@ -28,7 +28,30 @@ from app.services.governance_service import GovernanceError, GovernanceService
 
 logger = logging.getLogger("app.metadata_catalog.api")
 
-router = APIRouter(prefix="/catalog", tags=["catalog"])
+# ── Module-permission floor for the ENTIRE /catalog router (Govern + Intelligence)
+# Mirrors how every other module gates its API: reads (GET) need govern:view,
+# writes (PUT/POST/DELETE/PATCH) need govern:edit. ONE method-based gate — no
+# per-endpoint drift. Admin back-fill + scoped-token caps are inherited from
+# require_permission(). Previously these endpoints only checked authentication
+# (get_current_user), so a user with govern:none/view could read AND write ALL
+# knowledge (metrics, glossary, rules, playbooks, QA, caveats, AI scope, docs) —
+# unlike dashboards/datasets/observability which enforce require_permission. This
+# closes that gap and makes the Intelligence group consistent with the system.
+_GOVERN_VIEW = require_permission("govern", "view")
+_GOVERN_EDIT = require_permission("govern", "edit")
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+async def govern_module_gate(request: Request, user: User = Depends(get_current_user)) -> User:
+    checker = _GOVERN_VIEW if request.method in _READ_METHODS else _GOVERN_EDIT
+    return await checker(user=user)
+
+
+router = APIRouter(
+    prefix="/catalog",
+    tags=["catalog"],
+    dependencies=[Depends(govern_module_gate)],
+)
 
 
 def _run(fn):

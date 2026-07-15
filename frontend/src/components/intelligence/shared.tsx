@@ -16,11 +16,11 @@ import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { IntelStatus } from '@/lib/catalog';
 
 /**
- * Two-layer access for the Intelligence group:
- *   "soạn" (author: create / edit / delete / scope / instructions) → needs
- *   `govern:edit`; "duyệt" (approve / certify) stays open to anyone with
- *   `govern:view`. So a non-tech reviewer sees review surfaces without the
- *   authoring depth, while stewards get the full toolset.
+ * Author gate for the Intelligence group. Consistent with the system-wide model
+ * (and now enforced by the backend /catalog gate): `govern:view` = READ-ONLY;
+ * EVERY write — create / edit / delete / scope / instructions AND approve /
+ * certify / propose — needs `govern:edit`. Grant `govern:edit` to whoever should
+ * review & certify; a pure observer gets `govern:view`.
  */
 export function useCanAuthor(): boolean {
   const { data } = usePermissions();

@@ -15,7 +15,7 @@ import { Tabs } from '@/components/ui/Tabs';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
-import { EmptyHint, timeAgo } from '@/components/intelligence/shared';
+import { EmptyHint, timeAgo, useCanAuthor } from '@/components/intelligence/shared';
 import {
   listReviewItems, approveReviewItem, rejectReviewItem, type ReviewItem,
 } from '@/lib/catalog';
@@ -44,6 +44,10 @@ const ACTION_LABEL_KEY: Record<string, string> = {
 
 export function InboxPage() {
   const { t, locale } = useI18n();
+  // Approving/rejecting mutates governance state → a WRITE. Only authors
+  // (govern:edit) may act; view users see the queue read-only, matching the
+  // system-wide "view = read-only" model now enforced by the backend.
+  const canAuthor = useCanAuthor();
   const [status, setStatus] = useState<'pending' | 'approved' | 'rejected'>('pending');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [items, setItems] = useState<ReviewItem[]>([]);
@@ -152,7 +156,12 @@ export function InboxPage() {
                 <p className="mt-2 text-tiny text-text-tertiary">🔎 {item.evidence}</p>
               )}
               <div className="mt-3 flex items-center gap-2 border-t border-[rgb(var(--border-line))] pt-2.5">
-                {item.status === 'pending' ? (
+                {item.status !== 'pending' ? (
+                  <Badge variant={item.status === 'approved' ? 'success' : 'danger'} size="xs">
+                    {item.status === 'approved' ? `✓ ${t('intel.inbox.tabApproved')}` : `✕ ${t('intel.inbox.tabRejected')}`}
+                    {item.resolved_by ? ` · ${item.resolved_by}` : ''}
+                  </Badge>
+                ) : canAuthor ? (
                   <>
                     <Button size="xs" variant="primary" loading={busy === item.id} leadingIcon={<Check className="h-3 w-3" />} onClick={() => act(item, true)}>
                       {t('intel.inbox.approve')}
@@ -162,10 +171,7 @@ export function InboxPage() {
                     </Button>
                   </>
                 ) : (
-                  <Badge variant={item.status === 'approved' ? 'success' : 'danger'} size="xs">
-                    {item.status === 'approved' ? `✓ ${t('intel.inbox.tabApproved')}` : `✕ ${t('intel.inbox.tabRejected')}`}
-                    {item.resolved_by ? ` · ${item.resolved_by}` : ''}
-                  </Badge>
+                  <Badge variant="subtle" size="xs">⏳ {t('intel.inbox.tabPending')}</Badge>
                 )}
                 <span className="ml-auto text-tiny text-text-quaternary">
                   {item.source === 'ai' ? 'AI' : item.created_by || t('intel.inbox.srcUser')} · {timeAgo(item.created_at, locale)}

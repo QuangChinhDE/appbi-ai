@@ -166,7 +166,7 @@ export function SemanticsPage() {
                         </span>
                       </td>
                       <td className="app-list-cell-tight text-right" onClick={(e) => e.stopPropagation()}>
-                        {m.status !== 'Approved' && (
+                        {canAuthor && m.status !== 'Approved' && (
                           <Button size="xs" variant="secondary" leadingIcon={<ShieldCheck className="h-3 w-3" />} onClick={() => certify(m)}>
                             {t('intel.sem.certify')}
                           </Button>
