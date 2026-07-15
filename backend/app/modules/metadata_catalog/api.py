@@ -37,14 +37,41 @@ logger = logging.getLogger("app.metadata_catalog.api")
 # knowledge (metrics, glossary, rules, playbooks, QA, caveats, AI scope, docs) —
 # unlike dashboards/datasets/observability which enforce require_permission. This
 # closes that gap and makes the Intelligence group consistent with the system.
-_GOVERN_VIEW = require_permission("govern", "view")
-_GOVERN_EDIT = require_permission("govern", "edit")
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_CATALOG_CHECKERS = {
+    m: {"view": require_permission(m, "view"), "edit": require_permission(m, "edit")}
+    for m in ("intelligence", "ai_inbox", "semantics", "ai_guidance", "govern", "observability")
+}
+
+
+def _catalog_module_for(path: str) -> str:
+    """Map a /catalog/* request path to its owning sidebar module. The catalog is
+    ONE backend domain presented as 5 modules, so each path is assigned to the
+    module that owns it; cross-cutting/aggregate paths (overview, ai-draft, status,
+    anything new) fall to 'intelligence' (the group cockpit key, which inherits
+    govern → legacy users pass)."""
+    sub = path.split("/catalog/", 1)[-1] if "/catalog/" in path else path
+    if sub.startswith("observability/"):
+        return "observability"
+    if sub.startswith("govern/"):
+        rest = sub[len("govern/"):]
+        if rest.startswith(("rules", "playbooks", "qa", "instructions", "ai-scope", "certify")):
+            return "ai_guidance"
+        if rest.startswith(("managed-metric", "metrics", "metric-", "vocab-", "glossary", "term", "classification", "tag", "caveats")):
+            return "semantics"
+        if rest.startswith(("review-items", "review")):
+            return "ai_inbox"
+        if rest.startswith(("knowledge", "search", "graph", "asset-docs", "change-log")):
+            return "govern"
+    return "intelligence"
 
 
 async def govern_module_gate(request: Request, user: User = Depends(get_current_user)) -> User:
-    checker = _GOVERN_VIEW if request.method in _READ_METHODS else _GOVERN_EDIT
-    return await checker(user=user)
+    """Per-module floor for the whole /catalog router: reads → <module>:view,
+    writes → <module>:edit. One gate, no per-endpoint drift."""
+    module = _catalog_module_for(request.url.path)
+    level = "view" if request.method in _READ_METHODS else "edit"
+    return await _CATALOG_CHECKERS[module][level](user=user)
 
 
 router = APIRouter(

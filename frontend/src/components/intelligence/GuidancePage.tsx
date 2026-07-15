@@ -41,7 +41,7 @@ type GuidanceTab = 'playbooks' | 'rules' | 'qa' | 'scope' | 'instructions';
 
 export function GuidancePage() {
   const { t } = useI18n();
-  const canAuthor = useCanAuthor();
+  const canAuthor = useCanAuthor('ai_guidance');
   const search = useSearchParams();
   const initial = (search.get('tab') as GuidanceTab) || 'playbooks';
   const [tab, setTab] = useState<GuidanceTab>(

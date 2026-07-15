@@ -47,7 +47,7 @@ export function InboxPage() {
   // Approving/rejecting mutates governance state → a WRITE. Only authors
   // (govern:edit) may act; view users see the queue read-only, matching the
   // system-wide "view = read-only" model now enforced by the backend.
-  const canAuthor = useCanAuthor();
+  const canAuthor = useCanAuthor('ai_inbox');
   const [status, setStatus] = useState<'pending' | 'approved' | 'rejected'>('pending');
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [items, setItems] = useState<ReviewItem[]>([]);

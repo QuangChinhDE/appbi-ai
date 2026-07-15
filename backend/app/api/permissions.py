@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import get_current_user, require_permission, INTELLIGENCE_INHERIT
 from app.models.team import Team, TeamMembership
 from app.models.user import User, UserStatus
 
@@ -36,6 +36,11 @@ _OPTIONAL_MODULES = {
     # backend deployed (METADATA_CATALOG_ENABLED) — so a stray module flag can't
     # produce dead-nav pointing at an unregistered router.
     "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    # Intelligence group — same enablement as govern (same catalog backend).
+    "intelligence": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    "ai_inbox": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    "semantics": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    "ai_guidance": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     "observability": settings.METADATA_CATALOG_ENABLED and settings.OBSERVABILITY_ENABLED,
 }
 
@@ -47,7 +52,12 @@ def _module_enabled(name: str) -> bool:
 _ALL_MODULES = [
     "data_sources",
     "datasets",
-    "govern",
+    # Intelligence sidebar group (was one 'govern' key; now one per module).
+    "intelligence",     # AI Readiness (cockpit)
+    "ai_inbox",         # AI Suggestions (review ledger)
+    "semantics",        # Metrics & Terms
+    "ai_guidance",      # AI Guidance
+    "govern",           # Documents (knowledge hub) — keeps the legacy key
     "observability",
     "explore_charts",
     "dashboards",
@@ -61,6 +71,10 @@ MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
 _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "data_sources":      ["none", "view", "edit", "full"],
     "datasets":          ["none", "view", "edit", "full"],
+    "intelligence":      ["none", "view", "edit", "full"],
+    "ai_inbox":          ["none", "view", "edit", "full"],
+    "semantics":         ["none", "view", "edit", "full"],
+    "ai_guidance":       ["none", "view", "edit", "full"],
     "govern":            ["none", "view", "edit", "full"],
     "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
@@ -82,6 +96,10 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "full",
         "datasets": "full",
         "govern": "full",
+        "intelligence": "full",
+        "ai_inbox": "full",
+        "semantics": "full",
+        "ai_guidance": "full",
         "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
@@ -92,6 +110,10 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "view",
         "datasets": "edit",
         "govern": "edit",
+        "intelligence": "edit",
+        "ai_inbox": "edit",
+        "semantics": "edit",
+        "ai_guidance": "edit",
         "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
@@ -102,6 +124,10 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "view",
         "datasets": "view",
         "govern": "view",
+        "intelligence": "view",
+        "ai_inbox": "view",
+        "semantics": "view",
+        "ai_guidance": "view",
         "observability": "view",
         "explore_charts": "view",
         "dashboards": "view",
@@ -112,6 +138,10 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "none",
         "datasets": "none",
         "govern": "none",
+        "intelligence": "none",
+        "ai_inbox": "none",
+        "semantics": "none",
+        "ai_guidance": "none",
         "observability": "none",
         "explore_charts": "none",
         "dashboards": "view",
@@ -203,6 +233,15 @@ def _get_user_permissions(user: User) -> Dict[str, str]:
     base = _default_permissions()
     stored: dict = user.permissions or {}
     base.update({k: v for k, v in stored.items() if k in MODULES})
+    # Intelligence group inherits the legacy 'govern' level when its own key is not
+    # explicitly stored — so existing govern:X users keep full Intelligence access.
+    resolved = set(stored)
+    _gv = stored.get("govern")
+    if _gv is not None:
+        for _m in INTELLIGENCE_INHERIT:
+            if _m in MODULES and _m not in stored:
+                base[_m] = _gv
+                resolved.add(_m)
     # Admin (settings=full) implicitly has any module added AFTER their
     # permissions row was created — surface those (e.g. govern/observability
     # enabled today) so the sidebar/matrix show them instead of hiding a new
@@ -210,7 +249,7 @@ def _get_user_permissions(user: User) -> Dict[str, str]:
     # an explicit stored level (even "none") is left untouched.
     if str(stored.get("settings", "")).strip().lower() == "full":
         for m in MODULES:
-            if m != "settings" and m not in stored:
+            if m != "settings" and m not in resolved:
                 base[m] = "full"
     return base
 

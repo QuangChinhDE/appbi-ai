@@ -22,9 +22,9 @@ import type { IntelStatus } from '@/lib/catalog';
  * certify / propose — needs `govern:edit`. Grant `govern:edit` to whoever should
  * review & certify; a pure observer gets `govern:view`.
  */
-export function useCanAuthor(): boolean {
+export function useCanAuthor(module: string = 'govern'): boolean {
   const { data } = usePermissions();
-  return hasPermission(data?.permissions, 'govern', 'edit');
+  return hasPermission(data?.permissions, module, 'edit');
 }
 
 /** Lifecycle badge — one vocabulary for every knowledge type. */
