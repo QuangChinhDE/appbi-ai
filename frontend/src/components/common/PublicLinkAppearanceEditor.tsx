@@ -23,6 +23,11 @@ interface PublicLinkAppearanceEditorProps {
   value: PublicLinkAppearanceConfig;
   dashboardName: string;
   onChange: (value: PublicLinkAppearanceConfig) => void;
+  // Snapshot freshness (TTL) only means something when the report actually has a
+  // materialized source (BigQuery with materialization on). When false, the
+  // report serves live/cached data and the TTL selector is hidden to avoid
+  // implying a "refresh schedule" that does nothing.
+  snapshotEnabled?: boolean;
 }
 
 interface ToggleCardProps {
@@ -91,6 +96,7 @@ export function PublicLinkAppearanceEditor({
   value,
   dashboardName,
   onChange,
+  snapshotEnabled = false,
 }: PublicLinkAppearanceEditorProps) {
   const appearance = normalizePublicLinkAppearance(value);
   const [logoError, setLogoError] = useState<string | null>(null);
@@ -241,6 +247,12 @@ export function PublicLinkAppearanceEditor({
         </div>
       </div>
 
+      {/* Snapshot freshness TTL only applies to a materialized source (BigQuery
+          with materialization on). For live/cached sources (Postgres, MySQL,
+          Sheets, manual, or BQ not materialized) there is no snapshot to
+          serve-stale/rebuild, so hiding this avoids implying a refresh schedule
+          that does nothing. */}
+      {snapshotEnabled && (
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Sparkles}
@@ -266,6 +278,7 @@ export function PublicLinkAppearanceEditor({
           Ví dụ TTL 30 phút: mở lúc 10:00 phục vụ snapshot hiện có; trong 10:00–10:30 không dựng lại. Ai xem sau 10:30 sẽ kích hoạt dựng snapshot mới ở nền; nếu 10:30 không ai xem thì không tự dựng.
         </p>
       </div>
+      )}
 
     </div>
   );

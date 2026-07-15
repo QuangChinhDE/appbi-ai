@@ -2398,6 +2398,12 @@ def refresh_dataset_snapshots(
     # snapshot_service.start_manual_refresh) so a large extract-load never blocks
     # the request past nginx's 120s API timeout. Client polls freshness/building.
     started = snapshot_service.start_manual_refresh([dataset_id])
+    # Pull the LATEST FROM SOURCE for every source type (not just BQ snapshots):
+    # bust the live query-result cache for this dataset's datasources so the next
+    # chart query re-reads the source instead of the ≤5-min cache.
+    from app.services import query_cache
+    for _sid in {t.datasource_id for t in (dataset_obj.tables or []) if t.datasource_id}:
+        query_cache.invalidate_datasource(_sid)
     ts = snapshot_service.as_of(
         db,
         [t.id for t in dataset_obj.tables] if getattr(dataset_obj, "tables", None) else [],
