@@ -345,31 +345,60 @@ def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
     return f"{auth_mode}:{project_id}:{creds_fp}"
 
 
+def _bq_client_cache_hit(cache_key: str | None) -> bigquery.Client | None:
+    """Return a warm cached client for the key, or None if cold/expired/uncacheable."""
+    if cache_key is None:
+        return None
+    cached = _BQ_CLIENT_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
+        return cached[1]
+    return None
+
+
 def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
     project_id = str(config.get("project_id") or "").strip() or None
     cache_key = _bigquery_client_cache_key(config)
-    if cache_key is not None:
-        cached = _BQ_CLIENT_CACHE.get(cache_key)
-        now = time.time()
-        if cached and (now - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
-            # Warm reuse — the fast path Fix #5 protects (we no longer close()
-            # cached clients). Kept at DEBUG to avoid spamming INFO on every
-            # dry-run + query; the cold-build line below is the notable event.
-            logger.debug("[perf] bq client cache=HIT project=%s", project_id)
-            return cached[1]
-    # [perf] cold build: credential load + TLS handshake. Expensive; should be
-    # RARE per datasource (~once per 5-min TTL). A burst of these on one
-    # dashboard load means the cache isn't sticking — only expected when the
-    # key can't be derived (no project / no OAuth owner id).
-    _build_reason = "uncacheable(no project/owner)" if cache_key is None else "cold/expired"
-    logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
-    client = bigquery.Client(
-        credentials=_build_gcp_credentials(config),
-        project=project_id,
-    )
-    if cache_key is not None:
-        _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
-    return client
+
+    # Fast path (unlocked): a warm client, the overwhelmingly common case —
+    # served with zero lock contention. Fix #5 keeps cached clients open.
+    hit = _bq_client_cache_hit(cache_key)
+    if hit is not None:
+        logger.debug("[perf] bq client cache=HIT project=%s", project_id)
+        return hit
+
+    def _build() -> bigquery.Client:
+        # Re-check inside the flight: a burst of concurrent requests that all
+        # missed the cold cache serialise here; the LEADER builds + caches, and
+        # every waiter (which enters after the leader populated the cache) takes
+        # this hit instead of issuing its own credential-load + TLS handshake.
+        # This is the single_flight() contract (compute re-checks the cache).
+        warm = _bq_client_cache_hit(cache_key)
+        if warm is not None:
+            logger.debug("[perf] bq client cache=HIT(after-flight) project=%s", project_id)
+            return warm
+        # [perf] cold build: credential load + TLS handshake. Expensive; should be
+        # RARE per datasource (~once per 5-min TTL). A burst of these on one
+        # dashboard load means the cache isn't sticking — only expected when the
+        # key can't be derived (no project / no OAuth owner id).
+        _build_reason = "uncacheable(no project/owner)" if cache_key is None else "cold/expired"
+        logger.info("[perf] bq client cache=MISS project=%s reason=%s (building new client)", project_id, _build_reason)
+        client = bigquery.Client(
+            credentials=_build_gcp_credentials(config),
+            project=project_id,
+        )
+        if cache_key is not None:
+            _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
+        return client
+
+    # Single-flight the cold build so a cache stampede (N concurrent cold-cache
+    # requests) collapses to ONE client build instead of N — the real source of
+    # the 17-26s outliers. Only when we have a key to dedup on; an uncacheable
+    # config (no project / no OAuth owner) has a distinct identity per call, so
+    # there is nothing to collapse — build directly (old behaviour).
+    if cache_key is None:
+        return _build()
+    from app.services import query_cache as _qc
+    return _qc.single_flight(f"bqclient::{cache_key}", _build)
 
 
 def _bq_client_is_cached(config: Dict[str, Any], client: "bigquery.Client") -> bool:
@@ -387,6 +416,50 @@ def _bq_client_is_cached(config: Dict[str, Any], client: "bigquery.Client") -> b
         return False
     cached = _BQ_CLIENT_CACHE.get(cache_key)
     return bool(cached and cached[1] is client)
+
+
+def evict_bigquery_client_cache(*configs: Dict[str, Any]) -> int:
+    """Drop cached BigQuery client(s) so the NEXT query rebuilds with fresh
+    credentials. Call this after a datasource's credential/config CHANGES — the
+    whole Source→Dataset→Explore→Dashboard chain resolves the datasource live and
+    builds its client through this one cache, so evicting here makes a key change
+    take effect immediately instead of the warm client (built from the OLD key)
+    lingering up to the 5-min TTL. Pass the config(s) whose entries to drop (e.g.
+    the pre- AND post-update config, since an auth-mode switch changes the key);
+    pass none to clear ALL. NEVER raises.
+
+    Per-process: with multiple uvicorn workers only the worker handling the update
+    is evicted synchronously. Other workers self-correct because the cache key is
+    derived from the credential (SA creds fingerprint / OAuth owner) — a real key
+    change yields a new cache key there too — bounded by the TTL for same-key
+    changes (e.g. OAuth re-auth)."""
+    try:
+        if configs:
+            keys = []
+            for cfg in configs:
+                try:
+                    k = _bigquery_client_cache_key(cfg)
+                except Exception:
+                    k = None
+                if k:
+                    keys.append(k)
+        else:
+            keys = list(_BQ_CLIENT_CACHE.keys())
+        evicted = 0
+        for k in keys:
+            entry = _BQ_CLIENT_CACHE.pop(k, None)
+            if entry is not None:
+                evicted += 1
+                try:
+                    entry[1].close()
+                except Exception:  # noqa: BLE001 — closing a torn-down client is best-effort
+                    pass
+        if evicted:
+            logger.info("[bq] evicted %d cached client(s) after datasource change", evicted)
+        return evicted
+    except Exception:  # noqa: BLE001 — cache eviction must never break an update
+        logger.debug("evict_bigquery_client_cache failed", exc_info=True)
+        return 0
 
 
 _TRAILING_ROW_LIMIT_RE = re.compile(
@@ -1235,6 +1308,41 @@ class DataSourceConnectionService:
         service account (which is the only identity granted on the SA-only
         snapshot dataset). Returns a decrypted config ready for execute_query."""
         return _materialization_bq_config(config)
+
+    @staticmethod
+    def bigquery_source_watermark(config: Dict[str, Any], sql: str, timeout_seconds: int = 30):
+        """MAX(last_modified_time) across the source tables that `sql` reads,
+        for change-driven snapshot refresh (perf #5). Resolves the referenced
+        tables via a FREE dry-run (no scan / no cost), then reads each table's
+        `.modified` from metadata. Uses the datasource's READ credential (the SA
+        can't see source). Returns a tz-aware UTC datetime, or None when it
+        can't be determined (no refs / view / federated / permission) → callers
+        fall back to TTL. NEVER raises."""
+        from app.core.crypto import decrypt_config
+        dc = decrypt_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(dc)
+            job = client.query(
+                sql,
+                job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+            )
+            refs = list(getattr(job, "referenced_tables", []) or [])
+            mods = []
+            for ref in refs:
+                try:
+                    t = client.get_table(ref)
+                    if getattr(t, "modified", None) is not None:
+                        mods.append(t.modified)
+                except Exception:  # noqa: BLE001 — skip tables we can't stat
+                    continue
+            return max(mods) if mods else None
+        except Exception:  # noqa: BLE001 — watermark is best-effort → None → TTL fallback
+            logger.debug("[snapshot] source watermark unavailable", exc_info=True)
+            return None
+        finally:
+            if client and not _bq_client_is_cached(dc, client):
+                client.close()
 
     @staticmethod
     def get_bigquery_location(config: Dict[str, Any]) -> str | None:

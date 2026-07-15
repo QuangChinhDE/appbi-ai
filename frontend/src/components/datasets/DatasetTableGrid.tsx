@@ -5,9 +5,28 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Hash, Settings2, X, Trash2, Eye } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Hash, Settings2, X, Trash2, Eye, Filter as FilterIcon, Wand2, Loader2 } from 'lucide-react';
 import { ColumnSummaryPopover } from './ColumnSummaryPopover';
+import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
+import { AiButton } from '@/components/ui/AiButton';
+import {
+  type TableColumnFilter,
+  type TableFilterColumnType,
+  EMPTY_TABLE_COLUMN_FILTER,
+  isTableColumnFilterActive,
+  detectTableColumnType,
+  rowMatchesAllTableFilters,
+  distinctTableColumnValues,
+} from '@/lib/tableColumnFilter';
+import type { AutoDetectTypesResult, AutoDetectSuggestion } from '@/hooks/use-datasets';
 import { useI18n } from '@/providers/LanguageProvider';
+
+// Map a dataset column's declared/overridden data type → the filter's type
+// family (else fall back to value-based sniffing). Keeps the filter's operators
+// aligned with the type the user set in the grid.
+const NUMERIC_DATA_TYPES = new Set(['number', 'integer', 'int', 'float', 'double', 'decimal', 'bigint', 'long']);
+const DATE_DATA_TYPES = new Set(['date', 'datetime', 'timestamp', 'timestamptz', 'datetimetz', 'time']);
 
 // ===================== Types =====================
 
@@ -33,6 +52,12 @@ export interface DatasetTableGridProps {
   columnFormatsDb?: Record<string, ColFormat>;
   /** Called when user applies a format so parent can persist to DB */
   onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => Promise<void> | void;
+  /** Full-scan auto-detect of column types. `onAutoDetectPreview` is a DRY RUN
+   *  (returns suggestions incl. off-type row counts/examples) → the grid shows a
+   *  confirm modal → `onAutoDetectApply` persists + reloads. When preview is set,
+   *  a toolbar "Auto-detect types" button shows. */
+  onAutoDetectPreview?: () => Promise<AutoDetectTypesResult>;
+  onAutoDetectApply?: () => Promise<void> | void;
   /** When set, enables the per-column summary popover (eye icon). */
   datasetId?: number | string;
   tableId?: number | string;
@@ -209,7 +234,43 @@ interface ValidationResult {
   examples: string[];
 }
 
-function validateColumnValues(values: any[], formatType: FormatType): ValidationResult {
+const _MONTHS_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const _ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
+const _DATE_TOKENS: Array<[string, string]> = [
+  ['YYYY', '(\\d{4})'], ['MMM', '([A-Za-z]{3,})'], ['MM', '(\\d{1,2})'], ['DD', '(\\d{1,2})'],
+  ['HH', '(\\d{1,2})'], ['mm', '(\\d{1,2})'], ['ss', '(\\d{1,2})'],
+];
+
+/** Does `value` match the SELECTED date format (range-checked)? Mirrors the
+ *  backend PARSE_DATE branch so the warning reflects what conversion will
+ *  actually keep. Dates come in many shapes on Sheets — we validate against the
+ *  format the user picked, not JS `new Date()` (which mis-reads dd/mm and
+ *  rejects valid day-first dates like 31/07/2026). */
+function matchesDateFormat(value: string, fmt: string): boolean {
+  const order: string[] = [];
+  let pattern = '';
+  let i = 0;
+  while (i < fmt.length) {
+    const tok = _DATE_TOKENS.find(([t]) => fmt.startsWith(t, i));
+    if (tok) { pattern += tok[1]; order.push(tok[0]); i += tok[0].length; }
+    else { pattern += fmt[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); i++; }
+  }
+  const m = new RegExp('^' + pattern + '$').exec(value);
+  if (!m) return false;
+  let g = 1;
+  for (const t of order) {
+    const v = m[g++];
+    const n = Number(v);
+    if (t === 'MM' && (n < 1 || n > 12)) return false;
+    if (t === 'DD' && (n < 1 || n > 31)) return false;
+    if (t === 'HH' && (n < 0 || n > 23)) return false;
+    if ((t === 'mm' || t === 'ss') && (n < 0 || n > 59)) return false;
+    if (t === 'MMM' && !_MONTHS_ABBR.includes(v.slice(0, 3).toLowerCase())) return false;
+  }
+  return true;
+}
+
+function validateColumnValues(values: any[], formatType: FormatType, dateFormat: string): ValidationResult {
   if (formatType === 'default' || formatType === 'text') {
     return { valid: true, invalidCount: 0, total: values.length, examples: [] };
   }
@@ -222,18 +283,20 @@ function validateColumnValues(values: any[], formatType: FormatType): Validation
   const isInvalid = (v: any): boolean => {
     const s = String(v).trim();
     if (formatType === 'number' || formatType === 'currency' || formatType === 'percentage') {
-      return isNaN(parseFloat(s)) || !isFinite(Number(s.replace(',', '.')));
+      return isNaN(parseFloat(s)) || !isFinite(Number(s.replace(/,/g, '')));
     }
     if (formatType === 'date' || formatType === 'datetime') {
       if (s === '') return false;
-      const d = new Date(s);
-      return isNaN(d.getTime());
+      // Convertible if it matches the chosen format OR ISO (the backend's
+      // COALESCE(PARSE_DATE(fmt), CAST AS DATE/TIMESTAMP) fallback). Anything
+      // else genuinely won't parse → it's a real "will be blank" value.
+      return !(matchesDateFormat(s, dateFormat) || _ISO_DATE_RE.test(s));
     }
     return false;
   };
 
   const badValues = nonEmpty.filter(isInvalid);
-  const examples = badValues.slice(0, 3).map((v) => String(v));
+  const examples = Array.from(new Set(badValues.map((v) => String(v)))).slice(0, 4);
   return {
     valid: badValues.length === 0,
     invalidCount: badValues.length,
@@ -295,13 +358,18 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
   const upd = (partial: Partial<ColFormat>) => setDraft((prev) => ({ ...prev, ...partial }));
   const isDirty = JSON.stringify(draft) !== JSON.stringify(format);
 
-  // Validate current draft type against actual column data
+  // Validate current draft type against actual column data — for dates, against
+  // the CHOSEN format (+ ISO fallback), matching what the backend keeps.
   const validation = useMemo(
-    () => validateColumnValues(values, draft.formatType),
-    [values, draft.formatType]
+    () => validateColumnValues(values, draft.formatType, draft.dateFormat),
+    [values, draft.formatType, draft.dateFormat]
   );
 
-  const canApply = isDirty && validation.valid;
+  // WARN, don't BLOCK: a few unparseable values shouldn't stop the user setting
+  // the type — they'll be saved blank (the backend safe-casts them to NULL).
+  // Only hard-block when EVERY non-empty value fails (the type is just wrong).
+  const allInvalid = validation.total > 0 && validation.invalidCount === validation.total;
+  const canApply = isDirty && !allInvalid;
   const handleApply = async () => {
     if (!canApply || isSaving) return;
     setSaveError(null);
@@ -516,8 +584,11 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         {isDirty && !validation.valid && (
           <div className="rounded border border-warning/40 bg-warning/10 p-2 text-[10px] text-warning space-y-0.5">
             <p className="font-semibold">⚠️ {t('datasets.formatPanel.invalidCount', { count: validation.invalidCount, total: validation.total })}</p>
-            <p className="text-warning">{t('datasets.formatPanel.invalidTypePrefix')} <strong>{draft.formatType}</strong>.
-              {t('datasets.formatPanel.invalidTypeSuffix')}</p>
+            <p className="text-warning">
+              {allInvalid
+                ? <>{t('datasets.formatPanel.invalidTypePrefix')} <strong>{draft.formatType}</strong>. {t('datasets.formatPanel.invalidTypeSuffix')}</>
+                : t('datasets.formatPanel.invalidWillBlank')}
+            </p>
             {validation.examples.length > 0 && (
               <p className="font-mono text-[9px] text-warning break-all">
                 {t('datasets.formatPanel.examplePrefix')} {validation.examples.map((e) => `"${e}"`).join(', ')}
@@ -544,7 +615,13 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
               : 'bg-warning/15 text-warning cursor-not-allowed'
           }`}
         >
-          {!isDirty ? t('datasets.formatPanel.noChanges') : !validation.valid ? t('datasets.formatPanel.dataInvalid') : t('datasets.formatPanel.applyAndSave')}
+          {!isDirty
+            ? t('datasets.formatPanel.noChanges')
+            : allInvalid
+            ? t('datasets.formatPanel.dataInvalid')
+            : !validation.valid
+            ? t('datasets.formatPanel.applyAnyway')
+            : t('datasets.formatPanel.applyAndSave')}
         </button>
 
         {/* Reset */}
@@ -596,6 +673,8 @@ export function DatasetTableGrid({
   onEditColumn,
   columnFormatsDb,
   onColumnFormatChange,
+  onAutoDetectPreview,
+  onAutoDetectApply,
   datasetId,
   tableId,
 }: DatasetTableGridProps) {
@@ -605,6 +684,72 @@ export function DatasetTableGrid({
   const [summaryCol, setSummaryCol] = useState<string | null>(null);
   const [activeFormatCol, setActiveFormatCol] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // ── Per-column data filter (Excel / Power BI AutoFilter) over the previewed
+  // rows. Pure client-side view filter — narrows which rows show, never
+  // re-queries. Multiple columns AND together. Shared popover + logic with the
+  // Explore chart table.
+  const [columnDataFilters, setColumnDataFilters] = useState<Record<string, TableColumnFilter>>({});
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false);   // preview (dry-run) in flight
+  const [isApplyingTypes, setIsApplyingTypes] = useState(false);
+  // Non-null → the confirm modal is open, holding the columns that will change.
+  const [autoDetectPlan, setAutoDetectPlan] = useState<AutoDetectSuggestion[] | null>(null);
+  const runAutoDetectPreview = async () => {
+    if (!onAutoDetectPreview || isAutoDetecting) return;
+    setIsAutoDetecting(true);
+    try {
+      const result = await onAutoDetectPreview();
+      // Show only columns whose detected type DIFFERS from the current one.
+      const NUM = new Set(['integer', 'float', 'number', 'int', 'double', 'decimal', 'bigint', 'numeric', 'real']);
+      const norm = (t?: string | null) => {
+        const s = (t || '').toLowerCase();
+        return NUM.has(s) ? 'number' : (s === 'datetime' || s === 'timestamp') ? 'datetime' : s;
+      };
+      const currentOf = (name: string) => {
+        const ov = (typeOverrides as Record<string, any> | undefined)?.[name];
+        const ovt = typeof ov === 'string' ? ov : ov?.type;
+        return norm(ovt || columns.find((c) => c.name === name)?.type);
+      };
+      const changes = (result.suggestions || []).filter(
+        (s) => s.suggested_type && norm(s.suggested_type) !== currentOf(s.column),
+      );
+      setAutoDetectPlan(changes);
+    } catch {
+      setAutoDetectPlan(null);
+    } finally {
+      setIsAutoDetecting(false);
+    }
+  };
+  const confirmAutoDetect = async () => {
+    if (!onAutoDetectApply || isApplyingTypes) return;
+    setIsApplyingTypes(true);
+    try {
+      await onAutoDetectApply();
+      setAutoDetectPlan(null);
+    } finally {
+      setIsApplyingTypes(false);
+    }
+  };
+  const openColumnFilter = (name: string, anchor: HTMLElement) => {
+    setFilterAnchorRect(anchor.getBoundingClientRect());
+    setOpenFilterCol((cur) => (cur === name ? null : name));
+    setSummaryCol(null);
+    setActiveFormatCol(null);
+  };
+  const updateColumnDataFilter = (name: string, next: TableColumnFilter) =>
+    setColumnDataFilters((prev) => ({ ...prev, [name]: next }));
+  const clearColumnDataFilter = (name: string) =>
+    setColumnDataFilters((prev) => {
+      const rest = { ...prev };
+      delete rest[name];
+      return rest;
+    });
+  const clearAllDataFilters = () => {
+    setColumnDataFilters({});
+    setOpenFilterCol(null);
+  };
 
   // Initialise format state from DB on table change.
   // columnFormatsDb (full format) takes priority over typeOverrides (type only).
@@ -687,6 +832,32 @@ export function DatasetTableGrid({
       return formattedRow;
     });
   }, [rows, columns, columnFormats]);
+
+  // Filter type per column: prefer the declared/overridden data type, else sniff
+  // values. Distinct-value list + row matching reuse the shared filter engine.
+  const columnFilterTypes = useMemo<Record<string, TableFilterColumnType>>(() => {
+    const map: Record<string, TableFilterColumnType> = {};
+    for (const col of columns) {
+      const ov = (typeOverrides as Record<string, any> | undefined)?.[col.name];
+      const ovType = typeof ov === 'string' ? ov : ov?.type;
+      const declared = String(ovType || col.type || '').toLowerCase();
+      if (DATE_DATA_TYPES.has(declared)) map[col.name] = 'date';
+      else if (NUMERIC_DATA_TYPES.has(declared)) map[col.name] = 'number';
+      else map[col.name] = detectTableColumnType(rows, col.name, false);
+    }
+    return map;
+  }, [columns, rows, typeOverrides]);
+  const hasActiveDataFilters = useMemo(
+    () => Object.values(columnDataFilters).some(isTableColumnFilterActive),
+    [columnDataFilters],
+  );
+  // Keep the ORIGINAL row index so formatted-cell + row-number lookups stay
+  // aligned after filtering.
+  const filteredIndexedRows = useMemo(() => {
+    const indexed = rows.map((row, i) => ({ row, i }));
+    if (!hasActiveDataFilters) return indexed;
+    return indexed.filter(({ row }) => rowMatchesAllTableFilters(row, columnDataFilters, columnFilterTypes));
+  }, [rows, columnDataFilters, columnFilterTypes, hasActiveDataFilters]);
 
   // ---- Loading skeleton ----
   if (isLoading) {
@@ -811,6 +982,22 @@ export function DatasetTableGrid({
                       </div>
 
                       <div className="flex items-center gap-0.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openColumnFilter(column.name, e.currentTarget);
+                          }}
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-all shrink-0 ${
+                            isTableColumnFilterActive(columnDataFilters[column.name])
+                              ? 'opacity-100 text-brand bg-brand/15'
+                              : openFilterCol === column.name
+                              ? 'opacity-100 text-brand bg-brand/15'
+                              : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
+                          }`}
+                          title={t('datasets.grid.filterColumn')}
+                        >
+                          <FilterIcon className={`w-3.5 h-3.5 ${isTableColumnFilterActive(columnDataFilters[column.name]) ? 'fill-current' : ''}`} />
+                        </button>
                         {datasetId !== undefined && tableId !== undefined && (
                           <button
                             onClick={(e) => {
@@ -899,7 +1086,7 @@ export function DatasetTableGrid({
           </thead>
 
           <tbody className="bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
-            {rows.map((row, rowIndex) => (
+            {filteredIndexedRows.map(({ row, i: rowIndex }) => (
               <tr key={rowIndex} className="hover:bg-surface-2 transition-colors">
                 <td className="w-16 px-4 py-3 text-sm text-text-quaternary border-r font-mono">{rowIndex + 1}</td>
                 {columns.map((column) => {
@@ -921,19 +1108,39 @@ export function DatasetTableGrid({
                 {!readOnly && onAddColumn && <td className="w-16 px-4 py-3 border-l" />}
               </tr>
             ))}
+            {hasActiveDataFilters && filteredIndexedRows.length === 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length + 1 + (!readOnly && onAddColumn ? 1 : 0)}
+                  className="px-4 py-8 text-center text-sm text-text-tertiary"
+                >
+                  {t('datasets.grid.filteredRows', { shown: 0, total: rows.length })}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
 
       <div className="border-t bg-surface-2 px-4 py-2 flex items-center gap-4">
         <p className="text-xs text-text-tertiary">
-          {t('datasets.grid.showingRows', { count: rows.length })}
+          {hasActiveDataFilters
+            ? t('datasets.grid.filteredRows', { shown: filteredIndexedRows.length, total: rows.length })
+            : t('datasets.grid.showingRows', { count: rows.length })}
         </p>
         {computedColSet.size > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-warning">
             <span className="inline-block w-2 h-2 rounded-full bg-warning/60" />
             {t('datasets.grid.computedColumnsCount', { count: computedColSet.size })}
           </span>
+        )}
+        {hasActiveDataFilters && (
+          <button
+            onClick={clearAllDataFilters}
+            className="text-xs text-text-quaternary hover:text-danger transition-colors"
+          >
+            {t('datasets.grid.clearAllFilters')}
+          </button>
         )}
         {Object.keys(columnFormats).length > 0 && (
           <button
@@ -943,7 +1150,121 @@ export function DatasetTableGrid({
             {t('datasets.grid.clearAllFormats', { count: Object.keys(columnFormats).length })}
           </button>
         )}
+        {onAutoDetectPreview && (
+          <AiButton
+            onClick={runAutoDetectPreview}
+            loading={isAutoDetecting}
+            title={t('datasets.grid.autoDetectHint')}
+            className="ml-auto"
+          >
+            {t('datasets.grid.autoDetectTypes')}
+          </AiButton>
+        )}
       </div>
+
+      {/* Column-filter popover — portal to <body> so the grid's overflow can't
+          clip it. */}
+      {openFilterCol && filterAnchorRect && (
+        <ColumnFilterPopover
+          key={openFilterCol}
+          label={openFilterCol}
+          type={columnFilterTypes[openFilterCol] ?? 'text'}
+          filter={columnDataFilters[openFilterCol] ?? EMPTY_TABLE_COLUMN_FILTER}
+          distinctValues={distinctTableColumnValues(rows, openFilterCol)}
+          anchorRect={filterAnchorRect}
+          onChange={(next) => updateColumnDataFilter(openFilterCol, next)}
+          onClear={() => clearColumnDataFilter(openFilterCol)}
+          onClose={() => setOpenFilterCol(null)}
+        />
+      )}
+
+      {/* Auto-detect PREVIEW / confirm modal — shows which columns will be typed
+          and which off-type rows become blank BEFORE applying. It's a config
+          (type_overrides), never a raw-data edit. */}
+      {autoDetectPlan !== null && createPortal(
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !isApplyingTypes && setAutoDetectPlan(null)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-4 w-4 text-brand" />
+                <h3 className="text-sm font-semibold text-text-primary">{t('datasets.grid.autoDetectPreviewTitle')}</h3>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                disabled={isApplyingTypes}
+                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-50"
+                onClick={() => setAutoDetectPlan(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              <p className="mb-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-[11px] leading-relaxed text-text-tertiary">
+                {t('datasets.grid.autoDetectConfigNote')}
+              </p>
+              {autoDetectPlan.length === 0 ? (
+                <p className="py-6 text-center text-sm text-text-tertiary">{t('datasets.grid.autoDetectNone')}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {autoDetectPlan.map((s) => {
+                    const bad = s.invalid_count ?? 0;
+                    const ex = (s.invalid_examples ?? []).slice(0, 3);
+                    return (
+                      <li key={s.column} className="rounded-md border border-[rgb(var(--border-line))] px-3 py-2">
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span className="truncate font-medium text-text-primary" title={s.column}>{s.column}</span>
+                          <span className="shrink-0 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-semibold text-brand">
+                            {s.suggested_type}{s.parse_format ? ` · ${s.parse_format}` : ''}
+                          </span>
+                        </div>
+                        {bad > 0 && (
+                          <div className="mt-1 text-[11px] text-warning">
+                            ⚠ {t('datasets.grid.autoDetectRowsToBlank', { count: bad })}
+                            {ex.length > 0 && (
+                              <span className="ml-1 font-mono text-text-quaternary">
+                                {t('datasets.formatPanel.examplePrefix')} {ex.map((e) => `"${e}"`).join(', ')}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-4 py-3">
+              <button
+                type="button"
+                disabled={isApplyingTypes}
+                onClick={() => setAutoDetectPlan(null)}
+                className="rounded-md border border-[rgb(var(--border-line))] px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+              >
+                {t('datasets.grid.autoDetectCancel')}
+              </button>
+              <button
+                type="button"
+                disabled={isApplyingTypes || autoDetectPlan.length === 0}
+                onClick={confirmAutoDetect}
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isApplyingTypes && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {t('datasets.grid.autoDetectApplyBtn', { count: autoDetectPlan.length })}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -93,7 +93,29 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'checkbox', label: 'On / off' },
   { value: 'file', label: 'File upload (base64, ≤1MB)' },
   { value: 'image', label: 'Image upload (base64, ≤1MB)' },
+  { value: 'images', label: 'Nhiều ảnh (chụp thực địa)' },
   { value: 'map', label: 'Bản đồ (chọn vùng trên map)' },
+  { value: 'geopoint', label: 'Vị trí GPS (chấm công/định vị)' },
+  { value: 'signature', label: 'Chữ ký tay' },
+  { value: 'barcode', label: 'Quét mã QR / Barcode' },
+  { value: 'audio', label: 'Ghi âm ghi chú' },
+  { value: 'computed', label: 'Tính tự động (công thức)' },
+  { value: 'status', label: 'Trạng thái / duyệt' },
+  // ── Rich input types ──────────────────────────────────────────────
+  { value: 'enum_list', label: 'Chọn nhiều (chips)' },
+  { value: 'rating', label: 'Đánh giá (sao)' },
+  { value: 'slider', label: 'Thanh trượt (slider)' },
+  { value: 'email', label: 'Email' },
+  { value: 'phone', label: 'Số điện thoại' },
+  { value: 'url', label: 'Đường dẫn (URL)' },
+  { value: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
+  { value: 'currency', label: 'Tiền tệ' },
+  { value: 'percent', label: 'Phần trăm (%)' },
+  { value: 'time', label: 'Giờ (time)' },
+  { value: 'duration', label: 'Khoảng thời gian' },
+  { value: 'color', label: 'Màu sắc' },
+  { value: 'video', label: 'Video (clip ngắn)' },
+  { value: 'qr', label: 'Mã QR (hiển thị / in tem)' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -369,6 +391,7 @@ export default function FormScreenEditor({
             tables={tables}
             pageOptions={pages}
             sectionOptions={sections}
+            allScreens={allScreens}
             onChange={(patch) => updateField(activeFieldIndex, patch)}
           />
         </BuilderInspectorPanel>
@@ -753,6 +776,14 @@ function SubmitFlowInspector({
           )}
         </Lbl>
       )}
+      <Lbl label="Đóng dấu GPS khi lưu (geo-stamp) — cột lưu 'lat,lng'" className="wb-col-span-2">
+        <input
+          value={form.geo_stamp_column || ''}
+          onChange={(event) => onChange({ geo_stamp_column: event.target.value || null })}
+          className={INPUT}
+          placeholder="vd: vi_tri_gps (để trống = tắt)"
+        />
+      </Lbl>
     </div>
   );
 }
@@ -1077,6 +1108,7 @@ function FieldInspector({
   tables,
   pageOptions,
   sectionOptions,
+  allScreens,
   onChange,
 }: {
   field: FormFieldSpec;
@@ -1084,6 +1116,7 @@ function FieldInspector({
   tables: DatasetTableInfo[];
   pageOptions: FormPage[];
   sectionOptions: string[];
+  allScreens: ScreenSpec[];
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
   const sectionValue = field.section || '';
@@ -1218,9 +1251,232 @@ function FieldInspector({
         </Lbl>
       </CollapsibleGroup>
 
-      {(field.widget === 'select' || field.widget === 'lookup' || field.widget === 'map') && (
+      {(field.widget === 'select' ||
+        field.widget === 'lookup' ||
+        field.widget === 'map' ||
+        field.widget === 'enum_list') && (
         <CollapsibleGroup title={field.widget === 'map' ? 'Bản đồ / vùng' : 'Options'}>
           <LookupEditor field={field} tables={tables} onChange={onChange} />
+        </CollapsibleGroup>
+      )}
+
+      {(field.widget === 'computed' ||
+        field.widget === 'number' ||
+        field.widget === 'images' ||
+        field.widget === 'image' ||
+        field.widget === 'status' ||
+        field.widget === 'rating' ||
+        field.widget === 'slider' ||
+        field.widget === 'currency' ||
+        field.widget === 'qr' ||
+        field.widget === 'barcode' ||
+        field.widget === 'enum_list') && (
+        <CollapsibleGroup title="Cấu hình widget">
+          {field.widget === 'rating' && (
+            <div className={BUILDER_GRID_2}>
+              <Lbl label="Số sao tối đa">
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={field.max_stars ?? 5}
+                  onChange={(event) =>
+                    onChange({ max_stars: Math.min(Math.max(Number(event.target.value) || 5, 1), 10) })
+                  }
+                  className={INPUT}
+                />
+              </Lbl>
+              <label className="mt-6 flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={!!field.allow_half}
+                  onChange={(event) => onChange({ allow_half: event.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Cho nửa sao
+              </label>
+            </div>
+          )}
+          {field.widget === 'slider' && (
+            <div className={BUILDER_GRID_4}>
+              <Lbl label="Min">
+                <input
+                  type="number"
+                  value={field.min_value ?? 0}
+                  onChange={(event) => onChange({ min_value: Number(event.target.value) })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Max">
+                <input
+                  type="number"
+                  value={field.max_value ?? 100}
+                  onChange={(event) => onChange({ max_value: Number(event.target.value) })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Bước (step)">
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={field.step ?? 1}
+                  onChange={(event) => onChange({ step: Number(event.target.value) || 1 })}
+                  className={INPUT}
+                />
+              </Lbl>
+              <Lbl label="Đơn vị">
+                <input
+                  value={field.unit || ''}
+                  onChange={(event) => onChange({ unit: event.target.value || null })}
+                  className={INPUT}
+                  placeholder="%"
+                />
+              </Lbl>
+            </div>
+          )}
+          {field.widget === 'currency' && (
+            <Lbl label="Mã / ký hiệu tiền tệ">
+              <input
+                value={field.currency_code || ''}
+                onChange={(event) => onChange({ currency_code: event.target.value || null })}
+                className={INPUT}
+                placeholder="VND"
+              />
+            </Lbl>
+          )}
+          {field.widget === 'enum_list' && (
+            <Lbl label="Số lựa chọn tối đa (bỏ trống = không giới hạn)">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={field.max_select ?? ''}
+                onChange={(event) =>
+                  onChange({ max_select: event.target.value ? Number(event.target.value) : null })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+          )}
+          {field.widget === 'computed' && (
+            <Lbl label="Công thức (VD: [san_luong] * [drc] / 100)">
+              <input
+                value={field.formula || ''}
+                onChange={(event) => onChange({ formula: event.target.value || null })}
+                className={INPUT}
+                placeholder="[san_luong] * [drc] / 100"
+              />
+            </Lbl>
+          )}
+          {(field.widget === 'computed' || field.widget === 'number') && (
+            <Lbl label="Đơn vị (hậu tố, VD: kg, %)">
+              <input
+                value={field.unit || ''}
+                onChange={(event) => onChange({ unit: event.target.value || null })}
+                className={INPUT}
+                placeholder="kg"
+              />
+            </Lbl>
+          )}
+          {(field.widget === 'image' || field.widget === 'images') && (
+            <label className="mt-1 flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={!!field.capture_only}
+                onChange={(event) => onChange({ capture_only: event.target.checked })}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              Chỉ cho chụp trực tiếp (không chọn từ thư viện)
+            </label>
+          )}
+          {field.widget === 'images' && (
+            <Lbl label="Số ảnh tối đa">
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={field.max_items ?? 10}
+                onChange={(event) =>
+                  onChange({ max_items: Math.min(Math.max(Number(event.target.value) || 10, 1), 20) })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+          )}
+          {field.widget === 'status' && (
+            <StatusStatesEditor field={field} onChange={onChange} />
+          )}
+          {field.widget === 'qr' && (
+            <div className="space-y-2">
+              <Lbl label="Cột nguồn (giá trị mã hoá vào QR)">
+                <SingleColumnPicker
+                  sourceColumns={tableCols.map((c) => c.name)}
+                  value={field.qr_source_column || field.column}
+                  onChange={(next) => onChange({ qr_source_column: next || null })}
+                  clearable
+                />
+              </Lbl>
+              <Lbl label="Hoặc mẫu giá trị (ưu tiên) — {{app_url}}, [cột]">
+                <input
+                  value={field.qr_value_template || ''}
+                  onChange={(e) => onChange({ qr_value_template: e.target.value || null })}
+                  className={INPUT}
+                  placeholder="{{app_url}}?screen=capnhat_giao&don_hang_id=[don_hang_id]"
+                />
+              </Lbl>
+              <div className={BUILDER_GRID_2}>
+                <Lbl label="Kích thước (px)">
+                  <input
+                    type="number"
+                    min={48}
+                    max={1024}
+                    value={field.qr_size ?? 160}
+                    onChange={(e) => onChange({ qr_size: Number(e.target.value) || 160 })}
+                    className={INPUT}
+                  />
+                </Lbl>
+                <Lbl label="Chú thích dưới mã">
+                  <input
+                    value={field.qr_caption || ''}
+                    onChange={(e) => onChange({ qr_caption: e.target.value || null })}
+                    className={INPUT}
+                  />
+                </Lbl>
+              </div>
+            </div>
+          )}
+          {field.widget === 'barcode' && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">
+                Sau khi quét được mã, tự chuyển sang màn hình sau (để mở form cập nhật đã điền sẵn).
+              </p>
+              <Lbl label="Quét xong mở màn hình">
+                <select
+                  value={field.scan_go_to_screen || ''}
+                  onChange={(e) => onChange({ scan_go_to_screen: e.target.value || null })}
+                  className={INPUT}
+                >
+                  <option value="">— Không chuyển (chỉ lưu mã) —</option>
+                  {allScreens.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.title || s.id}
+                    </option>
+                  ))}
+                </select>
+              </Lbl>
+              {field.scan_go_to_screen && (
+                <Lbl label="Mang mã sang cột (ở màn hình đích)">
+                  <input
+                    value={field.scan_carry_as || ''}
+                    onChange={(e) => onChange({ scan_carry_as: e.target.value || null })}
+                    className={INPUT}
+                    placeholder={field.column}
+                  />
+                </Lbl>
+              )}
+            </div>
+          )}
         </CollapsibleGroup>
       )}
 
@@ -1419,6 +1675,32 @@ function LookupEditor({
             </Lbl>
           </>
         )}
+
+        {lookup.kind === 'dataset_table' &&
+          (field.widget === 'select' ||
+            field.widget === 'lookup' ||
+            field.widget === 'enum_list') && (
+            <>
+              <Lbl label="Lọc theo field (cột form cha) — tùy chọn">
+                <input
+                  value={lookup.filter_by_field || ''}
+                  onChange={(event) =>
+                    onChange({ lookup: { ...lookup, filter_by_field: event.target.value || null } })
+                  }
+                  className={INPUT}
+                  placeholder="VD: lo_id (field chọn trước đó)"
+                />
+              </Lbl>
+              <Lbl label="Cột khớp trên bảng nguồn">
+                <SingleColumnPicker
+                  sourceColumns={lookupCols.map((column) => column.name)}
+                  value={lookup.filter_column || null}
+                  onChange={(next) => onChange({ lookup: { ...lookup, filter_column: next || '' } })}
+                  placeholder="-- cột để lọc --"
+                />
+              </Lbl>
+            </>
+          )}
       </div>
 
       {lookup.kind === 'static' ? (
@@ -1678,6 +1960,126 @@ function StaticValuesEditor({
         <Plus className="h-3.5 w-3.5" />
         Add choice
       </BuilderActionButton>
+    </div>
+  );
+}
+
+const STATUS_COLORS = ['slate', 'green', 'amber', 'red', 'blue', 'violet'];
+
+function StatusStatesEditor({
+  field,
+  onChange,
+}: {
+  field: FormFieldSpec;
+  onChange: (patch: Partial<FormFieldSpec>) => void;
+}) {
+  const cfg = field.status_config || { states: [], editable_by_roles: [] };
+  const states = cfg.states || [];
+  const setCfg = (patch: Partial<NonNullable<FormFieldSpec['status_config']>>) =>
+    onChange({ status_config: { ...cfg, ...patch } });
+  const updateState = (
+    index: number,
+    patch: Partial<{ value: string; label: string; color: string }>,
+  ) => {
+    const next = states.map((s, i) => (i === index ? { ...s, ...patch } : s));
+    setCfg({ states: next });
+  };
+  return (
+    <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+      <div className="text-caption font-emphasis text-text-secondary">Các trạng thái</div>
+      {states.length > 0 ? (
+        <div className="space-y-2">
+          {states.map((s, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                value={s.value}
+                onChange={(event) => updateState(index, { value: event.target.value })}
+                placeholder="giá trị (vd: cho_duyet)"
+                className={INPUT}
+              />
+              <input
+                value={s.label || ''}
+                onChange={(event) => updateState(index, { label: event.target.value })}
+                placeholder="nhãn (vd: Chờ duyệt)"
+                className={INPUT}
+              />
+              <select
+                value={s.color || 'slate'}
+                onChange={(event) => updateState(index, { color: event.target.value })}
+                className={INPUT}
+              >
+                {STATUS_COLORS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <BuilderIconButton
+                onClick={() => setCfg({ states: states.filter((_, i) => i !== index) })}
+                title="Delete"
+                variant="danger"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-danger" />
+              </BuilderIconButton>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <BuilderEmptyHint>Chưa có trạng thái nào.</BuilderEmptyHint>
+      )}
+      <BuilderActionButton
+        onClick={() => setCfg({ states: [...states, { value: '', label: '', color: 'slate' }] })}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Thêm trạng thái
+      </BuilderActionButton>
+      <Lbl label="Chỉ role này được đổi trạng thái (cách nhau dấu phẩy) — trống = ai sửa được dòng đều đổi được">
+        <input
+          value={(cfg.editable_by_roles || []).join(', ')}
+          onChange={(event) =>
+            setCfg({
+              editable_by_roles: event.target.value
+                .split(',')
+                .map((r) => r.trim())
+                .filter(Boolean),
+            })
+          }
+          className={INPUT}
+          placeholder="vd: admin, quan_doc"
+        />
+      </Lbl>
+      {states.length > 0 && (
+        <div className="space-y-1.5 border-t border-[rgb(var(--border-line))] pt-2">
+          <div className="text-caption font-emphasis text-text-secondary">
+            Luồng chuyển hợp lệ (bỏ trống = cho chuyển tự do; máy chủ chặn bước sai)
+          </div>
+          {states.map((s) => {
+            const from = s.value;
+            const nexts = (cfg.allowed_transitions || {})[from] || [];
+            return (
+              <div key={from || Math.random()} className="flex items-center gap-2">
+                <span className="w-28 shrink-0 truncate text-xs text-text-secondary" title={from}>
+                  {s.label || from || '—'} →
+                </span>
+                <input
+                  value={nexts.join(', ')}
+                  onChange={(event) => {
+                    const list = event.target.value
+                      .split(',')
+                      .map((v) => v.trim())
+                      .filter(Boolean);
+                    const map = { ...(cfg.allowed_transitions || {}) };
+                    if (list.length) map[from] = list;
+                    else delete map[from];
+                    setCfg({ allowed_transitions: map });
+                  }}
+                  className={INPUT}
+                  placeholder="giá trị được phép chuyển tới (vd: dang_giao, huy)"
+                  disabled={!from}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

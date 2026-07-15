@@ -306,6 +306,50 @@ function evalNode(node: Node, ctx: EvalContext): unknown {
         return args.slice(1).some((v) => v === target || String(v) === String(target));
       }
       if (N === 'NOT') return !truthy(args[0]);
+      if (N === 'AND') return args.every((v) => truthy(v));
+      if (N === 'OR') return args.some((v) => truthy(v));
+      if (N === 'ISBLANK') {
+        const v = args[0];
+        return v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+      }
+      // Text
+      if (N === 'CONCAT') return args.map((v) => (v === null || v === undefined ? '' : String(v))).join('');
+      if (N === 'UPPER') return args[0] == null ? null : String(args[0]).toUpperCase();
+      if (N === 'LOWER') return args[0] == null ? null : String(args[0]).toLowerCase();
+      if (N === 'TRIM') return args[0] == null ? null : String(args[0]).trim();
+      if (N === 'LEN') return args[0] == null ? 0 : String(args[0]).length;
+      if (N === 'LEFT') {
+        const s = args[0] == null ? '' : String(args[0]);
+        const n = Math.trunc(coerceNumber(args[1]) ?? 0);
+        return s.slice(0, Math.max(n, 0));
+      }
+      if (N === 'RIGHT') {
+        const s = args[0] == null ? '' : String(args[0]);
+        const n = Math.trunc(coerceNumber(args[1]) ?? 0);
+        return n > 0 ? s.slice(-n) : '';
+      }
+      if (N === 'CONTAINS') {
+        const hay = args[0] == null ? '' : String(args[0]);
+        const needle = args[1] == null ? '' : String(args[1]);
+        return hay.includes(needle);
+      }
+      // Math
+      if (N === 'MOD') {
+        const a = coerceNumber(args[0]);
+        const b = coerceNumber(args[1]);
+        return a === null || !b ? null : a % b;
+      }
+      if (N === 'POWER') {
+        const a = coerceNumber(args[0]);
+        const b = coerceNumber(args[1]);
+        return a === null || b === null ? null : a ** b;
+      }
+      // Date parts (ISO string)
+      if (N === 'YEAR' || N === 'MONTH' || N === 'DAY') {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(args[0] == null ? '' : String(args[0]));
+        if (!m) return null;
+        return Number(m[{ YEAR: 1, MONTH: 2, DAY: 3 }[N] as 1 | 2 | 3]);
+      }
       return null;
     }
   }

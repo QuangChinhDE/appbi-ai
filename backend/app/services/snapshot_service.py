@@ -212,6 +212,15 @@ def build_table_snapshot(
         row.is_current = True
         row.built_at = datetime.utcnow()
         row.build_ms = int((time.time() - t0) * 1000)
+        # perf #5 — capture the source watermark (MAX last_modified of the tables
+        # this snapshot read) so a later render can detect SOURCE-DATA changes and
+        # rebuild only when the data actually changed (change-driven, no spam).
+        try:
+            row.source_watermark = DataSourceConnectionService.bigquery_source_watermark(
+                datasource.config, resolved_sql
+            )
+        except Exception:  # noqa: BLE001 — best-effort; None → TTL fallback
+            row.source_watermark = None
         db.commit()
 
         # Best-effort GC of the just-superseded physical tables.
@@ -380,6 +389,32 @@ def is_stale(as_of_ts: Optional[datetime], ttl_minutes: Optional[int]) -> bool:
 # triggers until the next TTL expiry (no polling / scheduler).
 _async_refresh_inflight: Dict[int, float] = {}
 _async_refresh_lock = threading.Lock()
+# Global ceiling on CONCURRENT background rebuilds across ALL datasets. Each
+# rebuild's extract-load pulls the whole table into Python then re-loads it (a
+# GIL-bound, RAM-heavy job that runs in-process). A public dashboard spanning K
+# datasets would otherwise fire K heavy rebuild threads at once — starving the
+# GIL so foreground /charts/{id}/data requests (which the viewer is waiting on)
+# stall and tiles "spin". Cap it so at most this many run together; skipped
+# datasets are picked up on the next trigger (TTL / watermark) — serve-stale
+# keeps them fast meanwhile, so nothing is lost by deferring.
+_MAX_CONCURRENT_REBUILDS = 1
+
+
+def _reserve_rebuild_slot(dataset_id: int) -> bool:
+    """Reserve a global rebuild slot for `dataset_id` under `_async_refresh_lock`.
+    Returns False (caller must NOT rebuild) when this dataset is already building
+    OR the global concurrency cap is reached. Caller frees the slot in `finally`
+    via `_async_refresh_inflight.pop`. MUST be called while holding the lock."""
+    if dataset_id in _async_refresh_inflight:
+        return False
+    if len(_async_refresh_inflight) >= _MAX_CONCURRENT_REBUILDS:
+        logger.info(
+            "[snapshot] rebuild cap %s reached; deferring dataset=%s (serve-stale meanwhile)",
+            _MAX_CONCURRENT_REBUILDS, dataset_id,
+        )
+        return False
+    _async_refresh_inflight[dataset_id] = time.time()
+    return True
 
 
 def trigger_async_refresh(dataset_id: int) -> None:
@@ -388,9 +423,8 @@ def trigger_async_refresh(dataset_id: int) -> None:
     if not dataset_id:
         return
     with _async_refresh_lock:
-        if dataset_id in _async_refresh_inflight:
+        if not _reserve_rebuild_slot(dataset_id):
             return
-        _async_refresh_inflight[dataset_id] = time.time()
 
     def _run() -> None:
         from app.core.database import SessionLocal
@@ -406,3 +440,167 @@ def trigger_async_refresh(dataset_id: int) -> None:
                 _async_refresh_inflight.pop(dataset_id, None)
 
     threading.Thread(target=_run, name=f"snap-refresh-{dataset_id}", daemon=True).start()
+
+
+# ── change-driven refresh: rebuild when the SOURCE DATA actually changed ──────
+# Detects source-data changes via the source tables' `last_modified_time`
+# (metadata only, no scan/cost) instead of a fixed schedule — so a rebuild fires
+# only on a REAL change (no time-based spam) and works for the builder too (which
+# has no TTL). The metadata check is rate-limited per dataset and runs in the
+# BACKGROUND so the request never waits; TTL remains the backstop for sources
+# whose last_modified is unreliable (streaming buffer) or absent (views).
+_watermark_check_at: Dict[int, float] = {}
+_WATERMARK_CHECK_INTERVAL = 120  # seconds between metadata checks per dataset
+
+
+def _source_changed(db: Session, dataset_id: int) -> bool:
+    """True if any current snapshot's source tables were modified AFTER the
+    snapshot's stored watermark. Metadata only (read cred). Missing watermark →
+    skip that table (TTL backstop). NEVER raises."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        return False
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.is_current.is_(True),
+            DatasetTableSnapshot.status == "ready",
+        )
+        .all()
+    )
+    if not rows:
+        return False
+    by_tid = {r.dataset_table_id: r for r in rows}
+    tables = db.query(DatasetTable).filter(DatasetTable.id.in_(list(by_tid))).all()
+    ds_cache: Dict[int, Optional[DataSource]] = {}
+    for t in tables:
+        row = by_tid.get(t.id)
+        if row is None or row.source_watermark is None:
+            continue  # no baseline → rely on TTL
+        ds = ds_cache.get(t.datasource_id)
+        if ds is None and t.datasource_id:
+            ds = db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
+            ds_cache[t.datasource_id] = ds
+        if ds is None:
+            continue
+        try:
+            cur = DataSourceConnectionService.bigquery_source_watermark(
+                ds.config, _resolved_sql(dataset_obj, t, ds, db)
+            )
+        except Exception:  # noqa: BLE001
+            cur = None
+        if cur is None:
+            continue
+        base = row.source_watermark
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        if cur > base:
+            return True
+    return False
+
+
+def schedule_source_change_check(dataset_id: int) -> None:
+    """Change-driven refresh (perf #5): rate-limited, in the BACKGROUND, detect a
+    SOURCE-DATA change (via last_modified watermark) and rebuild only then. The
+    request serves the current snapshot instantly; rebuilds happen off-thread and
+    only on a real change. NEVER blocks / raises."""
+    if not dataset_id:
+        return
+    now = time.time()
+    with _async_refresh_lock:
+        if dataset_id in _async_refresh_inflight:
+            return  # a rebuild is already running
+        if now - _watermark_check_at.get(dataset_id, 0.0) < _WATERMARK_CHECK_INTERVAL:
+            return  # checked recently → don't spam metadata
+        _watermark_check_at[dataset_id] = now
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            if not _source_changed(db, dataset_id):
+                return
+            with _async_refresh_lock:
+                if not _reserve_rebuild_slot(dataset_id):
+                    return
+            try:
+                refresh_all_for_dataset(db, dataset_id, force=True)
+                logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)
+            finally:
+                with _async_refresh_lock:
+                    _async_refresh_inflight.pop(dataset_id, None)
+        except Exception:  # noqa: BLE001 — background best-effort
+            logger.warning("[snapshot] source-change check failed dataset=%s", dataset_id, exc_info=True)
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, name=f"snap-wmcheck-{dataset_id}", daemon=True).start()
+
+
+def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
+    """Manual "Refresh data": rebuild the given datasets' snapshots in the
+    BACKGROUND and return immediately, so the HTTP request never blocks on a long
+    extract-load. This fixes the sync-refresh-in-request problem (a big rebuild
+    used to run inside the POST, blowing past nginx's 120s while backend kept
+    going to 280s/table and the viewer saw a timeout even though it was still
+    building). Rebuilds SEQUENTIALLY in ONE thread — the extract-load holds a
+    whole table in RAM, so one-at-a-time keeps peak memory bounded on a small VM
+    (do NOT parallelise here until the build is moved server-side). Marks each
+    dataset in the SAME in-flight registry the auto-refresh uses, so a concurrent
+    TTL/watermark rebuild won't double-build, and the client can poll
+    ``datasets_rebuilding`` for a "đang làm mới…" indicator. NEVER raises. Returns
+    the dataset ids actually claimed (those not already rebuilding)."""
+    ids: List[int] = []
+    seen = set()
+    for d in dataset_ids or []:
+        try:
+            di = int(d)
+        except (TypeError, ValueError):
+            continue
+        if di and di not in seen:
+            seen.add(di)
+            ids.append(di)
+    if not ids:
+        return []
+    with _async_refresh_lock:
+        claimed = [d for d in ids if d not in _async_refresh_inflight]
+        for d in claimed:
+            _async_refresh_inflight[d] = time.time()
+    if not claimed:
+        return []
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            for d in claimed:
+                try:
+                    refresh_all_for_dataset(db, d, force=True)
+                    logger.info("[snapshot] manual refresh done dataset=%s", d)
+                except Exception:  # noqa: BLE001 — one dataset's failure must not block the rest
+                    logger.warning("[snapshot] manual refresh failed dataset=%s", d, exc_info=True)
+                finally:
+                    # Release each dataset as it finishes so freshness polling
+                    # reflects real progress instead of flipping only at the end.
+                    with _async_refresh_lock:
+                        _async_refresh_inflight.pop(d, None)
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, name="snap-manual-refresh", daemon=True).start()
+    return claimed
+
+
+def datasets_rebuilding(dataset_ids: List[int]) -> bool:
+    """True if ANY of the given datasets currently has a snapshot rebuild in
+    flight (manual or auto). Drives the client's "đang làm mới…" poll after an
+    async refresh so the UI knows when the rebuild has actually finished."""
+    with _async_refresh_lock:
+        for d in dataset_ids or []:
+            try:
+                if int(d) in _async_refresh_inflight:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False

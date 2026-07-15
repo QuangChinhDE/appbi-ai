@@ -18,6 +18,7 @@ import {
 } from '@/components/explore/ExploreEditor';
 import { ChartEditorWithTabs } from '@/components/explore/ChartEditorWithTabs';
 import { useDatasetTables } from '@/hooks/use-datasets';
+import { useI18n } from '@/providers/LanguageProvider';
 import type {
   DashboardHtmlImportCalculatedField,
   DashboardHtmlImportChartPlan,
@@ -66,6 +67,7 @@ export function HtmlImportChartEditor({
   onClose,
   onSave,
 }: HtmlImportChartEditorProps) {
+  const { t } = useI18n();
   const { data: datasetTables = [] } = useDatasetTables(datasetId);
 
   // Resolve the initial table from the plan's source_key (preferring the
@@ -146,7 +148,7 @@ export function HtmlImportChartEditor({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={plan ? `Edit chart — ${plan.title}` : 'Edit chart'}
+      title={plan ? t('dashboards.htmlImport.editChartTitle', { title: plan.title }) : t('dashboards.htmlImport.editChart')}
       size="full"
       bodyClassName="overflow-hidden p-0"
       contentClassName="max-w-[96rem]"
@@ -165,12 +167,12 @@ export function HtmlImportChartEditor({
               lockDatasetSelection
               onBack={onClose}
               onEphemeralSave={handleEphemeralSave}
-              backLabel="Back to review"
-              saveButtonLabel="Apply Changes"
+              backLabel={t('dashboards.htmlImport.backToReview')}
+              saveButtonLabel={t('dashboards.htmlImport.applyChanges')}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-              Editor requires an existing dataset context.
+              {t('dashboards.htmlImport.editorRequiresDataset')}
             </div>
           )}
         </div>

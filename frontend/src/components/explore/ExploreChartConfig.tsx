@@ -39,8 +39,12 @@ import {
   Info,
 } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
+import { DATE_FORMAT_OPTIONS, type DateFormatKind } from '@/lib/exploreAggregations';
+import { useI18n } from '@/providers/LanguageProvider';
 import type {
   ChartBenchmarkLineStyle,
+  BenchmarkLineDef,
+  BenchmarkAggregate,
   ChartSortRule,
   ConditionalFormatRule,
   KpiGoalDirection,
@@ -69,6 +73,13 @@ export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct' |
 export type TableLayoutMode = 'standard' | 'pivot';
 
 export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
+/**
+ * A per-column table cell format is EITHER a number format OR a date format
+ * (see DateFormatKind). The two value-spaces are disjoint, so a single string
+ * field carries both; the renderer branches on `isDateFormatKind`.
+ */
+export type TableCellFormat = NumberFormat | DateFormatKind;
+export type { DateFormatKind };
 /** Power-BI-style value-axis "Display units". */
 export type AxisDisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
@@ -267,8 +278,11 @@ export interface ChartStyleConfig {
   // Line
   showDots?: boolean;
   lineStyle?: 'solid' | 'dashed';
-  // Benchmark line
+  // Benchmark line. showBenchmarkLine is the master enable. `benchmarkLines` is
+  // the multi-line model (fixed or dynamic-aggregate); the legacy single scalars
+  // below are kept for back-compat and folded into a one-element list on load.
   showBenchmarkLine?: boolean;
+  benchmarkLines?: BenchmarkLineDef[];
   benchmarkValue?: number | '';
   benchmarkLabel?: string;
   benchmarkColor?: string;
@@ -277,6 +291,11 @@ export interface ChartStyleConfig {
   kpiLabel?: string;
   kpiContextTemplate?: string;
   kpiBenchmarkValue?: number | '';
+  // Calculation on the benchmark (dynamic "Target" metric OR the manual value):
+  // final = base × multiplier + offset. Lets "[Goal] × 1.1" (110% of goal)
+  // without hand-editing the number when the goal changes.
+  kpiBenchmarkMultiplier?: number | '';
+  kpiBenchmarkOffset?: number | '';
   kpiBenchmarkLabel?: string;
   kpiShowBenchmarkValue?: boolean;
   kpiShowDelta?: boolean;
@@ -313,7 +332,7 @@ export interface ChartStyleConfig {
    *  and the table-wide Number Format for that column only. Empty/absent =
    *  inherit (measure format → table-wide format). Lets DA format a % or money
    *  column at chart-build time without editing the dataset measure. */
-  tableColumnFormats?: Record<string, NumberFormat>;
+  tableColumnFormats?: Record<string, TableCellFormat>;
   // Display-only table header aliases. Raw column keys/data rows are unchanged.
   tableColumnLabels?: Record<string, string>;
   tableHyperlinkRules?: TableHyperlinkRule[];
@@ -542,6 +561,19 @@ export function normalizeChartStyleConfig(
   if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'showBenchmarkLine')) {
     normalized.showBenchmarkLine = rawStyleConfig?.benchmarkValue !== undefined && rawStyleConfig?.benchmarkValue !== '';
   }
+  // Fold the legacy single benchmark scalars into the multi-line array so the
+  // editor shows the existing line. Only when no array is already present.
+  if ((!Array.isArray(normalized.benchmarkLines) || normalized.benchmarkLines.length === 0)
+      && normalized.benchmarkValue !== undefined && normalized.benchmarkValue !== '') {
+    normalized.benchmarkLines = [{
+      source: 'value',
+      value: normalized.benchmarkValue,
+      label: normalized.benchmarkLabel,
+      color: normalized.benchmarkColor,
+      lineStyle: normalized.benchmarkLineStyle,
+    }];
+  }
+  if (!Array.isArray(normalized.benchmarkLines)) normalized.benchmarkLines = [];
 
   normalized.fontSize = normalizePixelSize(normalized.fontSize, DEFAULT_STYLE_CONFIG.fontSize, 8, 48);
   normalized.chartTitleFontSize = normalizePixelSize(normalized.chartTitleFontSize, undefined, 10, 48);
@@ -553,6 +585,10 @@ export function normalizeChartStyleConfig(
       value: Number.isFinite(Number(rule.value)) ? Number(rule.value) : 0,
       color: normalizeColorInput(rule.color || '#16a34a', '#16a34a'),
       label: rule.label?.trim() || undefined,
+      // Preserve dynamic-threshold fields (source/multiplier/offset).
+      source: rule.source === 'benchmark' ? 'benchmark' : 'value',
+      ...(typeof rule.multiplier === 'number' ? { multiplier: rule.multiplier } : {}),
+      ...(typeof rule.offset === 'number' ? { offset: rule.offset } : {}),
     }));
   }
 
@@ -1271,11 +1307,37 @@ const KPI_GOAL_DIRECTION_OPTIONS: Array<{ value: KpiGoalDirection; label: string
   { value: 'down', label: 'Lower is better' },
 ];
 
-type TableBenchmarkMode = 'value' | 'field';
+type TableBenchmarkMode = 'value' | 'field' | 'percentile' | 'percentage';
 
 function getTableBenchmarkMode(rule: ConditionalFormatRule): TableBenchmarkMode {
+  if (rule.benchmarkType) return rule.benchmarkType;
   return rule.benchmarkField ? 'field' : 'value';
 }
+
+// Feature #4 — how a matched rule is presented.
+const CF_MODE_OPTIONS: Array<{ value: NonNullable<ConditionalFormatRule['mode']>; label: string }> = [
+  { value: 'color', label: 'Màu nền / chữ' },
+  { value: 'dataBar', label: 'Thanh dữ liệu (Data bar)' },
+  { value: 'icon', label: 'Biểu tượng (Icon)' },
+];
+// Feature #5 — benchmark type. Percentile/percentage are computed over the column.
+const CF_BENCHMARK_OPTIONS: Array<{ value: TableBenchmarkMode; label: string }> = [
+  { value: 'value', label: 'Giá trị cố định' },
+  { value: 'field', label: 'Cột khác' },
+  { value: 'percentile', label: 'Phân vị (Percentile)' },
+  { value: 'percentage', label: '% của giá trị lớn nhất' },
+];
+const CF_ICON_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'up', label: '↑  Tăng' },
+  { value: 'down', label: '↓  Giảm' },
+  { value: 'flat', label: '—  Ổn định' },
+  { value: 'check', label: '✓  Đạt' },
+  { value: 'cross', label: '✕  Không đạt' },
+  { value: 'warning', label: '⚠  Cảnh báo' },
+  { value: 'flag', label: '⚑  Cờ' },
+  { value: 'star', label: '★  Sao' },
+  { value: 'dot', label: '●  Chấm' },
+];
 
 function createDefaultTableRule(displayedColumns: Col[], availableColumns: Col[]): ConditionalFormatRule {
   const numericDisplayed = displayedColumns.find(isNumeric);
@@ -1291,6 +1353,8 @@ function createDefaultTableRule(displayedColumns: Col[], availableColumns: Col[]
     value: '',
     color: '#1f2937',
     backgroundColor: '#dbeafe',
+    mode: 'color',
+    benchmarkType: 'value',
   };
 }
 
@@ -1466,6 +1530,12 @@ function fieldDisplayMeta(c: Col): { label: string; view: string | null; typeLab
 function fieldSecondaryText(c: Col): string {
   const meta = fieldDisplayMeta(c);
   return `${meta.typeLabel} - ${fieldSourceLabel(c)}`;
+}
+
+function isDateType(c: Col): boolean {
+  return ['date', 'datetime', 'timestamp', 'timestamptz', 'datetimetz', 'time'].includes(
+    (c.type ?? '').toLowerCase(),
+  );
 }
 
 function isNumeric(c: Col): boolean {
@@ -2303,6 +2373,7 @@ function FormatGroup({
   searchActive?: boolean;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(defaultOpen);
   if (!matchesSearch) return null;
   const isOpen = searchActive ? true : open;
@@ -2323,7 +2394,7 @@ function FormatGroup({
             className={`h-1.5 w-1.5 rounded-full transition-colors ${
               hasCustomization ? 'bg-brand' : 'bg-text-quaternary/40'
             }`}
-            title={hasCustomization ? 'Has custom settings' : 'Default settings'}
+            title={hasCustomization ? t('explore.config.hasCustomSettings') : t('explore.config.defaultSettings')}
           />
           <span>{title}</span>
         </span>
@@ -2341,7 +2412,7 @@ function FormatGroup({
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Toggle switch ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, checked, onChange, description }: { label: string; checked: boolean; onChange: (v: boolean) => void; description?: string }) {
   return (
     <div
       className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 transition-colors ${
@@ -2350,9 +2421,13 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
     >
       <div className="min-w-0">
         <div className={`text-xs font-semibold ${checked ? 'text-brand' : 'text-text-secondary'}`}>{label}</div>
-        <div className={`text-[11px] ${checked ? 'text-brand' : 'text-text-quaternary'}`}>
-          {checked ? 'Enabled' : 'Disabled'}
-        </div>
+        {description ? (
+          <div className="text-[11px] leading-4 text-text-quaternary">{description}</div>
+        ) : (
+          <div className={`text-[11px] ${checked ? 'text-brand' : 'text-text-quaternary'}`}>
+            {checked ? 'Enabled' : 'Disabled'}
+          </div>
+        )}
       </div>
       <button
         type="button"
@@ -3420,6 +3495,7 @@ export function ExploreChartConfig({
   onRoleConfigChange,
   onStyleConfigChange,
 }: ExploreChartConfigProps) {
+  const { t } = useI18n();
   const isStyleOnly = mode === 'styleOnly';
   const upd = useCallback(
     (patch: Partial<ChartRoleConfig>) => onRoleConfigChange({ ...roleConfig, ...patch }),
@@ -3540,14 +3616,30 @@ export function ExploreChartConfig({
     'LINE', 'TIME_SERIES', 'AREA', 'SCATTER',
   ].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
+  // Metric keys the chart plots — a dynamic-aggregate benchmark reads one of
+  // these off the data rows (metricKey = `${agg}__${field}`, present per bucket).
+  const benchmarkFieldOptions = [
+    ...(normalizedRoleConfig.metrics || []),
+    ...(normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : []),
+  ].map((m) => ({ value: metricKey(m), label: `${m.agg}(${m.field})` }));
+  const benchmarkLines = normalizedStyleConfig.benchmarkLines ?? [];
+  const setBenchmarkLines = (next: BenchmarkLineDef[]) => updStyle({ benchmarkLines: next });
+  const addBenchmarkLine = () => setBenchmarkLines([
+    ...benchmarkLines,
+    { source: 'value', value: '', label: `Mục tiêu ${benchmarkLines.length + 1}`, color: '#dc2626', lineStyle: 'dashed' },
+  ]);
+  const updateBenchmarkLine = (i: number, patch: Partial<BenchmarkLineDef>) =>
+    setBenchmarkLines(benchmarkLines.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const removeBenchmarkLine = (i: number) =>
+    setBenchmarkLines(benchmarkLines.filter((_, idx) => idx !== i));
   const supportsDataSection = !isTableLike && !isNoDimensionMetric;
-  const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
-  const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
+  const chartBindingTitle = queryMode === 'custom' ? t('explore.config.sqlColumnRoles') : t('explore.config.fieldRoles');
+  const tableBindingTitle = isPivotEnabled ? t('explore.config.pivotLayout') : t('explore.config.visibleColumns');
   const tableRoleSectionHint = queryMode === 'custom'
-    ? 'Choose directly from the columns returned by your SQL. Nothing is inferred back into Config Builder fields.'
-    : 'Standard table stays as-is. Enable pivot only when you want dynamic cross-tab headers driven by distinct column values.';
+    ? t('explore.config.tableRoleHintCustom')
+    : t('explore.config.tableRoleHintGenerated');
   const chartRoleSectionHint = queryMode === 'custom'
-    ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
+    ? t('explore.config.chartRoleHintCustom')
     : undefined;
   const showQuickView = !isTableLike && chartType !== 'KPI';
   const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || isPieLike || isScatterLike || chartType === 'TIME_SERIES' || supportsDataSection);
@@ -3801,7 +3893,7 @@ export function ExploreChartConfig({
   };
 
   const tableColumnFormats = normalizedStyleConfig.tableColumnFormats ?? {};
-  const updateTableColumnFormat = (columnName: string, format: NumberFormat | '') => {
+  const updateTableColumnFormat = (columnName: string, format: TableCellFormat | '') => {
     const next = { ...tableColumnFormats };
     if (!format) delete next[columnName];
     else next[columnName] = format;
@@ -4109,7 +4201,8 @@ export function ExploreChartConfig({
 
           {tableNumericColumns.length > 0 && (
             <Toggle
-              label="Heatmap"
+              label="Thang màu / Gradient (Color scale)"
+              description="Tô nền chuyển sắc theo độ lớn — nhìn nhanh giá trị cao/thấp mà không cần đặt ngưỡng."
               checked={isHeatmapEnabled}
               onChange={toggleTableHeatmap}
             />
@@ -4117,7 +4210,8 @@ export function ExploreChartConfig({
 
           {tableFormattingColumns.length > 0 && (
             <Toggle
-              label="Conditional formatting"
+              label="Định dạng theo điều kiện (Conditional formatting)"
+              description="Nhiều quy tắc: đổi màu / thanh dữ liệu / icon theo ngưỡng, phân vị, %, hoặc giá trị cột khác."
               checked={isConditionalFormattingEnabled}
               onChange={toggleTableConditionalFormatting}
             />
@@ -4253,14 +4347,14 @@ export function ExploreChartConfig({
 
       {isTableLike && tableFormattingColumns.length > 0 && (
         <Disclosure
-          title="Column Layout"
-          hint="Rename table headers for this chart, set value alignment, and clear saved widths. Raw column keys and queries stay unchanged."
+          title={t('explore.config.columnLayout')}
+          hint={t('explore.config.columnLayoutHint')}
           defaultOpen
         >
           <div className="flex items-center justify-between rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
             <div className="flex items-center gap-1">
-              <div className="text-xs font-semibold text-text-secondary">Resizable columns</div>
-              <HelpTooltip text="Drag the divider on a column header in the preview to widen or shrink that column." />
+              <div className="text-xs font-semibold text-text-secondary">{t('explore.config.resizableColumns')}</div>
+              <HelpTooltip text={t('explore.config.resizableColumnsHelp')} />
             </div>
             <button
               type="button"
@@ -4268,14 +4362,14 @@ export function ExploreChartConfig({
               disabled={Object.keys(tableColumnWidths).length === 0}
               className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Reset all widths
+              {t('explore.config.resetAllWidths')}
             </button>
           </div>
 
           <div className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
-            <span className="min-w-0 flex-1">Column</span>
-            <span className="w-[84px] text-center">Align</span>
-            <span className="w-[112px]">Format</span>
+            <span className="min-w-0 flex-1">{t('explore.config.column')}</span>
+            <span className="w-[84px] text-center">{t('explore.config.align')}</span>
+            <span className="w-[112px]">{t('explore.config.formatColumn')}</span>
             <span className="w-6" />
           </div>
           <div className="space-y-1">
@@ -4303,7 +4397,7 @@ export function ExploreChartConfig({
                       onChange={(event) => updateTableColumnLabel(column.name, event.target.value)}
                       placeholder={colLabel(column)}
                       className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-[11px]"
-                      title="Custom table header for this chart"
+                      title={t('explore.config.customHeaderTitle')}
                     />
                   </div>
                   <div className="inline-flex w-[84px] shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
@@ -4313,7 +4407,7 @@ export function ExploreChartConfig({
                         <button
                           key={`${column.name}-${option.value}`}
                           type="button"
-                          title={`Align ${option.label}`}
+                          title={t('explore.config.alignOption', { option: option.label })}
                           onClick={() => updateTableColumnAlignment(column.name, option.value)}
                           className={`flex-1 py-1 text-[11px] font-semibold transition-colors ${
                             active ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2'
@@ -4326,16 +4420,27 @@ export function ExploreChartConfig({
                   </div>
                   <select
                     value={tableColumnFormats[column.name] ?? ''}
-                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as NumberFormat | '')}
-                    title="Number format for this column"
+                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as TableCellFormat | '')}
+                    title={t('explore.config.columnNumberFormatTitle')}
                     className="w-[112px] shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-1 text-[11px]"
                   >
-                    <option value="">Default</option>
-                    <option value="auto">Number</option>
-                    <option value="compact">Compact</option>
-                    <option value="number">1,234</option>
-                    <option value="percent">Percent %</option>
-                    <option value="currency">Currency {normalizedStyleConfig.currencySymbol || '$'}</option>
+                    <option value="">{t('explore.config.default')}</option>
+                    {isDateType(column) ? (
+                      // Date columns get DATE display formats (not number formats,
+                      // which no-op on an ISO string) — fixes "can't format a date
+                      // column".
+                      DATE_FORMAT_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="auto">{t('explore.config.number')}</option>
+                        <option value="compact">{t('explore.config.compact')}</option>
+                        <option value="number">1,234</option>
+                        <option value="percent">{t('explore.config.percent')}</option>
+                        <option value="currency">{t('explore.config.currency')} {normalizedStyleConfig.currencySymbol || '$'}</option>
+                      </>
+                    )}
                   </select>
                   <button
                     type="button"
@@ -4486,8 +4591,8 @@ export function ExploreChartConfig({
 
       {isTableLike && isHeatmapEnabled && tableNumericColumns.length > 0 && (
         <Disclosure
-          title="Heatmap"
-          hint="Split each numeric column into color bands based on that column's own value range."
+          title="Thang màu / Gradient (Color scale)"
+          hint="Tô nền mỗi cột số chuyển sắc theo khoảng min–max của chính cột đó (đậm = cao, nhạt = thấp)."
           defaultOpen
         >
           {tableHeatmapRules.length > 0 && (
@@ -4564,14 +4669,15 @@ export function ExploreChartConfig({
 
       {isTableLike && isConditionalFormattingEnabled && tableFormattingColumns.length > 0 && (
         <Disclosure
-          title="Conditional Formatting"
-          hint="Rules run from top to bottom. The first match wins, and conditional formatting overrides heatmap colors on the same cell."
+          title="Định dạng theo điều kiện (Conditional formatting)"
+          hint="Nhiều quy tắc chạy từ trên xuống, quy tắc khớp đầu tiên thắng. Mỗi quy tắc chọn kiểu (màu / thanh dữ liệu / icon), ngưỡng (giá trị / phân vị / % / cột khác), và có thể tô cột này dựa trên giá trị cột khác."
           defaultOpen
         >
           {tableConditionalFormatting.length > 0 && (
             <div className="space-y-3">
               {tableConditionalFormatting.map((rule, index) => {
                 const benchmarkMode = getTableBenchmarkMode(rule);
+                const ruleMode = rule.mode || 'color';
                 return (
                   <div
                     key={`table-rule-${index}`}
@@ -4591,8 +4697,22 @@ export function ExploreChartConfig({
                       </button>
                     </div>
 
+                    {/* Feature #4 — presentation style */}
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-text-secondary">Kiểu định dạng</label>
+                      <select
+                        value={ruleMode}
+                        onChange={e => updateTableRule(index, { mode: e.target.value as ConditionalFormatRule['mode'] })}
+                        className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                      >
+                        {CF_MODE_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     <SelectSlot
-                      label="Highlight Column"
+                      label="Tô định dạng cho cột"
                       required
                       value={rule.field}
                       options={tableFormattingColumns}
@@ -4600,81 +4720,136 @@ export function ExploreChartConfig({
                       onChange={value => updateTableRule(index, { field: value })}
                     />
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Operator</label>
-                        <select
-                          value={rule.operator}
-                          onChange={e => updateTableRule(index, {
-                            operator: e.target.value as ConditionalFormatRule['operator'],
-                          })}
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        >
-                          {CONDITIONAL_OPERATOR_OPTIONS.map(option => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark Type</label>
-                        <select
-                          value={benchmarkMode}
-                          onChange={e => {
-                            const nextMode = e.target.value as TableBenchmarkMode;
-                            updateTableRule(index, nextMode === 'field'
-                              ? { benchmarkField: rule.benchmarkField ?? tableBenchmarkColumns[0]?.name }
-                              : { benchmarkField: undefined });
-                          }}
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        >
-                          <option value="value">Fixed value</option>
-                          <option value="field">Another column</option>
-                        </select>
-                      </div>
+                    {/* Feature #3 — cross-column: condition can read another column */}
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-text-secondary">
+                        Dựa trên giá trị cột
+                      </label>
+                      <select
+                        value={rule.sourceColumn ?? ''}
+                        onChange={e => updateTableRule(index, { sourceColumn: e.target.value || undefined })}
+                        className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                      >
+                        <option value="">(chính cột này)</option>
+                        {tableFormattingColumns.map(c => (
+                          <option key={c.name} value={c.name}>{c.label ?? c.name}</option>
+                        ))}
+                      </select>
                     </div>
 
-                    {benchmarkMode === 'field' ? (
-                      <SelectSlot
-                        label="Benchmark Column"
-                        required
-                        value={rule.benchmarkField || ''}
-                        options={tableBenchmarkColumns}
-                        placeholder="select column"
-                        onChange={value => updateTableRule(index, { benchmarkField: value || undefined })}
+                    {ruleMode === 'dataBar' ? (
+                      // Data bars are column-wide (no condition): just a bar color.
+                      <ColorField
+                        label="Màu thanh"
+                        value={rule.barColor || '#3b82f6'}
+                        onChange={value => updateTableRule(index, { barColor: value })}
                       />
                     ) : (
-                      <div>
-                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark</label>
-                        <input
-                          type="text"
-                          value={String(rule.value ?? '')}
-                          onChange={e => updateTableRule(index, { value: e.target.value })}
-                          placeholder="e.g. 1000"
-                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
-                        />
-                      </div>
-                    )}
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Toán tử</label>
+                            <select
+                              value={rule.operator}
+                              onChange={e => updateTableRule(index, {
+                                operator: e.target.value as ConditionalFormatRule['operator'],
+                              })}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            >
+                              {CONDITIONAL_OPERATOR_OPTIONS.map(option => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <ColorField
-                        label="Background"
-                        value={rule.backgroundColor || '#dbeafe'}
-                        onChange={value => updateTableRule(index, { backgroundColor: value })}
-                      />
-                      <ColorField
-                        label="Text"
-                        value={rule.color || '#1f2937'}
-                        onChange={value => updateTableRule(index, { color: value })}
-                      />
-                    </div>
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Loại ngưỡng</label>
+                            <select
+                              value={benchmarkMode}
+                              onChange={e => {
+                                const nextMode = e.target.value as TableBenchmarkMode;
+                                updateTableRule(index, nextMode === 'field'
+                                  ? { benchmarkType: 'field', benchmarkField: rule.benchmarkField ?? tableBenchmarkColumns[0]?.name }
+                                  : { benchmarkType: nextMode, benchmarkField: undefined });
+                              }}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            >
+                              {CF_BENCHMARK_OPTIONS.map(o => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
 
-                    {benchmarkMode === 'value' && String(rule.value ?? '').trim() === '' && (
-                      <p className="text-[11px] text-warning">
-                        Enter a benchmark value to activate this rule on the table.
-                      </p>
+                        {benchmarkMode === 'field' ? (
+                          <SelectSlot
+                            label="Cột so sánh"
+                            required
+                            value={rule.benchmarkField || ''}
+                            options={tableBenchmarkColumns}
+                            placeholder="select column"
+                            onChange={value => updateTableRule(index, { benchmarkField: value || undefined })}
+                          />
+                        ) : (
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">
+                              {benchmarkMode === 'percentile' ? 'Phân vị (0–100)'
+                                : benchmarkMode === 'percentage' ? '% của Max (0–100)'
+                                : 'Ngưỡng'}
+                            </label>
+                            <input
+                              type="text"
+                              value={String(rule.value ?? '')}
+                              onChange={e => updateTableRule(index, { value: e.target.value })}
+                              placeholder={benchmarkMode === 'percentile' ? 'vd 90 = top 10%'
+                                : benchmarkMode === 'percentage' ? 'vd 80 = ≥80% của Max'
+                                : 'vd 1000'}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                        )}
+
+                        {ruleMode === 'icon' ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="mb-1 block text-xs font-semibold text-text-secondary">Biểu tượng</label>
+                              <select
+                                value={rule.icon || 'flag'}
+                                onChange={e => updateTableRule(index, { icon: e.target.value })}
+                                className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                              >
+                                {CF_ICON_OPTIONS.map(o => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <ColorField
+                              label="Màu icon"
+                              value={rule.color || '#1f2937'}
+                              onChange={value => updateTableRule(index, { color: value })}
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            <ColorField
+                              label="Màu nền"
+                              value={rule.backgroundColor || '#dbeafe'}
+                              onChange={value => updateTableRule(index, { backgroundColor: value })}
+                            />
+                            <ColorField
+                              label="Màu chữ"
+                              value={rule.color || '#1f2937'}
+                              onChange={value => updateTableRule(index, { color: value })}
+                            />
+                          </div>
+                        )}
+
+                        {benchmarkMode !== 'field' && String(rule.value ?? '').trim() === '' && (
+                          <p className="text-[11px] text-warning">
+                            Nhập ngưỡng để kích hoạt quy tắc này.
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                 );
@@ -4757,13 +4932,19 @@ export function ExploreChartConfig({
             </div>
           </div>
 
+          <p className="text-[11px] leading-4 text-text-tertiary">
+            Benchmark ĐỘNG: đặt <span className="font-semibold">Target</span> ở phần Field Roles (một chỉ số) —
+            benchmark tự tính theo dữ liệu &amp; bộ lọc. Nếu không có Target thì dùng giá trị thủ công dưới đây.
+            Công thức bên dưới áp cho CẢ hai: <span className="font-mono">benchmark × hệ số + cộng thêm</span> (vd × 1.1 = vượt mục tiêu 10%).
+          </p>
+
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Manual Benchmark</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark thủ công (giá trị)</label>
               <input
                 type="number"
                 value={normalizedStyleConfig.kpiBenchmarkValue ?? ''}
-                placeholder="Optional"
+                placeholder="Tùy chọn (nếu không đặt Target)"
                 onChange={e => updStyle({
                   kpiBenchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
                 })}
@@ -4772,12 +4953,36 @@ export function ExploreChartConfig({
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Label</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Nhãn benchmark</label>
               <input
                 type="text"
                 value={normalizedStyleConfig.kpiBenchmarkLabel || ''}
                 placeholder="Target"
                 onChange={e => updStyle({ kpiBenchmarkLabel: e.target.value })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Hệ số nhân (×)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={normalizedStyleConfig.kpiBenchmarkMultiplier ?? ''}
+                placeholder="1 (vd 1.1 = +10%)"
+                onChange={e => updStyle({ kpiBenchmarkMultiplier: e.target.value === '' ? '' : Number(e.target.value) })}
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Cộng thêm (+)</label>
+              <input
+                type="number"
+                value={normalizedStyleConfig.kpiBenchmarkOffset ?? ''}
+                placeholder="0"
+                onChange={e => updStyle({ kpiBenchmarkOffset: e.target.value === '' ? '' : Number(e.target.value) })}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
               />
             </div>
@@ -4851,7 +5056,7 @@ export function ExploreChartConfig({
 
                   <div className="grid grid-cols-[96px_1fr] gap-2">
                     <div>
-                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Operator</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Toán tử</label>
                       <select
                         value={rule.operator}
                         onChange={e => updStyle({
@@ -4870,7 +5075,69 @@ export function ExploreChartConfig({
                     </div>
 
                     <div>
-                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Value</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Nguồn ngưỡng</label>
+                      <select
+                        value={rule.source === 'benchmark' ? 'benchmark' : 'value'}
+                        onChange={e => updStyle({
+                          kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                            ruleIndex === index
+                              ? { ...currentRule, source: e.target.value === 'benchmark' ? 'benchmark' : 'value' }
+                              : currentRule
+                          )),
+                        })}
+                        className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                      >
+                        <option value="value">Giá trị cố định</option>
+                        <option value="benchmark">So với Target / Benchmark</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {rule.source === 'benchmark' ? (
+                    <div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">× Hệ số</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={rule.multiplier ?? 1}
+                            placeholder="1"
+                            onChange={e => updStyle({
+                              kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                                ruleIndex === index
+                                  ? { ...currentRule, multiplier: e.target.value === '' ? undefined : Number(e.target.value) }
+                                  : currentRule
+                              )),
+                            })}
+                            className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">+ Cộng thêm</label>
+                          <input
+                            type="number"
+                            step="any"
+                            value={rule.offset ?? 0}
+                            placeholder="0"
+                            onChange={e => updStyle({
+                              kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                                ruleIndex === index
+                                  ? { ...currentRule, offset: e.target.value === '' ? undefined : Number(e.target.value) }
+                                  : currentRule
+                              )),
+                            })}
+                            className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                          />
+                        </div>
+                      </div>
+                      <p className="mt-1 text-[10px] leading-tight text-text-quaternary">
+                        Ngưỡng = Target/Benchmark × Hệ số + Cộng thêm. Ví dụ × 0.9 = 90% mục tiêu.
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Giá trị</label>
                       <input
                         type="number"
                         value={rule.value}
@@ -4884,7 +5151,7 @@ export function ExploreChartConfig({
                         className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                       />
                     </div>
-                  </div>
+                  )}
 
                   <div>
                     <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Status Label</label>
@@ -5152,7 +5419,7 @@ export function ExploreChartConfig({
           {['GAUGE', 'BULLET'].includes(chartType) && <>
             <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
+            <MetricSlot label="Target — Benchmark động (chỉ số)" hint="Chọn 1 chỉ số làm benchmark động (tự tính theo dữ liệu + bộ lọc). Áp công thức ×/+ ở phần KPI để đặt vd Goal × 1.1." single value={benchmarkMetric} options={numOrAll} allOptions={allCols} declaredMeasureRefs={declaredMeasureRefs}
               onChange={v => upd({ benchmarkMetric: v[0] })} />
           </>}
 
@@ -5176,8 +5443,8 @@ export function ExploreChartConfig({
       {showQuickView && (
         <SectionPanel
           step={quickViewStep}
-          title="Format"
-          description="Style the chart. Visual covers the everyday controls; open Axes & Scale or Advanced when you need extra tuning."
+          title={t('explore.config.format')}
+          description={t('explore.config.formatDescription')}
         >
         {/* Phase-15.92 v2 — search box. Style aligned with the surface-1
             inputs used throughout the panel (border-strong + bg-surface-1
@@ -5188,7 +5455,7 @@ export function ExploreChartConfig({
             type="text"
             value={formatSearch}
             onChange={e => setFormatSearch(e.target.value)}
-            placeholder="Search settings (eg. axis, label, color)…"
+            placeholder={t('explore.config.searchSettingsPlaceholder')}
             className="w-full pl-8 pr-8 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 placeholder:text-text-quaternary focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand/40 transition-colors"
           />
           {formatSearch && (
@@ -5196,8 +5463,8 @@ export function ExploreChartConfig({
               type="button"
               onClick={() => setFormatSearch('')}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-text-quaternary hover:text-text-secondary rounded"
-              title="Clear search"
-              aria-label="Clear search"
+              title={t('explore.config.clearSearch')}
+              aria-label={t('explore.config.clearSearch')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -5205,7 +5472,7 @@ export function ExploreChartConfig({
         </div>
 
         <FormatGroup
-          title="Visual"
+          title={t('explore.config.visual')}
           defaultOpen
           matchesSearch={matchesFormatSearch(['visual', 'chart title', 'color palette', 'series colors', 'legend labels', 'rename', 'label', 'number format', 'legend', 'data labels', 'font', 'font size', 'donut', 'stack mode'])}
           searchActive={formatSearchActive}
@@ -5220,8 +5487,8 @@ export function ExploreChartConfig({
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           {/* Chart Title */}
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Chart Title</label>
-            <input type="text" value={styleConfig.chartTitle || ''} placeholder="Optional title"
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.chartTitle')}</label>
+            <input type="text" value={styleConfig.chartTitle || ''} placeholder={t('explore.config.optionalTitle')}
               onChange={e => updStyle({ chartTitle: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
@@ -5233,8 +5500,8 @@ export function ExploreChartConfig({
                   the renderer — otherwise the slider reads "0% (Pie)" while the
                   chart shows a donut. */}
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
-                Donut Hole: {styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}%
-                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)) === 0 ? 'Pie' : 'Donut'})</span>
+                {t('explore.config.donutHole', { value: styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0) })}
+                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)) === 0 ? t('explore.config.pie') : t('explore.config.donut')})</span>
               </label>
               <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? (chartType === 'DONUT' ? 55 : 0)}
                 onChange={e => updStyle({ pieInnerRadius: Number(e.target.value) })}
@@ -5245,12 +5512,12 @@ export function ExploreChartConfig({
           {/* STACKED_BAR: 100% stack mode */}
           {chartType === 'STACKED_BAR' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Stack Mode</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.stackMode')}</label>
               <select value={styleConfig.stackMode || 'normal'}
                 onChange={e => updStyle({ stackMode: e.target.value as 'normal' | 'percent' })}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="normal">Normal (absolute values)</option>
-                <option value="percent">100% Stacked (percentage)</option>
+                <option value="normal">{t('explore.config.stackNormal')}</option>
+                <option value="percent">{t('explore.config.stackPercent')}</option>
               </select>
             </div>
           )}
@@ -5266,7 +5533,7 @@ export function ExploreChartConfig({
             const activePalette = CHART_PALETTES.find(p => p.name === activePaletteName) ?? CHART_PALETTES[0];
             return (
               <div>
-                <label className="text-xs font-semibold text-text-secondary mb-1 block">Color Palette</label>
+                <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.colorPalette')}</label>
                 <div className="flex items-center gap-2">
                   <select
                     value={activePaletteName}
@@ -5279,7 +5546,7 @@ export function ExploreChartConfig({
                   </select>
                   <div
                     className="flex shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1"
-                    title={`${activePalette.label} palette preview`}
+                    title={t('explore.config.palettePreview', { name: activePalette.label })}
                   >
                     {activePalette.colors.slice(0, 5).map((c, i) => (
                       <div
@@ -5307,7 +5574,7 @@ export function ExploreChartConfig({
                    accident). */}
           {chartType === 'GAUGE' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Data Label Format</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.dataLabelFormat')}</label>
               <select
                 value={styleConfig.dataLabelConfig?.format ?? ''}
                 onChange={(e) => {
@@ -5322,12 +5589,12 @@ export function ExploreChartConfig({
                 }}
                 className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
               >
-                <option value="">Inherit Number Format</option>
-                <option value="auto">Auto (raw)</option>
-                <option value="compact">Compact (1.2K, 3.4M)</option>
-                <option value="number">Full Number (1,234)</option>
-                <option value="percent">Percent (%)</option>
-                <option value="currency">Currency ($)</option>
+                <option value="">{t('explore.config.inheritNumberFormat')}</option>
+                <option value="auto">{t('explore.config.formatAuto')}</option>
+                <option value="compact">{t('explore.config.formatCompact')}</option>
+                <option value="number">{t('explore.config.formatNumber')}</option>
+                <option value="percent">{t('explore.config.formatPercent')}</option>
+                <option value="currency">{t('explore.config.formatCurrency')}</option>
               </select>
             </div>
           )}
@@ -5354,7 +5621,7 @@ export function ExploreChartConfig({
               controls instead of below the Advanced cluster. */}
           {chartType === 'HEATMAP' && (
             <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.fontSize', { value: styleConfig.fontSize || 12 })}</label>
               <input
                 type="range"
                 min={8}
@@ -5368,29 +5635,29 @@ export function ExploreChartConfig({
           )}
 
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.numberFormat')}</label>
             <select value={styleConfig.numberFormat || 'compact'}
               onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="auto">Auto (raw)</option>
-              <option value="compact">Compact (1.2K, 3.4M)</option>
-              <option value="number">Full Number (1,234)</option>
-              <option value="percent">Percent (%)</option>
-              <option value="currency">Currency ($)</option>
+              <option value="auto">{t('explore.config.formatAuto')}</option>
+              <option value="compact">{t('explore.config.formatCompact')}</option>
+              <option value="number">{t('explore.config.formatNumber')}</option>
+              <option value="percent">{t('explore.config.formatPercent')}</option>
+              <option value="currency">{t('explore.config.formatCurrency')}</option>
             </select>
           </div>
 
           {/* Phase-15.92 — Legend moved up alongside Number Format. */}
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.legend')}</label>
             <select value={styleConfig.legendPosition || 'bottom'}
               onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-              <option value="top">Top</option>
-              <option value="bottom">Bottom</option>
-              <option value="left">Left</option>
-              <option value="right">Right</option>
-              <option value="none">Hidden</option>
+              <option value="top">{t('explore.config.legendTop')}</option>
+              <option value="bottom">{t('explore.config.legendBottom')}</option>
+              <option value="left">{t('explore.config.legendLeft')}</option>
+              <option value="right">{t('explore.config.legendRight')}</option>
+              <option value="none">{t('explore.config.legendHidden')}</option>
             </select>
           </div>
         </FormatGroup>
@@ -5402,7 +5669,7 @@ export function ExploreChartConfig({
             disclosures: Series mix, Per-series fmt, Tooltip extras,
             Annotations, Conditional colors, Calc fields, Data Labels. */}
         <FormatGroup
-          title="Advanced"
+          title={t('explore.config.advanced')}
           defaultOpen={false}
           matchesSearch={matchesFormatSearch(['advanced', 'series mix', 'per-series', 'tooltip', 'annotation', 'conditional', 'calculated', 'data label', 'template', 'value format', 'format', 'currency', 'percent', 'decimal'])}
           searchActive={formatSearchActive}
@@ -5995,7 +6262,7 @@ export function ExploreChartConfig({
             reference-line / sort controls. */}
         {hasAdvancedControls && (
           <FormatGroup
-            title="Axes & Scale"
+            title={t('explore.config.axesScale')}
             defaultOpen={false}
             matchesSearch={matchesFormatSearch(['axis', 'axes', 'scale', 'grid', 'benchmark', 'bar', 'line', 'dual', 'time', 'granularity', 'point', 'sort', 'limit'])}
             searchActive={formatSearchActive}
@@ -6020,13 +6287,13 @@ export function ExploreChartConfig({
           <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
             onChange={v => updStyle({ showGrid: v })} />
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">X Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.xAxisLabel')}</label>
             <input type="text" value={styleConfig.xAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ xAxisLabel: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-text-secondary mb-1 block">Y Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">{t('explore.config.yAxisLabel')}</label>
             <input type="text" value={styleConfig.yAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ yAxisLabel: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
@@ -6071,65 +6338,124 @@ export function ExploreChartConfig({
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Bar options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {supportsBenchmarkLine && (
-        <Disclosure title="Benchmark Line" hint="Optional reference line for the numeric axis.">
+        <Disclosure
+          title="Đường benchmark (Benchmark lines)"
+          hint="Nhiều đường mục tiêu cùng lúc (vd Tối thiểu / Kỳ vọng / Xuất sắc). Mỗi đường là giá trị cố định HOẶC động (trung bình/trung vị/max/min/phân vị của một chỉ số — tự đổi theo bộ lọc)."
+        >
           <Toggle
-            label="Enable benchmark"
+            label="Bật đường benchmark"
             checked={normalizedStyleConfig.showBenchmarkLine ?? false}
             onChange={v => updStyle({ showBenchmarkLine: v })}
           />
 
           {normalizedStyleConfig.showBenchmarkLine && (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Value</label>
-                  <input
-                    type="number"
-                    value={normalizedStyleConfig.benchmarkValue ?? ''}
-                    placeholder="1000"
-                    onChange={e => updStyle({
-                      benchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
-                    })}
-                    className={`w-full px-2 py-1.5 text-xs border rounded-md ${
-                      normalizedStyleConfig.benchmarkValue === ''
-                        ? 'border-warning/40 bg-warning/10'
-                        : 'border-[rgb(var(--border-strong))]'
-                    }`}
-                  />
-                </div>
+            <div className="mt-2 space-y-3">
+              {benchmarkLines.map((line, index) => {
+                const src = line.source ?? 'value';
+                return (
+                  <div key={`bench-${index}`} className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">Đường {index + 1}</span>
+                      <button type="button" onClick={() => removeBenchmarkLine(index)}
+                        className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger" title="Xoá đường">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Label</label>
-                  <input
-                    type="text"
-                    value={normalizedStyleConfig.benchmarkLabel ?? ''}
-                    placeholder="Benchmark"
-                    onChange={e => updStyle({ benchmarkLabel: e.target.value })}
-                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
-                  />
-                </div>
-              </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Nguồn giá trị</label>
+                        <select
+                          value={src}
+                          onChange={e => updateBenchmarkLine(index, { source: e.target.value as BenchmarkLineDef['source'] })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                        >
+                          <option value="value">Giá trị cố định</option>
+                          <option value="aggregate">Động (theo chỉ số)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Nhãn</label>
+                        <input type="text" value={line.label ?? ''} placeholder="vd Mục tiêu"
+                          onChange={e => updateBenchmarkLine(index, { label: e.target.value })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs" />
+                      </div>
+                    </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <ColorField
-                  label="Line Color"
-                  value={normalizedStyleConfig.benchmarkColor || '#dc2626'}
-                  onChange={value => updStyle({ benchmarkColor: value })}
-                />
+                    {src === 'aggregate' ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold text-text-secondary">Chỉ số</label>
+                          <select
+                            value={line.field ?? ''}
+                            onChange={e => updateBenchmarkLine(index, { field: e.target.value || undefined })}
+                            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                          >
+                            <option value="">— chọn chỉ số —</option>
+                            {benchmarkFieldOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold text-text-secondary">Phép tính</label>
+                          <select
+                            value={line.aggregate ?? 'avg'}
+                            onChange={e => updateBenchmarkLine(index, { aggregate: e.target.value as BenchmarkAggregate })}
+                            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                          >
+                            <option value="avg">Trung bình</option>
+                            <option value="median">Trung vị</option>
+                            <option value="min">Nhỏ nhất</option>
+                            <option value="max">Lớn nhất</option>
+                            <option value="sum">Tổng</option>
+                            <option value="percentile">Phân vị</option>
+                          </select>
+                        </div>
+                        {line.aggregate === 'percentile' && (
+                          <div>
+                            <label className="mb-1 block text-xs font-semibold text-text-secondary">Phân vị (0–100)</label>
+                            <input type="number" value={line.percentile ?? 90} placeholder="90"
+                              onChange={e => updateBenchmarkLine(index, { percentile: e.target.value === '' ? undefined : Number(e.target.value) })}
+                              className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs" />
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Giá trị</label>
+                        <input type="number" value={line.value ?? ''} placeholder="vd 1000"
+                          onChange={e => updateBenchmarkLine(index, { value: e.target.value === '' ? '' : Number(e.target.value) })}
+                          className={`w-full rounded-md border px-2 py-1.5 text-xs ${line.value === '' || line.value == null ? 'border-warning/40 bg-warning/10' : 'border-[rgb(var(--border-strong))] bg-surface-1'}`} />
+                      </div>
+                    )}
 
-                <div>
-                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Style</label>
-                  <select
-                    value={normalizedStyleConfig.benchmarkLineStyle || 'dashed'}
-                    onChange={e => updStyle({ benchmarkLineStyle: e.target.value as ChartBenchmarkLineStyle })}
-                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                  </select>
-                </div>
-              </div>
-            </>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ColorField label="Màu đường" value={line.color || '#dc2626'}
+                        onChange={value => updateBenchmarkLine(index, { color: value })} />
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Kiểu nét</label>
+                        <select
+                          value={line.lineStyle ?? 'dashed'}
+                          onChange={e => updateBenchmarkLine(index, { lineStyle: e.target.value as ChartBenchmarkLineStyle })}
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
+                        >
+                          <option value="solid">Liền</option>
+                          <option value="dashed">Đứt</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {src === 'aggregate' && !line.field && (
+                      <p className="text-[11px] text-warning">Chọn chỉ số để kích hoạt đường động này.</p>
+                    )}
+                  </div>
+                );
+              })}
+
+              <button type="button" onClick={addBenchmarkLine}
+                className="w-full rounded-md border border-dashed border-brand/40 bg-brand/10 px-3 py-2 text-xs font-medium text-brand hover:bg-brand/15">
+                + Thêm đường benchmark
+              </button>
+            </div>
           )}
         </Disclosure>
       )}
@@ -6246,21 +6572,21 @@ export function ExploreChartConfig({
 
       {/* Sort & Limit */}
       {supportsDataSection && (
-        <Disclosure title="Sort & Limit" hint="Sort by the chart output columns before rendering, then optionally cap the number of displayed rows.">
+        <Disclosure title={t('explore.config.sortLimit')} hint={t('explore.config.sortLimitHint')}>
           {/* Sort rules */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-text-secondary">Sort Rules</span>
+              <span className="text-xs font-semibold text-text-secondary">{t('explore.config.sortRules')}</span>
               <button type="button"
                 onClick={() => {
                   if (sortLimitCols.length === 0) return;
                   updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
                 }}
                 disabled={sortLimitCols.length === 0}
-                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">+ Add rule</button>
+                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">{t('explore.config.addRule')}</button>
             </div>
             {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
-              <p className="text-[11px] text-text-quaternary italic">Run query first to enable sorting.</p>
+              <p className="text-[11px] text-text-quaternary italic">{t('explore.config.runQueryEnableSorting')}</p>
             )}
             {chartSortRules.map((rule, i) => (
               <div key={i} className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2">
@@ -6291,21 +6617,21 @@ export function ExploreChartConfig({
               / dataLimitDirection via applyDataLimit in ExploreChart and
               ChartPreview. */}
           <div className="mt-3 space-y-1.5 border-t border-[rgb(var(--border-line))] pt-3">
-            <span className="text-xs font-semibold text-text-secondary">Limit</span>
+            <span className="text-xs font-semibold text-text-secondary">{t('explore.config.limit')}</span>
             <div className="flex items-center gap-1.5">
               <select
                 value={styleConfig.dataLimitDirection ?? 'top'}
                 onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
                 className="w-24 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="top">Top</option>
-                <option value="bottom">Bottom</option>
+                <option value="top">{t('explore.config.top')}</option>
+                <option value="bottom">{t('explore.config.bottom')}</option>
               </select>
               <input
                 type="number"
                 min={1}
                 step={1}
                 inputMode="numeric"
-                placeholder="All rows"
+                placeholder={t('explore.config.allRows')}
                 value={styleConfig.dataLimit === undefined || styleConfig.dataLimit === '' ? '' : styleConfig.dataLimit}
                 onChange={e => {
                   const raw = e.target.value;
@@ -6315,9 +6641,9 @@ export function ExploreChartConfig({
                 }}
                 className="flex-1 min-w-0 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
               />
-              <span className="text-[11px] text-text-quaternary">rows</span>
+              <span className="text-[11px] text-text-quaternary">{t('explore.config.rows')}</span>
             </div>
-            <p className="text-[10px] text-text-quaternary">Applied after sorting. Leave blank to show every row.</p>
+            <p className="text-[10px] text-text-quaternary">{t('explore.config.limitHelp')}</p>
           </div>
         </Disclosure>
       )}

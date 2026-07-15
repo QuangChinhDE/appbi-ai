@@ -1449,14 +1449,14 @@ function FilterCard({
         {configOpen && !lockSlots && onUpdateIcon && (
           <div className="mb-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2">
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">Icon</span>
+              <span className="text-[11px] font-emphasis uppercase tracking-wide text-text-quaternary">{t('dashboards.filterCard.icon')}</span>
               <button
                 type="button"
                 onClick={() => onUpdateIcon(undefined)}
                 className={`text-[10px] font-medium ${f.icon ? 'text-text-tertiary hover:text-brand' : 'text-brand'}`}
-                title="Dùng icon tự động theo loại filter"
+                title={t('dashboards.filterCard.iconAutoTooltip')}
               >
-                {f.icon ? 'Tự động' : '✓ Tự động'}
+                {f.icon ? t('dashboards.filterCard.iconAuto') : t('dashboards.filterCard.iconAutoActive')}
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-1">
@@ -1480,7 +1480,7 @@ function FilterCard({
                 onChange={(e) => onUpdateIcon(e.target.value.slice(0, 4) || undefined)}
                 placeholder="🙂"
                 className="h-6 w-12 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1 text-center text-[13px] outline-none focus:ring-1 focus:ring-brand"
-                title="Gõ/dán emoji bất kỳ"
+                title={t('dashboards.filterCard.emojiTooltip')}
               />
             </div>
           </div>

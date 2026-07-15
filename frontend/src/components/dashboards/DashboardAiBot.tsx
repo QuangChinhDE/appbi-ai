@@ -7,6 +7,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   fetchAiRecon,
   streamAiAgentChat,
+  streamAiExplore,
   loadAiSession,
   saveAiSession,
   clearAiSession,
@@ -14,6 +15,7 @@ import {
   type AiBriefing,
   type AiChatMessage,
   type AiConversationState,
+  type AiExplorationInsight,
   type AiProvider,
   type AiRecon,
 } from '@/lib/api/public';
@@ -56,15 +58,15 @@ const MODEL_OPTIONS: Record<AiProvider, { value: string; label: string }[]> = {
     { value: 'o3-mini', label: 'o3-mini (reasoning)' },
   ],
   anthropic: [
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (đề xuất)' },
-    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (mạnh nhất)' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (rẻ, nhanh)' },
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (cũ)' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5 (đề xuất)' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (mạnh nhất)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (rẻ, nhanh)' },
   ],
   gemini: [
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (mạnh nhất)' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (rẻ, nhanh)' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (mạnh nhất)' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (đề xuất)' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (rẻ, nhanh)' },
   ],
 };
 
@@ -232,8 +234,16 @@ interface ChatMessage extends AiChatMessage {
   };
   /** Web-search sources the answer drew on (shown as clickable links). */
   sources?: { title?: string | null; url?: string | null }[];
-  /** Greeting message: renders the 3 choices (Tổng quan / Hướng dẫn / Chi tiết)
-   *  instead of pre-computed (and possibly stale) highlight numbers. */
+  /** Phase 16 — typed insights extracted by the exploration engine, rendered
+   *  as an insight-ladder panel (grouped by rung) above the summary text. */
+  insights?: AiExplorationInsight[];
+  /** Phase 16 — live exploration progress (questions being answered). */
+  exploration?: {
+    steps: { question: string; qtype: string; status: 'running' | 'done'; failed?: boolean; level?: number }[];
+    stage: 'questions' | 'answer' | 'summary' | string;
+  };
+  /** Greeting message: renders the choices (Tổng quan / Phân tích toàn diện /
+   *  Hướng dẫn / Chi tiết) instead of pre-computed highlight numbers. */
   isWelcome?: boolean;
   /** When set, this assistant message asks the user (mid-guide) whether to
    *  switch to the overview or keep the guided tour. Holds the user's pending
@@ -813,6 +823,142 @@ export function DashboardAiBot({
     setActiveStatus('');
   }, []);
 
+  // Phase 16 — goal-driven exploration ("Phân tích toàn diện"). One SSE run
+  // that decomposes the SMART goal into questions, answers them with chart
+  // tools, streams typed insights live, then a ranked summary. Renders into
+  // a single assistant message (insight-ladder panel + summary prose).
+  const runExplore = useCallback(async () => {
+    if (isStreaming) return;
+    const userMsg: ChatMessage = { role: 'user', content: 'Phân tích toàn diện báo cáo theo mục tiêu phiên.' };
+    const priorMessages = messages.map((m) => (
+      m.isWelcome || m.pivotPending ? { ...m, isWelcome: false, pivotPending: undefined } : m
+    ));
+    let latestMessages: ChatMessage[] = [
+      ...priorMessages,
+      userMsg,
+      { role: 'assistant', content: '', statusLog: [], insights: [], exploration: { steps: [], stage: 'questions' } },
+    ];
+    setMessages(latestMessages);
+    setInputText('');
+    setIsStreaming(true);
+    setActiveStatus('');
+    setRouteMode(null);
+    abortRef.current = false;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const patchLast = (patch: (m: ChatMessage) => ChatMessage) => {
+      const lastIdx = latestMessages.length - 1;
+      if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+        latestMessages = [
+          ...latestMessages.slice(0, lastIdx),
+          patch(latestMessages[lastIdx]),
+        ];
+        setMessages(latestMessages);
+      }
+    };
+
+    try {
+      let answerSoFar = '';
+      const gen = streamAiExplore(
+        token,
+        keyConfigured ? '' : apiKey,
+        provider,
+        modelId.trim() || DEFAULT_MODELS[provider],
+        sessionToken ?? undefined,
+        briefing,
+        viewerFilters,
+        controller.signal,
+        sessionKey,
+      );
+      for await (const ev of gen) {
+        if (abortRef.current) break;
+        if (ev.type === 'usage') {
+          totalPromptTokensRef.current += ev.prompt_tokens ?? 0;
+          totalCompletionTokensRef.current += ev.completion_tokens ?? 0;
+        }
+        applyEvent(ev, {
+          appendText: (chunk) => {
+            answerSoFar += chunk;
+            patchLast((m) => ({ ...m, content: answerSoFar }));
+          },
+          setStatus: (s) => setActiveStatus(s),
+          appendStatusLog: (entry) => {
+            patchLast((m) => ({ ...m, statusLog: [...(m.statusLog ?? []), entry] }));
+          },
+          setReadingPlan: () => { /* explore has its own progress panel */ },
+          updatePlanStep: () => { /* not emitted by explore */ },
+          updateState: () => { /* explore does not evolve chat state */ },
+          onRoute: () => { /* not emitted by explore */ },
+          setSources: () => { /* explore is report-grounded, no web */ },
+          addInsight: (insight) => {
+            patchLast((m) => ({ ...m, insights: [...(m.insights ?? []), insight] }));
+          },
+          onExplorationStep: (step) => {
+            patchLast((m) => {
+              const prev = m.exploration ?? { steps: [], stage: 'questions' };
+              if (step.stage === 'answer' && step.question) {
+                const steps = prev.steps.slice();
+                const idx = steps.findIndex((s) => s.question === step.question);
+                const entry = {
+                  question: step.question,
+                  qtype: step.qtype || 'desc',
+                  status: (step.status === 'done' ? 'done' : 'running') as 'running' | 'done',
+                  failed: step.failed,
+                  level: step.level,
+                };
+                if (idx >= 0) steps[idx] = entry; else steps.push(entry);
+                return { ...m, exploration: { steps, stage: 'answer' } };
+              }
+              return { ...m, exploration: { ...prev, stage: step.stage } };
+            });
+          },
+        });
+      }
+    } catch (err: unknown) {
+      const aborted = abortRef.current || (err instanceof DOMException && err.name === 'AbortError');
+      if (!aborted) {
+        const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
+        patchLast((m) => ({ ...m, content: t('dashboards.aiBot.errorWrapper', { msg }) }));
+      }
+    } finally {
+      abortControllerRef.current = null;
+      setIsStreaming(false);
+      setActiveStatus('');
+      // Persist like a chat turn so the exploration report survives F5.
+      const safeMessages = latestMessages
+        .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map((m) => ({ role: m.role, content: m.content }));
+      if (safeMessages.length > 0) {
+        saveAiSession(token, sessionKey, {
+          session_key: sessionKey,
+          provider,
+          model: modelId,
+          messages: safeMessages,
+          briefing: briefing as unknown as Record<string, unknown> | null,
+          conv_state: convState as unknown as Record<string, unknown> | null,
+          turn_count: Math.floor(messages.filter((m) => m.role === 'user').length) + 1,
+          prompt_tokens: totalPromptTokensRef.current,
+          completion_tokens: totalCompletionTokensRef.current,
+        }, sessionToken ?? undefined).catch(() => { /* silent */ });
+      }
+    }
+  }, [
+    apiKey,
+    briefing,
+    convState,
+    isStreaming,
+    keyConfigured,
+    messages,
+    modelId,
+    provider,
+    sessionKey,
+    sessionToken,
+    t,
+    token,
+    viewerFilters,
+  ]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -828,16 +974,23 @@ export function DashboardAiBot({
     handleSend(q, { skipPivot: true });
   }, [handleSend, isStreaming]);
 
-  // Greeting choice (3 options).
+  // Greeting choice (4 options).
   //  overview → AI analyses the whole report (fresh).
+  //  explore  → Phase 16 goal-driven exploration (insight ladder + actions).
   //  guide    → step-by-step guided tour teaching how to read the report.
   //  detail   → AI opens up and invites a specific question (no AI call).
-  const handleWelcomeAction = useCallback((kind: 'overview' | 'guide' | 'detail') => {
+  const handleWelcomeAction = useCallback((kind: 'overview' | 'explore' | 'guide' | 'detail') => {
     if (isStreaming) return;
     if (kind === 'overview') {
       setChatMode('normal');
       chatModeRef.current = 'normal';  // sync so the send isn't seen as guide
       handleSend(OVERVIEW_QUESTION, { skipPivot: true });
+      return;
+    }
+    if (kind === 'explore') {
+      setChatMode('normal');
+      chatModeRef.current = 'normal';
+      void runExplore();
       return;
     }
     if (kind === 'guide') {
@@ -863,7 +1016,7 @@ export function DashboardAiBot({
       },
     ]);
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [handleSend, isStreaming]);
+  }, [handleSend, isStreaming, runExplore]);
 
   // Mid-guide pivot re-choice. Overview → leave the tour and analyse the whole
   // report. Continue → keep the guided flow (move to the next step), ignoring
@@ -990,7 +1143,7 @@ export function DashboardAiBot({
             <Bot className="h-3.5 w-3.5" />
           </div>
           <div className="flex flex-col leading-tight">
-            <span className="text-caption font-strong text-text-primary">AI Analyst</span>
+            <span className="text-caption font-strong text-text-primary">{t('dashboards.aiBot.title')}</span>
             {view === 'chat' && dashboardName && (
               <span className="text-micro text-text-tertiary truncate max-w-[180px]">{dashboardName}</span>
             )}
@@ -1162,6 +1315,12 @@ function applyEvent(
     updateState: (s: AiConversationState) => void;
     onRoute: (mode: 'normal' | 'thinking') => void;
     setSources: (sources: { title?: string | null; url?: string | null }[]) => void;
+    /** Phase 16 — exploration-only events (chat turns never emit these). */
+    addInsight?: (insight: AiExplorationInsight) => void;
+    onExplorationStep?: (step: {
+      stage: string; status: string; question?: string; qtype?: string;
+      level?: number; failed?: boolean;
+    }) => void;
   },
 ) {
   if (ev.type === 'text') {
@@ -1201,6 +1360,15 @@ function applyEvent(
     if (typeof ev.step_index === 'number' && ev.status) {
       ops.updatePlanStep(ev.step_index, ev.status);
     }
+    return;
+  }
+  if (ev.type === 'insight') {
+    // Phase 16 — one typed insight landed; render it live in the ladder panel.
+    if (ev.insight && ops.addInsight) ops.addInsight(ev.insight);
+    return;
+  }
+  if (ev.type === 'exploration_step') {
+    if (ops.onExplorationStep) ops.onExplorationStep(ev);
     return;
   }
   if (ev.type === 'state') {
@@ -1372,7 +1540,7 @@ function ChatView({
   onSend: () => void;
   onStop: () => void;
   onPickSuggestion: (q: string) => void;
-  onWelcomeAction: (kind: 'overview' | 'guide' | 'detail') => void;
+  onWelcomeAction: (kind: 'overview' | 'explore' | 'guide' | 'detail') => void;
   onPivotAction: (kind: 'overview' | 'continue', pending: string) => void;
   briefing: AiBriefing | null;
   convState: AiConversationState | null;
@@ -1422,6 +1590,8 @@ function ChatView({
                   status={activeStatus}
                   log={msg.statusLog ?? []}
                   readingPlan={msg.readingPlan}
+                  exploration={msg.exploration}
+                  insights={msg.insights}
                 />
               )}
             </React.Fragment>
@@ -1447,6 +1617,21 @@ function ChatView({
               aria-label={t('dashboards.aiBot.dismissNudgeAria')}
             >
               <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+        {/* Phase 16 — quick action pinned to the composer so long-lived
+            sessions (which never see the welcome buttons again) can still
+            launch a goal-driven exploration at any time. */}
+        {!isStreaming && !reconError && (
+          <div className="mb-2 flex">
+            <button
+              type="button"
+              onClick={() => onWelcomeAction('explore')}
+              className="flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 px-2.5 py-1 text-tiny font-emphasis text-brand transition-colors hover:bg-brand/15"
+              title="AI tự đặt câu hỏi theo mục tiêu phiên, trích insight 4 tầng (mô tả → chẩn đoán → dự báo → đề xuất) kèm hành động"
+            >
+              <Sparkles className="h-3 w-3" /> Phân tích toàn diện
             </button>
           </div>
         )}
@@ -1564,7 +1749,7 @@ function MessageBubble({
   disabled?: boolean;
   disableActions?: boolean;
   onPickSuggestion?: (q: string) => void;
-  onWelcomeAction?: (kind: 'overview' | 'guide' | 'detail') => void;
+  onWelcomeAction?: (kind: 'overview' | 'explore' | 'guide' | 'detail') => void;
   onPivotAction?: (kind: 'overview' | 'continue', pending: string) => void;
   onRate?: (index: number, rating: 'up' | 'down') => void;
 }) {
@@ -1594,8 +1779,18 @@ function MessageBubble({
             collapsed={!streaming}
           />
         )}
+        {!isUser && message.exploration && message.exploration.steps.length > 0 && (
+          <ExplorationProgress
+            steps={message.exploration.steps}
+            stage={message.exploration.stage}
+            collapsed={!streaming}
+          />
+        )}
         {!isUser && message.statusLog && message.statusLog.length > 0 && (
           <StatusLog log={message.statusLog} collapsed={!streaming} />
+        )}
+        {!isUser && message.insights && message.insights.length > 0 && (
+          <InsightLadderPanel insights={message.insights} />
         )}
         <RichMarkdown text={body} />
         {!isUser && message.isWelcome && onWelcomeAction && (
@@ -1607,6 +1802,14 @@ function MessageBubble({
               className="flex items-center gap-1.5 rounded-lg border border-brand/40 bg-brand/10 px-3 py-2 text-caption font-emphasis text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <BarChart3 className="h-3.5 w-3.5" /> Xem tổng quan báo cáo
+            </button>
+            <button
+              type="button"
+              onClick={() => onWelcomeAction('explore')}
+              disabled={disableActions}
+              className="flex items-center gap-1.5 rounded-lg border border-brand/30 bg-surface-1 px-3 py-2 text-caption font-emphasis text-text-primary transition-colors hover:border-brand/50 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-brand" /> Phân tích toàn diện (insight + hành động)
             </button>
             <button
               type="button"
@@ -1997,10 +2200,14 @@ function ThinkingBubble({
   status,
   log,
   readingPlan,
+  exploration,
+  insights,
 }: {
   status: string;
   log: NonNullable<ChatMessage['statusLog']>;
   readingPlan?: ChatMessage['readingPlan'];
+  exploration?: ChatMessage['exploration'];
+  insights?: AiExplorationInsight[];
 }) {
   const { t } = useI18n();
   const liveText = (status && status.trim()) || t('dashboards.aiBot.thinkingFallback');
@@ -2022,6 +2229,24 @@ function ThinkingBubble({
               stepStatuses={readingPlan.stepStatuses}
               collapsed={false}
             />
+          </div>
+        )}
+        {/* Phase 16 — exploration ("Phân tích toàn diện") emits its whole
+            answer only at the end, so WITHOUT this the user stared at a bare
+            "Thinking…" for ~30s. Surface the live question-by-question
+            progress + insights as they land. */}
+        {exploration && exploration.steps.length > 0 && (
+          <div className="mb-1.5">
+            <ExplorationProgress
+              steps={exploration.steps}
+              stage={exploration.stage}
+              collapsed={false}
+            />
+          </div>
+        )}
+        {insights && insights.length > 0 && (
+          <div className="mb-1.5">
+            <InsightLadderPanel insights={insights} />
           </div>
         )}
         {visible.length > 0 && (
@@ -2171,10 +2396,34 @@ function normalizeAgentText(text: string): string {
   // 3. Bare confidence tag right after a closing bracket of a chart chip with
   //    a space already there (idempotent for already-bracketed forms).
   out = out.replace(/(\[chart:\d+\])\s+\[?(HIGH|MED|LOW)\]?(?!\w)/g, (_m, c, lvl) => `${c} [${lvl}]`);
+  // 4. Insight-ladder tokens — models (esp. gpt-4o) improvise the tag:
+  //    `[DIG]`, `[DIST]`, `[descriptive]`, `[Diagnostic]`… Map ANY short
+  //    all-letter bracket token that isn't a known chip to the nearest rung
+  //    by prefix, so it renders as a chip instead of leaking as raw text.
+  //    Chart/confidence chips are already-normalized above and skipped here.
+  // Map the intended rung. gpt-4o also emits Vietnamese/garbled attempts
+  // (`[DỊA]`, `[Dự kiến]`, `[DONE]`) — fold accents first so prefix-matching
+  // catches them, then any STILL-unknown letter-only bracket token is dropped
+  // entirely (never leak a raw `[XXX]` into the answer). Chart/confidence/WEB
+  // chips and anything with digits or `:` are preserved.
+  const KNOWN = new Set(['HIGH', 'MED', 'LOW', 'WEB']);
+  out = out.replace(/\[([^\]\d:]{2,20})\]/gu, (m, word) => {
+    const w = String(word)
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')  // strip diacritics
+      .replace(/đ/gi, 'd')
+      .trim().toUpperCase();
+    if (KNOWN.has(w)) return m;
+    if (w.startsWith('DES') || w.startsWith('MO TA') || w.startsWith('MOTA')) return '[DESC]';
+    if (w.startsWith('DIA') || w.startsWith('DIG') || w.startsWith('DIST') || w.startsWith('CHAN')) return '[DIAG]';
+    if (w.startsWith('PRED') || w.startsWith('FORE') || w.startsWith('DU BAO') || w.startsWith('DU KIEN')) return '[PRED]';
+    if (w.startsWith('PRES') || w.startsWith('REC') || w.startsWith('ACT') || w.startsWith('DE XUAT') || w.startsWith('HANH DONG')) return '[PRESC]';
+    // Unknown short letter-only token at a bullet edge = a botched tag → drop.
+    return '';
+  });
   return out;
 }
 
-const INLINE_PATTERN = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[chart:\d+(?:\s*[—–-]\s*"[^"\]]+")?\]|\[HIGH\]|\[MED\]|\[LOW\])/g;
+const INLINE_PATTERN = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[chart:\d+(?:\s*[—–-]\s*"[^"\]]+")?\]|\[HIGH\]|\[MED\]|\[LOW\]|\[DESC\]|\[DIAG\]|\[PRED\]|\[PRESC\])/g;
 
 function renderInline(text: string): React.ReactNode[] {
   if (!text) return [];
@@ -2208,6 +2457,15 @@ function renderInline(text: string): React.ReactNode[] {
     }
     if (part === '[HIGH]' || part === '[MED]' || part === '[LOW]') {
       out.push(<ConfidenceBadge key={idx} level={part.slice(1, -1) as 'HIGH' | 'MED' | 'LOW'} />);
+      return;
+    }
+    if (part === '[DESC]' || part === '[DIAG]' || part === '[PRED]' || part === '[PRESC]') {
+      out.push(
+        <InsightTypeChip
+          key={idx}
+          type={part.slice(1, -1).toLowerCase() as 'desc' | 'diag' | 'pred' | 'presc'}
+        />,
+      );
       return;
     }
     // Plain text — preserve newlines as <br/>
@@ -2272,5 +2530,144 @@ function ConfidenceBadge({ level }: { level: 'HIGH' | 'MED' | 'LOW' }) {
     >
       {level}
     </span>
+  );
+}
+
+// ── Insight ladder (Phase 16 — InsightBench rework) ──────────────────────────
+// Descriptive → Diagnostic → Predictive → Prescriptive. Same taxonomy as the
+// backend prompt contract ([DESC]/[DIAG]/[PRED]/[PRESC] tokens).
+
+const _INSIGHT_TYPE_META: Record<'desc' | 'diag' | 'pred' | 'presc', { label: string; tooltip: string; cls: string }> = {
+  desc: {
+    label: 'Mô tả',
+    tooltip: 'Descriptive — chuyện gì đã xảy ra (đọc trực tiếp từ dữ liệu)',
+    cls: 'bg-info/15 text-info',
+  },
+  diag: {
+    label: 'Chẩn đoán',
+    tooltip: 'Diagnostic — vì sao xảy ra (bóc tách phân khúc / so sánh kỳ / tương quan)',
+    cls: 'bg-warning/15 text-warning',
+  },
+  pred: {
+    label: 'Dự báo',
+    tooltip: 'Predictive — điều gì sắp xảy ra (chiếu xu hướng từ dữ liệu)',
+    cls: 'bg-brand/15 text-brand',
+  },
+  presc: {
+    label: 'Đề xuất',
+    tooltip: 'Prescriptive — nên làm gì (hành động cụ thể bám theo phát hiện)',
+    cls: 'bg-success/15 text-success',
+  },
+};
+
+function InsightTypeChip({ type }: { type: 'desc' | 'diag' | 'pred' | 'presc' }) {
+  const meta = _INSIGHT_TYPE_META[type];
+  return (
+    <span
+      className={`mx-0.5 inline-flex cursor-help items-center rounded px-1 py-0 text-[0.65em] font-strong ${meta.cls}`}
+      title={meta.tooltip}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+/** Grouped, typed insights from the exploration engine — the ladder view. */
+function InsightLadderPanel({ insights }: { insights: AiExplorationInsight[] }) {
+  const order: ('desc' | 'diag' | 'pred' | 'presc')[] = ['desc', 'diag', 'pred', 'presc'];
+  const groups = order
+    .map((k) => ({ key: k, items: insights.filter((i) => i.type === k) }))
+    .filter((g) => g.items.length > 0);
+  // Prescriptive actions can also ride on non-presc insights via `action`.
+  const actions = insights
+    .filter((i) => i.action && i.type !== 'presc')
+    .map((i) => ({ action: i.action as string, evidence: i.evidence }));
+  if (groups.length === 0 && actions.length === 0) return null;
+  return (
+    <div className="mb-2 rounded-lg border border-brand/20 bg-brand/[0.04] p-2">
+      <p className="mb-1.5 flex items-center gap-1 text-micro font-emphasis text-brand">
+        <Sparkles className="h-3 w-3" /> Insight đã trích xuất ({insights.length})
+      </p>
+      <div className="flex flex-col gap-1.5">
+        {groups.map((g) => (
+          <div key={g.key}>
+            {g.items.map((ins, i) => (
+              <div key={`${g.key}-${i}`} className="mb-1 flex items-start gap-1.5 text-tiny leading-snug">
+                <span className="mt-px flex-shrink-0"><InsightTypeChip type={g.key} /></span>
+                <span className="min-w-0">
+                  {renderInline(ins.statement)}
+                  {ins.evidence.map((cid) => <ChartChip key={cid} chartId={cid} />)}
+                  <ConfidenceBadge level={(ins.confidence === 'HIGH' || ins.confidence === 'LOW' ? ins.confidence : 'MED')} />
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+        {actions.length > 0 && (
+          <div className="border-t border-brand/15 pt-1.5">
+            {actions.map((a, i) => (
+              <div key={i} className="mb-1 flex items-start gap-1.5 text-tiny leading-snug">
+                <span className="mt-px flex-shrink-0"><InsightTypeChip type="presc" /></span>
+                <span className="min-w-0">
+                  {renderInline(a.action)}
+                  {a.evidence.map((cid) => <ChartChip key={cid} chartId={cid} />)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Live progress of the exploration run (which question is being answered). */
+function ExplorationProgress({
+  steps,
+  stage,
+  collapsed,
+}: {
+  steps: { question: string; qtype: string; status: 'running' | 'done'; failed?: boolean; level?: number }[];
+  stage: string;
+  collapsed?: boolean;
+}) {
+  const [open, setOpen] = useState(!collapsed);
+  useEffect(() => { setOpen(!collapsed); }, [collapsed]);
+  const doneCount = steps.filter((s) => s.status === 'done').length;
+  return (
+    <div className="mb-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-micro font-emphasis text-text-secondary"
+      >
+        <span className="flex items-center gap-1">
+          <Activity className="h-3 w-3 text-brand" />
+          {stage === 'summary' ? 'Đang tổng hợp báo cáo insight…' : `AI đang khám phá báo cáo (${doneCount}/${steps.length} câu hỏi)`}
+        </span>
+        <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {steps.map((s, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-tiny leading-snug text-text-secondary">
+              <span className="mt-0.5 flex-shrink-0">
+                {s.failed ? (
+                  <AlertTriangle className="h-3 w-3 text-warning" />
+                ) : s.status === 'done' ? (
+                  <CheckCircle2 className="h-3 w-3 text-success" />
+                ) : (
+                  <Loader2 className="h-3 w-3 animate-spin text-brand" />
+                )}
+              </span>
+              <span className="min-w-0">
+                {(s.level ?? 0) > 0 ? <span className="text-text-quaternary">↳ </span> : null}
+                {s.question}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

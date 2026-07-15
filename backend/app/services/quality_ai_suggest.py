@@ -434,53 +434,93 @@ async def _call_gemini(description: str, user_prompt: str) -> Optional[Dict[str,
     return None
 
 
-async def _call_openrouter(user_prompt: str) -> Optional[Dict[str, Any]]:
-    """Call OpenRouter API using httpx."""
+async def _call_openai(user_prompt: str) -> Optional[Dict[str, Any]]:
+    """Call the OpenAI chat-completions API using httpx."""
     import httpx
 
-    keys = settings.active_api_keys
-    if not keys:
+    api_key = settings.OPENAI_API_KEY.strip()
+    if not api_key:
         return None
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        last_exc: Optional[Exception] = None
-        for index, key in enumerate(keys, start=1):
-            try:
-                resp = await client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "HTTP-Referer": settings.OPENROUTER_SITE_URL,
-                        "X-Title": settings.OPENROUTER_APP_NAME,
-                    },
-                    json={
-                        "model": settings.quality_openrouter_model,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.15,
-                        "max_tokens": 800,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if not content:
-                    logger.warning("OpenRouter AI suggest returned empty content on key #%s", index)
-                    continue
-                parsed = _parse_json_response(content)
-                if parsed is not None:
-                    return parsed
-                logger.warning("OpenRouter AI suggest returned non-JSON content on key #%s", index)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning("OpenRouter AI suggest failed on key #%s: %s", index, exc)
-
-        if last_exc is not None:
-            raise last_exc
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.active_quality_model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.15,
+                "max_tokens": 800,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not content:
+            logger.warning("OpenAI AI suggest returned empty content")
+            return None
+        parsed = _parse_json_response(content)
+        if parsed is not None:
+            return parsed
+        logger.warning("OpenAI AI suggest returned non-JSON content")
         return None
+
+
+async def _call_gemini_json(user_prompt: str) -> Optional[Dict[str, Any]]:
+    """Gemini fallback (direct API) — same JSON contract as _call_openai."""
+    import httpx
+
+    key = settings.GEMINI_API_KEY.strip()
+    if not key:
+        return None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+            params={"key": key},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": f"{SYSTEM_PROMPT}\n\n{user_prompt}"}]}],
+                "generationConfig": {"temperature": 0.15, "maxOutputTokens": 800, "responseMimeType": "application/json"},
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = "".join(
+            p.get("text", "")
+            for p in (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+        )
+        return _parse_json_response(text) if text else None
+
+
+async def _call_anthropic_json(user_prompt: str) -> Optional[Dict[str, Any]]:
+    """Claude fallback (direct API) — same JSON contract as _call_openai."""
+    import httpx
+
+    key = settings.ANTHROPIC_API_KEY.strip()
+    if not key:
+        return None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={
+                "model": "claude-3-5-haiku-latest",
+                "max_tokens": 800,
+                "temperature": 0.15,
+                "system": f"{SYSTEM_PROMPT}\n\nRespond with ONLY a valid JSON object, no prose.",
+                "messages": [{"role": "user", "content": user_prompt}],
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        return _parse_json_response(text) if text else None
 
 
 def _sanitize_result(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -576,45 +616,28 @@ async def suggest_quality_rule(
 
     result = None
     provider_used: Optional[str] = None
-    gemini_failure: Optional[Exception] = None
-    gemini_quota_exhausted = False
+    last_error: Optional[Exception] = None
 
-    # Try Gemini first (faster, cheaper)
-    if settings.GEMINI_API_KEY.strip():
+    # Fallback chain: OpenAI → Gemini → Claude. Each is skipped if its key is
+    # missing (returns None) and rolled over on any error/quota.
+    for name, fn in (("openai", _call_openai), ("gemini", _call_gemini_json), ("anthropic", _call_anthropic_json)):
         try:
-            result = await _call_gemini(description, user_prompt)
-            if result is not None:
-                provider_used = "gemini"
-        except GeminiQuotaFallbackError as exc:
-            gemini_failure = exc
-            gemini_quota_exhausted = True
-            logger.warning("Gemini AI suggest exhausted quota/token budget after retries: %s", exc)
-        except Exception as exc:
-            gemini_failure = exc
-            logger.warning("Gemini AI suggest failed after retries: %s", exc)
-
-    # Fallback to OpenRouter only when Gemini quota/token is exhausted after retries.
-    if result is None and gemini_quota_exhausted and settings.active_api_keys:
-        logger.info("Quality AI suggest falling back to OpenRouter after Gemini quota/token exhaustion")
-        try:
-            result = await _call_openrouter(user_prompt)
-            if result is not None:
-                provider_used = "openrouter"
-        except Exception as exc:
-            logger.warning("OpenRouter AI suggest failed: %s", exc)
+            r = await fn(user_prompt)
+            if r is not None:
+                result = r
+                provider_used = name
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning("Quality AI suggest via %s failed: %s — trying next provider", name, exc)
 
     if result is None:
         from fastapi import HTTPException
 
-        detail = "AI suggestion service is not available. Configure GEMINI_API_KEY or OPENROUTER_API_KEY."
-        if isinstance(gemini_failure, GeminiOutputFormatError):
-            detail = f"Gemini did not return valid JSON after {MAX_GEMINI_RETRIES} attempts."
-        elif gemini_failure is not None and not gemini_quota_exhausted:
-            detail = f"Gemini suggestion failed after {MAX_GEMINI_RETRIES} attempts: {gemini_failure}"
-        raise HTTPException(
-            status_code=503,
-            detail=detail,
-        )
+        detail = "AI suggestion service is not available. Configure OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY."
+        if last_error is not None:
+            detail = f"All AI providers failed; last error: {last_error}"
+        raise HTTPException(status_code=503, detail=detail)
 
     logger.info("Quality AI suggest resolved via %s", provider_used or "unknown")
     return _sanitize_result(result)

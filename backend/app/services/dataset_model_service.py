@@ -2532,6 +2532,8 @@ def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | 
         # rebuild so the slicer cascade stays consistent with the charts.
         if snapshot_service.is_stale(snapshot_service.as_of(db, list(snap_map.keys())), ttl_minutes):
             snapshot_service.trigger_async_refresh(dataset_id)
+        # Change-driven refresh: rebuild if the source DATA changed since build.
+        snapshot_service.schedule_source_change_check(dataset_id)
         sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
         exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
         return snap_map, exec_ds

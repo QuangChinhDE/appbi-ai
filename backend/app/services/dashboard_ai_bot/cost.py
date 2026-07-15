@@ -123,35 +123,33 @@ _PRICES: dict[str, ModelPricing] = {
     "gpt-4.1-nano": _openai(0.10, 0.025, 0.40),
     "gpt-4.1": _openai(2.0, 0.50, 8.0),
     "o3-mini": _openai(1.10, 0.55, 4.40),
-    # Anthropic
-    "claude-opus-4-7": _anthropic(15.0, 75.0),
-    "claude-opus-4": _anthropic(15.0, 75.0),
+    # Anthropic — refreshed 2026-07 against the live price sheet. The old
+    # table priced opus-4-7 at legacy 15/75 (wrong: Opus 4.6+ is 5/25) and
+    # still carried the RETIRED claude-3-5-* family (404 since 2026-02-19).
+    "claude-fable-5": _anthropic(10.0, 50.0),
+    "claude-opus-4-8": _anthropic(5.0, 25.0),
+    "claude-opus-4-7": _anthropic(5.0, 25.0),
+    "claude-opus-4-6": _anthropic(5.0, 25.0),
+    "claude-opus-4": _anthropic(15.0, 75.0),   # legacy opus-4-0/4-1 pricing
+    "claude-sonnet-5": _anthropic(3.0, 15.0),
     "claude-sonnet-4-6": _anthropic(3.0, 15.0),
     "claude-sonnet-4": _anthropic(3.0, 15.0),
-    "claude-haiku-4-5-20251001": _anthropic(0.80, 4.0),
-    "claude-haiku-4-5": _anthropic(0.80, 4.0),
-    "claude-3-5-sonnet-20241022": _anthropic(3.0, 15.0),
-    "claude-3-5-sonnet": _anthropic(3.0, 15.0),
-    "claude-3-5-haiku-20241022": _anthropic(0.80, 4.0),
-    "claude-3-5-haiku": _anthropic(0.80, 4.0),
-    # Gemini
-    "gemini-1.5-pro": _gemini(
+    "claude-haiku-4-5-20251001": _anthropic(1.0, 5.0),
+    "claude-haiku-4-5": _anthropic(1.0, 5.0),
+    # Gemini — 1.5 family is EOL; 2.x is the live generation.
+    "gemini-2.5-pro": _gemini(
         short_input_per_1m=1.25,
         short_cached_input_per_1m=0.3125,
-        short_output_per_1m=5.0,
+        short_output_per_1m=10.0,
         long_input_per_1m=2.50,
         long_cached_input_per_1m=0.625,
-        long_output_per_1m=10.0,
-        threshold_tokens=128_000,
+        long_output_per_1m=15.0,
+        threshold_tokens=200_000,
     ),
-    "gemini-1.5-flash": _gemini(
-        short_input_per_1m=0.075,
-        short_cached_input_per_1m=0.01875,
-        short_output_per_1m=0.30,
-        long_input_per_1m=0.15,
-        long_cached_input_per_1m=0.0375,
-        long_output_per_1m=0.60,
-        threshold_tokens=128_000,
+    "gemini-2.5-flash": _gemini(
+        short_input_per_1m=0.30,
+        short_cached_input_per_1m=0.075,
+        short_output_per_1m=2.50,
     ),
     "gemini-2.0-flash": _gemini(
         short_input_per_1m=0.10,

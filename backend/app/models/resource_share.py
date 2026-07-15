@@ -18,6 +18,7 @@ class ResourceType(str, enum.Enum):
     DATASOURCE = "datasource"
     CHAT_SESSION = "chat_session"
     WORKBOARD = "workboard"
+    KNOWLEDGE_DOC = "knowledge_doc"
 
 
 class SharePermission(str, enum.Enum):

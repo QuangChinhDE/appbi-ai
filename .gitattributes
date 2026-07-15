@@ -1,0 +1,12 @@
+# Shell scripts MUST use LF line endings. A .sh checked out with CRLF fails on
+# Linux/macOS with "bad interpreter: /usr/bin/env bash^M" — and entrypoint.sh runs
+# inside the (Linux) container. Pin them regardless of any dev's core.autocrlf.
+*.sh            text eol=lf
+run.sh          text eol=lf
+backend/entrypoint.sh text eol=lf
+
+# PowerShell is happiest with CRLF on Windows.
+*.ps1           text eol=crlf
+
+# Let Git auto-detect and normalize everything else to LF in the repo.
+*               text=auto

@@ -899,6 +899,22 @@ def get_public_dashboard(
         db,
         session_token=x_public_session,
     )
+
+    # Perf: everything built below (hydrate every chart + resolve every dataset's
+    # semantic model + build the filter inventory) is IDENTICAL for all viewers
+    # of a token and is the GATE before any tile can load — so N concurrent
+    # viewers each rebuild it. Cache the built response by token (short TTL;
+    # structure edits still surface within the TTL) and coalesce concurrent
+    # builds across workers — the same mechanism as chart-data. Auth + the
+    # access-count bump already ran per-request in `_get_dashboard_by_token`.
+    from app.services import query_cache as _qc
+    _meta_cached = _qc.get_public_meta(token)
+    _meta_leader = False
+    if _meta_cached is None:
+        _meta_cached, _meta_leader = _qc.begin_coalesced_public_meta(token)
+    if _meta_cached is not None:
+        return _meta_cached
+
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
@@ -1042,145 +1058,31 @@ def get_public_dashboard(
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
     dash.public_link_appearance = safe_appearance
-    return dash
+
+    # Serialize the built structure to a plain dict, cache it by token, and wake
+    # any workers coalescing on this token. Returning the dict (validated by the
+    # response_model) is fine; on any serialization hiccup we fall back to the ORM
+    # and simply skip caching (correctness over the perf optimization).
+    from fastapi.encoders import jsonable_encoder as _jsonable_encoder
+    _meta_payload = None
+    try:
+        _meta_payload = _jsonable_encoder(DashboardResponse.model_validate(dash))
+    except Exception:
+        logger.debug("public dashboard meta serialize failed; returning ORM", exc_info=True)
+    if _meta_payload is not None:
+        _qc.set_public_meta(token, _meta_payload)
+    if _meta_leader:
+        _qc.end_coalesced_public_meta(token)
+    return _meta_payload if _meta_payload is not None else dash
 
 
 if settings.WORKBOARDS_ENABLED:
-    def _get_workboard_by_token(
-        token: str,
-        db: Session,
-        session_token: str | None = None,
-        *,
-        track_access: bool = True,
-    ):
-        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
-        if not workboard or not link:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if not bool(link.get("is_active", True)):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if link.get("password_hash"):
-            if not session_token or not _verify_public_session(session_token, token):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="This shared link requires a password.",
-                    headers={"X-Link-Password-Required": "true"},
-                )
-        if track_access:
-            touched = WorkboardPublicLinkService.touch_access(db, workboard, str(link.get("id")))
-            if touched:
-                link = touched
-        return workboard, link
-
-
-    @router.post("/workboards/{token}/auth")
-    @_limiter.limit("10/minute")
-    def auth_public_workboard_link(
-        token: str,
-        body: _PasswordBody,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
-        if not workboard or not link or not bool(link.get("is_active", True)):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Shared workboard not found or link has been revoked.",
-            )
-        if not link.get("password_hash"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This link does not require a password.")
-        if not WorkboardPublicLinkService.verify_password(link, body.password):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
-        return {"session_token": _create_public_session(token), "expires_in": PUBLIC_SESSION_SECONDS}
-
-
-    @router.get("/workboards/{token}")
-    @_limiter.limit("30/minute")
-    def get_public_workboard(
-        token: str,
-        request: Request,
-        db: Session = Depends(get_db),
-        x_public_session: str | None = Header(default=None),
-    ):
-        workboard, link = _get_workboard_by_token(
-            token,
-            db,
-            session_token=x_public_session,
-        )
-        # Mini-app contract: a public link is just an authenticated handle
-        # on a workboard. The FE consumes ``workboard.layout`` (screens[])
-        # and drives everything through the workspace screen endpoints.
-        payload = {
-            "workboard": {
-                "id": workboard.id,
-                "name": workboard.name,
-                "description": workboard.description,
-                "slug": workboard.slug,
-                "layout": _strip_ocr(workboard.layout_json or {}),
-            },
-            "link": {
-                "id": str(link.get("id")),
-                "name": str(link.get("name") or workboard.name),
-                "token": token,
-                "is_active": bool(link.get("is_active", True)),
-                "has_password": bool(link.get("password_hash")),
-                "access_count": int(link.get("access_count") or 0),
-                "last_accessed_at": link.get("last_accessed_at"),
-                "created_at": link.get("created_at"),
-                "updated_at": link.get("updated_at"),
-            },
-        }
-        return payload
-
-
-    @router.post("/workboards/{token}/submit")
-    @_limiter.limit("30/minute")
-    def submit_public_workboard_form(
-        token: str,
-        body: dict,
-        request: Request,
-        db: Session = Depends(get_db),
-        x_public_session: str | None = Header(default=None),
-    ):
-        workboard, link = _get_workboard_by_token(
-            token,
-            db,
-            session_token=x_public_session,
-            track_access=False,
-        )
-        values = body.get("values") if isinstance(body, dict) else None
-        if not isinstance(values, dict):
-            raise HTTPException(status_code=400, detail="values is required.")
-        try:
-            result = WorkboardWriteService.insert_row(db, workboard, values, None)
-        except WorkboardValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"message": str(exc), "violations": exc.violations},
-            ) from exc
-        except WorkboardWriteError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        return {
-            "action": "insert",
-            **result,
-        }
-
-
-    # â”€â”€ Workspace public endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    #
-    # Workspaces are the public face of a project's mini-app. End-users
-    # (workers, foremen, drivers) authenticate against the project's own
-    # employee table via `app_user_service.authenticate`, then drive a
-    # role-filtered menu of workboards. Cookie name is namespaced to the
-    # workspace token so multiple workspaces on the same domain don't
-    # clobber each other's sessions.
-
-    _WORKSPACE_COOKIE_PREFIX = "wbws_"  # final cookie: wbws_<short-hash-of-token>
+    # Prefix for the per-workspace session cookie; final name is
+    # ``wbws_<short-hash-of-token>`` (see _workspace_cookie_name). Must be a
+    # module-level constant so the login/logout paths can resolve it —
+    # omitting it raises ``NameError: _WORKSPACE_COOKIE_PREFIX is not defined``
+    # AFTER auth succeeds, surfacing to the user as a false "Đăng nhập thất bại".
+    _WORKSPACE_COOKIE_PREFIX = "wbws_"
 
     def _workspace_cookie_name(workspace_token: str) -> str:
         import hashlib
@@ -1580,7 +1482,7 @@ if settings.WORKBOARDS_ENABLED:
         )
         identity = identity_from_app_user(app_user)
         return screen_runtime.render_app_shell(
-            wb, identity, hidden_screen_ids=_public_hidden_screen_ids(ws, wb)
+            wb, identity, hidden_screen_ids=_public_hidden_screen_ids(ws, wb), db=db
         )
 
 
@@ -1631,7 +1533,8 @@ if settings.WORKBOARDS_ENABLED:
             }
         if screen.kind == "doc":
             return screen_runtime.render_doc_screen(
-                db, wb, screen, identity=identity, app_user_payload=app_user
+                db, wb, screen, identity=identity, app_user_payload=app_user,
+                shared_context=shared_context,
             )
         if screen.kind == "dashboard":
             if screen.dashboard is None:
@@ -1693,6 +1596,7 @@ if settings.WORKBOARDS_ENABLED:
         block_index: int,
         request: Request,
         db: Session = Depends(get_db),
+        shared: str | None = Query(default=None, description="JSON-encoded shared_context"),
     ):
         """Stream a doc data_table block as XLSX (opt-in per block)."""
         ws = _load_workspace_or_404(db, token)
@@ -1705,8 +1609,16 @@ if settings.WORKBOARDS_ENABLED:
         screen = screen_runtime.get_screen(layout, screen_id)
         if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        shared_context: dict | None = None
+        if shared:
+            try:
+                shared_context = json.loads(shared)
+                if not isinstance(shared_context, dict):
+                    shared_context = None
+            except Exception:
+                shared_context = None
         content, filename = screen_runtime.export_doc_data_block_to_excel(
-            db, wb, screen, block_index, identity=identity
+            db, wb, screen, block_index, identity=identity, shared_context=shared_context,
         )
         from urllib.parse import quote
         return Response(
@@ -1760,6 +1672,9 @@ if settings.WORKBOARDS_ENABLED:
         trigger_id = (body or {}).get("trigger_id")
         if not isinstance(trigger_id, str) or not trigger_id:
             raise HTTPException(status_code=400, detail="trigger_id is required")
+        shared_ctx = (body or {}).get("shared")
+        if not isinstance(shared_ctx, dict):
+            shared_ctx = None
 
         try:
             group_id, runs = _sync_svc.trigger_sync(
@@ -1770,6 +1685,7 @@ if settings.WORKBOARDS_ENABLED:
                 trigger_id,
                 identity=identity,
                 app_user_payload=app_user,
+                shared_context=shared_ctx,
             )
         except _sync_svc.WebhookSyncError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -2237,7 +2153,79 @@ if settings.WORKBOARDS_ENABLED:
             ) from exc
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        # Web-push (C13): when someone reviews/edits a row owned by another
+        # app-user, notify that owner ("your record was updated"). Best-effort.
+        try:
+            row = result.get("row") if isinstance(result, dict) else None
+            owner = row.get("miniapp_user") if isinstance(row, dict) else None
+            updater = app_user.get("username") if isinstance(app_user, dict) else None
+            if owner and owner != updater:
+                from app.modules.workboards.services import push_service
+                push_service.send_to_user(
+                    db, wb.id, owner,
+                    title=f"Cập nhật: {screen.title}",
+                    body=f"Bản ghi của bạn vừa được {updater or 'quản lý'} cập nhật.",
+                    url=f"/ws/{token}/workboards/{wb.id}",
+                )
+        except Exception:
+            logger.exception("push notify on update failed")
         return {"action": "update", **result}
+
+
+    @router.get("/workspaces/{token}/push/config")
+    def workspace_push_config(token: str, db: Session = Depends(get_db)):
+        """VAPID public key for the browser's pushManager.subscribe. Public."""
+        from app.modules.workboards.services import push_service
+        _load_workspace_or_404(db, token)
+        return {"enabled": push_service.is_configured(), "public_key": push_service.get_public_key()}
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/push/subscribe")
+    def workspace_push_subscribe(
+        token: str,
+        workboard_id: int,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import push_service
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        sub = (body or {}).get("subscription") if isinstance(body, dict) else None
+        unsub = (body or {}).get("unsubscribe") if isinstance(body, dict) else None
+        username = app_user.get("username") if isinstance(app_user, dict) else None
+        if not isinstance(sub, dict) or not sub.get("endpoint"):
+            raise HTTPException(status_code=400, detail="subscription with endpoint is required.")
+        if unsub:
+            push_service.delete_subscription(db, wb.id, sub["endpoint"])
+            return {"ok": True, "unsubscribed": True}
+        try:
+            push_service.save_subscription(
+                db, wb.id, username, sub, user_agent=request.headers.get("user-agent"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/push/test")
+    def workspace_push_test(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        from app.modules.workboards.services import push_service
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request, app_user=app_user)
+        username = app_user.get("username") if isinstance(app_user, dict) else None
+        sent = push_service.send_to_user(
+            db, wb.id, username,
+            title="Thông báo thử",
+            body="Bạn đã bật thông báo cho mini-app này ✅",
+            url=f"/ws/{token}/workboards/{wb.id}",
+        )
+        return {"ok": True, "delivered": sent}
 
 
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/row")
@@ -2577,6 +2565,95 @@ def get_public_chart_data(
         )
 
 
+class _PublicChartsBatchItem(BaseModel):
+    chart_id: int
+    # Viewer filters for THIS chart (already scope-bounded + cross-filter-merged
+    # by the FE, exactly like the single-chart endpoint's `filters` query param).
+    filters: list[dict] | None = None
+    granularity: str | None = None
+
+
+class _PublicChartsBatchBody(BaseModel):
+    items: list[_PublicChartsBatchItem]
+
+
+@router.post("/dashboards/{token}/charts/data")
+# "1 request = 1 page": one open/page-switch now sends ONE request for all its
+# tiles instead of N. Kept generous but bounded (a viewer flips pages a handful
+# of times per minute; each is one call here regardless of tile count).
+@_limiter.limit("120/minute")
+def get_public_charts_data_batch(
+    token: str,
+    request: Request,
+    body: _PublicChartsBatchBody,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Batch chart-data for a public link — the server side of "1 request = 1
+    page". Resolves the dashboard + link filters + snapshot TTL ONCE (vs once
+    per tile before), then fans the charts out server-side via
+    ``ChartService.get_charts_data_batch`` (own session/thread each). Returns
+    per-chart ``{chart_id, data | error, status}``; a bad/unauthorised-to-this-
+    dashboard tile is isolated and never fails the whole page. Each chart uses
+    the SAME merge + engine path as the single-chart endpoint, so results are
+    byte-identical."""
+    dash, public_filters, _, _chart_appearance = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    ttl = _resolve_public_snapshot_ttl(_chart_appearance)
+    valid_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+
+    items: list[dict] = []
+    not_found: list[int] = []
+    seen: set[int] = set()
+    for it in body.items:
+        cid = int(it.chart_id)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        if cid not in valid_ids:
+            not_found.append(cid)
+            continue
+        viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
+        combined_filters = _build_public_chart_filters(
+            dash, public_filters, viewer_filters,
+            context_for_log=f"chart_data_batch:{token}:{cid}",
+        )
+        _grain = str(it.granularity or "").strip().lower()
+        grain = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
+        items.append({
+            "chart_id": cid,
+            "extra_filters": combined_filters or None,
+            "filter_context": "dashboard",
+            "granularity_override": grain,
+            "snapshot_ttl_minutes": ttl,
+        })
+
+    # Serialize INSIDE each worker thread (session still open) so the Chart ORM
+    # in the result is copied into ChartDataResponse before the session closes —
+    # otherwise the request thread hits DetachedInstanceError on lazy attributes.
+    raw_results = ChartService.get_charts_data_batch(
+        items, serialize=lambda d: ChartDataResponse(**d),
+    )
+
+    results: list[dict] = []
+    for r in raw_results:
+        if r.get("ok"):
+            results.append({"chart_id": r["chart_id"], "data": r["data"]})
+        else:
+            results.append({
+                "chart_id": r["chart_id"],
+                "error": r.get("error"),
+                "status": r.get("status", 500),
+            })
+    for cid in not_found:
+        results.append({
+            "chart_id": cid,
+            "error": "Chart not found in this shared dashboard.",
+            "status": 404,
+        })
+    return {"results": results}
+
 
 # â”€â”€ Agentic AI Bot endpoints (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
@@ -2608,7 +2685,9 @@ def get_dashboard_ai_recon(
     Frontend calls this once when the bot opens to render a "what's notable"
     welcome message and to seed suggested questions. No LLM call here.
     """
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
@@ -2678,7 +2757,6 @@ class _AiAgentChatBody(BaseModel):
     session_key: str | None = None
 
 
-
 class _AiBriefingGuessQuery(BaseModel):
     pass  # currently no body, just GET
 
@@ -2691,92 +2769,6 @@ class _AiBriefingBriefBody(BaseModel):
     # Same purpose as on _AiAgentChatBody: viewer slicer state so the recon
     # snapshot reflects the dashboard the user is actually looking at.
     viewer_filters: list[dict] | None = None
-
-
-@router.get("/dashboards/{token}/ai/dashboard.pdf")
-@_limiter.limit("10/minute")
-def get_dashboard_ai_pdf(
-    token: str,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-):
-    """Render the dashboard as a multi-page PDF â€” one page per chart plus a
-    cover page. The user can download this and re-feed it into ANY LLM
-    (Claude, ChatGPT) for offline analysis â€” same data, "real images" the
-    way the user described.
-    """
-    from app.services.dashboard_ai_bot.thinking.advanced_tools import (
-        _detect_dim_idx, _detect_measure_idx,
-    )
-    from app.services.dashboard_ai_bot.thinking.chart_renderer import render_dashboard_pdf
-    from app.services.dashboard_ai_bot.tool_context import _fetch_chart_data, ToolContext
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-
-    # Same merge as every other public surface (see recon above) — the PDF must
-    # reflect the link's enforced scope, not the raw un-merged link filters.
-    combined_filters = _build_public_chart_filters(
-        dash, public_filters, [], context_for_log="ai_pdf",
-    )
-    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
-    payloads: list[dict] = []
-    for chart_id in sorted(ctx.allowed_chart_ids):
-        meta = ctx.chart_meta.get(chart_id, {})
-        try:
-            data = _fetch_chart_data(ctx, chart_id)
-        except Exception:
-            logger.warning("AI PDF: failed to load chart_id=%s", chart_id)
-            continue
-        cols = data["columns"]
-        rows = data["rows"][:200]
-        m_idx = _detect_measure_idx(cols, rows)
-        d_idx = _detect_dim_idx(cols, rows, m_idx, prefer_datetime=True)
-        ctype = (meta.get("chart_type") or "").lower()
-        role = "kpi" if any(h in ctype for h in ("kpi", "metric", "card", "number", "stat")) else (
-            "trend" if any(h in ctype for h in ("line", "area")) else (
-                "distribution" if any(h in ctype for h in ("pie", "donut")) else "breakdown"
-            )
-        )
-        payloads.append({
-            "chart_id": chart_id,
-            "chart_name": meta.get("name", f"Chart {chart_id}"),
-            "chart_type": meta.get("chart_type", ""),
-            "chart_role": role,
-            "columns": cols,
-            "rows": rows,
-            "dim_idx": d_idx,
-            "measure_idx": m_idx,
-        })
-
-    try:
-        pdf_bytes = render_dashboard_pdf(
-            dashboard_name=dash.name or "Dashboard",
-            chart_payloads=payloads,
-        )
-    except Exception:
-        logger.exception("AI PDF render failed for token=%s", token)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to render PDF.",
-        )
-
-    safe_name = (dash.name or "dashboard").replace(" ", "_")[:60]
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.pdf"',
-            "Cache-Control": "no-store",
-        },
-    )
 
 
 @router.get("/dashboards/{token}/ai/briefing/guess")
@@ -2795,7 +2787,9 @@ def get_dashboard_ai_briefing_guess(
     metrics. The frontend wizard renders this as Step 1 (confirm/correct).
     No LLM call.
     """
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.thinking.briefing import guess_briefing_from_recon
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
@@ -2874,7 +2868,9 @@ async def post_dashboard_ai_briefing_brief(
     """
     import json as _json
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.thinking.agent import (
+        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
+    )
     from app.services.dashboard_ai_bot.thinking.briefing import (
         Briefing,
         EXEC_BRIEF_SYSTEM_PROMPT,
@@ -3019,7 +3015,9 @@ async def save_ai_chat_session(
     from app.models.ai_chat_session import AiChatSession
     from datetime import datetime
 
-    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    _dash_for_kb, _pf_kb, _z_kb, _ap_kb = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
 
     session_key = session_key.strip()
     if len(session_key) > 64 or not session_key:
@@ -3060,6 +3058,44 @@ async def save_ai_chat_session(
     row.updated_at = datetime.utcnow()
 
     db.commit()
+
+    # ── Learning capture (institutional memory) ─────────────────────────────
+    # Distil THIS turn's high-confidence findings into the company knowledge
+    # base and fold in any thumbs up/down. Best-effort — never break a save.
+    try:
+        from app.services.dashboard_ai_bot import knowledge as _kb
+        dash_id = getattr(_dash_for_kb, "id", None)
+        if isinstance(dash_id, int):
+            cs = body.conv_state if isinstance(body.conv_state, dict) else {}
+            all_findings = cs.get("findings") if isinstance(cs.get("findings"), list) else []
+            cur_turn = cs.get("turn_index")
+            # Only THIS turn's findings, so cumulative state doesn't re-inflate
+            # support_count on every save.
+            findings = [
+                f for f in all_findings
+                if not isinstance(cur_turn, int) or f.get("turn_index") == cur_turn
+            ]
+            last_rating = None
+            for m in reversed(safe_messages):
+                if m.get("role") == "assistant":
+                    last_rating = m.get("rating")
+                    break
+            _kb.capture_findings(
+                db, dashboard_id=dash_id, findings=findings,
+                rated_down=(last_rating == "down"),
+            )
+            for m in safe_messages:
+                if m.get("role") == "assistant" and m.get("rating") in ("up", "down"):
+                    _kb.apply_feedback(
+                        db, dashboard_id=dash_id,
+                        claim_text=str(m.get("content") or ""),
+                        positive=(m.get("rating") == "up"),
+                    )
+            db.commit()
+    except Exception:
+        logger.warning("ai knowledge capture failed", exc_info=True)
+        db.rollback()
+
     return {"ok": True}
 
 
@@ -3093,6 +3129,8 @@ async def clear_ai_chat_session(
         db.commit()
     return {"ok": True}
 
+
+# ── AI bot institutional memory (learned company knowledge) ──────────────────
 
 @router.post("/dashboards/{token}/ai/agent/chat")
 @_limiter.limit("20/minute")
@@ -3236,6 +3274,26 @@ async def chat_dashboard_ai_agent(
         HARD_TIMEOUT = 240.0
         loop = asyncio.get_event_loop()
         started = loop.time()
+        # Knowledge grounding — GENERIC, data-driven. Assembles whatever a
+        # business has AUTHORED for this dashboard's datasets (Govern glossary,
+        # data dictionary, semantic descriptions, aliases) PLUS institutional
+        # memory, and injects it so the bot reasons from authored definitions
+        # instead of guessing from column names. Zero per-report logic; empty
+        # (ungrounded fallback) when nothing is authored. Best-effort.
+        learned_block = ""
+        try:
+            from app.services.dashboard_ai_bot import knowledge_context as _kc
+            _last_q = ""
+            for _m in reversed(safe_messages):
+                if _m.get("role") == "user":
+                    _last_q = str(_m.get("content") or "")
+                    break
+            learned_block = _kc.build_knowledge_context_block(
+                db, dashboard_id=dash.id, question=_last_q,
+            )
+        except Exception:
+            logger.warning("ai knowledge context build failed", exc_info=True)
+
         agen = run_agent_stream(
             mode=effective_mode,
             ctx=ctx,
@@ -3249,6 +3307,7 @@ async def chat_dashboard_ai_agent(
             web_search_enabled=web_search_flag,
             guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
             report_context_note=report_note,
+            learned_knowledge_block=learned_block,
         ).__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
@@ -3357,6 +3416,183 @@ async def chat_dashboard_ai_agent(
     )
 
 
+class _AiAgentExploreBody(BaseModel):
+    """Body for the goal-driven exploration run ("Phân tích toàn diện")."""
+    briefing: dict | None = None
+    viewer_filters: list[dict] | None = None
+    session_key: str | None = None
+    # Bounded server-side (explorer.MAX_BREADTH/MAX_DEPTH) — the FE default
+    # of (3, 1) keeps a run under ~2-4 minutes.
+    breadth: int | None = None
+    depth: int | None = None
+
+
+@router.post("/dashboards/{token}/ai/agent/explore")
+@_limiter.limit("6/minute")
+async def explore_dashboard_ai_agent(
+    token: str,
+    body: _AiAgentExploreBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+    x_user_ai_model: str | None = Header(default=None),
+):
+    """Phase 16 — goal-driven exploration (InsightBench/AgentPoirot loop).
+
+    One SSE run: generate root questions from the SMART goal + chart
+    schema, answer each with the chart tools, extract typed insights,
+    follow up on the most promising thread, then stream a ranked summary
+    with action items. Same filter contract as chat: every tool call sees
+    exactly what the dashboard renders.
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
+    from app.services.dashboard_ai_bot.thinking.explorer import run_exploration_stream
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
+    )
+    report_note = sanitize_report_context_note(
+        (appearance_config or {}).get("ai_bot_report_context_note"),
+    )
+
+    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
+    combined_filters = _build_public_chart_filters(
+        dash,
+        public_filters,
+        [item for item in viewer_filters_body if isinstance(item, dict)],
+        context_for_log=f"ai_bot_explore:{token}",
+    )
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+
+    captured_key = effective_key
+
+    async def sse_stream():
+        import asyncio
+        # Exploration is a multi-question run — a longer leash than chat,
+        # but the same never-strand-the-UI watchdog contract.
+        IDLE_TIMEOUT = 90.0
+        HARD_TIMEOUT = 420.0
+        loop = asyncio.get_event_loop()
+        started = loop.time()
+        agen = run_exploration_stream(
+            ctx=ctx,
+            api_key=captured_key,
+            provider=provider,
+            model=model,
+            briefing=briefing_obj,
+            report_context_note=report_note,
+            breadth=body.breadth or 3,
+            depth=body.depth if body.depth is not None else 1,
+        ).__aiter__()
+        timed_out = False
+        m_insights = 0
+        m_prompt = m_completion = m_rounds = 0
+        m_usd = None
+        m_error = False
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(agen.__anext__(), timeout=IDLE_TIMEOUT)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
+                _et = getattr(ev, "type", None)
+                if _et == "insight":
+                    m_insights += 1
+                elif _et == "cost":
+                    c = (ev.extra or {}).get("cost") or {}
+                    m_prompt = int(c.get("prompt_tokens") or m_prompt)
+                    m_completion = int(c.get("completion_tokens") or m_completion)
+                    m_rounds = int(c.get("rounds") or m_rounds)
+                    m_usd = c.get("usd", m_usd)
+                elif _et == "error":
+                    m_error = True
+                envelope = _event_to_envelope(ev)
+                if envelope is not None:
+                    yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+                if envelope is not None and envelope.get("type") == "done":
+                    return
+                if loop.time() - started > HARD_TIMEOUT:
+                    timed_out = True
+                    break
+        finally:
+            try:
+                await agen.aclose()
+            except Exception:
+                pass
+            # Same telemetry table as chat turns; mode="explore" separates
+            # exploration runs in cost/UX analysis.
+            try:
+                from app.core.database import SessionLocal as _SL
+                from app.models.ai_chat_turn_log import AiChatTurnLog
+                _log_db = _SL()
+                try:
+                    _log_db.add(AiChatTurnLog(
+                        token=token,
+                        session_key=(body.session_key or None),
+                        mode="explore",
+                        routed="manual",
+                        provider=provider,
+                        model=model,
+                        question=(briefing_obj.smart_goal[:1000] if briefing_obj else ""),
+                        prompt_tokens=m_prompt,
+                        completion_tokens=m_completion,
+                        rounds=m_rounds,
+                        usd=(round(float(m_usd), 6) if m_usd is not None else None),
+                        tools_used=None,
+                        web_searched=False,
+                        had_answer=(m_insights > 0),
+                        errored=(m_error or timed_out),
+                        latency_ms=int((loop.time() - started) * 1000),
+                    ))
+                    _log_db.commit()
+                finally:
+                    _log_db.close()
+            except Exception:
+                logger.debug("ai_bot explore turn-log write failed", exc_info=True)
+        if timed_out:
+            logger.warning("ai_bot explore watchdog fired token=%s", token)
+            yield (
+                "data: "
+                + _json.dumps({
+                    "type": "error",
+                    "text": "Phân tích toàn diện mất quá nhiều thời gian và đã dừng. Các insight đã tìm được vẫn hiển thị ở trên.",
+                }, ensure_ascii=False)
+                + "\n\n"
+            )
+            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _event_to_envelope(ev) -> dict | None:
     """Convert an AgentEvent into the wire envelope.
 
@@ -3412,6 +3648,15 @@ def _event_to_envelope(ev) -> dict | None:
             "chart_id": extra.get("chart_id"),
             "status": extra.get("status"),
         }
+    if et == "insight":
+        # Phase 16 — one typed Insight extracted by the exploration engine
+        # (rung + statement + evidence chart ids + justification + action).
+        # Already sanitized in explorer._parse_insight (chart ids validated
+        # against the dashboard, strings capped).
+        return {"type": "insight", "insight": (ev.extra or {}).get("insight") or {}}
+    if et == "exploration_step":
+        # Phase 16 — exploration progress tick (stage + question metadata).
+        return {"type": "exploration_step", **(ev.extra or {})}
     if et == "error":
         return {"type": "error", "text": ev.text}
     if et == "state":
@@ -3425,5 +3670,5 @@ def _event_to_envelope(ev) -> dict | None:
         return {"type": "usage", **(ev.extra or {})}
     if et == "done":
         return {"type": "done"}
-    # tool_call is internal; not sent to FE
+    # tool_call (and the explorer-internal _answer) never reach the FE
     return None

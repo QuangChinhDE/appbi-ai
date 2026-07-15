@@ -29,8 +29,10 @@ import {
   PencilLine,
   Plus,
   Rows3,
+  ScanLine,
   Settings2,
   Sigma,
+  Palette,
   Trash2,
 } from 'lucide-react';
 
@@ -52,9 +54,17 @@ import type {
   CellFormat,
   TableComputedColumnSpec,
   TableLookupColumnSpec,
+  TableRollupColumnSpec,
+  TableRollupAgg,
+  FormatRuleSpec,
+  FormatRuleColor,
+  TableColumnMetaSpec,
+  TableInputType,
   TableScreenSpecBuilt,
   TableTotalsKind,
   TableFilterSpec,
+  PosCartConfigSpec,
+  PosCartHeaderInputSpec,
   ScreenSpec,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
@@ -86,9 +96,12 @@ type ActiveItem =
   | 'detail_panel'
   | 'empty'
   | 'display'
+  | 'pos_cart'
+  | 'format_rules'
   | `filter:${number}`
   | `computed:${number}`
-  | `lookup:${number}`;
+  | `lookup:${number}`
+  | `rollup:${number}`;
 
 const EMPTY_TABLE: TableSpec = {
   columns: [],
@@ -240,6 +253,14 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     () => tableSpec.lookup_columns || [],
     [tableSpec.lookup_columns],
   );
+  const rollups = useMemo(
+    () => tableSpec.rollup_columns || [],
+    [tableSpec.rollup_columns],
+  );
+  const formatRules = useMemo(
+    () => tableSpec.format_rules || [],
+    [tableSpec.format_rules],
+  );
   const totals = tableSpec.totals || {};
   const boundTable = tables.find((table) => table.id === screen.table_id);
   const tableCols = boundTable?.columns ?? [];
@@ -253,9 +274,10 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     () => [
       ...columnNames,
       ...lookups.map((l) => l.name),
+      ...rollups.map((r) => r.name),
       ...computed.map((c) => c.name),
     ],
-    [columnNames, lookups, computed],
+    [columnNames, lookups, rollups, computed],
   );
 
   const activeFilterIndex = activeItem.startsWith('filter:')
@@ -266,6 +288,9 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     : -1;
   const activeLookupIndex = activeItem.startsWith('lookup:')
     ? Number(activeItem.slice('lookup:'.length))
+    : -1;
+  const activeRollupIndex = activeItem.startsWith('rollup:')
+    ? Number(activeItem.slice('rollup:'.length))
     : -1;
 
   useEffect(() => {
@@ -278,14 +303,19 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     if (activeItem.startsWith('lookup:') && activeLookupIndex >= lookups.length) {
       setActiveItem(lookups.length > 0 ? `lookup:${lookups.length - 1}` : 'columns');
     }
+    if (activeItem.startsWith('rollup:') && activeRollupIndex >= rollups.length) {
+      setActiveItem(rollups.length > 0 ? `rollup:${rollups.length - 1}` : 'columns');
+    }
   }, [
     activeComputedIndex,
     activeFilterIndex,
     activeItem,
     activeLookupIndex,
+    activeRollupIndex,
     computed.length,
     filters.length,
     lookups.length,
+    rollups.length,
   ]);
 
   const updateTable = (patch: Partial<TableSpec>) =>
@@ -461,6 +491,95 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     } else if (activeLookupIndex > idx) {
       setActiveItem(`lookup:${activeLookupIndex - 1}`);
     }
+  };
+
+  // ── Roll-up columns (aggregate a child table up to this row) ──────────
+  const addRollup = () => {
+    const baseName = `rollup_${rollups.length + 1}`;
+    let name = baseName;
+    let suffix = 1;
+    const taken = new Set(allReferenceableColumns);
+    while (taken.has(name)) {
+      suffix += 1;
+      name = `${baseName}_${suffix}`;
+    }
+    const firstTable = tables[0];
+    const next: TableRollupColumnSpec[] = [
+      ...rollups,
+      {
+        name,
+        label: '',
+        from_table_id: firstTable?.id ?? 0,
+        match_column_local: columnNames[0] || '',
+        match_column_remote: firstTable?.columns[0]?.name || '',
+        agg: 'count',
+        value_column: null,
+        format: null,
+      },
+    ];
+    const nextVisible = tableSpec.columns.includes(name)
+      ? tableSpec.columns
+      : [...tableSpec.columns, name];
+    updateTable({ rollup_columns: next, columns: nextVisible });
+    setActiveItem(`rollup:${next.length - 1}`);
+  };
+
+  const updateRollup = (idx: number, patch: Partial<TableRollupColumnSpec>) => {
+    const next = [...rollups];
+    const prev = next[idx];
+    next[idx] = { ...prev, ...patch };
+    let nextColumns = tableSpec.columns;
+    let nextTotals = totals;
+    if (patch.name && patch.name !== prev.name) {
+      nextColumns = nextColumns.map((c) => (c === prev.name ? patch.name! : c));
+      if (totals[prev.name]) {
+        nextTotals = { ...totals };
+        nextTotals[patch.name] = nextTotals[prev.name];
+        delete nextTotals[prev.name];
+      }
+    }
+    updateTable({ rollup_columns: next, columns: nextColumns, totals: nextTotals });
+  };
+
+  const removeRollup = (idx: number) => {
+    const removed = rollups[idx];
+    const next = rollups.filter((_, index) => index !== idx);
+    const nextColumns = tableSpec.columns.filter((c) => c !== removed?.name);
+    const nextTotals = { ...totals };
+    if (removed) delete nextTotals[removed.name];
+    updateTable({
+      rollup_columns: next,
+      columns: nextColumns,
+      totals: nextTotals,
+    });
+    if (activeRollupIndex === idx) {
+      setActiveItem(
+        next.length > 0
+          ? `rollup:${Math.max(0, Math.min(idx, next.length - 1))}`
+          : 'columns',
+      );
+    } else if (activeRollupIndex > idx) {
+      setActiveItem(`rollup:${activeRollupIndex - 1}`);
+    }
+  };
+
+  // ── Conditional formatting rules ─────────────────────────────────────
+  const addFormatRule = () => {
+    const next: FormatRuleSpec[] = [
+      ...formatRules,
+      { when: '', color: 'amber', columns: [], icon: null, label: null },
+    ];
+    updateTable({ format_rules: next });
+    setActiveItem('format_rules');
+  };
+
+  const updateFormatRule = (idx: number, patch: Partial<FormatRuleSpec>) => {
+    const next = formatRules.map((r, i) => (i === idx ? { ...r, ...patch } : r));
+    updateTable({ format_rules: next });
+  };
+
+  const removeFormatRule = (idx: number) => {
+    updateTable({ format_rules: formatRules.filter((_, i) => i !== idx) });
   };
 
   const toggleColumnVisible = (column: string) => {
@@ -714,30 +833,269 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       );
     }
 
+    if (activeItem === 'pos_cart') {
+      const pos = (tableSpec.pos_cart || null) as PosCartConfigSpec | null;
+      const ownCols = (tables.find((t) => t.id === screen.table_id)?.columns || []).map((c) => c.name);
+      const catCols = pos
+        ? (tables.find((t) => t.id === pos.catalog_table_id)?.columns || []).map((c) => c.name)
+        : [];
+      const setPos = (patch: Partial<PosCartConfigSpec>) =>
+        updateTable({ pos_cart: { ...(pos as PosCartConfigSpec), ...patch } });
+      const ColSel = ({
+        value,
+        onPick,
+        cols,
+        allowBlank = true,
+      }: {
+        value?: string | null;
+        onPick: (v: string) => void;
+        cols: string[];
+        allowBlank?: boolean;
+      }) => (
+        <select value={value || ''} onChange={(e) => onPick(e.target.value)} className={INPUT}>
+          {allowBlank && <option value="">— chọn cột —</option>}
+          {cols.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+          {value && !cols.includes(value) && <option value={value}>{value} (tự nhập)</option>}
+        </select>
+      );
+      const hdr = pos?.header_inputs || [];
+      const setHdr = (next: PosCartHeaderInputSpec[]) => setPos({ header_inputs: next });
+      const copyPairs = Object.entries(pos?.catalog_copy || {});
+      const setCopy = (pairs: [string, string][]) =>
+        setPos({ catalog_copy: Object.fromEntries(pairs.filter(([k]) => k)) });
+      return (
+        <BuilderInspectorPanel
+          icon={<ScanLine className="h-4 w-4" />}
+          title="Chế độ POS — quét → giỏ → 1 lần lưu"
+          subtitle="Quét mã (camera) dồn vào 1 danh sách như máy tính tiền siêu thị; bấm Lưu mới ghi tất cả xuống dữ liệu 1 lần rồi mở phiếu để in."
+        >
+          <div className="space-y-3">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={!!pos}
+                onChange={(e) =>
+                  updateTable({
+                    pos_cart: e.target.checked
+                      ? {
+                          barcode_column: '',
+                          quantity_column: '',
+                          catalog_table_id: 0,
+                          catalog_match_column: '',
+                          catalog_copy: {},
+                          header_inputs: [],
+                          order_id_prefix: 'PN',
+                          submit_label: 'Lưu & In phiếu',
+                          allow_manual_search: true,
+                        }
+                      : null,
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span className="text-caption text-text-secondary">
+                <span className="font-emphasis text-text-primary">Bật chế độ POS quét</span>
+                <span className="ml-1 text-text-tertiary">
+                  — thay lưới bảng bằng giao diện quét mã + giỏ hàng.
+                </span>
+              </span>
+            </label>
+
+            {pos && (
+              <>
+                <Lbl label="Bảng danh mục sản phẩm (catalog)">
+                  <select
+                    value={pos.catalog_table_id || 0}
+                    onChange={(e) => setPos({ catalog_table_id: Number(e.target.value) })}
+                    className={INPUT}
+                  >
+                    <option value={0}>— chọn bảng —</option>
+                    {tables.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </Lbl>
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Cột mã khớp (trong catalog)">
+                    <ColSel value={pos.catalog_match_column} cols={catCols} onPick={(v) => setPos({ catalog_match_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột tên hàng (catalog)">
+                    <ColSel value={pos.catalog_label_column} cols={catCols} onPick={(v) => setPos({ catalog_label_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột đơn giá (catalog)">
+                    <ColSel value={pos.catalog_price_column} cols={catCols} onPick={(v) => setPos({ catalog_price_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột mã trên dòng (ghi xuống)">
+                    <ColSel value={pos.barcode_column} cols={ownCols} onPick={(v) => setPos({ barcode_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột số lượng (dòng)">
+                    <ColSel value={pos.quantity_column} cols={ownCols} onPick={(v) => setPos({ quantity_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột thành tiền (dòng)">
+                    <ColSel value={pos.amount_column} cols={ownCols} onPick={(v) => setPos({ amount_column: v })} />
+                  </Lbl>
+                  <Lbl label="Cột số phiếu (sinh tự động)">
+                    <ColSel value={pos.order_id_column} cols={ownCols} onPick={(v) => setPos({ order_id_column: v })} />
+                  </Lbl>
+                  <Lbl label="Tiền tố số phiếu">
+                    <input value={pos.order_id_prefix || ''} onChange={(e) => setPos({ order_id_prefix: e.target.value })} className={INPUT} placeholder="PN" />
+                  </Lbl>
+                  <Lbl label="Cột ngày (dòng)">
+                    <ColSel value={pos.date_column} cols={ownCols} onPick={(v) => setPos({ date_column: v })} />
+                  </Lbl>
+                </div>
+
+                <div className="rounded-md border border-border-subtle p-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-caption font-emphasis text-text-primary">Cột catalog → cột dòng</span>
+                    <BuilderIconButton title="Thêm" onClick={() => setCopy([...(copyPairs as [string, string][]), ['', '']])}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </BuilderIconButton>
+                  </div>
+                  {copyPairs.length === 0 && (
+                    <p className="text-tiny text-text-tertiary">Sao chép tên hàng/ĐVT/đơn giá từ catalog xuống mỗi dòng.</p>
+                  )}
+                  {copyPairs.map(([lineCol, catCol], i) => (
+                    <div key={i} className="mb-1 flex items-center gap-1">
+                      <ColSel value={lineCol} cols={ownCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [v, catCol]; setCopy(p); }} />
+                      <span className="text-text-tertiary">←</span>
+                      <ColSel value={catCol} cols={catCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [lineCol, v]; setCopy(p); }} />
+                      <BuilderIconButton title="Xoá" variant="danger" onClick={() => setCopy((copyPairs as [string, string][]).filter((_, idx) => idx !== i))}>
+                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                      </BuilderIconButton>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-md border border-border-subtle p-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-caption font-emphasis text-text-primary">Trường đầu phiếu (nhập 1 lần)</span>
+                    <BuilderIconButton title="Thêm" onClick={() => setHdr([...hdr, { column: '', label: '', kind: 'text', options: [], required: false, write_to_line: true }])}>
+                      <Plus className="h-3.5 w-3.5" />
+                    </BuilderIconButton>
+                  </div>
+                  {hdr.map((h, i) => (
+                    <div key={i} className="mb-2 space-y-1 rounded border border-border-subtle p-1.5">
+                      <div className={BUILDER_GRID_2}>
+                        <ColSel value={h.column} cols={ownCols} onPick={(v) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, column: v } : x)))} />
+                        <input value={h.label} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))} className={INPUT} placeholder="Nhãn (vd: Loại phiếu)" />
+                        <select value={h.kind || 'text'} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, kind: e.target.value as 'text' | 'select' | 'date' } : x)))} className={INPUT}>
+                          <option value="text">Văn bản</option>
+                          <option value="select">Chọn</option>
+                          <option value="date">Ngày</option>
+                        </select>
+                        <input value={(h.options || []).join(', ')} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, options: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)))} className={INPUT} placeholder="Lựa chọn: A, B, C" />
+                      </div>
+                      <div className="flex items-center gap-3 text-tiny">
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={!!h.required} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, required: e.target.checked } : x)))} /> Bắt buộc</label>
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={h.write_to_line !== false} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, write_to_line: e.target.checked } : x)))} /> Ghi vào dòng</label>
+                        <BuilderIconButton title="Xoá" variant="danger" onClick={() => setHdr(hdr.filter((_, idx) => idx !== i))}>
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Nút Lưu (nhãn)">
+                    <input value={pos.submit_label || ''} onChange={(e) => setPos({ submit_label: e.target.value })} className={INPUT} placeholder="Lưu & In phiếu" />
+                  </Lbl>
+                  <Lbl label="Mở màn sau khi lưu (id)">
+                    <input value={pos.after_submit_screen || ''} onChange={(e) => setPos({ after_submit_screen: e.target.value })} className={INPUT} placeholder="vd: phieu_nhap" />
+                  </Lbl>
+                  <Lbl label="Màn ghi header phiếu (id)">
+                    <input value={pos.header_screen_id || ''} onChange={(e) => setPos({ header_screen_id: e.target.value })} className={INPUT} placeholder="vd: don_header (ghi 1 dòng vào bảng phiếu)" />
+                  </Lbl>
+                  <Lbl label="Mang theo cột (dấu phẩy)">
+                    <input value={(pos.after_submit_carry || []).join(', ')} onChange={(e) => setPos({ after_submit_carry: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="ma_don, loai, ma_kho" />
+                  </Lbl>
+                  <Lbl label="Gợi ý khi giỏ trống">
+                    <input value={pos.empty_hint || ''} onChange={(e) => setPos({ empty_hint: e.target.value })} className={INPUT} />
+                  </Lbl>
+                </div>
+                <label className="flex items-center gap-2 text-caption text-text-secondary">
+                  <input type="checkbox" checked={pos.allow_manual_search !== false} onChange={(e) => setPos({ allow_manual_search: e.target.checked })} />
+                  Cho tìm sản phẩm bằng ô tìm kiếm (ngoài quét mã)
+                </label>
+              </>
+            )}
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
     if (activeItem === 'display') {
       const mode = tableSpec.display_mode || 'table';
       const gc = tableSpec.gallery_config || { image_column: '' };
       const updateGallery = (patch: Partial<NonNullable<TableSpec['gallery_config']>>) =>
         updateTable({ gallery_config: { ...gc, ...patch } });
+      const cal = tableSpec.calendar_config || { date_column: '' };
+      const updateCalendar = (patch: Partial<NonNullable<TableSpec['calendar_config']>>) =>
+        updateTable({ calendar_config: { ...cal, ...patch } });
       const visibleCols = tableSpec.columns || [];
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
           title="Chế độ hiển thị"
-          subtitle="Bảng dữ liệu hoặc lưới thẻ ảnh (Gallery) — cùng dữ liệu, chỉ khác cách hiển thị."
+          subtitle="Bảng / lưới thẻ ảnh (Gallery) / lịch (Calendar) — cùng dữ liệu, chỉ khác cách hiển thị."
         >
           <Lbl label="Kiểu hiển thị">
             <select
               value={mode}
               onChange={(event) =>
-                updateTable({ display_mode: event.target.value as 'table' | 'gallery' })
+                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' })
               }
               className={INPUT}
             >
               <option value="table">Bảng (mặc định)</option>
               <option value="gallery">Gallery ảnh</option>
+              <option value="calendar">Lịch (Calendar)</option>
             </select>
           </Lbl>
+
+          {mode === 'calendar' && (
+            <div className="mt-3 space-y-3">
+              {visibleCols.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  Hãy chọn cột hiển thị trước — Calendar cần một cột ngày.
+                </BuilderEmptyHint>
+              ) : (
+                <>
+                  <Lbl label="Cột ngày (bắt buộc)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.date_column || null}
+                      onChange={(next) => updateCalendar({ date_column: next || '' })}
+                      placeholder="-- cột ngày đặt bản ghi lên lịch --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột nhãn trên ô ngày (tùy chọn)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.title_column || null}
+                      onChange={(next) => updateCalendar({ title_column: next || null })}
+                      placeholder="-- mặc định: khoá chính --"
+                    />
+                  </Lbl>
+                  <Lbl label="Cột tô màu chip (tùy chọn, vd trạng thái)">
+                    <SingleColumnPicker
+                      sourceColumns={visibleCols}
+                      value={cal.color_column || null}
+                      onChange={(next) => updateCalendar({ color_column: next || null })}
+                      placeholder="-- không --"
+                    />
+                  </Lbl>
+                </>
+              )}
+            </div>
+          )}
 
           {mode === 'gallery' && (
             <div className="mt-3 space-y-3">
@@ -797,6 +1155,87 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               )}
             </div>
           )}
+
+          <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700">Thẻ KPI (trên đầu bảng)</div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateTable({
+                    stat_tiles: [
+                      ...(tableSpec.stat_tiles || []),
+                      { label: '', column: '', agg: 'sum' },
+                    ],
+                  })
+                }
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                <Plus className="h-3.5 w-3.5" /> Thêm thẻ
+              </button>
+            </div>
+            {(tableSpec.stat_tiles || []).length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                Chưa có thẻ KPI. Thêm để hiện tổng/đếm ngay trên đầu bảng (vd Σ Sản lượng).
+              </BuilderEmptyHint>
+            ) : (
+              (tableSpec.stat_tiles || []).map((tile, idx) => {
+                const updateTile = (patch: Partial<NonNullable<TableSpec['stat_tiles']>[number]>) =>
+                  updateTable({
+                    stat_tiles: (tableSpec.stat_tiles || []).map((t, i) =>
+                      i === idx ? { ...t, ...patch } : t,
+                    ),
+                  });
+                return (
+                  <div key={idx} className="flex items-center gap-2">
+                    <input
+                      value={tile.label}
+                      onChange={(event) => updateTile({ label: event.target.value })}
+                      placeholder="Nhãn (Σ Sản lượng)"
+                      className={INPUT}
+                    />
+                    <SingleColumnPicker
+                      sourceColumns={tableSpec.columns || []}
+                      value={tile.column || null}
+                      onChange={(next) => updateTile({ column: next || '' })}
+                      placeholder="-- cột --"
+                    />
+                    <select
+                      value={tile.agg || 'sum'}
+                      onChange={(event) =>
+                        updateTile({ agg: event.target.value as NonNullable<TableSpec['stat_tiles']>[number]['agg'] })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="sum">sum</option>
+                      <option value="avg">avg</option>
+                      <option value="min">min</option>
+                      <option value="max">max</option>
+                      <option value="count">count</option>
+                    </select>
+                    <input
+                      value={tile.unit || ''}
+                      onChange={(event) => updateTile({ unit: event.target.value || null })}
+                      placeholder="đơn vị"
+                      className={`${INPUT} w-20`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateTable({
+                          stat_tiles: (tableSpec.stat_tiles || []).filter((_, i) => i !== idx),
+                        })
+                      }
+                      className="shrink-0 text-rose-600"
+                      title="Xoá"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </BuilderInspectorPanel>
       );
     }
@@ -980,10 +1419,26 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
 
     if (activeItem === 'column_meta') {
       const meta = tableSpec.column_metadata || {};
-      const update = (col: string, patch: Partial<{ label: string; width_px: number | null; format: CellFormat | null; align: 'left' | 'center' | 'right' | null }>) => {
+      const editableSet = new Set(tableSpec.editable_columns || []);
+      const update = (col: string, patch: Partial<TableColumnMetaSpec>) => {
         const next = { ...meta, [col]: { ...(meta[col] || {}), ...patch } };
         updateTable({ column_metadata: next });
       };
+      const TABLE_INPUT_TYPES: Array<{ value: TableInputType; label: string }> = [
+        { value: 'text', label: 'Text' },
+        { value: 'number', label: 'Number' },
+        { value: 'currency', label: 'Currency' },
+        { value: 'percent', label: 'Percent' },
+        { value: 'date', label: 'Date' },
+        { value: 'datetime', label: 'Date+time' },
+        { value: 'time', label: 'Time' },
+        { value: 'checkbox', label: 'Checkbox' },
+        { value: 'select', label: 'Select' },
+        { value: 'enum_list', label: 'Multi-select' },
+        { value: 'rating', label: 'Rating' },
+        { value: 'color', label: 'Color' },
+        { value: 'slider', label: 'Slider' },
+      ];
       return (
         <BuilderInspectorPanel
           icon={<Settings2 className="h-4 w-4" />}
@@ -1049,6 +1504,106 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                         <option value="right">Right</option>
                       </select>
                     </div>
+                    {editableSet.has(col) && (
+                      <div className="mt-1 space-y-2 rounded bg-surface-2 p-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <Lbl label="Kiểu ô nhập (khi sửa)">
+                            <select
+                              value={m.input_type || ''}
+                              onChange={(event) =>
+                                update(col, {
+                                  input_type: (event.target.value || null) as TableInputType | null,
+                                })
+                              }
+                              className={INPUT}
+                            >
+                              <option value="">Text (mặc định)</option>
+                              {TABLE_INPUT_TYPES.map((t) => (
+                                <option key={t.value} value={t.value}>
+                                  {t.label}
+                                </option>
+                              ))}
+                            </select>
+                          </Lbl>
+                          {m.input_type === 'currency' && (
+                            <Lbl label="Ký hiệu tiền">
+                              <input
+                                value={m.currency_code || ''}
+                                onChange={(event) =>
+                                  update(col, { currency_code: event.target.value || null })
+                                }
+                                className={INPUT}
+                                placeholder="VND"
+                              />
+                            </Lbl>
+                          )}
+                          {m.input_type === 'rating' && (
+                            <Lbl label="Số sao">
+                              <input
+                                type="number"
+                                min={1}
+                                max={10}
+                                value={m.max_stars ?? 5}
+                                onChange={(event) =>
+                                  update(col, { max_stars: Number(event.target.value) || 5 })
+                                }
+                                className={INPUT}
+                              />
+                            </Lbl>
+                          )}
+                        </div>
+                        {m.input_type === 'slider' && (
+                          <div className="grid grid-cols-3 gap-2">
+                            <input
+                              type="number"
+                              value={m.min_value ?? 0}
+                              onChange={(event) => update(col, { min_value: Number(event.target.value) })}
+                              className={INPUT}
+                              placeholder="min"
+                            />
+                            <input
+                              type="number"
+                              value={m.max_value ?? 100}
+                              onChange={(event) => update(col, { max_value: Number(event.target.value) })}
+                              className={INPUT}
+                              placeholder="max"
+                            />
+                            <input
+                              type="number"
+                              step="any"
+                              value={m.step ?? 1}
+                              onChange={(event) => update(col, { step: Number(event.target.value) || 1 })}
+                              className={INPUT}
+                              placeholder="step"
+                            />
+                          </div>
+                        )}
+                        {(m.input_type === 'select' || m.input_type === 'enum_list') && (
+                          <Lbl label="Lựa chọn (mỗi dòng: label|value)">
+                            <textarea
+                              value={(m.options || [])
+                                .map((o) => `${o.label}|${String(o.value)}`)
+                                .join('\n')}
+                              onChange={(event) =>
+                                update(col, {
+                                  options: event.target.value
+                                    .split('\n')
+                                    .map((ln) => ln.trim())
+                                    .filter(Boolean)
+                                    .map((ln) => {
+                                      const [label, value] = ln.split('|');
+                                      return { label: label.trim(), value: (value ?? label).trim() };
+                                    }),
+                                })
+                              }
+                              rows={3}
+                              className={INPUT}
+                              placeholder={'Tốt|good\nKhá|ok'}
+                            />
+                          </Lbl>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1472,6 +2027,250 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       );
     }
 
+    if (activeItem.startsWith('rollup:')) {
+      const col = rollups[activeRollupIndex];
+      if (!col) return null;
+      const remoteTable = tables.find((t) => t.id === col.from_table_id);
+      const remoteColumns = remoteTable?.columns.map((c) => c.name) ?? [];
+      const needsValueColumn = (col.agg || 'count') !== 'count';
+      return (
+        <BuilderInspectorPanel
+          icon={<Sigma className="h-4 w-4" />}
+          title={col.label?.trim() || col.name}
+          subtitle="Aggregate rows from a related child table (read-only)"
+          action={
+            <BuilderIconButton
+              onClick={() => removeRollup(activeRollupIndex)}
+              title="Delete column"
+              variant="danger"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-danger" />
+            </BuilderIconButton>
+          }
+        >
+          <div className="space-y-3">
+            <div className={BUILDER_GRID_2}>
+              <Lbl label="Column name (identifier)">
+                <input
+                  value={col.name}
+                  onChange={(event) => {
+                    const cleaned = event.target.value.replace(/[^A-Za-z0-9_]/g, '_');
+                    updateRollup(activeRollupIndex, { name: cleaned });
+                  }}
+                  className={`${INPUT} font-mono`}
+                />
+              </Lbl>
+              <Lbl label="Display label">
+                <input
+                  value={col.label || ''}
+                  onChange={(event) =>
+                    updateRollup(activeRollupIndex, { label: event.target.value })
+                  }
+                  className={INPUT}
+                  placeholder={col.name}
+                />
+              </Lbl>
+              <Lbl label="Child dataset table">
+                <select
+                  value={col.from_table_id || 0}
+                  onChange={(event) =>
+                    updateRollup(activeRollupIndex, {
+                      from_table_id: Number(event.target.value) || 0,
+                    })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">— pick a table —</option>
+                  {tables.map((table) => (
+                    <option key={table.id} value={table.id}>
+                      {table.display_name}
+                    </option>
+                  ))}
+                </select>
+              </Lbl>
+              <Lbl label="Aggregate">
+                <select
+                  value={col.agg || 'count'}
+                  onChange={(event) =>
+                    updateRollup(activeRollupIndex, {
+                      agg: event.target.value as TableRollupAgg,
+                    })
+                  }
+                  className={INPUT}
+                >
+                  <option value="count">Count (số dòng con)</option>
+                  <option value="sum">Sum</option>
+                  <option value="avg">Average</option>
+                  <option value="min">Min</option>
+                  <option value="max">Max</option>
+                </select>
+              </Lbl>
+              <Lbl label="Match on (this table)">
+                <SingleColumnPicker
+                  sourceColumns={columnNames}
+                  value={col.match_column_local || null}
+                  onChange={(next) =>
+                    updateRollup(activeRollupIndex, { match_column_local: next || '' })
+                  }
+                />
+              </Lbl>
+              <Lbl label="Match on (child table)">
+                <SingleColumnPicker
+                  sourceColumns={remoteColumns}
+                  value={col.match_column_remote || null}
+                  onChange={(next) =>
+                    updateRollup(activeRollupIndex, { match_column_remote: next || '' })
+                  }
+                />
+              </Lbl>
+              {needsValueColumn ? (
+                <Lbl label="Value column (child)">
+                  <SingleColumnPicker
+                    sourceColumns={remoteColumns}
+                    value={col.value_column || null}
+                    onChange={(next) =>
+                      updateRollup(activeRollupIndex, { value_column: next || null })
+                    }
+                  />
+                </Lbl>
+              ) : null}
+              <Lbl label="Format">
+                <select
+                  value={col.format || ''}
+                  onChange={(event) =>
+                    updateRollup(activeRollupIndex, {
+                      format: (event.target.value || null) as CellFormat | null,
+                    })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">— auto —</option>
+                  {CELL_FORMATS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </Lbl>
+            </div>
+            {needsValueColumn && !col.value_column ? (
+              <p className="text-caption text-amber-600">
+                Chọn một cột số ở bảng con để {col.agg}.
+              </p>
+            ) : null}
+            <p className="text-caption text-text-tertiary">
+              Roll-up chạy một lần mỗi trang: gom các dòng của bảng con theo khóa
+              khớp rồi tính {col.agg || 'count'} bằng máy chủ (tôn trọng RLS của
+              bảng con). Ví dụ: đếm số lần ghi nhận, tổng sản lượng theo lô.
+            </p>
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'format_rules') {
+      const FMT_COLORS: Array<{ value: FormatRuleColor; label: string; dot: string }> = [
+        { value: 'green', label: 'Xanh lá', dot: 'bg-emerald-500' },
+        { value: 'amber', label: 'Vàng', dot: 'bg-amber-500' },
+        { value: 'red', label: 'Đỏ', dot: 'bg-rose-500' },
+        { value: 'blue', label: 'Xanh dương', dot: 'bg-sky-500' },
+        { value: 'violet', label: 'Tím', dot: 'bg-violet-500' },
+        { value: 'slate', label: 'Xám', dot: 'bg-slate-400' },
+      ];
+      return (
+        <BuilderInspectorPanel
+          icon={<Palette className="h-4 w-4" />}
+          title="Định dạng có điều kiện"
+          subtitle="Tô màu dòng/ô khi biểu thức đúng — áp cho cả bảng, gallery"
+          action={
+            <BuilderIconButton onClick={addFormatRule} title="Thêm quy tắc">
+              <Plus className="h-3.5 w-3.5" />
+            </BuilderIconButton>
+          }
+        >
+          {formatRules.length === 0 ? (
+            <BuilderEmptyHint>
+              Chưa có quy tắc. Ví dụ: <code>{'{{row.san_luong}} < 100'}</code> → tô
+              đỏ dòng sản lượng thấp.
+            </BuilderEmptyHint>
+          ) : (
+            <div className="space-y-4">
+              {formatRules.map((rule, idx) => (
+                <div
+                  key={idx}
+                  className="space-y-3 rounded-lg border border-border-subtle p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-caption font-medium text-text-secondary">
+                      Quy tắc {idx + 1}
+                    </span>
+                    <BuilderIconButton
+                      onClick={() => removeFormatRule(idx)}
+                      title="Xóa quy tắc"
+                      variant="danger"
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-danger" />
+                    </BuilderIconButton>
+                  </div>
+                  <Lbl label="Biểu thức (khi đúng thì áp dụng)">
+                    <input
+                      value={rule.when}
+                      onChange={(event) =>
+                        updateFormatRule(idx, { when: event.target.value })
+                      }
+                      className={`${INPUT} font-mono`}
+                      placeholder="{{row.san_luong}} < 100"
+                    />
+                  </Lbl>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Màu">
+                      <select
+                        value={rule.color || 'amber'}
+                        onChange={(event) =>
+                          updateFormatRule(idx, {
+                            color: event.target.value as FormatRuleColor,
+                          })
+                        }
+                        className={INPUT}
+                      >
+                        {FMT_COLORS.map((c) => (
+                          <option key={c.value} value={c.value}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Lbl>
+                    <Lbl label="Biểu tượng (tùy chọn)">
+                      <input
+                        value={rule.icon || ''}
+                        onChange={(event) =>
+                          updateFormatRule(idx, { icon: event.target.value || null })
+                        }
+                        className={INPUT}
+                        placeholder="⚠️"
+                      />
+                    </Lbl>
+                  </div>
+                  <Lbl label="Áp cho cột (bỏ trống = cả dòng)">
+                    <MultiColumnPicker
+                      sourceColumns={allReferenceableColumns}
+                      value={rule.columns || []}
+                      onChange={(next) => updateFormatRule(idx, { columns: next })}
+                    />
+                  </Lbl>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="mt-3 text-caption text-text-tertiary">
+            Biểu thức dùng cùng cú pháp với show_if/valid_if:{' '}
+            <code>{'{{row.cot}}'}</code>, AND/OR, so sánh, hàm CONCAT/YEAR…
+            Quy tắc đầu tiên khớp sẽ thắng.
+          </p>
+        </BuilderInspectorPanel>
+      );
+    }
+
     if (activeItem.startsWith('filter:')) {
       const filter = filters[activeFilterIndex];
       if (!filter) return null;
@@ -1580,6 +2379,13 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('behaviour')}
             />
             <BuilderNavigatorItem
+              icon={<ScanLine className="h-3.5 w-3.5" />}
+              label="Chế độ POS (quét → giỏ)"
+              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+              active={activeItem === 'pos_cart'}
+              onClick={() => setActiveItem('pos_cart')}
+            />
+            <BuilderNavigatorItem
               icon={<Rows3 className="h-3.5 w-3.5" />}
               label="Paging and sorting"
               subtitle={`${tableSpec.page_size ?? 100} rows/page${
@@ -1675,6 +2481,17 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               active={activeItem === 'detail_panel'}
               onClick={() => setActiveItem('detail_panel')}
             />
+            <BuilderNavigatorItem
+              icon={<Palette className="h-3.5 w-3.5" />}
+              label="Định dạng có điều kiện"
+              subtitle={
+                formatRules.length === 0
+                  ? 'No rules'
+                  : `${formatRules.length} rule${formatRules.length === 1 ? '' : 's'}`
+              }
+              active={activeItem === 'format_rules'}
+              onClick={() => setActiveItem('format_rules')}
+            />
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup
@@ -1754,6 +2571,54 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                     action={
                       <BuilderIconButton
                         onClick={() => removeLookup(index)}
+                        title="Delete column"
+                        variant="danger"
+                      >
+                        <Trash2 className="h-3 w-3 text-danger" />
+                      </BuilderIconButton>
+                    }
+                  />
+                );
+              })
+            )}
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup
+            title={`Roll-up columns (${rollups.length})`}
+            action={
+              <button
+                type="button"
+                onClick={addRollup}
+                disabled={tables.length === 0}
+                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
+                title="Add roll-up column"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            }
+          >
+            {rollups.length === 0 ? (
+              <BuilderEmptyHint className="px-3 py-4">
+                Chưa có cột roll-up (gộp bảng con).
+              </BuilderEmptyHint>
+            ) : (
+              rollups.map((col, index) => {
+                const remoteTable = tables.find((t) => t.id === col.from_table_id);
+                return (
+                  <BuilderNavigatorItem
+                    key={`${col.name}:${index}`}
+                    icon={<Sigma className="h-3.5 w-3.5" />}
+                    label={col.label?.trim() || col.name}
+                    subtitle={
+                      remoteTable
+                        ? `${col.agg || 'count'}(${remoteTable.display_name})`
+                        : 'No table selected'
+                    }
+                    active={activeItem === `rollup:${index}`}
+                    onClick={() => setActiveItem(`rollup:${index}`)}
+                    action={
+                      <BuilderIconButton
+                        onClick={() => removeRollup(index)}
                         title="Delete column"
                         variant="danger"
                       >

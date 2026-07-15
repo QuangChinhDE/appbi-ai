@@ -237,6 +237,11 @@ class DatasetTableSnapshot(Base):
     error = Column(Text, nullable=True)
     is_current = Column(Boolean, nullable=False, default=False, server_default=expression.false(), index=True)
     built_at = Column(DateTime, nullable=True)                   # set when status → ready
+    # perf #5 — MAX(last_modified_time) of the source tables this snapshot read,
+    # captured at build. A later render compares the current source watermark to
+    # this to detect SOURCE-DATA changes (not just SQL/schema) and rebuild only
+    # when the data actually changed — change-driven refresh, no time-based spam.
+    source_watermark = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 

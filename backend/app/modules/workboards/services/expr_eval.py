@@ -334,6 +334,52 @@ def _eval(node: Any, ctx: Dict[str, Any]) -> Any:
             return evaluated[0] in evaluated[1:]
         if name == "NOT":
             return not _truthy(evaluated[0]) if evaluated else True
+        if name == "AND":
+            return all(_truthy(v) for v in evaluated)
+        if name == "OR":
+            return any(_truthy(v) for v in evaluated)
+        if name == "ISBLANK":
+            v = evaluated[0] if evaluated else None
+            return v is None or (isinstance(v, str) and v.strip() == "")
+        # ── Text ──
+        if name == "CONCAT":
+            return "".join("" if v is None else str(v) for v in evaluated)
+        if name == "UPPER":
+            return str(evaluated[0]).upper() if evaluated and evaluated[0] is not None else None
+        if name == "LOWER":
+            return str(evaluated[0]).lower() if evaluated and evaluated[0] is not None else None
+        if name == "TRIM":
+            return str(evaluated[0]).strip() if evaluated and evaluated[0] is not None else None
+        if name == "LEN":
+            return len(str(evaluated[0])) if evaluated and evaluated[0] is not None else 0
+        if name == "LEFT":
+            s = "" if not evaluated or evaluated[0] is None else str(evaluated[0])
+            n = int(_coerce_number(evaluated[1]) or 0) if len(evaluated) > 1 else 0
+            return s[:max(n, 0)]
+        if name == "RIGHT":
+            s = "" if not evaluated or evaluated[0] is None else str(evaluated[0])
+            n = int(_coerce_number(evaluated[1]) or 0) if len(evaluated) > 1 else 0
+            return s[-n:] if n > 0 else ""
+        if name == "CONTAINS":
+            hay = "" if not evaluated or evaluated[0] is None else str(evaluated[0])
+            needle = "" if len(evaluated) < 2 or evaluated[1] is None else str(evaluated[1])
+            return needle in hay
+        # ── Math ──
+        if name == "MOD":
+            a = _coerce_number(evaluated[0]) if evaluated else None
+            b = _coerce_number(evaluated[1]) if len(evaluated) > 1 else None
+            return None if a is None or not b else a % b
+        if name == "POWER":
+            a = _coerce_number(evaluated[0]) if evaluated else None
+            b = _coerce_number(evaluated[1]) if len(evaluated) > 1 else None
+            return None if a is None or b is None else a ** b
+        # ── Date parts (ISO date/datetime string) ──
+        if name in ("YEAR", "MONTH", "DAY"):
+            s = str(evaluated[0]) if evaluated and evaluated[0] is not None else ""
+            m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+            if not m:
+                return None
+            return int(m.group({"YEAR": 1, "MONTH": 2, "DAY": 3}[name]))
         # Unknown function — fail soft.
         return None
     return None

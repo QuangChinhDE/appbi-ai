@@ -140,6 +140,11 @@ class Briefing:
     focus: str = "overview"      # overview | issues | compare | deepdive
     timeframe: str = "current_period"
     custom_note: str = ""        # free-text the user added in step 2/3
+    # SMART goal — the session's north star. InsightBench (ICLR-25) measured
+    # a ~33% insight-quality drop when agents explore under a generic goal vs
+    # a specific, measurable one; this is the highest-leverage briefing field.
+    # Auto-drafted from recon (guess_briefing_from_recon), user-editable.
+    smart_goal: str = ""
     key_chart_ids: list[int] = field(default_factory=list)
     confirmed: bool = False
 
@@ -151,6 +156,7 @@ class Briefing:
             "focus": self.focus,
             "timeframe": self.timeframe,
             "custom_note": self.custom_note,
+            "smart_goal": self.smart_goal,
             "key_chart_ids": list(self.key_chart_ids),
             "confirmed": bool(self.confirmed),
         }
@@ -166,6 +172,7 @@ class Briefing:
             focus=str(raw.get("focus") or "overview"),
             timeframe=str(raw.get("timeframe") or "current_period"),
             custom_note=str(raw.get("custom_note") or "")[:600],
+            smart_goal=str(raw.get("smart_goal") or "")[:400],
             key_chart_ids=[int(x) for x in (raw.get("key_chart_ids") or []) if isinstance(x, (int, float, str)) and str(x).isdigit()],
             confirmed=bool(raw.get("confirmed")),
         )
@@ -259,6 +266,17 @@ def guess_briefing_from_recon(recon: dict, dashboard_name: str, dashboard_descri
 
     timeframe_hint = _detect_timeframe_hint(summaries)
 
+    # SMART-goal draft (InsightBench: specific goal ≫ generic goal). Built
+    # from the strongest headline signal so it names a real measure/segment;
+    # the wizard shows it as an editable suggestion, never silently applied.
+    smart_goal_draft = _draft_smart_goal(
+        domain_label=domain_label,
+        summaries=summaries,
+        key_ids=key_ids,
+        timeframe_hint=timeframe_hint,
+        dashboard_name=dashboard_name,
+    )
+
     return {
         "domain": top_domain,
         "domain_label": domain_label,
@@ -267,6 +285,7 @@ def guess_briefing_from_recon(recon: dict, dashboard_name: str, dashboard_descri
         "key_chart_ids": key_ids,
         "headline_facts": headline_facts,
         "timeframe_hint": timeframe_hint,
+        "smart_goal_draft": smart_goal_draft,
         "role_options": ROLE_OPTIONS,
         "focus_options": FOCUS_OPTIONS,
         "timeframe_options": TIMEFRAME_OPTIONS,
@@ -385,6 +404,54 @@ def _format_num(v: Any) -> str:
     return f"{f:.2f}"
 
 
+def _draft_smart_goal(
+    *,
+    domain_label: str,
+    summaries: list[dict],
+    key_ids: list[int],
+    timeframe_hint: str,
+    dashboard_name: str,
+) -> str:
+    """Heuristic 1-sentence SMART-goal draft. Pure data, no LLM.
+
+    Prefers the strongest actionable signal among the key charts (strong
+    trend > high concentration > headline KPI) so the goal names a REAL
+    measure — "Xác định nguyên nhân Doanh thu giảm 23%..." — instead of the
+    generic "tìm insight thú vị" InsightBench showed to be worthless.
+    """
+    by_id: dict[int, dict] = {
+        p["chart_id"]: p for p in summaries if isinstance(p.get("chart_id"), int)
+    }
+    domain_part = f" của báo cáo {domain_label}" if domain_label else ""
+
+    for cid in key_ids:
+        pack = by_id.get(cid)
+        if not pack:
+            continue
+        name = str(pack.get("chart_name") or "chỉ số chính")
+        trend = pack.get("trend") or {}
+        if trend.get("direction") in ("up", "down") and trend.get("pct_change") is not None:
+            verb = "tăng" if trend["direction"] == "up" else "giảm"
+            pct = abs(float(trend.get("pct_change") or 0))
+            return (
+                f"Xác định nguyên nhân {name} {verb} {pct:.0f}% ({timeframe_hint}), "
+                f"bóc tách theo phân khúc đóng góp lớn nhất và đề xuất 1-2 hành động."
+            )
+        if pack.get("top_share_pct") is not None and float(pack["top_share_pct"]) > 50:
+            return (
+                f"Đánh giá mức độ tập trung của {name} (nhóm dẫn đầu chiếm "
+                f"{float(pack['top_share_pct']):.0f}%), rủi ro phụ thuộc và đề xuất hành động cân bằng."
+            )
+
+    # Fallback: name the first key chart so the goal still points somewhere real.
+    first = by_id.get(key_ids[0]) if key_ids else None
+    anchor = str((first or {}).get("chart_name") or dashboard_name or "các chỉ số chính")
+    return (
+        f"Đánh giá hiệu suất{domain_part} qua {anchor} trong {timeframe_hint}, "
+        f"tìm 3 insight quan trọng nhất (mô tả → nguyên nhân → hành động)."
+    )
+
+
 # ── Briefing formatter for system prompts ──────────────────────────────────
 
 
@@ -397,6 +464,10 @@ def format_briefing_for_prompt(briefing: Briefing | None) -> str:
     if not briefing or not briefing.confirmed:
         return ""
     lines = ["═══ USER BRIEFING (đã confirm) ═══"]
+    if briefing.smart_goal.strip():
+        # North star first — triage, tool choice and the final answer should
+        # all serve this goal (InsightBench: specific goal ≫ generic goal).
+        lines.append(f"MỤC TIÊU PHIÊN (SMART): {briefing.smart_goal.strip()}")
     lines.append(f"Lĩnh vực dashboard: {briefing.domain_label or briefing.domain}")
     lines.append(f"Vai trò người hỏi: {_role_label(briefing.role)}")
     lines.append(f"Trọng tâm phiên này: {_focus_label(briefing.focus)}")
@@ -480,8 +551,8 @@ insight pack tự động) cùng briefing từ user. Hãy viết MỘT đoạn t
   TL;DR: <1 câu kết luận cao nhất, có số liệu, có [chart:N]>
 
   Điểm cần chú ý:
-  - <bullet 1, có số liệu, [chart:N], [HIGH|MED|LOW]>
-  - <bullet 2, có số liệu, [chart:N], [HIGH|MED|LOW]>
+  - <[DESC|DIAG|PRED] bullet 1, có số liệu, [chart:N], [HIGH|MED|LOW]>
+  - <[DESC|DIAG|PRED] bullet 2, có số liệu, [chart:N], [HIGH|MED|LOW]>
   - <bullet 3 — chỉ thêm nếu thực sự đáng>
 
   [FOLLOWUP] <câu hỏi gợi ý 1>
@@ -515,6 +586,8 @@ def build_executive_brief_user_prompt(
     """Compact text representation of recon + briefing for the brief LLM call."""
     lines: list[str] = []
     lines.append("## Briefing user đã confirm")
+    if briefing.smart_goal.strip():
+        lines.append(f"- MỤC TIÊU PHIÊN (SMART): {briefing.smart_goal.strip()}")
     lines.append(f"- Lĩnh vực: {briefing.domain_label or briefing.domain}")
     lines.append(f"- Vai trò: {_role_label(briefing.role)}")
     lines.append(f"- Trọng tâm: {_focus_label(briefing.focus)}")

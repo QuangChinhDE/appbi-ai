@@ -81,7 +81,6 @@ from app.services.dataset_excel_export_service import (
     export_dataset_table_to_excel,
 )
 from app.core.logging import get_logger
-from app.services.runtime_modes import datasource_sync_enabled
 from app.services.schema_inference import infer_schema_from_sql
 from app.services.live_query_service import (
     LiveQueryService,
@@ -2395,8 +2394,21 @@ def refresh_dataset_snapshots(
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    result = snapshot_service.refresh_all_for_dataset(db, dataset_id, force=True)
-    return {"ok": True, **result}
+    # ASYNC: kick a background rebuild and return immediately (see
+    # snapshot_service.start_manual_refresh) so a large extract-load never blocks
+    # the request past nginx's 120s API timeout. Client polls freshness/building.
+    started = snapshot_service.start_manual_refresh([dataset_id])
+    ts = snapshot_service.as_of(
+        db,
+        [t.id for t in dataset_obj.tables] if getattr(dataset_obj, "tables", None) else [],
+    )
+    return {
+        "ok": True,
+        "status": "started",
+        "started": started,
+        "building": snapshot_service.datasets_rebuilding([dataset_id]),
+        "as_of": ts.isoformat() if ts else None,
+    }
 
 
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
@@ -2790,46 +2802,13 @@ def add_table_to_dataset(
         if not db_table:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        if not datasource_sync_enabled() and db_table.datasource_id is not None:
+        if db_table.datasource_id is not None:
             db_table.query_mode = "live"
             db.commit()
             db.refresh(db_table)
 
-        # ── Auto-detect table size and set query_mode ──
-        if datasource_sync_enabled() and datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
-            try:
-                ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-                stn = db_table.source_table_name.strip().strip('"').strip("'")
-                if "." in stn:
-                    schema_name, tbl_name = stn.split(".", 1)
-                    schema_name = schema_name.strip('"').strip("'")
-                    tbl_name = tbl_name.strip('"').strip("'")
-                else:
-                    schema_name = "public" if ds_type == "postgresql" else ""
-                    tbl_name = stn
-
-                size_info = LiveQueryService.get_table_size_metadata(
-                    ds_type, datasource.config, schema_name, tbl_name,
-                )
-                if size_info.get("estimated_row_count") or size_info.get("estimated_size_bytes"):
-                    db_table.estimated_row_count = size_info.get("estimated_row_count")
-                    db_table.estimated_size_bytes = size_info.get("estimated_size_bytes")
-                    if LiveQueryService.should_use_live_mode(
-                        size_info.get("estimated_row_count"),
-                        size_info.get("estimated_size_bytes"),
-                    ):
-                        db_table.query_mode = "live"
-                        logger.info(
-                            "Table %s auto-set to live mode (rows=%s, bytes=%s)",
-                            db_table.source_table_name,
-                            size_info.get("estimated_row_count"),
-                            size_info.get("estimated_size_bytes"),
-                        )
-                    db.commit()
-                    db.refresh(db_table)
-            except Exception as e:
-                logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
-        elif datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
+        # ── Auto-detect table size (live-query metadata) ──
+        if datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
                 stn = db_table.source_table_name.strip().strip('"').strip("'")
@@ -3106,18 +3085,22 @@ def update_dataset_table(
 
         table_update.type_overrides = normalized_overrides
 
+    # A type-override change is NOT a schema change: it re-types EXISTING columns
+    # (keyed by name) and never adds/removes/renames any — the cast itself is
+    # validated separately by the type audit above. Including it here made a
+    # simple STRING→DATE re-infer the whole schema and (when that inference
+    # returned a different/empty set) flag EVERY column as "about to be dropped",
+    # firing a bogus "N semantic references … columns about to be deleted"
+    # cascade. Only source_query / transformations can actually change columns.
     schema_refresh_requested = any(
         value is not None
         for value in (
             table_update.source_query,
             table_update.transformations,
-            table_update.type_overrides,
         )
     )
 
-    if schema_refresh_requested and (
-        table_update.transformations is not None or table_update.type_overrides is not None
-    ):
+    if schema_refresh_requested and table_update.transformations is not None:
         validation_draft = _build_table_draft(db_table, table_update)
         validation_datasource = datasource
         if validation_datasource is None and getattr(validation_draft, "datasource_id", None) is not None:
@@ -3216,6 +3199,14 @@ def update_dataset_table(
                     db.commit()
         except Exception as exc:
             logger.warning("Column inference failed after updating table %s: %s", updated_table.id, exc)
+
+        # Re-run full-scan type detection after a schema refresh for sources whose
+        # per-import inference is sample-based/unreliable (Google Sheets, manual
+        # upload, derived_table). Without this a RE-SYNCED sheet re-infers every
+        # column as `string` and silently loses the number/date types — the exact
+        # gap behind "GG Sheet rất hay lỗi dữ liệu". Mirrors the table-created
+        # trigger; `apply_suggestions_to_table` never overwrites user-set types.
+        _enqueue_auto_type_detection_if_needed(background_tasks, updated_table)
 
     DescriptionPipelineService.enqueue_table_pipeline(
         background_tasks,

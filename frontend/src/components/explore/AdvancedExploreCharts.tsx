@@ -9,6 +9,7 @@ import {
 import { useI18n } from '@/providers/LanguageProvider';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
+import { applyKpiBenchmarkCalc } from '@/lib/exploreAggregations';
 import type { ChartStyleConfig, MetricConfig, SemanticLabelMap } from './ExploreChartConfig';
 import { fieldLabel, metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
@@ -134,10 +135,10 @@ interface AdvancedExploreChartProps {
   /** Phase-15.13: same semantic label map used by ExploreChart; forwarded to
    *  TableVisualization when rendering MATRIX so headers humanise. */
   labelMap?: import('./ExploreChartConfig').SemanticLabelMap;
-  /** Phase-16.x: per-column number format (field → percent/currency/number)
-   *  forwarded to MATRIX's TableVisualization so a percent/currency measure
-   *  formats in its own column. */
-  formatMap?: Map<string, import('./ExploreChartConfig').NumberFormat>;
+  /** Phase-16.x: per-column cell format (field → number OR date format)
+   *  forwarded to MATRIX's TableVisualization so a percent/currency measure —
+   *  or a date column — formats in its own column. */
+  formatMap?: Map<string, import('./ExploreChartConfig').TableCellFormat>;
 }
 
 interface NameValue {
@@ -2046,16 +2047,19 @@ export function AdvancedExploreChart({
   );
   const targetValue = useMemo(() => {
     const metricTarget = benchmarkMetric ? aggregateMetric(data, benchmarkMetric, preAggregated) : 0;
-    if (metricTarget > 0) return metricTarget;
-    const staticTarget = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
-      ? Number(style.benchmarkValue)
-      : Number(style.kpiBenchmarkValue);
+    const base = metricTarget > 0
+      ? metricTarget
+      : (style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
+          ? Number(style.benchmarkValue)
+          : Number(style.kpiBenchmarkValue));
+    // Apply the benchmark calculation (× multiplier + offset), e.g. Goal × 1.1.
+    const calc = applyKpiBenchmarkCalc(Number.isFinite(base) ? base : null, style);
     // Return 0 (not the value itself) when NO target is configured. The
     // gauge/bullet renderers read `target > 0` to decide whether to draw a
     // target marker / "Target X" label and how to scale. Defaulting to the
     // value made every target-less gauge read as "goal met at 100%".
-    return Number.isFinite(staticTarget) && staticTarget > 0 ? staticTarget : 0;
-  }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue]);
+    return calc !== null && Number.isFinite(calc) && calc > 0 ? calc : 0;
+  }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue, style.kpiBenchmarkMultiplier, style.kpiBenchmarkOffset]);
 
   // Cross-highlight (source-dim): names present in the P-filtered subset stay
   // solid; the rest dim. null ⇒ no highlight (render unchanged).

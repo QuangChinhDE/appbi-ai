@@ -13,12 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_edit_access
+from app.core.dependencies import get_current_user, require_edit_access, require_permission
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import Chart, Dashboard, Dataset, DatasetTable
 from app.models.resource_share import ResourceShare, ResourceType
@@ -28,7 +28,30 @@ from app.services.governance_service import GovernanceError, GovernanceService
 
 logger = logging.getLogger("app.metadata_catalog.api")
 
-router = APIRouter(prefix="/catalog", tags=["catalog"])
+# ── Module-permission floor for the ENTIRE /catalog router (Govern + Intelligence)
+# Mirrors how every other module gates its API: reads (GET) need govern:view,
+# writes (PUT/POST/DELETE/PATCH) need govern:edit. ONE method-based gate — no
+# per-endpoint drift. Admin back-fill + scoped-token caps are inherited from
+# require_permission(). Previously these endpoints only checked authentication
+# (get_current_user), so a user with govern:none/view could read AND write ALL
+# knowledge (metrics, glossary, rules, playbooks, QA, caveats, AI scope, docs) —
+# unlike dashboards/datasets/observability which enforce require_permission. This
+# closes that gap and makes the Intelligence group consistent with the system.
+_GOVERN_VIEW = require_permission("govern", "view")
+_GOVERN_EDIT = require_permission("govern", "edit")
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+async def govern_module_gate(request: Request, user: User = Depends(get_current_user)) -> User:
+    checker = _GOVERN_VIEW if request.method in _READ_METHODS else _GOVERN_EDIT
+    return await checker(user=user)
+
+
+router = APIRouter(
+    prefix="/catalog",
+    tags=["catalog"],
+    dependencies=[Depends(govern_module_gate)],
+)
 
 
 def _run(fn):
@@ -146,6 +169,272 @@ def upsert_tag(body: TagWrite, db: Session = Depends(get_db), _: User = Depends(
 @router.delete("/govern/tag/{fqn:path}")
 def delete_tag(fqn: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
     return _run(lambda: GovernanceService.delete_tag(db, fqn))
+
+
+# ════════════ GOVERN: MANAGED METRICS (metrics quản trị doanh nghiệp) ════════
+# AUTHORED KPIs a business governs by — definition, formula, unit, grain, target,
+# owner, physical binding, status/version. This is the DATA-ENTRY surface (nhập
+# liệu) that produces accurate business context; distinct from the derived
+# semantic measures under /govern/metrics. The AI reads these as authoritative.
+class ManagedMetricWrite(BaseModel):
+    name: str                              # display name the user typed
+    machine_name: str | None = None        # set on EDIT (keep stable); derived on CREATE
+    definition: str | None = None
+    formula: str | None = None
+    unit: str | None = None
+    grain: str | None = None               # daily|weekly|monthly|quarterly|yearly|point_in_time
+    category: str | None = None
+    direction: str | None = "neutral"      # up_good|down_good|neutral
+    target_value: float | None = None
+    target_operator: str | None = None     # >= | <= | = | between
+    target_value2: float | None = None
+    owner: str | None = None
+    related_term_fqn: str | None = None
+    dataset_id: int | None = None
+    dataset_table_id: int | None = None
+    measure_ref: str | None = None
+    home_doc_id: int | None = None         # knowledge doc where this metric is DEFINED (home/SSOT)
+    anchor: str | None = None
+    synonyms: list[str] = []
+    status: str | None = "Draft"           # Draft|Approved|Deprecated
+
+
+@router.get("/govern/managed-metrics")
+def govern_managed_metrics(
+    category: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {"metrics": GovernanceService.list_managed_metrics(db, category, status)}
+
+
+@router.get("/govern/managed-metric/{name}")
+def govern_managed_metric(name: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    m = GovernanceService.get_managed_metric(db, name)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chỉ số quản trị.")
+    return m
+
+
+@router.put("/govern/managed-metric")
+def upsert_managed_metric(
+    body: ManagedMetricWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.upsert_managed_metric(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/managed-metric/{name}")
+def delete_managed_metric(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.delete_managed_metric(db, name, changed_by=who))
+
+
+@router.get("/govern/change-log")
+def govern_change_log(
+    entity_type: str | None = Query(default=None),
+    entity_fqn: str | None = Query(default=None),
+    limit: int = Query(default=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Evolution of the business domain (log theo sự phát triển) — audit trail
+    of every governed-knowledge change."""
+    return {"entries": GovernanceService.list_change_log(db, entity_type, entity_fqn, limit)}
+
+
+# ════════════ GOVERN: KNOWLEDGE HUB (Cẩm nang tri thức) ══════════════════════
+# Rich-text knowledge articles organized into spaces + a page tree — the
+# onboarding "kho tàng" where a business records how its whole reporting system
+# works, with metrics/glossary/dashboards riding along as related links.
+class KnowledgeDocWrite(BaseModel):
+    id: int | None = None                 # set on EDIT
+    title: str
+    space: str | None = "Chung"
+    parent_id: int | None = None
+    position: int | None = 0
+    doc_type: str | None = "article"      # overview|guide|domain|process|faq|article
+    summary: str | None = None
+    body: str | None = None               # markdown
+    tags: list[str] = []
+    related_metrics: list[str] = []
+    related_terms: list[str] = []
+    related_dashboard_ids: list[int] = []
+    related_dataset_ids: list[int] = []
+    status: str | None = "Draft"          # Draft|Published|Archived
+    pinned: bool | None = False
+    owner: str | None = None
+    change_note: str | None = None        # optional note recorded on the version snapshot
+    # Knowledge Hub metadata (AI-readable node + review workflow)
+    business_domain: str | None = None
+    process_ref: str | None = None
+    review_date: str | None = None        # "YYYY-MM-DD"
+    importance: str | None = None         # low|normal|high
+
+
+@router.get("/govern/knowledge")
+def govern_knowledge_list(
+    space: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {
+        "docs": GovernanceService.list_knowledge_docs(db, user, space, status),
+        "spaces": GovernanceService.knowledge_spaces(db, user),
+    }
+
+
+@router.get("/govern/knowledge/insights")
+def govern_knowledge_insights(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Knowledge-health lists (missing owner/summary/tags, stale review, not
+    embedded) + most viewed / most retrieved — for knowledge managers."""
+    return GovernanceService.knowledge_insights(db, user)
+
+
+@router.get("/govern/search")
+def govern_search_everything(
+    q: str = Query(default=""), db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Search everything inside the Knowledge Hub — documents, governed KPIs,
+    business terms, dashboards, datasets — grouped results."""
+    return GovernanceService.govern_search(db, q, user)
+
+
+@router.get("/govern/graph")
+def govern_knowledge_graph(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Whole-hub knowledge graph (Obsidian-style): visible docs + [[wikilink]] and
+    shared-KPI edges."""
+    return GovernanceService.knowledge_graph(db, user)
+
+
+@router.get("/govern/knowledge/{doc_id}")
+def govern_knowledge_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    d = _run(lambda: GovernanceService.get_knowledge_doc(db, doc_id, user))
+    if d is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    # Usage telemetry (fire-and-forget): the doc was opened for reading.
+    try:
+        from sqlalchemy import text as _t
+        db.execute(_t("UPDATE govern_knowledge_docs SET view_count = COALESCE(view_count,0) + 1, last_viewed_at = NOW() WHERE id = :i"), {"i": doc_id})
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    return d
+
+
+@router.post("/govern/knowledge/{doc_id}/verify")
+def govern_knowledge_verify(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Owner attests the document is still correct → refreshes the review clock."""
+    return _run(lambda: GovernanceService.verify_knowledge_doc(db, doc_id, changed_by=getattr(user, "email", None), current_user=user))
+
+
+@router.post("/govern/knowledge/{doc_id}/ai-summary")
+def govern_knowledge_ai_summary(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Force-regenerate the AI summary/keywords for a document."""
+    from app.models.governance import GovernKnowledgeDoc
+    from app.services.dashboard_ai_bot.govern_ai_summary import generate_summary
+    d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trang tri thức.")
+    _run(lambda: GovernanceService._require_doc(db, user, d, "edit"))
+    status = generate_summary(db, d, force=True)
+    if status not in ("generated", "unchanged"):
+        raise HTTPException(status_code=503, detail=f"AI chưa sinh được tóm tắt ({status}). Kiểm tra khoá AI.")
+    return {"ok": True, "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or []}
+
+
+@router.put("/govern/knowledge")
+def govern_knowledge_upsert(
+    body: KnowledgeDocWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.upsert_knowledge_doc(db, body.model_dump(), changed_by=who, current_user=user))
+
+
+class KnowledgeAIDraftReq(BaseModel):
+    # A knowledge doc usually spans several sources — accept a list. `dataset_id`
+    # is kept for backward compatibility with older single-select callers.
+    dataset_ids: list[int] = []
+    dataset_id: int | None = None
+    dashboard_ids: list[int] = []
+    focus: str | None = None
+
+
+@router.post("/govern/knowledge/ai-draft")
+def govern_knowledge_ai_draft(
+    body: KnowledgeAIDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """AI reads the real model + sample + metrics of ONE OR MORE datasets (plus
+    optional dashboards and a focus) and drafts a business document (unsaved).
+    The user reviews/edits before saving."""
+    from app.services.dashboard_ai_bot.govern_ai_draft import draft_document
+    ids = body.dataset_ids or ([body.dataset_id] if body.dataset_id else [])
+    if not ids:
+        raise HTTPException(status_code=422, detail="Chọn ít nhất một dataset.")
+    draft = draft_document(db, ids, body.dashboard_ids, body.focus)
+    if draft is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI chưa soạn được tài liệu. Kiểm tra dataset tồn tại và đã cấu hình khoá AI (OPENAI/GEMINI/ANTHROPIC).",
+        )
+    return draft
+
+
+@router.delete("/govern/knowledge/{doc_id}")
+def govern_knowledge_delete(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceService.delete_knowledge_doc(db, doc_id, changed_by=who, current_user=user))
+
+
+@router.get("/govern/asset-docs")
+def govern_asset_docs(
+    asset_type: str = Query(...),   # dashboard | dataset | term
+    asset_ref: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Reverse lineage: knowledge docs that reference a given report/dataset/term
+    (so an asset's Govern view can show 'documented in …')."""
+    return {"docs": GovernanceService.docs_referencing_asset(db, asset_type, asset_ref)}
+
+
+@router.get("/govern/knowledge/{doc_id}/versions")
+def govern_knowledge_versions(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Locked version history of a business document (evolution over time)."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    return {"versions": GovernanceService.list_doc_versions(db, doc_id)}
+
+
+@router.get("/govern/knowledge/{doc_id}/versions/{version}")
+def govern_knowledge_version(doc_id: int, version: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    v = GovernanceService.get_doc_version(db, doc_id, version)
+    if v is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiên bản.")
+    return v
+
+
+class PublishVersionReq(BaseModel):
+    version: int
+    change_note: str
+
+
+@router.post("/govern/knowledge/{doc_id}/publish")
+def govern_knowledge_publish(doc_id: int, body: PublishVersionReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Make a specific version LIVE (RAG/public reads it) with a required change
+    note. The latest working draft is unaffected — v1 can stay live while v2 drafts."""
+    return _run(lambda: GovernanceService.publish_version(db, doc_id, body.version, body.change_note, changed_by=getattr(user, "email", None), current_user=user))
+
+
+@router.post("/govern/knowledge/{doc_id}/versions/{version}/change-note-ai")
+def govern_knowledge_change_note_ai(doc_id: int, version: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """AI drafts a short 'what changed' note by diffing this version against the
+    previously-published/previous one (diff only — never the whole document)."""
+    return _run(lambda: (GovernanceService.require_doc_access(db, doc_id, user, "edit"), GovernanceService.version_change_note_ai(db, doc_id, version))[1])
 
 
 # ════════════════════════ GOVERN: METRICS (AppBI-native) ════════════════════
@@ -536,3 +825,249 @@ def observability_alerts(db: Session = Depends(get_db), user: User = Depends(get
                 "alertType": "Quality · score",
             })
     return {"alerts": alerts, "total": len(alerts)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Intelligence modules — teach-the-AI knowledge (rules / playbooks / verified
+# Q&A / instructions) + governance spine (single review inbox, caveats, AI data
+# scope, provenance cockpit). All additive; the AI bot consumes Approved only.
+# ═════════════════════════════════════════════════════════════════════════════
+from app.services.governance_ai_service import GovernanceAIService  # noqa: E402
+
+
+class RuleWrite(BaseModel):
+    id: int | None = None
+    name: str
+    condition_text: str
+    conclusion_text: str
+    exceptions_text: str | None = None
+    applies_to: list[dict[str, Any]] = []
+    owner: str | None = None
+    status: str | None = None
+
+
+class PlaybookWrite(BaseModel):
+    id: int | None = None
+    name: str
+    trigger_text: str
+    steps: list[str] = []
+    dim_priority: list[str] = []
+    expected_output: str | None = None
+    linked_metrics: list[str] = []
+    owner: str | None = None
+    status: str | None = None
+
+
+class QAWrite(BaseModel):
+    id: int | None = None
+    question: str
+    trigger_phrases: list[str] = []
+    answer_md: str
+    chart_id: int | None = None
+    dashboard_id: int | None = None
+    playbook_id: int | None = None
+    as_test: bool = True
+    owner: str | None = None
+    status: str | None = None
+
+
+class InstructionWrite(BaseModel):
+    scope: str = "global"
+    scope_id: int | None = None
+    content_md: str
+
+
+class CaveatWrite(BaseModel):
+    id: int | None = None
+    dataset_id: int | None = None
+    title: str
+    content: str
+    always_inject: bool = True
+    owner: str | None = None
+
+
+class ScopeWrite(BaseModel):
+    excluded_columns: list[str] = []
+    excluded_measures: list[str] = []
+
+
+class ReviewItemWrite(BaseModel):
+    entity_type: str
+    entity_id: int | None = None
+    action: str = "suggest"
+    title: str
+    payload: dict[str, Any] | None = None
+    evidence: str | None = None
+    confidence: float | None = None
+
+
+class ReviewResolve(BaseModel):
+    note: str | None = None
+
+
+# ── Rules ────────────────────────────────────────────────────────────────────
+@router.get("/govern/rules")
+def govern_rules(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"rules": GovernanceAIService.list_rules(db)}
+
+
+@router.put("/govern/rules")
+def govern_rules_upsert(body: RuleWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_rule(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/rules/{rule_id}")
+def govern_rules_delete(rule_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_rule(db, rule_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Playbooks ────────────────────────────────────────────────────────────────
+@router.get("/govern/playbooks")
+def govern_playbooks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"playbooks": GovernanceAIService.list_playbooks(db)}
+
+
+@router.put("/govern/playbooks")
+def govern_playbooks_upsert(body: PlaybookWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_playbook(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/playbooks/{playbook_id}")
+def govern_playbooks_delete(playbook_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_playbook(db, playbook_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Verified Q&A ─────────────────────────────────────────────────────────────
+@router.get("/govern/qa")
+def govern_qa(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"qa": GovernanceAIService.list_qa(db)}
+
+
+@router.put("/govern/qa")
+def govern_qa_upsert(body: QAWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_qa(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/qa/{qa_id}")
+def govern_qa_delete(qa_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_qa(db, qa_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── Certify (in-context; ALWAYS writes the single review ledger) ─────────────
+@router.post("/govern/certify/{entity_type}/{entity_id}")
+def govern_certify(entity_type: str, entity_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.certify(db, entity_type, entity_id, changed_by=who))
+
+
+# ── AI Instructions ──────────────────────────────────────────────────────────
+@router.get("/govern/instructions")
+def govern_instructions(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"instructions": GovernanceAIService.list_instructions(db)}
+
+
+@router.put("/govern/instructions")
+def govern_instructions_create(body: InstructionWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.create_instruction_version(db, body.model_dump(), changed_by=who))
+
+
+# ── Data caveats ─────────────────────────────────────────────────────────────
+@router.get("/govern/caveats")
+def govern_caveats(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"caveats": GovernanceAIService.list_caveats(db)}
+
+
+@router.put("/govern/caveats")
+def govern_caveats_upsert(body: CaveatWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.upsert_caveat(db, body.model_dump(), changed_by=who))
+
+
+@router.delete("/govern/caveats/{caveat_id}")
+def govern_caveats_delete(caveat_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _run(lambda: GovernanceAIService.delete_caveat(db, caveat_id, changed_by=getattr(user, "email", None)))
+    return {"ok": True}
+
+
+# ── AI data scope ────────────────────────────────────────────────────────────
+@router.get("/govern/ai-scope/{dataset_id}")
+def govern_ai_scope_get(dataset_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    scope = GovernanceAIService.get_scope(db, dataset_id)
+    scope["fields"] = GovernanceAIService.scope_fields(db, dataset_id)
+    return scope
+
+
+@router.put("/govern/ai-scope/{dataset_id}")
+def govern_ai_scope_put(dataset_id: int, body: ScopeWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.put_scope(db, dataset_id, body.model_dump(), changed_by=who))
+
+
+# ── Review inbox (single ledger) ─────────────────────────────────────────────
+@router.get("/govern/review-items")
+def govern_review_items(
+    status: str = Query(default="pending"),
+    entity_type: str | None = Query(default=None),
+    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {
+        "items": GovernanceAIService.list_review_items(db, status=status, entity_type=entity_type),
+        "pending": GovernanceAIService.review_count(db),
+    }
+
+
+@router.get("/govern/review-items/count")
+def govern_review_count(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return {"pending": GovernanceAIService.review_count(db)}
+
+
+@router.post("/govern/review-items")
+def govern_review_create(body: ReviewItemWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.create_review_item(db, body.model_dump(), created_by=who))
+
+
+@router.post("/govern/review-items/{item_id}/approve")
+def govern_review_approve(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    note = body.note if body else None
+    return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=True, resolved_by=who, note=note))
+
+
+@router.post("/govern/review-items/{item_id}/reject")
+def govern_review_reject(item_id: int, body: ReviewResolve | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    note = body.note if body else None
+    return _run(lambda: GovernanceAIService.resolve_review_item(db, item_id, approve=False, resolved_by=who, note=note))
+
+
+# ── Cockpit overview ─────────────────────────────────────────────────────────
+@router.get("/govern/intelligence/overview")
+def govern_intelligence_overview(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    return GovernanceAIService.intelligence_overview(db)
+
+
+@router.post("/govern/managed-metric/{name}/certify")
+def govern_metric_certify(name: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    who = getattr(user, "email", None)
+    return _run(lambda: GovernanceAIService.certify_metric_by_name(db, name, changed_by=who))
+
+
+class AiDraftReq(BaseModel):
+    entity_type: str          # rule | playbook | qa | caveat | metric
+    prompt: str
+    dataset_id: int | None = None
+
+
+@router.post("/govern/ai-draft")
+def govern_intel_ai_draft(body: AiDraftReq, db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """AI-compose an Intelligence entity from a natural-language prompt.
+    Returns a draft the create modal fills in for the user to review/edit."""
+    return _run(lambda: GovernanceAIService.ai_draft(db, body.entity_type, body.prompt, body.dataset_id))

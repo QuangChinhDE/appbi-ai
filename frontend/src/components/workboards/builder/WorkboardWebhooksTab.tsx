@@ -31,6 +31,7 @@ import { useWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type DocScreenStub = { id: string; title: string };
 
@@ -54,13 +55,13 @@ interface Props {
 
 type SubTab = 'endpoints' | 'history';
 
-const STATUS_LABELS: Record<SyncRunStatus, string> = {
-  pending: 'Đang chờ',
-  running: 'Đang chạy',
-  success: 'Thành công',
-  failed: 'Thất bại',
-  partial: 'Một phần',
-  cancelled: 'Đã huỷ',
+const STATUS_LABEL_KEYS: Record<SyncRunStatus, string> = {
+  pending: 'workboards.webhooks.status.pending',
+  running: 'workboards.webhooks.status.running',
+  success: 'workboards.webhooks.status.success',
+  failed: 'workboards.webhooks.status.failed',
+  partial: 'workboards.webhooks.status.partial',
+  cancelled: 'workboards.webhooks.status.cancelled',
 };
 
 const STATUS_TONE: Record<SyncRunStatus, string> = {
@@ -115,6 +116,7 @@ function WebhookSubTabButton({
 }
 
 export default function WorkboardWebhooksTab({ workboardId }: Props) {
+  const { t } = useI18n();
   const [subTab, setSubTab] = useState<SubTab>('endpoints');
 
   return (
@@ -126,14 +128,14 @@ export default function WorkboardWebhooksTab({ workboardId }: Props) {
             onClick={() => setSubTab('endpoints')}
             icon={<WebhookIcon className="h-3.5 w-3.5" />}
           >
-            Endpoints
+            {t('workboards.webhooks.endpoints')}
           </WebhookSubTabButton>
           <WebhookSubTabButton
             active={subTab === 'history'}
             onClick={() => setSubTab('history')}
             icon={<RefreshCw className="h-3.5 w-3.5" />}
           >
-            History
+            {t('workboards.webhooks.history')}
           </WebhookSubTabButton>
         </div>
       </div>
@@ -151,6 +153,7 @@ export default function WorkboardWebhooksTab({ workboardId }: Props) {
 // ── Endpoints ────────────────────────────────────────────────────────────
 
 function EndpointsPane({ workboardId }: { workboardId: number }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<WebhookConfig[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<WebhookConfig | null>(null);
@@ -173,11 +176,11 @@ function EndpointsPane({ workboardId }: { workboardId: number }) {
       const data = await workboardWebhookApi.list(workboardId);
       setItems(data);
     } catch (err) {
-      toast.error('Không tải được danh sách webhook');
+      toast.error(t('workboards.webhooks.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [workboardId]);
+  }, [workboardId, t]);
 
   useEffect(() => {
     load();
@@ -195,31 +198,31 @@ function EndpointsPane({ workboardId }: { workboardId: number }) {
     <div className="p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-text-primary">Outbound webhooks</h2>
+          <h2 className="text-sm font-semibold text-text-primary">{t('workboards.webhooks.title')}</h2>
           <p className="mt-0.5 text-xs text-text-tertiary">
-            Cấu hình các endpoint nhận dữ liệu khi user bấm Sync trên doc.
+            {t('workboards.webhooks.description')}
           </p>
         </div>
         <Button onClick={() => setCreating(true)} leadingIcon={<Plus className="h-4 w-4" />}>
-          Thêm webhook
+          {t('workboards.webhooks.add')}
         </Button>
       </div>
 
       {items && items.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[rgb(var(--border-line))] py-10 text-text-tertiary">
           <WebhookIcon className="h-7 w-7" />
-          <p className="text-sm">Chưa có webhook nào.</p>
+          <p className="text-sm">{t('workboards.webhooks.empty')}</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
           <table className="w-full text-sm">
             <thead className="bg-surface-2 text-xs text-text-tertiary">
               <tr>
-                <th className="px-3 py-2 text-left">Tên</th>
+                <th className="px-3 py-2 text-left">{t('workboards.webhooks.name')}</th>
                 <th className="px-3 py-2 text-left">Doc screen</th>
                 <th className="px-3 py-2 text-left">URL</th>
                 <th className="px-3 py-2 text-left">Batch</th>
-                <th className="px-3 py-2 text-left">Trạng thái</th>
+                <th className="px-3 py-2 text-left">{t('workboards.webhooks.statusLabel')}</th>
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
@@ -242,12 +245,12 @@ function EndpointsPane({ workboardId }: { workboardId: number }) {
                     ) : orphaned ? (
                       <span className="inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-rose-700">
                         <AlertTriangle className="h-3 w-3" />
-                        Screen đã xoá ({w.screen_id})
+                        {t('workboards.webhooks.deletedScreen', { screen: w.screen_id || '' })}
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">
                         <AlertTriangle className="h-3 w-3" />
-                        Chưa gán
+                        {t('workboards.webhooks.unassigned')}
                       </span>
                     )}
                   </td>
@@ -267,12 +270,12 @@ function EndpointsPane({ workboardId }: { workboardId: number }) {
                     {w.is_active ? (
                       <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700">
                         <CheckCircle2 className="h-3 w-3" />
-                        Đang bật
+                        {t('workboards.webhooks.enabled')}
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
                         <XCircle className="h-3 w-3" />
-                        Tắt
+                        {t('workboards.webhooks.disabled')}
                       </span>
                     )}
                   </td>
@@ -281,24 +284,24 @@ function EndpointsPane({ workboardId }: { workboardId: number }) {
                       type="button"
                       onClick={() => setEditing(w)}
                       className="rounded p-1 text-text-tertiary hover:bg-surface-2"
-                      title="Sửa"
+                      title={t('workboards.webhooks.edit')}
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     <button
                       type="button"
                       onClick={async () => {
-                        if (!window.confirm(`Xoá webhook "${w.name}"?`)) return;
+                        if (!window.confirm(t('workboards.webhooks.deleteConfirm', { name: w.name }))) return;
                         try {
                           await workboardWebhookApi.remove(workboardId, w.id);
-                          toast.success('Đã xoá');
+                          toast.success(t('workboards.webhooks.deleted'));
                           load();
                         } catch {
-                          toast.error('Xoá thất bại');
+                          toast.error(t('workboards.webhooks.deleteFailed'));
                         }
                       }}
                       className="rounded p-1 text-rose-500 hover:bg-rose-50"
-                      title="Xoá"
+                      title={t('workboards.webhooks.delete')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -344,6 +347,7 @@ function WebhookEditorModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useI18n();
   const [form, setForm] = useState<WebhookCreateInput>(() =>
     initial
       ? {
@@ -371,27 +375,27 @@ function WebhookEditorModal({
 
   const onSave = async () => {
     if (!form.name.trim() || !form.url.trim()) {
-      toast.error('Tên và URL bắt buộc');
+      toast.error(t('workboards.webhooks.nameUrlRequired'));
       return;
     }
     if (!form.screen_id) {
-      toast.error('Chọn doc screen mà webhook này phục vụ');
+      toast.error(t('workboards.webhooks.docScreenRequired'));
       return;
     }
     setSaving(true);
     try {
       if (initial) {
         await workboardWebhookApi.update(workboardId, initial.id, form);
-        toast.success('Đã cập nhật webhook');
+        toast.success(t('workboards.webhooks.updated'));
       } else {
         await workboardWebhookApi.create(workboardId, form);
-        toast.success('Đã tạo webhook');
+        toast.success(t('workboards.webhooks.created'));
       }
       onSaved();
     } catch (err) {
       const msg =
         (err as { response?: { data?: { detail?: string } } }).response?.data?.detail ||
-        'Lưu thất bại';
+        t('workboards.webhooks.saveFailed');
       toast.error(String(msg));
     } finally {
       setSaving(false);
@@ -400,7 +404,7 @@ function WebhookEditorModal({
 
   const onTest = async () => {
     if (!initial) {
-      toast.error('Lưu webhook trước khi test.');
+      toast.error(t('workboards.webhooks.saveBeforeTest'));
       return;
     }
     setTesting(true);
@@ -417,7 +421,7 @@ function WebhookEditorModal({
       setTestResult({
         ok: false,
         status: null,
-        error: String((err as Error).message || 'Lỗi không xác định'),
+        error: String((err as Error).message || t('workboards.webhooks.unknownError')),
         duration_ms: 0,
       });
     } finally {
@@ -430,24 +434,24 @@ function WebhookEditorModal({
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-surface-1 shadow-xl">
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
           <h3 className="text-sm font-semibold text-text-primary">
-            {initial ? 'Sửa webhook' : 'Tạo webhook'}
+            {initial ? t('workboards.webhooks.editTitle') : t('workboards.webhooks.createTitle')}
           </h3>
           <button onClick={onClose} className="rounded p-1 hover:bg-surface-2">
             <XCircle className="h-4 w-4 text-text-tertiary" />
           </button>
         </div>
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
-          <Field label="Tên webhook *">
+          <Field label={t('workboards.webhooks.nameRequiredLabel')}>
             <Input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="VD: Đẩy ca sản xuất lên ERP"
+              placeholder={t('workboards.webhooks.namePlaceholder')}
             />
           </Field>
-          <Field label="Phục vụ doc screen *">
+          <Field label={t('workboards.webhooks.docScreenLabel')}>
             {docScreens.length === 0 ? (
               <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
-                Workboard này chưa có doc screen nào. Tạo doc screen trong Builder trước.
+                {t('workboards.webhooks.noDocScreens')}
               </p>
             ) : (
               <select
@@ -455,7 +459,7 @@ function WebhookEditorModal({
                 onChange={(e) => setForm({ ...form, screen_id: e.target.value })}
                 className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm"
               >
-                <option value="">— Chọn doc screen —</option>
+                <option value="">{t('workboards.webhooks.docScreenPlaceholder')}</option>
                 {docScreens.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.title} ({s.id})
@@ -464,8 +468,7 @@ function WebhookEditorModal({
               </select>
             )}
             <p className="mt-1 text-[11px] text-text-tertiary">
-              Webhook chỉ nhận dữ liệu từ doc này — nó được thiết kế cho row shape
-              của doc cụ thể, không tái dùng giữa các doc.
+              {t('workboards.webhooks.docScreenHint')}
             </p>
           </Field>
           <Field label="URL *">
@@ -475,7 +478,7 @@ function WebhookEditorModal({
               placeholder="https://n8n.local/webhook/abc"
             />
           </Field>
-          <Field label="Mô tả">
+          <Field label={t('workboards.webhooks.descriptionLabel')}>
             <textarea
               value={form.description ?? ''}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
@@ -500,7 +503,7 @@ function WebhookEditorModal({
                 }
               />
             </Field>
-            <Field label="Delay giữa batch (ms)">
+            <Field label={t('workboards.webhooks.delayLabel')}>
               <Input
                 type="number"
                 value={form.delay_between_batches_ms}
@@ -536,7 +539,7 @@ function WebhookEditorModal({
                 checked={form.is_active}
                 onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
               />
-              Đang bật
+              {t('workboards.webhooks.enabled')}
             </label>
             <label className="inline-flex items-center gap-2">
               <input
@@ -544,7 +547,7 @@ function WebhookEditorModal({
                 checked={form.stop_on_error}
                 onChange={(e) => setForm({ ...form, stop_on_error: e.target.checked })}
               />
-              Dừng khi batch lỗi
+              {t('workboards.webhooks.stopOnError')}
             </label>
           </div>
 
@@ -594,12 +597,10 @@ function WebhookEditorModal({
                 className="inline-flex items-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-tertiary hover:bg-surface-2"
               >
                 <Plus className="h-3 w-3" />
-                Thêm header
+                {t('workboards.webhooks.addHeader')}
               </button>
               <p className="text-[11px] text-text-tertiary">
-                Lưu ý: headers được lưu plaintext trong workboard settings. Đừng đặt
-                secret quá nhạy cảm, ưu tiên dùng URL có token hoặc IP whitelist
-                phía endpoint.
+                {t('workboards.webhooks.headersWarning')}
               </p>
             </div>
           </Field>
@@ -615,13 +616,13 @@ function WebhookEditorModal({
               {testResult.ok ? (
                 <>
                   <CheckCircle2 className="mr-1 inline h-3.5 w-3.5" />
-                  Test OK · HTTP {testResult.status} · {testResult.duration_ms}ms
+                  {t('workboards.webhooks.testOk')} · HTTP {testResult.status} · {testResult.duration_ms}ms
                 </>
               ) : (
                 <>
                   <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-                  Test thất bại · HTTP {testResult.status ?? '—'} ·{' '}
-                  {testResult.error ?? 'lỗi không xác định'}
+                  {t('workboards.webhooks.testFailed')} · HTTP {testResult.status ?? '—'} ·{' '}
+                  {testResult.error ?? t('workboards.webhooks.unknownError')}
                 </>
               )}
             </div>
@@ -639,7 +640,7 @@ function WebhookEditorModal({
             ) : (
               <Send className="h-3.5 w-3.5" />
             )}
-            Gửi test
+            {t('workboards.webhooks.sendTest')}
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -647,10 +648,10 @@ function WebhookEditorModal({
               onClick={onClose}
               className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-xs"
             >
-              Huỷ
+              {t('workboards.webhooks.cancel')}
             </button>
             <Button onClick={onSave} disabled={saving}>
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Lưu'}
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('workboards.webhooks.save')}
             </Button>
           </div>
         </div>
@@ -677,6 +678,7 @@ function Field({
 // ── History ──────────────────────────────────────────────────────────────
 
 function HistoryPane({ workboardId }: { workboardId: number }) {
+  const { t } = useI18n();
   const [rows, setRows] = useState<SyncRunRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<SyncRunStatus | ''>('');
@@ -691,11 +693,11 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
       });
       setRows(data);
     } catch {
-      toast.error('Không tải được lịch sử sync');
+      toast.error(t('workboards.webhooks.historyLoadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [workboardId, statusFilter]);
+  }, [workboardId, statusFilter, t]);
 
   useEffect(() => {
     load();
@@ -709,10 +711,10 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
           onChange={(e) => setStatusFilter(e.target.value as SyncRunStatus | '')}
           className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-sm"
         >
-          <option value="">Tất cả trạng thái</option>
-          {(Object.keys(STATUS_LABELS) as SyncRunStatus[]).map((s) => (
+          <option value="">{t('workboards.webhooks.allStatuses')}</option>
+          {(Object.keys(STATUS_LABEL_KEYS) as SyncRunStatus[]).map((s) => (
             <option key={s} value={s}>
-              {STATUS_LABELS[s]}
+              {t(STATUS_LABEL_KEYS[s])}
             </option>
           ))}
         </select>
@@ -722,7 +724,7 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
           className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs hover:bg-surface-2"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-          Làm mới
+          {t('workboards.webhooks.refresh')}
         </button>
       </div>
 
@@ -732,18 +734,18 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
         </div>
       ) : rows && rows.length === 0 ? (
         <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] py-10 text-center text-sm text-text-tertiary">
-          Chưa có lượt đồng bộ nào.
+          {t('workboards.webhooks.noRuns')}
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
           <table className="w-full text-sm">
             <thead className="bg-surface-2 text-xs text-text-tertiary">
               <tr>
-                <th className="px-3 py-2 text-left">Thời điểm</th>
+                <th className="px-3 py-2 text-left">{t('workboards.webhooks.time')}</th>
                 <th className="px-3 py-2 text-left">Webhook</th>
                 <th className="px-3 py-2 text-left">Screen / Block</th>
-                <th className="px-3 py-2 text-left">Tiến độ</th>
-                <th className="px-3 py-2 text-left">Trạng thái</th>
+                <th className="px-3 py-2 text-left">{t('workboards.webhooks.progress')}</th>
+                <th className="px-3 py-2 text-left">{t('workboards.webhooks.statusLabel')}</th>
                 <th className="px-3 py-2 text-left">HTTP</th>
                 <th className="px-3 py-2"></th>
               </tr>
@@ -767,14 +769,14 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
                   <td className="px-3 py-2 text-xs">
                     {r.completed_batches + r.failed_batches}/{r.total_batches}
                     {r.failed_batches > 0 && (
-                      <span className="ml-1 text-rose-600">({r.failed_batches} lỗi)</span>
+                      <span className="ml-1 text-rose-600">({t('workboards.webhooks.errorCount', { count: r.failed_batches })})</span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs">
                     <span
                       className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] ${STATUS_TONE[r.status]}`}
                     >
-                      {STATUS_LABELS[r.status]}
+                      {t(STATUS_LABEL_KEYS[r.status])}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-xs">
@@ -788,14 +790,14 @@ function HistoryPane({ workboardId }: { workboardId: number }) {
                           e.stopPropagation();
                           try {
                             await workboardWebhookApi.cancelRun(workboardId, r.run_id);
-                            toast.success('Đã yêu cầu huỷ');
+                            toast.success(t('workboards.webhooks.cancelRequested'));
                             load();
                           } catch {
-                            toast.error('Huỷ thất bại');
+                            toast.error(t('workboards.webhooks.cancelFailed'));
                           }
                         }}
                         className="rounded p-1 text-rose-500 hover:bg-rose-50"
-                        title="Huỷ"
+                        title={t('workboards.webhooks.cancel')}
                       >
                         <XCircle className="h-3.5 w-3.5" />
                       </button>
@@ -828,6 +830,7 @@ function SyncRunDetailModal({
   runId: string;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [detail, setDetail] = useState<Awaited<
     ReturnType<typeof workboardWebhookApi.getRun>
   > | null>(null);
@@ -852,7 +855,7 @@ function SyncRunDetailModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-surface-1 shadow-xl">
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
-          <h3 className="text-sm font-semibold">Chi tiết sync run</h3>
+          <h3 className="text-sm font-semibold">{t('workboards.webhooks.runDetailTitle')}</h3>
           <button onClick={onClose} className="rounded p-1 hover:bg-surface-2">
             <XCircle className="h-4 w-4 text-text-tertiary" />
           </button>
@@ -863,11 +866,11 @@ function SyncRunDetailModal({
           ) : (
             <dl className="grid grid-cols-2 gap-y-2 text-xs">
               <DT label="Run ID">{detail.run_id}</DT>
-              <DT label="Trạng thái">
+              <DT label={t('workboards.webhooks.statusLabel')}>
                 <span
                   className={`rounded px-1.5 py-0.5 ${STATUS_TONE[detail.status]}`}
                 >
-                  {STATUS_LABELS[detail.status]}
+                  {t(STATUS_LABEL_KEYS[detail.status])}
                 </span>
               </DT>
               <DT label="Webhook">{detail.webhook_name || detail.webhook_id}</DT>
@@ -881,9 +884,9 @@ function SyncRunDetailModal({
               <DT label="Rows">{detail.total_rows}</DT>
               <DT label="Batches">
                 {detail.completed_batches + detail.failed_batches} /{' '}
-                {detail.total_batches} ({detail.failed_batches} lỗi)
+                {detail.total_batches} ({t('workboards.webhooks.errorCount', { count: detail.failed_batches })})
               </DT>
-              <DT label="HTTP cuối">{detail.last_response_status ?? '—'}</DT>
+              <DT label={t('workboards.webhooks.lastHttp')}>{detail.last_response_status ?? '—'}</DT>
               <DT label="Duration">
                 {detail.duration_ms ? `${detail.duration_ms} ms` : '—'}
               </DT>
@@ -894,7 +897,7 @@ function SyncRunDetailModal({
               )}
               {detail.response_excerpt && (
                 <div className="col-span-2">
-                  <div className="mb-1 text-text-tertiary">Response (cắt 2KB)</div>
+                  <div className="mb-1 text-text-tertiary">{t('workboards.webhooks.responseExcerpt')}</div>
                   <pre className="max-h-64 overflow-auto rounded bg-surface-2 p-2 text-[11px]">
                     {JSON.stringify(detail.response_excerpt, null, 2)}
                   </pre>

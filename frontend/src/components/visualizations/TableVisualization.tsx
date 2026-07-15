@@ -3,8 +3,23 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useExportMode } from '@/lib/export-mode';
-import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
-import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
+import {
+  ArrowUp, ArrowDown, ArrowUpDown,
+  Minus, Check, X as XIcon, AlertTriangle, Flag, Star, Circle,
+  Filter as FilterIcon,
+  type LucideIcon,
+} from 'lucide-react';
+import {
+  type TableColumnFilter,
+  type TableFilterColumnType,
+  EMPTY_TABLE_COLUMN_FILTER,
+  isTableColumnFilterActive,
+  detectTableColumnType,
+  rowMatchesAllTableFilters,
+  distinctTableColumnValues,
+} from '@/lib/tableColumnFilter';
+import { ColumnFilterPopover } from '@/components/common/ColumnFilterPopover';
+import type { NumberFormat, TableCellFormat } from '@/components/explore/ExploreChartConfig';
 import type { TableColumnAlignment, TableHyperlinkRule } from '@/types/api';
 import {
   SortConfig,
@@ -14,10 +29,19 @@ import {
 } from '@/types/api';
 import {
   buildTableHeatmapStats,
+  buildConditionalStats,
   getCellStyle,
   getHeatmapCellStyle,
   parseNumericCellValue,
+  isDateFormatKind,
+  formatDateCellValue,
 } from '@/lib/exploreAggregations';
+
+// Icon keys usable in conditional-formatting "icon" mode (Feature #4).
+const CF_ICONS: Record<string, LucideIcon> = {
+  up: ArrowUp, down: ArrowDown, flat: Minus, check: Check,
+  cross: XIcon, warning: AlertTriangle, flag: Flag, star: Star, dot: Circle,
+};
 
 export interface TableVisualizationProps {
   data: Record<string, any>[];
@@ -40,6 +64,14 @@ export interface TableVisualizationProps {
   columnAlignments?: Record<string, TableColumnAlignment>;
   hyperlinkRules?: TableHyperlinkRule[];
   enableColumnResize?: boolean;
+  /**
+   * Excel/Power BI-style per-column view filter. When true (default), each
+   * header gets a filter control that narrows the ALREADY-fetched rows by
+   * text/number/date condition + multi-select checklist; multiple columns
+   * combine with AND. This is a pure client-side presentation filter — it
+   * never re-queries or touches the semantic/dashboard filter system.
+   */
+  enableColumnFilters?: boolean;
   numberFormat?: NumberFormat;
   decimalPlaces?: number;
   currencySymbol?: string;
@@ -58,7 +90,7 @@ export interface TableVisualizationProps {
    * the semantic model's measure `format.kind` (buildSemanticFormatMap), so a
    * column declared as percent/currency at the dataset level formats itself.
    */
-  columnFormats?: Record<string, NumberFormat> | Map<string, NumberFormat>;
+  columnFormats?: Record<string, TableCellFormat> | Map<string, TableCellFormat>;
   /** Cross-highlight (PBI-parity): when set, rows whose dimension key is NOT in
    *  this set are dimmed (the selection's matching rows stay full opacity).
    *  Pass together with `rowDimKey` so both sides compute the key identically. */
@@ -227,6 +259,7 @@ export function TableVisualization({
   columnAlignments,
   hyperlinkRules,
   enableColumnResize = true,
+  enableColumnFilters = true,
   numberFormat = 'auto',
   decimalPlaces = 1,
   currencySymbol = '$',
@@ -240,7 +273,7 @@ export function TableVisualization({
   // declared percent/currency/number measure formats by THAT format; others
   // fall back to the table-wide `numberFormat`. Accepts qualified ("view.field")
   // or bare ("field") keys (tries both).
-  const getColumnFormat = (col: string): NumberFormat => {
+  const getColumnFormat = (col: string): TableCellFormat => {
     if (columnFormats) {
       const get = (k: string) =>
         columnFormats instanceof Map ? columnFormats.get(k) : columnFormats[k];
@@ -276,13 +309,43 @@ export function TableVisualization({
   const [localSorts, setLocalSorts] = useState<SortConfig[] | null>(null);
   const effectiveSorts = onSortChange ? sorts : (localSorts ?? sorts);
 
-  // Apply the effective sort to the rows for display. Mixed-type safe: numbers
-  // compare numerically, everything else by locale string; null/undefined sink
-  // to the bottom regardless of direction (standard grid behaviour).
+  // ── Per-column view filter (Excel / Power BI AutoFilter) ──────────────────
+  // A pure client-side filter over the ALREADY-fetched rows: it narrows what
+  // the table shows, never re-queries and never touches the semantic/dashboard
+  // filter system. State is uncontrolled/local (ephemeral view state);
+  // `openFilterCol` tracks which header popover is open.
+  const [columnFilters, setColumnFilters] = useState<Record<string, TableColumnFilter>>({});
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+  // Numeric-column detection (a column with any numeric-parseable value) — kept
+  // on the FULL rows so the type is stable as the user filters.
+  const numericColumns = useMemo(
+    () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
+    [cols, rows],
+  );
+  const columnFilterTypes = useMemo<Record<string, TableFilterColumnType>>(() => {
+    const map: Record<string, TableFilterColumnType> = {};
+    for (const col of cols) map[col] = detectTableColumnType(rows, col, numericColumns.includes(col));
+    return map;
+  }, [cols, rows, numericColumns]);
+  const hasActiveColumnFilters = useMemo(
+    () => enableColumnFilters && Object.values(columnFilters).some(isTableColumnFilterActive),
+    [enableColumnFilters, columnFilters],
+  );
+  // rows → filteredRows (feeds sort, stats, summary, display). The full `rows`
+  // stay available for the "filtered from N" count and the checklist options.
+  const filteredRows = useMemo(() => {
+    if (!hasActiveColumnFilters) return rows;
+    return rows.filter((r) => rowMatchesAllTableFilters(r, columnFilters, columnFilterTypes));
+  }, [rows, columnFilters, columnFilterTypes, hasActiveColumnFilters]);
+
+  // Apply the effective sort to the (filtered) rows for display. Mixed-type
+  // safe: numbers compare numerically, everything else by locale string;
+  // null/undefined sink to the bottom regardless of direction.
   const sortedRows = useMemo(() => {
-    if (!effectiveSorts || effectiveSorts.length === 0) return rows;
+    if (!effectiveSorts || effectiveSorts.length === 0) return filteredRows;
     const ordered = [...effectiveSorts].sort((a, b) => a.index - b.index);
-    const arr = [...rows];
+    const arr = [...filteredRows];
     arr.sort((ra, rb) => {
       for (const s of ordered) {
         const va = ra?.[s.field];
@@ -302,16 +365,12 @@ export function TableVisualization({
       return 0;
     });
     return arr;
-  }, [rows, effectiveSorts]);
+  }, [filteredRows, effectiveSorts]);
 
   // Phase-B22 — during PDF export, render EVERY row (drop the 200-cap) so the
   // exporter captures the full table.
   const exporting = useExportMode();
   const displayRows = exporting ? sortedRows : sortedRows.slice(0, maxRows);
-  const numericColumns = useMemo(
-    () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
-    [cols, rows],
-  );
 
   useEffect(() => {
     liveColumnWidthsRef.current = liveColumnWidths;
@@ -424,9 +483,17 @@ export function TableVisualization({
 
     return cols.find((col) => !numericColumns.includes(col)) ?? '';
   }, [cols, numericColumns, summaryLabelColumn]);
+  // Heatmap / conditional stats + summaries compute over the FILTERED rows so
+  // the coloring and totals reflect exactly what the viewer sees (Excel parity).
   const heatmapStats = useMemo(
-    () => buildTableHeatmapStats(rows, heatmapRules),
-    [heatmapRules, rows],
+    () => buildTableHeatmapStats(filteredRows, heatmapRules),
+    [heatmapRules, filteredRows],
+  );
+  // Column stats for conditional rules that scale to the column (percentile,
+  // percentage, data bars). Built once per (rows, rules) — see getCellStyle.
+  const conditionalStats = useMemo(
+    () => buildConditionalStats(filteredRows, conditionalFormatting),
+    [conditionalFormatting, filteredRows],
   );
   const resolvedSummaryRows = useMemo<TableSummaryRowConfig[]>(() => {
     if (showSummaryRow === false) {
@@ -475,12 +542,12 @@ export function TableVisualization({
           return;
         }
 
-        totalRow[col] = calculateSummaryValue(rows, col, summaryRow.calculation ?? 'sum');
+        totalRow[col] = calculateSummaryValue(filteredRows, col, summaryRow.calculation ?? 'sum');
       });
 
       return totalRow;
     });
-  }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, rows]);
+  }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, filteredRows]);
 
   if (cols.length === 0 || rows.length === 0) {
     return (
@@ -556,6 +623,26 @@ export function TableVisualization({
     setActiveResizeColumn(column);
   };
 
+  // ── Column-filter handlers ────────────────────────────────────────────────
+  const openColumnFilter = (column: string, anchor: HTMLElement) => {
+    setFilterAnchorRect(anchor.getBoundingClientRect());
+    setOpenFilterCol((current) => (current === column ? null : column));
+  };
+  const updateColumnFilter = (column: string, next: TableColumnFilter) => {
+    setColumnFilters((prev) => ({ ...prev, [column]: next }));
+  };
+  const clearColumnFilter = (column: string) => {
+    setColumnFilters((prev) => {
+      const rest = { ...prev };
+      delete rest[column];
+      return rest;
+    });
+  };
+  const clearAllColumnFilters = () => {
+    setColumnFilters({});
+    setOpenFilterCol(null);
+  };
+
   const allColumnWidthsResolved = cols.every((col) => typeof liveColumnWidths[col] === 'number' && liveColumnWidths[col] > 0);
   const tableWidth = allColumnWidthsResolved
     ? cols.reduce((total, col) => total + liveColumnWidths[col], 0)
@@ -607,6 +694,28 @@ export function TableVisualization({
                         {lookupColumnLabel(col, columnLabels)}
                       </span>
                       {getSortIndicator(col)}
+                      {enableColumnFilters && (
+                        <button
+                          type="button"
+                          aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
+                          title="Filter column"
+                          className={clsx(
+                            "ml-0.5 shrink-0 rounded p-0.5 transition-colors",
+                            isTableColumnFilterActive(columnFilters[col])
+                              ? "text-brand"
+                              : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 hover:text-text-secondary",
+                            openFilterCol === col && "text-brand opacity-100",
+                          )}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openColumnFilter(col, event.currentTarget);
+                          }}
+                        >
+                          <FilterIcon
+                            className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
+                          />
+                        </button>
+                      )}
                     </div>
 
                     {enableColumnResize && (
@@ -650,22 +759,51 @@ export function TableVisualization({
                   const cellValue = row[col];
                   const alignment = getColumnAlignment(col, columnAlignments);
                   const heatmapStyle = getHeatmapCellStyle(cellValue, col, heatmapRules, heatmapStats);
-                  const conditionalStyle = getCellStyle(cellValue, col, conditionalFormatting, row);
-                  const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
+                  const cf = getCellStyle(cellValue, col, conditionalFormatting, row, conditionalStats);
+                  // Color/background: conditional rule wins; else heatmap fallback.
+                  const colorStyle = (cf.color || cf.backgroundColor)
+                    ? { color: cf.color, backgroundColor: cf.backgroundColor }
+                    : heatmapStyle;
+                  const dataBar = cf.dataBar;
+                  const IconGlyph = cf.icon ? CF_ICONS[cf.icon.key] : undefined;
                   const hyperlinkRule = hyperlinkRuleByColumn[col];
                   const safeHref = hyperlinkRule ? resolveRuleHref(hyperlinkRule, row) : null;
                   const displayValue = formatCellValue(cellValue, { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
-                  
+
                   return (
                     <td
                       key={col}
                       className="border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top"
                       style={{
-                        ...style,
+                        ...colorStyle,
                         textAlign: alignment,
+                        position: dataBar ? 'relative' : undefined,
                       }}
                     >
-                      <div className="break-words">
+                      {dataBar && (
+                        <div
+                          aria-hidden
+                          className="pointer-events-none absolute inset-y-1.5 left-2 right-2 flex items-center"
+                        >
+                          <div
+                            style={{
+                              width: `${Math.max(2, dataBar.ratio * 100)}%`,
+                              height: '100%',
+                              backgroundColor: dataBar.color,
+                              opacity: 0.28,
+                              borderRadius: 3,
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div className={clsx('relative break-words', IconGlyph && 'inline-flex items-center gap-1.5')}>
+                        {IconGlyph && (
+                          <IconGlyph
+                            className="h-3.5 w-3.5 shrink-0"
+                            style={cf.icon?.color ? { color: cf.icon.color } : undefined}
+                            aria-hidden
+                          />
+                        )}
                         {safeHref ? (
                           <a
                             href={safeHref}
@@ -719,16 +857,45 @@ export function TableVisualization({
             </tfoot>
           )}
         </table>
-      
-      {!exporting && rows.length > maxRows && (
-        <div className="px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
-          Showing {maxRows} of {rows.length} rows
-          {summaryRowsData.length > 0 ? ` | Summary uses all ${rows.length} rows` : ''}
+
+      {!exporting && (rows.length > maxRows || hasActiveColumnFilters) && (
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
+          <span>
+            Showing {displayRows.length} of {filteredRows.length}
+            {hasActiveColumnFilters ? ` (filtered from ${rows.length})` : ''} rows
+            {summaryRowsData.length > 0 ? ` | Summary uses ${filteredRows.length} row${filteredRows.length === 1 ? '' : 's'}` : ''}
+          </span>
+          {hasActiveColumnFilters && (
+            <button
+              type="button"
+              onClick={clearAllColumnFilters}
+              className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-0.5 font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              <XIcon className="h-3 w-3" /> Clear all filters
+            </button>
+          )}
         </div>
+      )}
+
+      {/* Column-filter popover — portal to <body> so the table's overflow clip
+          never truncates it. */}
+      {enableColumnFilters && openFilterCol && filterAnchorRect && (
+        <ColumnFilterPopover
+          key={openFilterCol}
+          label={lookupColumnLabel(openFilterCol, columnLabels)}
+          type={columnFilterTypes[openFilterCol] ?? 'text'}
+          filter={columnFilters[openFilterCol] ?? EMPTY_TABLE_COLUMN_FILTER}
+          distinctValues={distinctTableColumnValues(rows, openFilterCol)}
+          anchorRect={filterAnchorRect}
+          onChange={(next) => updateColumnFilter(openFilterCol, next)}
+          onClear={() => clearColumnFilter(openFilterCol)}
+          onClose={() => setOpenFilterCol(null)}
+        />
       )}
     </div>
   );
 }
+
 
 function resolveSummaryLabelColumn(
   labelColumn: string | undefined,
@@ -786,11 +953,13 @@ function calculateSummaryValue(
 function formatNumericCellValue(
   value: number,
   options: {
-    numberFormat?: NumberFormat;
+    numberFormat?: TableCellFormat;
     decimalPlaces?: number;
     currencySymbol?: string;
   },
 ): string {
+  // Only number formats reach here (formatCellValue intercepts date kinds); a
+  // stray date kind harmlessly falls through to the default toLocaleString.
   const format = options.numberFormat ?? 'auto';
   const decimalPlaces = options.decimalPlaces ?? 1;
   const currencySymbol = options.currencySymbol || '$';
@@ -822,7 +991,7 @@ function formatNumericCellValue(
 function formatCellValue(
   value: any,
   options: {
-    numberFormat?: NumberFormat;
+    numberFormat?: TableCellFormat;
     decimalPlaces?: number;
     currencySymbol?: string;
   } = {},
@@ -837,6 +1006,13 @@ function formatCellValue(
 
   if (typeof value === 'boolean') {
     return value ? 'Yes' : 'No';
+  }
+
+  // A DATE column format wins first — so a date is ALWAYS rendered as a date,
+  // never mangled by the numeric branch below (e.g. a YYYYMMDD int → "20,240,324"
+  // or a numeric year → "2,024"). formatDateCellValue leaves non-dates as-is.
+  if (isDateFormatKind(options.numberFormat)) {
+    return formatDateCellValue(value, options.numberFormat);
   }
 
   const numericValue = parseNumericCellValue(value);

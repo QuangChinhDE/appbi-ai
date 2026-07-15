@@ -5,6 +5,7 @@ import { Bot, ChevronDown, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input, Textarea } from '@/components/ui/Input';
+import { AiButton } from '@/components/ui/AiButton';
 import { dashboardApi } from '@/lib/api/dashboards';
 
 // Dedicated AI-analyst setup for a public link. Split out of the appearance
@@ -30,14 +31,15 @@ const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'gpt-4o-mini', label: 'GPT-4o mini (cheap, fast)' },
   ],
   anthropic: [
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
-    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (strongest)' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (cheap, fast)' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5 (recommended)' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (strongest)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (cheap, fast)' },
   ],
   gemini: [
-    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (cheap, fast)' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recommended)' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (cheap, fast)' },
   ],
 };
 
@@ -270,16 +272,14 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
                 <label className="block text-tiny font-strong text-text-secondary">
                   System prompt — điều hướng AI đọc báo cáo
                 </label>
-                <button
-                  type="button"
+                <AiButton
+                  size="xs"
                   onClick={handleGenerate}
-                  disabled={generating}
-                  className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2 py-1 text-tiny font-emphasis text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  loading={generating}
                   title="Để AI đọc báo cáo và viết nháp system prompt (bạn có thể sửa lại)"
                 >
-                  {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-                  {generating ? 'Đang đọc báo cáo…' : 'AI đọc & viết giúp'}
-                </button>
+                  AI đọc &amp; viết giúp
+                </AiButton>
               </div>
               {genError && <p className="mb-1 text-tiny text-danger">{genError}</p>}
               <Textarea

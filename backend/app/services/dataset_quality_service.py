@@ -97,6 +97,7 @@ RULE_TYPE_LEVEL: Dict[str, str] = {
     "freshness_days": "table",
     "row_count_range": "table",
     "statistical_range": "column",
+    "schema_drift": "table",
     "custom_sql": "table",
 }
 
@@ -116,6 +117,7 @@ RULE_TYPE_DIMENSION: Dict[str, str] = {
     "freshness_days": "timeliness",
     "row_count_range": "accuracy",
     "statistical_range": "accuracy",
+    "schema_drift": "consistency",
     "custom_sql": "accuracy",
 }
 
@@ -868,7 +870,9 @@ def _normalize_quality_config(
     if not isinstance(raw, dict):
         raw = {}
 
-    if rule_type in {"not_null", "not_blank", "unique_column"}:
+    if rule_type in {"not_null", "not_blank", "unique_column", "schema_drift"}:
+        # schema_drift needs no user config — the baseline column fingerprint is
+        # captured automatically on the rule's first run.
         return {}
 
     if rule_type == "completeness_pct":
@@ -1196,6 +1200,11 @@ _RULE_DESCRIPTION_TEMPLATES: Dict[str, Dict[str, str]] = {
         "fail": '"{col}" has outliers beyond z-score bounds',
         "scope": "Column-level — z-score outlier detection",
     },
+    "schema_drift": {
+        "pass": "Table schema matches the captured baseline",
+        "fail": "Table schema changed — columns added / removed / retyped",
+        "scope": "Table-level — compares column fingerprint to a baseline",
+    },
     "custom_sql": {
         "pass": "Custom query returns rows_failed = 0",
         "fail": "Custom query found failing rows",
@@ -1271,6 +1280,11 @@ class DatasetQualityService:
         )
         if not table:
             return {"error": "Table not found", "sql": None, **_build_description(rule_type, column_name, config)}
+
+        # Schema-drift is a metadata check (no SQL) — the baseline is captured on
+        # the rule's first real run, so there is nothing to preview as SQL.
+        if (_clean_optional_str(rule_type) or "").lower() == "schema_drift":
+            return {"sql": None, **_build_description("schema_drift", None, config), "error": None}
 
         descs = _build_description(rule_type, column_name, config)
 
@@ -2004,6 +2018,50 @@ class DatasetQualityService:
         )
 
     @staticmethod
+    def _schema_fingerprint(table: DatasetTable) -> List[Dict[str, str]]:
+        """Stable [{name,type}] list from the table's cached schema."""
+        cache = table.columns_cache or {}
+        cols = cache.get("columns") if isinstance(cache, dict) else None
+        out: List[Dict[str, str]] = []
+        for c in (cols or []):
+            if isinstance(c, dict) and c.get("name"):
+                out.append({"name": str(c["name"]), "type": str(c.get("type") or c.get("dtype") or "")})
+        out.sort(key=lambda x: x["name"].lower())
+        return out
+
+    @staticmethod
+    def _check_schema_drift(db, rule, db_table, log) -> Dict[str, Any]:
+        """Compare the table's current column fingerprint to a stored baseline.
+        On first run, capture the baseline (into rule.config) and pass; afterwards
+        fail when columns are added / removed / retyped."""
+        current = DatasetQualityService._schema_fingerprint(db_table)
+        cfg = dict(rule.config or {})
+        baseline = cfg.get("baseline_columns")
+        if not baseline:
+            cfg["baseline_columns"] = current
+            rule.config = cfg
+            if getattr(rule, "id", 0):  # real (persisted) rule — not the test SimpleNamespace
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            log(f"Baseline captured ({len(current)} columns)")
+            return {"passed": True, "rows_checked": len(current), "rows_failed": 0,
+                    "detail": f"Baseline captured ({len(current)} columns)"}
+        prev_map = {c["name"]: c.get("type", "") for c in baseline}
+        cur_map = {c["name"]: c.get("type", "") for c in current}
+        added = [n for n in cur_map if n not in prev_map]
+        removed = [n for n in prev_map if n not in cur_map]
+        retyped = [{"column": n, "from": prev_map[n], "to": cur_map[n]}
+                   for n in cur_map if n in prev_map and prev_map[n] != cur_map[n]]
+        changes = len(added) + len(removed) + len(retyped)
+        log(f"Schema drift: +{len(added)} / -{len(removed)} / ~{len(retyped)}")
+        detail = (f"+{len(added)} added / -{len(removed)} removed / ~{len(retyped)} retyped"
+                  if changes else "Schema unchanged")
+        return {"passed": changes == 0, "rows_checked": len(current), "rows_failed": changes,
+                "detail": detail, "added": added, "removed": removed, "retyped": retyped}
+
+    @staticmethod
     def _execute_single_rule(
         db: Session,
         dataset_obj: Dataset,
@@ -2039,6 +2097,11 @@ class DatasetQualityService:
             })
 
         _log(f"Table: '{db_table.display_name or db_table.source_table_name}' (kind={db_table.source_kind})")
+
+        # Schema-drift: pure metadata comparison (no warehouse query). Handle it
+        # before source resolution so it works on any table kind.
+        if rule.rule_type == "schema_drift":
+            return _result(DatasetQualityService._check_schema_drift(db, rule, db_table, _log))
 
         if db_table.source_kind == "generated_calendar":
             _log("SKIP: Calendar table — no data to check")

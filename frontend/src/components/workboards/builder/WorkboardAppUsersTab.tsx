@@ -44,6 +44,7 @@ import {
   normalizeAppUserRole,
 } from './appUserRoles';
 import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
   workboard: Workboard;
@@ -417,6 +418,7 @@ function renderContextSummary(
 function renderHierarchySummary(
   context: Record<string, unknown>,
   directReports: string[] = [],
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): string {
   const manager = firstStringFromContext(context.manager_username, context.reports_to);
   const adminBranches = stringListFromContext(
@@ -426,11 +428,17 @@ function renderHierarchySummary(
     context.scope_usernames ?? context.managed_usernames ?? context.visible_usernames,
   );
   const parts: string[] = [];
-  if (manager) parts.push(`reports to ${manager}`);
-  if (directReports.length > 0) parts.push(`direct users: ${directReports.join(', ')}`);
-  if (adminBranches.length > 0) parts.push(`admin branches: ${adminBranches.join(', ')}`);
-  if (explicitUsers.length > 0) parts.push(`extra users: ${explicitUsers.join(', ')}`);
-  return parts.join(' | ') || 'self only';
+  if (manager) parts.push(t('workboards.users.reportsTo', { username: manager }));
+  if (directReports.length > 0) {
+    parts.push(t('workboards.users.directUsers', { users: directReports.join(', ') }));
+  }
+  if (adminBranches.length > 0) {
+    parts.push(t('workboards.users.adminBranches', { users: adminBranches.join(', ') }));
+  }
+  if (explicitUsers.length > 0) {
+    parts.push(t('workboards.users.extraUsers', { users: explicitUsers.join(', ') }));
+  }
+  return parts.join(' | ') || t('workboards.users.selfOnly');
 }
 
 function mergeInitialAccessValue(
@@ -451,6 +459,7 @@ function isOwnerUsingDefaultPin(user: WorkboardAppUserResponse): boolean {
 }
 
 export default function WorkboardAppUsersTab({ workboard }: Props) {
+  const { t } = useI18n();
   const [users, setUsers] = useState<WorkboardAppUserResponse[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [loadingAccess, setLoadingAccess] = useState(true);
@@ -588,9 +597,9 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
     try {
       await workboardApi.setTableMiniappShare(workboard.id, tableId, shared);
       await loadAudit();
-      toast.success(shared ? 'Đã đánh dấu là shared.' : 'Đã bỏ shared.');
+      toast.success(shared ? t('workboards.users.sharedMarked') : t('workboards.users.sharedUnmarked'));
     } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Không cập nhật được flag shared.'));
+      toast.error(getApiErrorMessage(err, t('workboards.users.sharedUpdateFailed')));
     }
   };
 
@@ -629,12 +638,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
     <div className="flex h-full flex-col bg-surface-0">
       <div className="flex items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
         <UserCircle2 className="h-4 w-4 text-text-tertiary" />
-        <h2 className="text-sm font-medium text-text-primary">App users</h2>
+        <h2 className="text-sm font-medium text-text-primary">{t('workboards.users.title')}</h2>
         <span className="text-caption text-text-tertiary">
-          {users.length} {users.length === 1 ? 'user' : 'users'} can sign in to this mini-app
+          {t(users.length === 1 ? 'workboards.users.countOne' : 'workboards.users.countMany', { count: users.length })}
         </span>
         <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-text-secondary">
-          Mini-app roles: user / admin / owner
+          {t('workboards.users.rolesHint')}
         </span>
         <div className="flex-1" />
         <div className="relative">
@@ -642,12 +651,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search username, name, role..."
+            placeholder={t('workboards.users.searchPlaceholder')}
             className="h-7 w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-7 pr-2 text-caption"
           />
         </div>
         <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setEditing('new')}>
-          Add user
+          {t('workboards.users.addUser')}
         </Button>
       </div>
 
@@ -674,11 +683,11 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
-                Default owner{' '}
+                {t('workboards.users.defaultOwnerPrefix')}{' '}
                 <strong>
                   {ownersUsingDefaultPin.map((user) => user.username).join(', ')}
                 </strong>{' '}
-                is still using the default PIN <strong>123456</strong>. Change the PIN in edit user.
+                {t('workboards.users.defaultOwnerMiddle')} <strong>123456</strong>. {t('workboards.users.defaultOwnerSuffix')}
               </div>
             </div>
           </div>
@@ -697,8 +706,8 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             <UserCircle2 className="mx-auto h-8 w-8 text-text-quaternary" />
             <p className="mt-2 text-caption text-text-secondary">
               {users.length === 0
-                ? 'No users yet. Click "Add user" to create the first account.'
-                : 'No users match the search.'}
+                ? t('workboards.users.empty')
+                : t('workboards.users.noMatches')}
             </p>
           </div>
         ) : (
@@ -706,13 +715,13 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             <table className="w-full text-caption">
               <thead className="border-b border-[rgb(var(--border-line))] bg-surface-2 text-caption text-text-tertiary">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Username</th>
-                  <th className="px-3 py-2 text-left font-medium">Full name</th>
-                  <th className="px-3 py-2 text-left font-medium">Role</th>
-                  <th className="px-3 py-2 text-left font-medium">Mini-app scope</th>
-                  <th className="px-3 py-2 text-left font-medium">RLS context</th>
-                  <th className="px-3 py-2 text-left font-medium">Active</th>
-                  <th className="px-3 py-2 text-right font-medium">Actions</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.username')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.fullName')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.role')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.miniappScope')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.rlsContext')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('workboards.users.active')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('workboards.users.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -726,7 +735,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                         <span>{user.username}</span>
                         {isOwnerUsingDefaultPin(user) && (
                           <span
-                            title="This owner is still using the default PIN 123456"
+                            title={t('workboards.users.defaultPinTitle')}
                             className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] font-bold leading-none text-white"
                           >
                             !
@@ -746,10 +755,11 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                     </td>
                     <td className="max-w-[280px] px-3 py-2 text-caption text-text-tertiary">
                       {isOwnerAppUserRole(user.role)
-                        ? 'full access'
+                        ? t('workboards.users.fullAccess')
                         : renderHierarchySummary(
                             user.context || {},
                             directReportsByUsername.get(user.username) || [],
+                            t,
                           )}
                     </td>
                     <td className="max-w-[320px] px-3 py-2 text-caption text-text-tertiary">
@@ -759,14 +769,14 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                       {user.active ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                       ) : (
-                        <span className="text-caption text-text-tertiary">off</span>
+                        <span className="text-caption text-text-tertiary">{t('workboards.users.off')}</span>
                       )}
                       {!user.has_pin && (
                         <span
-                          title="No PIN yet; an admin must reset it before this user can sign in"
+                          title={t('workboards.users.noPinTitle')}
                           className="ml-1.5 inline-flex rounded bg-warning/10 px-1.5 py-0.5 text-caption text-warning"
                         >
-                          no PIN
+                          {t('workboards.users.noPin')}
                         </span>
                       )}
                     </td>
@@ -774,14 +784,14 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                       <button
                         onClick={() => setEditing(user)}
                         className="mr-1 rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-                        title="Edit"
+                        title={t('workboards.users.edit')}
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => setPendingDelete(user)}
                         className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
-                        title="Delete"
+                        title={t('workboards.users.delete')}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -816,12 +826,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
         <Modal
           isOpen
           onClose={() => setPendingDelete(null)}
-          title={`Delete user "${pendingDelete.username}"?`}
+          title={t('workboards.users.deleteTitle', { username: pendingDelete.username })}
           size="sm"
           footer={
             <>
               <Button variant="ghost" size="sm" onClick={() => setPendingDelete(null)}>
-                Cancel
+                {t('workboards.users.cancel')}
               </Button>
               <Button
                 variant="danger"
@@ -829,21 +839,21 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                 onClick={async () => {
                   try {
                     await workboardApi.deleteAppUser(workboard.id, pendingDelete.id);
-                    toast.success('User deleted');
+                    toast.success(t('workboards.users.deletedToast'));
                     setPendingDelete(null);
                     void loadUsers();
                   } catch (err) {
-                    toast.error(getApiErrorMessage(err, 'Delete failed.'));
+                    toast.error(getApiErrorMessage(err, t('workboards.users.deleteFailed')));
                   }
                 }}
               >
-                Delete
+                {t('workboards.users.delete')}
               </Button>
             </>
           }
         >
           <p className="text-body text-text-secondary">
-            This account will no longer be able to sign in. This action cannot be undone.
+            {t('workboards.users.deleteDescription')}
           </p>
         </Modal>
       )}
@@ -874,6 +884,7 @@ function AppUserEditModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useI18n();
   const isCreate = user === null;
   const normalizedExistingRole = normalizeAppUserRole(user?.role) || 'user';
   const roleOptions = useMemo(
@@ -1017,17 +1028,17 @@ function AppUserEditModal({
   const handleSave = async () => {
     setError(null);
     if (!username.trim()) {
-      setError('Username is required.');
+      setError(t('workboards.users.usernameRequired'));
       return;
     }
     if (isCreate && !pin) {
-      setError('PIN is required when creating a new user.');
+      setError(t('workboards.users.pinRequired'));
       return;
     }
     const cleanUsername = username.trim();
     const cleanManagerUsername = managerUsername.trim();
     if (cleanManagerUsername && cleanManagerUsername === cleanUsername) {
-      setError('Manager username cannot be the same as this user.');
+      setError(t('workboards.users.managerCannotSelf'));
       return;
     }
 
@@ -1065,7 +1076,7 @@ function AppUserEditModal({
           context,
         };
         await workboardApi.createAppUser(workboardId, payload);
-        toast.success('User created');
+        toast.success(t('workboards.users.createdToast'));
       } else {
         const payload: WorkboardAppUserUpdate = {
           username: cleanUsername,
@@ -1076,11 +1087,11 @@ function AppUserEditModal({
         };
         if (pin) payload.pin = pin;
         await workboardApi.updateAppUser(workboardId, user!.id, payload);
-        toast.success('User updated');
+        toast.success(t('workboards.users.updatedToast'));
       }
       onSaved();
     } catch (err: unknown) {
-      setError(getApiErrorMessage(err, 'Save failed.'));
+      setError(getApiErrorMessage(err, t('workboards.users.saveFailed')));
     } finally {
       setSubmitting(false);
     }
@@ -1095,16 +1106,16 @@ function AppUserEditModal({
     <Modal
       isOpen
       onClose={onClose}
-      title={isCreate ? 'Create user' : `Edit user "${user?.username}"`}
+      title={isCreate ? t('workboards.users.createTitle') : t('workboards.users.editTitle', { username: user?.username || '' })}
       size="xl"
       contentClassName="h-[80vh]"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
+            {t('workboards.users.cancel')}
           </Button>
           <Button variant="primary" size="sm" onClick={handleSave} loading={submitting} disabled={submitting}>
-            {isCreate ? 'Create' : 'Save'}
+            {isCreate ? t('workboards.users.create') : t('workboards.users.save')}
           </Button>
         </>
       }
@@ -1112,27 +1123,27 @@ function AppUserEditModal({
       <div className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="block">
-            <span className="mb-1 block text-caption font-medium text-text-secondary">Username *</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">{t('workboards.users.usernameRequiredLabel')}</span>
             <Input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="e.g. cn01"
+              placeholder={t('workboards.users.usernamePlaceholder')}
               autoFocus={isCreate}
             />
           </label>
           <label className="block">
             <span className="mb-1 block text-caption font-medium text-text-secondary">
-              {isCreate ? 'PIN *' : 'PIN (blank = keep current)'}
+              {isCreate ? t('workboards.users.pinCreateLabel') : t('workboards.users.pinEditLabel')}
             </span>
             <Input
               type="password"
               value={pin}
               onChange={(event) => setPin(event.target.value)}
-              placeholder={isCreate ? 'Sign-in PIN' : 'Set a new PIN...'}
+              placeholder={isCreate ? t('workboards.users.pinCreatePlaceholder') : t('workboards.users.pinEditPlaceholder')}
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-caption font-medium text-text-secondary">Full name</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">{t('workboards.users.fullName')}</span>
             <Input
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
@@ -1140,7 +1151,7 @@ function AppUserEditModal({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-caption font-medium text-text-secondary">Role</span>
+            <span className="mb-1 block text-caption font-medium text-text-secondary">{t('workboards.users.role')}</span>
             <select
               value={role}
               onChange={(event) => setRole(event.target.value)}
@@ -1163,25 +1174,25 @@ function AppUserEditModal({
             onChange={(event) => setActive(event.target.checked)}
             className="h-3.5 w-3.5"
           />
-          Active (allow sign-in)
+          {t('workboards.users.activeAllowSignin')}
         </label>
 
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="mb-2">
-            <h3 className="text-caption font-medium text-text-secondary">Mini-app hierarchy</h3>
+            <h3 className="text-caption font-medium text-text-secondary">{t('workboards.users.hierarchyTitle')}</h3>
             <p className="text-caption text-text-tertiary">
-              This controls mini-app row scope only. AppBI dataset permissions are checked before a builder can connect the dataset.
+              {t('workboards.users.hierarchyDescription')}
             </p>
             {isOwnerAppUserRole(role) && (
               <p className="mt-1 text-caption text-success">
-                Owner has full access in the mini-app; hierarchy fields are ignored for RLS.
+                {t('workboards.users.ownerIgnoresHierarchy')}
               </p>
             )}
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <label className="block">
               <span className="mb-1 block text-caption font-medium text-text-secondary">
-                Direct manager
+                {t('workboards.users.directManager')}
               </span>
               <SingleColumnPicker
                 sourceColumns={managerOptions}
@@ -1189,19 +1200,19 @@ function AppUserEditModal({
                 onChange={(next) => setManagerUsername(next || '')}
                 placeholder={
                   managerOptions.length === 0
-                    ? 'No other users yet'
-                    : 'Pick a manager…'
+                    ? t('workboards.users.noOtherUsers')
+                    : t('workboards.users.pickManager')
                 }
-                emptyHint="No matching users."
+                emptyHint={t('workboards.users.noMatchingUsers')}
                 labelByValue={userLabelByUsername}
               />
               <p className="mt-1 text-caption text-text-tertiary">
-                This user becomes part of that manager&apos;s scope.
+                {t('workboards.users.directManagerHint')}
               </p>
             </label>
             <label className="block">
               <span className="mb-1 block text-caption font-medium text-text-secondary">
-                Admin branches this user can view
+                {t('workboards.users.adminBranchesLabel')}
               </span>
               <MultiColumnPicker
                 sourceColumns={adminBranchOptions}
@@ -1209,18 +1220,18 @@ function AppUserEditModal({
                 onChange={setScopeAdminUsernames}
                 placeholder={
                   adminBranchOptions.length === 0
-                    ? 'No admins/owners yet'
-                    : 'Pick admin branches…'
+                    ? t('workboards.users.noAdminsOwners')
+                    : t('workboards.users.pickAdminBranches')
                 }
-                emptyHint="No matching admins."
+                emptyHint={t('workboards.users.noMatchingAdmins')}
               />
               <p className="mt-1 text-caption text-text-tertiary">
-                Includes those admins and every user under them.
+                {t('workboards.users.adminBranchesHint')}
               </p>
             </label>
             <label className="block">
               <span className="mb-1 block text-caption font-medium text-text-secondary">
-                Extra visible usernames
+                {t('workboards.users.extraVisibleUsernames')}
               </span>
               <MultiColumnPicker
                 sourceColumns={managerOptions}
@@ -1228,13 +1239,13 @@ function AppUserEditModal({
                 onChange={setScopeUsernames}
                 placeholder={
                   managerOptions.length === 0
-                    ? 'No other users yet'
-                    : 'Pick extra users…'
+                    ? t('workboards.users.noOtherUsers')
+                    : t('workboards.users.pickExtraUsers')
                 }
-                emptyHint="No matching users."
+                emptyHint={t('workboards.users.noMatchingUsers')}
               />
               <p className="mt-1 text-caption text-text-tertiary">
-                Optional direct grants beyond the manager tree.
+                {t('workboards.users.extraUsersHint')}
               </p>
             </label>
           </div>
@@ -1242,13 +1253,13 @@ function AppUserEditModal({
 
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="mb-2">
-            <h3 className="text-caption font-medium text-text-secondary">RLS context fields</h3>
+            <h3 className="text-caption font-medium text-text-secondary">{t('workboards.users.rlsFieldsTitle')}</h3>
             <p className="text-caption text-text-tertiary">
-              Non-hierarchy placeholders from RLS appear here. Pick values directly from data instead of typing them by hand.
+              {t('workboards.users.rlsFieldsDescription')}
             </p>
             {isOwnerAppUserRole(role) && (
               <p className="mt-1 text-caption text-success">
-                Owner has full access in the mini-app. The fields below are optional context only.
+                {t('workboards.users.ownerOptionalContext')}
               </p>
             )}
           </div>
@@ -1262,11 +1273,11 @@ function AppUserEditModal({
           {loadingAccess ? (
             <div className="flex items-center gap-2 text-caption text-text-tertiary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Loading access options from the dataset...
+              {t('workboards.users.loadingAccessOptions')}
             </div>
           ) : effectiveAccessFields.length === 0 ? (
             <p className="text-caption text-text-tertiary">
-              No access fields were detected from RLS. You can still use additional context below.
+              {t('workboards.users.noAccessFields')}
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1293,7 +1304,7 @@ function AppUserEditModal({
                         }}
                         className="h-9 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 text-caption"
                       >
-                        <option value="">— Pick a value —</option>
+                        <option value="">{t('workboards.users.pickValue')}</option>
                         {field.options.map((option) => (
                           <option key={option.key} value={option.key}>
                             {option.label}
@@ -1309,14 +1320,14 @@ function AppUserEditModal({
                             [field.key]: event.target.value,
                           }))
                         }
-                        placeholder={`Enter ${field.label.toLowerCase()}`}
+                        placeholder={t('workboards.users.enterField', { label: field.label.toLowerCase() })}
                       />
                     )}
                     <p className="mt-1 text-caption text-text-tertiary">
-                      Used by role: {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
+                      {t('workboards.users.usedByRole')} {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
                     </p>
                     <p className="text-caption text-text-quaternary">
-                      Source: {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
+                      {t('workboards.users.sourceLabel')} {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
                     </p>
                   </label>
                 );
@@ -1328,19 +1339,19 @@ function AppUserEditModal({
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-caption font-medium text-text-secondary">
-              Additional context (advanced)
+              {t('workboards.users.additionalContext')}
             </span>
             <button
               type="button"
               onClick={addRow}
               className="inline-flex items-center gap-1 text-caption text-brand hover:underline"
             >
-              <Plus className="h-3 w-3" /> Add key
+              <Plus className="h-3 w-3" /> {t('workboards.users.addKey')}
             </button>
           </div>
           {contextRows.length === 0 ? (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 p-2 text-caption text-text-tertiary">
-              No additional context.
+              {t('workboards.users.noAdditionalContext')}
             </p>
           ) : (
             <div className="space-y-1">
@@ -1361,7 +1372,7 @@ function AppUserEditModal({
                   <button
                     onClick={() => removeRow(index)}
                     className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
-                    title="Delete row"
+                    title={t('workboards.users.deleteRow')}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -1371,7 +1382,7 @@ function AppUserEditModal({
           )}
           {advancedSuggestions.length > 0 && (
             <p className="mt-1 text-caption text-text-tertiary">
-              Suggested from layout: {advancedSuggestions.map((key) => (
+              {t('workboards.users.suggestedFromLayout')} {advancedSuggestions.map((key) => (
                 <code key={key} className="mx-0.5 rounded bg-surface-2 px-1">{key}</code>
               ))}
             </p>

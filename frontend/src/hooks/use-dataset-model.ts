@@ -271,7 +271,7 @@ export async function fetchDatasetModelDistinctValues(
   return response.data;
 }
 
-export async function fetchDatasetModelJoinSuggestion(
+async function fetchDatasetModelJoinSuggestion(
   datasetId: number,
   params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn' | 'fromColumns' | 'toColumns'>,
 ) {
@@ -482,34 +482,6 @@ export async function previewMeasure(args: {
     { measure, group_by: groupBy || undefined },
   );
   return response.data;
-}
-
-/**
- * Update model relationships
- */
-export function useUpdateModelExplore() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async ({
-      datasetId,
-      exploreId,
-      data,
-    }: {
-      datasetId: number;
-      exploreId: number;
-      data: Partial<Pick<DatasetModelExplore, 'joins' | 'description'>>;
-    }) => {
-      const response = await api.put(
-        `/datasets/${datasetId}/model/explores/${exploreId}`,
-        data
-      );
-      return response.data;
-    },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
-    },
-  });
 }
 
 export function useDatasetModelJoinSuggestion(

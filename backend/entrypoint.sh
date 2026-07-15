@@ -63,6 +63,39 @@ done
 
 echo "==> PostgreSQL is up"
 
+# ── Check the pgvector extension before migrations (check-only) ─────────────
+# The application DB account is USE-ONLY — it must never create extensions. We
+# only VERIFY that 'vector' (pgvector) is present. If it is missing, stop with a
+# clear message asking a superuser/admin account to install it once, instead of
+# crash-looping through a deep migration stacktrace. For the bundled local-db,
+# the extension is provisioned by the db container's own init (as the postgres
+# superuser) — see scripts/db-init/01-init-pgvector.sql — not by this app.
+echo "==> Checking pgvector extension..."
+python - <<'PYEOF'
+import os, sys
+from sqlalchemy import create_engine, text
+try:
+    with create_engine(os.environ["DATABASE_URL"]).connect() as c:
+        present = c.execute(text("SELECT 1 FROM pg_extension WHERE extname='vector'")).scalar()
+except Exception as e:
+    print(f"==> WARNING: could not check pgvector ({e}); continuing to migrations.")
+    sys.exit(0)
+if present:
+    print("==> pgvector present.")
+    sys.exit(0)
+sys.stderr.write(
+    "\n" + "=" * 72 + "\n"
+    "STOP: the 'vector' (pgvector) extension is not installed on this database.\n"
+    "This application account is use-only and will NOT create it.\n\n"
+    "Ask a Postgres SUPERUSER / admin account to run ONCE on this database:\n"
+    "    CREATE EXTENSION vector;\n"
+    "then restart:  ./run.sh --recreate\n"
+    "(If the extension is unavailable server-side, install pgvector on the PG\n"
+    " server / enable it in the managed instance first.)\n"
+    + "=" * 72 + "\n")
+sys.exit(1)
+PYEOF
+
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 
@@ -155,5 +188,11 @@ PYEOF
 # every public-link request as coming from 127.0.0.1 on prod, and one
 # busy dashboard (e.g. an HTML-imported one with many tiles) exhausts
 # the shared rate-limit bucket, making chart data silently fail to load.
+# Multiple workers so one slow/heavy request (or a background snapshot rebuild)
+# can't block the whole app (single process = one GIL). Cross-worker request
+# coalescing + the shared sqlite cache (query_cache) keep concurrent identical
+# viewers from each hitting the warehouse. WEB_CONCURRENCY defaults to 1 (prior
+# behaviour) — set it (e.g. 4) on the VM to scale concurrent report viewing.
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    --workers "${WEB_CONCURRENCY:-1}" \
     --proxy-headers --forwarded-allow-ips="*"

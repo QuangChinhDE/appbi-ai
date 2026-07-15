@@ -33,7 +33,28 @@ export interface FormFieldSpec {
     | 'lookup'
     | 'file'
     | 'image'
-    | 'map';
+    | 'map'
+    | 'geopoint'
+    | 'images'
+    | 'signature'
+    | 'barcode'
+    | 'audio'
+    | 'computed'
+    | 'status'
+    | 'email'
+    | 'phone'
+    | 'url'
+    | 'rich_text'
+    | 'enum_list'
+    | 'rating'
+    | 'slider'
+    | 'currency'
+    | 'percent'
+    | 'time'
+    | 'duration'
+    | 'color'
+    | 'video'
+    | 'qr';
   label?: string | null;
   required?: boolean;
   default?: unknown;
@@ -56,6 +77,9 @@ export interface FormFieldSpec {
     lat_column?: string | null;
     lng_column?: string | null;
     basemap?: 'satellite' | 'streets' | 'light' | null;
+    // Cascading select — narrow options by another field's value.
+    filter_by_field?: string | null;
+    filter_column?: string | null;
   } | null;
   section?: string | null;
   page?: number | null;
@@ -66,6 +90,33 @@ export interface FormFieldSpec {
   valid_if_error?: string | null;
   computed_from_dataset?: string | null;
   max_file_kb?: number | null;
+  // Capture / media / measurement extras.
+  capture_only?: boolean | null;
+  max_items?: number | null;
+  unit?: string | null;
+  formula?: string | null;
+  status_config?: {
+    states?: Array<{ value: string; label?: string | null; color?: string | null }>;
+    editable_by_roles?: string[];
+    // Lifecycle guard enforced server-side: from-value -> allowed to-values.
+    allowed_transitions?: Record<string, string[]>;
+  } | null;
+  // Rich input-type config.
+  max_stars?: number | null;
+  allow_half?: boolean | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  step?: number | null;
+  currency_code?: string | null;
+  max_select?: number | null;
+  // QR display (widget='qr').
+  qr_source_column?: string | null;
+  qr_value_template?: string | null;
+  qr_size?: number | null;
+  qr_caption?: string | null;
+  // Scan -> navigate (widget='barcode').
+  scan_go_to_screen?: string | null;
+  scan_carry_as?: string | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -81,6 +132,7 @@ export interface FormScreenSpecBuilt {
   }>;
   sections?: string[];
   ocr?: OcrConfigSpec | null;
+  geo_stamp_column?: string | null;
 }
 
 export interface OcrConfigSpec {
@@ -126,6 +178,29 @@ export interface TableLookupColumnSpec {
   format?: CellFormat | null;
 }
 
+export type TableRollupAgg = 'sum' | 'count' | 'avg' | 'min' | 'max';
+
+export interface TableRollupColumnSpec {
+  name: string;
+  label?: string | null;
+  from_table_id: number;
+  match_column_local: string;
+  match_column_remote: string;
+  agg?: TableRollupAgg;
+  value_column?: string | null;
+  format?: CellFormat | null;
+}
+
+export type FormatRuleColor = 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet';
+
+export interface FormatRuleSpec {
+  when: string;
+  color?: FormatRuleColor;
+  columns?: string[];
+  icon?: string | null;
+  label?: string | null;
+}
+
 export type TableTotalsKind = 'sum' | 'avg' | 'min' | 'max' | 'count';
 
 export interface TableColumnGroupSpec {
@@ -133,12 +208,35 @@ export interface TableColumnGroupSpec {
   columns: string[];
 }
 
+export type TableInputType =
+  | 'text'
+  | 'number'
+  | 'currency'
+  | 'percent'
+  | 'date'
+  | 'datetime'
+  | 'time'
+  | 'checkbox'
+  | 'select'
+  | 'enum_list'
+  | 'rating'
+  | 'color'
+  | 'slider';
+
 export interface TableColumnMetaSpec {
   label?: string | null;
   width_px?: number | null;
   format?: CellFormat | null;
   align?: 'left' | 'center' | 'right' | null;
   merge?: boolean | null;
+  /** Typed inline editor for an editable column. Undefined = plain text. */
+  input_type?: TableInputType | null;
+  options?: Array<{ label: string; value: unknown }> | null;
+  currency_code?: string | null;
+  max_stars?: number | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  step?: number | null;
 }
 
 export interface TableDetailPanelSpec {
@@ -147,6 +245,38 @@ export interface TableDetailPanelSpec {
   columns?: string[];
   editable_columns?: string[];
   sections?: Record<string, string[]>;
+}
+
+export interface PosCartHeaderInputSpec {
+  column: string;
+  label: string;
+  kind?: 'text' | 'select' | 'date';
+  options?: string[];
+  default?: string | null;
+  required?: boolean;
+  write_to_line?: boolean;
+}
+
+export interface PosCartConfigSpec {
+  barcode_column: string;
+  quantity_column: string;
+  catalog_table_id: number;
+  catalog_match_column: string;
+  catalog_label_column?: string | null;
+  catalog_price_column?: string | null;
+  catalog_copy?: Record<string, string>;
+  amount_column?: string | null;
+  header_inputs?: PosCartHeaderInputSpec[];
+  order_id_column?: string | null;
+  order_id_prefix?: string;
+  date_column?: string | null;
+  header_screen_id?: string | null;
+  submit_label?: string;
+  after_submit_screen?: string | null;
+  after_submit_carry?: string[];
+  allow_manual_search?: boolean;
+  catalog_group_column?: string | null;
+  empty_hint?: string | null;
 }
 
 export interface TableScreenSpecBuilt {
@@ -163,13 +293,15 @@ export interface TableScreenSpecBuilt {
   default_values?: Record<string, unknown>;
   computed_columns?: TableComputedColumnSpec[];
   lookup_columns?: TableLookupColumnSpec[];
+  rollup_columns?: TableRollupColumnSpec[];
+  format_rules?: FormatRuleSpec[];
   totals?: Record<string, TableTotalsKind>;
   column_groups?: TableColumnGroupSpec[];
   group_by?: string[];
   column_metadata?: Record<string, TableColumnMetaSpec>;
   detail_panel?: TableDetailPanelSpec;
   empty_state_message?: string | null;
-  display_mode?: 'table' | 'gallery';
+  display_mode?: 'table' | 'gallery' | 'calendar';
   gallery_config?: {
     image_column: string;
     title_column?: string | null;
@@ -177,6 +309,21 @@ export interface TableScreenSpecBuilt {
     group_by_column?: string | null;
     columns_per_row?: number;
   } | null;
+  calendar_config?: {
+    date_column: string;
+    title_column?: string | null;
+    color_column?: string | null;
+  } | null;
+  stat_tiles?: Array<{
+    label: string;
+    column: string;
+    agg?: 'sum' | 'avg' | 'min' | 'max' | 'count';
+    format?: string | null;
+    unit?: string | null;
+  }>;
+  /** Supermarket-style batch scan cart. When set, the runtime renders a POS
+   * interface instead of the grid. None/undefined = ordinary table. */
+  pos_cart?: PosCartConfigSpec | null;
 }
 
 export interface DocBlockSpec {
@@ -187,7 +334,8 @@ export interface DocBlockSpec {
     | 'text'
     | 'spacer'
     | 'signature'
-    | 'footer';
+    | 'footer'
+    | 'qr_code';
   [key: string]: unknown;
 }
 
@@ -314,11 +462,43 @@ export interface ScreenGroupSpec {
   visible_for_roles?: string[];
 }
 
+export type ThemeMode = 'light' | 'dark' | 'auto';
+export type ThemeFont = 'system' | 'inter' | 'be-vietnam' | 'roboto' | 'serif' | 'mono';
+
+export interface ThemeBackgroundSpec {
+  kind: 'color' | 'gradient' | 'image';
+  color?: string | null;
+  gradient_preset?: string | null;
+  /** data: URI (client-compressed, ~200KB cap) — external URLs are CSP-blocked. */
+  image_data?: string | null;
+}
+
+export interface ThemeCardStyleSpec {
+  radius?: 'none' | 'sm' | 'md' | 'lg' | 'xl' | null;
+  shadow?: 'none' | 'sm' | 'md' | null;
+  border?: boolean | null;
+}
+
+export interface ThemeLoginSpec {
+  background?: ThemeBackgroundSpec | null;
+  tagline?: string | null;
+}
+
+/** Theme + branding superset (mirrors BE BrandingConfig / WorkspaceBranding). */
 export interface BrandingSpec {
   app_name?: string | null;
   logo_url?: string | null;
+  logo_data?: string | null;
+  logo_layout?: 'mark' | 'wide' | null;
   primary_color?: string | null;
+  accent_color?: string | null;
   welcome_text?: string | null;
+  theme?: ThemeMode;
+  background?: ThemeBackgroundSpec | null;
+  font_family?: ThemeFont | null;
+  card_style?: ThemeCardStyleSpec | null;
+  header_style?: 'fill' | 'line' | 'minimal' | null;
+  login?: ThemeLoginSpec | null;
 }
 
 export interface AutoNumberConfigSpec {
@@ -329,6 +509,19 @@ export interface AutoNumberConfigSpec {
   start_at?: number;
 }
 
+export interface PrintTemplateSpec {
+  enabled?: boolean;
+  company_name?: string | null;
+  address?: string | null;
+  tax_code?: string | null;
+  hotline?: string | null;
+  email?: string | null;
+  website?: string | null;
+  logo_data?: string | null;
+  footer_note?: string | null;
+  accent_color?: string | null;
+}
+
 export interface MiniAppLayoutSpec {
   screens: ScreenSpec[];
   mini_app_nav: MiniAppNavSpec;
@@ -337,6 +530,8 @@ export interface MiniAppLayoutSpec {
   auto_number_columns?: AutoNumberConfigSpec[];
   /** Named workspaces (screen groups). Empty = flat nav (legacy). */
   screen_groups?: ScreenGroupSpec[];
+  /** Reusable letterhead for doc print + Excel export. */
+  print_template?: PrintTemplateSpec;
   [key: string]: unknown;
 }
 

@@ -46,6 +46,7 @@ import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
 import { DefaultOwnerCredentialsDialog } from '@/components/workboards/DefaultOwnerCredentialsDialog';
 import type { Workboard } from '@/lib/api/workboards';
 import { storeWorkboardDefaultOwnerNotice } from '@/lib/workboard-default-owner-notice';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type WorkboardListFilters = {
   state?: string;        // 'published' | 'draft'
@@ -69,6 +70,7 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
 
 export default function WorkboardsPage() {
   const router = useRouter();
+  const { t } = useI18n();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'workboards', 'edit');
 
@@ -140,11 +142,11 @@ export default function WorkboardsPage() {
   const handleCreate = async (event?: React.FormEvent) => {
     if (event) event.preventDefault();
     if (!name.trim()) {
-      toast.error('Tên workboard là bắt buộc');
+      toast.error(t('workboards.toast.nameRequired'));
       return;
     }
     if (!datasetId) {
-      toast.error('Hãy chọn dataset');
+      toast.error(t('workboards.toast.datasetRequired'));
       return;
     }
     try {
@@ -178,11 +180,11 @@ export default function WorkboardsPage() {
           pin: created.default_owner_credentials.pin,
         });
       } else {
-        toast.success(`Đã tạo “${created.name}”`);
+        toast.success(t('workboards.toast.created', { name: created.name }));
         router.push(`/workboards/${created.id}`);
       }
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Tạo workboard thất bại'));
+      toast.error(getApiErrorMessage(err, t('workboards.toast.createFailed')));
     }
   };
 
@@ -190,10 +192,10 @@ export default function WorkboardsPage() {
     if (!pendingDelete) return;
     try {
       await deleteMutation.mutateAsync(pendingDelete.id);
-      toast.success(`Deleted “${pendingDelete.name}”`);
+      toast.success(t('workboards.toast.deleted', { name: pendingDelete.name }));
       setPendingDelete(null);
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Delete failed'));
+      toast.error(getApiErrorMessage(err, t('workboards.toast.deleteFailed')));
     }
   };
 
@@ -228,8 +230,8 @@ export default function WorkboardsPage() {
     }
     setSelectedIds(new Set());
     setIsBulkDeleting(false);
-    if (ok > 0) toast.success(`Deleted ${ok} workboard(s)`);
-    if (fail > 0) toast.error(`Failed to delete ${fail} workboard(s)`);
+    if (ok > 0) toast.success(t('workboards.toast.bulkDeleted', { count: ok }));
+    if (fail > 0) toast.error(t('workboards.toast.bulkDeleteFailed', { count: fail }));
   };
 
   const action = canEdit ? (
@@ -239,9 +241,9 @@ export default function WorkboardsPage() {
         size="sm"
         leadingIcon={<Upload className="h-3.5 w-3.5" />}
         onClick={() => setIsImportOpen(true)}
-        title="Import workboard từ file template"
+        title={t('workboards.action.importTitle')}
       >
-        Import
+        {t('workboards.action.import')}
       </Button>
       <Button
         variant="primary"
@@ -249,7 +251,7 @@ export default function WorkboardsPage() {
         leadingIcon={<Plus className="h-3.5 w-3.5" />}
         onClick={() => setIsCreateOpen(true)}
       >
-        New workboard
+        {t('workboards.action.new')}
       </Button>
     </div>
   ) : undefined;
@@ -265,41 +267,41 @@ export default function WorkboardsPage() {
   const filterDropdowns = (
     <div className="flex flex-wrap items-center gap-2">
       <FilterDropdown
-        label="Status"
+        label={t('workboards.filter.status')}
         value={listFilters.state}
         options={[
-          { label: 'All', value: '' },
-          { label: 'Published', value: 'published' },
-          { label: 'Draft', value: 'draft' },
+          { label: t('workboards.filter.all'), value: '' },
+          { label: t('workboards.filter.published'), value: 'published' },
+          { label: t('workboards.filter.draft'), value: 'draft' },
         ]}
         onChange={(v) => setListFilter('state', v)}
       />
       <FilterDropdown
-        label="Access"
+        label={t('workboards.filter.access')}
         value={listFilters.access}
         options={[
-          { label: 'All', value: '' },
-          { label: 'Full access', value: 'full' },
-          { label: 'Editable', value: 'edit' },
-          { label: 'View only', value: 'view' },
+          { label: t('workboards.filter.all'), value: '' },
+          { label: t('workboards.filter.fullAccess'), value: 'full' },
+          { label: t('workboards.filter.editable'), value: 'edit' },
+          { label: t('workboards.filter.viewOnly'), value: 'view' },
         ]}
         onChange={(v) => setListFilter('access', v)}
       />
       <FilterDropdown
-        label="Dataset"
+        label={t('workboards.filter.dataset')}
         value={listFilters.dataset}
         options={[
-          { label: 'All', value: '' },
+          { label: t('workboards.filter.all'), value: '' },
           ...datasets.map((d) => ({ label: d.name, value: String(d.id) })),
         ]}
         onChange={(v) => setListFilter('dataset', v)}
       />
       {owners.length > 0 && (
         <FilterDropdown
-          label="Owner"
+          label={t('workboards.filter.owner')}
           value={listFilters.owner}
           options={[
-            { label: 'All', value: '' },
+            { label: t('workboards.filter.all'), value: '' },
             ...owners.map((o) => ({ label: o.split('@')[0], value: o })),
           ]}
           onChange={(v) => setListFilter('owner', v)}
@@ -311,37 +313,41 @@ export default function WorkboardsPage() {
   return (
     <>
       <PageListLayout
-        title="Workboards"
-        description={`${items.length} workboard${items.length !== 1 ? 's' : ''}`}
+        title={t('workboards.page.title')}
+        description={t(items.length === 1 ? 'workboards.page.countOne' : 'workboards.page.countMany', { count: items.length })}
         overview={(
           <ModuleOverview
             icon={ClipboardList}
-            title="Workboards"
-            description="Mini data-entry apps bound to dataset tables — form, list, and document views in one place. Workers and supervisors fill them through public links."
-            badges={['Mini-app builder', 'Form + list + doc', 'Role-based RLS']}
+            title={t('workboards.overview.title')}
+            description={t('workboards.overview.description')}
+            badges={[
+              t('workboards.overview.badgeBuilder'),
+              t('workboards.overview.badgeViews'),
+              t('workboards.overview.badgeRls'),
+            ]}
             stats={[
               {
-                label: 'Workboards',
+                label: t('workboards.overview.statWorkboards'),
                 value: items.length,
-                helper: 'Total saved',
+                helper: t('workboards.overview.statWorkboardsHelper'),
               },
               {
-                label: 'Screens',
+                label: t('workboards.overview.statScreens'),
                 value: totalScreens,
-                helper: 'Across all workboards',
+                helper: t('workboards.overview.statScreensHelper'),
               },
               {
-                label: 'Published',
+                label: t('workboards.overview.statPublished'),
                 value: publishedCount,
-                helper: 'Available via public link',
+                helper: t('workboards.overview.statPublishedHelper'),
               },
             ]}
           />
         )}
         action={action}
         isLoading={isLoading}
-        loadingText="Loading workboards…"
-        searchPlaceholder="Search workboards…"
+        loadingText={t('workboards.loading')}
+        searchPlaceholder={t('workboards.searchPlaceholder')}
         defaultView="list"
         toolbarExtra={filterDropdowns}
         activeFilters={
@@ -353,7 +359,7 @@ export default function WorkboardsPage() {
                   active
                   onClick={() => toggleListFilter('state', listFilters.state!)}
                 >
-                  {listFilters.state === 'published' ? 'Published' : 'Draft'}
+                  {listFilters.state === 'published' ? t('workboards.filter.published') : t('workboards.filter.draft')}
                 </FilterTag>
               )}
               {listFilters.access && (
@@ -363,12 +369,12 @@ export default function WorkboardsPage() {
                   onClick={() => toggleListFilter('access', listFilters.access!)}
                 >
                   {listFilters.access === 'full'
-                    ? 'Full access'
+                    ? t('workboards.filter.fullAccess')
                     : listFilters.access === 'edit'
-                      ? 'Editable'
+                      ? t('workboards.filter.editable')
                       : listFilters.access === 'view'
-                        ? 'View only'
-                        : 'Restricted'}
+                        ? t('workboards.filter.viewOnly')
+                        : t('workboards.filter.restricted')}
                 </FilterTag>
               )}
               {listFilters.owner && (
@@ -376,7 +382,7 @@ export default function WorkboardsPage() {
                   active
                   onClick={() => toggleListFilter('owner', listFilters.owner!)}
                 >
-                  Owner: {listFilters.owner.split('@')[0]}
+                  {t('workboards.filter.ownerChip', { owner: listFilters.owner.split('@')[0] })}
                 </FilterTag>
               )}
               {listFilters.dataset && (
@@ -385,11 +391,11 @@ export default function WorkboardsPage() {
                   active
                   onClick={() => setListFilter('dataset')}
                 >
-                  Dataset: {datasetById.get(Number(listFilters.dataset)) || `#${listFilters.dataset}`}
+                  {t('workboards.filter.datasetChip', { dataset: datasetById.get(Number(listFilters.dataset)) || `#${listFilters.dataset}` })}
                 </FilterTag>
               )}
               <Button variant="ghost" size="xs" onClick={clearListFilters}>
-                Clear filters
+                {t('workboards.filter.clear')}
               </Button>
             </>
           ) : null
@@ -428,8 +434,7 @@ export default function WorkboardsPage() {
                     <div className="flex h-48 flex-col items-center justify-center text-center">
                       <Search className="mb-2 h-7 w-7 text-text-quaternary" />
                       <p className="text-caption text-text-tertiary">
-                        No workboards matching &ldquo;
-                        <strong className="text-text-primary">{filterText}</strong>&rdquo;
+                        {t('workboards.empty.noMatches', { query: filterText })}
                       </p>
                     </div>
                   ) : viewMode === 'grid' ? (
@@ -487,9 +492,9 @@ export default function WorkboardsPage() {
         isOpen={showBulkConfirm}
         onClose={() => setShowBulkConfirm(false)}
         onConfirm={handleBulkDelete}
-        title={`Delete ${selectedIds.size} workboard${selectedIds.size === 1 ? '' : 's'}?`}
-        description="This action cannot be undone."
-        confirmLabel="Delete"
+        title={t('workboards.confirm.bulkDeleteTitle', { count: selectedIds.size })}
+        description={t('workboards.confirm.cannotUndo')}
+        confirmLabel={t('common.delete')}
         variant="danger"
       />
 
@@ -501,7 +506,7 @@ export default function WorkboardsPage() {
             setIsCreateOpen(false);
             resetForm();
           }}
-          title="New workboard"
+          title={t('workboards.create.title')}
           size="md"
           footer={
             <>
@@ -514,7 +519,7 @@ export default function WorkboardsPage() {
                 }}
                 disabled={createMutation.isPending}
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -529,38 +534,38 @@ export default function WorkboardsPage() {
                 loading={createMutation.isPending}
                 title={
                   datasets.length === 0
-                    ? 'Bạn cần tạo dataset trước khi tạo workboard'
+                    ? t('workboards.create.datasetNeededTitle')
                     : !datasetId
-                      ? 'Hãy chọn dataset'
+                      ? t('workboards.toast.datasetRequired')
                       : undefined
                 }
               >
-                Create
+                {t('workboards.create.create')}
               </Button>
             </>
           }
         >
           <form onSubmit={handleCreate} className="space-y-3">
-            <FieldGroup label="Tên workboard" required>
+            <FieldGroup label={t('workboards.create.nameLabel')} required>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="VD: Nhật ký sản xuất"
+                placeholder={t('workboards.create.namePlaceholder')}
                 autoFocus
               />
             </FieldGroup>
-            <FieldGroup label="Mô tả">
+            <FieldGroup label={t('workboards.create.descriptionLabel')}>
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={2}
-                placeholder="Tuỳ chọn"
+                placeholder={t('workboards.create.descriptionPlaceholder')}
               />
             </FieldGroup>
             <FieldGroup
-              label="Dataset"
+              label={t('workboards.filter.dataset')}
               required
-              description="Mỗi screen trong Builder sẽ tự chọn bảng từ dataset này."
+              description={t('workboards.create.datasetDescription')}
             >
               {datasets.length === 0 ? (
                 <div className="rounded-md border border-dashed border-warning/40 bg-warning/5 p-3">
@@ -568,12 +573,10 @@ export default function WorkboardsPage() {
                     <Database className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
                     <div className="flex-1 text-tiny text-text-secondary">
                       <p className="font-emphasis text-text-primary">
-                        Bạn chưa có dataset nào.
+                        {t('workboards.create.noDatasetTitle')}
                       </p>
                       <p className="mt-0.5">
-                        Workboard cần một dataset để lấy bảng dữ liệu. Hãy tạo
-                        dataset trước (kết nối nguồn dữ liệu, chọn bảng), rồi
-                        quay lại đây.
+                        {t('workboards.create.noDatasetBody')}
                       </p>
                       <Button
                         variant="primary"
@@ -586,7 +589,7 @@ export default function WorkboardsPage() {
                           router.push('/datasets');
                         }}
                       >
-                        Sang module Datasets
+                        {t('workboards.create.goDatasets')}
                       </Button>
                     </div>
                   </div>
@@ -599,7 +602,7 @@ export default function WorkboardsPage() {
                     setDatasetId(e.target.value ? Number(e.target.value) : null)
                   }
                 >
-                  <option value="">— Chọn dataset —</option>
+                  <option value="">{t('workboards.create.datasetPlaceholder')}</option>
                   {datasets.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
@@ -639,12 +642,12 @@ export default function WorkboardsPage() {
         <Modal
           isOpen={!!pendingDelete}
           onClose={() => setPendingDelete(null)}
-          title={`Delete “${pendingDelete.name}”?`}
+          title={t('workboards.delete.title', { name: pendingDelete.name })}
           size="sm"
           footer={
             <>
               <Button variant="ghost" size="sm" onClick={() => setPendingDelete(null)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="danger"
@@ -653,13 +656,13 @@ export default function WorkboardsPage() {
                 disabled={deleteMutation.isPending}
                 loading={deleteMutation.isPending}
               >
-                Delete
+                {t('common.delete')}
               </Button>
             </>
           }
         >
           <p className="text-body text-text-secondary">
-            The workboard configuration will be removed. The underlying data in your database is not touched.
+            {t('workboards.delete.description')}
           </p>
         </Modal>
       )}
@@ -728,8 +731,9 @@ function WorkboardGridCard({
   selected?: boolean;
   onToggleSelect?: () => void;
 }) {
+  const { t, locale } = useI18n();
   const perms = getResourcePermissions(workboard.user_permission ?? undefined);
-  const created = new Date(workboard.updated_at).toLocaleDateString();
+  const created = new Date(workboard.updated_at).toLocaleDateString(locale);
   return (
     <div className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear">
       <div className="flex-1 p-4">
@@ -738,7 +742,7 @@ function WorkboardGridCard({
             {onToggleSelect && (
               <input
                 type="checkbox"
-                aria-label={`Select ${workboard.name}`}
+                aria-label={t('workboards.grid.selectAria', { name: workboard.name })}
                 checked={!!selected}
                 onChange={onToggleSelect}
                 className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
@@ -756,7 +760,7 @@ function WorkboardGridCard({
             />
             {perms.canDelete && (
               <IconButton
-                aria-label="Delete"
+                aria-label={t('common.delete')}
                 variant="ghost"
                 size="xs"
                 onClick={onDelete}
@@ -785,7 +789,7 @@ function WorkboardGridCard({
         <div className="mt-3 flex items-center justify-between text-tiny text-text-quaternary">
           <span className="flex items-center gap-1">
             <Database className="h-3 w-3" />
-            {datasetName || `Dataset #${workboard.dataset_id}`}
+            {datasetName || t('workboards.list.datasetFallback', { id: workboard.dataset_id })}
           </span>
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
@@ -799,10 +803,10 @@ function WorkboardGridCard({
             <button
               onClick={onShare}
               className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
-              title="Share"
+              title={t('common.share')}
             >
               <Share2 className="h-3 w-3" />
-              Share
+              {t('common.share')}
             </button>
           )}
         </div>
@@ -811,7 +815,7 @@ function WorkboardGridCard({
           className="ml-auto flex items-center gap-1 text-tiny font-emphasis text-brand transition-colors hover:text-brand-hover"
         >
           <Eye className="h-3 w-3" />
-          Open
+          {t('common.open')}
         </button>
       </div>
     </div>

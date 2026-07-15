@@ -1,8 +1,8 @@
 """
 EmbeddingService - generate and store vector embeddings for charts/tables.
 
-Uses the OpenRouter embeddings endpoint so all AI traffic goes through the same
-provider. Embeddings are stored in resource_embeddings (pgvector).
+Uses the OpenAI embeddings endpoint. Embeddings are stored in
+resource_embeddings (pgvector).
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -15,12 +15,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
-def _openrouter_embed(content: str) -> Optional[List[float]]:
-    api_keys = settings.active_api_keys
-    if not api_keys:
+def _openai_embed(content: str) -> Optional[List[float]]:
+    api_key = settings.OPENAI_API_KEY.strip()
+    if not api_key:
         return None
 
     payload: Dict[str, Any] = {
@@ -28,17 +28,15 @@ def _openrouter_embed(content: str) -> Optional[List[float]]:
         "input": content,
         "encoding_format": "float",
     }
-    if settings.OPENROUTER_EMBEDDING_DIMENSIONS > 0:
-        payload["dimensions"] = settings.OPENROUTER_EMBEDDING_DIMENSIONS
+    if settings.openai_embedding_dimensions > 0:
+        payload["dimensions"] = settings.openai_embedding_dimensions
 
     try:
         response = httpx.post(
-            f"{OPENROUTER_BASE_URL}/embeddings",
+            f"{OPENAI_BASE_URL}/embeddings",
             headers={
-                "Authorization": f"Bearer {api_keys[0]}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": settings.OPENROUTER_SITE_URL,
-                "X-Title": settings.OPENROUTER_APP_NAME,
             },
             json=payload,
             timeout=30.0,
@@ -52,7 +50,7 @@ def _openrouter_embed(content: str) -> Optional[List[float]]:
             return None
         return [float(value) for value in embedding]
     except Exception as exc:
-        logger.warning("EmbeddingService: OpenRouter embedding failed - %s", exc)
+        logger.warning("EmbeddingService: OpenAI embedding failed - %s", exc)
         return None
 
 
@@ -68,21 +66,21 @@ def _extract_col_names(columns_cache) -> List[str]:
 class EmbeddingService:
     @staticmethod
     def generate_embedding(content: str) -> Optional[List[float]]:
-        """Generate a document embedding via OpenRouter."""
-        if not settings.OPENROUTER_API_KEY:
-            logger.debug("EmbeddingService: OPENROUTER_API_KEY not set, skipping")
+        """Generate a document embedding via OpenAI."""
+        if not settings.OPENAI_API_KEY.strip():
+            logger.debug("EmbeddingService: OPENAI_API_KEY not set, skipping")
             return None
-        result = _openrouter_embed(content[:8000])
+        result = _openai_embed(content[:8000])
         if result is None:
             logger.warning("EmbeddingService: generate failed - returned None")
         return result
 
     @staticmethod
     def generate_query_embedding(query: str) -> Optional[List[float]]:
-        """Generate a query embedding via OpenRouter."""
-        if not settings.OPENROUTER_API_KEY:
+        """Generate a query embedding via OpenAI."""
+        if not settings.OPENAI_API_KEY.strip():
             return None
-        result = _openrouter_embed(query[:2000])
+        result = _openai_embed(query[:2000])
         if result is None:
             logger.warning("EmbeddingService: query embed failed - returned None")
         return result

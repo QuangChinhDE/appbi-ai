@@ -434,7 +434,7 @@ export function ReadonlyChartTile({
                 key={filter.id}
                 className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700"
               >
-                <span className="font-mono text-[0.6rem] uppercase opacity-60">having</span>
+                <span className="font-mono text-[0.6rem] uppercase opacity-60">{t('dashboards.tile.havingLabel')}</span>
                 {havingOptions.find((option) => option.key === filter.field)?.label ?? filter.field}
                 {` ${filter.operator} ${filter.value}`}
                 <button

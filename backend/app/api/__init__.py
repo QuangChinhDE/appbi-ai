@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, observability, feedback, public, personal_access_tokens, teams
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, observability, public, personal_access_tokens, teams
 from app.core.config import settings
 from app.routers import semantic
 
@@ -39,20 +39,14 @@ if settings.WORKBOARDS_ENABLED:
 
 api_router.include_router(semantic.router)
 
-# Metadata Catalog — hidden OpenMetadata backend (proxied under /catalog).
-# Imported ONLY when enabled so the core app is unaffected while OFF.
+# Metadata Catalog — AppBI-native Govern backend (Vocabulary + Metrics + Knowledge Hub),
+# proxied under /catalog. Imported ONLY when enabled so the core app is unaffected while OFF.
 if settings.METADATA_CATALOG_ENABLED:
     from app.modules.metadata_catalog.api import router as metadata_catalog_router
     api_router.include_router(metadata_catalog_router)
 
-# Phase 4: Proactive Intelligence
-api_router.include_router(anomaly.router)
-
-# Observability — unified 5-pillar module (monitors + incidents + lineage + usage)
+# Observability — dataset health (incidents + semantic lineage + usage + alert channels)
 api_router.include_router(observability.router)
-
-# Phase 5: Feedback-Driven Knowledge System
-api_router.include_router(feedback.router)
 
 # Public unauthenticated endpoints (shared dashboard links)
 api_router.include_router(public.router)

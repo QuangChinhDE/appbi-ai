@@ -11,8 +11,12 @@ import {
   Search,
   BarChart3,
   ClipboardList,
+  Compass,
   Database,
+  Gauge,
+  Inbox,
   Landmark,
+  LineChart,
   Plug,
   Radar,
   Home,
@@ -23,17 +27,20 @@ import {
   LogOut,
   KeyRound,
   Shield,
+  Settings,
+  Users,
   HelpCircle,
   Info,
   Trash2,
   X,
 } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { cn } from '@/lib/utils';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
+import { reviewCount } from '@/lib/catalog';
 import { extractApiError } from '@/lib/api-errors';
 import { useNotifications, type AppNotification, type AppNotificationLevel } from '@/lib/notifications';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -49,22 +56,59 @@ interface NavItem {
   module?: string;
 }
 
+interface NavGroup {
+  /** Section eyebrow; omit for the standalone top group (Overview). */
+  labelKey?: string;
+  items: NavItem[];
+}
+
 interface SidebarProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
 }
 
-const ALL_NAV_ITEMS: NavItem[] = [
-  { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
-  { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
-  { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
-  { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
-  { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
-  { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
-  { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
-  { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
-  { labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-4 w-4" />, module: 'settings' },
+// Modules grouped by what the user is doing, instead of one flat list.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    items: [
+      { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
+    ],
+  },
+  {
+    labelKey: 'sidebar.group.build',
+    items: [
+      { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-4 w-4" />, module: 'data_sources' },
+      { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-4 w-4" />, module: 'datasets' },
+      { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
+      { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
+      { labelKey: 'sidebar.nav.observability', href: '/observability', icon: <Radar className="h-4 w-4" />, module: 'observability' },
+    ],
+  },
+  {
+    // Intelligence = the knowledge system feeding AI Insight. Five modules,
+    // one job each; all gated by the existing 'govern' permission key.
+    labelKey: 'sidebar.group.intelligence',
+    items: [
+      { labelKey: 'sidebar.nav.intelligence', href: '/intelligence', icon: <Gauge className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
+    ],
+  },
+  {
+    // Operate lives last — day-to-day action apps built on top of everything above.
+    labelKey: 'sidebar.group.operate',
+    items: [
+      { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
+    ],
+  },
 ];
+
+// Settings lives behind a gear icon + modal, not a persistent nav row.
+const SETTINGS_ITEM: NavItem = {
+  labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-4 w-4" />, module: 'settings',
+};
 
 function getInitials(name: string): string {
   return name
@@ -81,6 +125,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -118,10 +163,20 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   }, [showUserMenu]);
 
   const perms = permData?.permissions;
-  const visibleItems = ALL_NAV_ITEMS.filter((item) => {
-    if (item.module) return hasPermission(perms, item.module, 'view');
-    return true;
+  const canSee = (item: NavItem) => (item.module ? hasPermission(perms, item.module, 'view') : true);
+
+  // Pending count for the single review ledger (Đề xuất AI) — light poll.
+  const { data: reviewPending = 0 } = useQuery({
+    queryKey: ['govern-review-count'],
+    queryFn: reviewCount,
+    enabled: Boolean(perms) && hasPermission(perms, 'govern', 'view'),
+    refetchInterval: 90_000,
+    staleTime: 60_000,
   });
+  const visibleGroups = NAV_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter(canSee) }))
+    .filter((group) => group.items.length > 0);
+  const canSettings = canSee(SETTINGS_ITEM);
 
   const isActive = (href: string) => {
     if (href === '/explore') return pathname.startsWith('/explore');
@@ -170,36 +225,54 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         )}
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-1">
-        <ul className="space-y-0.5">
-          {visibleItems.map((item) => {
-            const active = isActive(item.href);
-            const label = t(item.labelKey);
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={cn(
-                    'group flex items-center rounded-md transition-colors',
-                    isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
-                    active
-                      ? 'bg-surface-2 text-text-primary'
-                      : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
-                  )}
-                  title={isCollapsed ? label : undefined}
-                >
-                  <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
-                    {item.icon}
-                  </span>
-                  {!isCollapsed && (
-                    <span className="text-caption font-emphasis truncate">{label}</span>
-                  )}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+      {/* Nav — grouped by what the user is doing */}
+      <nav className={cn('flex-1 overflow-y-auto px-2 py-2', isCollapsed ? 'space-y-1.5' : 'space-y-3')}>
+        {visibleGroups.map((group, gi) => (
+          <div key={group.labelKey ?? `group-${gi}`}>
+            {group.labelKey && (
+              isCollapsed ? (
+                gi > 0 && <div className="mx-auto mb-1.5 h-px w-6 bg-[rgb(var(--border-line))]" aria-hidden="true" />
+              ) : (
+                <p className="px-2.5 pb-1 pt-0.5 text-[10px] font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                  {t(group.labelKey)}
+                </p>
+              )
+            )}
+            <ul className="space-y-0.5">
+              {group.items.map((item) => {
+                const active = isActive(item.href);
+                const label = t(item.labelKey);
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        'group flex items-center rounded-md transition-colors',
+                        isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
+                        active
+                          ? 'bg-surface-2 text-text-primary'
+                          : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                      )}
+                      title={isCollapsed ? label : undefined}
+                    >
+                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
+                        {item.icon}
+                      </span>
+                      {!isCollapsed && (
+                        <span className="text-caption font-emphasis truncate">{label}</span>
+                      )}
+                      {!isCollapsed && item.href === '/ai-inbox' && reviewPending > 0 && (
+                        <span className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand px-1 text-[10px] font-strong text-text-inverse">
+                          {reviewPending > 99 ? '99+' : reviewPending}
+                        </span>
+                      )}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
 
       {/* Bottom: user + collapse */}
@@ -265,7 +338,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                       </span>
                     )}
                   </div>
-                  <span>{language === 'vi' ? 'Thông báo' : 'Notifications'}</span>
+                  <span>{t('sidebar.user.notifications')}</span>
                 </button>
 
                 <div className="border-t border-[rgb(var(--border-line))] px-3 py-2.5">
@@ -306,7 +379,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   className="flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-secondary hover:bg-surface-2"
                 >
                   <KeyRound className="h-3.5 w-3.5 text-text-tertiary" />
-                  <span>{language === 'vi' ? 'Token API' : 'API tokens'}</span>
+                  <span>{t('sidebar.user.apiTokens')}</span>
                 </button>
                 <button
                   onClick={() => {
@@ -316,7 +389,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   className="flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-secondary hover:bg-surface-2"
                 >
                   <HelpCircle className="h-3.5 w-3.5 text-text-tertiary" />
-                  <span>{language === 'vi' ? 'Hướng dẫn sử dụng' : 'Getting started guide'}</span>
+                  <span>{t('sidebar.user.gettingStarted')}</span>
                 </button>
                 {user.has_password && user.auth_provider === 'password' ? (
                   <button
@@ -331,7 +404,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   </button>
                 ) : (
                   <div className="px-3 py-2 text-caption text-text-tertiary">
-                    {language === 'vi' ? 'Tài khoản này dùng đăng nhập Google.' : 'This account signs in with Google.'}
+                    {t('sidebar.user.googleAccount')}
                   </div>
                 )}
                 <button
@@ -343,6 +416,27 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {canSettings && (
+          <div className="px-2 pt-2">
+            <button
+              onClick={() => setShowSettings(true)}
+              className={cn(
+                'group flex w-full items-center rounded-md h-8 transition-colors',
+                'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                isCollapsed ? 'justify-center' : 'px-2.5 gap-2',
+              )}
+              title={isCollapsed ? t('sidebar.nav.settings') : undefined}
+            >
+              <span className="flex-shrink-0 text-text-tertiary group-hover:text-text-secondary">
+                <Settings className="h-4 w-4" />
+              </span>
+              {!isCollapsed && (
+                <span className="text-caption font-emphasis truncate">{t('sidebar.nav.settings')}</span>
+              )}
+            </button>
           </div>
         )}
 
@@ -378,9 +472,80 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         unreadCount={unreadCount}
         onMarkAllRead={markAllNotificationsRead}
         onClearAll={clearNotifications}
-        language={language}
+      />
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        onGoPermissions={() => {
+          setShowSettings(false);
+          router.push(SETTINGS_ITEM.href);
+        }}
       />
     </aside>
+  );
+}
+
+function SettingsModal({
+  open,
+  onClose,
+  onGoPermissions,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onGoPermissions: () => void;
+}) {
+  const { t } = useI18n();
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] px-4 animate-fade-in"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-md overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg animate-slide-up"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-[rgb(var(--border-line))] px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-brand/10 p-2 text-brand">
+              <Settings className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-small font-strong text-text-primary">{t('sidebar.nav.settings')}</h2>
+              <p className="text-caption text-text-tertiary">{t('sidebar.settings.description')}</p>
+            </div>
+          </div>
+          <IconButton aria-label={t('common.close')} variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </IconButton>
+        </div>
+
+        <div className="p-4">
+          <button
+            onClick={onGoPermissions}
+            className="group flex w-full items-center gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 px-4 py-3 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
+          >
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+              <Users className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-caption font-emphasis text-text-primary">{t('sidebar.settings.permissions')}</p>
+              <p className="truncate text-tiny text-text-tertiary">{t('sidebar.settings.permissionsDesc')}</p>
+            </div>
+            <ChevronRight className="h-4 w-4 flex-shrink-0 text-text-quaternary group-hover:text-text-secondary" />
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -391,7 +556,6 @@ function NotificationsModal({
   unreadCount,
   onMarkAllRead,
   onClearAll,
-  language,
 }: {
   open: boolean;
   onClose: () => void;
@@ -399,18 +563,9 @@ function NotificationsModal({
   unreadCount: number;
   onMarkAllRead: () => void;
   onClearAll: () => void;
-  language: 'en' | 'vi';
 }) {
+  const { t, locale } = useI18n();
   if (!open) return null;
-
-  const title = language === 'vi' ? 'Thông báo' : 'Notifications';
-  const description = language === 'vi'
-    ? 'Mọi thông báo trong app sẽ được lưu lại ở đây.'
-    : 'All app notifications are collected here.';
-  const emptyTitle = language === 'vi' ? 'Chưa có thông báo nào' : 'No notifications yet';
-  const emptyDescription = language === 'vi'
-    ? 'Khi bạn lưu, cập nhật, xóa hoặc chia sẻ, thông báo sẽ xuất hiện ở đây.'
-    : 'Save, update, delete, and share events will appear here.';
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] px-4 animate-fade-in">
@@ -426,12 +581,12 @@ function NotificationsModal({
               )}
             </div>
             <div>
-              <h2 className="text-small font-strong text-text-primary">{title}</h2>
-              <p className="text-caption text-text-tertiary">{description}</p>
+              <h2 className="text-small font-strong text-text-primary">{t('sidebar.notifications.title')}</h2>
+              <p className="text-caption text-text-tertiary">{t('sidebar.notifications.description')}</p>
             </div>
           </div>
           <IconButton
-            aria-label={language === 'vi' ? 'Đóng thông báo' : 'Close notifications'}
+            aria-label={t('sidebar.notifications.closeAria')}
             variant="ghost"
             size="sm"
             onClick={onClose}
@@ -442,9 +597,7 @@ function NotificationsModal({
 
         <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-2.5">
           <p className="text-caption text-text-secondary">
-            {language === 'vi'
-              ? `${notifications.length} thông báo${unreadCount > 0 ? `, ${unreadCount} chưa đọc` : ''}`
-              : `${notifications.length} notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+            {t(unreadCount > 0 ? 'sidebar.notifications.summaryUnread' : 'sidebar.notifications.summary', { count: notifications.length, unread: unreadCount })}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -454,7 +607,7 @@ function NotificationsModal({
               disabled={unreadCount === 0}
               leadingIcon={<CheckCheck className="h-3 w-3" />}
             >
-              {language === 'vi' ? 'Đọc hết' : 'Mark all read'}
+              {t('sidebar.notifications.markAllRead')}
             </Button>
             <Button
               size="xs"
@@ -464,7 +617,7 @@ function NotificationsModal({
               leadingIcon={<Trash2 className="h-3 w-3" />}
               className="text-danger hover:text-danger hover:bg-danger/8"
             >
-              {language === 'vi' ? 'Xóa hết' : 'Clear all'}
+              {t('sidebar.notifications.clearAll')}
             </Button>
           </div>
         </div>
@@ -473,8 +626,8 @@ function NotificationsModal({
           {notifications.length === 0 ? (
             <div className="flex h-full min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 text-center">
               <Bell className="mb-3 h-8 w-8 text-text-quaternary" />
-              <p className="text-small font-strong text-text-primary">{emptyTitle}</p>
-              <p className="mt-1 max-w-sm text-caption text-text-tertiary">{emptyDescription}</p>
+              <p className="text-small font-strong text-text-primary">{t('sidebar.notifications.emptyTitle')}</p>
+              <p className="mt-1 max-w-sm text-caption text-text-tertiary">{t('sidebar.notifications.emptyDescription')}</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -508,7 +661,7 @@ function NotificationsModal({
                           )}
                         </div>
                         <p className="mt-2 text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                          {formatNotificationTimestamp(notification.createdAt, language)}
+                          {formatNotificationTimestamp(notification.createdAt, locale, t)}
                         </p>
                       </div>
                     </div>
@@ -556,14 +709,14 @@ function getNotificationAppearance(level: AppNotificationLevel): {
   }
 }
 
-function formatNotificationTimestamp(createdAt: string, language: 'en' | 'vi') {
+function formatNotificationTimestamp(createdAt: string, locale: string, t: (key: string) => string) {
   const date = new Date(createdAt);
 
   if (Number.isNaN(date.getTime())) {
-    return language === 'vi' ? 'Không rõ thời gian' : 'Unknown time';
+    return t('sidebar.notifications.unknownTime');
   }
 
-  return new Intl.DateTimeFormat(language === 'vi' ? 'vi-VN' : 'en-US', {
+  return new Intl.DateTimeFormat(locale, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',

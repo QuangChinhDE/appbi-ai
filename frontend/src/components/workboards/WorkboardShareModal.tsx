@@ -15,7 +15,20 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Copy, Eye, EyeOff, Loader2, Power, PowerOff, Share2 } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  Eye,
+  EyeOff,
+  Globe2,
+  Loader2,
+  Palette,
+  Power,
+  PowerOff,
+  Share2,
+  ShieldCheck,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
@@ -23,6 +36,7 @@ import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
 import { useWorkboard } from '@/hooks/use-workboards';
 import { workspaceAdminApi, type WorkspaceAdmin } from '@/lib/api/workspaces';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { Workboard } from '@/lib/api/workboards';
 
 export const WORKBOARD_CONG_CHANGED = 'appbi:workboard-cong-changed';
@@ -46,6 +60,7 @@ function apiErr(err: unknown, fallback: string): string {
 }
 
 export default function WorkboardShareModal({ workboard, onClose }: Props) {
+  const { t } = useI18n();
   const slug = workboard.slug ?? '';
   const { data: fullWb } = useWorkboard(workboard.id);
   const [loading, setLoading] = useState(true);
@@ -60,11 +75,11 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
     try {
       setWorkspaces(await workspaceAdminApi.list());
     } catch (err) {
-      setError(apiErr(err, 'Không tải được trạng thái chia sẻ.'));
+      setError(apiErr(err, t('workboards.share.loadFailed')));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -133,9 +148,9 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
       });
       await reload();
       announceChanged();
-      toast.success('Đã bật chia sẻ công khai — copy link để gửi cho mọi người');
+      toast.success(t('workboards.share.publicEnabledToast'));
     } catch (err) {
-      setError(apiErr(err, 'Không bật được chia sẻ.'));
+      setError(apiErr(err, t('workboards.share.enableFailed')));
     } finally {
       setBusyId(null);
     }
@@ -155,7 +170,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
       await reload();
       announceChanged();
     } catch (err) {
-      setError(apiErr(err, 'Không gắn được app vào Cổng.'));
+      setError(apiErr(err, t('workboards.share.attachFailed')));
     } finally {
       setBusyId(null);
     }
@@ -169,7 +184,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
       await reload();
       announceChanged();
     } catch (err) {
-      setError(apiErr(err, 'Không đổi được trạng thái chia sẻ.'));
+      setError(apiErr(err, t('workboards.share.statusChangeFailed')));
     } finally {
       setBusyId(null);
     }
@@ -182,7 +197,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      toast.error('Trình duyệt chặn copy — bôi đen link để copy thủ công');
+      toast.error(t('workboards.share.copyBlocked'));
     }
   };
 
@@ -199,10 +214,10 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
         setWorkspaces(await workspaceAdminApi.list());
       } catch (err) {
         setHidden(prev);
-        setError(apiErr(err, 'Không lưu được hiển thị.'));
+        setError(apiErr(err, t('workboards.share.visibilitySaveFailed')));
       }
     },
-    [primary, slug, hidden],
+    [primary, slug, hidden, t],
   );
 
   const toggleScreen = (id: string) =>
@@ -216,24 +231,99 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
     );
   };
 
+  const branding = (fullWb?.layout_json?.branding || {}) as {
+    app_name?: string | null;
+    primary_color?: string | null;
+    accent_color?: string | null;
+    logo_url?: string | null;
+    logo_data?: string | null;
+    logo_layout?: 'mark' | 'wide' | null;
+    welcome_text?: string | null;
+    login?: { tagline?: string | null } | null;
+  };
+  const brandName = branding.app_name || workboard.name || slug || 'Mini app';
+  const primaryColor = branding.primary_color || '#2563eb';
+  const accentColor = branding.accent_color || primaryColor;
+  const logoSrc = branding.logo_data || branding.logo_url;
+  const visibleCount = screens.filter((s) => !hidden.includes(s.id)).length;
+
   return (
     <Modal
       isOpen
       onClose={onClose}
-      title="Chia sẻ app công khai"
-      size="md"
-      footer={<Button variant="ghost" size="sm" onClick={onClose}>Đóng</Button>}
+      title={t('workboards.share.title')}
+      size="xl"
+      footer={<Button variant="ghost" size="sm" onClick={onClose}>{t('workboards.share.close')}</Button>}
     >
       <div className="space-y-4">
-        <p className="text-caption text-text-secondary">
-          Mọi người mở app qua <strong>1 link</strong> rồi đăng nhập bằng PIN (không cần
-          tài khoản AppBI). Bên dưới chọn workspace/screen nào hiện trên link — Builder
-          vẫn giữ đủ mọi screen.
-        </p>
+        <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+          <div
+            className="flex flex-wrap items-end justify-between gap-4 px-4 py-4"
+            style={{
+              background: `linear-gradient(135deg, ${primaryColor}, ${accentColor})`,
+            }}
+          >
+            <div className="min-w-0 text-white">
+              <div className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2 py-1 text-tiny font-emphasis uppercase tracking-wider">
+                <Globe2 className="h-3.5 w-3.5" />
+                Public app delivery
+              </div>
+              <h3 className="truncate text-body font-strong">{brandName}</h3>
+              <p className="mt-1 max-w-xl text-caption text-white/85">
+                {branding.login?.tagline || branding.welcome_text || 'Link đăng nhập bằng PIN cho người dùng ngoài AppBI.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg bg-white/92 px-3 py-2 text-slate-700 shadow-sm">
+              {logoSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoSrc}
+                  alt=""
+                  className={`${branding.logo_layout === 'wide' ? 'h-8 w-16' : 'h-8 w-8'} rounded object-contain`}
+                />
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded-md text-sm font-strong text-white" style={{ backgroundColor: primaryColor }}>
+                  {brandName.slice(0, 1).toUpperCase()}
+                </div>
+              )}
+              <div className="text-caption font-medium">Enterprise-ready</div>
+            </div>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-3">
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Status
+              </div>
+              <div className="mt-1 text-caption font-medium text-text-primary">
+                {primary ? (primary.is_active === false ? t('workboards.share.inactiveStatus') : t('workboards.share.activeStatus')) : 'Not public'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                Screens visible
+              </div>
+              <div className="mt-1 text-caption font-medium text-text-primary">
+                {visibleCount}/{screens.length || 0}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
+              <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                <Palette className="h-3.5 w-3.5" />
+                Branding
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: primaryColor }} />
+                <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: accentColor }} />
+                <span className="text-caption text-text-secondary">App settings</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {!slug && (
           <div className="rounded-md border border-warning/20 bg-warning/5 p-3 text-caption text-warning">
-            App chưa có slug — lưu app trong Builder trước khi chia sẻ.
+            {t('workboards.share.noSlug')}
           </div>
         )}
         {error && <div className="text-caption text-danger">{error}</div>}
@@ -246,7 +336,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
           <div className="flex flex-col items-start gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-4">
             <div className="flex items-center gap-2 text-body text-text-primary">
               <Share2 className="h-4 w-4 text-text-tertiary" />
-              App này <strong>chưa công khai</strong>.
+              {t('workboards.share.notPublicPrefix')} <strong>{t('workboards.share.notPublicStrong')}</strong>.
             </div>
             <Button
               variant="primary"
@@ -256,7 +346,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
               disabled={!slug || busyId === 'new'}
               loading={busyId === 'new'}
             >
-              Bật chia sẻ công khai
+              {t('workboards.share.enablePublic')}
             </Button>
           </div>
         ) : (
@@ -265,7 +355,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
             <div className="space-y-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-4">
               <div className="flex items-center justify-between gap-2">
                 <FilterTag tone={primary.is_active === false ? 'danger' : 'success'} className="cursor-default">
-                  {primary.is_active === false ? '● Đã tắt — không ai vào được' : '● Đang công khai'}
+                  {primary.is_active === false ? t('workboards.share.inactiveStatus') : t('workboards.share.activeStatus')}
                 </FilterTag>
                 <Button
                   variant={primary.is_active === false ? 'primary' : 'outline'}
@@ -276,11 +366,11 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                   leadingIcon={primary.is_active === false ? <Power className="h-3.5 w-3.5" /> : <PowerOff className="h-3.5 w-3.5" />}
                   className={primary.is_active === false ? '' : 'text-danger'}
                 >
-                  {primary.is_active === false ? 'Bật lại' : 'Tắt cả link'}
+                  {primary.is_active === false ? t('workboards.share.turnOnAgain') : t('workboards.share.turnOffLink')}
                 </Button>
               </div>
               <div>
-                <div className="mb-1 text-caption text-text-tertiary">Link gửi cho mọi người:</div>
+                <div className="mb-1 text-caption text-text-tertiary">{t('workboards.share.publicLinkLabel')}</div>
                 <div className="flex items-center gap-2">
                   <input
                     readOnly
@@ -290,10 +380,10 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                   />
                   <Button variant="secondary" size="sm" onClick={() => void copyLink()}
                     leadingIcon={copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}>
-                    {copied ? 'Đã copy' : 'Copy'}
+                    {copied ? t('workboards.share.copied') : t('workboards.share.copy')}
                   </Button>
                   <a href={publicLink(primary.token)} target="_blank" rel="noreferrer">
-                    <Button variant="ghost" size="sm">Mở</Button>
+                    <Button variant="ghost" size="sm">{t('workboards.share.open')}</Button>
                   </a>
                 </div>
               </div>
@@ -302,7 +392,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
             {/* Hiển thị workspace / screen nào trên link */}
             <div>
               <div className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                Hiển thị trên link (bật/tắt workspace hoặc từng screen)
+                {t('workboards.share.visibilityHeading')}
               </div>
               <div className="space-y-2">
                 {groupedTree.map((g) => {
@@ -327,7 +417,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                 {ungrouped.length > 0 && (
                   <div className="overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
                     <div className="px-3 py-2 text-caption font-emphasis text-text-tertiary">
-                      Khác (chưa phân workspace) <span className="text-text-quaternary">({ungrouped.length})</span>
+                      {t('workboards.share.ungroupedScreens')} <span className="text-text-quaternary">({ungrouped.length})</span>
                     </div>
                     <div className="divide-y divide-[rgb(var(--border-line))] border-t border-[rgb(var(--border-line))]">
                       {ungrouped.map((s) => (
@@ -337,7 +427,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                   </div>
                 )}
                 {groupedTree.length === 0 && ungrouped.length === 0 && (
-                  <p className="text-caption text-text-tertiary">App chưa có screen nào.</p>
+                  <p className="text-caption text-text-tertiary">{t('workboards.share.noScreens')}</p>
                 )}
               </div>
             </div>
@@ -352,7 +442,7 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
               onClick={() => setShowAdvanced((v) => !v)}
               className="flex w-full items-center justify-between px-3 py-2 text-caption text-text-secondary hover:text-text-primary"
             >
-              <span>Nâng cao — gộp app vào nhiều Cổng / nhiều link</span>
+              <span>{t('workboards.share.advanced')}</span>
               <ChevronDown className={`h-4 w-4 transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
             </button>
             {showAdvanced && (
@@ -362,11 +452,11 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-caption text-text-primary">{ws.name}</span>
                       <FilterTag tone={ws.is_active === false ? 'danger' : 'success'} className="cursor-default">
-                        {ws.is_active === false ? 'Đã tắt' : 'Đang bật'}
+                        {ws.is_active === false ? t('workboards.share.off') : t('workboards.share.on')}
                       </FilterTag>
                     </div>
                     <Button variant="outline" size="xs" loading={busyId === ws.id} disabled={busyId === ws.id} onClick={() => void toggleActive(ws)}>
-                      {ws.is_active === false ? 'Bật' : 'Tắt'}
+                      {ws.is_active === false ? t('workboards.share.turnOn') : t('workboards.share.turnOff')}
                     </Button>
                   </div>
                 ))}
@@ -374,12 +464,12 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                   <div key={ws.id} className="flex items-center justify-between gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
                     <span className="truncate text-caption text-text-secondary">{ws.name}</span>
                     <Button variant="outline" size="xs" loading={busyId === ws.id} disabled={!slug || busyId === ws.id} onClick={() => void attach(ws)}>
-                      Gắn app vào
+                      {t('workboards.share.attachApp')}
                     </Button>
                   </div>
                 ))}
                 <Button variant="secondary" size="xs" onClick={createCong} disabled={!slug || busyId === 'new'} loading={busyId === 'new'}>
-                  Tạo thêm Cổng mới
+                  {t('workboards.share.createAnotherPortal')}
                 </Button>
               </div>
             )}
@@ -402,18 +492,19 @@ function ScreenRow({ s, shown, onToggle }: { s: ScreenLite; shown: boolean; onTo
 }
 
 function VisToggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; disabled?: boolean }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={on ? 'Đang hiện — bấm để ẩn trên link' : 'Đang ẩn — bấm để hiện'}
+      title={on ? t('workboards.share.visibleTitle') : t('workboards.share.hiddenTitle')}
       className={`inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-tiny font-emphasis transition-colors disabled:opacity-40 ${
         on ? 'text-success hover:bg-success/10' : 'text-text-quaternary hover:bg-surface-2'
       }`}
     >
       {on ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-      {on ? 'Hiện' : 'Ẩn'}
+      {on ? t('workboards.share.visible') : t('workboards.share.hidden')}
     </button>
   );
 }

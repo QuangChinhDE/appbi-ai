@@ -12,7 +12,8 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-3-5-haiku-20241022"
+# Alias (no date suffix) — claude-3-5-haiku-20241022 was retired 2026-02-19.
+ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 
 def _to_anthropic_messages(messages: list[dict]) -> list[dict]:

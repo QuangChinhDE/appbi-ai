@@ -35,6 +35,7 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     "dataset": "datasets",
     "datasource": "data_sources",
     "workboard": "workboards",
+    "knowledge_doc": "govern",
 }
 
 

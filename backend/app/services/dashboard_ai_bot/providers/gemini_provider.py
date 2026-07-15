@@ -17,7 +17,8 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-1.5-flash"
+# gemini-1.5-flash is EOL for new projects — 2.5-flash is the live default.
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 def _to_gemini_contents(messages: list[dict]) -> list[dict]:

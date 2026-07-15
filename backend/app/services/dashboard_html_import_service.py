@@ -1544,6 +1544,8 @@ def _complete_json_with_import_provider(
     if provider == "unavailable":
         return None
 
+    # Legacy Gemini path — retained but NOT selected: html_import_ai_provider
+    # now returns "openai" (or "unavailable"). Kept for reference only.
     if provider == "gemini":
         try:
             import google.generativeai as genai
@@ -1584,6 +1586,8 @@ def _complete_json_with_import_provider(
                 )
             return None
 
+    # OpenAI path (default): LLMClient.complete_json targets api.openai.com and
+    # uses OPENAI_API_KEY; model is gpt-4o-mini (settings.html_import_ai_model).
     return LLMClient.complete_json(prompt, system=system_prompt, model=model, max_tokens=max_tokens)
 
 

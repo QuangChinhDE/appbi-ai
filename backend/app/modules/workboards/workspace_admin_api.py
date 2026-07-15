@@ -1,10 +1,13 @@
 """Authenticated admin endpoints for managing workspaces.
 
 Lives behind ``workboards`` permission because workspace delivery is part of
-the Workboard mini-app flow. A Workboards-scoped PAT should be able to
-create/link/preview workspaces without also requiring Settings admin rights.
-The public-facing flows (login, menu, screen rendering) live in
-``app.api.public``.
+the Workboard mini-app flow. Write endpoints require ``edit`` — the SAME level
+that builds a workboard and creates its per-workboard public links
+(``require_edit_access`` in api.py); a delivery workspace is just the portal
+that bundles those, so gating it higher than the thing it delivers made no
+sense (an ``edit`` user could already expose data via /public-links). Read
+endpoints require ``view``. The public-facing flows (login, menu, screen
+rendering) live in ``app.api.public``.
 """
 from __future__ import annotations
 
@@ -135,7 +138,7 @@ def list_workspaces(
 def create_workspace(
     body: WorkspaceCreateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("workboards", "full")),
+    user: User = Depends(require_permission("workboards", "edit")),
 ):
     slug = body.slug
     if slug:
@@ -178,7 +181,7 @@ def update_workspace(
     workspace_id: int,
     body: WorkspaceUpdateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("workboards", "full")),
+    user: User = Depends(require_permission("workboards", "edit")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
@@ -197,7 +200,7 @@ def update_workspace(
 def rotate_token(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "full")),
+    _: User = Depends(require_permission("workboards", "edit")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
@@ -393,7 +396,7 @@ def preview_session(
 def delete_workspace(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("workboards", "full")),
+    _: User = Depends(require_permission("workboards", "edit")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:

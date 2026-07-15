@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getFilterTypeForColumn, getDistinctValues, type FilterType } from '@/lib/filters';
 import { fetchDatasetModelDistinctValues, modelKeys } from '@/hooks/use-dataset-model';
 import { DateInput } from '@/components/ui/DateInput';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // ── Filter type ──────────────────────────────────────────────────────────────
 // Operator superset — includes all operators from both classic and new modes.
@@ -23,42 +24,42 @@ const MAX_DROPDOWN_VALS = 80;
 // ── Per-type operator menus ───────────────────────────────────────────────────
 const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> = {
   date: [
-    { value: 'between',    label: 'Is between' },
-    { value: 'gte',        label: 'On or after' },
-    { value: 'lte',        label: 'On or before' },
-    { value: 'eq',         label: 'Exactly on' },
-    { value: 'gt',         label: 'After' },
-    { value: 'lt',         label: 'Before' },
-    { value: 'is_null',    label: 'Is empty' },
-    { value: 'is_not_null',label: 'Is not empty' },
+    { value: 'between',    label: 'explore.filters.operator.isBetween' },
+    { value: 'gte',        label: 'explore.filters.operator.onOrAfter' },
+    { value: 'lte',        label: 'explore.filters.operator.onOrBefore' },
+    { value: 'eq',         label: 'explore.filters.operator.exactlyOn' },
+    { value: 'gt',         label: 'explore.filters.operator.after' },
+    { value: 'lt',         label: 'explore.filters.operator.before' },
+    { value: 'is_null',    label: 'explore.filters.operator.isEmpty' },
+    { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
   ],
   number: [
-    { value: 'eq',         label: 'Equals' },
-    { value: 'neq',        label: 'Not equals' },
-    { value: 'between',    label: 'Is between' },
-    { value: 'gt',         label: 'Greater than' },
-    { value: 'gte',        label: 'Greater or equal' },
-    { value: 'lt',         label: 'Less than' },
-    { value: 'lte',        label: 'Less or equal' },
-    { value: 'is_null',    label: 'Is empty' },
-    { value: 'is_not_null',label: 'Is not empty' },
+    { value: 'eq',         label: 'explore.filters.operator.equals' },
+    { value: 'neq',        label: 'explore.filters.operator.notEquals' },
+    { value: 'between',    label: 'explore.filters.operator.isBetween' },
+    { value: 'gt',         label: 'explore.filters.operator.greaterThan' },
+    { value: 'gte',        label: 'explore.filters.operator.greaterOrEqual' },
+    { value: 'lt',         label: 'explore.filters.operator.lessThan' },
+    { value: 'lte',        label: 'explore.filters.operator.lessOrEqual' },
+    { value: 'is_null',    label: 'explore.filters.operator.isEmpty' },
+    { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
   ],
   text: [
-    { value: 'contains',      label: 'Contains' },
-    { value: 'eq',            label: 'Equals' },
-    { value: 'neq',           label: 'Not equals' },
-    { value: 'starts_with',   label: 'Starts with' },
-    { value: 'not_contains',  label: 'Does not contain' },
-    { value: 'is_null',       label: 'Is empty' },
-    { value: 'is_not_null',   label: 'Is not empty' },
+    { value: 'contains',      label: 'explore.filters.operator.contains' },
+    { value: 'eq',            label: 'explore.filters.operator.equals' },
+    { value: 'neq',           label: 'explore.filters.operator.notEquals' },
+    { value: 'starts_with',   label: 'explore.filters.operator.startsWith' },
+    { value: 'not_contains',  label: 'explore.filters.operator.doesNotContain' },
+    { value: 'is_null',       label: 'explore.filters.operator.isEmpty' },
+    { value: 'is_not_null',   label: 'explore.filters.operator.isNotEmpty' },
   ],
   dropdown: [
-    { value: 'in',     label: 'Is any of' },
-    { value: 'not_in', label: 'Is not any of' },
-    { value: 'eq',     label: 'Is exactly' },
-    { value: 'neq',    label: 'Is not' },
-    { value: 'is_null',    label: 'Is empty' },
-    { value: 'is_not_null',label: 'Is not empty' },
+    { value: 'in',     label: 'explore.filters.operator.isAnyOf' },
+    { value: 'not_in', label: 'explore.filters.operator.isNotAnyOf' },
+    { value: 'eq',     label: 'explore.filters.operator.isExactly' },
+    { value: 'neq',    label: 'explore.filters.operator.isNot' },
+    { value: 'is_null',    label: 'explore.filters.operator.isEmpty' },
+    { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
   ],
 };
 
@@ -116,14 +117,14 @@ function humaniseFieldKey(name: string): string {
     .join(' ');
 }
 
-function resolveViewLabel(col: ColInfo): string {
+function resolveViewLabel(col: ColInfo, baseLabel = 'Base'): string {
   if (col.viewLabel?.trim()) return col.viewLabel.trim();
   if (col.viewName?.trim()) return humaniseFieldKey(col.viewName);
   if (col.name.includes('.')) {
     const viewPart = col.name.split('.', 1)[0];
     if (viewPart) return humaniseFieldKey(viewPart);
   }
-  return 'Base';
+  return baseLabel;
 }
 
 function resolveColLabel(col: ColInfo): string {
@@ -180,6 +181,8 @@ export function FilterBuilder({
   filters, onChange, columns, dataRows = [], datasetId, availableFields, readOnly,
   bridgeOnlyViewNames,
 }: FilterBuilderProps) {
+  const { t } = useI18n();
+
   // Build column list — prefer columns with type info, fall back to string[]
   const cols: ColInfo[] = useMemo(() => {
     if (columns && columns.length > 0) return columns;
@@ -257,10 +260,9 @@ export function FilterBuilder({
               <div className="flex items-start gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
                 <Info className="mt-0.5 h-3 w-3 flex-shrink-0" />
                 <span>
-                  Bảng này chỉ nối <strong>gián tiếp</strong> tới bảng gốc của chart
-                  (qua một bảng trung gian). Theo chuẩn PowerBI, filter này sẽ bị{' '}
-                  <strong>bỏ qua</strong> khi chạy. Đặt quan hệ thành{' '}
-                  <strong>cross-filter 2 chiều</strong> trong Data Model nếu muốn áp dụng.
+                  {t('explore.filters.bridgeOnlyPrefix')} <strong>{t('explore.filters.bridgeOnlyIndirect')}</strong>{' '}
+                  {t('explore.filters.bridgeOnlyMiddle')} <strong>{t('explore.filters.bridgeOnlyIgnored')}</strong>{' '}
+                  {t('explore.filters.bridgeOnlySuffix')}
                 </span>
               </div>
             )}
@@ -270,10 +272,10 @@ export function FilterBuilder({
 
       {filters.length === 0 && (
         <span className="group/help relative inline-flex items-center gap-1 text-xs text-text-quaternary italic py-0.5 cursor-default">
-          No filters
+          {t('explore.filters.noFilters')}
           <Info className="h-3 w-3 text-text-quaternary transition-colors group-hover/help:text-brand" />
           <span className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
-            Chart shows all data when no filters are applied.
+            {t('explore.filters.noFiltersHelp')}
           </span>
         </span>
       )}
@@ -284,7 +286,7 @@ export function FilterBuilder({
           disabled={!cols.length}
           className="flex items-center gap-1 text-xs text-warning hover:text-warning font-medium disabled:opacity-40"
         >
-          <Plus className="w-3 h-3" /> Add Filter
+          <Plus className="w-3 h-3" /> {t('explore.filters.addFilter')}
         </button>
       )}
     </div>
@@ -314,6 +316,7 @@ function FieldPickerLite({
   onChange: (v: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -325,7 +328,7 @@ function FieldPickerLite({
     const buckets = new Map<string, { viewLabel: string; items: ColInfo[] }>();
     for (const opt of options) {
       const label = resolveColLabel(opt);
-      const viewLabel = resolveViewLabel(opt);
+      const viewLabel = resolveViewLabel(opt, t('explore.filters.baseView'));
       const viewKey = opt.viewName || (opt.name.includes('.') ? opt.name.split('.', 1)[0] : '__base__');
       if (q) {
         const haystack = `${label} ${opt.name} ${opt.type} ${viewLabel}`.toLowerCase();
@@ -342,7 +345,7 @@ function FieldPickerLite({
       bucket.items.sort((a, b) => resolveColLabel(a).localeCompare(resolveColLabel(b)));
     }
     return Array.from(buckets.values()).sort((a, b) => a.viewLabel.localeCompare(b.viewLabel));
-  }, [options, query]);
+  }, [options, query, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -385,10 +388,10 @@ function FieldPickerLite({
           {selected ? (
             <>
               <span className="font-medium text-text-secondary">{resolveColLabel(selected)}</span>
-              <span className="ml-1.5 text-[10px] text-text-quaternary">· {resolveViewLabel(selected)}</span>
+              <span className="ml-1.5 text-[10px] text-text-quaternary">· {resolveViewLabel(selected, t('explore.filters.baseView'))}</span>
             </>
           ) : (
-            <span className="text-text-quaternary">Choose field…</span>
+            <span className="text-text-quaternary">{t('explore.filters.chooseField')}</span>
           )}
         </span>
         <ChevronDown className={`h-3 w-3 shrink-0 text-text-quaternary transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -402,18 +405,18 @@ function FieldPickerLite({
                 autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search fields…"
+                placeholder={t('explore.filters.searchFields')}
                 className="min-w-0 flex-1 bg-transparent text-xs text-text-secondary outline-none placeholder:text-text-quaternary"
               />
               <span className="text-[10px] text-text-quaternary">
-                {totalCount} field{totalCount === 1 ? '' : 's'}
+                {t(totalCount === 1 ? 'explore.filters.fieldCountOne' : 'explore.filters.fieldCountMany', { count: totalCount })}
               </span>
             </div>
           </div>
           <div className="max-h-64 overflow-y-auto py-0.5">
             {groups.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs italic text-text-quaternary">
-                No fields match
+                {t('explore.filters.noFieldsMatch')}
               </div>
             ) : (
               groups.map((group) => (
@@ -441,7 +444,7 @@ function FieldPickerLite({
                           {resolveColLabel(opt)}
                         </span>
                         <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-quaternary">
-                          {opt.type || 'field'}
+                          {opt.type || t('explore.filters.fieldType')}
                         </span>
                       </button>
                     );
@@ -475,6 +478,7 @@ function FilterRow({
   datasetId,
   onChangeField, onChangeOperator, onChangeValue, onRemove,
 }: FilterRowProps) {
+  const { t } = useI18n();
   const [dropOpen, setDropOpen] = useState(false);
   const selectedVals: string[] = Array.isArray(filter.value) ? filter.value : [];
 
@@ -526,7 +530,7 @@ function FilterRow({
           options={fieldOptions}
           onChange={onChangeField}
         />
-        <button onClick={onRemove} title="Remove filter"
+        <button onClick={onRemove} title={t('explore.filters.removeFilter')}
           className="p-0.5 text-text-quaternary hover:text-danger flex-shrink-0">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -539,7 +543,7 @@ function FilterRow({
         className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand focus:border-brand/50 outline-none"
       >
         {operators.map(o => (
-          <option key={o.value} value={o.value}>{o.label}</option>
+          <option key={o.value} value={o.value}>{t(o.label)}</option>
         ))}
       </select>
 
@@ -551,14 +555,14 @@ function FilterRow({
       {colType === 'date' && filter.operator === 'between' && (
         <div className="grid grid-cols-2 gap-1.5">
           <div>
-            <p className="text-[10px] text-text-quaternary mb-0.5">From date</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">{t('explore.filters.fromDate')}</p>
             <DateInput
               value={Array.isArray(filter.value) ? filter.value[0] ?? '' : ''}
               onChange={d => onChangeValue([d, Array.isArray(filter.value) ? filter.value[1] ?? '' : ''])}
             />
           </div>
           <div>
-            <p className="text-[10px] text-text-quaternary mb-0.5">To date</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">{t('explore.filters.toDate')}</p>
             <DateInput
               value={Array.isArray(filter.value) ? filter.value[1] ?? '' : ''}
               onChange={d => onChangeValue([Array.isArray(filter.value) ? filter.value[0] ?? '' : '', d])}
@@ -577,7 +581,7 @@ function FilterRow({
       {colType === 'number' && filter.operator === 'between' && (
         <div className="grid grid-cols-2 gap-1.5">
           <div>
-            <p className="text-[10px] text-text-quaternary mb-0.5">Min</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">{t('explore.filters.min')}</p>
             <input type="number"
               value={Array.isArray(filter.value) ? filter.value[0] ?? '' : ''}
               onChange={e => onChangeValue([e.target.value, Array.isArray(filter.value) ? filter.value[1] ?? '' : ''])}
@@ -585,7 +589,7 @@ function FilterRow({
             />
           </div>
           <div>
-            <p className="text-[10px] text-text-quaternary mb-0.5">Max</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">{t('explore.filters.max')}</p>
             <input type="number"
               value={Array.isArray(filter.value) ? filter.value[1] ?? '' : ''}
               onChange={e => onChangeValue([Array.isArray(filter.value) ? filter.value[0] ?? '' : '', e.target.value])}
@@ -598,7 +602,7 @@ function FilterRow({
         <input type="number"
           value={filter.value ?? ''}
           onChange={e => onChangeValue(e.target.value === '' ? '' : Number(e.target.value))}
-          placeholder="Enter number…"
+          placeholder={t('explore.filters.enterNumber')}
           className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
         />
       )}
@@ -608,7 +612,7 @@ function FilterRow({
         <input type="text"
           value={typeof filter.value === 'string' ? filter.value : ''}
           onChange={e => onChangeValue(e.target.value)}
-          placeholder="Enter value…"
+          placeholder={t('explore.filters.enterValue')}
           className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
         />
       )}
@@ -621,10 +625,10 @@ function FilterRow({
           >
             <span className={selectedVals.length === 0 ? 'text-text-quaternary' : 'text-text-secondary'}>
               {selectedVals.length === 0
-                ? 'Choose values…'
+                ? t('explore.filters.chooseValues')
                 : selectedVals.length === 1
                   ? selectedVals[0]
-                  : `${selectedVals.length} selected`}
+                  : t('explore.filters.selectedCount', { count: selectedVals.length })}
             </span>
             <ChevronDown className={`w-3 h-3 text-text-quaternary transition-transform ${dropOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -639,14 +643,14 @@ function FilterRow({
                 {shouldFetchRemote && remoteDistinctQuery.isLoading ? (
                   <div className="flex items-center gap-1.5 px-3 py-2 text-xs italic text-text-quaternary">
                     <Loader2 className="h-3 w-3 animate-spin" />
-                    Loading distinct values from semantic engine…
+                    {t('explore.filters.loadingDistinct')}
                   </div>
                 ) : shouldFetchRemote && remoteDistinctQuery.isError ? (
                   <p className="px-3 py-2 text-xs italic text-danger">
-                    Could not load distinct values. Check that the field is reachable from the chart's base view.
+                    {t('explore.filters.loadDistinctFailed')}
                   </p>
                 ) : effectiveDistinctValues.length === 0 ? (
-                  <p className="text-xs text-text-quaternary px-3 py-2 italic">No values in sample data</p>
+                  <p className="text-xs text-text-quaternary px-3 py-2 italic">{t('explore.filters.noValuesInSample')}</p>
                 ) : (
                   effectiveDistinctValues.map(v => (
                     <label key={v}
@@ -654,7 +658,7 @@ function FilterRow({
                     >
                       <input type="checkbox" checked={selectedVals.includes(v)} onChange={() => toggleVal(v)}
                         className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1" />
-                      <span className="truncate">{v || '(empty)'}</span>
+                      <span className="truncate">{v || t('explore.filters.emptyValue')}</span>
                     </label>
                   ))
                 )}
@@ -682,14 +686,14 @@ function FilterRow({
               onChange={e => onChangeValue(e.target.value)}
               className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             >
-              <option value="">— select value —</option>
+              <option value="">{t('explore.filters.selectValue')}</option>
               {distinctValues.map(v => <option key={v} value={v}>{v}</option>)}
             </select>
           )
           : (
             <input type="text" value={typeof filter.value === 'string' ? filter.value : ''}
               onChange={e => onChangeValue(e.target.value)}
-              placeholder="Enter value…"
+              placeholder={t('explore.filters.enterValue')}
               className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             />
           )

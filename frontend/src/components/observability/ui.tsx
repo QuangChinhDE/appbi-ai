@@ -6,8 +6,10 @@
  */
 import { cn } from '@/lib/utils';
 import type { Pillar, Severity } from '@/lib/observability';
-import { PILLAR_LABEL, SEVERITY_LABEL } from '@/lib/observability';
+import { useI18n } from '@/providers/LanguageProvider';
 import { Clock, Database, BarChart3, LayoutDashboard, GitBranch } from 'lucide-react';
+
+type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
 const SEV_TONE: Record<string, string> = {
   critical: 'bg-danger/10 text-danger', error: 'bg-danger/10 text-danger',
@@ -15,10 +17,12 @@ const SEV_TONE: Record<string, string> = {
 };
 
 export function SeverityBadge({ severity }: { severity: Severity | string }) {
+  const { t } = useI18n();
   const s = (severity || 'info').toLowerCase();
+  const labelKey = ['info', 'warning', 'critical'].includes(s) ? `observability.severity.${s}` : null;
   return (
     <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-tiny font-emphasis capitalize', SEV_TONE[s] ?? 'bg-surface-2 text-text-tertiary')}>
-      {SEVERITY_LABEL[s as Severity] ?? severity}
+      {labelKey ? t(labelKey) : severity}
     </span>
   );
 }
@@ -32,16 +36,22 @@ const STATUS_TONE: Record<string, string> = {
   error: 'bg-warning/10 text-warning',
   unknown: 'bg-surface-2 text-text-tertiary',
 };
-const STATUS_LABEL: Record<string, string> = {
-  open: 'Đang mở', acknowledged: 'Đã nhận', resolved: 'Đã xử lý',
-  ok: 'Bình thường', breached: 'Vi phạm', error: 'Lỗi', unknown: '—',
+const STATUS_LABEL_KEY: Record<string, string> = {
+  open: 'observability.status.open',
+  acknowledged: 'observability.status.acknowledged',
+  resolved: 'observability.status.resolved',
+  ok: 'observability.status.ok',
+  breached: 'observability.status.breached',
+  error: 'observability.status.error',
+  unknown: 'observability.status.unknown',
 };
 
 export function StatusPill({ status }: { status?: string | null }) {
+  const { t } = useI18n();
   const s = (status || 'unknown').toLowerCase();
   return (
     <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-tiny font-emphasis', STATUS_TONE[s] ?? 'bg-surface-2 text-text-tertiary')}>
-      {STATUS_LABEL[s] ?? status}
+      {STATUS_LABEL_KEY[s] ? t(STATUS_LABEL_KEY[s]) : status}
     </span>
   );
 }
@@ -53,10 +63,12 @@ const PILLAR_TONE: Record<string, string> = {
 };
 
 export function PillarBadge({ pillar }: { pillar: Pillar | string }) {
+  const { t } = useI18n();
   const p = (pillar || '').toLowerCase();
+  const labelKey = ['freshness', 'volume', 'schema', 'distribution', 'quality'].includes(p) ? `observability.pillar.${p}` : null;
   return (
     <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-tiny font-emphasis', PILLAR_TONE[p] ?? 'bg-surface-2 text-text-tertiary')}>
-      {PILLAR_LABEL[p as Pillar] ?? pillar}
+      {labelKey ? t(labelKey) : pillar}
     </span>
   );
 }
@@ -94,39 +106,56 @@ export function Sparkline({ values, breached, width = 120, height = 28 }: {
   );
 }
 
-export function relativeTime(iso?: string | null): string {
+export function relativeTime(iso?: string | null, t?: TFunction, locale = 'vi-VN'): string {
   if (!iso) return '—';
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '—';
   const diff = Date.now() - then;
   const mins = Math.round(diff / 60000);
-  if (mins < 1) return 'vừa xong';
-  if (mins < 60) return `${mins} phút trước`;
+  const fallback = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  if (mins < 1) return t ? t('observability.time.justNow') : fallback.format(0, 'minute');
+  if (mins < 60) return t ? t('observability.time.minutesAgo', { count: mins }) : fallback.format(-mins, 'minute');
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} giờ trước`;
+  if (hrs < 24) return t ? t('observability.time.hoursAgo', { count: hrs }) : fallback.format(-hrs, 'hour');
   const days = Math.round(hrs / 24);
-  if (days < 30) return `${days} ngày trước`;
-  return new Date(iso).toLocaleDateString('vi-VN');
+  if (days < 30) return t ? t('observability.time.daysAgo', { count: days }) : fallback.format(-days, 'day');
+  return new Date(iso).toLocaleDateString(locale);
 }
 
-export function fmtNumber(n?: number | null): string {
+export function fmtNumber(n?: number | null, locale = 'vi-VN'): string {
   if (n == null) return '—';
-  return new Intl.NumberFormat('vi-VN').format(n);
+  return new Intl.NumberFormat(locale).format(n);
 }
 
-export function fmtBytes(n?: number | null): string {
+export function fmtBytes(n?: number | null, locale = 'vi-VN'): string {
   if (!n) return '—';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let v = n, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: v < 10 && i > 0 ? 1 : 0 }).format(v)} ${units[i]}`;
 }
 
-export function fmtDuration(hours?: number | null): string {
+function fmtUnit(value: number, unit: 'minute' | 'hour' | 'day', locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 1,
+    style: 'unit',
+    unit,
+    unitDisplay: 'long',
+  }).format(value);
+}
+
+export function fmtDuration(hours?: number | null, t?: TFunction, locale = 'vi-VN'): string {
   if (hours == null) return '—';
-  if (hours < 1) return `${Math.round(hours * 60)} phút`;
-  if (hours < 48) return `${hours.toFixed(1)} giờ`;
-  return `${(hours / 24).toFixed(1)} ngày`;
+  if (hours < 1) {
+    const count = Math.round(hours * 60);
+    return t ? t('observability.duration.minutes', { count }) : fmtUnit(count, 'minute', locale);
+  }
+  if (hours < 48) {
+    const count = Number(hours.toFixed(1));
+    return t ? t('observability.duration.hours', { count }) : fmtUnit(count, 'hour', locale);
+  }
+  const count = Number((hours / 24).toFixed(1));
+  return t ? t('observability.duration.days', { count }) : fmtUnit(count, 'day', locale);
 }
 
 export const ClockIcon = Clock;

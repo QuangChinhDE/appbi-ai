@@ -33,6 +33,34 @@ export interface ConditionalFormatRule {
   benchmarkField?: string;
   color?: string; // Text color
   backgroundColor?: string; // Background color
+  /**
+   * Cross-column (Feature #3): the column whose value DRIVES the condition,
+   * while the style is applied to `field`. Undefined → the condition is
+   * evaluated on `field` itself (backward-compatible). Example: color the
+   * "Tên nhân viên" column (field) red when "Doanh thu" (sourceColumn) < 50M.
+   */
+  sourceColumn?: string;
+  /**
+   * Benchmark type (Feature #5):
+   *  - 'value'      → compare against the literal `value` (default / legacy).
+   *  - 'field'      → compare against another column `benchmarkField` (legacy,
+   *                   inferred when benchmarkField is set).
+   *  - 'percentile' → `value` is a percentile 0–100 computed over the column's
+   *                   values this render (e.g. operator '>=' + value 90 → top 10%).
+   *  - 'percentage' → `value` is a % of the column's max (value/max*100).
+   */
+  benchmarkType?: 'value' | 'field' | 'percentile' | 'percentage';
+  /**
+   * Presentation (Feature #4):
+   *  - 'color'   → text/background color (default / legacy).
+   *  - 'dataBar' → an in-cell horizontal bar proportional to the value across
+   *                the column's min…max (Excel/PBI style). `barColor` sets fill.
+   *  - 'icon'    → prepend an indicator icon (`icon`) when the rule matches.
+   */
+  mode?: 'color' | 'dataBar' | 'icon';
+  barColor?: string;
+  /** Icon key for mode 'icon': up | down | flat | check | cross | warning | flag | star | dot. */
+  icon?: string;
 }
 
 export interface TableHeatmapRule {
@@ -78,6 +106,31 @@ export interface TableSummaryRowConfig {
 export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
 export type KpiGoalDirection = 'up' | 'down';
 
+// Benchmark line aggregate (dynamic value computed over the plotted data — like
+// a Tableau/PBI reference line). `percentile` uses `percentile` (0–100).
+export type BenchmarkAggregate = 'avg' | 'median' | 'min' | 'max' | 'sum' | 'percentile';
+
+/**
+ * One benchmark / reference line on a bar/line/area chart. Multiple lines are
+ * supported (e.g. "Minimum target", "Expected", "Excellent"). The value is
+ * either a FIXED number or DYNAMIC — an aggregate of a chosen metric computed
+ * over the current (filtered) data, so the line moves with the data.
+ */
+export interface BenchmarkLineDef {
+  id?: string;
+  label?: string;
+  color?: string;
+  lineStyle?: ChartBenchmarkLineStyle;
+  /** 'value' → fixed number; 'aggregate' → computed from `field`. */
+  source?: 'value' | 'aggregate';
+  value?: number | '';
+  /** Metric key (agg__field) to aggregate for source='aggregate'. */
+  field?: string;
+  aggregate?: BenchmarkAggregate;
+  /** 0–100 for aggregate='percentile'. */
+  percentile?: number;
+}
+
 // Chart-level sort rule (applied client-side before rendering)
 export interface ChartSortRule {
   field: string;
@@ -92,6 +145,17 @@ export interface KpiValueColorRule {
   value: number;
   color: string;
   label?: string;
+  /**
+   * Dynamic threshold source:
+   *  - 'value'      → compare against the static `value` (default / legacy).
+   *  - 'benchmark'  → compare against the KPI's Target/benchmark value (which can
+   *                   itself be a dynamic metric, e.g. Goal/Budget/Target). The
+   *                   `multiplier`/`offset` form a simple formula, e.g.
+   *                   benchmark × 1.2 or benchmark + 10.
+   */
+  source?: 'value' | 'benchmark';
+  multiplier?: number;
+  offset?: number;
 }
 
 // Explore 2.0: Grouping configuration

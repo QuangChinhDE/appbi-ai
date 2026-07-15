@@ -1916,6 +1916,9 @@ def _resolve_chart_snapshot_overrides(
         as_of = snapshot_service.as_of(db, list(overrides.keys()))
         stale = snapshot_service.is_stale(as_of, ttl_minutes)
         trigger = dataset_obj.id if stale else None
+        # Change-driven refresh: rate-limited background check — rebuild if the
+        # SOURCE DATA changed since build (works for builder too; no TTL needed).
+        snapshot_service.schedule_source_change_check(dataset_obj.id)
         return overrides, as_of, "snapshot", stale, trigger
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
         logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
@@ -2348,10 +2351,22 @@ def _execute_semantic_chart_runtime(
         if isinstance(cond, dict)
     ]
 
+    coalesce_leader = False
     if cache_enabled:
         cached = query_cache.get_cached(
             datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
         )
+        if cached is None:
+            # Cross-process request coalescing: on a multi-worker deployment N
+            # viewers of the SAME report each fire this identical query. Elect ONE
+            # leader across all workers to run it; everyone else waits for the
+            # leader's cached result instead of duplicating the warehouse scan
+            # (fixes cost scaling linearly with concurrent viewers). Returns a
+            # coalesced result (waiter) or flags us as the leader (must run + then
+            # end_coalesced_compute). Falls back to "compute" on any error.
+            cached, coalesce_leader = query_cache.begin_coalesced_compute(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+            )
         if cached is not None:
             # Phase-15.96 — `cache_filters` only contains filters that
             # made it past `_normalize_runtime_filters_for_chart`. Two
@@ -2598,6 +2613,11 @@ def _execute_semantic_chart_runtime(
         query_cache.set_cached(
             datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
         )
+        if coalesce_leader:
+            # Result is cached now → wake any workers waiting on this query.
+            query_cache.end_coalesced_compute(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+            )
 
     logger.info(
         "[perf] semantic chart EXECUTED (cache=MISS) chart_id=%s ds=%d ds_type=%s explore=%s "
@@ -3322,6 +3342,80 @@ class ChartService:
         finally:
             _pbi_chart_id_var.reset(_pbi_token)
             _snapshot_ttl_var.reset(_snap_ttl_token)
+
+    @staticmethod
+    def get_charts_data_batch(
+        items: list[dict],
+        *,
+        serialize=None,
+        max_workers: int = 8,
+    ) -> list[dict]:
+        """Fetch data for MANY charts in ONE call — the server-side fan-out behind
+        the per-page "1 request = 1 page" endpoint (perf: kill N HTTP round-trips
+        + FE socket queueing, and share the dashboard/link resolve done ONCE by
+        the caller).
+
+        Each ``item`` is ``{chart_id, extra_filters?, filter_context?,
+        granularity_override?, snapshot_ttl_minutes?}`` and runs through the SAME
+        ``get_chart_data`` the single-chart endpoints use — so a batch result is
+        byte-identical to N individual calls (this is a transport + concurrency
+        layer, NOT a new query path; the result cache / single-flight still apply
+        per chart).
+
+        Concurrency: each chart runs in its OWN thread with its OWN
+        ``SessionLocal()`` (SQLAlchemy Session is not thread-safe; the caller's
+        request session is never touched — same pattern as
+        ``_dispatch_per_measure_isolation``). Failures are ISOLATED per chart: a
+        bad tile yields ``{"ok": False, "error": ...}`` instead of failing the
+        whole page. Result order matches ``items``.
+
+        ``serialize`` (optional) is run INSIDE the worker thread while its
+        session is still open, on the raw ``get_chart_data`` result, and its
+        return value becomes ``data``. This is REQUIRED when the caller will
+        serialize an API model built from the result: ``get_chart_data`` returns
+        a dict holding the Chart ORM instance, so it must be converted to a
+        detached-safe form (e.g. ``ChartDataResponse(**d)``, which copies via
+        ``from_attributes``) BEFORE the thread closes its session — otherwise the
+        request thread hits ``DetachedInstanceError`` on lazy attributes.
+        """
+        if not items:
+            return []
+        from concurrent.futures import ThreadPoolExecutor
+        from app.core.database import SessionLocal
+
+        def _one(item: dict) -> dict:
+            cid = int(item["chart_id"])
+            local_db = SessionLocal()
+            try:
+                data = ChartService.get_chart_data(
+                    local_db,
+                    cid,
+                    extra_filters=item.get("extra_filters"),
+                    filter_context=item.get("filter_context"),
+                    granularity_override=item.get("granularity_override"),
+                    snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
+                )
+                if serialize is not None:
+                    data = serialize(data)
+                return {"chart_id": cid, "ok": True, "data": data}
+            except ValueError as exc:
+                # Invalid chart config for the current dataset state — the same
+                # case the single endpoint maps to 400 (Vietnamese-friendly msg).
+                return {"chart_id": cid, "ok": False, "status": 400, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 — one tile must not sink the page
+                logger.exception("Batch chart-data failed for chart_id=%s", cid)
+                return {
+                    "chart_id": cid, "ok": False, "status": 500,
+                    "error": f"Failed to retrieve chart data: {exc}",
+                }
+            finally:
+                local_db.close()
+
+        # Bound concurrency: a big page must not open dozens of warehouse
+        # connections at once (the DB pool is shared with foreground requests).
+        workers = max(1, min(max_workers, len(items)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="chartbatch") as ex:
+            return list(ex.map(_one, items))
 
     @staticmethod
     def _get_chart_data_inner(

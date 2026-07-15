@@ -6,7 +6,7 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
-from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.cell.cell import Cell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 

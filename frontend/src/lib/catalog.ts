@@ -1,14 +1,9 @@
 /**
  * Catalog client — talks ONLY to AppBI's /api/v1/catalog/* proxy.
  * Native AppBI backend (its own Postgres) — no third-party catalog server.
- * Powers the Govern + Observability modules.
+ * Powers the Govern module (Vocabulary + Metrics + Knowledge Hub).
  */
 import { apiClient } from './api-client';
-
-export interface CatalogStatus {
-  enabled: boolean;
-  connected: boolean;
-}
 
 // ── Govern ────────────────────────────────────────────────────────────────
 export interface Glossary {
@@ -74,83 +69,11 @@ export interface Metric {
   glossaryTerms?: VocabRef[];
   tags?: VocabRef[];
 }
-export interface MetricPatch {
-  view_id: number;
-  name: string;
-  label?: string;
-  description?: string;
-  glossary_terms?: VocabRef[];
-  tags?: VocabRef[];
-}
-export interface VocabUsageMetric {
-  name: string;
-  label: string;
-  type: string;
-  dataset?: string | null;
-  dataset_id?: number | null;
-  table?: string | null;
-  view_id?: number;
-  table_id?: number | null;
-}
-export interface VocabUsage {
-  fqn: string;
-  metrics: VocabUsageMetric[];
-  count: number;
-}
 export interface MetricsLibrary {
   metrics: Metric[];
   total: number;
   datasets: number;
   conflicts: number;
-}
-export interface MetricVariants {
-  name: string;
-  count: number;
-  distinctDefinitions: number;
-  variants: Metric[];
-}
-export interface MetricUsageChart { id: number; name: string; chartType?: string | null; dashboardIds: number[]; }
-export interface MetricUsageDashboard { id: number; name: string; }
-export interface MetricUsage {
-  charts: MetricUsageChart[];
-  dashboards: MetricUsageDashboard[];
-  chartCount: number;
-  dashboardCount: number;
-}
-
-// ── Observability ───────────────────────────────────────────────────────────
-export interface DataQualitySummary {
-  total: number;
-  success: number;
-  failed: number;
-  aborted: number;
-  successRate: number;
-}
-export interface DataQualityTest {
-  name: string;
-  fqn: string;
-  status: string;
-  entity?: string | null;
-}
-export interface Incident {
-  id?: string;
-  testCase?: string | null;
-  severity?: string | null;
-  status?: string | null;
-  assignee?: string | null;
-  timestamp?: number | null;
-}
-export interface Alert {
-  name: string;
-  fqn: string;
-  description?: string | null;
-  enabled: boolean;
-  alertType?: string | null;
-}
-
-export async function getCatalogStatus(): Promise<CatalogStatus> {
-  const { data } = await apiClient.get<CatalogStatus>('/catalog/status');
-  return data;
 }
 
 // ── Glossary CRUD (OM-backed) ───────────────────────────────────────────────
@@ -201,81 +124,541 @@ export async function getMetrics(): Promise<MetricsLibrary> {
   return { metrics: data.metrics ?? [], total: data.total ?? 0, datasets: data.datasets ?? 0, conflicts: data.conflicts ?? 0 };
 }
 
-export async function getMetricVariants(name: string): Promise<MetricVariants> {
-  const { data } = await apiClient.get<MetricVariants>('/catalog/govern/metric-variants', { params: { name } });
-  return { name: data.name, count: data.count ?? 0, distinctDefinitions: data.distinctDefinitions ?? 0, variants: data.variants ?? [] };
+// ── Managed Metrics (metrics quản trị doanh nghiệp) — AUTHORED KPIs ──────────
+export interface ManagedMetric {
+  name: string;                 // display name
+  machine_name: string;         // stable id
+  fqn: string;
+  definition?: string | null;
+  formula?: string | null;
+  unit?: string | null;
+  grain?: string | null;        // daily|weekly|monthly|quarterly|yearly|point_in_time
+  category?: string | null;
+  direction: 'up_good' | 'down_good' | 'neutral';
+  target_value?: number | null;
+  target_operator?: string | null;   // >= | <= | = | between
+  target_value2?: number | null;
+  owner?: string | null;
+  related_term_fqn?: string | null;
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  measure_ref?: string | null;
+  home_doc_id?: number | null;  // knowledge doc where this metric is DEFINED (home/SSOT)
+  anchor?: string | null;
+  synonyms: string[];
+  status: 'Draft' | 'Approved' | 'Deprecated';
+  version: number;
+  provider?: string | null;
+  updated_at?: string | null;
+  /** Resolved on LIST — title of the home doc + how many docs reuse it. */
+  home_doc_title?: string | null;
+  usage_count?: number;
 }
 
-export async function getMetricUsage(tableId: number, name: string): Promise<MetricUsage> {
-  const { data } = await apiClient.get<MetricUsage>('/catalog/govern/metric-usage', {
-    params: { table_id: tableId, name },
+/** A minimal knowledge-doc reference used in metric lineage + asset-docs. */
+export interface KnowledgeDocRef {
+  id: number;
+  title: string;
+  space: string;
+}
+
+export interface ManagedMetricLineage {
+  home_doc: KnowledgeDocRef | null;
+  used_in: KnowledgeDocRef[];
+}
+
+/** GET one managed metric — carries the reuse/SSOT lineage graph. */
+export interface ManagedMetricDetail extends ManagedMetric {
+  lineage?: ManagedMetricLineage;
+}
+
+export interface ManagedMetricWrite {
+  name: string;
+  machine_name?: string;        // set on EDIT
+  definition?: string;
+  formula?: string;
+  unit?: string;
+  grain?: string;
+  category?: string;
+  direction?: 'up_good' | 'down_good' | 'neutral';
+  target_value?: number | null;
+  target_operator?: string;
+  target_value2?: number | null;
+  owner?: string;
+  related_term_fqn?: string;
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  measure_ref?: string;
+  home_doc_id?: number | null;
+  anchor?: string;
+  synonyms?: string[];
+  status?: 'Draft' | 'Approved' | 'Deprecated';
+}
+
+export async function listManagedMetrics(params?: { category?: string; status?: string }): Promise<ManagedMetric[]> {
+  const { data } = await apiClient.get<{ metrics: ManagedMetric[] }>('/catalog/govern/managed-metrics', { params });
+  return data.metrics ?? [];
+}
+
+/** Fetch a single managed metric (by machine_name) with its SSOT + reuse lineage. */
+export async function getManagedMetric(machineName: string): Promise<ManagedMetricDetail> {
+  const { data } = await apiClient.get<ManagedMetricDetail>(`/catalog/govern/managed-metric/${encodeURIComponent(machineName)}`);
+  return data;
+}
+
+export async function upsertManagedMetric(body: ManagedMetricWrite): Promise<{ machine_name: string; version: number }> {
+  const { data } = await apiClient.put('/catalog/govern/managed-metric', body);
+  return data;
+}
+
+export async function deleteManagedMetric(name: string): Promise<void> {
+  await apiClient.delete(`/catalog/govern/managed-metric/${encodeURIComponent(name)}`);
+}
+
+// ── Knowledge Hub (Cẩm nang tri thức) ───────────────────────────────────────
+export interface KnowledgeDoc {
+  id: number;
+  title: string;
+  slug?: string | null;
+  space: string;
+  parent_id?: number | null;
+  position: number;
+  doc_type: string;             // overview|guide|domain|process|faq|article
+  summary?: string | null;
+  body?: string;                // markdown (only on GET one)
+  tags: string[];
+  related_metrics: string[];
+  related_terms: string[];
+  related_dashboard_ids: number[];
+  related_dataset_ids: number[];
+  status: 'Draft' | 'Published' | 'Archived';
+  version: number;
+  pinned: boolean;
+  owner?: string | null;
+  updated_at?: string | null;
+  /** Resolved on GET one — metric embed tokens ({{metric:slug}}) → cards. */
+  metrics_on_page?: (ManagedMetric & { is_source: boolean })[];
+  missing_metric_tokens?: string[];
+  /** Resolved on GET one — asset embed tokens ({{dashboard|dataset|term:...}}). */
+  assets_on_page?: KnowledgeAsset[];
+  /** Resolved on GET one — the knowledge-graph neighborhood with reasons. */
+  related_docs?: RelatedDoc[];
+  // ── Knowledge Hub metadata + AI section + usage telemetry ──
+  business_domain?: string | null;
+  process_ref?: string | null;
+  review_date?: string | null;          // YYYY-MM-DD
+  last_verified_at?: string | null;
+  importance?: 'low' | 'normal' | 'high' | string;
+  ai_summary?: string | null;
+  ai_keywords?: string[];
+  view_count?: number;
+  retrieval_count?: number;
+  /** Deterministic AI-readiness score + machine keys of what's missing. */
+  ai_ready?: { score: number; missing: string[] };
+  /** Which version is live (RAG/public read it); may differ from the latest. */
+  published_version?: number | null;
+  /** [[wikilinks]] this doc points at, resolved for the reader. */
+  wikilinks_on_page?: { target: string; alias?: string | null; doc_id: number | null; title: string | null; exists: boolean }[];
+  /** Docs that explicitly [[link]] to this one (Obsidian backlinks). */
+  backlinks?: { id: number; title: string; space: string }[];
+  // ── Resource sharing / permissions (same model as Dataset) ──
+  owner_id?: string | null;
+  owner_email?: string | null;
+  /** Caller's effective permission on this doc: none|view|edit|full. */
+  user_permission?: string | null;
+}
+
+export interface RelatedDoc {
+  id: number;
+  title: string;
+  space: string;
+  shared_metrics: string[];
+  shared_dashboards?: string[];
+  shared_datasets?: string[];
+  shared_tags?: string[];
+}
+
+export interface KnowledgeAsset {
+  type: 'dashboard' | 'dataset' | 'term';
+  ref: string;
+  name?: string | null;
+  description?: string | null;
+  definition?: string | null;
+  open_path?: string | null;
+  exists: boolean;
+}
+
+export interface KnowledgeSpace { space: string; count: number; }
+
+export interface KnowledgeDocWrite {
+  id?: number;
+  title: string;
+  space?: string;
+  parent_id?: number | null;
+  position?: number;
+  doc_type?: string;
+  summary?: string;
+  body?: string;
+  tags?: string[];
+  related_metrics?: string[];
+  related_terms?: string[];
+  related_dashboard_ids?: number[];
+  related_dataset_ids?: number[];
+  status?: 'Draft' | 'Published' | 'Archived';
+  pinned?: boolean;
+  owner?: string;
+  change_note?: string;         // optional note recorded on the version snapshot
+  business_domain?: string;
+  process_ref?: string;
+  review_date?: string | null;  // YYYY-MM-DD
+  importance?: string;          // low|normal|high
+}
+
+export async function listKnowledge(params?: { space?: string; status?: string }): Promise<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }> {
+  const { data } = await apiClient.get<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }>('/catalog/govern/knowledge', { params });
+  return { docs: data.docs ?? [], spaces: data.spaces ?? [] };
+}
+
+export async function getKnowledgeDoc(id: number): Promise<KnowledgeDoc> {
+  const { data } = await apiClient.get<KnowledgeDoc>(`/catalog/govern/knowledge/${id}`);
+  return data;
+}
+
+export async function upsertKnowledgeDoc(body: KnowledgeDocWrite): Promise<{ id: number; version: number; slug: string }> {
+  const { data } = await apiClient.put('/catalog/govern/knowledge', body);
+  return data;
+}
+
+export async function deleteKnowledgeDoc(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/knowledge/${id}`);
+}
+
+// Version history (locked snapshots of a business doc over time)
+export interface KnowledgeDocVersion {
+  version: number;
+  title: string;
+  status?: string | null;
+  change_note?: string | null;
+  changed_by?: string | null;
+  created_at?: string | null;
+  space?: string | null;
+  doc_type?: string | null;
+  summary?: string | null;
+  body?: string;
+  is_published?: boolean;
+  is_latest?: boolean;
+}
+
+/** Make a specific version live (RAG/public reads it); requires a change note. */
+export async function publishVersion(docId: number, version: number, changeNote: string): Promise<{ published_version: number }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/publish`, { version, change_note: changeNote });
+  return data;
+}
+/** AI drafts a short "what changed" note from the diff (never the whole doc). */
+export async function aiChangeNote(docId: number, version: number): Promise<string> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/versions/${version}/change-note-ai`);
+  return data.change_note ?? '';
+}
+
+export async function listDocVersions(docId: number): Promise<KnowledgeDocVersion[]> {
+  const { data } = await apiClient.get<{ versions: KnowledgeDocVersion[] }>(`/catalog/govern/knowledge/${docId}/versions`);
+  return data.versions ?? [];
+}
+
+export async function getDocVersion(docId: number, version: number): Promise<KnowledgeDocVersion> {
+  const { data } = await apiClient.get<KnowledgeDocVersion>(`/catalog/govern/knowledge/${docId}/versions/${version}`);
+  return data;
+}
+
+// AI-drafted document: the backend reads the dataset's real model + sample +
+// metrics and writes a business doc (unsaved) for the user to review/edit.
+export interface KnowledgeDraft {
+  title: string;
+  summary: string;
+  body: string;
+  tags: string[];
+  space?: string;
+  related_dataset_ids?: number[];
+  related_dashboard_ids?: number[];
+}
+export interface AiDraftReq { dataset_ids: number[]; dashboard_ids?: number[]; focus?: string }
+export async function aiDraftKnowledge(req: AiDraftReq): Promise<KnowledgeDraft> {
+  const { data } = await apiClient.post<KnowledgeDraft>('/catalog/govern/knowledge/ai-draft', {
+    dataset_ids: req.dataset_ids,
+    dashboard_ids: req.dashboard_ids ?? [],
+    focus: req.focus ?? null,
   });
   return data;
 }
 
-export async function updateMetric(patch: MetricPatch): Promise<void> {
-  await apiClient.patch('/catalog/govern/metric', patch);
+// ── Knowledge Hub: search everything / AI summary / verify ──────────────────
+export interface SearchHit { id: number | string; name: string; subtitle?: string; open_path?: string }
+export interface GovernSearchResult {
+  documents: SearchHit[]; metrics: SearchHit[]; terms: SearchHit[]; dashboards: SearchHit[]; datasets: SearchHit[];
+}
+export async function governSearch(q: string): Promise<GovernSearchResult> {
+  const { data } = await apiClient.get<GovernSearchResult>('/catalog/govern/search', { params: { q } });
+  return {
+    documents: data.documents ?? [], metrics: data.metrics ?? [], terms: data.terms ?? [],
+    dashboards: data.dashboards ?? [], datasets: data.datasets ?? [],
+  };
 }
 
-/** Reverse lineage: metrics that have a given glossary term / classification tag attached. */
-export async function getVocabUsage(fqn: string): Promise<VocabUsage> {
-  const { data } = await apiClient.get<VocabUsage>('/catalog/govern/vocab-usage', { params: { fqn } });
-  return { fqn: data.fqn, metrics: data.metrics ?? [], count: data.count ?? 0 };
+export async function regenAiSummary(docId: number): Promise<{ ai_summary: string; ai_keywords: string[] }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/ai-summary`);
+  return { ai_summary: data.ai_summary ?? '', ai_keywords: data.ai_keywords ?? [] };
 }
 
-export async function getDataQuality(): Promise<{ summary: DataQualitySummary; tests: DataQualityTest[] }> {
-  const { data } = await apiClient.get<{ summary: DataQualitySummary; tests: DataQualityTest[] }>(
-    '/catalog/observability/data-quality',
-  );
+// Whole-hub knowledge graph (Obsidian-style): docs + [[wikilink]]/shared-KPI edges.
+export interface GraphNode { id: number; title: string; space: string; doc_type: string }
+export interface GraphEdge { from: number; to: number; type: 'link' | 'metric' }
+export interface KnowledgeGraph { nodes: GraphNode[]; edges: GraphEdge[] }
+export async function governGraph(): Promise<KnowledgeGraph> {
+  const { data } = await apiClient.get<KnowledgeGraph>('/catalog/govern/graph');
+  return { nodes: data.nodes ?? [], edges: data.edges ?? [] };
+}
+
+export async function verifyDoc(docId: number): Promise<{ last_verified_at: string }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/verify`);
   return data;
 }
-export async function listIncidents(): Promise<Incident[]> {
-  const { data } = await apiClient.get<{ incidents: Incident[] }>('/catalog/observability/incidents');
-  return data.incidents ?? [];
-}
-export async function listAlerts(): Promise<Alert[]> {
-  const { data } = await apiClient.get<{ alerts: Alert[] }>('/catalog/observability/alerts');
-  return data.alerts ?? [];
+
+export interface DatasetLite { id: number; name: string }
+export async function listDatasetsLite(): Promise<DatasetLite[]> {
+  const { data } = await apiClient.get<unknown>('/datasets/');
+  const arr = Array.isArray(data) ? data : ((data as { datasets?: unknown[]; items?: unknown[] })?.datasets ?? (data as { items?: unknown[] })?.items ?? []);
+  return (arr as { id: number; name: string }[]).map((d) => ({ id: d.id, name: d.name }));
 }
 
-// ── AppBI-native Data Quality rollup (the real engine, surfaced org-wide) ────
-export interface QualityDatasetRow {
-  dataset_id: number;
-  dataset: string;
+// ═════════════════════════════════════════════════════════════════════════════
+// Intelligence modules — teach-the-AI knowledge (rules / playbooks / verified
+// Q&A / AI instructions) + governance spine (single review inbox, data caveats,
+// AI data scope, provenance cockpit). Mirrors /catalog/govern/* endpoints.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export type IntelStatus = 'Draft' | 'Approved' | 'Deprecated';
+
+export interface GovernRule {
+  id: number;
+  name: string;
+  condition_text: string;
+  conclusion_text: string;
+  exceptions_text?: string | null;
+  applies_to: { kind: string; ref: string; label?: string }[];
+  status: IntelStatus;
+  version: number;
   owner?: string | null;
-  score?: number | null;
-  totalRules: number;
-  enabledRules: number;
-  coveredTables: number;
-  passed: number;
-  failed: number;
-  lastRunStatus?: string | null;
-  lastRunAt?: string | null;
+  updated_at?: string | null;
 }
-export interface QualityIncident {
+
+export interface GovernPlaybook {
+  id: number;
+  name: string;
+  trigger_text: string;
+  steps: string[];
+  dim_priority: string[];
+  expected_output?: string | null;
+  linked_metrics: string[];
+  status: IntelStatus;
+  version: number;
+  owner?: string | null;
+  run_count: number;
+  last_run_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface GovernQA {
+  id: number;
+  question: string;
+  trigger_phrases: string[];
+  answer_md: string;
+  chart_id?: number | null;
+  dashboard_id?: number | null;
+  playbook_id?: number | null;
+  status: IntelStatus;
+  as_test: boolean;
+  owner?: string | null;
+  use_count: number;
+  last_used_at?: string | null;
+  version: number;
+  updated_at?: string | null;
+}
+
+export interface GovernInstruction {
+  id: number;
+  scope: 'global' | 'dataset' | 'dashboard';
+  scope_id?: number | null;
+  content_md: string;
+  version: number;
+  status: 'active' | 'archived';
+  eval_pass_rate?: number | null;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface GovernCaveat {
+  id: number;
+  dataset_id?: number | null;
+  title: string;
+  content: string;
+  always_inject: boolean;
+  status: string;
+  owner?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ReviewItem {
+  id: number;
+  entity_type: string;
+  entity_id?: number | null;
+  action: 'suggest' | 'certify' | 'recertify' | 'flag' | 'retire';
+  title: string;
+  payload?: Record<string, unknown> | null;
+  evidence?: string | null;
+  confidence?: number | null;
+  source: 'ai' | 'user' | 'system';
+  status: 'pending' | 'approved' | 'rejected';
+  note?: string | null;
+  created_by?: string | null;
+  resolved_by?: string | null;
+  created_at?: string | null;
+  resolved_at?: string | null;
+}
+
+export interface IntelligenceOverview {
+  readiness: number;
+  coverage: Record<string, { approved: number; total: number }>;
+  pending_reviews: number;
+  flagged: number;
+  answers_30d: number;
+  top_used: { kind: string; name: string; count: number }[];
+  ungrounded_questions: string[];
+  unbound_metrics: { id: number; name: string; display_name: string; binding: string; status: string }[];
+  lifecycle: { draft: number; approved: number; deprecated: number; pending_suggestions: number };
+}
+
+// ── Rules ─────────────────────────────────────────────────────────────────
+export async function listRules(): Promise<GovernRule[]> {
+  const { data } = await apiClient.get<{ rules: GovernRule[] }>('/catalog/govern/rules');
+  return data.rules ?? [];
+}
+export async function upsertRule(body: Partial<GovernRule>): Promise<GovernRule> {
+  const { data } = await apiClient.put<GovernRule>('/catalog/govern/rules', body);
+  return data;
+}
+export async function deleteRule(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/rules/${id}`);
+}
+
+// ── Playbooks ─────────────────────────────────────────────────────────────
+export async function listPlaybooks(): Promise<GovernPlaybook[]> {
+  const { data } = await apiClient.get<{ playbooks: GovernPlaybook[] }>('/catalog/govern/playbooks');
+  return data.playbooks ?? [];
+}
+export async function upsertPlaybook(body: Partial<GovernPlaybook>): Promise<GovernPlaybook> {
+  const { data } = await apiClient.put<GovernPlaybook>('/catalog/govern/playbooks', body);
+  return data;
+}
+export async function deletePlaybook(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/playbooks/${id}`);
+}
+
+// ── Verified Q&A ──────────────────────────────────────────────────────────
+export async function listQA(): Promise<GovernQA[]> {
+  const { data } = await apiClient.get<{ qa: GovernQA[] }>('/catalog/govern/qa');
+  return data.qa ?? [];
+}
+export async function upsertQA(body: Partial<GovernQA>): Promise<GovernQA> {
+  const { data } = await apiClient.put<GovernQA>('/catalog/govern/qa', body);
+  return data;
+}
+export async function deleteQA(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/qa/${id}`);
+}
+
+// ── Certify (in-context; writes the single review ledger) ────────────────
+export async function certifyEntity(entityType: 'metric' | 'rule' | 'playbook' | 'qa', id: number): Promise<unknown> {
+  const { data } = await apiClient.post(`/catalog/govern/certify/${entityType}/${id}`);
+  return data;
+}
+
+// ── AI Instructions ───────────────────────────────────────────────────────
+export async function listInstructions(): Promise<GovernInstruction[]> {
+  const { data } = await apiClient.get<{ instructions: GovernInstruction[] }>('/catalog/govern/instructions');
+  return data.instructions ?? [];
+}
+export async function createInstructionVersion(body: { scope: string; scope_id?: number | null; content_md: string }): Promise<GovernInstruction> {
+  const { data } = await apiClient.put<GovernInstruction>('/catalog/govern/instructions', body);
+  return data;
+}
+
+// ── Data caveats ──────────────────────────────────────────────────────────
+export async function listCaveats(): Promise<GovernCaveat[]> {
+  const { data } = await apiClient.get<{ caveats: GovernCaveat[] }>('/catalog/govern/caveats');
+  return data.caveats ?? [];
+}
+export async function upsertCaveat(body: Partial<GovernCaveat>): Promise<GovernCaveat> {
+  const { data } = await apiClient.put<GovernCaveat>('/catalog/govern/caveats', body);
+  return data;
+}
+export async function deleteCaveat(id: number): Promise<void> {
+  await apiClient.delete(`/catalog/govern/caveats/${id}`);
+}
+
+// ── AI data scope ─────────────────────────────────────────────────────────
+export interface AIScope {
   dataset_id: number;
-  dataset: string;
-  table?: string | null;
-  column?: string | null;
-  rule: string;
-  dimension: string;
-  severity: string;
-  rowsFailed?: number | null;
-  error?: boolean;
-  lastRunAt?: string | null;
-}
-export interface QualityOverview {
-  summary: { datasets: number; totalRules: number; enabledRules: number; passed: number; failed: number; incidents: number; avgScore?: number | null };
-  datasets: QualityDatasetRow[];
-  incidents: QualityIncident[];
-  candidates: { dataset_id: number; dataset: string }[];
-}
-export async function getQualityOverview(): Promise<QualityOverview> {
-  const { data } = await apiClient.get<QualityOverview>('/catalog/observability/quality-overview');
-  return {
-    summary: data.summary ?? { datasets: 0, totalRules: 0, enabledRules: 0, passed: 0, failed: 0, incidents: 0, avgScore: null },
-    datasets: data.datasets ?? [],
-    incidents: data.incidents ?? [],
-    candidates: data.candidates ?? [],
+  excluded_columns: string[];
+  excluded_measures: string[];
+  fields?: {
+    measures: { name: string; label: string; kind: string }[];
+    columns: { name: string }[];
   };
+}
+export async function getAIScope(datasetId: number): Promise<AIScope> {
+  const { data } = await apiClient.get<AIScope>(`/catalog/govern/ai-scope/${datasetId}`);
+  return data;
+}
+export async function putAIScope(datasetId: number, body: { excluded_columns: string[]; excluded_measures: string[] }): Promise<AIScope> {
+  const { data } = await apiClient.put<AIScope>(`/catalog/govern/ai-scope/${datasetId}`, body);
+  return data;
+}
+
+// ── Review inbox (single ledger) ──────────────────────────────────────────
+export async function listReviewItems(params?: { status?: string; entity_type?: string }): Promise<{ items: ReviewItem[]; pending: number }> {
+  const { data } = await apiClient.get<{ items: ReviewItem[]; pending: number }>('/catalog/govern/review-items', { params });
+  return { items: data.items ?? [], pending: data.pending ?? 0 };
+}
+export async function reviewCount(): Promise<number> {
+  const { data } = await apiClient.get<{ pending: number }>('/catalog/govern/review-items/count');
+  return data.pending ?? 0;
+}
+export async function createReviewItem(body: Partial<ReviewItem>): Promise<ReviewItem> {
+  const { data } = await apiClient.post<ReviewItem>('/catalog/govern/review-items', body);
+  return data;
+}
+export async function approveReviewItem(id: number, note?: string): Promise<ReviewItem & { created_entity?: unknown }> {
+  const { data } = await apiClient.post(`/catalog/govern/review-items/${id}/approve`, { note: note ?? null });
+  return data;
+}
+export async function rejectReviewItem(id: number, note?: string): Promise<ReviewItem> {
+  const { data } = await apiClient.post(`/catalog/govern/review-items/${id}/reject`, { note: note ?? null });
+  return data;
+}
+
+// ── Cockpit overview ──────────────────────────────────────────────────────
+export async function intelligenceOverview(): Promise<IntelligenceOverview> {
+  const { data } = await apiClient.get<IntelligenceOverview>('/catalog/govern/intelligence/overview');
+  return data;
+}
+
+// ── AI compose: prompt → structured draft the create modal fills in ─────────
+export async function aiDraftEntity(
+  entityType: 'rule' | 'playbook' | 'qa' | 'caveat' | 'metric',
+  prompt: string,
+  datasetId?: number,
+): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post<{ draft: Record<string, unknown> }>(
+    '/catalog/govern/ai-draft', { entity_type: entityType, prompt, dataset_id: datasetId ?? null });
+  return data.draft ?? {};
 }

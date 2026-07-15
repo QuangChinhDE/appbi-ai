@@ -16,7 +16,7 @@
  *                                                    screens/reports viewed at least once
  *   - everything else                             -> network (untouched)
  */
-const VERSION = 'appbi-pwa-v2';
+const VERSION = 'appbi-pwa-v4';
 const STATIC_CACHE = `${VERSION}-static`;
 const PAGE_CACHE = `${VERSION}-pages`;
 const RSC_CACHE = `${VERSION}-rsc`;
@@ -43,6 +43,40 @@ self.addEventListener('message', (e) => {
   if (e.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// ── Web Push (C13) ────────────────────────────────────────────────────────
+// Payload is JSON {title, body, url}. Shows a notification; clicking it focuses
+// an existing mini-app tab or opens the target URL.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { body: event.data ? event.data.text() : '' };
+  }
+  const title = data.title || 'Thông báo';
+  const options = {
+    body: data.body || '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    data: { url: data.url || '/m' },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/m';
+  event.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of all) {
+        if (client.url.includes(target) && 'focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })(),
+  );
+});
+
 const isStatic = (u) =>
   u.pathname.startsWith('/_next/static/') ||
   u.pathname.startsWith('/icon-') ||
@@ -61,6 +95,10 @@ const isRsc = (req) => {
 };
 
 const isPublicApiGet = (req, u) => req.method === 'GET' && u.pathname.startsWith('/api/v1/public/');
+
+// File downloads (export.xlsx, .pdf, …) — bypass the SW entirely.
+const isDownload = (u) =>
+  /\.(xlsx|xls|csv|pdf|docx|zip)$/i.test(u.pathname) || /\/export(\.[a-z0-9]+)?$/i.test(u.pathname);
 
 // RSC and HTML share a URL → give RSC its own normalized cache key (path only,
 // dropping the volatile _rsc cache-buster) so client-nav hits offline.
@@ -115,6 +153,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   if (url.origin !== self.location.origin) return;
+
+  // Binary downloads (Excel / PDF exports) must NEVER be served from or written
+  // to the cache — a cached/partial binary reopens as a corrupt "not a real
+  // file" error. Pass them straight to the network, untouched by the SW.
+  if (request.method === 'GET' && isDownload(url)) return;
 
   if (isStatic(url)) {
     event.respondWith(cacheFirst(request, STATIC_CACHE));

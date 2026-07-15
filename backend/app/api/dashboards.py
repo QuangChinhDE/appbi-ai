@@ -292,22 +292,39 @@ def refresh_dashboard_snapshots(
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
 
+    dataset_ids = _dashboard_dataset_ids(db, dash)
+    if not dataset_ids:
+        return {"ok": True, "status": "idle", "datasets": [], "building": False, "as_of": None}
+    # ASYNC: kick a background rebuild and return immediately instead of building
+    # inside this request. A big/multi-table rebuild used to run synchronously —
+    # blowing past nginx's 120s API timeout (backend budgets 280s/table) so the
+    # viewer saw a timeout while the backend kept churning. The client now shows
+    # "đang làm mới…" and polls /snapshots/info (building flag) for completion.
+    started = snapshot_service.start_manual_refresh(list(dataset_ids))
+    ts = _dashboard_snapshot_as_of(db, dash)  # current (pre-rebuild) freshness
+    return {
+        "ok": True,
+        "status": "started",
+        "datasets": list(dataset_ids),
+        "started": started,
+        "building": snapshot_service.datasets_rebuilding(list(dataset_ids)),
+        "as_of": ts.isoformat() if ts else None,
+    }
+
+
+def _dashboard_dataset_ids(db: Session, dash) -> set:
+    """Dataset ids behind a dashboard's charts — used for snapshot refresh and
+    the 'building' freshness poll."""
+    from app.models.dataset import DatasetTable
     charts = [dc.chart for dc in (dash.dashboard_charts or []) if dc.chart is not None]
-    table_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
-    if not table_ids:
-        return {"ok": True, "datasets": [], "as_of": None}
-    dataset_ids = {
+    base_ids = {c.dataset_table_id for c in charts if getattr(c, "dataset_table_id", None)}
+    if not base_ids:
+        return set()
+    return {
         t.dataset_id
-        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(table_ids))).all()
+        for t in db.query(DatasetTable).filter(DatasetTable.id.in_(list(base_ids))).all()
         if t.dataset_id
     }
-    results, as_ofs = [], []
-    for ds_id in dataset_ids:
-        r = snapshot_service.refresh_all_for_dataset(db, ds_id, force=True)
-        results.append({"dataset_id": ds_id, **r})
-        if r.get("as_of"):
-            as_ofs.append(r["as_of"])
-    return {"ok": True, "datasets": results, "as_of": (min(as_ofs) if as_ofs else None)}
 
 
 def _dashboard_snapshot_as_of(db: Session, dash) -> Optional[Any]:
@@ -355,8 +372,14 @@ def get_dashboard_snapshot_info(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
+    from app.services import snapshot_service
     ts = _dashboard_snapshot_as_of(db, dash)
-    return {"as_of": ts.isoformat() if ts else None, "mode": "snapshot" if ts else "live"}
+    building = snapshot_service.datasets_rebuilding(list(_dashboard_dataset_ids(db, dash)))
+    return {
+        "as_of": ts.isoformat() if ts else None,
+        "mode": "snapshot" if ts else "live",
+        "building": building,
+    }
 
 
 @router.post("/import-html/analyze", response_model=DashboardHtmlImportAnalyzeResponse)
@@ -2495,114 +2518,3 @@ async def suggest_ai_system_prompt(
     if not text:
         raise HTTPException(status_code=502, detail="AI không trả về nội dung.")
     return {"system_prompt": text[:4000]}
-
-
-# ============ Dashboard Filters ============
-# Commented out - using hybrid approach with filters_config JSON field instead
-# Filters are now stored directly in dashboard.filters_config as JSON array
-# and managed client-side for v1, with future server-side filtering in v2
-
-# @router.get("/{dashboard_id}/filters", response_model=List[DashboardFilterSchema])
-# def get_dashboard_filters(dashboard_id: int, db: Session = Depends(get_db)):
-#     """Get all filters for a dashboard"""
-#     # Verify dashboard exists
-#     dashboard = DashboardService.get_by_id(db, dashboard_id)
-#     if not dashboard:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=f"Dashboard with ID {dashboard_id} not found"
-#         )
-#     
-#     filters = db.query(DashboardFilter).filter(
-#         DashboardFilter.dashboard_id == dashboard_id
-#     ).all()
-#     
-#     return filters
-
-
-# @router.post("/{dashboard_id}/filters", response_model=DashboardFilterSchema, status_code=status.HTTP_201_CREATED)
-# def create_dashboard_filter(
-#     dashboard_id: int,
-#     filter_data: DashboardFilterCreate,
-#     db: Session = Depends(get_db)
-# ):
-#     """Create a new dashboard filter"""
-#     # Verify dashboard exists
-#     dashboard = DashboardService.get_by_id(db, dashboard_id)
-#     if not dashboard:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=f"Dashboard with ID {dashboard_id} not found"
-#         )
-#     
-#     # Create filter
-#     db_filter = DashboardFilter(
-#         dashboard_id=dashboard_id,
-#         name=filter_data.name,
-#         field=filter_data.field,
-#         type=filter_data.type,
-#         operator=filter_data.operator,
-#         value=filter_data.value
-#     )
-#     
-#     db.add(db_filter)
-#     db.commit()
-#     db.refresh(db_filter)
-#     
-#     return db_filter
-
-
-# @router.put("/{dashboard_id}/filters/{filter_id}", response_model=DashboardFilterSchema)
-# def update_dashboard_filter(
-#     dashboard_id: int,
-#     filter_id: int,
-#     filter_data: DashboardFilterUpdate,
-#     db: Session = Depends(get_db)
-# ):
-#     """Update a dashboard filter"""
-#     # Get filter
-#     db_filter = db.query(DashboardFilter).filter(
-#         DashboardFilter.id == filter_id,
-#         DashboardFilter.dashboard_id == dashboard_id
-#     ).first()
-#     
-#     if not db_filter:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=f"Filter with ID {filter_id} not found in dashboard {dashboard_id}"
-#         )
-#     
-#     # Update fields
-#     update_data = filter_data.model_dump(exclude_unset=True)
-#     for key, value in update_data.items():
-#         setattr(db_filter, key, value)
-#     
-#     db.commit()
-#     db.refresh(db_filter)
-#     
-#     return db_filter
-
-
-# @router.delete("/{dashboard_id}/filters/{filter_id}", status_code=status.HTTP_204_NO_CONTENT)
-# def delete_dashboard_filter(
-#     dashboard_id: int,
-#     filter_id: int,
-#     db: Session = Depends(get_db)
-# ):
-#     """Delete a dashboard filter"""
-#     # Get filter
-#     db_filter = db.query(DashboardFilter).filter(
-#         DashboardFilter.id == filter_id,
-#         DashboardFilter.dashboard_id == dashboard_id
-#     ).first()
-#     
-#     if not db_filter:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail=f"Filter with ID {filter_id} not found in dashboard {dashboard_id}"
-#         )
-#     
-#     db.delete(db_filter)
-#     db.commit()
-#     
-#     return None

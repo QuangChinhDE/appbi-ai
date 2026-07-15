@@ -11,11 +11,31 @@
  */
 import axios from 'axios';
 
+export interface ThemeBackgroundApi {
+  kind: 'color' | 'gradient' | 'image';
+  color?: string | null;
+  gradient_preset?: string | null;
+  image_data?: string | null;
+}
+
 export interface WorkspaceBranding {
   app_name?: string | null;
   logo_url?: string | null;
+  logo_data?: string | null;
+  logo_layout?: 'mark' | 'wide' | null;
   primary_color?: string | null;
+  accent_color?: string | null;
   welcome_text?: string | null;
+  theme?: 'light' | 'dark' | 'auto';
+  background?: ThemeBackgroundApi | null;
+  font_family?: 'system' | 'inter' | 'be-vietnam' | 'roboto' | 'serif' | 'mono' | null;
+  card_style?: {
+    radius?: 'none' | 'sm' | 'md' | 'lg' | 'xl' | null;
+    shadow?: 'none' | 'sm' | 'md' | null;
+    border?: boolean | null;
+  } | null;
+  header_style?: 'fill' | 'line' | 'minimal' | null;
+  login?: { background?: ThemeBackgroundApi | null; tagline?: string | null } | null;
 }
 
 export interface WorkspaceMeta {
@@ -94,6 +114,8 @@ export interface AppShellResponse {
     description?: string | null;
   };
   branding: WorkspaceBranding;
+  /** Storage-aware media size ceiling (KB); FE pre-checks uploads against it. */
+  media_max_kb?: number;
   nav: AppShellNav;
   screens: AppShellScreenStub[];
   screen_groups?: AppShellScreenGroup[];
@@ -124,12 +146,14 @@ export interface FormScreenResponse {
   primary_key_columns: string[];
   submit_label?: string | null;
   fields: Array<Record<string, unknown>>;
-  lookups: Record<string, Array<{ label: string; value: unknown }>>;
+  lookups: Record<string, Array<{ label: string; value: unknown; geometry?: unknown; lat?: unknown; lng?: unknown; filter?: unknown }>>;
   initial_values: Record<string, unknown>;
   after_submit?: ScreenAction | null;
   /** Columns the workboard auto-fills on insert when left blank.
    *  Treat as readonly with a hint so the user knows typing is ignored. */
   auto_number_columns?: string[];
+  /** When set, the FE captures device GPS at submit and writes "lat,lng" here. */
+  geo_stamp_column?: string | null;
   /** Pages array for multi-step forms (optional). */
   pages?: Array<Record<string, unknown>>;
   /** Section headings used to group fields inside a single page. */
@@ -141,6 +165,38 @@ export interface FormScreenResponse {
 export interface OcrExtractResult {
   values: Record<string, unknown>;
   raw?: Record<string, unknown>;
+}
+
+export interface PosCartHeaderInput {
+  column: string;
+  label: string;
+  kind?: 'text' | 'select' | 'date';
+  options?: string[];
+  default?: string | null;
+  required?: boolean;
+  write_to_line?: boolean;
+}
+
+export interface PosCartConfig {
+  barcode_column: string;
+  quantity_column: string;
+  catalog_table_id: number;
+  catalog_match_column: string;
+  catalog_label_column?: string | null;
+  catalog_price_column?: string | null;
+  catalog_copy?: Record<string, string>;
+  amount_column?: string | null;
+  header_inputs?: PosCartHeaderInput[];
+  order_id_column?: string | null;
+  order_id_prefix?: string;
+  date_column?: string | null;
+  header_screen_id?: string | null;
+  submit_label?: string;
+  after_submit_screen?: string | null;
+  after_submit_carry?: string[];
+  allow_manual_search?: boolean;
+  catalog_group_column?: string | null;
+  empty_hint?: string | null;
 }
 
 export interface TableScreenResponse {
@@ -190,6 +246,23 @@ export interface TableScreenResponse {
       return_column: string;
       format?: string | null;
     }>;
+    rollup_columns?: Array<{
+      name: string;
+      label?: string | null;
+      from_table_id: number;
+      match_column_local: string;
+      match_column_remote: string;
+      agg?: 'sum' | 'count' | 'avg' | 'min' | 'max';
+      value_column?: string;
+      format?: string | null;
+    }>;
+    format_rules?: Array<{
+      when: string;
+      color: 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet';
+      columns?: string[];
+      icon?: string | null;
+      label?: string | null;
+    }>;
     totals?: Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
     column_groups?: Array<{ label: string; columns: string[] }>;
     group_by?: string[];
@@ -201,6 +274,13 @@ export interface TableScreenResponse {
         format?: string | null;
         align?: 'left' | 'center' | 'right' | null;
         merge?: boolean | null;
+        input_type?: string | null;
+        options?: Array<{ label: string; value: unknown }> | null;
+        currency_code?: string | null;
+        max_stars?: number | null;
+        min_value?: number | null;
+        max_value?: number | null;
+        step?: number | null;
       }
     >;
     detail_panel?: {
@@ -211,7 +291,7 @@ export interface TableScreenResponse {
       sections?: Record<string, string[]>;
     };
     empty_state_message?: string | null;
-    display_mode?: 'table' | 'gallery';
+    display_mode?: 'table' | 'gallery' | 'calendar';
     gallery_config?: {
       image_column: string;
       title_column?: string | null;
@@ -219,8 +299,23 @@ export interface TableScreenResponse {
       group_by_column?: string | null;
       columns_per_row?: number;
     } | null;
+    calendar_config?: {
+      date_column: string;
+      title_column?: string | null;
+      color_column?: string | null;
+    } | null;
+    stat_tiles?: Array<{ label: string; column: string; agg?: string; format?: string | null; unit?: string | null }>;
+    pos_cart?: PosCartConfig | null;
   };
+  pos_catalog?: {
+    match_column?: string | null;
+    label_column?: string | null;
+    price_column?: string | null;
+    group_column?: string | null;
+    rows: Array<Record<string, unknown>>;
+  } | null;
   totals_row?: Record<string, unknown> | null;
+  stat_tiles?: Array<{ label: string; value: unknown; format?: string | null; unit?: string | null }>;
   column_groups?: Array<{ label: string; columns: string[] }>;
   merges?: Array<{ column: string; row_start: number; row_span: number }>;
   column_labels?: Record<string, string>;
@@ -239,6 +334,19 @@ export interface TableRowDetailResponse {
   lookup_columns: Array<Record<string, unknown>>;
 }
 
+export interface PrintTemplate {
+  enabled?: boolean;
+  company_name?: string | null;
+  address?: string | null;
+  tax_code?: string | null;
+  hotline?: string | null;
+  email?: string | null;
+  website?: string | null;
+  logo_data?: string | null;
+  footer_note?: string | null;
+  accent_color?: string | null;
+}
+
 export interface DocScreenResponse {
   screen_id: string;
   kind: 'doc';
@@ -246,6 +354,7 @@ export interface DocScreenResponse {
   page?: Record<string, unknown> | null;
   blocks: DocBlockRendered[];
   context?: Record<string, unknown>;
+  print_template?: PrintTemplate | null;
 }
 
 export interface DashboardScreenResponse {
@@ -271,6 +380,49 @@ const client = axios.create({
   baseURL: '/api/v1',
   withCredentials: true,
 });
+
+const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+async function blobToErrorMessage(blob: Blob): Promise<string | null> {
+  try {
+    const text = await blob.text();
+    if (!text.trim()) return null;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) {
+        return typeof parsed.detail === 'string'
+          ? parsed.detail
+          : JSON.stringify(parsed.detail);
+      }
+      if (parsed?.message) return String(parsed.message);
+    } catch {
+      // Not JSON. Fall through to a short text/html preview.
+    }
+    return text.replace(/\s+/g, ' ').trim().slice(0, 220);
+  } catch {
+    return null;
+  }
+}
+
+async function assertXlsxBlob(blob: Blob): Promise<void> {
+  if (!blob || blob.size === 0) {
+    throw new Error('File Excel tải về đang rỗng.');
+  }
+  const signature = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  const isZip =
+    signature[0] === 0x50 &&
+    signature[1] === 0x4b &&
+    signature[2] === 0x03 &&
+    signature[3] === 0x04;
+  if (isZip) return;
+
+  const serverMessage = await blobToErrorMessage(blob);
+  throw new Error(
+    serverMessage ||
+      'Máy chủ không trả về file XLSX hợp lệ. Vui lòng thử xuất lại.',
+  );
+}
 
 export const workspaceApi = {
   async getMeta(token: string): Promise<{ workspace: WorkspaceMeta }> {
@@ -423,16 +575,70 @@ export const workspaceApi = {
     );
     return r.data;
   },
+  // ── Web Push (C13) ──
+  async pushConfig(token: string): Promise<{ enabled: boolean; public_key: string | null }> {
+    const r = await client.get(`/public/workspaces/${token}/push/config`);
+    return r.data;
+  },
+  async pushSubscribe(
+    token: string,
+    workboardId: number,
+    subscription: unknown,
+    unsubscribe = false,
+  ): Promise<Record<string, unknown>> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/push/subscribe`,
+      { subscription, unsubscribe },
+    );
+    return r.data;
+  },
+  async pushTest(token: string, workboardId: number): Promise<{ ok: boolean; delivered: number }> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/push/test`,
+      {},
+    );
+    return r.data;
+  },
   async exportDocBlockExcel(
     token: string,
     workboardId: number,
     screenId: string,
     blockIndex: number,
+    sharedContext?: Record<string, unknown>,
   ): Promise<{ blob: Blob; filename: string }> {
-    const r = await client.get(
-      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/export.xlsx`,
-      { responseType: 'blob' },
-    );
+    const params: Record<string, string> = {};
+    if (sharedContext && Object.keys(sharedContext).length > 0) {
+      params.shared = JSON.stringify(sharedContext);
+    }
+    let r;
+    try {
+      r = await client.get(
+        `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/export.xlsx`,
+        { responseType: 'blob', params, headers: { 'Cache-Control': 'no-store' } },
+      );
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.data instanceof Blob) {
+        const message = await blobToErrorMessage(err.response.data);
+        throw new Error(message || 'Không xuất được Excel.');
+      }
+      throw err;
+    }
+    // Guard: if the server (or a stale cache) returned a non-spreadsheet body
+    // (JSON/HTML error), surface it instead of saving a corrupt ".xlsx".
+    const rawBlob = r.data as Blob;
+    const blobType = String(rawBlob?.type || '');
+    if (blobType && !blobType.includes('spreadsheet') && !blobType.includes('octet-stream')) {
+      let msg = 'Xuất Excel lỗi — máy chủ trả về nội dung không hợp lệ.';
+      try {
+        const text = await (r.data as Blob).text();
+        const parsed = JSON.parse(text);
+        if (parsed?.detail) msg = String(parsed.detail);
+      } catch {
+        /* keep default */
+      }
+      throw new Error(msg);
+    }
+    await assertXlsxBlob(rawBlob);
     const disposition = String(r.headers['content-disposition'] || '');
     let filename = `export-${screenId}-block-${blockIndex + 1}.xlsx`;
     const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -446,7 +652,15 @@ export const workspaceApi = {
     } else if (asciiMatch) {
       filename = asciiMatch[1];
     }
-    return { blob: r.data as Blob, filename };
+    // Re-wrap with the canonical spreadsheet MIME so the saved file always
+    // opens as Excel regardless of what the transport tagged the blob.
+    return {
+      blob:
+        blobType === XLSX_MIME
+          ? rawBlob
+          : new Blob([rawBlob], { type: XLSX_MIME }),
+      filename,
+    };
   },
 
   async triggerBlockSync(
@@ -455,6 +669,7 @@ export const workspaceApi = {
     screenId: string,
     blockIndex: number,
     triggerId: string,
+    sharedContext?: Record<string, unknown>,
   ): Promise<{
     group_id: string;
     runs: Array<{
@@ -464,9 +679,13 @@ export const workspaceApi = {
       webhook_name?: string | null;
     }>;
   }> {
+    const body: Record<string, unknown> = { trigger_id: triggerId };
+    if (sharedContext && Object.keys(sharedContext).length > 0) {
+      body.shared = sharedContext;
+    }
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/sync`,
-      { trigger_id: triggerId },
+      body,
     );
     return r.data;
   },

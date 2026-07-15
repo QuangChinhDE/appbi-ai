@@ -24,6 +24,7 @@ Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 from __future__ import annotations
 
 import itertools
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
@@ -149,11 +150,26 @@ def _parse_locale_number(text: str) -> Optional[float]:
         return None
     # vi-VN: '.' groups thousands, ',' is the decimal mark. When a comma is
     # present it is the decimal point, so strip grouping dots then swap it for
-    # a dot. A lone dot (no comma) is thousands grouping ("1.000.000", "1.234").
+    # a dot.
     if "," in s:
         s = s.replace(".", "").replace(",", ".")
     elif "." in s:
-        s = s.replace(".", "")
+        # A lone dot is thousands grouping ONLY when it forms valid vi-VN
+        # groups: the first segment is 1-3 digits and every later segment is
+        # EXACTLY 3 digits ("1.000.000" -> 1000000, "1.234" -> 1234). A dot
+        # whose trailing segment isn't 3 digits is a decimal point, not
+        # grouping ("98.0" -> 98.0, "88.8" -> 88.8, "125.4" -> 125.4) — this
+        # is what a native numeric (Postgres/BQ) read back as a VARCHAR looks
+        # like, and must NOT be inflated ×10 into SUM/AVG.
+        parts = s.split(".")
+        is_grouping = (
+            len(parts) >= 2
+            and all(p.isdigit() for p in parts)
+            and 1 <= len(parts[0]) <= 3
+            and all(len(p) == 3 for p in parts[1:])
+        )
+        if is_grouping:
+            s = "".join(parts)
     try:
         val = float(s)
     except ValueError:
@@ -326,10 +342,12 @@ def _build_substitution_map(
     workboard: Workboard,
     *,
     app_user: Optional[Dict[str, Any]] = None,
+    shared: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     return {
         "app_user": dict(app_user or {}),
+        "shared": dict(shared or {}),
         "now": now.isoformat(),
         "today": now.date().isoformat(),
         "workboard": {"id": workboard.id, "name": workboard.name},
@@ -491,8 +509,9 @@ def _resolve_lookup_options(
             return []
         base_rows = result.get("rows") or []
 
-        def _attach_geo(opt: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
-            """Additively enrich an option with geometry for the map widget.
+        def _attach_extras(opt: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+            """Additively enrich an option with map geometry and/or the
+            cascading-filter key.
 
             select/lookup callers never read these keys, so this is safe for
             every field — the extra keys are simply ignored downstream.
@@ -506,6 +525,10 @@ def _resolve_lookup_options(
                 if lat not in (None, "") and lng not in (None, ""):
                     opt["lat"] = lat
                     opt["lng"] = lng
+            # Cascading select: carry the remote match value so the FE can keep
+            # only the options whose `filter_column` == the parent field's value.
+            if cfg.filter_column:
+                opt["filter"] = row.get(cfg.filter_column)
             return opt
 
         if cfg.relationship_path:
@@ -517,7 +540,7 @@ def _resolve_lookup_options(
                 hops=cfg.relationship_path,
             )
             return [
-                _attach_geo(
+                _attach_extras(
                     {
                         "label": resolved_labels.get(row.get(value_col))
                         or str(row.get(label_col, "") or ""),
@@ -528,7 +551,7 @@ def _resolve_lookup_options(
                 for row in base_rows
             ]
         return [
-            _attach_geo(
+            _attach_extras(
                 {
                     "label": str(row.get(label_col, "") or ""),
                     "value": row.get(value_col),
@@ -624,10 +647,112 @@ def _load_datasource(db: Session, table: DatasetTable) -> Optional[DataSource]:
     return db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
 
 
+def _resolve_read_target(db: Session, table: DatasetTable) -> tuple[Optional[DataSource], Any]:
+    """Resolve the ``(datasource, query_table)`` pair used to READ a screen's rows.
+
+    Physical / ``sql_query`` tables read directly against their own datasource.
+    Derived (calculated) tables and the generated Date table have no
+    ``datasource_id`` of their own — they reference sibling tables through
+    ``dataset_table_<id>`` aliases. Route those through
+    :func:`build_live_proxy_table_for_dataset_table`, which returns a live proxy
+    (``source_kind='sql_query'`` carrying the fully-inlined CTE SQL) plus the
+    underlying datasource. This lets a workboard ``table`` / ``doc`` screen
+    render an aggregated or cross-table result exactly like the dataset preview
+    does — including on a Google Sheets source, where the proxy SQL reads every
+    referenced tab into DuckDB within a single query. Read-only by nature; write
+    paths never call this (a derived table isn't editable).
+    """
+    if table is None:
+        return None, None
+    from app.services.dataset_table_sql_service import (
+        is_derived_table,
+        build_live_proxy_table_for_dataset_table,
+    )
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+
+    if is_derived_table(table) or is_generated_calendar_table(table):
+        from app.models.dataset import Dataset
+
+        dataset_obj = (
+            db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+        )
+        if dataset_obj is not None:
+            try:
+                return build_live_proxy_table_for_dataset_table(db, dataset_obj, table)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "workboard: derived-table proxy resolve failed for table %s: %s",
+                    getattr(table, "id", None),
+                    exc,
+                )
+                return None, None
+    return _load_datasource(db, table), table
+
+
+def _resolve_pos_catalog(db: Session, pos_cart: Any) -> Dict[str, Any]:
+    """Load the product master for a POS scan-cart screen.
+
+    Returns ``{match_column, label_column, price_column, group_column, rows}``.
+    The catalog is reference data (products) shared by every operator, so no RLS
+    is applied. Rows are read via :func:`_resolve_read_target` so the catalog may
+    itself be a physical, sql or derived table. Never raises — a missing catalog
+    degrades to an empty list (the scanner then just stores raw codes).
+    """
+    empty = {
+        "match_column": getattr(pos_cart, "catalog_match_column", None),
+        "label_column": getattr(pos_cart, "catalog_label_column", None),
+        "price_column": getattr(pos_cart, "catalog_price_column", None),
+        "group_column": getattr(pos_cart, "catalog_group_column", None),
+        "rows": [],
+    }
+    try:
+        catalog = _load_table(db, getattr(pos_cart, "catalog_table_id", 0))
+        datasource, query_table = _resolve_read_target(db, catalog) if catalog else (None, None)
+        if not catalog or not datasource or query_table is None:
+            return empty
+        result = LiveQueryService.execute_preview_query(
+            datasource, query_table, limit=_TOTALS_ROW_CAP, offset=0, filters=[]
+        )
+        empty["rows"] = result.get("rows") or []
+        return empty
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("workboard: POS catalog resolve failed: %s", exc)
+        return empty
+
+
+# ── Media size ceilings (single source of truth) ──────────────────────────
+# Base64-into-JSONB media. Postgres JSONB is effectively unbounded, so we use
+# a documented app ceiling; Google Sheets caps a single CELL at ~50,000 chars
+# (base64 inflates 4/3 → ~35 KB safe). The effective cap is chosen per screen
+# by :func:`media_cap_kb` from the datasource kind — NOT hardcoded per widget.
+WORKBOARD_MEDIA_MAX_KB = 1024
+WORKBOARD_MEDIA_MAX_KB_SHEETS = 35
+# Every widget whose value is a base64 data-URI (or a JSON array of them) and
+# must be size-capped. Previously only {file, image} were capped, so images/
+# signature/audio silently bypassed the ceiling.
+_MEDIA_WIDGETS = {"file", "image", "images", "signature", "audio", "video"}
+
+
+def media_cap_kb(db: Session, workboard: Workboard, screen: Optional["Screen"] = None) -> int:
+    """Storage-aware media size ceiling in KB for a screen's writes."""
+    try:
+        table_id = getattr(screen, "table_id", None) or workboard.primary_table_id
+        table = _load_table(db, table_id) if table_id else None
+        ds = _load_datasource(db, table) if table else None
+        if ds is not None and getattr(ds, "type", None) is not None:
+            tval = ds.type.value if hasattr(ds.type, "value") else str(ds.type)
+            if tval == "google_sheets":
+                return WORKBOARD_MEDIA_MAX_KB_SHEETS
+    except Exception:  # pragma: no cover - defensive; fall back to safe default
+        pass
+    return WORKBOARD_MEDIA_MAX_KB
+
+
 def _apply_field_conditions(
     screen: Screen,
     values: Dict[str, Any],
     identity: CallerIdentity,
+    media_max_kb: int = WORKBOARD_MEDIA_MAX_KB,
 ) -> Dict[str, Any]:
     """Enforce field-level show_if / required_if / readonly_if at write time.
 
@@ -647,15 +772,10 @@ def _apply_field_conditions(
     }
     cleaned = dict(values or {})
     violations: List[str] = []
-    # Hard ceiling for inline file uploads (base64 stored in a cell). Workboards
-    # write to Google Sheets, where a single CELL is capped at 50,000 chars.
-    # base64 inflates by 4/3, so the safe content ceiling is ~36 KB
-    # (36*1024*4/3 ≈ 49,150 chars). A larger upload was silently truncated by
-    # the Sheets API → a corrupt/half image with no error. Cap at 35 KB so the
-    # data-URL header + base64 stays under the cell limit. Builder can set a
-    # stricter per-field cap via FormField.max_file_kb.
-    _HARD_FILE_KB_CAP = 35
-    _FILE_WIDGETS = {"file", "image"}
+    # Storage-aware hard ceiling for base64 media (see WORKBOARD_MEDIA_MAX_KB).
+    # ``media_max_kb`` is chosen per screen from the datasource kind; the builder
+    # can tighten it further per-field via FormField.max_file_kb.
+    _HARD_FILE_KB_CAP = int(media_max_kb or WORKBOARD_MEDIA_MAX_KB)
     # Pages whose ``show_if`` is falsy are skipped in the wizard — their fields
     # must NOT be required or written (mirror field-level show_if). Build the
     # set of hidden page ids once.
@@ -670,22 +790,39 @@ def _apply_field_conditions(
             # Field lives on a skipped page — drop any stale value, never require.
             cleaned.pop(col, None)
             continue
-        if getattr(field, "readonly", False):
-            # Static readonly fields are display-only. Drop submitted values so
-            # callers cannot override system columns such as generated PKs.
+        if getattr(field, "readonly", False) or getattr(field, "widget", None) == "qr":
+            # Static readonly fields — and the display-only `qr` widget — are
+            # never written. Drop submitted values so callers cannot override
+            # system columns such as generated PKs (or the QR's source column).
             cleaned.pop(col, None)
             continue
-        if getattr(field, "widget", None) in _FILE_WIDGETS:
+        if getattr(field, "widget", None) in _MEDIA_WIDGETS:
             raw_value = cleaned.get(col)
+            # A media cell is either a single data-URL string, or (images) a
+            # JSON array of data-URL strings — possibly still a JSON string.
+            parts: List[str] = []
             if isinstance(raw_value, str) and raw_value:
-                # Strip a leading data-URL header so length is the raw payload.
-                payload_for_size = (
-                    raw_value.split(",", 1)[1]
-                    if raw_value.startswith("data:") and "," in raw_value
-                    else raw_value
-                )
-                # Base64 expands by 4/3; size_kb ≈ len * 3 / 4 / 1024.
-                size_kb = (len(payload_for_size) * 3) // 4 // 1024
+                if raw_value.startswith("["):
+                    try:
+                        decoded = json.loads(raw_value)
+                        parts = [p for p in decoded if isinstance(p, str)]
+                    except (ValueError, TypeError):
+                        parts = [raw_value]
+                else:
+                    parts = [raw_value]
+            elif isinstance(raw_value, list):
+                parts = [p for p in raw_value if isinstance(p, str)]
+            if parts:
+                # Base64 expands by 4/3; size_kb ≈ len * 3 / 4 / 1024. Sum every
+                # item so a multi-image cell can't exceed the cell budget.
+                total_len = 0
+                for item in parts:
+                    total_len += len(
+                        item.split(",", 1)[1]
+                        if item.startswith("data:") and "," in item
+                        else item
+                    )
+                size_kb = (total_len * 3) // 4 // 1024
                 builder_cap = int(getattr(field, "max_file_kb", None) or 0)
                 effective_cap = (
                     min(builder_cap, _HARD_FILE_KB_CAP) if builder_cap > 0
@@ -699,6 +836,26 @@ def _apply_field_conditions(
                     )
                     cleaned.pop(col, None)
                     continue
+        # ── Type coercion for rich numeric / list widgets ──────────────
+        # The FE normally emits the storable form, but coerce defensively so a
+        # locale-formatted string ("1.234,5") or a JSON-array string can never
+        # land in a numeric/array column raw. Numbers reuse the vi-VN-aware
+        # parser (dot-decimal safe — see _parse_locale_number).
+        _widget = getattr(field, "widget", None)
+        if _widget in ("currency", "percent", "rating", "slider", "duration"):
+            _v = cleaned.get(col)
+            if isinstance(_v, str) and _v.strip() != "":
+                _n = _parse_locale_number(_v)
+                if _n is not None:
+                    cleaned[col] = _n
+        elif _widget == "enum_list":
+            # Store as a JSON STRING so a text/jsonb cell write never receives a
+            # Python list (the connector would emit a PG array literal → type
+            # mismatch). The FE already sends a JSON string; normalise a stray
+            # list defensively.
+            _v = cleaned.get(col)
+            if isinstance(_v, list):
+                cleaned[col] = json.dumps(_v, ensure_ascii=False)
         if getattr(field, "computed_from_dataset", None):
             # Field is auto-filled by a dataset-side transformation (calculated
             # column, lookup, etc.). The dataset is the source of truth, so any
@@ -748,6 +905,90 @@ def _apply_field_conditions(
             detail={"message": "Validation failed", "violations": violations},
         )
     return cleaned
+
+
+def _status_fields(screen: Screen) -> List[Any]:
+    """Form fields with widget='status' that carry a StatusConfig."""
+    if screen.form is None:
+        return []
+    return [
+        f
+        for f in screen.form.fields
+        if getattr(f, "widget", None) == "status" and getattr(f, "status_config", None)
+    ]
+
+
+def _fetch_current_row(
+    db: Session, workboard: Workboard, screen: Screen, pk: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Load the row targeted by ``pk`` on the screen's table (pre-update
+    snapshot) so status-transition rules can compare previous -> new."""
+    if not pk or screen.table_id is None:
+        return None
+    table = _load_table(db, screen.table_id)
+    datasource = _load_datasource(db, table) if table else None
+    if not table or not datasource:
+        return None
+    filters = [{"field": k, "operator": "eq", "value": v} for k, v in pk.items()]
+    result = LiveQueryService.execute_preview_query(
+        datasource, table, limit=1, offset=0, filters=filters
+    )
+    rows = result.get("rows") or []
+    return rows[0] if rows else None
+
+
+def _enforce_status_rules(
+    status_fields: List[Any],
+    values: Dict[str, Any],
+    identity: CallerIdentity,
+    *,
+    previous_row: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Server-side status lifecycle guard.
+
+    The FE ``editable_by_roles`` gate is advisory only (bypassable via a
+    crafted API call), so re-check it here, plus the new ``allowed_transitions``
+    map. For each status field actually being written:
+      * ``editable_by_roles`` — the caller's role must be allowed to change it.
+      * ``allowed_transitions`` — the previous->new pair must be permitted
+        (only checked on update, where a previous value exists).
+    AppBI staff and the ``owner`` role bypass (same contract as RLS).
+    """
+    if not status_fields:
+        return
+    if not identity.is_app_user or is_owner_role(identity.role):
+        return
+    role = (identity.role or "").strip().lower()
+    for field in status_fields:
+        col = field.column
+        if col not in values:
+            continue  # not being written (e.g. RLS writable_columns stripped it)
+        new_s = "" if values.get(col) is None else str(values.get(col))
+        prev_raw = previous_row.get(col) if previous_row else None
+        prev_s = "" if prev_raw is None else str(prev_raw)
+        if previous_row is not None and new_s == prev_s:
+            continue  # unchanged — never blocked
+        cfg = field.status_config
+        editable_roles = [r.strip().lower() for r in (cfg.editable_by_roles or [])]
+        if editable_roles and role not in editable_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Vai trò của bạn không được phép đổi trạng thái '{field.label or col}'.",
+            )
+        transitions = cfg.allowed_transitions or {}
+        if transitions and previous_row is not None and prev_s:
+            allowed = transitions.get(prev_s)
+            if allowed is not None:
+                allowed_s = [str(x) for x in allowed]
+                if new_s not in allowed_s:
+                    nice = ", ".join(allowed_s) if allowed_s else "(trạng thái kết thúc)"
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"Không thể chuyển '{field.label or col}' từ '{prev_s}' "
+                            f"sang '{new_s}'. Cho phép: {nice}."
+                        ),
+                    )
 
 
 def _resolve_initial_values(
@@ -851,6 +1092,9 @@ def render_form_screen(
         # treats these as readonly + shows a hint so users don't think the
         # form is broken when typing into them is ignored.
         "auto_number_columns": auto_number_columns,
+        # When set, the FE captures device GPS at submit and writes "lat,lng"
+        # into this column (anti-fraud geo-audit).
+        "geo_stamp_column": screen.form.geo_stamp_column,
     }
 
 
@@ -888,7 +1132,9 @@ def insert_screen_row(
             )
 
     if screen.kind == "form":
-        cleaned_pre = _apply_field_conditions(screen, values, identity)
+        cleaned_pre = _apply_field_conditions(
+            screen, values, identity, media_max_kb=media_cap_kb(db, workboard, screen)
+        )
     else:
         # Table: merge builder default_values (with placeholders) under
         # user values. Computed/lookup columns are never writeable from
@@ -919,6 +1165,9 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    if screen.kind == "form":
+        # Value-level status guard on top of RLS column masking (insert = no prev).
+        _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
     # Idempotency: claim the op_id BEFORE the data write (same transaction). A
     # replayed offline submit — or one whose success response was lost — hits
     # the PK conflict here and is treated as already-done, so it can never be
@@ -964,7 +1213,9 @@ def update_screen_row(
         raise HTTPException(status_code=400, detail="Table screen has no spec.")
 
     if screen.kind == "form":
-        cleaned_pre = _apply_field_conditions(screen, values, identity)
+        cleaned_pre = _apply_field_conditions(
+            screen, values, identity, media_max_kb=media_cap_kb(db, workboard, screen)
+        )
     else:
         # Table: a column must be flagged in either the inline grid
         # ``editable_columns`` OR the detail panel's ``editable_columns``.
@@ -994,6 +1245,13 @@ def update_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
     )
+    if screen.kind == "form":
+        # Value-level status guard: compare the previous row's status to the new
+        # value so allowed_transitions + editable_by_roles are enforced server-side.
+        _sf = _status_fields(screen)
+        if _sf:
+            _prev = _fetch_current_row(db, workboard, screen, pk)
+            _enforce_status_rules(_sf, cleaned, identity, previous_row=_prev)
 
     # Make sure the targeted row passes RLS before touching it.
     rls_filters, allowed = build_rls_filter(
@@ -1168,6 +1426,9 @@ def fetch_table_row_for_panel(
     for lookup in table_spec.lookup_columns or []:
         if lookup.match_column_local in all_db_columns:
             extra_keys.append(lookup.match_column_local)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        if rollup.match_column_local in all_db_columns:
+            extra_keys.append(rollup.match_column_local)
 
     row_keys = list(dict.fromkeys([
         *(c for c in panel_columns if c in all_db_columns),
@@ -1175,11 +1436,15 @@ def fetch_table_row_for_panel(
     ]))
     row: Dict[str, Any] = {col: raw_row.get(col) for col in row_keys}
 
-    # Lookup resolution for this single row.
+    # Lookup + roll-up resolution for this single row.
     lookup_maps = _resolve_table_lookups(db, table_spec, [row])
+    rollup_maps = _resolve_table_rollups(db, table_spec, [row])
     for lookup in table_spec.lookup_columns or []:
         match_value = row.get(lookup.match_column_local)
         row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        match_value = row.get(rollup.match_column_local)
+        row[rollup.name] = rollup_maps.get(rollup.name, {}).get(match_value)
 
     # Per-row computed columns (cross-row aggregates degrade to single-row).
     if table_spec.computed_columns:
@@ -1304,6 +1569,108 @@ def _resolve_table_lookups(
     return out
 
 
+def _resolve_table_rollups(
+    db: Session,
+    table_spec: Any,
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Dict[Any, Any]]:
+    """Reverse-reference roll-ups: aggregate child rows per parent key.
+
+    The inverse of :func:`_resolve_table_lookups`. For each roll-up column,
+    fetch ALL child rows whose ``match_column_remote`` is IN the page's parent
+    keys (one batched ``IN`` query, no GROUP-BY transport needed), bucket by
+    key and reduce with ``agg`` in Python. Returns
+    ``{rollup_name: {parent_key: aggregated_value}}``.
+
+    Child fetch is capped at 1000 rows (LiveQueryService clamp); a roll-up
+    over more child rows than that for the visible parents is approximate.
+    """
+    out: Dict[str, Dict[Any, Any]] = {}
+    rollups = list(getattr(table_spec, "rollup_columns", None) or [])
+    if not rollups or not rows:
+        return out
+
+    for rollup in rollups:
+        agg = (getattr(rollup, "agg", "count") or "count").lower()
+        needs_value = agg != "count"
+        if (
+            not rollup.from_table_id
+            or not rollup.match_column_local
+            or not rollup.match_column_remote
+            or (needs_value and not rollup.value_column)
+        ):
+            out[rollup.name] = {}
+            continue
+        local_col = rollup.match_column_local
+        distinct_values = list({
+            row.get(local_col) for row in rows if row.get(local_col) not in (None, "")
+        })
+        if not distinct_values:
+            out[rollup.name] = {}
+            continue
+        linked_table = _load_table(db, rollup.from_table_id)
+        linked_ds = _load_datasource(db, linked_table) if linked_table else None
+        if not linked_table or not linked_ds:
+            out[rollup.name] = {}
+            continue
+        try:
+            result = LiveQueryService.execute_preview_query(
+                linked_ds,
+                linked_table,
+                limit=1000,
+                offset=0,
+                filters=[
+                    {
+                        "field": rollup.match_column_remote,
+                        "operator": "in",
+                        "value": distinct_values,
+                    }
+                ],
+            )
+        except SheetsQuotaError:
+            raise _quota_503()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "Grid roll-up '%s' failed for from_table=%s",
+                rollup.name,
+                rollup.from_table_id,
+            )
+            out[rollup.name] = {}
+            continue
+
+        # Bucket child rows by parent key.
+        buckets: Dict[Any, List[Dict[str, Any]]] = {}
+        for child in result.get("rows") or []:
+            key = child.get(rollup.match_column_remote)
+            if key is None:
+                continue
+            buckets.setdefault(key, []).append(child)
+
+        mapping: Dict[Any, Any] = {}
+        for key, children in buckets.items():
+            if agg == "count":
+                mapping[key] = len(children)
+                continue
+            nums = [
+                n for n in (_coerce_total(c.get(rollup.value_column)) for c in children)
+                if n is not None
+            ]
+            if not nums:
+                mapping[key] = None
+            elif agg == "sum":
+                mapping[key] = sum(nums)
+            elif agg in ("avg", "average"):
+                mapping[key] = sum(nums) / len(nums)
+            elif agg == "min":
+                mapping[key] = min(nums)
+            elif agg == "max":
+                mapping[key] = max(nums)
+            else:
+                mapping[key] = None
+        out[rollup.name] = mapping
+    return out
+
+
 def _coerce_total(value: Any) -> Optional[float]:
     if value in (None, ""):
         return None
@@ -1363,6 +1730,54 @@ def _compute_table_totals(
     return out
 
 
+def _compute_stat_tiles(
+    table_spec: Any,
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Aggregate :class:`TableScreenSpec.stat_tiles` across ``rows``.
+
+    Returns ``[{label, value, format, unit}]`` — the FE renders one KPI card
+    per entry above the table/gallery. Reuses the same coercion as footer
+    totals, over the same (RLS-filtered, capped) row set.
+    """
+    tiles = list(getattr(table_spec, "stat_tiles", None) or [])
+    if not tiles:
+        return []
+    out: List[Dict[str, Any]] = []
+    for tile in tiles:
+        column = getattr(tile, "column", None)
+        agg = (getattr(tile, "agg", "sum") or "sum").lower()
+        value: Any
+        if not column:
+            value = None
+        elif agg == "count":
+            value = sum(1 for row in rows if row.get(column) not in (None, ""))
+        else:
+            nums = [
+                n for n in (_coerce_total(row.get(column)) for row in rows)
+                if n is not None
+            ]
+            if not nums:
+                value = None
+            elif agg == "sum":
+                value = sum(nums)
+            elif agg in ("avg", "average"):
+                value = sum(nums) / len(nums)
+            elif agg == "min":
+                value = min(nums)
+            elif agg == "max":
+                value = max(nums)
+            else:
+                value = None
+        out.append({
+            "label": getattr(tile, "label", "") or "",
+            "value": value,
+            "format": getattr(tile, "format", None),
+            "unit": getattr(tile, "unit", None),
+        })
+    return out
+
+
 def render_table_screen(
     db: Session,
     workboard: Workboard,
@@ -1396,8 +1811,8 @@ def render_table_screen(
     table_spec = screen.table
 
     table = _load_table(db, screen.table_id)
-    datasource = _load_datasource(db, table) if table else None
-    if not table or not datasource:
+    datasource, query_table = _resolve_read_target(db, table) if table else (None, None)
+    if not table or not datasource or query_table is None:
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
     rls_filters, allowed = build_rls_filter(
@@ -1416,7 +1831,8 @@ def render_table_screen(
 
     computed_names = {c.name for c in (table_spec.computed_columns or [])}
     lookup_names = {l.name for l in (table_spec.lookup_columns or [])}
-    if sort_column and sort_column in (computed_names | lookup_names):
+    rollup_names = {r.name for r in (getattr(table_spec, "rollup_columns", None) or [])}
+    if sort_column and sort_column in (computed_names | lookup_names | rollup_names):
         # Sorting by a derived column requires post-eval sort, which would
         # silently break pagination. Drop to default ordering.
         sort_column = None
@@ -1428,7 +1844,7 @@ def render_table_screen(
     # cached + materialised into DuckDB). _TOTALS_ROW_CAP bounds worst case.
     result = LiveQueryService.execute_preview_query(
         datasource,
-        table,
+        query_table,
         limit=_TOTALS_ROW_CAP + 1,
         offset=0,
         filters=merged,
@@ -1442,7 +1858,7 @@ def render_table_screen(
     selected_columns = [
         c
         for c in declared_columns
-        if c in all_db_columns or c in computed_names or c in lookup_names
+        if c in all_db_columns or c in computed_names or c in lookup_names or c in rollup_names
     ] or all_db_columns
 
     # PK columns stay in the row payload so the runtime can issue PATCH /
@@ -1451,6 +1867,9 @@ def render_table_screen(
     for lookup in table_spec.lookup_columns or []:
         if lookup.match_column_local in all_db_columns:
             row_keys.append(lookup.match_column_local)
+    for rollup in getattr(table_spec, "rollup_columns", None) or []:
+        if rollup.match_column_local in all_db_columns:
+            row_keys.append(rollup.match_column_local)
     # Include any extra column referenced only by the detail panel so the
     # current-page rows already carry the data needed by the side panel.
     panel = table_spec.detail_panel
@@ -1458,6 +1877,12 @@ def render_table_screen(
         for col in (panel.columns or selected_columns):
             if col in all_db_columns and col not in row_keys:
                 row_keys.append(col)
+    # KPI stat tiles aggregate a column across the loaded rows — make sure that
+    # column is fetched even when it isn't a visible grid column.
+    for tile in getattr(table_spec, "stat_tiles", None) or []:
+        tcol = getattr(tile, "column", None)
+        if tcol in all_db_columns and tcol not in row_keys:
+            row_keys.append(tcol)
     row_keys = list(dict.fromkeys(row_keys))
 
     base_rows: List[Dict[str, Any]] = [
@@ -1465,12 +1890,16 @@ def render_table_screen(
         for row in (result.get("rows") or [])
     ]
 
-    # ── Lookup resolution ────────────────────────────────────────────
+    # ── Lookup + roll-up resolution ──────────────────────────────────
     lookup_maps = _resolve_table_lookups(db, table_spec, base_rows)
+    rollup_maps = _resolve_table_rollups(db, table_spec, base_rows)
     for row in base_rows:
         for lookup in table_spec.lookup_columns or []:
             match_value = row.get(lookup.match_column_local)
             row[lookup.name] = lookup_maps.get(lookup.name, {}).get(match_value)
+        for rollup in getattr(table_spec, "rollup_columns", None) or []:
+            match_value = row.get(rollup.match_column_local)
+            row[rollup.name] = rollup_maps.get(rollup.name, {}).get(match_value)
 
     # ── Computed columns (JS sandbox, one pass) ──────────────────────
     # Each column compiles ONCE, then evaluates once per row. Compile
@@ -1514,6 +1943,7 @@ def render_table_screen(
         base_rows = base_rows[:_TOTALS_ROW_CAP]
     total_count = len(base_rows)
     totals_row = _compute_table_totals(table_spec, base_rows) or None
+    stat_tiles = _compute_stat_tiles(table_spec, base_rows)
 
     # ── Slice the requested page out of the full set ─────────────────
     page_rows = base_rows[offset:offset + page_size]
@@ -1522,7 +1952,7 @@ def render_table_screen(
     column_groups = _normalize_column_groups(selected_columns, table_spec.column_groups)
     merges = _compute_merges(page_rows, list(table_spec.group_by or []), selected_columns)
 
-    return {
+    payload = {
         "columns": selected_columns,
         "primary_key_columns": pk_cols,
         "rows": page_rows,
@@ -1532,10 +1962,16 @@ def render_table_screen(
         "totals_partial": totals_partial,
         "table_view": table_spec.model_dump(),
         "totals_row": totals_row,
+        "stat_tiles": stat_tiles,
         "column_groups": column_groups,
         "merges": merges,
         "column_labels": screen.column_labels or {},
     }
+    # POS scan-cart screens carry the resolved product catalog so the FE
+    # scanner resolves codes → {name, unit, price} instantly, client-side.
+    if getattr(table_spec, "pos_cart", None) is not None:
+        payload["pos_catalog"] = _resolve_pos_catalog(db, table_spec.pos_cart)
+    return payload
 
 
 # ── Doc screen ────────────────────────────────────────────────────────────
@@ -1769,18 +2205,22 @@ def render_doc_screen(
     *,
     identity: CallerIdentity,
     app_user_payload: Optional[Dict[str, Any]] = None,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if screen.kind != "doc" or screen.doc is None:
         raise HTTPException(status_code=400, detail="Screen is not a doc.")
 
-    substitution = _build_substitution_map(workboard, app_user=app_user_payload)
+    substitution = _build_substitution_map(
+        workboard, app_user=app_user_payload, shared=shared_context
+    )
     rendered_blocks: List[Dict[str, Any]] = []
     screen_column_labels = screen.column_labels or {}
     for block in screen.doc.blocks:
         payload = block.model_dump()
         if isinstance(block, DataTableBlock):
             payload["data"] = _resolve_doc_data_block(
-                db, workboard, screen, block, identity=identity
+                db, workboard, screen, block,
+                identity=identity, shared_context=shared_context,
             )
         # Inject screen-level column_labels so frontend can show friendly names
         if screen_column_labels and not payload.get("column_labels"):
@@ -1795,7 +2235,25 @@ def render_doc_screen(
         "page": screen.doc.page.model_dump(),
         "blocks": rendered_blocks,
         "context": substitution,
+        "print_template": _doc_print_template(workboard),
     }
+
+
+def _doc_print_template(workboard: Workboard) -> Optional[Dict[str, Any]]:
+    """The reusable letterhead for doc print/export, read from the layout.
+
+    Stored under ``layout_json.print_template`` (LayoutJson ignores it as an
+    extra key, so it round-trips as a plain dict). Returns None when unset or
+    disabled so the FE simply omits the letterhead band.
+    """
+    try:
+        raw = getattr(workboard, "layout_json", None) or {}
+        pt = raw.get("print_template") if isinstance(raw, dict) else None
+        if isinstance(pt, dict) and pt.get("enabled", True):
+            return pt
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return None
 
 
 def _resolve_doc_data_block(
@@ -1805,6 +2263,7 @@ def _resolve_doc_data_block(
     block: DataTableBlock,
     *,
     identity: CallerIdentity,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # Doc blocks default to ``primary`` (the screen's table) but also
     # support ``lookup:<table_id>`` so a single doc screen can join over
@@ -1820,8 +2279,8 @@ def _resolve_doc_data_block(
         return {"columns": [], "rows": []}
 
     table = _load_table(db, table_id)
-    datasource = _load_datasource(db, table) if table else None
-    if not table or not datasource:
+    datasource, query_table = _resolve_read_target(db, table) if table else (None, None)
+    if not table or not datasource or query_table is None:
         return {"columns": [], "rows": []}
 
     filters: List[Dict[str, Any]] = []
@@ -1836,8 +2295,22 @@ def _resolve_doc_data_block(
             return {"columns": [], "rows": []}
         filters = filters + rls_filters
 
+    # Context filters bind a column to a runtime shared-context value so a
+    # per-record document (a printable phiếu) shows ONLY that record. A
+    # required binding whose value is missing yields NO rows (never a full
+    # dump); an optional one is simply skipped.
+    shared = shared_context or {}
+    for cf in getattr(block, "context_filters", None) or []:
+        raw = shared.get(cf.from_shared)
+        present = raw is not None and not (isinstance(raw, str) and not raw.strip())
+        if not present:
+            if cf.required:
+                return {"columns": [], "rows": []}
+            continue
+        filters = filters + [{"field": cf.column, "operator": "eq", "value": raw}]
+
     result = LiveQueryService.execute_preview_query(
-        datasource, table, limit=block.max_rows, offset=0, filters=filters
+        datasource, query_table, limit=block.max_rows, offset=0, filters=filters
     )
     all_columns: List[str] = result.get("columns") or []
     rows: List[Dict[str, Any]] = result.get("rows") or []
@@ -1916,12 +2389,14 @@ def export_doc_data_block_to_excel(
     block_index: int,
     *,
     identity: CallerIdentity,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> tuple[bytes, str]:
     """Render the *displayed* table of a doc ``data_table`` block to XLSX.
 
     Returns ``(content, filename)``. Only blocks with
-    ``allow_export_excel=True`` are exportable; the same RLS as on-screen
-    rendering applies because we go through :func:`_resolve_doc_data_block`.
+    ``allow_export_excel=True`` are exportable; the same RLS + shared-context
+    filters as on-screen rendering apply because we go through
+    :func:`_resolve_doc_data_block`.
     """
     if screen.kind != "doc" or screen.doc is None:
         raise HTTPException(status_code=400, detail="Screen is not a doc.")
@@ -1934,35 +2409,210 @@ def export_doc_data_block_to_excel(
     if not block.allow_export_excel:
         raise HTTPException(status_code=403, detail="Excel export is disabled for this block.")
 
-    data = _resolve_doc_data_block(db, workboard, screen, block, identity=identity)
+    data = _resolve_doc_data_block(
+        db, workboard, screen, block,
+        identity=identity, shared_context=shared_context,
+    )
     columns: List[str] = data.get("columns") or []
     rows: List[Dict[str, Any]] = data.get("rows") or []
 
-    # Reuse the dataset exporter so cell coercion stays consistent.
-    from app.services.dataset_excel_export_service import (
-        export_dataset_table_to_excel,
-        sanitize_excel_sheet_title,
+    content = _build_templated_excel(
+        workboard=workboard,
+        screen=screen,
+        block=block,
+        columns=columns,
+        rows=rows,
+        column_labels=data.get("column_labels") or {},
+        shared_context=shared_context or {},
     )
-
-    def _fetch_page(_limit: int, offset: int) -> Dict[str, Any]:
-        if offset == 0:
-            return {"columns": columns, "rows": rows}
-        return {"columns": columns, "rows": []}
-
-    sheet_title = sanitize_excel_sheet_title(
-        block.title or screen.title or f"block_{block_index + 1}"
-    )
-    result = export_dataset_table_to_excel(
-        _fetch_page,
-        sheet_title=sheet_title,
-        page_size=max(len(rows), 1),
-        max_rows=max(len(rows), 1),
-    )
-    # Compose a filename like "workboard-slug__screen-id__block-2.xlsx".
     safe_screen = re.sub(r"[^A-Za-z0-9_.-]+", "_", screen.id) or "screen"
     safe_wb = re.sub(r"[^A-Za-z0-9_.-]+", "_", workboard.slug or workboard.name or "workboard")
     filename = f"{safe_wb}__{safe_screen}__block-{block_index + 1}.xlsx"
-    return result.content, filename
+    return content, filename
+
+
+_XLSX_NUMFMT = {
+    "currency": '#,##0 "₫"',
+    "number": "#,##0.####",
+    "integer": "#,##0",
+    "percent": "0.0%",
+}
+
+
+def _build_templated_excel(
+    *,
+    workboard: Workboard,
+    screen: Screen,
+    block: DataTableBlock,
+    columns: List[str],
+    rows: List[Dict[str, Any]],
+    column_labels: Dict[str, str],
+    shared_context: Dict[str, Any],
+) -> bytes:
+    """Build a letterhead-templated XLSX for a doc data_table.
+
+    Layout: company letterhead (from the reusable print_template) → report
+    title → export date + carried filters → an optional grouped header row
+    (``column_groups``) → the styled table with per-column number formats →
+    a bold totals row (``block.totals``). This is the "Excel có sẵn biểu mẫu"
+    output — matches the on-screen document.
+    """
+    import io
+    from datetime import datetime as _dt
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    pt = _doc_print_template(workboard) or {}
+    accent = str(pt.get("accent_color") or "0F766E").lstrip("#") or "0F766E"
+
+    meta_by_col = {k: v for k, v in (block.column_metadata or {}).items()}
+
+    def _label(col: str) -> str:
+        m = meta_by_col.get(col)
+        if m is not None and getattr(m, "label", None):
+            return str(m.label)
+        return column_labels.get(col) or col
+
+    def _fmt(col: str) -> Optional[str]:
+        m = meta_by_col.get(col)
+        return str(getattr(m, "format", None)) if m is not None and getattr(m, "format", None) else None
+
+    numeric_formats = {"currency", "number", "integer", "percent"}
+
+    def _num(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        s = re.sub(r"[^0-9.\-]", "", str(value))
+        try:
+            return float(s) if s not in ("", "-", ".") else None
+        except ValueError:
+            return None
+
+    ncols = max(len(columns), 1)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (re.sub(r"[\[\]\*/\\?:]", " ", (block.title or screen.title or "Báo cáo"))[:31]) or "Báo cáo"
+
+    thin = Side(style="thin", color="D1D5DB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    accent_fill = PatternFill("solid", fgColor=accent)
+    head_font = Font(bold=True, color="FFFFFF", size=11)
+
+    r = 1
+
+    def _merge_line(text: str, *, bold=False, size=11, color="111827", align="left"):
+        nonlocal r
+        ws.cell(r, 1, text)
+        cell = ws.cell(r, 1)
+        cell.font = Font(bold=bold, size=size, color=color)
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        if ncols > 1:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+        r += 1
+
+    # ── Letterhead ──────────────────────────────────────────────────
+    if pt.get("company_name"):
+        _merge_line(str(pt["company_name"]), bold=True, size=14, color=accent)
+    sub_bits: List[str] = []
+    if pt.get("address"):
+        sub_bits.append(f"Địa chỉ: {pt['address']}")
+    if pt.get("tax_code"):
+        sub_bits.append(f"MST: {pt['tax_code']}")
+    if pt.get("hotline"):
+        sub_bits.append(f"Hotline: {pt['hotline']}")
+    if pt.get("email"):
+        sub_bits.append(pt["email"])
+    for line in sub_bits:
+        _merge_line(line, size=10, color="6B7280")
+    if pt.get("company_name") or sub_bits:
+        r += 1  # spacer
+
+    # ── Report title + meta ─────────────────────────────────────────
+    _merge_line(str(block.title or screen.title or "Báo cáo").upper(), bold=True, size=13, align="center")
+    _merge_line(f"Ngày xuất: {_dt.now():%d/%m/%Y %H:%M}", size=9, color="6B7280", align="center")
+    carried = [f"{k}: {v}" for k, v in (shared_context or {}).items() if v not in (None, "")]
+    if carried:
+        _merge_line(" · ".join(carried), size=9, color="6B7280", align="center")
+    r += 1  # spacer
+
+    # ── Optional grouped header (column_groups) ─────────────────────
+    groups = list(block.column_groups or [])
+    if groups:
+        col_pos = {c: i for i, c in enumerate(columns)}
+        for g in groups:
+            gcols = [c for c in (g.columns or []) if c in col_pos]
+            if not gcols:
+                continue
+            idxs = sorted(col_pos[c] for c in gcols)
+            start, end = idxs[0] + 1, idxs[-1] + 1
+            cell = ws.cell(r, start, g.label or "")
+            cell.font = head_font
+            cell.fill = accent_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+            if end > start:
+                ws.merge_cells(start_row=r, start_column=start, end_row=r, end_column=end)
+                for cc in range(start, end + 1):
+                    ws.cell(r, cc).border = border
+                    ws.cell(r, cc).fill = accent_fill
+        r += 1
+
+    # ── Table header row ────────────────────────────────────────────
+    header_row = r
+    for j, col in enumerate(columns):
+        cell = ws.cell(r, j + 1, _label(col))
+        cell.font = head_font
+        cell.fill = accent_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    r += 1
+
+    # ── Data rows ───────────────────────────────────────────────────
+    for row in rows:
+        for j, col in enumerate(columns):
+            fmt = _fmt(col)
+            raw = row.get(col)
+            cell = ws.cell(r, j + 1)
+            if fmt in numeric_formats:
+                num = _num(raw)
+                cell.value = num
+                cell.number_format = _XLSX_NUMFMT.get(fmt, "#,##0")
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.value = "" if raw is None else str(raw)
+                cell.alignment = Alignment(horizontal="left")
+            cell.border = border
+        r += 1
+
+    # ── Totals row ──────────────────────────────────────────────────
+    total_cols = set(block.totals or [])
+    if total_cols and rows:
+        for j, col in enumerate(columns):
+            cell = ws.cell(r, j + 1)
+            cell.font = Font(bold=True)
+            cell.border = border
+            if j == 0:
+                cell.value = "TỔNG"
+            elif col in total_cols:
+                cell.value = sum((_num(row.get(col)) or 0) for row in rows)
+                cell.number_format = _XLSX_NUMFMT.get(_fmt(col) or "integer", "#,##0")
+                cell.alignment = Alignment(horizontal="right")
+        r += 1
+
+    # ── Column widths ───────────────────────────────────────────────
+    for j, col in enumerate(columns):
+        header_len = len(_label(col))
+        sample = max((len(str(row.get(col) or "")) for row in rows[:50]), default=0)
+        width = min(max(header_len + 2, sample + 2, 10), 42)
+        ws.column_dimensions[get_column_letter(j + 1)].width = width
+    ws.freeze_panes = ws.cell(header_row + 1, 1)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ── Public app shell payload ──────────────────────────────────────────────
@@ -1971,6 +2621,7 @@ def render_app_shell(
     workboard: Workboard,
     identity: CallerIdentity,
     hidden_screen_ids: Optional[Set[str]] = None,
+    db: Optional[Session] = None,
 ) -> Dict[str, Any]:
     """Initial payload the public runtime fetches on entry to a workboard.
 
@@ -2024,6 +2675,9 @@ def render_app_shell(
             "description": workboard.description,
         },
         "branding": layout.branding.model_dump(),
+        "media_max_kb": (
+            media_cap_kb(db, workboard) if db is not None else WORKBOARD_MEDIA_MAX_KB
+        ),
         "nav": {
             **layout.mini_app_nav.model_dump(),
             "items": nav_items,

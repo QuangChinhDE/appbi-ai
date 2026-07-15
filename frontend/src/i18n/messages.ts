@@ -16,6 +16,7 @@ const baseEn: MessageCatalog = {
   'common.english': 'English',
   'common.vietnamese': 'Tiếng Việt',
   'common.cancel': 'Cancel',
+  'common.close': 'Close',
   'common.delete': 'Delete',
   'common.open': 'Open',
   'common.notRunYet': 'Not run yet',
@@ -23,12 +24,23 @@ const baseEn: MessageCatalog = {
   'sidebar.nav.overview': 'Overview',
   'sidebar.nav.datasources': 'Data Sources',
   'sidebar.nav.datasets': 'Datasets',
-  'sidebar.nav.govern': 'Govern',
+  'sidebar.nav.govern': 'Documents',
+  'sidebar.nav.intelligence': 'AI Readiness',
+  'sidebar.nav.semantics': 'Metrics & Terms',
+  'sidebar.nav.aiGuidance': 'AI Guidance',
+  'sidebar.nav.aiInbox': 'AI Suggestions',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Explore',
   'sidebar.nav.dashboards': 'Dashboards',
   'sidebar.nav.workboards': 'Workboards',
   'sidebar.nav.settings': 'Settings',
+  'sidebar.group.build': 'Build',
+  'sidebar.group.operate': 'Operate',
+  'sidebar.group.intelligence': 'Intelligence',
+  'sidebar.group.trust': 'Trust',
+  'sidebar.settings.description': 'Workspace administration & access control.',
+  'sidebar.settings.permissions': 'People & permissions',
+  'sidebar.settings.permissionsDesc': 'Users, teams and role-based access',
   'sidebar.user.changePassword': 'Change password',
   'sidebar.user.signOut': 'Sign out',
   'sidebar.user.language': 'Interface language',
@@ -93,6 +105,8 @@ const baseEn: MessageCatalog = {
   'dashboards.canvas.editWidget': 'Edit widget',
   'dashboards.canvas.removeWidget': 'Remove widget',
   'dashboards.canvas.dragToResize': 'Drag to resize',
+  'dashboards.canvas.bringToFront': 'Bring to front',
+  'dashboards.canvas.sendToBack': 'Send to back',
   'dashboards.addChart.modalTitle': 'Add Chart to Dashboard',
   'dashboards.addChart.allChartTypes': 'All chart types',
   'dashboards.addChart.chooseExisting': 'Choose Existing',
@@ -163,6 +177,7 @@ const baseVi: MessageCatalog = {
   'common.english': 'English',
   'common.vietnamese': 'Tiếng Việt',
   'common.cancel': 'Hủy',
+  'common.close': 'Đóng',
   'common.delete': 'Xóa',
   'common.open': 'Mở',
   'common.notRunYet': 'Chưa chạy',
@@ -170,12 +185,23 @@ const baseVi: MessageCatalog = {
   'sidebar.nav.overview': 'Tổng quan',
   'sidebar.nav.datasources': 'Nguồn dữ liệu',
   'sidebar.nav.datasets': 'Dataset',
-  'sidebar.nav.govern': 'Govern',
+  'sidebar.nav.govern': 'Tài liệu',
+  'sidebar.nav.intelligence': 'Sẵn sàng AI',
+  'sidebar.nav.semantics': 'Chỉ số & Thuật ngữ',
+  'sidebar.nav.aiGuidance': 'Hướng dẫn AI',
+  'sidebar.nav.aiInbox': 'Đề xuất AI',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Khám phá',
   'sidebar.nav.dashboards': 'Dashboard',
   'sidebar.nav.workboards': 'Workboard',
   'sidebar.nav.settings': 'Cài đặt',
+  'sidebar.group.build': 'Xây dựng',
+  'sidebar.group.operate': 'Vận hành',
+  'sidebar.group.intelligence': 'Trí tuệ',
+  'sidebar.group.trust': 'Tin cậy',
+  'sidebar.settings.description': 'Quản trị workspace & phân quyền truy cập.',
+  'sidebar.settings.permissions': 'Người dùng & Phân quyền',
+  'sidebar.settings.permissionsDesc': 'Người dùng, nhóm và phân quyền theo vai trò',
   'sidebar.user.changePassword': 'Đổi mật khẩu',
   'sidebar.user.signOut': 'Đăng xuất',
   'sidebar.user.language': 'Ngôn ngữ giao diện',
@@ -240,6 +266,8 @@ const baseVi: MessageCatalog = {
   'dashboards.canvas.editWidget': 'Sửa widget',
   'dashboards.canvas.removeWidget': 'Xóa widget',
   'dashboards.canvas.dragToResize': 'Kéo để thay đổi kích thước',
+  'dashboards.canvas.bringToFront': 'Đưa lên trước',
+  'dashboards.canvas.sendToBack': 'Đưa ra sau',
   'dashboards.addChart.modalTitle': 'Thêm biểu đồ vào Dashboard',
   'dashboards.addChart.allChartTypes': 'Tất cả loại biểu đồ',
   'dashboards.addChart.chooseExisting': 'Chọn có sẵn',
@@ -308,11 +336,15 @@ import { dashboardsCatalog } from './catalog/dashboards';
 import { dashboardsDetailCatalog } from './catalog/dashboards-detail';
 import { dashboardsModalsCatalog } from './catalog/dashboards-modals';
 import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
+import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
+import { governCatalog } from './catalog/govern';
 import { workboardsCatalog } from './catalog/workboards';
 import { datasourcesCatalog } from './catalog/datasources';
+import { observabilityCatalog } from './catalog/observability';
 import { publicCatalog } from './catalog/public';
+import { settingsCatalog } from './catalog/settings';
 import { sharedCatalog } from './catalog/shared';
 
 const moduleCatalogs: ModuleCatalog[] = [
@@ -320,11 +352,15 @@ const moduleCatalogs: ModuleCatalog[] = [
   dashboardsDetailCatalog,
   dashboardsModalsCatalog,
   dashboardsAiBotCatalog,
+  dashboardsThemeCatalog,
   datasetsCatalog,
   exploreCatalog,
+  governCatalog,
   workboardsCatalog,
   datasourcesCatalog,
+  observabilityCatalog,
   publicCatalog,
+  settingsCatalog,
   sharedCatalog,
 ];
 

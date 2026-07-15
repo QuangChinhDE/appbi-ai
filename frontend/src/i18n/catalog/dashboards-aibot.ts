@@ -3,6 +3,7 @@ import type { ModuleCatalog } from '../messages';
 // DashboardAiBot panel strings, harvested from the panel externalization workflow.
 export const dashboardsAiBotCatalog: ModuleCatalog = {
   en: {
+    "dashboards.aiBot.title": "AI Analyst",
     "dashboards.aiBot.analyzing": "AI Analyst is analyzing",
     "dashboards.aiBot.webSourcesLabel": "Web sources",
     "dashboards.aiBot.stopTitle": "Stop generating",
@@ -29,7 +30,6 @@ export const dashboardsAiBotCatalog: ModuleCatalog = {
     "dashboards.aiBot.modelHint": "Defaults to the strongest model. Switch to a lighter one if your key isn't authorized for it.",
     "dashboards.aiBot.modelLabel": "Model",
     "dashboards.aiBot.normalLabel": "Normal",
-    "dashboards.aiBot.normalModeTitle": "Normal mode · fast answers with the core tools",
     "dashboards.aiBot.openAria": "Open AI Assistant",
     "dashboards.aiBot.openTitle": "Ask AI about this dashboard",
     "dashboards.aiBot.providerLabel": "AI provider",
@@ -60,10 +60,10 @@ export const dashboardsAiBotCatalog: ModuleCatalog = {
     "dashboards.aiBot.stepReading": "reading…",
     "dashboards.aiBot.thinkingFallback": "Thinking…",
     "dashboards.aiBot.thinkingLabel": "Thinking",
-    "dashboards.aiBot.thinkingModeTitle": "Thinking mode · deep multi-step analysis (reading plan, more tools, memory)",
     "dashboards.aiBot.unknownError": "Unknown error.",
   },
   vi: {
+    "dashboards.aiBot.title": "AI Analyst",
     "dashboards.aiBot.analyzing": "AI Analyst đang phân tích",
     "dashboards.aiBot.webSourcesLabel": "Nguồn tham khảo trên web",
     "dashboards.aiBot.stopTitle": "Dừng tạo câu trả lời",
@@ -90,7 +90,6 @@ export const dashboardsAiBotCatalog: ModuleCatalog = {
     "dashboards.aiBot.modelHint": "Mặc định là model mạnh nhất. Đổi sang bản nhẹ hơn nếu key của bạn chưa được cấp quyền.",
     "dashboards.aiBot.modelLabel": "Model",
     "dashboards.aiBot.normalLabel": "Normal",
-    "dashboards.aiBot.normalModeTitle": "Chế độ Normal · trả lời nhanh với bộ công cụ cốt lõi",
     "dashboards.aiBot.openAria": "Mở AI Assistant",
     "dashboards.aiBot.openTitle": "Hỏi AI về dashboard này",
     "dashboards.aiBot.providerLabel": "Nhà cung cấp AI",
@@ -121,7 +120,6 @@ export const dashboardsAiBotCatalog: ModuleCatalog = {
     "dashboards.aiBot.stepReading": "đang đọc…",
     "dashboards.aiBot.thinkingFallback": "Đang suy nghĩ…",
     "dashboards.aiBot.thinkingLabel": "Thinking",
-    "dashboards.aiBot.thinkingModeTitle": "Chế độ Thinking · phân tích sâu nhiều bước (kế hoạch đọc, nhiều công cụ, nhớ ngữ cảnh)",
     "dashboards.aiBot.unknownError": "Lỗi không xác định.",
   },
 };

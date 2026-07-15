@@ -478,6 +478,7 @@ function ChartTileBase({
     data: chartData,
     isLoading: isLoadingData,
     isFetching: isFetchingData,
+    isSuccess: isChartDataSuccess,
     error: chartDataError,
     refetch: refetchChartData,
   } = useChartData(
@@ -1443,13 +1444,27 @@ function ChartTileBase({
             </div>
           </div>
         ) : !chartData ? (
-          <div className="flex h-full items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-4 text-center">
-            <div>
-              <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
-              <p className="text-sm font-medium text-text-primary">{t('dashboards.tile.noChartData')}</p>
-              <p className="mt-1 text-xs text-text-tertiary">{t('dashboards.tile.noChartDataHint')}</p>
+          // No data object yet. `chartData` is only undefined BEFORE the query
+          // resolves — i.e. while it's pending OR gated (waiting for filters to
+          // seed, the 300ms filter debounce to catch up, or the tile to enter
+          // the viewport). In react-query v5 a gated/disabled query is `pending`
+          // but NOT `fetching`, so `isLoadingData` (=isPending && isFetching) is
+          // false there — which used to fall through to a FALSE "No chart data
+          // available" warning mid-load/refresh. Show the loading spinner unless
+          // the query actually RESOLVED successfully with no data object (rare).
+          isChartDataSuccess ? (
+            <div className="flex h-full items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-4 text-center">
+              <div>
+                <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
+                <p className="text-sm font-medium text-text-primary">{t('dashboards.tile.noChartData')}</p>
+                <p className="mt-1 text-xs text-text-tertiary">{t('dashboards.tile.noChartDataHint')}</p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-brand" />
+            </div>
+          )
         ) : exploreConfig ? (
           // Phase-15.78 — `key` on a chart-type wrapper triggers a clean
           // remount + fade-in on chart-type change. Recharts components

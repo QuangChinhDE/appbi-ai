@@ -203,6 +203,15 @@ def _get_user_permissions(user: User) -> Dict[str, str]:
     base = _default_permissions()
     stored: dict = user.permissions or {}
     base.update({k: v for k, v in stored.items() if k in MODULES})
+    # Admin (settings=full) implicitly has any module added AFTER their
+    # permissions row was created — surface those (e.g. govern/observability
+    # enabled today) so the sidebar/matrix show them instead of hiding a new
+    # module behind a missing key. Mirrors require_permission()'s admin rule;
+    # an explicit stored level (even "none") is left untouched.
+    if str(stored.get("settings", "")).strip().lower() == "full":
+        for m in MODULES:
+            if m != "settings" and m not in stored:
+                base[m] = "full"
     return base
 
 

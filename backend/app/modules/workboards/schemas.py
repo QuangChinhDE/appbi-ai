@@ -73,6 +73,62 @@ class LookupConfig(BaseModel):
         default="satellite", description="Basemap tile style for the map widget."
     )
 
+    # ── Dependent / cascading lookup (widget=select/lookup) ──────────────────
+    # When set, the FE narrows the options to the rows whose `filter_column`
+    # equals the current value of another form field (`filter_by_field`).
+    # `_resolve_lookup_options` projects `filter_column` into each option so the
+    # FE can filter client-side as the parent field changes.
+    filter_by_field: Optional[str] = Field(
+        default=None,
+        description="Column of ANOTHER form field whose value narrows these options (cascading select).",
+    )
+    filter_column: Optional[str] = Field(
+        default=None,
+        description="Remote column on the lookup table matched against filter_by_field's value.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatusState(BaseModel):
+    """One state in a status/approval widget."""
+
+    value: str = Field(..., min_length=1, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=120)
+    color: Optional[str] = Field(
+        default=None,
+        description="Badge tone: slate|green|amber|red|blue|violet (FE maps to Tailwind).",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatusConfig(BaseModel):
+    """Config for widget='status' — a colored lifecycle select with per-role gating.
+
+    Distinct from a plain select: it renders a badge, and `editable_by_roles`
+    restricts WHO may change it (approval gate) on top of the screen RLS
+    ``writable_columns``. Empty ``editable_by_roles`` = every role that can write
+    the row may change it.
+    """
+
+    states: List[StatusState] = Field(default_factory=list)
+    editable_by_roles: List[str] = Field(
+        default_factory=list,
+        description="Roles allowed to change the status. Empty = anyone who can write the row.",
+    )
+    allowed_transitions: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Optional lifecycle guard: from-value -> allowed to-values. When set, the "
+            "SERVER blocks any status change whose (previous -> new) pair is not listed "
+            "(an empty list for a value = terminal state). A value absent from the map "
+            "is unconstrained. Because status_config is per-field-per-screen, giving a "
+            "role its own screen with a narrower map yields per-role transitions "
+            "(e.g. the driver's form omits '-> Huỷ', the manager's form allows it)."
+        ),
+    )
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -90,6 +146,28 @@ class FormField(BaseModel):
         "file",
         "image",
         "map",
+        "geopoint",   # capture device GPS -> "lat,lng"
+        "images",     # multiple photos -> JSON array of data URLs
+        "signature",  # canvas signature -> data:image PNG
+        "barcode",    # QR/barcode scan (BarcodeDetector) + manual fallback
+        "audio",      # voice note -> data:audio data URL
+        "computed",   # readonly, value computed live from `formula`
+        "status",     # colored lifecycle select (approval)
+        # ── Rich input types (AppSheet-parity) ──────────────────────────
+        "email",      # typed text, email validation + mailto: view
+        "phone",      # typed text, tel: view + numeric inputmode
+        "url",        # typed text, url validation + link view
+        "rich_text",  # markdown editor -> markdown string
+        "enum_list",  # multi-select chips -> JSON array (source = lookup)
+        "rating",     # star rating -> number
+        "slider",     # range slider -> number
+        "currency",   # money input -> number (raw), symbol via currency_code
+        "percent",    # percent input -> number (0-100)
+        "time",       # time-of-day -> "HH:MM"
+        "duration",   # h/m -> total minutes (number)
+        "color",      # color picker -> hex string
+        "video",      # short capture/upload -> data:video data URL
+        "qr",         # display-only: render a QR from a column value / template (print label)
     ] = "text"
     label: Optional[str] = None
     required: bool = False
@@ -136,10 +214,84 @@ class FormField(BaseModel):
         ge=1,
         le=10240,
         description=(
-            "For widget='file' / 'image': max size in KB the FE will accept. "
-            "BE enforces a hard ceiling at 1024 KB regardless — file upload is "
-            "base64-into-JSONB so anything larger destroys the row's payload."
+            "For widget='file' / 'image' / 'images' / 'signature' / 'audio': max size "
+            "in KB the FE will accept per item. BE enforces a hard ceiling at 1024 KB "
+            "regardless — media is base64-into-JSONB so anything larger destroys the row."
         ),
+    )
+    # ── Capture / media extras ───────────────────────────────────────────────
+    capture_only: Optional[bool] = Field(
+        default=None,
+        description="widget=image/images: force live camera capture (no gallery pick) — field-work anti-fraud.",
+    )
+    max_items: Optional[int] = Field(
+        default=None, ge=1, le=20,
+        description="widget=images: max number of photos.",
+    )
+    unit: Optional[str] = Field(
+        default=None, max_length=16,
+        description="widget=number/computed: unit suffix shown after the value (e.g. 'kg', '%').",
+    )
+    formula: Optional[str] = Field(
+        default=None, max_length=1000,
+        description=(
+            "widget=computed: arithmetic expression over [other_column] evaluated LIVE "
+            "on the form and stored on submit, e.g. `[san_luong] * [drc] / 100`."
+        ),
+    )
+    status_config: Optional[StatusConfig] = Field(
+        default=None, description="widget=status only: the lifecycle states + approval gating.",
+    )
+    # ── Rich input-type config ───────────────────────────────────────────────
+    max_stars: Optional[int] = Field(
+        default=None, ge=1, le=10, description="widget=rating: number of stars (default 5).",
+    )
+    allow_half: Optional[bool] = Field(
+        default=None, description="widget=rating: allow half-star values.",
+    )
+    min_value: Optional[float] = Field(
+        default=None, description="widget=slider: minimum value (default 0).",
+    )
+    max_value: Optional[float] = Field(
+        default=None, description="widget=slider: maximum value (default 100).",
+    )
+    step: Optional[float] = Field(
+        default=None, gt=0, description="widget=slider: step increment (default 1).",
+    )
+    currency_code: Optional[str] = Field(
+        default=None, max_length=8,
+        description="widget=currency: ISO code / symbol shown (e.g. 'VND', '$').",
+    )
+    max_select: Optional[int] = Field(
+        default=None, ge=1, le=50,
+        description="widget=enum_list: max number of selected chips.",
+    )
+    # ── QR display (widget='qr') — renders a QR image, never writes the column ──
+    qr_source_column: Optional[str] = Field(
+        default=None,
+        description="widget=qr: column whose current value is encoded. Defaults to this field's own `column`.",
+    )
+    qr_value_template: Optional[str] = Field(
+        default=None, max_length=1000,
+        description=(
+            "widget=qr: a template encoded instead of a single column, with [other_column] "
+            "placeholders (e.g. a deep-link URL). Takes precedence over qr_source_column."
+        ),
+    )
+    qr_size: Optional[int] = Field(
+        default=None, ge=48, le=1024, description="widget=qr: rendered size in px (default 160).",
+    )
+    qr_caption: Optional[str] = Field(
+        default=None, max_length=200, description="widget=qr: text printed under the code.",
+    )
+    # ── Scan -> navigate (widget='barcode') — jump to a screen carrying the code ─
+    scan_go_to_screen: Optional[str] = Field(
+        default=None,
+        description="widget=barcode: on a successful scan, navigate to this screen id (in-app scan-to-form).",
+    )
+    scan_carry_as: Optional[str] = Field(
+        default=None, max_length=255,
+        description="widget=barcode: column name the scanned value is carried under to scan_go_to_screen (default = this field's column).",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -303,11 +455,36 @@ class DataTableSyncTrigger(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DataTableContextFilter(BaseModel):
+    """Filter a doc data_table by a value carried in the runtime shared context.
+
+    When a row action (or a POS submit) navigates to a doc screen carrying e.g.
+    ``ma_don``, that value lands in the shared context. Binding it here makes a
+    per-record document — a printable phiếu — show ONLY that record's rows
+    instead of every row the viewer can see.
+    """
+
+    column: str = Field(..., min_length=1, description="data_table column to filter.")
+    from_shared: str = Field(
+        ..., min_length=1, description="Key in the shared context that supplies the match value."
+    )
+    required: bool = Field(
+        default=True,
+        description="When the shared value is absent: True → show no rows; False → skip this filter.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
         default="primary",
         description="`primary` (the screen's bound table) or `lookup:<table_id>`",
+    )
+    context_filters: List[DataTableContextFilter] = Field(
+        default_factory=list,
+        description="Filter rows by runtime shared-context values (for per-record docs like a printable phiếu).",
     )
     columns: List[str] = Field(default_factory=list)
     column_groups: List[DataTableColumnGroup] = Field(default_factory=list)
@@ -376,6 +553,23 @@ class FooterBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class QrCodeBlock(BaseModel):
+    """A QR code rendered on a printable doc (e.g. a shipping label).
+
+    ``value`` is the string encoded — a static code or a placeholder such as
+    ``{{shared.ma_don}}`` / ``{{app_user.username}}`` resolved server-side at
+    render time. Pair it with a HeaderBlock/KvGridBlock to build a full label.
+    """
+
+    type: Literal["qr_code"]
+    value: str = ""
+    size: int = Field(default=180, ge=48, le=1024)
+    caption: Optional[str] = Field(default=None, max_length=200)
+    align: Literal["left", "center", "right"] = "center"
+
+    model_config = ConfigDict(extra="forbid")
+
+
 DocBlock = Union[
     HeaderBlock,
     KvGridBlock,
@@ -384,6 +578,7 @@ DocBlock = Union[
     SpacerBlock,
     SignatureBlock,
     FooterBlock,
+    QrCodeBlock,
 ]
 
 
@@ -402,12 +597,61 @@ class AuditConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ThemeBackground(BaseModel):
+    """Background for the app shell or login page. Images are stored as a
+    bounded ``data:`` URI (the FE compresses on upload) so they satisfy the
+    ``img-src 'self' data:`` CSP — external URLs are blocked in production."""
+
+    kind: Literal["color", "gradient", "image"] = "color"
+    color: Optional[str] = Field(default=None, max_length=32)
+    gradient_preset: Optional[str] = Field(default=None, max_length=48)
+    image_data: Optional[str] = Field(
+        default=None, description="data: URI (client-compressed, ~200KB cap)."
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ThemeCardStyle(BaseModel):
+    radius: Optional[Literal["none", "sm", "md", "lg", "xl"]] = None
+    shadow: Optional[Literal["none", "sm", "md"]] = None
+    border: Optional[bool] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ThemeLogin(BaseModel):
+    background: Optional[ThemeBackground] = None
+    tagline: Optional[str] = Field(default=None, max_length=240)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class BrandingConfig(BaseModel):
+    """Theme + branding for a workboard's public mini-app shell.
+
+    Superset "design system" config (AppSheet-parity): colors, dark mode,
+    background, font, card/header style, and a per-login override. Kept as
+    ``extra="ignore"`` (not forbid) because it is purely cosmetic — a stray
+    legacy key must never 422 an entire layout save.
+    """
+
     app_name: Optional[str] = None
     logo_url: Optional[str] = None
+    logo_data: Optional[str] = None
+    logo_layout: Optional[Literal["mark", "wide"]] = None
     primary_color: Optional[str] = Field(default=None, max_length=32)
     accent_color: Optional[str] = Field(default=None, max_length=32)
+    welcome_text: Optional[str] = None
+    # Mode drives the CSS-variable theme + ``data-theme`` on the shell root.
     theme: Literal["light", "dark", "auto"] = "auto"
+    background: Optional[ThemeBackground] = None
+    font_family: Optional[
+        Literal["system", "inter", "be-vietnam", "roboto", "serif", "mono"]
+    ] = None
+    card_style: Optional[ThemeCardStyle] = None
+    header_style: Optional[Literal["fill", "line", "minimal"]] = None
+    login: Optional[ThemeLogin] = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -523,6 +767,13 @@ class FormScreenSpec(BaseModel):
     pages: List[FormPage] = Field(default_factory=list)
     sections: List[str] = Field(default_factory=list)
     ocr: Optional[OcrConfig] = None
+    geo_stamp_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the FE captures the device GPS at submit and writes 'lat,lng' "
+            "into this column (readonly, anti-fraud geo-audit of who was where)."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -592,19 +843,98 @@ class TableLookupColumn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TableRollupColumn(BaseModel):
+    """A read-only column that AGGREGATES child rows from a related table —
+    a reverse-reference roll-up ("order total = SUM of its line-items",
+    "records-per-plot = COUNT").
+
+    The inverse of :class:`TableLookupColumn`: instead of pulling one value
+    for a matching key, it gathers ALL child rows whose ``match_column_remote``
+    equals this row's ``match_column_local`` and reduces them with ``agg``.
+    Runtime fetches the child rows in one batched ``IN`` query (RLS of the
+    child table is NOT applied — the parent rows are already scoped) and
+    aggregates in Python, so no GROUP-BY transport is needed.
+
+    Incomplete config (blank columns / from_table_id=0) is skipped at runtime.
+    """
+
+    name: str = Field(..., min_length=1, max_length=120)
+    label: Optional[str] = Field(default=None, max_length=200)
+    from_table_id: int = Field(default=0, ge=0)
+    match_column_local: str = Field(default="", max_length=120)
+    match_column_remote: str = Field(default="", max_length=120)
+    agg: Literal["sum", "count", "avg", "min", "max"] = "count"
+    value_column: str = Field(
+        default="", max_length=120,
+        description="Child column to aggregate. Ignored for agg=count.",
+    )
+    format: Optional[Literal[
+        "text", "number", "integer", "currency", "percent", "date", "datetime"
+    ]] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FormatRule(BaseModel):
+    """Conditional formatting: tint a row (or specific columns) when a
+    row-local expression is truthy — AppSheet-style "format rules".
+
+    ``when`` uses the shared wb-expr grammar over the row's values
+    (including computed/lookup/rollup columns). Evaluated on the FE per row.
+    First matching rule wins per cell. ``columns`` empty = whole row.
+    """
+
+    when: str = Field(..., min_length=1, max_length=1000)
+    color: Literal["slate", "green", "amber", "red", "blue", "violet"] = "amber"
+    columns: List[str] = Field(
+        default_factory=list,
+        description="Columns to tint; empty = the whole row.",
+    )
+    icon: Optional[str] = Field(default=None, max_length=40, description="Optional emoji/marker prefix.")
+    label: Optional[str] = Field(default=None, max_length=80, description="Legend label for this rule.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TableColumnOption(BaseModel):
+    """A static option for a select / enum_list inline cell."""
+
+    label: str = Field(..., max_length=200)
+    value: Any = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableColumnMeta(BaseModel):
     """Per-column presentation metadata (label override, width, align,
-    format hint, merge flag). The runtime currently consumes label/format
-    from this map; width/align are FE-only hints.
+    format hint, merge flag) plus — for editable columns — the typed inline
+    editor (``input_type``) and its config. The runtime consumes label/format;
+    width/align are FE-only hints; input_type drives the inline cell control.
     """
 
     label: Optional[str] = Field(default=None, max_length=200)
     width_px: Optional[int] = Field(default=None, ge=1, le=2000)
     format: Optional[Literal[
-        "text", "number", "integer", "currency", "percent", "date", "datetime"
+        "text", "number", "integer", "currency", "percent", "date", "datetime", "qr"
     ]] = None
     align: Optional[Literal["left", "center", "right"]] = None
     merge: Optional[bool] = None
+    # ── Typed inline editor (editable columns only) ──────────────────────
+    input_type: Optional[Literal[
+        "text", "number", "currency", "percent", "date", "datetime", "time",
+        "checkbox", "select", "enum_list", "rating", "color", "slider",
+    ]] = Field(
+        default=None,
+        description="Control used to edit this cell inline. None = plain text.",
+    )
+    options: Optional[List[TableColumnOption]] = Field(
+        default=None, description="Static options for input_type=select/enum_list.",
+    )
+    currency_code: Optional[str] = Field(default=None, max_length=8)
+    max_stars: Optional[int] = Field(default=None, ge=1, le=10)
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step: Optional[float] = Field(default=None, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -681,6 +1011,124 @@ class GalleryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CalendarConfig(BaseModel):
+    """Month-calendar layout for a Table screen when ``display_mode='calendar'``.
+
+    Same query / RLS / filters / detail-panel as the grid — rows are placed on
+    a month grid by ``date_column``. Clicking a chip opens the detail panel.
+    """
+
+    date_column: str = Field(
+        ..., min_length=1,
+        description="Column holding the date each row is placed on (ISO date / datetime).",
+    )
+    title_column: Optional[str] = Field(
+        default=None, description="Column shown as each day-chip's label (defaults to the PK).",
+    )
+    color_column: Optional[str] = Field(
+        default=None,
+        description="Optional column whose value tints the chip (e.g. a status column).",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatTile(BaseModel):
+    """One KPI tile shown above a Table screen.
+
+    Aggregates a column across the loaded (RLS-filtered) rows so a worker sees
+    e.g. "Σ Sản lượng hôm nay" without opening a whole dashboard. Computed on
+    the same page cap as footer totals — cheap, no extra query.
+    """
+
+    label: str = Field(..., min_length=1, max_length=80)
+    column: str = Field(..., min_length=1)
+    agg: Literal["sum", "avg", "min", "max", "count"] = "sum"
+    format: Optional[str] = Field(
+        default=None,
+        description="Optional cell format key (number|integer|currency|percent|...).",
+    )
+    unit: Optional[str] = Field(default=None, max_length=16, description="Suffix after the value.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PosCartHeaderInput(BaseModel):
+    """One header field captured ONCE per POS submit and written onto EVERY
+    line row (denormalised), e.g. Loại phiếu / Kho / Người giao/nhận."""
+
+    column: str = Field(..., min_length=1, description="Header/line column key.")
+    label: str = Field(..., min_length=1, max_length=80)
+    kind: Literal["text", "select", "date"] = "text"
+    options: List[str] = Field(
+        default_factory=list, description="Choices when kind='select'."
+    )
+    default: Optional[str] = None
+    required: bool = False
+    write_to_line: bool = Field(
+        default=True,
+        description=(
+            "True → the value is written onto every saved line. False → captured "
+            "and carried to the receipt only (metadata that is not a line column, "
+            "e.g. Người giao when lines live in a detail table)."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PosCartConfig(BaseModel):
+    """Supermarket-style batch scan cart on a ``table`` screen.
+
+    When present the runtime renders a point-of-sale interface instead of the
+    editable grid: scan a barcode (phone camera) → the product is resolved from
+    a catalog table and appended to an on-screen list with an editable quantity
+    → press *Submit* to persist EVERY line at once through the screen's
+    bulk-insert endpoint. Nothing touches the datasource until submit — exactly
+    like a checkout scanner. A phiếu id is generated per submit and, optionally,
+    the user is routed to a printable doc screen (the receipt).
+
+    The read side attaches the resolved catalog rows as ``pos_catalog`` so the
+    scanner resolves codes instantly client-side (no per-scan round trip).
+    """
+
+    barcode_column: str = Field(..., min_length=1, description="Line column that stores the scanned code.")
+    quantity_column: str = Field(..., min_length=1, description="Line column for the quantity.")
+    catalog_table_id: int = Field(..., description="Dataset table id of the product master.")
+    catalog_match_column: str = Field(..., min_length=1, description="Catalog column matched against the scanned code.")
+    catalog_label_column: Optional[str] = Field(default=None, description="Product-name column in the catalog.")
+    catalog_price_column: Optional[str] = Field(default=None, description="Unit-price column in the catalog.")
+    catalog_copy: Dict[str, str] = Field(
+        default_factory=dict,
+        description="line_column -> catalog_column values copied onto every appended line.",
+    )
+    amount_column: Optional[str] = Field(default=None, description="Line column set to quantity × unit price.")
+    header_inputs: List[PosCartHeaderInput] = Field(default_factory=list)
+    order_id_column: Optional[str] = Field(default=None, description="Line column for the generated phiếu id.")
+    order_id_prefix: str = Field(default="PN", max_length=12)
+    date_column: Optional[str] = Field(default=None, description="Line column auto-set to today's date.")
+    header_screen_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Screen id (bound to the phiếu HEADER table, usually hidden from nav) "
+            "that receives ONE row per submit with the header values (phiếu id, "
+            "loại, kho, người giao, ngày). Keeps the header table in sync so "
+            "phiếu lists show POS-created phiếu. None = lines only."
+        ),
+    )
+    submit_label: str = Field(default="Lưu phiếu", max_length=40)
+    after_submit_screen: Optional[str] = Field(default=None, description="Doc screen opened after a successful save (the receipt).")
+    after_submit_carry: List[str] = Field(
+        default_factory=list,
+        description="Header/line columns carried to after_submit_screen (e.g. the generated phiếu id).",
+    )
+    allow_manual_search: bool = Field(default=True, description="Show a searchable catalog picker beside the scanner.")
+    catalog_group_column: Optional[str] = Field(default=None, description="Optional catalog column used to group the picker.")
+    empty_hint: Optional[str] = Field(default=None, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -745,6 +1193,7 @@ class TableScreenSpec(BaseModel):
 
     computed_columns: List[TableComputedColumn] = Field(default_factory=list)
     lookup_columns: List[TableLookupColumn] = Field(default_factory=list)
+    rollup_columns: List[TableRollupColumn] = Field(default_factory=list)
     totals: Dict[str, Literal["sum", "avg", "min", "max", "count"]] = Field(
         default_factory=dict,
     )
@@ -773,13 +1222,34 @@ class TableScreenSpec(BaseModel):
 
     empty_state_message: Optional[str] = None
 
-    display_mode: Literal["table", "gallery"] = Field(
+    display_mode: Literal["table", "gallery", "calendar"] = Field(
         default="table",
-        description="'table' = spreadsheet grid (default). 'gallery' = image cards, requires gallery_config.",
+        description="'table' = grid (default). 'gallery' = image cards (gallery_config). 'calendar' = month view (calendar_config).",
     )
     gallery_config: Optional[GalleryConfig] = Field(
         default=None,
         description="Card layout config; required (and its image_column must be in `columns`) when display_mode='gallery'.",
+    )
+    calendar_config: Optional[CalendarConfig] = Field(
+        default=None,
+        description="Month-view config; required (and its date_column must be in `columns`) when display_mode='calendar'.",
+    )
+    stat_tiles: List[StatTile] = Field(
+        default_factory=list,
+        description="KPI tiles shown above the table/gallery (aggregate a column across the loaded rows).",
+    )
+    format_rules: List[FormatRule] = Field(
+        default_factory=list,
+        description="Conditional formatting: tint rows/cells when a row-local expression is truthy.",
+    )
+    pos_cart: Optional[PosCartConfig] = Field(
+        default=None,
+        description=(
+            "Turns this table screen into a supermarket-style batch scan cart: "
+            "scan → on-screen line list → one Submit persists all lines via "
+            "bulk-insert. The read side attaches the resolved product catalog as "
+            "``pos_catalog``. None = ordinary editable/read-only grid."
+        ),
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -830,10 +1300,26 @@ class TableScreenSpec(BaseModel):
                 )
             lookup_names.append(name)
 
+        rollup_names: list[str] = []
+        for col in self.rollup_columns or []:
+            name = (col.name or "").strip()
+            if not name:
+                continue
+            if name in rollup_names:
+                raise ValueError(
+                    f"Roll-up column name '{name}' is used more than once."
+                )
+            if name in computed_names or name in lookup_names:
+                raise ValueError(
+                    f"Roll-up column '{name}' collides with a computed/lookup "
+                    f"column of the same name. Rename one."
+                )
+            rollup_names.append(name)
+
         # Visible DB columns = anything in ``columns`` that ISN'T a derived
         # name. Derived names ARE expected to appear in ``columns`` (the
         # user includes them in display order) — that's fine.
-        derived = set(computed_names) | set(lookup_names)
+        derived = set(computed_names) | set(lookup_names) | set(rollup_names)
         # `columns` may include both DB cols and derived names; we only
         # detect a shadow when the SAME name appears more than once in
         # ``columns`` itself.
@@ -878,6 +1364,26 @@ class TableScreenSpec(BaseModel):
                 if col and col not in visible:
                     raise ValueError(
                         f"gallery_config.{label} '{col}' must be listed in "
+                        f"'columns' so the runtime returns its value."
+                    )
+
+        # Calendar display mode: date_column drives placement, so it (and any
+        # title/color column) must be surfaced in `columns` to reach the FE.
+        if self.display_mode == "calendar":
+            if self.calendar_config is None:
+                raise ValueError(
+                    "display_mode='calendar' requires calendar_config."
+                )
+            cc = self.calendar_config
+            visible = set(self.columns or [])
+            for label, col in (
+                ("date_column", cc.date_column),
+                ("title_column", cc.title_column),
+                ("color_column", cc.color_column),
+            ):
+                if col and col not in visible:
+                    raise ValueError(
+                        f"calendar_config.{label} '{col}' must be listed in "
                         f"'columns' so the runtime returns its value."
                     )
 
@@ -1158,6 +1664,29 @@ class ScreenGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PrintTemplate(BaseModel):
+    """Reusable letterhead applied to EVERY doc screen's print + Excel export.
+
+    Set up once in App Settings; the runtime auto-renders it as a header band
+    atop each document (logo + company + address) and the Excel exporter
+    prepends the same details as styled header rows. This is the "mẫu in được
+    setup trước" — one config, consistent phiếu / báo cáo output.
+    """
+
+    enabled: bool = True
+    company_name: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=300)
+    tax_code: Optional[str] = Field(default=None, max_length=60)
+    hotline: Optional[str] = Field(default=None, max_length=80)
+    email: Optional[str] = Field(default=None, max_length=120)
+    website: Optional[str] = Field(default=None, max_length=120)
+    logo_data: Optional[str] = Field(default=None, description="Logo as a data: URI (CSP-safe; external URLs blocked).")
+    footer_note: Optional[str] = Field(default=None, max_length=300)
+    accent_color: Optional[str] = Field(default=None, description="Hex for the letterhead accent rule.")
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -1174,6 +1703,8 @@ class LayoutJson(BaseModel):
     # Named groups of screens (UI: "Workspace"). Empty = flat nav (today's
     # behaviour). Additive + backward-compatible; see ScreenGroup.
     screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)
+    # Reusable print letterhead for doc screens (print + Excel export).
+    print_template: Optional[PrintTemplate] = None
 
     # ignore unknown future fields rather than erroring out clients
     model_config = ConfigDict(extra="ignore")
@@ -1250,33 +1781,6 @@ class WorkboardResponse(WorkboardBase):
 # Row-level write payloads
 # ---------------------------------------------------------------------------
 
-class WorkboardRowPayload(BaseModel):
-    """Generic envelope for INSERT/UPDATE row submissions."""
-
-    values: Dict[str, Any] = Field(default_factory=dict)
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowUpdatePayload(WorkboardRowPayload):
-    """UPDATE/DELETE require row PK + optional optimistic-lock token."""
-
-    pk: Dict[str, Any] = Field(..., description="Primary key column → value")
-    lock_token: Optional[Any] = Field(
-        default=None,
-        description="Value of optimistic_lock_column captured when row was loaded.",
-    )
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowDeletePayload(BaseModel):
-    pk: Dict[str, Any] = Field(...)
-    lock_token: Optional[Any] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 # ---------------------------------------------------------------------------
 # App-user CRUD (Builder "Users" tab)
 # ---------------------------------------------------------------------------
@@ -1334,52 +1838,9 @@ class AppUserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class AppUserBulkImport(BaseModel):
-    """Used by the import flow + the Users tab CSV uploader."""
-
-    users: List[Dict[str, Any]] = Field(default_factory=list)
-    skip_existing: bool = True
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardWriteResult(BaseModel):
-    """Standard envelope returned by row-write endpoints."""
-
-    action: Literal["insert", "update", "delete"]
-    row: Optional[Dict[str, Any]] = None
-    pk: Optional[Dict[str, Any]] = None
-    affected_rows: int = 0
-    warnings: List[Dict[str, Any]] = Field(default_factory=list)
-    submission_id: Optional[int] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 # ---------------------------------------------------------------------------
 # Runtime (table list) responses
 # ---------------------------------------------------------------------------
-
-class WorkboardRowsRequest(BaseModel):
-    """Filters + pagination for the list view."""
-
-    filters: List[Dict[str, Any]] = Field(default_factory=list)
-    page: int = Field(default=1, ge=1)
-    page_size: Optional[int] = Field(default=None, ge=1, le=500)
-    sort_column: Optional[str] = None
-    sort_direction: Optional[Literal["asc", "desc"]] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class WorkboardRowsResponse(BaseModel):
-    columns: List[str] = Field(default_factory=list)
-    rows: List[Dict[str, Any]] = Field(default_factory=list)
-    total: Optional[int] = None
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
 
 # ---------------------------------------------------------------------------
 # Public links / public runtime
@@ -1413,19 +1874,6 @@ class WorkboardPublicLinkResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-
-class WorkboardPublicAuthResponse(BaseModel):
-    session_token: str
-    expires_in: int
-
-
-class WorkboardPublicPayload(BaseModel):
-    workboard: Dict[str, Any]
-    link: WorkboardPublicLinkResponse
-    mode: Literal["form", "view"] = "form"
-    form: Optional[Dict[str, Any]] = None
-    rendered_view: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1564,22 +2012,3 @@ class WorkboardSyncRunDetailResponse(WorkboardSyncRunResponse):
     webhook_url: Optional[str] = None
     response_excerpt: Optional[Dict[str, Any]] = None
 
-
-class WorkboardSyncTriggerResponse(BaseModel):
-    """Response from POST .../sync.
-
-    A trigger may fan out to multiple webhooks; the response groups all
-    resulting run_ids under a single ``group_id`` so the frontend can
-    poll/cancel them together.
-    """
-
-    group_id: str
-    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)
-
-
-class WorkboardSyncGroupResponse(BaseModel):
-    """Polled status for a fan-out group (1+ webhook runs)."""
-
-    group_id: str
-    status: SyncRunStatus      # aggregate
-    runs: List[WorkboardSyncRunResponse] = Field(default_factory=list)

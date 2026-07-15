@@ -28,6 +28,7 @@ import { ChartType } from '@/types/api';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { getPalette, buildDimensionColorMap, ChartPaletteName, DEFAULT_CHART_THEME } from '@/lib/chartColors';
+import { resolveBenchmarkLines, applyKpiBenchmarkCalc } from '@/lib/exploreAggregations';
 import type { ChartStyleConfig, NumberFormat } from '@/components/explore/ExploreChartConfig';
 import { normalizeChartStyleConfig } from '@/components/explore/ExploreChartConfig';
 import type { ConditionalFormatRule, ChartSortRule, TimeGranularity } from '@/types/api';
@@ -133,11 +134,6 @@ function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
   );
 }
 
-function getBenchmarkValue(style?: ChartStyleConfig): number | null {
-  if (style?.benchmarkValue === '' || style?.benchmarkValue == null) return null;
-  const value = Number(style.benchmarkValue);
-  return Number.isFinite(value) ? value : null;
-}
 
 function applySortRules(data: Record<string, any>[], rules: ChartSortRule[]): Record<string, any>[] {
   if (!rules || rules.length === 0) return data;
@@ -299,11 +295,6 @@ export function ChartPreview({
   const showDataLabels = style.showDataLabels ?? false;
   const showDots = style.showDots ?? true;
   const lineStyle = style.lineStyle ?? 'solid';
-  const benchmarkValue = getBenchmarkValue(style);
-  const showBenchmarkLine = Boolean(style.showBenchmarkLine && benchmarkValue !== null);
-  const benchmarkColor = style.benchmarkColor || '#dc2626';
-  const benchmarkDash = style.benchmarkLineStyle === 'solid' ? undefined : '6 4';
-  const benchmarkLabel = style.benchmarkLabel?.trim() || undefined;
   const xAxisLabel = style.xAxisLabel || undefined;
   const yAxisLabel = style.yAxisLabel || undefined;
   const legendPosition = style.legendPosition ?? 'bottom';
@@ -363,26 +354,27 @@ export function ChartPreview({
         align: (legendPosition === 'left' ? 'left' : legendPosition === 'right' ? 'right' : 'center') as 'left' | 'center' | 'right',
       }
     : null;
-  const renderBenchmarkLine = (axis: 'x' | 'y') => {
-    if (!showBenchmarkLine || benchmarkValue === null) return null;
-
-    return (
+  const renderBenchmarkLines = (axis: 'x' | 'y', rows: Record<string, any>[]) => {
+    const lines = resolveBenchmarkLines(style, rows);
+    if (lines.length === 0) return null;
+    return lines.map((line, i) => (
       <ReferenceLine
+        key={`benchmark-${i}`}
         ifOverflow="extendDomain"
-        stroke={benchmarkColor}
+        stroke={line.color}
         strokeWidth={2}
-        strokeDasharray={benchmarkDash}
-        label={benchmarkLabel
+        strokeDasharray={line.dash}
+        label={line.label
           ? {
-              value: benchmarkLabel,
+              value: line.label,
               position: 'insideTopRight',
-              fill: benchmarkColor,
+              fill: line.color,
               fontSize: Math.max(fontSize - 1, 10),
             }
           : undefined}
-        {...(axis === 'x' ? { x: benchmarkValue } : { y: benchmarkValue })}
+        {...(axis === 'x' ? { x: line.value } : { y: line.value })}
       />
-    );
+    ));
   };
   const emitSelection = (field: string | undefined, value: unknown) => {
     if (!onSelectDataPoint || !field || value === undefined || value === null || value === '') return;
@@ -449,7 +441,7 @@ export function ChartPreview({
                   </Bar>
                 ))
               )}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', sortedData)}
             </BarChart>,
             sortedData.length,
           )}
@@ -481,7 +473,7 @@ export function ChartPreview({
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Line>
               ))}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
             </LineChart>,
             displayData.length,
           )}
@@ -517,7 +509,7 @@ export function ChartPreview({
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Area>
               ))}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', displayData)}
             </AreaChart>,
             displayData.length,
           )}
@@ -558,7 +550,7 @@ export function ChartPreview({
                   </Bar>
                 ))
               )}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', sortedData)}
             </BarChart>,
             sortedData.length,
           )}
@@ -646,7 +638,7 @@ export function ChartPreview({
                   </Bar>
                 );
               })}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', sortedData)}
             </BarChart>,
             sortedData.length,
           )}
@@ -764,7 +756,7 @@ export function ChartPreview({
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Line>
               ))}
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', tsData)}
             </LineChart>,
             tsData.length,
           )}
@@ -793,7 +785,7 @@ export function ChartPreview({
             {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
           </Bar>
         ))}
-        {renderBenchmarkLine('x')}
+        {renderBenchmarkLines('x', sortedData)}
       </BarChart>
     );
     return (
@@ -844,7 +836,7 @@ export function ChartPreview({
               <Line type="monotone" dataKey={lineField} name={getSeriesLabel(lineField)} stroke={getSeriesColor(lineField, barFields.length)}
                 strokeWidth={lineWidth} dot={showDots} strokeDasharray={lineDash}
                 yAxisId={dualYAxis ? 'right' : 0} />
-              {renderBenchmarkLine('y')}
+              {renderBenchmarkLines('y', sortedData)}
             </ComposedChart>,
             sortedData.length,
           )}
@@ -896,9 +888,10 @@ export function ChartPreview({
       || chartTitle
       || fallbackValueField
       || 'KPI';
-    const kpiBenchmarkValue = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
+    const kpiBenchmarkBase = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
       ? null
       : Number(style.kpiBenchmarkValue);
+    const kpiBenchmarkValue = applyKpiBenchmarkCalc(kpiBenchmarkBase, style);
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}

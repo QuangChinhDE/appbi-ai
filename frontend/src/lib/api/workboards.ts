@@ -33,6 +33,8 @@ export interface WorkboardMiniAppNav {
 export interface WorkboardBranding {
   app_name?: string;
   logo_url?: string;
+  logo_data?: string;
+  logo_layout?: 'mark' | 'wide';
   primary_color?: string;
   accent_color?: string;
   theme?: 'light' | 'dark' | 'auto';

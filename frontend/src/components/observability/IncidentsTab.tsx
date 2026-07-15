@@ -12,15 +12,17 @@ import { Button } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import { SeverityBadge, StatusPill, PillarBadge, relativeTime, fmtDuration } from './ui';
 import { AlertChannelsModal } from './AlertChannelsModal';
 import {
-  listIncidents, updateIncident, type Incident, type Pillar, type Severity, PILLAR_LABEL,
+  listIncidents, updateIncident, type Incident, type Pillar, type Severity,
 } from '@/lib/observability';
 
 const PILLARS: Pillar[] = ['freshness', 'volume', 'schema', 'distribution', 'quality'];
 
 export function IncidentsTab({ datasetId, showChannels = true }: { datasetId?: number; showChannels?: boolean } = {}) {
+  const { t, locale } = useI18n();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
   const [showResolved, setShowResolved] = useState(false);
@@ -44,7 +46,7 @@ export function IncidentsTab({ datasetId, showChannels = true }: { datasetId?: n
   const act = async (inc: Incident, action: 'acknowledge' | 'resolve' | 'reopen') => {
     setBusyId(inc.id);
     try { await updateIncident(inc.id, action); await reload(); }
-    catch { toast.error('Cập nhật sự cố thất bại'); }
+    catch { toast.error(t('observability.incidents.toast.updateFailed')); }
     finally { setBusyId(null); }
   };
 
@@ -62,31 +64,31 @@ export function IncidentsTab({ datasetId, showChannels = true }: { datasetId?: n
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-caption text-text-tertiary">Mọi sự cố từ chất lượng · bất thường · độ tươi · khối lượng · lược đồ — một vòng đời chung.</p>
-        {showChannels && <Button variant="secondary" size="sm" leadingIcon={<Bell className="h-4 w-4" />} onClick={() => setChannelsOpen(true)}>Kênh cảnh báo</Button>}
+        <p className="text-caption text-text-tertiary">{t('observability.incidents.intro')}</p>
+        {showChannels && <Button variant="secondary" size="sm" leadingIcon={<Bell className="h-4 w-4" />} onClick={() => setChannelsOpen(true)}>{t('observability.action.alertChannels')}</Button>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <FilterTag tone="neutral" active={!showResolved} onClick={() => setShowResolved(false)}>Đang mở{counts.open ? ` (${counts.open})` : ''}</FilterTag>
-        <FilterTag tone="neutral" active={showResolved} onClick={() => setShowResolved(true)}>Tất cả</FilterTag>
+        <FilterTag tone="neutral" active={!showResolved} onClick={() => setShowResolved(false)}>{t('observability.incidents.filter.open')}{counts.open ? ` (${counts.open})` : ''}</FilterTag>
+        <FilterTag tone="neutral" active={showResolved} onClick={() => setShowResolved(true)}>{t('observability.incidents.filter.all')}</FilterTag>
         <span className="mx-1 h-4 w-px bg-[rgb(var(--border-line))]" />
         {(['critical', 'warning', 'info'] as Severity[]).map((s) => (
           <FilterTag key={s} tone={s === 'critical' ? 'danger' : s === 'warning' ? 'warning' : 'info'} active={severity === s} onClick={() => setSeverity(severity === s ? null : s)}>
-            {s === 'critical' ? 'Nghiêm trọng' : s === 'warning' ? 'Cảnh báo' : 'Thông tin'}
+            {t(`observability.severity.${s}`)}
           </FilterTag>
         ))}
         <span className="mx-1 h-4 w-px bg-[rgb(var(--border-line))]" />
         {PILLARS.map((p) => (
-          <FilterTag key={p} tone="neutral" active={pillar === p} onClick={() => setPillar(pillar === p ? null : p)}>{PILLAR_LABEL[p]}</FilterTag>
+          <FilterTag key={p} tone="neutral" active={pillar === p} onClick={() => setPillar(pillar === p ? null : p)}>{t(`observability.pillar.${p}`)}</FilterTag>
         ))}
       </div>
 
       {loading ? (
-        <p className="py-10 text-center text-caption text-text-tertiary">Đang tải…</p>
+        <p className="py-10 text-center text-caption text-text-tertiary">{t('observability.loading')}</p>
       ) : incidents.length === 0 ? (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-6 py-14 text-center">
           <CheckCircle2 className="mx-auto mb-4 h-12 w-12 text-success" />
-          <h3 className="mb-1 text-small font-strong text-text-primary">{showResolved ? 'Chưa có sự cố nào' : 'Không có sự cố đang mở'}</h3>
-          <p className="text-caption text-text-tertiary">Mọi monitor đều đang khoẻ. Sự cố mới sẽ xuất hiện ở đây.</p>
+          <h3 className="mb-1 text-small font-strong text-text-primary">{showResolved ? t('observability.incidents.empty.allTitle') : t('observability.incidents.empty.openTitle')}</h3>
+          <p className="text-caption text-text-tertiary">{t('observability.incidents.empty.body')}</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
@@ -112,19 +114,19 @@ export function IncidentsTab({ datasetId, showChannels = true }: { datasetId?: n
                         <StatusPill status={inc.status} />
                       </div>
                       <div className="mt-0.5 text-tiny text-text-quaternary">
-                        {inc.dataset ?? `Dataset #${inc.datasetId}`} · phát hiện {relativeTime(inc.firstSeenAt)}
-                        {resolved && inc.mttrHours != null && <> · xử lý trong <span className="text-success">{fmtDuration(inc.mttrHours)}</span></>}
+                        {inc.dataset ?? t('observability.detail.datasetIdFallback', { id: inc.datasetId })} · {t('observability.incidents.detectedAt', { time: relativeTime(inc.firstSeenAt, t, locale) })}
+                        {resolved && inc.mttrHours != null && <> · <span className="text-success">{t('observability.incidents.resolvedIn', { duration: fmtDuration(inc.mttrHours, t, locale) })}</span></>}
                       </div>
                     </div>
                     <div className="flex flex-shrink-0 items-center gap-1.5">
                       {!resolved && inc.status === 'open' && (
-                        <Button size="sm" variant="ghost" disabled={busyId === inc.id} onClick={() => act(inc, 'acknowledge')} leadingIcon={<Check className="h-3.5 w-3.5" />}>Nhận</Button>
+                        <Button size="sm" variant="ghost" disabled={busyId === inc.id} onClick={() => act(inc, 'acknowledge')} leadingIcon={<Check className="h-3.5 w-3.5" />}>{t('observability.action.acknowledge')}</Button>
                       )}
                       {!resolved && (
-                        <Button size="sm" variant="secondary" disabled={busyId === inc.id} onClick={() => act(inc, 'resolve')} leadingIcon={<CheckCircle2 className="h-3.5 w-3.5" />}>Xử lý</Button>
+                        <Button size="sm" variant="secondary" disabled={busyId === inc.id} onClick={() => act(inc, 'resolve')} leadingIcon={<CheckCircle2 className="h-3.5 w-3.5" />}>{t('observability.action.resolve')}</Button>
                       )}
                       {resolved && (
-                        <Button size="sm" variant="ghost" disabled={busyId === inc.id} onClick={() => act(inc, 'reopen')} leadingIcon={<RotateCcw className="h-3.5 w-3.5" />}>Mở lại</Button>
+                        <Button size="sm" variant="ghost" disabled={busyId === inc.id} onClick={() => act(inc, 'reopen')} leadingIcon={<RotateCcw className="h-3.5 w-3.5" />}>{t('observability.action.reopen')}</Button>
                       )}
                     </div>
                   </div>
@@ -146,16 +148,17 @@ export function IncidentsTab({ datasetId, showChannels = true }: { datasetId?: n
 }
 
 function IncidentDetail({ incident }: { incident: Incident }) {
+  const { t } = useI18n();
   const d = incident.detail ?? {};
   const rows: { k: string; v: string }[] = [];
   const push = (k: string, v: any) => { if (v != null && v !== '') rows.push({ k, v: typeof v === 'object' ? JSON.stringify(v) : String(v) }); };
 
-  push('Nguồn', incident.source);
-  if (incident.pillar === 'freshness') { push('Trễ (giờ)', d.lag_hours); push('Ngưỡng (giờ)', d.max_lag_hours); push('Load gần nhất', d.last_loaded_at); }
-  if (incident.pillar === 'volume') { push('Số dòng', d.row_count); push('Kỳ vọng', d.expected); push('z-score', d.z_score); push('Thay đổi %', d.change_pct); push('Lý do', d.reason); }
-  if (incident.pillar === 'schema') { push('Cột thêm', (d.added || []).join(', ')); push('Cột xoá', (d.removed || []).join(', ')); push('Đổi kiểu', (d.retyped || []).map((r: any) => `${r.column}: ${r.from}→${r.to}`).join(', ')); }
-  if (incident.pillar === 'distribution') { push('Hiện tại', d.current); push('Kỳ vọng', d.expected); push('z-score', d.z_score); push('Thay đổi %', d.change_pct); push('Giải thích', d.explanation); }
-  if (incident.pillar === 'quality') { push('Chiều', d.dimension); push('Loại quy tắc', d.rule_type); push('Cột', d.column); push('Dòng lỗi', d.rows_failed); }
+  push(t('observability.incidents.detail.source'), incident.source);
+  if (incident.pillar === 'freshness') { push(t('observability.incidents.detail.lagHours'), d.lag_hours); push(t('observability.incidents.detail.maxLagHours'), d.max_lag_hours); push(t('observability.incidents.detail.lastLoadedAt'), d.last_loaded_at); }
+  if (incident.pillar === 'volume') { push(t('observability.incidents.detail.rowCount'), d.row_count); push(t('observability.incidents.detail.expected'), d.expected); push(t('observability.incidents.detail.zScore'), d.z_score); push(t('observability.incidents.detail.changePct'), d.change_pct); push(t('observability.incidents.detail.reason'), d.reason); }
+  if (incident.pillar === 'schema') { push(t('observability.incidents.detail.columnsAdded'), (d.added || []).join(', ')); push(t('observability.incidents.detail.columnsRemoved'), (d.removed || []).join(', ')); push(t('observability.incidents.detail.typeChanges'), (d.retyped || []).map((r: any) => `${r.column}: ${r.from}→${r.to}`).join(', ')); }
+  if (incident.pillar === 'distribution') { push(t('observability.incidents.detail.current'), d.current); push(t('observability.incidents.detail.expected'), d.expected); push(t('observability.incidents.detail.zScore'), d.z_score); push(t('observability.incidents.detail.changePct'), d.change_pct); push(t('observability.incidents.detail.explanation'), d.explanation); }
+  if (incident.pillar === 'quality') { push(t('observability.incidents.detail.dimension'), d.dimension); push(t('observability.incidents.detail.ruleType'), d.rule_type); push(t('observability.incidents.detail.column'), d.column); push(t('observability.incidents.detail.failedRows'), d.rows_failed); }
 
   if (rows.length === 0) return <pre className="overflow-x-auto text-tiny text-text-tertiary">{JSON.stringify(d, null, 2)}</pre>;
   return (

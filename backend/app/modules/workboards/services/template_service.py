@@ -639,6 +639,10 @@ def _rename_doc_columns(
         for key in ("columns", "totals", "group_by"):
             if key in block:
                 block[key] = _rename_col_list(block.get(key), old_table_id, column_map)
+        if isinstance(block.get("column_metadata"), dict):
+            block["column_metadata"] = _rename_col_dict_keys(
+                block.get("column_metadata"), old_table_id, column_map
+            )
         if isinstance(block.get("column_groups"), list):
             for group in block["column_groups"]:
                 if isinstance(group, dict) and "columns" in group:
@@ -666,28 +670,65 @@ def _rename_doc_columns(
                         )
 
 
+def _rewrite_expr(
+    text: Any,
+    old_table_id: Optional[int],
+    column_map: Dict[int, Dict[str, str]],
+) -> Any:
+    """Rewrite column references inside a wb-expr string.
+
+    Handles both grammars used across the schema: bracket refs ``[col]``
+    (formula / valid_if / show_if / required_if / readonly_if /
+    qr_value_template) and ``{{row.col}}`` refs (format_rules.when). Only
+    whole-token matches are replaced so ``[date]`` never touches
+    ``[date_created]``. Placeholders like ``{{app_user.x}}`` / ``{{today}}`` /
+    ``{{shared.x}}`` are left untouched — they are not table columns.
+    """
+    if not isinstance(text, str) or old_table_id is None:
+        return text
+    mapping = column_map.get(old_table_id) or {}
+    if not mapping:
+        return text
+    out = text
+    for old, new in mapping.items():
+        if not old or old == new:
+            continue
+        esc = re.escape(old)
+        out = re.sub(r"\[\s*" + esc + r"\s*\]", "[" + new + "]", out)
+        out = re.sub(r"\{\{\s*row\." + esc + r"\s*\}\}", "{{row." + new + "}}", out)
+    return out
+
+
 def _rename_lookup_columns(
     lookup: Any,
     column_map: Dict[int, Dict[str, str]],
+    own_table_id: Optional[int] = None,
 ) -> None:
     if not isinstance(lookup, dict):
         return
+    # filter_by_field (cascading select parent) is a column on the field's OWN
+    # screen table, not the lookup's remote table.
+    if own_table_id is not None and "filter_by_field" in lookup:
+        lookup["filter_by_field"] = _rename_col(lookup.get("filter_by_field"), own_table_id, column_map)
     lookup_table_id = lookup.get("table_id")
     if isinstance(lookup_table_id, int):
-        if "value_column" in lookup:
-            lookup["value_column"] = _rename_col(lookup.get("value_column"), lookup_table_id, column_map)
-        if "label_column" in lookup:
-            lookup["label_column"] = _rename_col(lookup.get("label_column"), lookup_table_id, column_map)
+        # value/label + map-widget geometry + cascading remote match column all
+        # live on the lookup's remote table.
+        for key in (
+            "value_column", "label_column", "filter_column",
+            "geometry_column", "lat_column", "lng_column",
+        ):
+            if key in lookup:
+                lookup[key] = _rename_col(lookup.get(key), lookup_table_id, column_map)
     for hop in lookup.get("relationship_path") or []:
         if not isinstance(hop, dict):
             continue
         hop_table_id = hop.get("table_id")
         if not isinstance(hop_table_id, int):
             continue
-        if "value_column" in hop:
-            hop["value_column"] = _rename_col(hop.get("value_column"), hop_table_id, column_map)
-        if "label_column" in hop:
-            hop["label_column"] = _rename_col(hop.get("label_column"), hop_table_id, column_map)
+        for key in ("value_column", "label_column"):
+            if key in hop:
+                hop[key] = _rename_col(hop.get(key), hop_table_id, column_map)
 
 
 def _rewrite_column_references(
@@ -708,6 +749,22 @@ def _rewrite_column_references(
     if not column_map:
         return out
 
+    # Screen id -> old table id. Needed for barcode ``scan_carry_as``, which
+    # names a column on the DESTINATION screen's table, not the scanning one.
+    screen_table: Dict[str, Optional[int]] = {}
+    for screen in out.get("screens") or []:
+        if isinstance(screen, dict) and screen.get("id") is not None:
+            tid = screen.get("table_id")
+            screen_table[str(screen["id"])] = tid if isinstance(tid, int) else primary_old_table_id
+
+    # Workboard-level audit convention columns live on the primary table.
+    audit = out.get("audit")
+    if isinstance(audit, dict):
+        for key in ("created_by_column", "created_at_column",
+                    "updated_by_column", "updated_at_column"):
+            if key in audit:
+                audit[key] = _rename_col(audit.get(key), primary_old_table_id, column_map)
+
     # Mini-app screens.
     for screen in out.get("screens") or []:
         if not isinstance(screen, dict):
@@ -717,6 +774,12 @@ def _rewrite_column_references(
             screen["primary_key_columns"] = _rename_col_list(
                 screen.get("primary_key_columns"), old_table_id, column_map
             )
+        if isinstance(screen.get("column_labels"), dict):
+            screen["column_labels"] = _rename_col_dict_keys(
+                screen.get("column_labels"), old_table_id, column_map
+            )
+
+        # ── Form screens ─────────────────────────────────────────────────
         form_cfg = screen.get("form") if isinstance(screen.get("form"), dict) else None
         if form_cfg:
             for field in form_cfg.get("fields") or []:
@@ -728,41 +791,108 @@ def _rewrite_column_references(
                     field["computed_from_dataset"] = _rename_col(
                         field.get("computed_from_dataset"), old_table_id, column_map
                     )
-                _rename_lookup_columns(field.get("lookup"), column_map)
+                if "qr_source_column" in field:
+                    field["qr_source_column"] = _rename_col(
+                        field.get("qr_source_column"), old_table_id, column_map
+                    )
+                # Expression-bearing fields ([col] / {{row.col}} refs).
+                for ek in ("show_if", "required_if", "readonly_if", "valid_if",
+                           "formula", "qr_value_template"):
+                    if field.get(ek):
+                        field[ek] = _rewrite_expr(field.get(ek), old_table_id, column_map)
+                # scan_carry_as names a column on the DESTINATION screen's table.
+                if field.get("scan_carry_as") and field.get("scan_go_to_screen"):
+                    dest_tid = screen_table.get(str(field.get("scan_go_to_screen")))
+                    field["scan_carry_as"] = _rename_col(field.get("scan_carry_as"), dest_tid, column_map)
+                _rename_lookup_columns(field.get("lookup"), column_map, own_table_id=old_table_id)
             if "initial_values" in form_cfg:
                 form_cfg["initial_values"] = _rename_col_dict_keys(
                     form_cfg.get("initial_values"), old_table_id, column_map
                 )
+            if form_cfg.get("geo_stamp_column"):
+                form_cfg["geo_stamp_column"] = _rename_col(
+                    form_cfg.get("geo_stamp_column"), old_table_id, column_map
+                )
+            after = form_cfg.get("after_submit")
+            if isinstance(after, dict) and "carry" in after:
+                after["carry"] = _rename_col_list(after.get("carry"), old_table_id, column_map)
+
+        # ── Table screens ────────────────────────────────────────────────
         table_screen = screen.get("table") if isinstance(screen.get("table"), dict) else None
         if table_screen:
-            if "columns" in table_screen:
-                table_screen["columns"] = _rename_col_list(
-                    table_screen.get("columns"), old_table_id, column_map
-                )
-            if "editable_columns" in table_screen:
-                table_screen["editable_columns"] = _rename_col_list(
-                    table_screen.get("editable_columns"), old_table_id, column_map
-                )
-            if "required_columns" in table_screen:
-                table_screen["required_columns"] = _rename_col_list(
-                    table_screen.get("required_columns"), old_table_id, column_map
-                )
+            for lk in ("columns", "editable_columns", "required_columns", "group_by"):
+                if lk in table_screen:
+                    table_screen[lk] = _rename_col_list(table_screen.get(lk), old_table_id, column_map)
             if "default_sort_column" in table_screen:
                 table_screen["default_sort_column"] = _rename_col(
                     table_screen.get("default_sort_column"), old_table_id, column_map
                 )
-            if "group_by" in table_screen:
-                table_screen["group_by"] = _rename_col_list(
-                    table_screen.get("group_by"), old_table_id, column_map
-                )
+            # Column-keyed dicts.
+            for dk in ("default_values", "totals", "column_metadata"):
+                if isinstance(table_screen.get(dk), dict):
+                    table_screen[dk] = _rename_col_dict_keys(table_screen.get(dk), old_table_id, column_map)
             for item in table_screen.get("filters") or []:
                 if isinstance(item, dict) and "column" in item:
                     item["column"] = _rename_col(item.get("column"), old_table_id, column_map)
             for group in table_screen.get("column_groups") or []:
                 if isinstance(group, dict) and "columns" in group:
-                    group["columns"] = _rename_col_list(
-                        group.get("columns"), old_table_id, column_map
-                    )
+                    group["columns"] = _rename_col_list(group.get("columns"), old_table_id, column_map)
+            for tile in table_screen.get("stat_tiles") or []:
+                if isinstance(tile, dict) and "column" in tile:
+                    tile["column"] = _rename_col(tile.get("column"), old_table_id, column_map)
+            for rule in table_screen.get("format_rules") or []:
+                if isinstance(rule, dict):
+                    if rule.get("when"):
+                        rule["when"] = _rewrite_expr(rule.get("when"), old_table_id, column_map)
+                    if "columns" in rule:
+                        rule["columns"] = _rename_col_list(rule.get("columns"), old_table_id, column_map)
+            for cc in table_screen.get("computed_columns") or []:
+                if isinstance(cc, dict) and cc.get("formula"):
+                    cc["formula"] = _rewrite_expr(cc.get("formula"), old_table_id, column_map)
+            # lookup / rollup columns: local match on THIS table, remote refs on
+            # the joined ``from_table_id`` table.
+            for lc in table_screen.get("lookup_columns") or []:
+                if not isinstance(lc, dict):
+                    continue
+                if "match_column_local" in lc:
+                    lc["match_column_local"] = _rename_col(lc.get("match_column_local"), old_table_id, column_map)
+                remote = lc.get("from_table_id") if isinstance(lc.get("from_table_id"), int) else None
+                for rk in ("match_column_remote", "return_column"):
+                    if rk in lc:
+                        lc[rk] = _rename_col(lc.get(rk), remote, column_map)
+            for rc in table_screen.get("rollup_columns") or []:
+                if not isinstance(rc, dict):
+                    continue
+                if "match_column_local" in rc:
+                    rc["match_column_local"] = _rename_col(rc.get("match_column_local"), old_table_id, column_map)
+                remote = rc.get("from_table_id") if isinstance(rc.get("from_table_id"), int) else None
+                for rk in ("match_column_remote", "value_column"):
+                    if rk in rc:
+                        rc[rk] = _rename_col(rc.get(rk), remote, column_map)
+            gcfg = table_screen.get("gallery_config")
+            if isinstance(gcfg, dict):
+                for gk in ("image_column", "title_column", "subtitle_column", "group_by_column"):
+                    if gk in gcfg:
+                        gcfg[gk] = _rename_col(gcfg.get(gk), old_table_id, column_map)
+            ccfg = table_screen.get("calendar_config")
+            if isinstance(ccfg, dict):
+                for ck in ("date_column", "title_column", "color_column"):
+                    if ck in ccfg:
+                        ccfg[ck] = _rename_col(ccfg.get(ck), old_table_id, column_map)
+            dp = table_screen.get("detail_panel")
+            if isinstance(dp, dict):
+                for dk in ("columns", "editable_columns"):
+                    if dk in dp:
+                        dp[dk] = _rename_col_list(dp.get(dk), old_table_id, column_map)
+                if isinstance(dp.get("sections"), dict):
+                    dp["sections"] = {
+                        label: _rename_col_list(cols, old_table_id, column_map)
+                        for label, cols in dp["sections"].items()
+                    }
+            for act in table_screen.get("row_actions") or []:
+                if isinstance(act, dict) and "carry" in act:
+                    act["carry"] = _rename_col_list(act.get("carry"), old_table_id, column_map)
+
         _rename_doc_columns(screen.get("doc"), primary_old_table_id=old_table_id, column_map=column_map)
         for rule in screen.get("rls") or []:
             _rename_rls_rule_columns(rule, old_table_id, column_map)
@@ -812,6 +942,9 @@ def _check_missing_columns(
         for lc in table_cfg.get("lookup_columns") or []:
             if isinstance(lc, dict) and lc.get("name"):
                 known.add(lc["name"])
+        for rc in table_cfg.get("rollup_columns") or []:
+            if isinstance(rc, dict) and rc.get("name"):
+                known.add(rc["name"])
         for f in ((screen.get("form") or {}).get("fields") or []):
             if isinstance(f, dict) and f.get("computed_from_dataset") and f.get("column"):
                 known.add(f["column"])

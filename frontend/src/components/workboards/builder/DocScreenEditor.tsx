@@ -20,6 +20,7 @@ import {
   Minus,
   PenTool,
   Plus,
+  QrCode,
   Table2,
   Trash2,
   Type,
@@ -63,13 +64,14 @@ const BLOCK_META: Record<BlockKind, { label: string; icon: React.ComponentType<{
   footer: { label: 'Footer', icon: FileText, group: 'text' },
   data_table: { label: 'Data table', icon: Table2, group: 'data' },
   kv_grid: { label: 'Key-value grid', icon: LayoutGrid, group: 'data' },
+  qr_code: { label: 'Mã QR', icon: QrCode, group: 'data' },
   spacer: { label: 'Spacer', icon: Minus, group: 'layout' },
   signature: { label: 'Signature', icon: PenTool, group: 'layout' },
 };
 
 const BLOCK_GROUPS: Array<{ id: 'text' | 'data' | 'layout'; label: string; kinds: BlockKind[] }> = [
   { id: 'text', label: 'Title & text', kinds: ['header', 'text', 'footer'] },
-  { id: 'data', label: 'Data', kinds: ['data_table', 'kv_grid'] },
+  { id: 'data', label: 'Data', kinds: ['data_table', 'kv_grid', 'qr_code'] },
   { id: 'layout', label: 'Layout & sign-off', kinds: ['spacer', 'signature'] },
 ];
 
@@ -210,6 +212,8 @@ function makeFreshBlock(type: BlockKind): DocBlockSpec {
       return { type, height_mm: 4 };
     case 'signature':
       return { type, slots: [{ label: 'Signer', role: '' }] };
+    case 'qr_code':
+      return { type, value: '{{shared.ma_don}}', size: 180, align: 'center', caption: '' };
     default:
       return { type: 'footer', left: '', center: '', right: '' };
   }
@@ -542,7 +546,59 @@ function Inspector({
       )}
       {block.type === 'signature' && <SignatureEditor block={block} onChange={onChange} />}
       {block.type === 'footer' && <FooterInspector block={block} onChange={onChange} />}
+      {block.type === 'qr_code' && <QrCodeInspector block={block} onChange={onChange} />}
     </BuilderInspectorPanel>
+  );
+}
+
+function QrCodeInspector({
+  block,
+  onChange,
+}: {
+  block: DocBlockSpec;
+  onChange: (patch: Partial<DocBlockSpec>) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Lbl label="Giá trị mã hoá — {{shared.cột}}, {{app_user.x}}, {{app_url}} hoặc chuỗi cố định">
+        <input
+          value={String(block.value ?? '')}
+          onChange={(e) => onChange({ value: e.target.value })}
+          className={INPUT}
+          placeholder="{{app_url}}?screen=capnhat_giao&don_hang_id={{shared.don_hang_id}}"
+        />
+      </Lbl>
+      <div className="grid grid-cols-2 gap-2">
+        <Lbl label="Kích thước (px)">
+          <input
+            type="number"
+            min={48}
+            max={1024}
+            value={Number(block.size ?? 180)}
+            onChange={(e) => onChange({ size: Number(e.target.value) || 180 })}
+            className={INPUT}
+          />
+        </Lbl>
+        <Lbl label="Căn lề">
+          <select
+            value={String(block.align ?? 'center')}
+            onChange={(e) => onChange({ align: e.target.value })}
+            className={INPUT}
+          >
+            <option value="left">Trái</option>
+            <option value="center">Giữa</option>
+            <option value="right">Phải</option>
+          </select>
+        </Lbl>
+      </div>
+      <Lbl label="Chú thích dưới mã">
+        <input
+          value={String(block.caption ?? '')}
+          onChange={(e) => onChange({ caption: e.target.value })}
+          className={INPUT}
+        />
+      </Lbl>
+    </div>
   );
 }
 
@@ -899,6 +955,20 @@ function DataTableEditor({
         />
       </BuilderCollapsibleAdvanced>
 
+      {/* Context filters — bind a column to a carried runtime value so a
+          per-record document (a printable phiếu) shows only that record. */}
+      <BuilderCollapsibleAdvanced
+        title="Lọc theo ngữ cảnh"
+        description="Chỉ hiện dòng của bản ghi được mở (vd: lọc theo ma_don mang sang từ nút/POS) — để in đúng 1 phiếu."
+        defaultOpen={Array.isArray(block.context_filters) && (block.context_filters as unknown[]).length > 0}
+      >
+        <ContextFiltersEditor
+          filters={(block.context_filters as Array<Record<string, unknown>> | undefined) || []}
+          columns={tableCols.map((c) => c.name)}
+          onChange={(next) => onChange({ context_filters: next })}
+        />
+      </BuilderCollapsibleAdvanced>
+
       {/* Advanced export. */}
       <BuilderCollapsibleAdvanced
         title="Export"
@@ -935,6 +1005,74 @@ function DataTableEditor({
 
       {/* Hidden column type hints only used to pre-fill defaults above. */}
       <ColumnTypeWarnings selected={selectedColumns} typesByName={columnTypeByName} />
+    </div>
+  );
+}
+
+function ContextFiltersEditor({
+  filters,
+  columns,
+  onChange,
+}: {
+  filters: Array<Record<string, unknown>>;
+  columns: string[];
+  onChange: (next: Array<Record<string, unknown>>) => void;
+}) {
+  const update = (idx: number, patch: Record<string, unknown>) =>
+    onChange(filters.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  return (
+    <div className="space-y-2">
+      {filters.length === 0 && (
+        <p className="text-tiny text-text-tertiary">
+          Chưa có bộ lọc. Thêm để giới hạn dòng theo giá trị mang sang (vd: cột <code>ma_don</code> = giá trị <code>ma_don</code>).
+        </p>
+      )}
+      {filters.map((f, i) => (
+        <div key={i} className="flex items-center gap-1">
+          <select
+            value={String(f.column ?? '')}
+            onChange={(e) => update(i, { column: e.target.value })}
+            className={INPUT}
+          >
+            <option value="">— cột —</option>
+            {columns.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            {Boolean(f.column) && !columns.includes(String(f.column)) && (
+              <option value={String(f.column)}>{String(f.column)}</option>
+            )}
+          </select>
+          <span className="text-text-tertiary">=</span>
+          <input
+            value={String(f.from_shared ?? '')}
+            onChange={(e) => update(i, { from_shared: e.target.value })}
+            className={INPUT}
+            placeholder="khoá mang sang (vd: ma_don)"
+          />
+          <label className="flex shrink-0 items-center gap-1 text-tiny text-text-secondary">
+            <input
+              type="checkbox"
+              checked={f.required !== false}
+              onChange={(e) => update(i, { required: e.target.checked })}
+            />
+            bắt buộc
+          </label>
+          <BuilderIconButton
+            onClick={() => onChange(filters.filter((_, idx) => idx !== i))}
+            title="Xoá"
+            variant="danger"
+          >
+            <Trash2 className="h-3.5 w-3.5 text-danger" />
+          </BuilderIconButton>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...filters, { column: '', from_shared: '', required: true }])}
+        className="inline-flex items-center gap-1 text-caption text-text-secondary hover:text-text-primary"
+      >
+        <Plus className="h-3.5 w-3.5" /> Thêm bộ lọc
+      </button>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button, IconButton } from '@/components/ui/Button';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface ConfirmDialogProps {
   isOpen: boolean;
@@ -22,10 +23,12 @@ export function ConfirmDialog({
   onConfirm,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   variant = 'danger',
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
+
   if (!isOpen) return null;
 
   const handleConfirm = () => {
@@ -53,7 +56,7 @@ export function ConfirmDialog({
               {title}
             </h3>
           </div>
-          <IconButton aria-label="Close" variant="ghost" size="sm" onClick={onClose}>
+          <IconButton aria-label={t('common.close')} variant="ghost" size="sm" onClick={onClose}>
             <X className="h-4 w-4" />
           </IconButton>
         </div>
@@ -64,10 +67,10 @@ export function ConfirmDialog({
 
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[rgb(var(--border-line))] bg-surface-2 rounded-b-xl">
           <Button variant="secondary" size="sm" onClick={onClose}>
-            {cancelLabel}
+            {cancelLabel ?? t('common.cancel')}
           </Button>
           <Button variant={confirmVariant} size="sm" onClick={handleConfirm}>
-            {confirmLabel}
+            {confirmLabel ?? t('common.confirm')}
           </Button>
         </div>
       </div>

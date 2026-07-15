@@ -56,18 +56,21 @@ export const dashboardApi = {
 
   // Dashboard perf #5 — force-rebuild the materialized snapshots for every
   // dataset this dashboard reads. Returns { as_of } for the "Số tính đến" label.
+  // Async now: kicks a BACKGROUND rebuild and returns immediately with
+  // `building` (whether a rebuild is in flight). Poll getSnapshotInfo until
+  // `building` is false. Never blocks on the extract-load.
   refreshSnapshots: async (
     dashboardId: number,
-  ): Promise<{ ok: boolean; as_of: string | null; datasets: any[] }> => {
+  ): Promise<{ ok: boolean; status?: string; as_of: string | null; building?: boolean; datasets?: any[] }> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/snapshots/refresh`);
     return response.data;
   },
 
   // Report-level "data as of" WITHOUT rebuilding, so the freshness label shows
-  // on load (not only after a Refresh click).
+  // on load (not only after a Refresh click). `building` = a rebuild is in flight.
   getSnapshotInfo: async (
     dashboardId: number,
-  ): Promise<{ as_of: string | null; mode: string }> => {
+  ): Promise<{ as_of: string | null; mode: string; building?: boolean }> => {
     const response = await apiClient.get(`/dashboards/${dashboardId}/snapshots/info`);
     return response.data;
   },

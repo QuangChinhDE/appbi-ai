@@ -5,6 +5,7 @@ import { Check, ChevronDown, Search, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   getAvailableRelatedOptions,
   getRelatedFilterLabel,
@@ -33,6 +34,7 @@ export function CrossModuleFilterControls({
   filters,
   onChange,
 }: CrossModuleFilterControlsProps) {
+  const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [openKey, setOpenKey] = useState<RelatedFilterKey | null>(null);
   const [searchByKey, setSearchByKey] = useState<Partial<Record<RelatedFilterKey, string>>>({});
@@ -115,7 +117,7 @@ export function CrossModuleFilterControls({
             {currentValue && (
               <button
                 type="button"
-                aria-label={`Clear ${config.label} filter`}
+                aria-label={t('shared.filters.clearFilter', { label: config.label })}
                 onClick={() => onChange(config.key, undefined)}
                 className="absolute right-7 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-primary"
               >
@@ -128,21 +130,23 @@ export function CrossModuleFilterControls({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-label font-emphasis text-text-secondary">{config.label}</p>
-                    <span className="text-tiny text-text-quaternary">{availableOptions.length} available</span>
+                    <span className="text-tiny text-text-quaternary">{t('shared.filters.availableCount', { count: availableOptions.length })}</span>
                   </div>
 
                   <Input
                     size="sm"
                     value={rawQuery}
                     onChange={(event) => setSearchByKey((current) => ({ ...current, [config.key]: event.target.value }))}
-                    placeholder={`Search ${config.label.toLowerCase()}...`}
+                    placeholder={t('shared.filters.searchPlaceholder', { label: config.label.toLowerCase() })}
                     leadingIcon={<Search />}
                     autoFocus
                   />
 
                   <div className="flex items-center justify-between gap-2 text-tiny text-text-quaternary">
                     <span>
-                      {query.length > 0 ? `${matchedOptions.length} match${matchedOptions.length === 1 ? '' : 'es'}` : config.placeholder}
+                      {query.length > 0
+                        ? t(matchedOptions.length === 1 ? 'shared.filters.matchOne' : 'shared.filters.matchMany', { count: matchedOptions.length })
+                        : config.placeholder}
                     </span>
                     {currentValue && (
                       <button
@@ -153,7 +157,7 @@ export function CrossModuleFilterControls({
                         }}
                         className="text-brand hover:text-brand-hover"
                       >
-                        Clear
+                        {t('shared.filters.clear')}
                       </button>
                     )}
                   </div>
@@ -200,14 +204,14 @@ export function CrossModuleFilterControls({
                     })
                   ) : (
                     <div className="px-2.5 py-6 text-center text-caption text-text-quaternary">
-                      No {config.label.toLowerCase()} matches.
+                      {t('shared.filters.noMatches', { label: config.label.toLowerCase() })}
                     </div>
                   )}
                 </div>
 
                 {query.length === 0 && matchedOptions.length > IDLE_OPTION_LIMIT && (
                   <p className="mt-2 text-tiny text-text-quaternary">
-                    Showing the first {visibleOptions.length - (currentValue ? 1 : 0)} options. Type to narrow the full list.
+                    {t('shared.filters.showingFirst', { count: visibleOptions.length - (currentValue ? 1 : 0) })}
                   </p>
                 )}
               </div>

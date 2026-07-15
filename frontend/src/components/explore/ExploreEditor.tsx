@@ -181,19 +181,19 @@ function QueryInspector({
               <div key={`${g.fact_view}-${idx}`} className="flex flex-col gap-1">
                 <div className="flex items-center justify-between text-[10px] text-text-tertiary">
                   <span>
-                    Group <code className="font-mono">{g.fact_view}</code>
+                    {t('explore.queryInspector.group')} <code className="font-mono">{g.fact_view}</code>
                   </span>
                   {g.sql && (
                     <button
                       onClick={() => navigator.clipboard.writeText(g.sql).catch(() => {})}
                       className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-text-secondary hover:bg-surface-1"
                     >
-                      Copy
+                      {t('explore.queryInspector.copy')}
                     </button>
                   )}
                 </div>
                 <pre className="overflow-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] font-mono leading-relaxed text-text-secondary">
-                  {g.sql || '-- (empty)'}
+                  {g.sql || t('explore.queryInspector.emptySqlPlaceholder')}
                 </pre>
               </div>
             ))}
@@ -202,14 +202,14 @@ function QueryInspector({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <div className="text-[10px] font-emphasis uppercase tracking-wide text-text-tertiary">
-                SQL - {sqlSource === 'backend' ? 'backend emitted' : 'frontend preview'}
+                {sqlSource === 'backend' ? t('explore.queryInspector.sqlBackendEmitted') : t('explore.queryInspector.sqlFrontendPreview')}
               </div>
               {sql && (
                 <button
                   onClick={onCopy}
                   className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1"
                 >
-                  {copied ? 'Copied' : 'Copy SQL'}
+                  {copied ? t('explore.queryInspector.copied') : t('explore.queryInspector.copySql')}
                 </button>
               )}
             </div>
@@ -219,7 +219,7 @@ function QueryInspector({
               </pre>
             ) : (
               <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-3 text-[11px] italic text-text-quaternary">
-                No SQL yet. Run the chart first.
+                {t('explore.queryInspector.noSqlYet')}
               </div>
             )}
           </div>
@@ -227,21 +227,19 @@ function QueryInspector({
 
         {/* ── Hints ─────────────────────────────────────────────── */}
         <div className="mt-1 rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 p-2 text-[10px] leading-snug text-text-quaternary">
-          <div className="mb-1 font-emphasis uppercase tracking-wide text-text-tertiary">Debug tips</div>
+          <div className="mb-1 font-emphasis uppercase tracking-wide text-text-tertiary">{t('explore.queryInspector.debugTips')}</div>
           <ul className="list-disc space-y-0.5 pl-4">
             <li>
-              <strong>Chart is empty but the table has data</strong>: check <code>Routing</code>. If it shows <em>live_query</em>
-              while the chart uses joined data, switch the field to a qualified <code>view.field</code> reference so the query routes through the semantic engine.
+              <strong>{t('explore.queryInspector.tipEmptyTitle')}</strong>: {t('explore.queryInspector.tipEmptyBody')}
             </li>
             <li>
-              <strong>Preview and saved chart totals differ</strong>: copy the SQL above and run it directly on the database.
-              The result should match. If it does, check the frontend adapter and browser console warnings.
+              <strong>{t('explore.queryInspector.tipTotalsTitle')}</strong>: {t('explore.queryInspector.tipTotalsBody')}
             </li>
             <li>
-              <strong>Engine warning</strong>: this is often an ambiguous join path. Mark one relationship inactive in Data Model to make the query path explicit.
+              <strong>{t('explore.queryInspector.tipWarningTitle')}</strong>: {t('explore.queryInspector.tipWarningBody')}
             </li>
             <li>
-              <strong>Wrong dialect</strong>: if the dialect does not match the datasource, for example BigQuery data with <code>postgresql</code> dialect, report it as a runtime routing issue.
+              <strong>{t('explore.queryInspector.tipDialectTitle')}</strong>: {t('explore.queryInspector.tipDialectBody')}
             </li>
           </ul>
         </div>
@@ -971,11 +969,11 @@ function isSourceTimeColumn(column: ColumnMetadata): boolean {
 type TimeGrainLevel = 'day' | 'week' | 'month' | 'quarter' | 'year';
 const DRILL_LEVEL_ORDER: TimeGrainLevel[] = ['day', 'week', 'month', 'quarter', 'year'];
 const DRILL_LEVEL_LABEL: Record<TimeGrainLevel, string> = {
-  day: 'Day',
-  week: 'Week',
-  month: 'Month',
-  quarter: 'Quarter',
-  year: 'Year',
+  day: 'explore.dateDrill.day',
+  week: 'explore.dateDrill.week',
+  month: 'explore.dateDrill.month',
+  quarter: 'explore.dateDrill.quarter',
+  year: 'explore.dateDrill.year',
 };
 
 function ChartDrillControls({
@@ -989,36 +987,38 @@ function ChartDrillControls({
   disabled?: boolean;
   onChange: (next: TimeGrainLevel) => void;
 }) {
+  const { t } = useI18n();
   const idx = DRILL_LEVEL_ORDER.indexOf(grain);
   const canFiner = idx > 0;
   const canCoarser = idx < DRILL_LEVEL_ORDER.length - 1;
+  const drillLevelLabel = (level: TimeGrainLevel) => t(DRILL_LEVEL_LABEL[level]);
   const baseBtn = 'inline-flex h-6 w-6 items-center justify-center rounded border border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40';
   const liveBtn = disabled ? '' : 'hover:border-brand/40 hover:bg-brand/10 hover:text-brand';
   return (
     <div
       className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-1 py-0.5"
-      title={`Date hierarchy on ${fieldDisplayLabel}. ↓ drills to a finer level, ↑ drills to a coarser one. Toggle off in Configure to keep raw timestamps.`}
+      title={t('explore.dateDrill.previewTitle', { field: fieldDisplayLabel })}
     >
       <button
         type="button"
         disabled={disabled || !canFiner}
         onClick={() => canFiner && onChange(DRILL_LEVEL_ORDER[idx - 1])}
         className={`${baseBtn} ${liveBtn}`}
-        title={canFiner ? `Drill down to ${DRILL_LEVEL_LABEL[DRILL_LEVEL_ORDER[idx - 1]]}` : 'Already at finest level (Day)'}
-        aria-label="Drill down"
+        title={canFiner ? t('explore.dateDrill.drillDownTo', { level: drillLevelLabel(DRILL_LEVEL_ORDER[idx - 1]) }) : t('explore.dateDrill.finestLevel')}
+        aria-label={t('explore.dateDrill.drillDown')}
       >
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       <span className="px-1.5 text-[11px] font-emphasis tracking-wide text-brand">
-        {DRILL_LEVEL_LABEL[grain]}
+        {drillLevelLabel(grain)}
       </span>
       <button
         type="button"
         disabled={disabled || !canCoarser}
         onClick={() => canCoarser && onChange(DRILL_LEVEL_ORDER[idx + 1])}
         className={`${baseBtn} ${liveBtn}`}
-        title={canCoarser ? `Drill up to ${DRILL_LEVEL_LABEL[DRILL_LEVEL_ORDER[idx + 1]]}` : 'Already at coarsest level (Year)'}
-        aria-label="Drill up"
+        title={canCoarser ? t('explore.dateDrill.drillUpTo', { level: drillLevelLabel(DRILL_LEVEL_ORDER[idx + 1]) }) : t('explore.dateDrill.coarsestLevel')}
+        aria-label={t('explore.dateDrill.drillUp')}
       >
         <ChevronUp className="h-3.5 w-3.5" />
       </button>
@@ -1097,6 +1097,7 @@ export function ExploreEditor({
   lockDatasetSelection = false,
 }: ExploreEditorProps) {
   const router = useRouter();
+  const { t } = useI18n();
   const isEphemeral = mode === 'ephemeral';
   // Ephemeral editors are never bound to an existing chart row.
   const effectiveChartId = isEphemeral ? null : chartId;
@@ -2367,7 +2368,7 @@ export function ExploreEditor({
 
   const handleRunQuery = async () => {
     if (!selectedDatasetId || !selectedTableId || !selectedTable) {
-      toast.error('Please select a dataset table first');
+      toast.error(t('explore.editor.selectDatasetTableFirst'));
       return;
     }
 
@@ -2377,7 +2378,7 @@ export function ExploreEditor({
       if (sqlMode === 'custom') {
         const sql = customSqlDraft.trim();
         if (!sql) {
-          toast.error('Custom SQL cannot be empty');
+          toast.error(t('explore.editor.customSqlEmpty'));
           return;
         }
         const buildCustomPreviewConfig = (roleConfig: ChartRoleConfig) => ({
@@ -2645,13 +2646,13 @@ export function ExploreEditor({
 
   const handleSaveLook = async () => {
     if (!selectedTableId) {
-      toast.error('Please select a dataset table first');
+      toast.error(t('explore.editor.selectDatasetTableFirst'));
       return;
     }
     const trimmedCustomSql = customSqlDraft.trim();
     if (sqlMode === 'custom') {
       if (!trimmedCustomSql) {
-        toast.error('Custom SQL cannot be empty');
+        toast.error(t('explore.editor.customSqlEmpty'));
         return;
       }
       if (customRoleRequirementMessage) {
@@ -2659,7 +2660,7 @@ export function ExploreEditor({
         return;
       }
       if (!customQueryState || currentQuerySignature !== customLastRunSignature) {
-        toast.error('Run the custom SQL before saving so the chart uses the latest output columns');
+        toast.error(t('explore.editor.runCustomSqlBeforeSaving'));
         return;
       }
     } else if (generatedRoleRequirementMessage) {
@@ -2851,7 +2852,7 @@ export function ExploreEditor({
       <div className="h-screen flex items-center justify-center bg-surface-2">
         <div className="text-center">
           <div className="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-3" />
-          <p className="text-sm text-text-secondary">Loading chart...</p>
+          <p className="text-sm text-text-secondary">{t('explore.editor.loadingChart')}</p>
         </div>
       </div>
     );
@@ -2863,8 +2864,8 @@ export function ExploreEditor({
         <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-warning">
             <Eye className="h-3.5 w-3.5 shrink-0" />
-            <span className="font-medium">View only</span>
-            <span className="text-warning">— You can preview this chart but cannot modify its configuration.</span>
+            <span className="font-medium">{t('explore.editor.viewOnly')}</span>
+            <span className="text-warning">- {t('explore.editor.viewOnlyDescription')}</span>
           </div>
         </div>
       )}
@@ -2897,7 +2898,7 @@ export function ExploreEditor({
                     if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     if (e.key === 'Escape') { setChartNameInput(chart?.name ?? ''); setIsEditingName(false); }
                   }}
-                  placeholder="Chart name..."
+                  placeholder={t('explore.editor.chartNamePlaceholder')}
                   className="min-w-[10rem] border-b border-brand/50 bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
                 />
                 <Check className="h-3.5 w-3.5 text-brand" />
@@ -2911,15 +2912,15 @@ export function ExploreEditor({
                 <span
                   className={`max-w-[14rem] truncate text-sm font-semibold text-text-primary ${resPerms.canEdit ? 'cursor-pointer hover:text-brand' : ''}`}
                   onClick={resPerms.canEdit ? () => setIsEditingName(true) : undefined}
-                  title={resPerms.canEdit ? 'Click to rename' : undefined}
+                  title={resPerms.canEdit ? t('explore.editor.clickToRename') : undefined}
                 >
-                  {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
+                  {chartNameInput || (chartId ? t('explore.editor.chartFallback') : t('explore.editor.newChartFallback'))}
                 </span>
                 {resPerms.canEdit && (
                   <button
                     type="button"
                     onClick={() => setIsEditingName(true)}
-                    aria-label="Rename chart"
+                    aria-label={t('explore.editor.renameChart')}
                     className="rounded-md p-1 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
                   >
                     <Pencil className="h-3 w-3" />
@@ -2935,7 +2936,7 @@ export function ExploreEditor({
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {!isDashboardModal && (
               <>
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Mode</span>
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.mode')}</span>
                 <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
                   <button
                     onClick={handleUseGeneratedQuery}
@@ -2947,7 +2948,7 @@ export function ExploreEditor({
                     }`}
                   >
                     <Database className="h-3 w-3" />
-                    Builder
+                    {t('explore.editor.builder')}
                   </button>
                   <span className="group/csql relative inline-flex">
                     <button
@@ -2955,17 +2956,17 @@ export function ExploreEditor({
                       className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-50"
                     >
                       <Code2 className="h-3 w-3" />
-                      SQL
+                      {t('explore.editor.sql')}
                     </button>
                     <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
-                      Temporarily unavailable — will be re-enabled in a future update.
+                      {t('explore.editor.sqlUnavailable')}
                     </span>
                   </span>
                 </div>
                 <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
               </>
             )}
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Dataset</span>
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.dataset')}</span>
             <div className="min-w-[14rem] max-w-[22rem] flex-1">
               <ExploreSourceSelector
                 selectedDatasetId={selectedDatasetId}
@@ -3006,10 +3007,16 @@ export function ExploreEditor({
                 ? 'border-success/40 bg-success/10 text-success'
                 : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
               const tip = hasJoined
-                ? `This chart combines ${joinedCount} related table${joinedCount === 1 ? '' : 's'}: ${(activeRelationshipSummary.crossTableViews ?? []).join(', ')}.`
+                ? t(joinedCount === 1 ? 'explore.editor.relatedTablesJoinedTitleOne' : 'explore.editor.relatedTablesJoinedTitleMany', {
+                    count: joinedCount,
+                    tables: (activeRelationshipSummary.crossTableViews ?? []).join(', '),
+                  })
                 : hasJoinable
-                  ? `Data: ${baseLabel}. You can pull fields from ${joinableCount} related table${joinableCount === 1 ? '' : 's'} — just pick one in the field list below.`
-                  : `Data: ${baseLabel}.`;
+                  ? t(joinableCount === 1 ? 'explore.editor.relatedTablesJoinableTitleOne' : 'explore.editor.relatedTablesJoinableTitleMany', {
+                      base: baseLabel,
+                      count: joinableCount,
+                    })
+                  : t('explore.editor.dataBaseTitle', { base: baseLabel });
               return (
                 <span
                   className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
@@ -3027,12 +3034,12 @@ export function ExploreEditor({
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {isQueryDirty && (
               <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
-                Run to refresh
+                {t('explore.editor.runToRefresh')}
               </span>
             )}
             {activeQueryState && (
               <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
-                {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
+                {t(activeQueryState.rows.length === 1 ? 'explore.editor.rowCountOne' : 'explore.editor.rowCountMany', { count: activeQueryState.rows.length })}
                 {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
@@ -3047,7 +3054,7 @@ export function ExploreEditor({
               {isRunningQuery
                 ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
                 : <Play className="h-3 w-3" />}
-              {isRunningQuery ? 'Running...' : 'Run'}
+              {isRunningQuery ? t('explore.editor.running') : t('explore.editor.run')}
             </button>
             {!isDashboardModal && (
               isEditingDesc ? (
@@ -3064,7 +3071,7 @@ export function ExploreEditor({
                     if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
                   }}
-                  placeholder="Add note..."
+                  placeholder={t('explore.editor.addNote')}
                   className="w-44 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
                 />
               ) : resPerms.canEdit ? (
@@ -3073,7 +3080,7 @@ export function ExploreEditor({
                   onClick={() => setIsEditingDesc(true)}
                   className="group/desc flex max-w-[12rem] cursor-text items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
                 >
-                  <span className="truncate">{chartDescInput || <span className="italic">Add note...</span>}</span>
+                  <span className="truncate">{chartDescInput || <span className="italic">{t('explore.editor.addNote')}</span>}</span>
                   <Pencil className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/desc:opacity-100" />
                 </button>
               ) : chartDescInput ? (
@@ -3088,8 +3095,8 @@ export function ExploreEditor({
               >
                 <Save className="h-3.5 w-3.5" />
                 {dryRunCreateChart.isPending || createChart.isPending || updateChart.isPending
-                  ? 'Saving...'
-                  : (saveButtonLabel ?? (chartId ? 'Update' : 'Save'))}
+                  ? t('explore.editor.saving')
+                  : (saveButtonLabel ?? (chartId ? t('explore.editor.update') : t('explore.editor.save')))}
               </button>
             )}
           </div>
@@ -3103,15 +3110,17 @@ export function ExploreEditor({
               sqlMode === 'custom' ? 'bg-warning/10' : 'bg-surface-2'
             }`}>
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Configure</span>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.configure')}</span>
                 {selectedDatasetId && (
                   <>
                     <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">{chartType}</span>
                     {hasActiveTransforms && (
-                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">transforms</span>
+                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">{t('explore.editor.transforms')}</span>
                     )}
                     {filters.length > 0 && (
-                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">{filters.length} filter{filters.length === 1 ? '' : 's'}</span>
+                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">
+                        {t(filters.length === 1 ? 'explore.editor.filterCountOne' : 'explore.editor.filterCountMany', { count: filters.length })}
+                      </span>
                     )}
                   </>
                 )}
@@ -3145,8 +3154,8 @@ export function ExploreEditor({
                     <div className="border-b border-[rgb(var(--border-line))]">
                       <div className="flex items-center justify-between px-5 py-3">
                         <div className="flex items-center gap-1.5">
-                          <p className="text-sm font-medium text-text-secondary">Custom SQL</p>
-                          <HelpTooltip text="Run SQL to refresh the output columns used by Chart Setup." />
+                          <p className="text-sm font-medium text-text-secondary">{t('explore.editor.customSql')}</p>
+                          <HelpTooltip text={t('explore.editor.customSqlHelp')} />
                         </div>
                         {resPerms.canEdit && (
                           <button
@@ -3154,7 +3163,7 @@ export function ExploreEditor({
                             className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
                           >
                             <RotateCcw className="h-3 w-3" />
-                            Reset
+                            {t('explore.editor.reset')}
                           </button>
                         )}
                       </div>
@@ -3169,9 +3178,9 @@ export function ExploreEditor({
                         />
 
                         <div className="mt-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
-                          <p className="text-sm font-medium text-text-primary">Output columns</p>
+                          <p className="text-sm font-medium text-text-primary">{t('explore.editor.outputColumns')}</p>
                           <p className="mt-1 text-xs text-text-tertiary">
-                            These columns only exist after the SQL runs. Chart Setup binds directly to them.
+                            {t('explore.editor.outputColumnsHelp')}
                           </p>
                         </div>
 
@@ -3194,7 +3203,7 @@ export function ExploreEditor({
                           ) : (
                             <div className="rounded-2xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-4 py-6 text-center">
                               <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />
-                              <p className="text-sm font-medium text-text-secondary">Run SQL to load output columns</p>
+                              <p className="text-sm font-medium text-text-secondary">{t('explore.editor.runSqlLoadOutputColumns')}</p>
                             </div>
                           )}
                         </div>
@@ -3239,7 +3248,7 @@ export function ExploreEditor({
                     >
                       <div className="flex items-center gap-2">
                         <Settings2 className="h-3.5 w-3.5 text-text-quaternary" />
-                        <span className="text-xs font-semibold text-text-secondary">Chart Filters</span>
+                        <span className="text-xs font-semibold text-text-secondary">{t('explore.editor.chartFilters')}</span>
                         {filters.length > 0 && (
                           <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
                             {filters.length}
@@ -3253,16 +3262,16 @@ export function ExploreEditor({
                     {isFiltersOpen && (
                       <div className="px-4 pb-4">
                         <p className="mb-2 text-[11px] text-text-tertiary">
-                          Saved with this chart and still applied after you add it to a dashboard.
+                          {t('explore.editor.chartFiltersPersistHelp')}
                         </p>
                         <p className="mb-3 text-[10px] text-text-quaternary">
                           {sqlMode === 'custom'
-                            ? 'These filters run against the columns returned by the custom SQL output.'
-                            : 'These filters run before dashboard-level filters.'}
+                            ? t('explore.editor.chartFiltersCustomHelp')
+                            : t('explore.editor.chartFiltersDashboardHelp')}
                         </p>
                         {sqlMode === 'custom' && filterColumns.length === 0 ? (
                           <p className="text-xs text-text-quaternary">
-                            Run the custom SQL once to load output columns for chart filters.
+                            {t('explore.editor.runCustomSqlForFilters')}
                           </p>
                         ) : (
                           <FilterBuilder
@@ -3283,9 +3292,9 @@ export function ExploreEditor({
                 <div className="flex h-full min-h-[28rem] items-center justify-center p-8">
                   <div className="max-w-md text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Choose a dataset to unlock Configure</p>
+                    <p className="text-sm font-medium text-text-secondary">{t('explore.editor.chooseDatasetUnlockConfigure')}</p>
                     <p className="mt-1 text-xs text-text-quaternary">
-                      Pick the dataset in the header. Base table auto-derives from the first field you pick.
+                      {t('explore.editor.chooseDatasetUnlockConfigureHelp')}
                     </p>
                   </div>
                 </div>
@@ -3296,11 +3305,11 @@ export function ExploreEditor({
           <div className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm lg:min-h-0">
             <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5">
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Preview</span>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{t('explore.editor.preview')}</span>
                 <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
                   {displayedQueryState
-                    ? `${displayedQueryState.rows.length} row${displayedQueryState.rows.length === 1 ? '' : 's'}`
-                    : 'No run yet'}
+                    ? t(displayedQueryState.rows.length === 1 ? 'explore.editor.rowCountOne' : 'explore.editor.rowCountMany', { count: displayedQueryState.rows.length })
+                    : t('explore.editor.noRunYet')}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -3317,11 +3326,11 @@ export function ExploreEditor({
                 )}
                 <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
                   {[
-                    { key: 'chart', label: 'Chart' },
-                    { key: 'table', label: 'Table' },
+                    { key: 'chart', label: t('explore.editor.tabChart') },
+                    { key: 'table', label: t('explore.editor.tabTable') },
                     // Phase-15.9: "Query" tab — shows SQL + routing + warnings
                     // so DA can debug pipeline issues without server logs.
-                    { key: 'query', label: 'Query' },
+                    { key: 'query', label: t('explore.editor.tabQuery') },
                   ].map((tab) => (
                     <button
                       key={tab.key}
@@ -3352,12 +3361,12 @@ export function ExploreEditor({
                   <div className="max-w-sm text-center">
                     <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
                     <p className="text-sm font-medium text-text-secondary">
-                      {selectedDatasetId ? 'Pick a field below to start' : 'Choose a dataset to start'}
+                      {selectedDatasetId ? t('explore.editor.pickFieldToStart') : t('explore.editor.chooseDatasetToStart')}
                     </p>
                     <p className="mt-1 text-xs text-text-quaternary">
                       {selectedDatasetId
-                        ? 'The base table will be derived from the first field you pick. Fields from related tables join automatically through relationships.'
-                        : 'Pick dataset in the header, then drag fields from the column panel.'}
+                        ? t('explore.editor.pickFieldToStartHelp')
+                        : t('explore.editor.chooseDatasetToStartHelp')}
                     </p>
                   </div>
                 </div>
@@ -3367,9 +3376,9 @@ export function ExploreEditor({
                     {isConfigBuilderMode
                       ? <Database className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
                       : <Code2 className="mx-auto mb-3 h-10 w-10 text-warning" />}
-                    <p className="text-sm font-medium text-text-secondary">Run once to generate the preview</p>
+                    <p className="text-sm font-medium text-text-secondary">{t('explore.editor.runOncePreview')}</p>
                     <p className="mt-1 text-xs text-text-quaternary">
-                      Configure the chart on the left, then run to see both the visual and table result here.
+                      {t('explore.editor.runOncePreviewHelp')}
                     </p>
                   </div>
                 </div>
@@ -3377,7 +3386,7 @@ export function ExploreEditor({
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-warning" />
-                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Configure</p>
+                    <p className="text-sm font-medium text-text-secondary">{t('explore.editor.finishRolesConfigure')}</p>
                     <p className="mt-1 text-xs text-text-quaternary">{customRunMessage}</p>
                   </div>
                 </div>

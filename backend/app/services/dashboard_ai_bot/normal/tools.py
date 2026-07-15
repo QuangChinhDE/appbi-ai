@@ -480,3 +480,15 @@ def execute_tool(ctx: ToolContext, name: str, args: dict | None) -> dict:
         return _err(str(exc))
     except Exception as exc:
         return _err(f"tool '{name}' raised {type(exc).__name__}: {str(exc)[:200]}")
+
+
+# ── Learning tools ──────────────────────────────────────────────────────────
+# Teaching + recall must work in Normal mode too (the router may keep a
+# "remember: …" instruction here). Same handlers as the Thinking variant.
+from app.services.dashboard_ai_bot.knowledge import (  # noqa: E402
+    KNOWLEDGE_TOOL_DEFS,
+    KNOWLEDGE_TOOLS,
+)
+
+TOOLS.update(KNOWLEDGE_TOOLS)
+TOOL_DEFINITIONS.extend(KNOWLEDGE_TOOL_DEFS)

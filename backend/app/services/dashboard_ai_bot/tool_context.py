@@ -379,6 +379,18 @@ def _fetch_chart_data(
             elif isinstance(item, (list, tuple)):
                 rows.append(list(item))
 
+    # Normalize Decimal → float at the fetch boundary so EVERY downstream
+    # tool sees consistent numeric types. Without this, chart-type code paths
+    # that return SQL NUMERIC as Decimal (vs str/float on others) made the
+    # pack's measure-detector misclassify the column as 'string' → unsorted
+    # top_5 → wrong "leading segment" (ds67 HORIZONTAL_BAR revenue bug).
+    from decimal import Decimal as _Decimal
+
+    def _norm(v):
+        return float(v) if isinstance(v, _Decimal) else v
+
+    rows = [[_norm(v) for v in r] for r in rows]
+
     payload = {
         "columns": columns,
         "rows": rows,

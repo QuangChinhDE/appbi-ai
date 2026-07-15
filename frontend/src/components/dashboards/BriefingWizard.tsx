@@ -14,6 +14,7 @@ import {
   type AiProvider,
 } from '@/lib/api/public';
 import { useI18n } from '@/providers/LanguageProvider';
+import { AiButton } from '@/components/ui/AiButton';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,9 @@ export function BriefingWizard({
   const [focus, setFocus] = useState<string>('overview');
   const [timeframe, setTimeframe] = useState<string>('current_period');
   const [note, setNote] = useState('');
+  // SMART goal — prefilled from the server's heuristic draft, user-editable.
+  // The session's north star (InsightBench: specific goal ≫ generic goal).
+  const [smartGoal, setSmartGoal] = useState('');
 
   // Step 3 — executive brief
   const [briefText, setBriefText] = useState('');
@@ -72,6 +76,7 @@ export function BriefingWizard({
         setGuess(g);
         setDomain(g.domain || 'generic');
         setDomainLabel(g.domain_label || g.domain || t('dashboards.briefingWizard.domainFallback'));
+        setSmartGoal(g.smart_goal_draft || '');
         setStep('domain');
       } catch (err: unknown) {
         if (cancelled) return;
@@ -146,11 +151,12 @@ export function BriefingWizard({
       focus,
       timeframe,
       custom_note: note.trim().slice(0, 600),
+      smart_goal: smartGoal.trim().slice(0, 400),
       key_chart_ids: guess.key_chart_ids,
       confirmed: true,
     };
     triggerBrief(briefing);
-  }, [domain, domainLabel, focus, guess, note, role, timeframe, triggerBrief]);
+  }, [domain, domainLabel, focus, guess, note, role, smartGoal, timeframe, triggerBrief]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -206,10 +212,12 @@ export function BriefingWizard({
         focus={focus}
         timeframe={timeframe}
         note={note}
+        smartGoal={smartGoal}
         onRole={setRole}
         onFocus={setFocus}
         onTimeframe={setTimeframe}
         onNote={setNote}
+        onSmartGoal={setSmartGoal}
         onBack={() => setStep('domain')}
         onConfirm={handleProfileConfirm}
         onSkip={onSkip}
@@ -342,8 +350,8 @@ function DomainStep({
 // ── Step 2 — Profile (role / focus / timeframe + note) ─────────────────────
 
 function ProfileStep({
-  guess, domain, domainLabel, role, focus, timeframe, note,
-  onRole, onFocus, onTimeframe, onNote, onBack, onConfirm, onSkip,
+  guess, domain, domainLabel, role, focus, timeframe, note, smartGoal,
+  onRole, onFocus, onTimeframe, onNote, onSmartGoal, onBack, onConfirm, onSkip,
 }: {
   guess: AiBriefingGuess;
   domain: string;
@@ -352,10 +360,12 @@ function ProfileStep({
   focus: string;
   timeframe: string;
   note: string;
+  smartGoal: string;
   onRole: (v: string) => void;
   onFocus: (v: string) => void;
   onTimeframe: (v: string) => void;
   onNote: (v: string) => void;
+  onSmartGoal: (v: string) => void;
   onBack: () => void;
   onConfirm: () => void;
   onSkip: () => void;
@@ -403,6 +413,18 @@ function ProfileStep({
       </div>
 
       <div>
+        <Label icon={<Target className="h-3 w-3" />} text={t('dashboards.briefingWizard.smartGoalLabel')} />
+        <textarea
+          value={smartGoal}
+          onChange={(e) => onSmartGoal(e.target.value)}
+          placeholder={t('dashboards.briefingWizard.smartGoalPlaceholder')}
+          rows={2}
+          maxLength={400}
+          className="w-full resize-none rounded-lg border border-brand/30 bg-brand/[0.04] px-3 py-2 text-caption text-text-primary placeholder:text-text-quaternary focus:border-brand/60 focus:outline-none"
+        />
+      </div>
+
+      <div>
         <Label icon={<Lightbulb className="h-3 w-3" />} text={t('dashboards.briefingWizard.noteLabel')} />
         <textarea
           value={note}
@@ -421,12 +443,9 @@ function ProfileStep({
         >
           {t('dashboards.briefingWizard.back')}
         </button>
-        <button
-          onClick={onConfirm}
-          className="flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-caption font-strong text-white transition-colors hover:bg-brand/90"
-        >
-          {t('dashboards.briefingWizard.summarizeForMe')} <Sparkles className="h-3.5 w-3.5" />
-        </button>
+        <AiButton size="md" onClick={onConfirm}>
+          {t('dashboards.briefingWizard.summarizeForMe')}
+        </AiButton>
       </div>
     </div>
   );

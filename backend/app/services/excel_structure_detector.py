@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections import Counter
 import re
 import unicodedata
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,10 +29,8 @@ from app.services.excel_parser import (
     _build_merge_map,
     _color_hex,
     _col_width_px,
-    _row_height_px,
     _border_sides,
     _is_row_empty,
-    USABLE_W,
     MIN_COL_WIDTH_PX,
 )
 

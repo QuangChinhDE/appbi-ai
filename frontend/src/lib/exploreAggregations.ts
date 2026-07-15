@@ -1,13 +1,11 @@
 /**
  * Explore 2.0: Aggregation, grouping, sorting, and conditional formatting utilities
  */
-import { 
-  AggregationFn, 
-  MeasureConfig, 
-  SortConfig, 
-  ConditionalFormatRule, 
+import {
+  ConditionalFormatRule,
   TableHeatmapRule,
-  GroupingConfig 
+  BenchmarkLineDef,
+  BenchmarkAggregate,
 } from '@/types/api';
 
 export interface TableHeatmapStats {
@@ -17,187 +15,24 @@ export interface TableHeatmapStats {
   };
 }
 
-/**
- * Apply an aggregation function to an array of values
- */
-export function applyAggregation(values: any[], agg: AggregationFn): number {
-  const numericValues = values
-    .map(v => typeof v === 'number' ? v : parseFloat(v))
-    .filter(v => !isNaN(v));
-  
-  if (numericValues.length === 0) return 0;
-  
-  switch (agg) {
-    case 'sum':
-      return numericValues.reduce((a, b) => a + b, 0);
-    
-    case 'avg':
-      return numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
-    
-    case 'count':
-      return values.length; // Count all values, not just numeric
-    
-    case 'min':
-      return Math.min(...numericValues);
-    
-    case 'max':
-      return Math.max(...numericValues);
-    
-    default:
-      return 0;
-  }
+// Per-column stats for conditional formatting that needs the column's
+// distribution: percentile thresholds (Feature #5), percentage-of-max, and
+// data-bar min…max scaling (Feature #4). Keyed by the SOURCE column that drives
+// the rule (sourceColumn ?? field).
+export interface ConditionalColumnStats {
+  min: number;
+  max: number;
+  sorted: number[]; // ascending — for percentile lookups
 }
+export type ConditionalStats = Record<string, ConditionalColumnStats>;
 
-/**
- * Aggregate data based on grouping and measure configurations
- * 
- * @param rawRows - Original data rows from dataset
- * @param grouping - Grouping configuration (rowDimensions, columnDimension)
- * @param measureConfigs - Measure configurations with aggregation functions
- * @returns Aggregated rows and optional pivot columns
- */
-export function aggregateData(
-  rawRows: any[],
-  grouping: GroupingConfig | null,
-  measureConfigs: MeasureConfig[]
-): {
-  rows: any[];
-  pivotColumns: string[] | null;
-} {
-  if (!rawRows || rawRows.length === 0) {
-    return { rows: [], pivotColumns: null };
-  }
-  
-  // No grouping - return raw data with measure columns
-  if (!grouping || grouping.rowDimensions.length === 0) {
-    return { rows: rawRows, pivotColumns: null };
-  }
-  
-  const { rowDimensions, columnDimension } = grouping;
-  
-  // Case 1: Only row dimensions (no pivot)
-  if (!columnDimension) {
-    const grouped = new Map<string, any[]>();
-    
-    // Group rows by rowDimensions
-    rawRows.forEach(row => {
-      const key = rowDimensions.map(dim => row[dim]).join('|||');
-      if (!grouped.has(key)) {
-        grouped.set(key, []);
-      }
-      grouped.get(key)!.push(row);
-    });
-    
-    // Aggregate each group
-    const aggregatedRows = Array.from(grouped.entries()).map(([key, groupRows]) => {
-      const row: any = {};
-      
-      // Add dimension values
-      rowDimensions.forEach((dim, i) => {
-        row[dim] = key.split('|||')[i];
-      });
-      
-      // Add aggregated measures
-      measureConfigs.forEach(mc => {
-        const values = groupRows.map(r => r[mc.field]);
-        row[mc.field] = applyAggregation(values, mc.agg);
-      });
-      
-      return row;
-    });
-    
-    return { rows: aggregatedRows, pivotColumns: null };
-  }
-  
-  // Case 2: Pivot table (rowDimensions + columnDimension)
-  const grouped = new Map<string, Map<string, any[]>>();
-  const columnValues = new Set<string>();
-  
-  // Group by rowDimensions and columnDimension
-  rawRows.forEach(row => {
-    const rowKey = rowDimensions.map(dim => row[dim]).join('|||');
-    const colValue = String(row[columnDimension] ?? '');
-    
-    columnValues.add(colValue);
-    
-    if (!grouped.has(rowKey)) {
-      grouped.set(rowKey, new Map());
-    }
-    if (!grouped.get(rowKey)!.has(colValue)) {
-      grouped.get(rowKey)!.set(colValue, []);
-    }
-    grouped.get(rowKey)!.get(colValue)!.push(row);
-  });
-  
-  const pivotColumns = Array.from(columnValues).sort();
-  
-  // Create pivot rows
-  const pivotRows = Array.from(grouped.entries()).map(([rowKey, colMap]) => {
-    const row: any = {};
-    
-    // Add row dimension values
-    rowDimensions.forEach((dim, i) => {
-      row[dim] = rowKey.split('|||')[i];
-    });
-    
-    // Add aggregated values for each column x measure combination
-    pivotColumns.forEach(colValue => {
-      const cellRows = colMap.get(colValue) || [];
-      
-      measureConfigs.forEach(mc => {
-        const values = cellRows.map(r => r[mc.field]);
-        const aggValue = applyAggregation(values, mc.agg);
-        const columnKey = `${colValue}_${mc.field}`;
-        row[columnKey] = aggValue;
-      });
-    });
-    
-    return row;
-  });
-  
-  return { rows: pivotRows, pivotColumns };
-}
-
-/**
- * Sort rows based on sort configurations
- * 
- * @param rows - Rows to sort
- * @param sorts - Sort configurations (ordered by index)
- * @returns Sorted rows
- */
-export function sortRows(rows: any[], sorts: SortConfig[] | null): any[] {
-  if (!sorts || sorts.length === 0 || rows.length === 0) {
-    return rows;
-  }
-  
-  // Sort by index to get priority order
-  const orderedSorts = [...sorts].sort((a, b) => a.index - b.index);
-  
-  return [...rows].sort((a, b) => {
-    for (const sort of orderedSorts) {
-      const aVal = a[sort.field];
-      const bVal = b[sort.field];
-      
-      // Handle null/undefined
-      if (aVal == null && bVal == null) continue;
-      if (aVal == null) return sort.direction === 'asc' ? 1 : -1;
-      if (bVal == null) return sort.direction === 'asc' ? -1 : 1;
-      
-      // Compare values
-      let comparison = 0;
-      if (typeof aVal === 'number' && typeof bVal === 'number') {
-        comparison = aVal - bVal;
-      } else {
-        comparison = String(aVal).localeCompare(String(bVal));
-      }
-      
-      if (comparison !== 0) {
-        return sort.direction === 'asc' ? comparison : -comparison;
-      }
-    }
-    
-    return 0;
-  });
+// Rich per-cell format output. `color`/`backgroundColor` = the legacy color
+// styling; `dataBar` = an in-cell proportional bar; `icon` = an indicator glyph.
+export interface CellFormat {
+  color?: string;
+  backgroundColor?: string;
+  dataBar?: { ratio: number; color: string };
+  icon?: { key: string; color?: string };
 }
 
 export function parseNumericCellValue(value: any): number | null {
@@ -215,6 +50,92 @@ export function parseNumericCellValue(value: any): number | null {
   const normalized = trimmed.replace(/,/g, '');
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Per-column DATE display formats for the table. Kept SEPARATE from NumberFormat
+ * so a date column never gets number-formatted (the old bug: a date column's
+ * only format options were number ones, which no-op on an ISO string — so dates
+ * were unformattable). These values never collide with NumberFormat
+ * ('auto'|'number'|'compact'|'percent'|'currency').
+ */
+export type DateFormatKind =
+  | 'date_iso'    // 2024-03-24
+  | 'date_dmy'    // 24/03/2024
+  | 'date_mdy'    // 03/24/2024
+  | 'date_med'    // 24 Mar 2024
+  | 'date_long'   // 24 March 2024
+  | 'month_year'  // Mar 2024
+  | 'year'        // 2024
+  | 'datetime';   // 2024-03-24 14:30
+
+export const DATE_FORMAT_OPTIONS: Array<{ value: DateFormatKind; label: string }> = [
+  { value: 'date_iso', label: '2024-03-24' },
+  { value: 'date_dmy', label: '24/03/2024' },
+  { value: 'date_mdy', label: '03/24/2024' },
+  { value: 'date_med', label: '24 Mar 2024' },
+  { value: 'date_long', label: '24 March 2024' },
+  { value: 'month_year', label: 'Mar 2024' },
+  { value: 'year', label: '2024' },
+  { value: 'datetime', label: '2024-03-24 14:30' },
+];
+
+const _DATE_FORMAT_KINDS = new Set<string>(DATE_FORMAT_OPTIONS.map((o) => o.value));
+
+export function isDateFormatKind(value: unknown): value is DateFormatKind {
+  return typeof value === 'string' && _DATE_FORMAT_KINDS.has(value);
+}
+
+const _MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _MON_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const _p2 = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * Format a date-ish cell value per a DateFormatKind.
+ *
+ * Timezone-safe: ISO-ish strings (`YYYY-MM-DD`, `YYYY-MM`, `YYYY`, `YYYY-MM-DDThh:mm`)
+ * are parsed by REGEX and formatted from their literal Y/M/D parts — never routed
+ * through `new Date(...)`, which would shift a date-only value across midnight in
+ * non-UTC zones (the classic off-by-one). Only genuinely non-ISO values fall back
+ * to Date (read via UTC getters). A value that isn't a date at all is returned
+ * unchanged, so applying a date format to a stray column can't mangle it.
+ */
+export function formatDateCellValue(value: any, kind: DateFormatKind): string {
+  if (value === null || value === undefined || value === '') return '';
+  const raw = value instanceof Date ? value.toISOString() : String(value).trim();
+
+  let y: number, mo: number, d: number;
+  let hh: number | null = null;
+  let mi: number | null = null;
+
+  const m = raw.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?(?:[T ](\d{2}):(\d{2}))?/);
+  if (m) {
+    y = Number(m[1]);
+    mo = Number(m[2]);
+    d = m[3] ? Number(m[3]) : 1;
+    if (m[4]) { hh = Number(m[4]); mi = Number(m[5] ?? '0'); }
+  } else if (/^\d{8}$/.test(raw)) {
+    // YYYYMMDD integer date
+    y = Number(raw.slice(0, 4)); mo = Number(raw.slice(4, 6)); d = Number(raw.slice(6, 8));
+  } else {
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) return String(value); // not a date → leave as-is
+    y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+    hh = dt.getUTCHours(); mi = dt.getUTCMinutes();
+  }
+  if (mo < 1 || mo > 12) return String(value); // guard against non-date "YYYY-NN"
+
+  switch (kind) {
+    case 'date_dmy': return `${_p2(d)}/${_p2(mo)}/${y}`;
+    case 'date_mdy': return `${_p2(mo)}/${_p2(d)}/${y}`;
+    case 'date_med': return `${d} ${_MON_SHORT[mo - 1]} ${y}`;
+    case 'date_long': return `${d} ${_MON_LONG[mo - 1]} ${y}`;
+    case 'month_year': return `${_MON_SHORT[mo - 1]} ${y}`;
+    case 'year': return `${y}`;
+    case 'datetime': return `${y}-${_p2(mo)}-${_p2(d)}${hh !== null ? ` ${_p2(hh)}:${_p2(mi ?? 0)}` : ''}`;
+    case 'date_iso':
+    default: return `${y}-${_p2(mo)}-${_p2(d)}`;
+  }
 }
 
 export function buildTableHeatmapStats(
@@ -329,97 +250,237 @@ export function getHeatmapCellStyle(
   };
 }
 
+// A rule needs column distribution stats when it scales to the column:
+// percentile / percentage benchmarks (Feature #5) or a data-bar (Feature #4).
+function ruleNeedsStats(rule: ConditionalFormatRule): boolean {
+  return (
+    rule.mode === 'dataBar' ||
+    rule.benchmarkType === 'percentile' ||
+    rule.benchmarkType === 'percentage'
+  );
+}
+
 /**
- * Get cell style based on conditional formatting rules
- * 
- * @param value - Cell value
- * @param field - Field name
- * @param rules - Conditional formatting rules
- * @returns Style object with color and backgroundColor
+ * Build per-source-column stats (min/max/sorted) for the rules that scale to the
+ * column (percentile, percentage, data bars). Keyed by the SOURCE column that
+ * drives each such rule so cross-column rules (Feature #3) read the right values.
+ */
+export function buildConditionalStats(
+  rows: Record<string, any>[],
+  rules: ConditionalFormatRule[] | null,
+): ConditionalStats {
+  const stats: ConditionalStats = {};
+  if (!rules || rules.length === 0 || rows.length === 0) return stats;
+  const cols = new Set<string>();
+  for (const rule of rules) {
+    if (ruleNeedsStats(rule)) cols.add(rule.sourceColumn || rule.field);
+  }
+  for (const col of cols) {
+    const nums = rows
+      .map((r) => parseNumericCellValue(r?.[col]))
+      .filter((v): v is number => v !== null);
+    if (nums.length === 0) continue;
+    const sorted = [...nums].sort((a, b) => a - b);
+    stats[col] = { min: sorted[0], max: sorted[sorted.length - 1], sorted };
+  }
+  return stats;
+}
+
+// Value at the p-th percentile (0–100) of an ascending array (linear interp).
+function percentileValue(sorted: number[], p: number): number | null {
+  if (!sorted || sorted.length === 0) return null;
+  const clampP = clamp(p, 0, 100);
+  if (sorted.length === 1) return sorted[0];
+  const idx = (clampP / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+function compareOp(
+  op: ConditionalFormatRule['operator'],
+  a: number | null,
+  b: number | null,
+  aStr: string,
+  bStr: string,
+): boolean {
+  switch (op) {
+    case '>':  return a !== null && b !== null && a > b;
+    case '<':  return a !== null && b !== null && a < b;
+    case '>=': return a !== null && b !== null && a >= b;
+    case '<=': return a !== null && b !== null && a <= b;
+    case '=':  return (a !== null && b !== null) ? a === b : aStr === bStr;
+    case '!=': return (a !== null && b !== null) ? a !== b : aStr !== bStr;
+    default:   return false;
+  }
+}
+
+/**
+ * Compute the conditional-formatting output for one cell. Supports:
+ *  - multiple rules with priority (first applicable wins) — Feature #1
+ *  - cross-column: the condition reads `sourceColumn`, the style lands on
+ *    `field` — Feature #3
+ *  - benchmark types value | field | percentile | percentage — Feature #5
+ *  - presentation modes color | dataBar | icon — Feature #4
+ * Backward-compatible: a legacy rule {field, operator, value|benchmarkField,
+ * color, backgroundColor} behaves exactly as before.
+ *
+ * @param value  the styled cell's value (rule.field's cell)
+ * @param field  the column being rendered
+ * @param rules  conditional rules
+ * @param row    the full row (needed for cross-column + benchmarkField)
+ * @param stats  column stats from buildConditionalStats (for percentile/%/dataBar)
  */
 export function getCellStyle(
   value: any,
   field: string,
   rules: ConditionalFormatRule[] | null,
   row?: Record<string, any>,
-): { color?: string; backgroundColor?: string } {
-  if (!rules || rules.length === 0) {
-    return {};
-  }
-  
-  const applicableRules = rules.filter(rule => rule.field === field);
-  
+  stats?: ConditionalStats | null,
+): CellFormat {
+  if (!rules || rules.length === 0) return {};
+  const applicableRules = rules.filter((rule) => rule.field === field);
+
   for (const rule of applicableRules) {
-    const benchmarkValue = rule.benchmarkField ? row?.[rule.benchmarkField] : rule.value;
-    if (benchmarkValue === undefined || benchmarkValue === null || benchmarkValue === '') {
-      continue;
+    const mode = rule.mode || 'color';
+    const srcCol = rule.sourceColumn || rule.field;
+    // The value that DRIVES the condition (cross-column reads another column).
+    const srcRaw = row && srcCol in row ? row[srcCol] : value;
+    const srcNum = parseNumericCellValue(srcRaw);
+    const colStats = stats?.[srcCol];
+
+    // Data bars are column-wide (no condition) — draw a bar ∝ value in min…max.
+    if (mode === 'dataBar') {
+      if (srcNum === null || !colStats) continue;
+      const span = colStats.max - colStats.min;
+      const ratio = span <= 0 ? 1 : clamp((srcNum - colStats.min) / span, 0, 1);
+      return { dataBar: { ratio, color: rule.barColor || '#3b82f6' } };
     }
 
-    const numValue = parseNumericCellValue(value);
-    const ruleValue = parseNumericCellValue(benchmarkValue);
-    
-    // Skip if values can't be compared numerically and operator is numeric
-    if (numValue === null && ['>', '<', '>=', '<='].includes(rule.operator)) {
-      continue;
-    }
-    
+    // color / icon: evaluate the condition.
+    const benchmarkType =
+      rule.benchmarkType || (rule.benchmarkField ? 'field' : 'value');
     let matches = false;
-    
-    switch (rule.operator) {
-      case '>':
-        matches = numValue !== null && ruleValue !== null && numValue > ruleValue;
-        break;
-      case '<':
-        matches = numValue !== null && ruleValue !== null && numValue < ruleValue;
-        break;
-      case '>=':
-        matches = numValue !== null && ruleValue !== null && numValue >= ruleValue;
-        break;
-      case '<=':
-        matches = numValue !== null && ruleValue !== null && numValue <= ruleValue;
-        break;
-      case '=':
-        matches = numValue !== null && ruleValue !== null
-          ? numValue === ruleValue
-          : String(value ?? '') === String(benchmarkValue ?? '');
-        break;
-      case '!=':
-        matches = numValue !== null && ruleValue !== null
-          ? numValue !== ruleValue
-          : String(value ?? '') !== String(benchmarkValue ?? '');
-        break;
+
+    if (benchmarkType === 'percentile') {
+      const p = parseNumericCellValue(rule.value);
+      const threshold = p !== null && colStats ? percentileValue(colStats.sorted, p) : null;
+      matches = compareOp(rule.operator, srcNum, threshold, String(srcRaw ?? ''), String(threshold ?? ''));
+    } else if (benchmarkType === 'percentage') {
+      const target = parseNumericCellValue(rule.value);
+      const pct = colStats && colStats.max !== 0 && srcNum !== null ? (srcNum / colStats.max) * 100 : null;
+      matches = compareOp(rule.operator, pct, target, String(pct ?? ''), String(target ?? ''));
+    } else {
+      const benchmarkRaw = benchmarkType === 'field' ? row?.[rule.benchmarkField ?? ''] : rule.value;
+      if (benchmarkRaw === undefined || benchmarkRaw === null || benchmarkRaw === '') continue;
+      const ruleNum = parseNumericCellValue(benchmarkRaw);
+      if (srcNum === null && ['>', '<', '>=', '<='].includes(rule.operator)) continue;
+      matches = compareOp(rule.operator, srcNum, ruleNum, String(srcRaw ?? ''), String(benchmarkRaw ?? ''));
     }
-    
-    if (matches) {
-      return {
-        color: rule.color,
-        backgroundColor: rule.backgroundColor
-      };
+
+    if (!matches) continue;
+
+    if (mode === 'icon') {
+      const out: CellFormat = { icon: { key: rule.icon || 'flag', color: rule.color } };
+      if (rule.backgroundColor) out.backgroundColor = rule.backgroundColor;
+      return out;
     }
+    return { color: rule.color, backgroundColor: rule.backgroundColor };
   }
-  
+
   return {};
 }
 
-/**
- * Format aggregation function name for display
- */
-export function formatAggregationLabel(agg: AggregationFn): string {
-  const labels: Record<AggregationFn, string> = {
-    sum: 'SUM',
-    avg: 'AVG',
-    count: 'COUNT',
-    min: 'MIN',
-    max: 'MAX'
-  };
-  return labels[agg] || agg.toUpperCase();
+// ── Benchmark / reference lines ──────────────────────────────────────────────
+// Resolve the chart's benchmark lines (multiple, each fixed OR a dynamic
+// aggregate of a metric over the CURRENT rows) into concrete y/x values +
+// styling. Shared by both chart renderers (ExploreChart + ChartPreview).
+export interface ResolvedBenchmarkLine {
+  value: number;
+  label?: string;
+  color: string;
+  dash?: string; // strokeDasharray; undefined = solid
 }
 
-/**
- * Get default aggregation for a measure
- */
-export function getDefaultAggregation(measureName: string): AggregationFn {
-  // You could analyze field name or type to determine default
-  // For now, default to sum for all measures
-  return 'sum';
+interface BenchmarkStyleInput {
+  showBenchmarkLine?: boolean;
+  benchmarkValue?: number | '';
+  benchmarkLabel?: string;
+  benchmarkColor?: string;
+  benchmarkLineStyle?: 'solid' | 'dashed';
+  benchmarkLines?: BenchmarkLineDef[];
+}
+
+function aggregateBenchmark(nums: number[], agg: BenchmarkAggregate, pct?: number): number | null {
+  if (nums.length === 0) return null;
+  switch (agg) {
+    case 'sum': return nums.reduce((a, b) => a + b, 0);
+    case 'avg': return nums.reduce((a, b) => a + b, 0) / nums.length;
+    case 'min': return Math.min(...nums);
+    case 'max': return Math.max(...nums);
+    case 'median': {
+      const s = [...nums].sort((a, b) => a - b);
+      const m = Math.floor(s.length / 2);
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    }
+    case 'percentile': return percentileValue([...nums].sort((a, b) => a - b), pct ?? 50);
+    default: return null;
+  }
+}
+
+export function resolveBenchmarkLines(
+  style: BenchmarkStyleInput | null | undefined,
+  rows: Record<string, any>[],
+): ResolvedBenchmarkLine[] {
+  if (!style || !style.showBenchmarkLine) return [];
+  // New array model wins; else synthesize a single line from the legacy scalars.
+  let defs: BenchmarkLineDef[] = [];
+  if (Array.isArray(style.benchmarkLines) && style.benchmarkLines.length > 0) {
+    defs = style.benchmarkLines;
+  } else if (style.benchmarkValue !== '' && style.benchmarkValue != null) {
+    defs = [{
+      source: 'value',
+      value: style.benchmarkValue,
+      label: style.benchmarkLabel,
+      color: style.benchmarkColor,
+      lineStyle: style.benchmarkLineStyle,
+    }];
+  }
+  const out: ResolvedBenchmarkLine[] = [];
+  for (const d of defs) {
+    let val: number | null = null;
+    if ((d.source ?? 'value') === 'aggregate' && d.field) {
+      const nums = (rows || [])
+        .map((r) => parseNumericCellValue(r?.[d.field as string]))
+        .filter((v): v is number => v !== null);
+      val = aggregateBenchmark(nums, d.aggregate ?? 'avg', d.percentile);
+    } else {
+      const n = typeof d.value === 'number' ? d.value : Number(d.value);
+      val = Number.isFinite(n) ? n : null;
+    }
+    if (val === null) continue;
+    out.push({
+      value: val,
+      label: (d.label ?? '').trim() || undefined,
+      color: d.color || '#dc2626',
+      dash: d.lineStyle === 'solid' ? undefined : '6 4',
+    });
+  }
+  return out;
+}
+
+// KPI manual benchmark calculation (Feature): apply `base × multiplier + offset`
+// to the benchmark base (dynamic Target metric OR manual value) so a target can
+// be expressed relative to a live value, e.g. Goal × 1.1 = beat goal by 10%.
+export function applyKpiBenchmarkCalc(
+  base: number | null | undefined,
+  opts: { kpiBenchmarkMultiplier?: number | ''; kpiBenchmarkOffset?: number | '' } | null | undefined,
+): number | null {
+  if (base === null || base === undefined || !Number.isFinite(base)) return base ?? null;
+  const m = opts?.kpiBenchmarkMultiplier;
+  const o = opts?.kpiBenchmarkOffset;
+  const mult = typeof m === 'number' && Number.isFinite(m) ? m : 1;
+  const off = typeof o === 'number' && Number.isFinite(o) ? o : 0;
+  return base * mult + off;
 }

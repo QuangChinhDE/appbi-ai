@@ -12,9 +12,6 @@
 import axios from 'axios';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
-import type {
-  WorkboardPublicPayload,
-} from '@/lib/api/workboards';
 
 // NEXT_PUBLIC_API_URL is baked as '/api/v1' (relative) so it works on any domain.
 // Next.js rewrites or nginx proxy the requests to the backend.
@@ -76,6 +73,25 @@ export const publicDashboardApi = {
     return res.data;
   },
 
+  // "1 request = 1 page": fetch data for MANY charts in ONE round-trip. Each
+  // item carries its own already-computed viewer filters (scope-bounded +
+  // cross-filter-merged by the caller), so the server result is byte-identical
+  // to N getChartData() calls — this is purely a transport + server-side
+  // concurrency win (kills N round-trips + the browser's per-host socket queue).
+  getChartsDataBatch: async (
+    token: string,
+    sessionToken: string | undefined,
+    items: Array<{ chart_id: number; filters?: BaseFilter[]; granularity?: string }>,
+  ): Promise<{ results: Array<{ chart_id: number; data?: any; error?: string; status?: number }> }> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(
+      `/public/dashboards/${token}/charts/data`,
+      { items },
+      { headers },
+    );
+    return res.data;
+  },
+
   getFilterDistinctValues: async (
     token: string,
     datasetId: number,
@@ -97,22 +113,6 @@ export const publicDashboardApi = {
         },
       },
     );
-    return res.data;
-  },
-};
-
-export const publicWorkboardApi = {
-  auth: async (
-    token: string,
-    password: string,
-  ): Promise<{ session_token: string; expires_in: number }> => {
-    const res = await publicClient.post(`/public/workboards/${token}/auth`, { password });
-    return res.data;
-  },
-
-  get: async (token: string, sessionToken?: string): Promise<WorkboardPublicPayload> => {
-    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
-    const res = await publicClient.get(`/public/workboards/${token}`, { headers });
     return res.data;
   },
 };
@@ -242,6 +242,32 @@ export interface AiReadingPlanItem {
 
 export type AiPlanStepStatus = 'pending' | 'running' | 'done';
 
+// Phase 16 (InsightBench rework) — one typed insight extracted by the
+// goal-driven exploration engine. `type` is the insight-ladder rung.
+export type AiInsightType = 'desc' | 'diag' | 'pred' | 'presc';
+
+export interface AiExplorationInsight {
+  type: AiInsightType;
+  statement: string;
+  evidence: number[];
+  justification: string;
+  confidence: 'HIGH' | 'MED' | 'LOW' | string;
+  action: string | null;
+}
+
+// Phase 16 — exploration progress tick (stage + question metadata).
+export interface AiExplorationStep {
+  stage: 'questions' | 'answer' | 'summary' | string;
+  status: 'running' | 'done' | string;
+  index?: number;
+  total?: number;
+  question?: string;
+  qtype?: AiInsightType | string;
+  level?: number;
+  failed?: boolean;
+  questions?: { question: string; type: string; charts: number[] }[];
+}
+
 export type AiAgentEvent =
   | { type: 'text'; text: string }
   | { type: 'route'; mode: 'normal' | 'thinking'; auto: boolean; reasons: string[] }
@@ -250,6 +276,8 @@ export type AiAgentEvent =
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
   | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
   | { type: 'plan_step'; step_index: number; chart_id: number | null; status: AiPlanStepStatus }
+  | ({ type: 'exploration_step' } & AiExplorationStep)
+  | { type: 'insight'; insight: AiExplorationInsight }
   | { type: 'state'; state: AiConversationState }
   | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
   | { type: 'usage'; prompt_tokens: number; completion_tokens: number }
@@ -265,6 +293,9 @@ export interface AiBriefing {
   focus: 'overview' | 'issues' | 'compare' | 'deepdive' | string;
   timeframe: string;
   custom_note: string;
+  /** SMART goal — the session's north star (InsightBench: specific goal
+   *  ≫ generic goal). Auto-drafted server-side, user-editable. */
+  smart_goal?: string;
   key_chart_ids: number[];
   confirmed: boolean;
 }
@@ -284,6 +315,8 @@ export interface AiBriefingGuess {
   key_chart_ids: number[];
   headline_facts: { text: string; chart_id: number }[];
   timeframe_hint: string;
+  /** Heuristic SMART-goal suggestion built from the strongest recon signal. */
+  smart_goal_draft?: string;
   role_options: AiBriefingGuessOption[];
   focus_options: AiBriefingGuessOption[];
   timeframe_options: AiBriefingGuessOption[];
@@ -324,42 +357,6 @@ export async function fetchAiRecon(
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
   const res = await publicClient.get(`/public/dashboards/${token}/ai/recon`, { headers });
   return res.data as AiRecon;
-}
-
-/**
- * Build the URL of the AI-generated PDF for this dashboard. The user can
- * download it and re-feed it into any LLM (Claude, ChatGPT) — same data
- * the way they'd hand a printed report to a human analyst.
- */
-export function buildAiDashboardPdfUrl(token: string, sessionToken?: string): string {
-  const base = `${API_BASE}/public/dashboards/${token}/ai/dashboard.pdf`;
-  if (!sessionToken) return base;
-  // Session token must travel via header for security, so we expose a
-  // separate fetch helper rather than a query string.
-  return base;
-}
-
-export async function downloadAiDashboardPdf(
-  token: string,
-  sessionToken?: string,
-  filename = 'dashboard.pdf',
-): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  const res = await fetch(buildAiDashboardPdfUrl(token), { headers });
-  if (!res.ok) throw new Error(`PDF ${res.status}`);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
 }
 
 /**
@@ -532,6 +529,38 @@ export async function clearAiSession(
   );
 }
 
+// Client-side idle watchdog for the SSE streams. The server has its own
+// 60s idle watchdog, but Next.js's edge-middleware `rewrite` proxy can
+// buffer/withhold SSE frames (incl. the terminal `done`) when a turn has a
+// long silent gap — e.g. a provider rate-limit back-off. Without a client
+// guard the UI hangs on "Thinking…" forever ("chờ hoài chả biết"). Race each
+// read against a timeout so a stalled stream surfaces a clear error instead.
+class AiStreamIdleError extends Error {
+  constructor() {
+    super('AI phản hồi quá chậm hoặc đang quá tải — bạn thử lại sau giây lát nhé.');
+    this.name = 'AiStreamIdleError';
+  }
+}
+
+async function readWithIdle<T>(
+  reader: ReadableStreamDefaultReader<T>,
+  idleMs: number,
+): Promise<ReadableStreamReadResult<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new AiStreamIdleError()), idleMs);
+  });
+  try {
+    return await Promise.race([reader.read(), idle]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Slightly longer than the server's 60s idle watchdog so the server's own
+// error+done wins in the normal case; this only fires when the proxy ate it.
+const SSE_IDLE_MS = 80_000;
+
 /**
  * Stream typed events from the agentic chat endpoint.
  *
@@ -602,7 +631,7 @@ export async function* streamAiAgentChat(
   let buffer = '';
 
   while (true) {
-    const { done, value } = await reader.read();
+    const { done, value } = await readWithIdle(reader, SSE_IDLE_MS);
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
@@ -614,6 +643,86 @@ export async function* streamAiAgentChat(
       const dataLine = evBlock
         .split('\n')
         .find((l) => l.startsWith('data:'));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(5).trim();
+      if (!payload) continue;
+      try {
+        const parsed = JSON.parse(payload) as AiAgentEvent;
+        yield parsed;
+        if (parsed.type === 'done') return;
+      } catch {
+        // Ignore malformed lines
+      }
+    }
+  }
+}
+
+/**
+ * Phase 16 — goal-driven exploration ("Phân tích toàn diện"). One SSE run:
+ * the agent decomposes the SMART goal into questions, answers each with the
+ * chart tools, emits typed `insight` events as they are extracted, then
+ * streams a ranked summary with action items. Same viewer-filter contract
+ * as chat.
+ */
+export async function* streamAiExplore(
+  token: string,
+  userAiKey: string,
+  provider: AiProvider,
+  model: string,
+  sessionToken?: string,
+  briefing?: AiBriefing | null,
+  viewerFilters?: unknown[],
+  signal?: AbortSignal,
+  sessionKey?: string,
+): AsyncGenerator<AiAgentEvent, void, unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-User-Ai-Key': userAiKey,
+    'X-User-Ai-Provider': provider,
+  };
+  const trimmedModel = model.trim();
+  if (trimmedModel) headers['X-User-Ai-Model'] = trimmedModel;
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+
+  const body: Record<string, unknown> = {};
+  if (briefing) body.briefing = briefing;
+  if (Array.isArray(viewerFilters) && viewerFilters.length > 0) {
+    body.viewer_filters = viewerFilters;
+  }
+  if (sessionKey) body.session_key = sessionKey;
+
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/explore`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json();
+      detail = json?.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() ?? '';
+
+    for (const evBlock of events) {
+      const dataLine = evBlock.split('\n').find((l) => l.startsWith('data:'));
       if (!dataLine) continue;
       const payload = dataLine.slice(5).trim();
       if (!payload) continue;

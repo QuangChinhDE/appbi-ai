@@ -19,6 +19,7 @@ Live querying reuses the exact helpers the anomaly engine already uses
 (dialect-aware, BigQuery / PostgreSQL / MySQL).
 """
 import logging
+import re
 import statistics
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -551,6 +552,16 @@ class ObservabilityService:
             if i.dataset_table_id:
                 inc_by_table[i.dataset_table_id] = inc_by_table.get(i.dataset_table_id, 0) + 1
 
+        # Quality-rule coverage per table — so the lineage shows which tables
+        # have checks (and which are unguarded), and the blast radius of a
+        # failing rule.
+        rules_by_table: Dict[int, int] = {}
+        if table_ids:
+            for (tid,) in db.query(DatasetQualityRule.table_id).filter(
+                    DatasetQualityRule.table_id.in_(table_ids)).all():
+                if tid is not None:
+                    rules_by_table[tid] = rules_by_table.get(tid, 0) + 1
+
         nodes: List[dict] = []
         edges: List[dict] = []
         seen_src = set()
@@ -563,6 +574,7 @@ class ObservabilityService:
             nodes.append({"id": tnode, "type": "table",
                           "label": t.display_name or t.source_table_name or f"table_{t.id}",
                           "openIncidents": inc_by_table.get(t.id, 0),
+                          "rules": rules_by_table.get(t.id, 0),
                           "rows": t.estimated_row_count})
             if t.datasource_id:
                 edges.append({"from": f"src:{t.datasource_id}", "to": tnode})
@@ -590,15 +602,250 @@ class ObservabilityService:
                 "dashboardCount": len(t_dash),
                 "dashboards": [{"id": did, "name": dashboards.get(did, f"#{did}")} for did in t_dash],
                 "openIncidents": inc_by_table.get(t.id, 0),
+                "rules": rules_by_table.get(t.id, 0),
                 "rows": t.estimated_row_count,
             })
-        tables_summary.sort(key=lambda x: (-x["openIncidents"], -x["chartCount"]))
+        # Sort by risk: open incidents first, then broad blast radius, then
+        # unguarded tables (no rules) that feed many charts.
+        tables_summary.sort(key=lambda x: (-x["openIncidents"], -x["chartCount"], x["rules"]))
 
         return {
             "dataset": {"id": dataset.id, "name": dataset.name},
             "nodes": nodes, "edges": edges, "tables": tables_summary,
             "impact": {"charts": len(charts), "dashboards": len(dash_ids)},
         }
+
+    # ── semantic (column + measure level) lineage ────────────────────────────
+
+    @staticmethod
+    def _identifiers(text: Optional[str]) -> set:
+        """Bare identifiers + ${...} refs found in a SQL/expression string."""
+        if not text:
+            return set()
+        out = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(text)))
+        for inner in re.findall(r"\$\{([^}]+)\}", str(text)):
+            out.add(inner.strip())
+            if "." in inner:
+                out.add(inner.rsplit(".", 1)[-1].strip())
+        return out
+
+    @staticmethod
+    def build_semantic_lineage(db: Session, dataset_id: int) -> Dict[str, Any]:
+        """Column- and measure-level lineage from the SEMANTIC MODEL.
+
+        Reads views (columns + measures), explore joins (join keys), maps
+        quality rules / incidents down to the column, derives measure→column and
+        measure→measure dependencies, and best-effort chart→field usage — so a
+        problem on one column can be traced to every dependent measure, joined
+        table, chart and dashboard.
+        """
+        from app.services.dataset_model_service import get_dataset_model
+
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            return {"dataset": None, "tables": [], "joins": [], "charts": [], "dashboards": []}
+        model = get_dataset_model(db, dataset_id) or {}
+        views = model.get("views") or []
+        explores = model.get("explores") or []
+
+        # view name → dataset_table_id (only real table views carry one)
+        view_to_table: Dict[str, int] = {}
+        table_views = []
+        for v in views:
+            if v.get("dataset_table_id"):
+                view_to_table[v["name"]] = v["dataset_table_id"]
+                table_views.append(v)
+
+        # quality rules by (table_id, column); + failing rule ids from latest run
+        rules = db.query(DatasetQualityRule).filter(
+            DatasetQualityRule.dataset_id == dataset_id).all()
+        failing_rule_ids: set = set()
+        latest = (
+            db.query(DatasetQualityRun)
+            .filter(DatasetQualityRun.dataset_id == dataset_id)
+            .filter(DatasetQualityRun.status == "completed")
+            .order_by(DatasetQualityRun.id.desc()).first()
+        )
+        if latest and latest.results:
+            for rid_str, res in latest.results.items():
+                if isinstance(res, dict) and not res.get("skipped") and (res.get("error") or not res.get("passed")):
+                    try:
+                        failing_rule_ids.add(int(rid_str))
+                    except (TypeError, ValueError):
+                        pass
+        rules_by_col: Dict[tuple, Dict[str, int]] = {}   # (table_id, col) → {rules, failing}
+        rules_table_level: Dict[int, Dict[str, int]] = {}
+        for r in rules:
+            key = (r.table_id, r.column_name)
+            slot = rules_by_col.setdefault(key, {"rules": 0, "failing": 0})
+            slot["rules"] += 1
+            if r.id in failing_rule_ids:
+                slot["failing"] += 1
+            if r.column_name is None:
+                t = rules_table_level.setdefault(r.table_id, {"rules": 0, "failing": 0})
+                t["rules"] += 1
+                if r.id in failing_rule_ids:
+                    t["failing"] += 1
+
+        # open incidents → per table + per column (fold detail carries "column")
+        open_inc = (
+            db.query(ObservabilityIncident)
+            .filter(ObservabilityIncident.dataset_id == dataset_id)
+            .filter(ObservabilityIncident.status != "resolved").all()
+        )
+        inc_by_table: Dict[int, int] = {}
+        inc_by_col: Dict[tuple, int] = {}
+        for i in open_inc:
+            if i.dataset_table_id:
+                inc_by_table[i.dataset_table_id] = inc_by_table.get(i.dataset_table_id, 0) + 1
+                col = (i.detail or {}).get("column") if isinstance(i.detail, dict) else None
+                if col:
+                    inc_by_col[(i.dataset_table_id, col)] = inc_by_col.get((i.dataset_table_id, col), 0) + 1
+
+        # datasource names
+        tables_orm = {t.id: t for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()}
+        ds_names = {
+            s.id: s.name for s in db.query(DataSource).filter(
+                DataSource.id.in_([t.datasource_id for t in tables_orm.values() if t.datasource_id])).all()
+        }
+
+        # join keys per (view) so columns can be flagged as join keys
+        join_key_cols: set = set()   # {(table_id, col)}
+        joins_out: List[dict] = []
+        for e in explores:
+            base = e.get("base_view_name")
+            base_tid = view_to_table.get(base)
+            for j in e.get("joins") or []:
+                tview = j.get("view")
+                to_tid = view_to_table.get(tview)
+                fcol, tcol = j.get("from_column"), j.get("to_column")
+                if base_tid and to_tid and base_tid != to_tid:
+                    joins_out.append({
+                        "fromTable": base_tid, "fromColumn": fcol,
+                        "toTable": to_tid, "toColumn": tcol,
+                        "relationship": j.get("relationship"),
+                    })
+                    if fcol:
+                        join_key_cols.add((base_tid, fcol))
+                    if tcol and to_tid:
+                        join_key_cols.add((to_tid, tcol))
+
+        # build tables with columns + measures (+ derived deps)
+        tables_out: List[dict] = []
+        for v in table_views:
+            tid = v["dataset_table_id"]
+            dim_names = {d.get("name") for d in (v.get("dimensions") or []) if isinstance(d, dict) and d.get("name")}
+            measure_names = {m.get("name") for m in (v.get("measures") or []) if isinstance(m, dict) and m.get("name")}
+
+            columns = []
+            for d in (v.get("dimensions") or []):
+                if not isinstance(d, dict) or not d.get("name"):
+                    continue
+                name = d["name"]
+                rc = rules_by_col.get((tid, name), {"rules": 0, "failing": 0})
+                columns.append({
+                    "name": name, "type": d.get("type"),
+                    "rules": rc["rules"], "failingRules": rc["failing"],
+                    "incidents": inc_by_col.get((tid, name), 0),
+                    "joinKey": (tid, name) in join_key_cols,
+                })
+
+            measures = []
+            for m in (v.get("measures") or []):
+                if not isinstance(m, dict) or not m.get("name"):
+                    continue
+                # same-view column deps: tokens in sql/expression/filters that match this view's dims
+                toks = ObservabilityService._identifiers(m.get("sql")) | ObservabilityService._identifiers(m.get("expression"))
+                for f in (m.get("filters") or []):
+                    if isinstance(f, dict) and f.get("field"):
+                        toks.add(str(f["field"]).rsplit(".", 1)[-1])
+                dep_cols = [{"table": tid, "column": c} for c in sorted(toks & dim_names)]
+                # cross-view column deps (scope=dataset) via source_columns
+                for sc in (m.get("source_columns") or []):
+                    if isinstance(sc, dict) and sc.get("field"):
+                        sc_tid = view_to_table.get(sc.get("view"))
+                        if sc_tid:
+                            dep_cols.append({"table": sc_tid, "column": sc["field"]})
+                # measure→measure deps
+                dep_measures = []
+                for dep in (m.get("depends_on") or []):
+                    if "." in dep:
+                        dv, dm = dep.rsplit(".", 1)
+                        dt = view_to_table.get(dv)
+                        dep_measures.append({"table": dt or tid, "measure": dm})
+                    else:
+                        dep_measures.append({"table": tid, "measure": dep})
+                measures.append({
+                    "name": m["name"], "label": m.get("label") or m["name"], "type": m.get("type"),
+                    "dependsColumns": dep_cols, "dependsMeasures": dep_measures,
+                })
+
+            t_orm = tables_orm.get(tid)
+            tl = rules_table_level.get(tid, {"rules": 0, "failing": 0})
+            tables_out.append({
+                "tableId": tid,
+                "view": v["name"],
+                "name": v.get("table_display_name") or (t_orm.display_name if t_orm else v["name"]),
+                "source": ds_names.get(t_orm.datasource_id) if t_orm and t_orm.datasource_id else None,
+                "columns": columns,
+                "measures": measures,
+                "tableRules": tl["rules"],
+                "tableFailingRules": tl["failing"],
+                "openIncidents": inc_by_table.get(tid, 0),
+            })
+
+        # charts on these tables + best-effort field usage + dashboards
+        table_ids = list(tables_orm.keys())
+        charts = db.query(Chart).filter(Chart.dataset_table_id.in_(table_ids)).all() if table_ids else []
+        chart_ids = [c.id for c in charts]
+        dcs = db.query(DashboardChart).filter(DashboardChart.chart_id.in_(chart_ids)).all() if chart_ids else []
+        chart_dash: Dict[int, List[int]] = {}
+        for dc in dcs:
+            chart_dash.setdefault(dc.chart_id, []).append(dc.dashboard_id)
+        dash_ids = sorted({dc.dashboard_id for dc in dcs})
+        dashboards = {d.id: d.name for d in db.query(Dashboard).filter(Dashboard.id.in_(dash_ids)).all()} if dash_ids else {}
+        # per-table field name sets for matching
+        dims_by_table = {t["tableId"]: {c["name"] for c in t["columns"]} for t in tables_out}
+        meas_by_table = {t["tableId"]: {m["name"] for m in t["measures"]} for t in tables_out}
+        charts_out: List[dict] = []
+        for c in charts:
+            strs = ObservabilityService._collect_config_strings(c.config)
+            uses_cols = sorted(strs & dims_by_table.get(c.dataset_table_id, set()))
+            uses_meas = sorted(strs & meas_by_table.get(c.dataset_table_id, set()))
+            charts_out.append({
+                "id": c.id, "name": c.name, "tableId": c.dataset_table_id,
+                "usesColumns": uses_cols, "usesMeasures": uses_meas,
+                "dashboardIds": chart_dash.get(c.id, []),
+            })
+
+        return {
+            "dataset": {"id": dataset.id, "name": dataset.name},
+            "hasModel": bool(model.get("views")),
+            "tables": tables_out,
+            "joins": joins_out,
+            "charts": charts_out,
+            "dashboards": [{"id": did, "name": dashboards.get(did, f"#{did}")} for did in dash_ids],
+        }
+
+    @staticmethod
+    def _collect_config_strings(config: Any) -> set:
+        """Recursively collect string leaf values + dict keys from a chart config."""
+        out: set = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                for k, val in node.items():
+                    out.add(str(k))
+                    walk(val)
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, str):
+                out.add(node)
+                if "." in node:
+                    out.add(node.rsplit(".", 1)[-1])
+        walk(config or {})
+        return out
 
     @staticmethod
     def get_usage(db: Session, dataset_ids: List[int]) -> List[Dict[str, Any]]:
@@ -639,6 +886,12 @@ class ObservabilityService:
         inc_per_ds: Dict[int, int] = {}
         for i in open_inc:
             inc_per_ds[i.dataset_id] = inc_per_ds.get(i.dataset_id, 0) + 1
+        # Quality rules per dataset — a dataset with rules is "observed" even
+        # without a native monitor, so the FE list can include it.
+        rules_per_ds: Dict[int, int] = {}
+        for (ds_id,) in db.query(DatasetQualityRule.dataset_id).filter(
+                DatasetQualityRule.dataset_id.in_(dataset_ids)).all():
+            rules_per_ds[ds_id] = rules_per_ds.get(ds_id, 0) + 1
 
         out = []
         for d in datasets:
@@ -654,8 +907,11 @@ class ObservabilityService:
                 "chartCount": len(ds_chart_ids), "dashboardCount": len(dash_ids),
                 "lastRefresh": last_refresh.isoformat() if last_refresh else None,
                 "monitors": mon_per_ds.get(d.id, 0),
+                "qualityRules": rules_per_ds.get(d.id, 0),
                 "openIncidents": inc_per_ds.get(d.id, 0),
                 "unused": len(ds_chart_ids) == 0,
+                # "observed" = has any check set up (monitor or rule) or an open incident
+                "observed": mon_per_ds.get(d.id, 0) > 0 or rules_per_ds.get(d.id, 0) > 0 or inc_per_ds.get(d.id, 0) > 0,
             })
         out.sort(key=lambda x: (-(x["chartCount"] + x["dashboardCount"]), -x["rows"]))
         return out

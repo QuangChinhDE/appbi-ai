@@ -35,6 +35,12 @@ def _find_project_root() -> pathlib.Path:
 _PROJECT_ROOT = _find_project_root()
 _ROOT_ENV = str(_PROJECT_ROOT / ".env")
 
+# Backend AI model choices are fixed in code (per owner decision):
+# text tasks → gpt-4o-mini; embeddings → text-embedding-3-small (768 dims).
+OPENAI_TEXT_MODEL = "gpt-4o-mini"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBEDDING_DIMS = 768
+
 
 def _first_non_empty(*values: str) -> str:
     for value in values:
@@ -165,30 +171,11 @@ class Settings(BaseSettings):
     GCP_SERVICE_ACCOUNT_EMAIL: str = ""
 
     # AI / Embedding
-    # Primary key (backward-compat) + up to 5 numbered keys for rotation
-    OPENROUTER_API_KEY: str = ""
-    OPENROUTER_API_KEY_1: str = ""
-    OPENROUTER_API_KEY_2: str = ""
-    OPENROUTER_API_KEY_3: str = ""
-    OPENROUTER_API_KEY_4: str = ""
-    OPENROUTER_API_KEY_5: str = ""
-    OPENROUTER_SITE_URL: str = "http://localhost:3000"
-    OPENROUTER_APP_NAME: str = "AppBI"
-    BACKEND_AI_DEFAULT_MODEL: str = ""
-    BACKEND_AI_DATASET_DOCS_MODEL: str = ""
-    BACKEND_AI_CHART_DOCS_MODEL: str = ""
-    BACKEND_AI_QUALITY_RULE_GEMINI_MODEL: str = ""
-    BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL: str = ""
-    BACKEND_AI_HTML_IMPORT_GEMINI_MODEL: str = ""
-    BACKEND_AI_HTML_IMPORT_OPENROUTER_MODEL: str = ""
-    BACKEND_AI_EMBEDDING_MODEL: str = ""
-    AI_DESCRIPTION_MODEL: str = "google/gemini-2.5-flash-lite"
+    # Provider API keys (backend AI tasks + report AI bot). Models are fixed in
+    # code (see OPENAI_TEXT_MODEL / OPENAI_EMBEDDING_MODEL above).
+    OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash-lite"
-    GEMINI_QUALITY_MODEL: str = ""
-    OPENROUTER_GEMINI_IMPORT_MODEL: str = "google/gemini-2.5-flash-lite"
-    OPENROUTER_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
-    OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
+    ANTHROPIC_API_KEY: str = ""
 
     # Large data thresholds — tables exceeding these are auto-set to query_mode="live"
     LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000         # 50M rows
@@ -219,7 +206,6 @@ class Settings(BaseSettings):
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache
     LIVE_QUERY_SHARED_CACHE_DB_PATH: str = ""           # defaults to DATA_DIR/live_query_cache.sqlite3
     LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
-    ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode
 
     # ── SMTP / Email Notifications ──────────────────────────────────────
     # Used by: dataset quality scheduled runs -> email PDF report.
@@ -243,79 +229,45 @@ class Settings(BaseSettings):
     def smtp_from_email(self) -> str:
         return (self.SMTP_FROM_EMAIL or self.SMTP_USERNAME or "").strip()
 
+    # ── Backend AI models — all fixed to OpenAI in code ─────────────────
+    # These properties keep their historical names (other modules call them)
+    # but now return the hardcoded OpenAI model regardless of provider.
     @property
     def active_description_model(self) -> str:
-        return self.active_dataset_docs_model
+        return OPENAI_TEXT_MODEL
 
     @property
     def active_dataset_docs_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_DATASET_DOCS_MODEL,
-            self.AI_DESCRIPTION_MODEL,
-            self.BACKEND_AI_DEFAULT_MODEL,
-            "google/gemini-2.5-flash-lite",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def active_chart_docs_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_CHART_DOCS_MODEL,
-            self.AI_DESCRIPTION_MODEL,
-            self.BACKEND_AI_DATASET_DOCS_MODEL,
-            self.BACKEND_AI_DEFAULT_MODEL,
-            "google/gemini-2.5-flash-lite",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def quality_gemini_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_QUALITY_RULE_GEMINI_MODEL,
-            self.GEMINI_QUALITY_MODEL,
-            self.BACKEND_AI_HTML_IMPORT_GEMINI_MODEL,
-            self.GEMINI_IMPORT_MODEL,
-            "gemini-2.5-flash",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def quality_openrouter_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL,
-            self.BACKEND_AI_DEFAULT_MODEL,
-            self.AI_DESCRIPTION_MODEL,
-            "google/gemini-2.5-flash",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def active_quality_model(self) -> str:
         """Model for quality rule suggestions."""
-        if self.GEMINI_API_KEY.strip():
-            return self.quality_gemini_model
-        return self.quality_openrouter_model
+        return OPENAI_TEXT_MODEL
 
     @property
     def html_import_gemini_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_HTML_IMPORT_GEMINI_MODEL,
-            self.GEMINI_IMPORT_MODEL,
-            "gemini-2.5-flash-lite",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def html_import_openrouter_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_HTML_IMPORT_OPENROUTER_MODEL,
-            self.OPENROUTER_GEMINI_IMPORT_MODEL,
-            self.BACKEND_AI_DEFAULT_MODEL,
-            "google/gemini-2.5-flash-lite",
-        )
+        return OPENAI_TEXT_MODEL
 
     @property
     def html_import_ai_provider(self) -> str:
-        if self.GEMINI_API_KEY.strip():
-            return "gemini"
-        if self.active_api_keys:
-            return "openrouter-gemini"
-        return "unavailable"
+        return "openai" if self.OPENAI_API_KEY.strip() else "unavailable"
 
     @property
     def html_import_ai_available(self) -> bool:
@@ -323,33 +275,20 @@ class Settings(BaseSettings):
 
     @property
     def html_import_ai_model(self) -> str:
-        if self.html_import_ai_provider == "gemini":
-            return self.html_import_gemini_model
-        return self.html_import_openrouter_model
+        return OPENAI_TEXT_MODEL
 
     @property
     def active_embedding_model(self) -> str:
-        return _first_non_empty(
-            self.BACKEND_AI_EMBEDDING_MODEL,
-            self.OPENROUTER_EMBEDDING_MODEL,
-            "openai/text-embedding-3-small",
-        )
+        return OPENAI_EMBEDDING_MODEL
+
+    @property
+    def openai_embedding_dimensions(self) -> int:
+        return OPENAI_EMBEDDING_DIMS
 
     @property
     def active_api_keys(self) -> List[str]:
-        """All configured OpenRouter keys in priority order."""
-        numbered = [
-            self.OPENROUTER_API_KEY_1,
-            self.OPENROUTER_API_KEY_2,
-            self.OPENROUTER_API_KEY_3,
-            self.OPENROUTER_API_KEY_4,
-            self.OPENROUTER_API_KEY_5,
-        ]
-        keys = [k.strip() for k in numbered if k.strip()]
-        default_key = self.OPENROUTER_API_KEY.strip()
-        if default_key and default_key not in keys:
-            keys.append(default_key)
-        return keys
+        """The configured OpenAI key (single-element list), or empty."""
+        return [self.OPENAI_API_KEY.strip()] if self.OPENAI_API_KEY.strip() else []
 
     @property
     def live_query_shared_cache_db_path(self) -> pathlib.Path:

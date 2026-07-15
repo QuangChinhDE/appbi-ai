@@ -14,6 +14,7 @@ This makes the module trivial to unit-test without a database.
 from __future__ import annotations
 
 import math
+import numbers
 import statistics
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
@@ -140,12 +141,23 @@ def _round(value: float | None) -> float | None:
 def _is_number(value: Any) -> bool:
     if value is None or isinstance(value, bool):
         return False
-    if isinstance(value, (int, float)):
-        return math.isfinite(float(value))
-    if isinstance(value, str):
+    # numbers.Number covers int/float AND Decimal/Fraction — SQL numeric
+    # columns often arrive as Decimal (and, on some chart-type code paths,
+    # as numeric strings). Both must count as numeric or the pack's
+    # measure-detector falls back to alphabetical rows and the bot reports
+    # the wrong "leading" segment (real ds67 bug: HORIZONTAL_BAR revenue
+    # came back as Decimal → classed 'string' → top_5 unsorted).
+    if isinstance(value, numbers.Number):
         try:
-            float(value)
-            return True
+            return math.isfinite(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return False
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return False
+        try:
+            return math.isfinite(float(s))
         except (TypeError, ValueError):
             return False
     return False
@@ -155,7 +167,8 @@ def _to_number(value: Any) -> float | None:
     try:
         if value is None or isinstance(value, bool):
             return None
-        return float(value)
+        f = float(value)  # handles int, float, Decimal, numeric str
+        return f if math.isfinite(f) else None
     except (TypeError, ValueError):
         return None
 

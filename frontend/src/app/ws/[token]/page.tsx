@@ -18,6 +18,13 @@ import {
   WorkspaceMeta,
   WorkspaceMenuResponse,
 } from '@/lib/api/workspace';
+import {
+  themeVars,
+  backgroundStyle,
+  darkModeCss,
+  resolveMode,
+  type WbTheme,
+} from '@/lib/wb-theme';
 
 // Map menu icon strings to lucide components. Falling back to ClipboardList
 // keeps the cards looking consistent for icons we don't bundle yet.
@@ -93,6 +100,13 @@ export default function WorkspacePage() {
 
   const branding = meta?.branding ?? null;
   const accent = branding?.primary_color || '#2563eb';
+  const theme = (branding ?? {}) as WbTheme;
+  const mode = resolveMode(theme.theme);
+  const loginBg = theme.login?.background || theme.background;
+  const portalRootStyle = {
+    ...themeVars(theme, mode),
+    ...backgroundStyle(loginBg, '#f1f5f9'),
+  };
 
   if (loadingMeta) {
     return (
@@ -153,10 +167,17 @@ export default function WorkspacePage() {
   if (!menu) {
     return (
       <div
-        className="flex min-h-screen items-center justify-center p-6"
-        style={{ backgroundColor: '#f1f5f9' }}
+        className="wb-app flex min-h-screen items-center justify-center p-6"
+        data-theme={mode}
+        style={portalRootStyle}
       >
+        <style>{darkModeCss()}</style>
         <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg">
+          {theme.login?.tagline && (
+            <p className="mb-4 text-center text-sm font-medium" style={{ color: accent }}>
+              {theme.login.tagline}
+            </p>
+          )}
           <div className="mb-6 flex items-center gap-3">
             {branding?.logo_url ? (
               <img
@@ -246,7 +267,12 @@ export default function WorkspacePage() {
 
   // ── Menu screen ────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div
+      className="wb-app min-h-screen bg-slate-50"
+      data-theme={mode}
+      style={{ ...themeVars(theme, mode), ...backgroundStyle(theme.background, 'var(--wb-bg)') }}
+    >
+      <style>{darkModeCss()}</style>
       <header
         className="border-b border-slate-200 bg-white"
         style={{ borderTopColor: accent, borderTopWidth: 3 }}

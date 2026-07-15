@@ -191,18 +191,6 @@ export const useDiscardDashboardDraft = () => {
   });
 };
 
-export const useShareDashboard = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ dashboardId, publicFiltersConfig }: { dashboardId: number; publicFiltersConfig?: any[] }) =>
-      dashboardApi.share(dashboardId, publicFiltersConfig),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
-    },
-  });
-};
-
 export const useAnalyzeDashboardHtmlImport = () => {
   return useMutation({
     mutationFn: (input: DashboardHtmlImportAnalyzeInput) => dashboardApi.analyzeHtmlImport(input),
@@ -281,13 +269,3 @@ export const useCancelDashboardHtmlImportDraft = () => {
   });
 };
 
-export const useUnshareDashboard = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => dashboardApi.unshare(id),
-    onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboards', id] });
-    },
-  });
-};
