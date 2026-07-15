@@ -301,6 +301,22 @@ def refresh_dashboard_snapshots(
     # viewer saw a timeout while the backend kept churning. The client now shows
     # "đang làm mới…" and polls /snapshots/info (building flag) for completion.
     started = snapshot_service.start_manual_refresh(list(dataset_ids))
+    # Make Refresh pull the LATEST FROM SOURCE for EVERY source type, not just BQ
+    # snapshots: drop the live query-result cache for these datasets' datasources.
+    # Non-BQ (PG/MySQL/Sheets) has no snapshot to rebuild, so without this the next
+    # chart query would re-serve the ≤5-min cached rows; busting the cache forces a
+    # fresh source read. For BQ it's a harmless re-read of the current snapshot
+    # until the async rebuild swaps in fresh data.
+    from app.models.dataset import DatasetTable
+    from app.services import query_cache
+    source_ids = {
+        row[0] for row in db.query(DatasetTable.datasource_id)
+        .filter(DatasetTable.dataset_id.in_(list(dataset_ids)))
+        .distinct().all()
+        if row[0]
+    }
+    for _sid in source_ids:
+        query_cache.invalidate_datasource(_sid)
     ts = _dashboard_snapshot_as_of(db, dash)  # current (pre-rebuild) freshness
     return {
         "ok": True,

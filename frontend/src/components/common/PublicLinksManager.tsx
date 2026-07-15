@@ -396,6 +396,21 @@ export function PublicLinksManager({
 
   const [view, setView] = useState<ModalView>('list');
   const [editingLink, setEditingLink] = useState<PublicLink | null>(null);
+  // Whether this report has a MATERIALIZED source (BigQuery w/ materialization).
+  // Only then does the snapshot-freshness TTL selector make sense — otherwise the
+  // report is live/cached and we hide it. Fetched once when the modal opens.
+  const [snapshotEnabled, setSnapshotEnabled] = useState(false);
+  useEffect(() => {
+    // The manager is a modal mounted on open — fetch the report's snapshot mode
+    // once so the appearance editor can show the TTL selector only when a
+    // materialized (snapshot) source actually backs the report.
+    let cancelled = false;
+    dashboardApi
+      .getSnapshotInfo(dashboardId)
+      .then((info) => { if (!cancelled) setSnapshotEnabled(info?.mode === 'snapshot'); })
+      .catch(() => { if (!cancelled) setSnapshotEnabled(false); });
+    return () => { cancelled = true; };
+  }, [dashboardId]);
 
   const [formName, setFormName] = useState('');
   // Unified-table rework (2026-06-18) — the link's filter UI is now ONE
@@ -1559,6 +1574,7 @@ export function PublicLinksManager({
                     value={formAppearance}
                     dashboardName={dashboardName}
                     onChange={setFormAppearance}
+                    snapshotEnabled={snapshotEnabled}
                   />
                 )}
 
