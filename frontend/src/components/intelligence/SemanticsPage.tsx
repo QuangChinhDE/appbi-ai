@@ -29,7 +29,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 
 export function SemanticsPage() {
   const { t } = useI18n();
-  const canAuthor = useCanAuthor();
+  const canAuthor = useCanAuthor('semantics');
   const [tab, setTab] = useState<'metrics' | 'caveats'>('metrics');
   const [metrics, setMetrics] = useState<ManagedMetric[]>([]);
   const [unbound, setUnbound] = useState<Record<string, string>>({});

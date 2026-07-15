@@ -70,11 +70,15 @@ interface TeamRecord {
 const MODULE_LABEL_KEYS: Record<string, string> = {
   data_sources: 'settings.module.data_sources',
   datasets: 'settings.module.datasets',
+  intelligence: 'settings.module.intelligence',
+  ai_inbox: 'settings.module.ai_inbox',
+  semantics: 'settings.module.semantics',
+  ai_guidance: 'settings.module.ai_guidance',
+  govern: 'settings.module.govern',
+  observability: 'settings.module.observability',
   explore_charts: 'settings.module.explore_charts',
   dashboards: 'settings.module.dashboards',
   workboards: 'settings.module.workboards',
-  govern: 'settings.module.govern',
-  observability: 'settings.module.observability',
   settings: 'settings.module.settings',
 };
 

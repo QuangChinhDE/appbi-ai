@@ -40,7 +40,7 @@ const KIND_LABEL_KEY: Record<string, string> = {
 export function IntelligenceOverviewPage() {
   const { t } = useI18n();
   const router = useRouter();
-  const canAuthor = useCanAuthor();  // propose = a write (creates a review item) → edit only
+  const canAuthor = useCanAuthor('ai_inbox');  // propose creates a review item → ai_inbox:edit
   const [ov, setOv] = useState<IntelligenceOverview | null>(null);
   const [tab, setTab] = useState<'board' | 'graph'>('board');
   const [proposed, setProposed] = useState<Set<string>>(new Set());

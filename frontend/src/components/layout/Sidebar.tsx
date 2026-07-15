@@ -89,10 +89,10 @@ const NAV_GROUPS: NavGroup[] = [
     // one job each; all gated by the existing 'govern' permission key.
     labelKey: 'sidebar.group.intelligence',
     items: [
-      { labelKey: 'sidebar.nav.intelligence', href: '/intelligence', icon: <Gauge className="h-4 w-4" />, module: 'govern' },
-      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'govern' },
-      { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'govern' },
-      { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.intelligence', href: '/intelligence', icon: <Gauge className="h-4 w-4" />, module: 'intelligence' },
+      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'ai_inbox' },
+      { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'semantics' },
+      { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'ai_guidance' },
       { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
     ],
   },
@@ -169,7 +169,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const { data: reviewPending = 0 } = useQuery({
     queryKey: ['govern-review-count'],
     queryFn: reviewCount,
-    enabled: Boolean(perms) && hasPermission(perms, 'govern', 'view'),
+    enabled: Boolean(perms) && hasPermission(perms, 'ai_inbox', 'view'),
     refetchInterval: 90_000,
     staleTime: 60_000,
   });

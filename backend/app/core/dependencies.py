@@ -49,7 +49,20 @@ MODULE_KEYS = (
     "dashboards",
     "workboards",
     "settings",
+    # Intelligence group — split out of 'govern' so each sidebar module has its
+    # own permission (AI Readiness / AI Suggestions / Metrics & Terms / AI Guidance;
+    # 'govern' itself now = Documents).
+    "intelligence",
+    "ai_inbox",
+    "semantics",
+    "ai_guidance",
 )
+
+# The 4 Intelligence AI modules share the backend catalog domain with 'govern'
+# (Documents). When a user has no explicit level for one of these, it INHERITS the
+# legacy 'govern' level — so existing govern:X users keep full Intelligence access
+# and NOBODY is locked out when the single key is split into five.
+INTELLIGENCE_INHERIT = ("intelligence", "ai_inbox", "semantics", "ai_guidance")
 
 
 def _extract_token(
@@ -243,6 +256,11 @@ def require_permission(module: str, min_level: str = "view"):
     async def _check(user: User = Depends(get_current_user)) -> User:
         perms = _normalize_permissions(user)
         user_level = perms.get(module, "none")
+        # Intelligence group inherits the legacy 'govern' level when its own key
+        # is not explicitly set (keeps existing govern:X users fully working).
+        raw_perms = user.permissions or {}
+        if module in INTELLIGENCE_INHERIT and module not in raw_perms and "govern" in raw_perms:
+            user_level = perms.get("govern", "none")
         # Admin (settings=full) implicitly gets access to modules added AFTER
         # their permissions row was created (no key stored yet), so newly enabled
         # modules like govern/observability aren't invisible to existing admins.
