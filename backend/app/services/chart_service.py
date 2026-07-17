@@ -42,6 +42,7 @@ from app.models import Chart, ChartType, ChartMetadata, ChartParameter
 from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.core.logging import get_logger
+from app.services.execution_plan import plan_chart_execution
 from app.services.chart_contracts import (
     _record_dropped_filter,
     enforce_no_hard_dropped_filters,
@@ -1837,107 +1838,6 @@ def _build_filtered_live_sql_for_dataset_table(
     )
 
 
-def _resolve_chart_snapshot_overrides(
-    db: Session,
-    datasource,
-    binding: dict,
-    base_view_name: str,
-    model_id,
-    dimension_refs: list,
-    measure_refs: list,
-    engine_filters: dict,
-    *,
-    ttl_minutes: Optional[int] = None,
-) -> Tuple[Dict[int, str], Optional[Any], str, bool, Optional[int], Optional[Any]]:
-    """Dashboard perf #5 — decide whether this chart can be served from snapshots.
-    Returns ``(overrides, as_of, mode, stale, trigger_dataset_id, host)``. Non-empty
-    overrides ⇒ the ENTIRE query reads only SA-only snapshot tables (+ inline
-    calendar) in the HOST BigQuery and MUST run on the host (service-account)
-    credential with the BigQuery dialect. ``host`` is that BigQuery DataSource
-    (None when live).
-
-    Federated ALL-OR-NOTHING: the dataset must have a BigQuery HOST (an enabled BQ
-    datasource) AND every non-calendar table must be federated-materializable
-    (sql_query OR physical — Sheets/manual/other-warehouse dims included; derived
-    tables are NOT) AND every such table must have a current snapshot in the host.
-    Any gap → ``({}, ..., "live", ..., None)`` so the chart runs live unchanged.
-    When all tables are BigQuery this reduces to the original all-BQ behaviour.
-
-    ``ttl_minutes`` (public per-link TTL, Stage 2):
-      • None  → builder/authed: use the current snapshot at ANY age, never
-                auto-rebuild (freshness is the explicit Refresh button). Manual.
-      • 0     → Realtime: bypass snapshots → live.
-      • > 0   → serve the current snapshot even when older than the TTL
-                (stale-then-async) and set ``stale=True`` + a
-                ``trigger_dataset_id`` so the caller schedules a BACKGROUND
-                rebuild — no viewer ever waits for the extract-load.
-    ``trigger_dataset_id`` is also set when the dataset is eligible but has NO
-    snapshot yet (first public open), so the first view warms it for the next.
-    NEVER raises."""
-    try:
-        from app.services import snapshot_service
-        from app.services.dataset_calendar_service import is_generated_calendar_table
-        if ttl_minutes == 0:  # Realtime → always live
-            return {}, None, "live", False, None, None
-        from app.models.semantic import SemanticView
-        from app.models.dataset import Dataset, DatasetTable
-
-        # Resolve the chart's dataset (binding.datasetId, else via the base view).
-        dataset_id = binding.get("datasetId")
-        if not dataset_id and base_view_name:
-            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
-            if bv is not None and getattr(bv, "dataset_table_id", None):
-                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
-                dataset_id = bt.dataset_id if bt else None
-        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first() if dataset_id else None
-        if dataset_obj is None:
-            return {}, None, "live", False, None, None
-
-        # Host = the enabled BigQuery datasource this dataset materializes INTO.
-        # None → not materialized (no BQ host / not opted in) → live. This is what
-        # lets a MIXED dataset (Sheets base + BigQuery facts) still snapshot: the
-        # host is the BQ datasource, not necessarily the chart's base datasource.
-        host = snapshot_service.resolve_host(db, dataset_obj.id)
-        if host is None:
-            return {}, None, "live", False, None, None
-
-        all_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
-        # Federated all-or-nothing: every non-calendar table must be materializable
-        # INTO the host BQ (sql_query OR physical — Sheets/manual/other dims). A
-        # derived table (aliases other tables) is not independently extractable →
-        # live. Calendar is rendered inline in BQ.
-        mat_tables = []
-        for t in all_tables:
-            if is_generated_calendar_table(t):
-                continue
-            if not snapshot_service.is_federated_materializable(t):  # derived → bail
-                return {}, None, "live", False, None, None
-            mat_tables.append(t)
-        if not mat_tables:
-            return {}, None, "live", False, None, None
-
-        # All-or-nothing: resolve the CURRENT snapshot at any age (serve-stale).
-        overrides: Dict[int, str] = {}
-        for t in mat_tables:
-            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)
-            if ref is None:
-                # Eligible but not built yet → warm it. For a federated (mixed)
-                # dataset live can't run (cross-engine), so ALWAYS warm; for an
-                # all-BQ dataset keep the original public-TTL-gated warm.
-                return {}, None, "live", False, dataset_obj.id, None
-            overrides[t.id] = ref
-        as_of = snapshot_service.as_of(db, list(overrides.keys()))
-        stale = snapshot_service.is_stale(as_of, ttl_minutes)
-        trigger = dataset_obj.id if stale else None
-        # Change-driven refresh: rate-limited background check — rebuild if the
-        # SOURCE DATA changed since build (works for builder too; no TTL needed).
-        snapshot_service.schedule_source_change_check(dataset_obj.id)
-        return overrides, as_of, "snapshot", stale, trigger, host
-    except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
-        logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
-        return {}, None, "live", False, None, None
-
-
 def _is_missing_relation_error(exc: Exception) -> bool:
     """True when a query failed because a physical table/relation is missing —
     e.g. a snapshot table dropped by BigQuery table-expiration (or GC) while the
@@ -1966,60 +1866,6 @@ def _detect_foreign_dialect_leak(sql: str, dialect: str) -> Optional[str]:
     if d == "duckdb" and re.search(r"`[^`\n]*\.[^`\n]*`", sql or ""):
         return "tham chiếu bảng kiểu BigQuery (dấu backtick `project.dataset.table`)"
     return None
-
-
-def _assert_dataset_single_engine(db: Session, binding: dict, base_view_name: str) -> None:
-    """Cross-source guard. A chart is compiled to ONE SQL string and executed on
-    ONE datasource/engine. If the dataset mixes tables from datasources with
-    DIFFERENT dialects (e.g. a Google Sheets dim table LEFT-JOINed to BigQuery
-    fact tables), the engine inlines one source's SQL — including engine-specific
-    syntax like BigQuery backtick refs / ``SELECT * EXCEPT`` / window functions —
-    into the OTHER engine's dialect, and the datasource rejects it with a cryptic
-    parser error (e.g. DuckDB: syntax error at or near a BigQuery backtick). Raise a clear,
-    actionable message instead. A homogeneous dataset (all one dialect, + inline
-    calendar which has no datasource) is NEVER blocked. Best-effort: never raises
-    anything but the intended ValueError."""
-    try:
-        from app.models.semantic import SemanticView
-        from app.models.dataset import DatasetTable
-        from app.models.datasource import DataSource
-        from app.services.dataset_calendar_service import is_generated_calendar_table
-        from app.services.live_query_service import _dialect_for_ds_type
-
-        dataset_id = binding.get("datasetId")
-        if not dataset_id and base_view_name:
-            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
-            if bv is not None and getattr(bv, "dataset_table_id", None):
-                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
-                dataset_id = bt.dataset_id if bt else None
-        if not dataset_id:
-            return
-        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
-        ds_ids = {
-            t.datasource_id for t in tables
-            if t.datasource_id and not is_generated_calendar_table(t)
-        }
-        if len(ds_ids) <= 1:
-            return
-        ds_rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
-        by_dialect: Dict[str, list] = {}
-        for d in ds_rows:
-            dia = _dialect_for_ds_type(getattr(d.type, "value", d.type))
-            by_dialect.setdefault(dia, []).append(getattr(d, "name", None) or f"#{d.id}")
-        if len(by_dialect) > 1:
-            parts = "; ".join(f"{k} ({', '.join(v)})" for k, v in sorted(by_dialect.items()))
-            raise ValueError(
-                "Dataset này trộn nhiều nguồn khác engine nhau — " + parts + ". "
-                "Một biểu đồ chỉ chạy được trên MỘT engine, nên không thể JOIN bảng "
-                "Google Sheets với bảng BigQuery trong cùng một truy vấn (engine sẽ "
-                "nhét cú pháp BigQuery như dấu backtick ` / SELECT * EXCEPT vào DuckDB "
-                "và báo lỗi cú pháp). Hãy đưa tất cả bảng về CÙNG một nguồn "
-                "(khuyến nghị: cùng trên BigQuery) hoặc tách thành các dataset riêng theo nguồn."
-            )
-    except ValueError:
-        raise
-    except Exception:  # noqa: BLE001 — guard must never crash a chart for other reasons
-        logger.debug("[cross-source] single-engine guard skipped (non-fatal)", exc_info=True)
 
 
 def _execute_semantic_chart_runtime(
@@ -2075,11 +1921,10 @@ def _execute_semantic_chart_runtime(
             f"Semantic chart needs an Explore '{explore_name}'"
         )
 
-    # Cross-source guard: fail with a clear message BEFORE the model rebuild if
-    # the dataset mixes incompatible engines (e.g. Sheets base + BigQuery joins),
-    # rather than leaking one engine's SQL into the other and erroring cryptically.
-    _assert_dataset_single_engine(db, binding, base_view_name)
-
+    # Cross-source safety now lives in the EXECUTION PLANNER (execution_plan.py),
+    # which runs AFTER snapshot resolution below — so a mixed-source dataset that
+    # is fully materialized into the host BigQuery runs normally, and only a
+    # mixed dataset forced to run LIVE gets a clear blocked message (issue #5).
     role_config = normalize_chart_role_config(
         chart_type,
         with_table_hyperlink_query_columns(
@@ -2382,59 +2227,71 @@ def _execute_semantic_chart_runtime(
         _snap_ttl = _snapshot_ttl_var.get()
     except LookupError:
         _snap_ttl = None
-    _snap_overrides, _snap_as_of, _snap_mode, _snap_stale, _snap_trigger, _snap_host = _resolve_chart_snapshot_overrides(
-        db, datasource, binding, base_view_name, model_id,
-        dimension_refs, measure_refs, engine_filters,
-        ttl_minutes=_snap_ttl,
+    # ── EXECUTION PLANNER (refactor Phase 2) ─────────────────────────────────
+    # ONE typed decision replaces the scattered snapshot-resolve + dialect/
+    # credential forcing + cross-source guard. See execution_plan.py. The live
+    # path deliberately keeps this function's own `dialect`/`ds_type` locals so
+    # its SQL stays byte-identical; only a snapshot-backed plan overrides them
+    # (snapshot refs render as BigQuery tables in the host → the WHOLE statement
+    # must be BigQuery, whatever the base datasource is).
+    plan = plan_chart_execution(
+        db, datasource, binding, base_view_name, ttl_minutes=_snap_ttl,
     )
-    if _snap_trigger:
+    _snap_overrides = dict(plan.overrides)
+    _snap_as_of = plan.as_of
+    _snap_mode = plan.mode
+    _snap_stale = plan.stale
+    # Federated = the DATASET spans >1 engine (engine-span, not "base isn't BQ"):
+    # a snapshot-backed query on such a dataset has NO live fallback — live SQL
+    # would join across engines (used by the missing-snapshot branch below).
+    _snap_federated = plan.mode == "snapshot" and plan.federated
+    _plan_dataset_id = plan.dataset_id
+    if plan.trigger_dataset_id:
         # Stale (or eligible-but-unbuilt) → warm in the background; this request
         # still serves the stale/live result instantly (or, for a not-yet-built
-        # federated dataset, surfaces the clear cross-source message meanwhile).
+        # mixed-engine dataset, surfaces the clear blocked message meanwhile).
         from app.services import snapshot_service as _ss
-        _ss.trigger_async_refresh(_snap_trigger)
-    # When snapshots back the whole query, ALL tables (incl. Google Sheets / other
-    # sources) have been materialized into the HOST BigQuery. So the query runs in
-    # BigQuery on the host's snapshot (service-account) credential — regardless of
-    # the chart's base datasource. Empty overrides → normal user-cred live path.
-    _base_is_bigquery = str(getattr(datasource.type, "value", datasource.type)).lower() == "bigquery"
-    _snap_federated = bool(_snap_overrides) and _snap_host is not None and not _base_is_bigquery
-    if _snap_overrides and _snap_host is not None:
-        _snap_exec_config = DataSourceConnectionService.snapshot_query_config(_snap_host.config)
-        # Snapshot refs render as BigQuery backtick tables → the WHOLE statement
-        # (calendar, time-grain, quoting, functions) must be BigQuery too, even
-        # when the base datasource is Google Sheets/manual (duckdb).
-        dialect = "bigquery"
-        ds_type = "bigquery"
+        _ss.trigger_async_refresh(plan.trigger_dataset_id)
+    if plan.exec_config is not None:  # snapshot mode → host SA credential + BQ
+        _snap_exec_config = plan.exec_config
+        dialect = plan.dialect
+        ds_type = plan.ds_type
     else:
         _snap_exec_config = None
 
-    # [exec-decision] Phase-0 observability (NO behaviour change): one grep-able
-    # line capturing the full physical execution decision for this chart, so the
-    # scattered hidden-state (mode/dialect/host/credential/freshness) is visible
-    # in one place. Grep ``[exec-decision]`` to trace why a chart ran the way it
-    # did. `mode`: live | snapshot | federated. `cred`: which credential identity
-    # executes (source datasource vs the materialization host service-account).
+    # [exec-decision] observability: one grep-able line with the full physical
+    # execution decision. Grep ``[exec-decision]`` to trace why a chart ran the
+    # way it did. `cred`: which credential identity executes (source datasource
+    # vs the materialization host service-account).
     try:
         logger.info(
             "[exec-decision] chart_id=%s dataset=%s base_ds=%s base_ds_type=%s "
             "mode=%s dialect=%s exec_host_ds=%s cred=%s snapshot_asof=%s stale=%s "
-            "federated=%s n_overrides=%d",
+            "federated=%s n_overrides=%d state=%s blocked=%s reason=%r",
             _pbi_current_chart_id(),
-            binding.get("datasetId"),
+            _plan_dataset_id,
             getattr(datasource, "id", None),
             str(getattr(datasource.type, "value", datasource.type)),
-            (_snap_mode if _snap_overrides else "live"),
+            plan.mode,
             dialect,
-            (getattr(_snap_host, "id", None) if _snap_host is not None else None),
-            ("host_service_account" if _snap_exec_config is not None else "source_datasource"),
+            plan.host_id,
+            plan.cred,
             (_snap_as_of.isoformat() if _snap_as_of else None),
             bool(_snap_stale),
-            _snap_federated,
+            plan.federated,
             len(_snap_overrides or {}),
+            plan.snapshot_state.value,
+            bool(plan.blocked),
+            plan.reason,
         )
     except Exception:  # noqa: BLE001 — logging must never break a chart
         logger.debug("[exec-decision] log emit failed", exc_info=True)
+
+    # A blocked plan = this request cannot run in the current state (mixed-engine
+    # dataset forced to live). Raise AFTER the warm-trigger + decision log so the
+    # background repair is already underway and the decision is visible.
+    if plan.blocked:
+        raise ValueError(plan.blocked)
 
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
@@ -2696,7 +2553,9 @@ def _execute_semantic_chart_runtime(
                 _pbi_current_chart_id(), datasource.id, str(exc)[:300],
             )
             try:
-                _ds_id_for_rebuild = binding.get("datasetId")
+                # Planner-resolved dataset id (works even when the binding lacks
+                # datasetId, e.g. the preview path — resolved via the base view).
+                _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
                 if _ds_id_for_rebuild:
                     from app.services import snapshot_service as _ss
                     _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
@@ -2756,7 +2615,9 @@ def _execute_semantic_chart_runtime(
                 _pbi_current_chart_id(), datasource.id, str(exc)[:300],
             )
             try:
-                _ds_id_for_rebuild = binding.get("datasetId")
+                # Planner-resolved dataset id (works even when the binding lacks
+                # datasetId, e.g. the preview path — resolved via the base view).
+                _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
                 if _ds_id_for_rebuild:
                     from app.services import snapshot_service as _ss
                     _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
