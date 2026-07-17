@@ -1940,6 +1940,21 @@ def _is_missing_relation_error(exc: Exception) -> bool:
     )
 
 
+def _detect_foreign_dialect_leak(sql: str, dialect: str) -> Optional[str]:
+    """If a query GENERATED for `dialect` contains syntax only ANOTHER engine
+    understands, return a short human reason; else None. The real-world trigger
+    is a cross-source dataset: one table's native SQL (e.g. a BigQuery sql_query
+    table with `project.dataset.table` backtick refs) inlined into a DuckDB
+    (Google Sheets) query, which then dies with a cryptic parser error. DuckDB
+    never emits backticks, so a backtick-quoted DOTTED identifier in a duckdb
+    query is an unambiguous BigQuery leak. Matching the dotted form (not any
+    lone backtick) keeps a stray backtick inside a filter VALUE from misfiring."""
+    d = (dialect or "").lower()
+    if d == "duckdb" and re.search(r"`[^`\n]*\.[^`\n]*`", sql or ""):
+        return "tham chiếu bảng kiểu BigQuery (dấu backtick `project.dataset.table`)"
+    return None
+
+
 def _assert_dataset_single_engine(db: Session, binding: dict, base_view_name: str) -> None:
     """Cross-source guard. A chart is compiled to ONE SQL string and executed on
     ONE datasource/engine. If the dataset mixes tables from datasources with
@@ -2545,6 +2560,24 @@ def _execute_semantic_chart_runtime(
             f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
             "Báo dev kiểm tra explore + measure config."
         ) from exc
+
+    # Cross-engine leak guard (deterministic): a cross-source dataset can inline
+    # one table's NATIVE SQL into another engine's query — e.g. a BigQuery
+    # sql_query table (`project.dataset.table` backtick refs + SELECT * EXCEPT)
+    # joined under a Google Sheets base that runs on DuckDB. DuckDB then rejects
+    # the BigQuery syntax with an opaque "syntax error at or near \`". Detect the
+    # foreign syntax in the GENERATED SQL (independent of how the dataset's
+    # datasources resolve) and fail with a clear, actionable message instead.
+    _leak = _detect_foreign_dialect_leak(sql, dialect)
+    if _leak:
+        raise ValueError(
+            "Biểu đồ này không chạy được vì dataset đang trộn nhiều nguồn khác "
+            f"engine nhau (phát hiện {_leak} trong truy vấn chạy trên '{dialect}'). "
+            "Một biểu đồ chỉ chạy trên MỘT engine — không thể JOIN bảng Google "
+            "Sheets với bảng BigQuery trong cùng một truy vấn. Hãy đưa tất cả bảng "
+            "về CÙNG một nguồn (khuyến nghị: cùng trên BigQuery) hoặc tách thành "
+            "các dataset riêng theo nguồn."
+        )
 
     # Cache key + lookup already ran BEFORE engine.run() above (perf: a
     # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
