@@ -2409,6 +2409,33 @@ def _execute_semantic_chart_runtime(
     else:
         _snap_exec_config = None
 
+    # [exec-decision] Phase-0 observability (NO behaviour change): one grep-able
+    # line capturing the full physical execution decision for this chart, so the
+    # scattered hidden-state (mode/dialect/host/credential/freshness) is visible
+    # in one place. Grep ``[exec-decision]`` to trace why a chart ran the way it
+    # did. `mode`: live | snapshot | federated. `cred`: which credential identity
+    # executes (source datasource vs the materialization host service-account).
+    try:
+        logger.info(
+            "[exec-decision] chart_id=%s dataset=%s base_ds=%s base_ds_type=%s "
+            "mode=%s dialect=%s exec_host_ds=%s cred=%s snapshot_asof=%s stale=%s "
+            "federated=%s n_overrides=%d",
+            _pbi_current_chart_id(),
+            binding.get("datasetId"),
+            getattr(datasource, "id", None),
+            str(getattr(datasource.type, "value", datasource.type)),
+            (_snap_mode if _snap_overrides else "live"),
+            dialect,
+            (getattr(_snap_host, "id", None) if _snap_host is not None else None),
+            ("host_service_account" if _snap_exec_config is not None else "source_datasource"),
+            (_snap_as_of.isoformat() if _snap_as_of else None),
+            bool(_snap_stale),
+            _snap_federated,
+            len(_snap_overrides or {}),
+        )
+    except Exception:  # noqa: BLE001 — logging must never break a chart
+        logger.debug("[exec-decision] log emit failed", exc_info=True)
+
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
         "_semantic_chart_runtime": True,
