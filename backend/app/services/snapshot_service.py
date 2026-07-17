@@ -137,7 +137,31 @@ def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
         (d for d in rows if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
         key=lambda d: d.id,
     )
-    return hosts[0] if hosts else None
+    if hosts:
+        return hosts[0]
+    # No BigQuery source of its own (Sheets-only / Postgres-only dataset). The
+    # serving invariant is "snapshot store = BigQuery", so fall back to the
+    # platform default BQ snapshot host — every non-BQ table federates INTO it.
+    return _default_snapshot_host(db)
+
+
+def _default_snapshot_host(db: Session) -> Optional[DataSource]:
+    """Platform default BigQuery host for datasets with no BQ source of their own.
+    Explicit `MATERIALIZATION_HOST_DATASOURCE_ID` wins; otherwise the lowest-id
+    materialization-enabled BigQuery datasource in the system. None if there is
+    no materialization-enabled BQ datasource anywhere (nothing can host)."""
+    from app.core.config import settings
+    explicit = getattr(settings, "MATERIALIZATION_HOST_DATASOURCE_ID", None)
+    if explicit:
+        d = db.query(DataSource).filter(DataSource.id == int(explicit)).first()
+        if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
+            return d
+    candidates = sorted(
+        (d for d in db.query(DataSource).all()
+         if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
+        key=lambda d: d.id,
+    )
+    return candidates[0] if candidates else None
 
 
 # ── fingerprint + naming ────────────────────────────────────────────────────

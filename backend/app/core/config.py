@@ -3,7 +3,7 @@ Configuration management using Pydantic Settings.
 """
 import pathlib
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Optional
 
 
 def _find_project_root() -> pathlib.Path:
@@ -193,6 +193,13 @@ class Settings(BaseSettings):
     # `materialization_write_credentials_json` overrides both.
     MATERIALIZATION_SA_KEY_FILE: str = ""
     MATERIALIZATION_SA_CREDENTIALS_JSON: str = ""
+    # Platform default BigQuery snapshot host. A dataset with NO BigQuery source
+    # of its own (e.g. Sheets-only, Postgres-only) still needs a BQ host to
+    # materialize its published snapshot into — "snapshot store = BigQuery" is
+    # the serving invariant. Set this to the datasource id of the BQ project that
+    # should host such snapshots; blank → snapshot_service falls back to the
+    # lowest-id materialization-enabled BQ datasource in the system.
+    MATERIALIZATION_HOST_DATASOURCE_ID: Optional[int] = None
     # ── DB connection pool (SQLAlchemy) ─────────────────────────────────────
     # Sized for concurrent long BigQuery queries; the connection is released
     # during each warehouse call (chart_service) so these rarely bind. Keep
