@@ -155,13 +155,24 @@ class SemanticQueryEngine:
         # Dashboard perf #5 — snapshot redirect map (see generate_sql). Default
         # empty = live behaviour; set per-request by the caller.
         self._snapshot_overrides: Dict[int, str] = {}
+        # Phase 3 — per-request compile-time relation cache + drop diagnostics.
+        self._relation_sql_cache: Dict[int, Optional[str]] = {}
+        self._propagation_drops: list = []
 
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
         every path compiles to via ``semantic_query_compiler``). Unpacks to
         ``generate_sql`` (which stays the internal implementation). ``spec``'s
         ``response_aliases`` / ``diagnostics`` are caller-side extras the engine
-        ignores."""
+        ignores.
+
+        Refactor Phase 3 — per-entry state hygiene: ``run`` is the ONE public
+        entry, so per-request diagnostics reset HERE (not in generate_sql, which
+        recurses internally for re-anchor/multi-fact and must ACCUMULATE across
+        those recursions). ``snapshot_overrides`` is likewise always passed as a
+        concrete dict so a reused engine instance can never leak a previous
+        request's snapshot redirects into this one."""
+        self._propagation_drops = []
         return self.generate_sql(
             explore_name=spec.explore_name,
             dimensions=list(spec.dimensions or []),
@@ -177,7 +188,7 @@ class SemanticQueryEngine:
             measure_agg_overrides=(dict(spec.measure_agg_overrides) or None) if spec.measure_agg_overrides else None,
             model_id=spec.model_id,
             explore_id=spec.explore_id,
-            snapshot_overrides=getattr(spec, "snapshot_overrides", None),
+            snapshot_overrides=dict(getattr(spec, "snapshot_overrides", None) or {}),
         )
 
     def generate_sql(
@@ -216,14 +227,18 @@ class SemanticQueryEngine:
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
         self._phys_coltype_cache = {}
+        # Refactor Phase 3 — compile-time relation cache: physical relation SQL is
+        # rendered per-request from the CURRENT DatasetTable definition in THIS
+        # engine's dialect (see _relation_sql_for_view), memoised per table id.
+        self._relation_sql_cache = {}
         # Dashboard perf #5 — snapshot redirect. {dataset_table_id -> physical_ref}.
         # When a view's table has a fresh materialized snapshot, the FROM clause
         # reads the flat snapshot instead of re-running its heavy source SQL.
-        # Empty map → no change (byte-identical SQL). Read-only; never mutates the
-        # ORM SemanticView (no accidental DB flush). Set ONLY when the caller
-        # passes a value so it PERSISTS across the internal recursive
-        # generate_sql calls (measure-isolation re-anchor + per-fact multifact),
-        # which pass no override arg.
+        # Empty map → no change. Read-only; never mutates the ORM SemanticView.
+        # Top-level entry (run()) ALWAYS passes a concrete dict; the internal
+        # recursive generate_sql calls (measure-isolation re-anchor + per-fact
+        # multifact) pass the current map explicitly so it survives recursion
+        # without relying on instance-state persistence (Phase 3 hygiene).
         if snapshot_overrides is not None:
             self._snapshot_overrides = dict(snapshot_overrides)
         pivots = pivots or []
@@ -446,6 +461,7 @@ class SemanticQueryEngine:
                             measure_agg_overrides=measure_agg_overrides,
                             model_id=getattr(self._model, "id", None),
                             _reanchored=True,
+                            snapshot_overrides=self._snapshot_overrides,
                         )
                 elif (
                     _is_cross_table
@@ -1889,7 +1905,7 @@ class SemanticQueryEngine:
         # measure `_measure_fact_view` returns the declared view (unchanged).
         view_name = self._measure_fact_view(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
-        m_table = self._snapshot_ref_for_view(view) or view.sql_table_name or view_name
+        m_table = self._snapshot_ref_for_view(view) or self._relation_sql_for_view(view) or view_name
 
         plain_agg = self._render_measure(
             field_ref, agg_override=agg_override, _isolate=False,
@@ -2142,6 +2158,7 @@ class SemanticQueryEngine:
                     measure_agg_overrides=measure_agg_overrides,
                     model_id=model_id,
                     _reanchored=True,
+                    snapshot_overrides=self._snapshot_overrides,
                 )
             except ValueError:
                 return None
@@ -2848,7 +2865,61 @@ class SemanticQueryEngine:
         ref = self._snapshot_overrides.get(tid) if tid is not None else None
         if not ref:
             return None
-        return f"(SELECT * FROM `{ref}`)"
+        # Refactor Phase 3 — quote the physical ref for THIS engine's dialect
+        # instead of hardcoding BigQuery backticks. Snapshots are hosted in
+        # BigQuery today (the planner forces dialect="bigquery" in snapshot
+        # mode, so this stays backticks in practice) — but the renderer itself
+        # no longer bakes in that assumption.
+        d = (self.database_type or "").lower()
+        if d in ("bigquery", "mysql"):
+            return f"(SELECT * FROM `{ref}`)"
+        quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
+        return f"(SELECT * FROM {quoted})"
+
+    def _relation_sql_for_view(self, view) -> Optional[str]:
+        """Refactor Phase 3 — the PHYSICAL relation a view reads from, rendered
+        at COMPILE TIME from the current DatasetTable definition in THIS
+        engine's dialect. This replaces trusting the sync-time
+        ``view.sql_table_name`` for FROM operands, which had two failure modes:
+          * staleness — the stored SQL drifts from the table definition until
+            someone re-opens/syncs the Dataset ("phải vào Dataset trước");
+          * wrong dialect — the stored SQL was rendered with the DATASET's
+            sync dialect (first datasource wins), which can differ from the
+            dialect this request actually executes on (mixed-source datasets,
+            snapshot mode forcing BigQuery).
+        Falls back to the stored ``sql_table_name`` for role views
+        (dataset_table_id is None) and on any load/render failure — i.e. the
+        pre-Phase-3 behaviour. Memoised per table id for the request."""
+        tid = getattr(view, "dataset_table_id", None)
+        if tid is None:
+            return getattr(view, "sql_table_name", None)
+        if tid in self._relation_sql_cache:
+            return self._relation_sql_cache[tid]
+        rendered = None
+        try:
+            from app.models.dataset import Dataset, DatasetTable
+            from app.models.models import DataSource
+            from app.services.dataset_model_service import _sql_table_for_table
+
+            t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            if t is not None:
+                ds_obj = self.db.query(Dataset).filter(Dataset.id == t.dataset_id).first()
+                src = (
+                    self.db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
+                    if t.datasource_id else None
+                )
+                if ds_obj is not None:
+                    rendered = _sql_table_for_table(
+                        ds_obj, t,
+                        calendar_dialect=(self.database_type or "postgresql").lower(),
+                        datasource=src, db=self.db,
+                    )
+        except Exception:  # noqa: BLE001 — fall back to the stored relation
+            logger.debug("[relation] compile-time render failed for view %s",
+                         getattr(view, "name", "?"), exc_info=True)
+        out = rendered or getattr(view, "sql_table_name", None)
+        self._relation_sql_cache[tid] = out
+        return out
 
     def _build_from_clause(
         self,
@@ -2882,7 +2953,7 @@ class SemanticQueryEngine:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
 
         # Determine base table name (snapshot redirect wins when present — #5)
-        base_table = self._snapshot_ref_for_view(base_view) or base_view.sql_table_name or explore.base_view_name
+        base_table = self._snapshot_ref_for_view(base_view) or self._relation_sql_for_view(base_view) or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
 
         joined_nodes: set[str] = {explore.base_view_name}
@@ -2920,7 +2991,7 @@ class SemanticQueryEngine:
                 if edge.to_node in joined_nodes:
                     continue
                 join_view = self._get_view_for_node(edge.to_node)
-                join_table = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
+                join_table = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
                 join_condition_rendered = self._render_edge_join_condition(edge)
                 if not join_condition_rendered:
                     raise ValueError(
@@ -3667,7 +3738,7 @@ class SemanticQueryEngine:
                     join_view = self._get_view_for_node(edge.to_node)
                 except ValueError:
                     return None
-                relation = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
+                relation = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
                 # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
                 # (the user's production case: `WITH a AS (WITH b AS (...))`
                 # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
