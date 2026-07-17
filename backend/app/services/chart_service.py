@@ -1940,6 +1940,60 @@ def _is_missing_relation_error(exc: Exception) -> bool:
     )
 
 
+def _assert_dataset_single_engine(db: Session, binding: dict, base_view_name: str) -> None:
+    """Cross-source guard. A chart is compiled to ONE SQL string and executed on
+    ONE datasource/engine. If the dataset mixes tables from datasources with
+    DIFFERENT dialects (e.g. a Google Sheets dim table LEFT-JOINed to BigQuery
+    fact tables), the engine inlines one source's SQL — including engine-specific
+    syntax like BigQuery backtick refs / ``SELECT * EXCEPT`` / window functions —
+    into the OTHER engine's dialect, and the datasource rejects it with a cryptic
+    parser error (e.g. DuckDB: syntax error at or near a BigQuery backtick). Raise a clear,
+    actionable message instead. A homogeneous dataset (all one dialect, + inline
+    calendar which has no datasource) is NEVER blocked. Best-effort: never raises
+    anything but the intended ValueError."""
+    try:
+        from app.models.semantic import SemanticView
+        from app.models.dataset import DatasetTable
+        from app.models.datasource import DataSource
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+        from app.services.live_query_service import _dialect_for_ds_type
+
+        dataset_id = binding.get("datasetId")
+        if not dataset_id and base_view_name:
+            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
+            if bv is not None and getattr(bv, "dataset_table_id", None):
+                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
+                dataset_id = bt.dataset_id if bt else None
+        if not dataset_id:
+            return
+        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        ds_ids = {
+            t.datasource_id for t in tables
+            if t.datasource_id and not is_generated_calendar_table(t)
+        }
+        if len(ds_ids) <= 1:
+            return
+        ds_rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
+        by_dialect: Dict[str, list] = {}
+        for d in ds_rows:
+            dia = _dialect_for_ds_type(getattr(d.type, "value", d.type))
+            by_dialect.setdefault(dia, []).append(getattr(d, "name", None) or f"#{d.id}")
+        if len(by_dialect) > 1:
+            parts = "; ".join(f"{k} ({', '.join(v)})" for k, v in sorted(by_dialect.items()))
+            raise ValueError(
+                "Dataset này trộn nhiều nguồn khác engine nhau — " + parts + ". "
+                "Một biểu đồ chỉ chạy được trên MỘT engine, nên không thể JOIN bảng "
+                "Google Sheets với bảng BigQuery trong cùng một truy vấn (engine sẽ "
+                "nhét cú pháp BigQuery như dấu backtick ` / SELECT * EXCEPT vào DuckDB "
+                "và báo lỗi cú pháp). Hãy đưa tất cả bảng về CÙNG một nguồn "
+                "(khuyến nghị: cùng trên BigQuery) hoặc tách thành các dataset riêng theo nguồn."
+            )
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 — guard must never crash a chart for other reasons
+        logger.debug("[cross-source] single-engine guard skipped (non-fatal)", exc_info=True)
+
+
 def _execute_semantic_chart_runtime(
     db: Session,
     datasource,
@@ -1992,6 +2046,11 @@ def _execute_semantic_chart_runtime(
         raise ValueError(
             f"Semantic chart needs an Explore '{explore_name}'"
         )
+
+    # Cross-source guard: fail with a clear message BEFORE the model rebuild if
+    # the dataset mixes incompatible engines (e.g. Sheets base + BigQuery joins),
+    # rather than leaking one engine's SQL into the other and erroring cryptically.
+    _assert_dataset_single_engine(db, binding, base_view_name)
 
     role_config = normalize_chart_role_config(
         chart_type,
