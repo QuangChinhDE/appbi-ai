@@ -1925,6 +1925,75 @@ def _resolve_chart_snapshot_overrides(
         return {}, None, "live", False, None
 
 
+def _is_missing_relation_error(exc: Exception) -> bool:
+    """True when a query failed because a physical table/relation is missing —
+    e.g. a snapshot table dropped by BigQuery table-expiration (or GC) while the
+    registry still marks it current. Used to fall back to a LIVE query + trigger a
+    rebuild instead of failing the whole chart."""
+    msg = str(exc).lower()
+    return (
+        "not found" in msg          # BigQuery: "Not found: Table project:ds.snap_t..."
+        or "notfound" in msg
+        or "was not found" in msg
+        or "does not exist" in msg  # Postgres-style relation errors
+        or "404" in msg
+    )
+
+
+def _assert_dataset_single_engine(db: Session, binding: dict, base_view_name: str) -> None:
+    """Cross-source guard. A chart is compiled to ONE SQL string and executed on
+    ONE datasource/engine. If the dataset mixes tables from datasources with
+    DIFFERENT dialects (e.g. a Google Sheets dim table LEFT-JOINed to BigQuery
+    fact tables), the engine inlines one source's SQL — including engine-specific
+    syntax like BigQuery backtick refs / ``SELECT * EXCEPT`` / window functions —
+    into the OTHER engine's dialect, and the datasource rejects it with a cryptic
+    parser error (e.g. DuckDB: syntax error at or near a BigQuery backtick). Raise a clear,
+    actionable message instead. A homogeneous dataset (all one dialect, + inline
+    calendar which has no datasource) is NEVER blocked. Best-effort: never raises
+    anything but the intended ValueError."""
+    try:
+        from app.models.semantic import SemanticView
+        from app.models.dataset import DatasetTable
+        from app.models.datasource import DataSource
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+        from app.services.live_query_service import _dialect_for_ds_type
+
+        dataset_id = binding.get("datasetId")
+        if not dataset_id and base_view_name:
+            bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
+            if bv is not None and getattr(bv, "dataset_table_id", None):
+                bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
+                dataset_id = bt.dataset_id if bt else None
+        if not dataset_id:
+            return
+        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        ds_ids = {
+            t.datasource_id for t in tables
+            if t.datasource_id and not is_generated_calendar_table(t)
+        }
+        if len(ds_ids) <= 1:
+            return
+        ds_rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
+        by_dialect: Dict[str, list] = {}
+        for d in ds_rows:
+            dia = _dialect_for_ds_type(getattr(d.type, "value", d.type))
+            by_dialect.setdefault(dia, []).append(getattr(d, "name", None) or f"#{d.id}")
+        if len(by_dialect) > 1:
+            parts = "; ".join(f"{k} ({', '.join(v)})" for k, v in sorted(by_dialect.items()))
+            raise ValueError(
+                "Dataset này trộn nhiều nguồn khác engine nhau — " + parts + ". "
+                "Một biểu đồ chỉ chạy được trên MỘT engine, nên không thể JOIN bảng "
+                "Google Sheets với bảng BigQuery trong cùng một truy vấn (engine sẽ "
+                "nhét cú pháp BigQuery như dấu backtick ` / SELECT * EXCEPT vào DuckDB "
+                "và báo lỗi cú pháp). Hãy đưa tất cả bảng về CÙNG một nguồn "
+                "(khuyến nghị: cùng trên BigQuery) hoặc tách thành các dataset riêng theo nguồn."
+            )
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 — guard must never crash a chart for other reasons
+        logger.debug("[cross-source] single-engine guard skipped (non-fatal)", exc_info=True)
+
+
 def _execute_semantic_chart_runtime(
     db: Session,
     datasource,
@@ -1977,6 +2046,11 @@ def _execute_semantic_chart_runtime(
         raise ValueError(
             f"Semantic chart needs an Explore '{explore_name}'"
         )
+
+    # Cross-source guard: fail with a clear message BEFORE the model rebuild if
+    # the dataset mixes incompatible engines (e.g. Sheets base + BigQuery joins),
+    # rather than leaking one engine's SQL into the other and erroring cryptically.
+    _assert_dataset_single_engine(db, binding, base_view_name)
 
     role_config = normalize_chart_role_config(
         chart_type,
@@ -2524,21 +2598,87 @@ def _execute_semantic_chart_runtime(
             skip_bigquery_cost_check=True,
         )
     except Exception as exc:
-        logger.exception(
-            "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
-            ds_type, dialect, sql[:500],
-        )
-        # STRICT (PowerBI fail-loud): a generated chart on a modeled dataset
-        # has NO fallback. If the semantic SQL errors on the datasource we
-        # surface it as a 400 with the engine's Vietnamese message — we do NOT
-        # silently degrade to a base-scoped legacy result. (This previously
-        # retried with isolation disabled — removed for strict single-path
-        # correctness: errors must be visible + fixed, not masked.)
-        raise ValueError(
-            f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
-            "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
-            "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
-        ) from exc
+        # ── Self-heal: snapshot table missing → fall back to LIVE + rebuild ──
+        # A snapshot-backed query can fail because the physical snapshot table
+        # was dropped (BigQuery table-expiration / GC) while the registry still
+        # marks it current. Rather than error the WHOLE chart (and every other
+        # chart on the dataset), fall back to a LIVE query — FULL data, no cap —
+        # on the datasource's OWN credential, and trigger a background rebuild so
+        # the snapshot repairs itself for the next view. Only snapshot-backed
+        # queries (`_snap_overrides`) take this path, and snapshots are
+        # BigQuery-only, so a genuine live query is never silently retried.
+        if _snap_overrides and _is_missing_relation_error(exc):
+            logger.warning(
+                "[snapshot] snapshot table missing at execute (chart_id=%s ds=%s) — "
+                "falling back to LIVE + triggering rebuild: %s",
+                _pbi_current_chart_id(), datasource.id, str(exc)[:300],
+            )
+            try:
+                _ds_id_for_rebuild = binding.get("datasetId")
+                if _ds_id_for_rebuild:
+                    from app.services import snapshot_service as _ss
+                    _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
+            except Exception:  # noqa: BLE001 — rebuild is best-effort
+                logger.debug("[snapshot] rebuild trigger after missing table failed", exc_info=True)
+            # Regenerate the query WITHOUT snapshot overrides → live SQL on source.
+            import dataclasses as _dc
+            _live_spec = _dc.replace(_spec, snapshot_overrides={})
+            try:
+                sql, _engine_columns, _pivot_metadata = engine.run(_live_spec)
+            except Exception:
+                logger.exception("Semantic chart LIVE regen failed after missing snapshot")
+                raise ValueError(
+                    f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+                    "Snapshot đã hết hạn và không dựng lại được SQL trực tiếp — "
+                    "thử bấm Refresh trên Dataset."
+                ) from exc
+            _exec_config = datasource.config
+            _snap_overrides = {}
+            _snap_mode = "live"
+            _snap_stale = False
+            _snap_as_of = None
+            # Regen re-opened a read txn (engine loads the model) → release the
+            # pooled DB connection before the up-to-60s live BQ wait (same
+            # QueuePool-exhaustion guard as the primary path above).
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+            # Live BigQuery can scan far more than a flat snapshot table → re-run
+            # the byte-cost guard on the regenerated SQL.
+            if ds_type == "bigquery":
+                _live_cfg = decrypt_config(_exec_config)
+                _live_bytes = _estimate_bigquery_bytes(_live_cfg, sql)
+                if _live_bytes > settings.BQ_MAX_BYTES_SCANNED:
+                    gb_est = _live_bytes / (1024**3)
+                    gb_max = settings.BQ_MAX_BYTES_SCANNED / (1024**3)
+                    raise ValueError(
+                        f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                        f"Add filters (e.g. date range) to reduce the data scanned."
+                    )
+            _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+                ds_type,
+                _exec_config,
+                sql,
+                timeout_seconds=timeout,
+                skip_bigquery_cost_check=True,
+            )
+        else:
+            logger.exception(
+                "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
+                ds_type, dialect, sql[:500],
+            )
+            # STRICT (PowerBI fail-loud): a generated chart on a modeled dataset
+            # has NO fallback for a genuine SQL/relationship error. If the semantic
+            # SQL errors on the datasource we surface it as a 400 with the engine's
+            # Vietnamese message — we do NOT silently degrade to a base-scoped
+            # legacy result. (The snapshot-missing case above is the ONE exception,
+            # because it's a serving artefact, not a modelling error.)
+            raise ValueError(
+                f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+                "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+                "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+            ) from exc
     elapsed_ms = (time.time() - start) * 1000
 
     alias_map = _spec.response_aliases  # computed once on the spec above
