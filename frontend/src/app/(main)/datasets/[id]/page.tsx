@@ -44,6 +44,7 @@ import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/d
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
+import { DatasetPublishControls, DatasetPublishBanner } from '@/components/datasets/DatasetPublishBar';
 import type { ModelViewEditPanelHandle } from '@/components/datasets/ModelViewEditPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { useDatasetModel, fetchColumnLineage, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
@@ -1373,6 +1374,13 @@ export default function DatasetDetailPage() {
         {/* Spacer */}
         <div className="flex-1" />
 
+        {/* Publish lifecycle: status badge + Sync&Publish + Grants (Import-mode) */}
+        <DatasetPublishControls datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+
+        {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
+          <div className="w-px h-5 bg-surface-3 mx-1" />
+        )}
+
         {/* Table-level actions — chỉ hiện ở tab Tables khi có table được chọn */}
         {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
           <div className="flex items-center gap-1">
@@ -1423,6 +1431,9 @@ export default function DatasetDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Changes-pending / sync-failed / draft banner (Import-mode lifecycle) */}
+      <DatasetPublishBanner datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
 
       {/* ── Body: sidebar + content (sidebar chỉ khi tab=tables) ── */}
       <div className="flex flex-1 overflow-hidden">

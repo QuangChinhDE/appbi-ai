@@ -471,13 +471,145 @@ export const datasetKeys = {
     [...datasetKeys.detail(datasetId), 'quality', 'runs', runId] as const,
   qualitySchedule: (datasetId: number) =>
     [...datasetKeys.detail(datasetId), 'quality', 'schedule'] as const,
+  publishStatus: (datasetId: number) =>
+    [...datasetKeys.detail(datasetId), 'publish-status'] as const,
+  grants: (datasetId: number) =>
+    [...datasetKeys.detail(datasetId), 'grants'] as const,
 };
 
 export const datasourceTableKeys = {
   all: ['datasource-tables'] as const,
-  list: (datasourceId: number, search?: string) => 
+  list: (datasourceId: number, search?: string) =>
     [...datasourceTableKeys.all, datasourceId, search] as const,
 };
+
+// ===== Publish lifecycle (Import-mode: Draft → Sync & Publish → Published) =====
+
+export type DatasetPublishState =
+  | 'draft'
+  | 'ready'
+  | 'syncing'
+  | 'published'
+  | 'changes_pending'
+  | 'sync_failed'
+  | 'disabled';
+
+export interface DatasetPublishStatus {
+  /** null = legacy dataset (never entered the publish lifecycle → live path). */
+  publish_state: DatasetPublishState | null;
+  published_generation: number | null;
+  published_at: string | null;
+  last_sync_error: string | null;
+  syncing: boolean;
+  has_published_data: boolean;
+}
+
+export type DatasetVerb = 'view' | 'explore' | 'build' | 'reshare' | 'edit' | 'manage';
+
+export interface DatasetGrantRecord {
+  id: number;
+  user_id: string | null;
+  team_id: string | null;
+  verb: DatasetVerb;
+}
+
+export interface DatasetGrantsResponse {
+  my_capabilities: DatasetVerb[];
+  grants: DatasetGrantRecord[];
+}
+
+/**
+ * Poll the dataset's lifecycle state. While a sync is in flight the query
+ * refetches every 2s so the badge flips syncing → published/sync_failed live.
+ */
+export function useDatasetPublishStatus(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.publishStatus(datasetId!),
+    queryFn: async () => {
+      const response = await api.get<DatasetPublishStatus>(
+        `/datasets/${datasetId}/publish-status`
+      );
+      return response.data;
+    },
+    enabled: datasetId !== null,
+    refetchInterval: (query) =>
+      (query.state.data as DatasetPublishStatus | undefined)?.syncing ? 2000 : false,
+  });
+}
+
+/**
+ * Sync & Publish: lock the design, ETL one complete generation, validate, pin.
+ * Async on the server — returns immediately; the status query polls to completion.
+ */
+export function useSyncAndPublishDataset() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (datasetId: number) => {
+      const response = await api.post<{ ok: boolean; started?: boolean; publish_state: string }>(
+        `/datasets/${datasetId}/publish`,
+        {}
+      );
+      return response.data;
+    },
+    onSuccess: (_data, datasetId) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.publishStatus(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+    },
+  });
+}
+
+export function useDatasetGrants(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.grants(datasetId!),
+    queryFn: async () => {
+      const response = await api.get<DatasetGrantsResponse>(
+        `/datasets/${datasetId}/grants`
+      );
+      return response.data;
+    },
+    enabled: datasetId !== null,
+  });
+}
+
+export function useSetDatasetGrant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      verb,
+      userId,
+      teamId,
+    }: { datasetId: number; verb: DatasetVerb; userId?: string; teamId?: string }) => {
+      const response = await api.post<{ ok: boolean; id: number; verb: string }>(
+        `/datasets/${datasetId}/grants`,
+        { verb, user_id: userId ?? null, team_id: teamId ?? null }
+      );
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.grants(variables.datasetId) });
+    },
+  });
+}
+
+export function useRevokeDatasetGrant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      userId,
+      teamId,
+    }: { datasetId: number; userId?: string; teamId?: string }) => {
+      const params = new URLSearchParams();
+      if (userId) params.set('user_id', userId);
+      if (teamId) params.set('team_id', teamId);
+      await api.delete(`/datasets/${datasetId}/grants?${params.toString()}`);
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.grants(variables.datasetId) });
+    },
+  });
+}
 
 function decodeContentDispositionFilename(header?: string | null): string | null {
   if (!header) return null;
