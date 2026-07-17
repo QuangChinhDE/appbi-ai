@@ -1396,7 +1396,15 @@ class DataSourceConnectionService:
         model. Checks existence FIRST (needs only read/get, which the write SA's
         dataEditor grants); only attempts create when it's missing. So a SA that
         has dataEditor on a PRE-CREATED dataset but NO project-level
-        `datasets.create` never hits a 403 here."""
+        `datasets.create` never hits a 403 here.
+
+        Snapshot tables must NOT auto-expire. A dataset-level default expiration
+        makes BigQuery silently drop the physical snapshot tables after N days
+        while the registry still marks them current — every chart on the dataset
+        then reads a dead ref and errors until a manual Dataset Refresh. Superseded
+        snapshots are GC'd explicitly on each atomic swap (build_table_snapshot),
+        so no default expiration is set. A legacy dataset that still carries one
+        (the old 2-day default) has it CLEARED here so future rebuilds persist."""
         from google.api_core.exceptions import NotFound
         mat_cfg = _materialization_bq_config(config)
         client = None
@@ -1405,14 +1413,25 @@ class DataSourceConnectionService:
             project = str(mat_cfg.get("project_id") or "").strip()
             ref = f"{project}.{dataset_name}"
             try:
-                client.get_dataset(ref)
+                existing = client.get_dataset(ref)
+                # Legacy datasets were created with a 2-day default expiration,
+                # which dropped still-current snapshot tables and broke dashboards.
+                # Clear it (best-effort) so rebuilt snapshots stop expiring.
+                if existing.default_table_expiration_ms is not None:
+                    existing.default_table_expiration_ms = None
+                    try:
+                        client.update_dataset(existing, ["default_table_expiration_ms"])
+                        logger.info("[snapshot] cleared legacy default_table_expiration on %s", ref)
+                    except Exception:  # noqa: BLE001 — not fatal; build still proceeds
+                        logger.warning("[snapshot] could not clear default expiration on %s", ref, exc_info=True)
                 return  # already exists → no create needed (strict-perms friendly)
             except NotFound:
                 pass
             ds = bigquery.Dataset(ref)
             if location:
                 ds.location = location
-            ds.default_table_expiration_ms = 2 * 24 * 60 * 60 * 1000  # 2 days
+            # No default_table_expiration_ms: a fixed expiry would silently drop a
+            # still-current snapshot. Cleanup is explicit (GC on swap).
             client.create_dataset(ds, exists_ok=True)
         finally:
             if client and not _bq_client_is_cached(mat_cfg, client):
