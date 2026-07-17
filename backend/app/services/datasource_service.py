@@ -1276,6 +1276,43 @@ class DataSourceConnectionService:
                 client.close()
 
     @staticmethod
+    def extract_generic_for_snapshot(
+        ds_type: str, config: Dict[str, Any], sql: str, timeout_seconds: int = 280
+    ) -> Tuple[None, List[Dict[str, Any]]]:
+        """EXTRACT step for a NON-BigQuery source (Google Sheets / manual / other
+        warehouse) in a federated dataset: run `sql` on the source's OWN engine
+        and return (None, json_safe_rows). Schema is None → the host LOAD uses
+        BigQuery autodetect, which mirrors the source engine's own column typing
+        (e.g. DuckDB's VARCHAR/BIGINT/DOUBLE for a Google Sheet). Rows are coerced
+        to JSON-loadable values (datetime/date/time→ISO, Decimal→str, bytes→b64)."""
+        import base64
+        import datetime as _dt
+        from decimal import Decimal
+
+        def _coerce(v):
+            if v is None:
+                return None
+            if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+                return v.isoformat()
+            if isinstance(v, Decimal):
+                return str(v)
+            if isinstance(v, bytes):
+                return base64.b64encode(v).decode("ascii")
+            if isinstance(v, dict):
+                return {k: _coerce(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_coerce(x) for x in v]
+            return v
+
+        # execute_query decrypts internally + validates SELECT-only; pass the
+        # source datasource's (encrypted) config exactly like the chart path.
+        _cols, rows, _ms = DataSourceConnectionService.execute_query(
+            ds_type, config, sql, timeout_seconds=timeout_seconds,
+        )
+        safe_rows = [{k: _coerce(val) for k, val in dict(r).items()} for r in rows]
+        return None, safe_rows
+
+    @staticmethod
     def load_bigquery_snapshot(
         config: Dict[str, Any], dataset_name: str, table_name: str,
         bq_schema: list, rows: List[Dict[str, Any]], timeout_seconds: int = 280,
@@ -1290,11 +1327,21 @@ class DataSourceConnectionService:
             client = _build_bigquery_client(mat_cfg)
             project = str(mat_cfg.get("project_id") or "").strip()
             table_ref = f"{project}.{dataset_name}.{table_name}"
-            job_config = bigquery.LoadJobConfig(
-                schema=bq_schema,
-                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            )
+            # BQ source → exact typed schema (parity). Non-BQ source (Sheets /
+            # manual / other warehouse) passes no schema → autodetect from the
+            # JSON value types, which mirrors the source engine's own typing.
+            if bq_schema:
+                job_config = bigquery.LoadJobConfig(
+                    schema=bq_schema,
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                )
+            else:
+                job_config = bigquery.LoadJobConfig(
+                    autodetect=True,
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                )
             job = client.load_table_from_json(rows, table_ref, job_config=job_config)
             job.result(timeout=timeout_seconds)
             return int(getattr(client.get_table(table_ref), "num_rows", len(rows)) or len(rows))

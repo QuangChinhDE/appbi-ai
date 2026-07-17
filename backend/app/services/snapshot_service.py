@@ -89,9 +89,42 @@ def is_enabled(datasource: Optional[DataSource]) -> bool:
 
 
 def should_materialize(table: DatasetTable) -> bool:
-    """MVP scope: only heavy custom-SQL tables. Physical tables are already flat;
-    calendar is generated live; derived tables reference other tables by alias."""
+    """MVP scope (all-BQ perf path): only heavy custom-SQL tables. Physical tables
+    are already flat; calendar is generated live; derived tables reference other
+    tables by alias. UNCHANGED — the all-BigQuery materialization path keys off
+    this exactly as before; federation uses `is_federated_materializable` below."""
     return getattr(table, "source_kind", None) == "sql_query" and bool(table.source_query)
+
+
+def is_federated_materializable(table: DatasetTable) -> bool:
+    """Federation scope: a table whose rows we can copy into the host BigQuery
+    snapshot dataset so the WHOLE dataset runs as one BigQuery query. Covers heavy
+    custom-SQL (sql_query) AND physical tables (e.g. Google Sheets / manual /
+    other-warehouse dims). Excludes generated calendar (rendered inline in BQ) and
+    derived tables (aliased over other tables — not independently extractable)."""
+    kind = getattr(table, "source_kind", None)
+    if kind == "sql_query":
+        return bool(table.source_query)
+    return kind == "physical_table"
+
+
+def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
+    """The BigQuery datasource that HOSTS this dataset's snapshots. For a
+    single-source BQ dataset this is just that datasource; for a MIXED dataset
+    (BQ facts + a Google Sheets dim, etc.) it is the BQ datasource all other
+    tables materialize INTO, so the chart runs entirely in BigQuery. Returns the
+    materialization-enabled BQ datasource among the dataset's tables (lowest id if
+    several), or None when there is no enabled BQ host."""
+    tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+    ds_ids = sorted({t.datasource_id for t in tables if t.datasource_id})
+    if not ds_ids:
+        return None
+    rows = db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all()
+    hosts = sorted(
+        (d for d in rows if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
+        key=lambda d: d.id,
+    )
+    return hosts[0] if hosts else None
 
 
 # ── fingerprint + naming ────────────────────────────────────────────────────
@@ -120,6 +153,20 @@ def _fingerprint(resolved_sql: str, table: DatasetTable) -> str:
 
 
 # ── build (single-flight) ───────────────────────────────────────────────────
+def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
+    """A plain SELECT returning the table's rows on its OWN (non-BigQuery) engine,
+    for the federated extract step. sql_query → wrap the source query; physical →
+    SELECT * from the source table (dialect-quoted)."""
+    from app.services.live_query_service import _dialect_for_ds_type
+    kind = getattr(table, "source_kind", None)
+    if kind == "sql_query" and table.source_query:
+        return f"SELECT * FROM (\n{table.source_query}\n) AS _appbi_src"
+    name = str(getattr(table, "source_table_name", "") or "").strip()
+    dia = _dialect_for_ds_type(_ds_type(source_ds))
+    q = ("`" + name.replace("`", "") + "`") if dia == "mysql" else ('"' + name.replace('"', "") + '"')
+    return f"SELECT * FROM {q}"
+
+
 def build_table_snapshot(
     db: Session,
     dataset_obj: Dataset,
@@ -127,21 +174,41 @@ def build_table_snapshot(
     datasource: DataSource,
     *,
     force: bool = False,
+    host_datasource: Optional[DataSource] = None,
 ) -> Optional[DatasetTableSnapshot]:
     """Ensure a fresh snapshot for one table. Idempotent + single-flight: the
     first caller builds; concurrent callers block then reuse the ready row.
-    Returns the current-ready row, or None on failure (caller falls back to live)."""
-    if not should_materialize(table):
+    Returns the current-ready row, or None on failure (caller falls back to live).
+
+    ``datasource`` is the table's SOURCE (used to EXTRACT). ``host_datasource`` is
+    the BigQuery datasource whose snapshot dataset the rows LOAD into; it defaults
+    to ``datasource`` (the all-BigQuery path — byte-identical to before). When they
+    differ (a Google Sheets / other-warehouse table in a BQ-hosted federated
+    dataset), rows are extracted on the source's own engine and loaded into the
+    host BQ so the whole dataset can be queried in one BigQuery statement."""
+    is_federated = getattr(table, "source_kind", None) != "sql_query" or _ds_type(datasource) != "bigquery"
+    if is_federated:
+        if not is_federated_materializable(table):
+            return None
+    elif not should_materialize(table):
         return None
+
+    host = host_datasource or datasource
+    # Fingerprint + (for a BigQuery source) the resolved BQ SQL to extract.
     try:
-        resolved_sql = _resolved_sql(dataset_obj, table, datasource, db)
+        if _ds_type(datasource) == "bigquery":
+            resolved_sql = _resolved_sql(dataset_obj, table, datasource, db)
+            source_sig = resolved_sql
+        else:
+            resolved_sql = None
+            source_sig = _source_select_sql(datasource, table)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[snapshot] resolve SQL failed for table %s: %s", table.id, exc)
         return None
-    fp = _fingerprint(resolved_sql, table)
-    cfg = settings_for(datasource)
+    fp = _fingerprint(source_sig, table)
+    cfg = settings_for(host)
     snap_dataset = cfg["dataset"]
-    project = str((datasource.config or {}).get("project_id") or "").strip()
+    project = str((host.config or {}).get("project_id") or "").strip()
 
     def _do() -> Optional[DatasetTableSnapshot]:
         # Re-check inside the lock: a concurrent build may have just finished.
@@ -174,16 +241,25 @@ def build_table_snapshot(
 
         t0 = time.time()
         try:
-            # EXTRACT with the datasource's own read credential, LOAD with the
-            # write service account — the write SA never reads the source, and
-            # the snapshot dataset is SA-only (per the chosen access model).
-            location = _source_location(datasource)
-            DataSourceConnectionService.ensure_bigquery_dataset(datasource.config, snap_dataset, location=location)
-            bq_schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
-                datasource.config, resolved_sql, timeout_seconds=_DDL_TIMEOUT_SEC
-            )
+            # EXTRACT with the SOURCE's own read credential, LOAD with the host's
+            # write service account — the write SA never reads the source, and the
+            # host snapshot dataset is SA-only (per the chosen access model). The
+            # snapshot dataset lives in (and is colocated with) the HOST.
+            location = _source_location(host)
+            DataSourceConnectionService.ensure_bigquery_dataset(host.config, snap_dataset, location=location)
+            if _ds_type(datasource) == "bigquery":
+                bq_schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
+                    datasource.config, resolved_sql, timeout_seconds=_DDL_TIMEOUT_SEC
+                )
+            else:
+                # Federated: pull rows on the source's own engine (Sheets/PG/…),
+                # load into the host BQ with autodetect (schema=None).
+                bq_schema, rows = DataSourceConnectionService.extract_generic_for_snapshot(
+                    _ds_type(datasource), datasource.config, source_sig,
+                    timeout_seconds=_DDL_TIMEOUT_SEC,
+                )
             row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
-                datasource.config, snap_dataset, table_name, bq_schema, rows,
+                host.config, snap_dataset, table_name, bq_schema, rows,
                 timeout_seconds=_DDL_TIMEOUT_SEC,
             )
         except Exception as exc:  # noqa: BLE001
@@ -215,23 +291,25 @@ def build_table_snapshot(
         # perf #5 — capture the source watermark (MAX last_modified of the tables
         # this snapshot read) so a later render can detect SOURCE-DATA changes and
         # rebuild only when the data actually changed (change-driven, no spam).
+        # Only meaningful for a BigQuery source; non-BQ → None (TTL fallback).
         try:
-            row.source_watermark = DataSourceConnectionService.bigquery_source_watermark(
-                datasource.config, resolved_sql
+            row.source_watermark = (
+                DataSourceConnectionService.bigquery_source_watermark(datasource.config, resolved_sql)
+                if resolved_sql is not None else None
             )
         except Exception:  # noqa: BLE001 — best-effort; None → TTL fallback
             row.source_watermark = None
         db.commit()
 
-        # Best-effort GC of the just-superseded physical tables.
+        # Best-effort GC of the just-superseded physical tables (in the HOST).
         for p in prior:
             try:
-                DataSourceConnectionService.drop_bigquery_table(datasource.config, p.physical_ref)
+                DataSourceConnectionService.drop_bigquery_table(host.config, p.physical_ref)
             except Exception:  # noqa: BLE001
                 pass
         logger.info(
-            "[snapshot] built table=%s ref=%s rows=%s in %sms",
-            table.id, ref, row.row_count, row.build_ms,
+            "[snapshot] built table=%s ref=%s rows=%s in %sms (federated=%s)",
+            table.id, ref, row.row_count, row.build_ms, is_federated,
         )
         return row
 
@@ -269,13 +347,19 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     datasource_by_id = {
         d.id: d for d in db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
     }
+    # Host = the BQ datasource that snapshots load into. Present → the whole
+    # dataset (incl. Google Sheets / other-source tables) materializes into BQ
+    # and can be queried as one BigQuery statement. Absent → nothing to build.
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    host = resolve_host(db, dataset_id)
     built, skipped = [], []
     for t in tables:
         ds = datasource_by_id.get(t.datasource_id)
-        if not (should_materialize(t) and is_enabled(ds)):
+        if (host is None or ds is None or is_generated_calendar_table(t)
+                or not is_federated_materializable(t)):
             skipped.append(t.id)
             continue
-        row = build_table_snapshot(db, dataset_obj, t, ds, force=force)
+        row = build_table_snapshot(db, dataset_obj, t, ds, force=force, host_datasource=host)
         if row is not None:
             built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
         else:

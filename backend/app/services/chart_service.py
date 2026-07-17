@@ -1848,16 +1848,20 @@ def _resolve_chart_snapshot_overrides(
     engine_filters: dict,
     *,
     ttl_minutes: Optional[int] = None,
-) -> Tuple[Dict[int, str], Optional[Any], str, bool, Optional[int]]:
+) -> Tuple[Dict[int, str], Optional[Any], str, bool, Optional[int], Optional[Any]]:
     """Dashboard perf #5 — decide whether this chart can be served from snapshots.
-    Returns ``(overrides, as_of, mode, stale, trigger_dataset_id)``. Non-empty
+    Returns ``(overrides, as_of, mode, stale, trigger_dataset_id, host)``. Non-empty
     overrides ⇒ the ENTIRE query reads only SA-only snapshot tables (+ inline
-    calendar) and MUST run on the snapshot (service-account) credential.
+    calendar) in the HOST BigQuery and MUST run on the host (service-account)
+    credential with the BigQuery dialect. ``host`` is that BigQuery DataSource
+    (None when live).
 
-    ALL-OR-NOTHING: only when the dataset is snapshot-ELIGIBLE (every table is
-    sql_query or generated_calendar — NO physical/derived table the write SA
-    couldn't read) AND every sql_query table has a current snapshot. Any gap →
-    ``({}, None, "live", False, ...)`` so the chart runs live unchanged.
+    Federated ALL-OR-NOTHING: the dataset must have a BigQuery HOST (an enabled BQ
+    datasource) AND every non-calendar table must be federated-materializable
+    (sql_query OR physical — Sheets/manual/other-warehouse dims included; derived
+    tables are NOT) AND every such table must have a current snapshot in the host.
+    Any gap → ``({}, ..., "live", ..., None)`` so the chart runs live unchanged.
+    When all tables are BigQuery this reduces to the original all-BQ behaviour.
 
     ``ttl_minutes`` (public per-link TTL, Stage 2):
       • None  → builder/authed: use the current snapshot at ANY age, never
@@ -1873,10 +1877,8 @@ def _resolve_chart_snapshot_overrides(
     try:
         from app.services import snapshot_service
         from app.services.dataset_calendar_service import is_generated_calendar_table
-        if not snapshot_service.is_enabled(datasource):
-            return {}, None, "live", False, None
         if ttl_minutes == 0:  # Realtime → always live
-            return {}, None, "live", False, None
+            return {}, None, "live", False, None, None
         from app.models.semantic import SemanticView
         from app.models.dataset import Dataset, DatasetTable
 
@@ -1889,29 +1891,40 @@ def _resolve_chart_snapshot_overrides(
                 dataset_id = bt.dataset_id if bt else None
         dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first() if dataset_id else None
         if dataset_obj is None:
-            return {}, None, "live", False, None
+            return {}, None, "live", False, None, None
+
+        # Host = the enabled BigQuery datasource this dataset materializes INTO.
+        # None → not materialized (no BQ host / not opted in) → live. This is what
+        # lets a MIXED dataset (Sheets base + BigQuery facts) still snapshot: the
+        # host is the BQ datasource, not necessarily the chart's base datasource.
+        host = snapshot_service.resolve_host(db, dataset_obj.id)
+        if host is None:
+            return {}, None, "live", False, None, None
 
         all_tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
-        # Eligible only if the SA (which can't read source) could run the whole
-        # query: every table must be a snapshot (sql_query) or inline calendar.
-        # A physical/derived table would leave a source reference in the SQL.
-        sql_tables = []
+        # Federated all-or-nothing: every non-calendar table must be materializable
+        # INTO the host BQ (sql_query OR physical — Sheets/manual/other dims). A
+        # derived table (aliases other tables) is not independently extractable →
+        # live. Calendar is rendered inline in BQ.
+        mat_tables = []
         for t in all_tables:
             if is_generated_calendar_table(t):
                 continue
-            if not snapshot_service.should_materialize(t):  # physical / derived
-                return {}, None, "live", False, None
-            sql_tables.append(t)
-        if not sql_tables:
-            return {}, None, "live", False, None
+            if not snapshot_service.is_federated_materializable(t):  # derived → bail
+                return {}, None, "live", False, None, None
+            mat_tables.append(t)
+        if not mat_tables:
+            return {}, None, "live", False, None, None
 
         # All-or-nothing: resolve the CURRENT snapshot at any age (serve-stale).
         overrides: Dict[int, str] = {}
-        for t in sql_tables:
+        for t in mat_tables:
             ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)
             if ref is None:
-                # Eligible but not built yet → live now; warm it for next time.
-                return {}, None, "live", False, (dataset_obj.id if ttl_minutes else None)
+                # Eligible but not built yet → warm it. For a federated (mixed)
+                # dataset live can't run (cross-engine), so ALWAYS warm; for an
+                # all-BQ dataset keep the original public-TTL-gated warm.
+                return {}, None, "live", False, dataset_obj.id, None
             overrides[t.id] = ref
         as_of = snapshot_service.as_of(db, list(overrides.keys()))
         stale = snapshot_service.is_stale(as_of, ttl_minutes)
@@ -1919,10 +1932,10 @@ def _resolve_chart_snapshot_overrides(
         # Change-driven refresh: rate-limited background check — rebuild if the
         # SOURCE DATA changed since build (works for builder too; no TTL needed).
         snapshot_service.schedule_source_change_check(dataset_obj.id)
-        return overrides, as_of, "snapshot", stale, trigger
+        return overrides, as_of, "snapshot", stale, trigger, host
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a chart
         logger.warning("[snapshot] override resolution failed; using live", exc_info=True)
-        return {}, None, "live", False, None
+        return {}, None, "live", False, None, None
 
 
 def _is_missing_relation_error(exc: Exception) -> bool:
@@ -2369,23 +2382,32 @@ def _execute_semantic_chart_runtime(
         _snap_ttl = _snapshot_ttl_var.get()
     except LookupError:
         _snap_ttl = None
-    _snap_overrides, _snap_as_of, _snap_mode, _snap_stale, _snap_trigger = _resolve_chart_snapshot_overrides(
+    _snap_overrides, _snap_as_of, _snap_mode, _snap_stale, _snap_trigger, _snap_host = _resolve_chart_snapshot_overrides(
         db, datasource, binding, base_view_name, model_id,
         dimension_refs, measure_refs, engine_filters,
         ttl_minutes=_snap_ttl,
     )
     if _snap_trigger:
-        # Stale (or eligible-but-unbuilt) under a public TTL → warm in the
-        # background; this request still serves the stale/live result instantly.
+        # Stale (or eligible-but-unbuilt) → warm in the background; this request
+        # still serves the stale/live result instantly (or, for a not-yet-built
+        # federated dataset, surfaces the clear cross-source message meanwhile).
         from app.services import snapshot_service as _ss
         _ss.trigger_async_refresh(_snap_trigger)
-    # When snapshots back the whole query, execute with the snapshot (service-
-    # account) credential — the snapshot dataset is SA-only, so the user cred
-    # can't read it. Empty overrides → normal user-cred live execution.
-    _snap_exec_config = (
-        DataSourceConnectionService.snapshot_query_config(datasource.config)
-        if _snap_overrides else None
-    )
+    # When snapshots back the whole query, ALL tables (incl. Google Sheets / other
+    # sources) have been materialized into the HOST BigQuery. So the query runs in
+    # BigQuery on the host's snapshot (service-account) credential — regardless of
+    # the chart's base datasource. Empty overrides → normal user-cred live path.
+    _base_is_bigquery = str(getattr(datasource.type, "value", datasource.type)).lower() == "bigquery"
+    _snap_federated = bool(_snap_overrides) and _snap_host is not None and not _base_is_bigquery
+    if _snap_overrides and _snap_host is not None:
+        _snap_exec_config = DataSourceConnectionService.snapshot_query_config(_snap_host.config)
+        # Snapshot refs render as BigQuery backtick tables → the WHOLE statement
+        # (calendar, time-grain, quoting, functions) must be BigQuery too, even
+        # when the base datasource is Google Sheets/manual (duckdb).
+        dialect = "bigquery"
+        ds_type = "bigquery"
+    else:
+        _snap_exec_config = None
 
     cache_enabled = _should_cache_live_query(ds_type)
     cache_role_config = {
@@ -2640,7 +2662,7 @@ def _execute_semantic_chart_runtime(
         # the snapshot repairs itself for the next view. Only snapshot-backed
         # queries (`_snap_overrides`) take this path, and snapshots are
         # BigQuery-only, so a genuine live query is never silently retried.
-        if _snap_overrides and _is_missing_relation_error(exc):
+        if _snap_overrides and _is_missing_relation_error(exc) and not _snap_federated:
             logger.warning(
                 "[snapshot] snapshot table missing at execute (chart_id=%s ds=%s) — "
                 "falling back to LIVE + triggering rebuild: %s",
@@ -2696,6 +2718,27 @@ def _execute_semantic_chart_runtime(
                 timeout_seconds=timeout,
                 skip_bigquery_cost_check=True,
             )
+        elif _snap_overrides and _is_missing_relation_error(exc) and _snap_federated:
+            # Federated dataset (mixed sources materialized into the host BQ): a
+            # LIVE query CANNOT run (it would join across engines), so there is no
+            # live fallback. Trigger a rebuild and ask the viewer to retry once the
+            # snapshot is back.
+            logger.warning(
+                "[snapshot] federated snapshot table missing (chart_id=%s ds=%s) — "
+                "triggering rebuild (no live fallback): %s",
+                _pbi_current_chart_id(), datasource.id, str(exc)[:300],
+            )
+            try:
+                _ds_id_for_rebuild = binding.get("datasetId")
+                if _ds_id_for_rebuild:
+                    from app.services import snapshot_service as _ss
+                    _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
+            except Exception:  # noqa: BLE001 — rebuild is best-effort
+                logger.debug("[snapshot] federated rebuild trigger failed", exc_info=True)
+            raise ValueError(
+                "Snapshot của dataset (nguồn trộn Google Sheets + BigQuery) đang được "
+                "dựng lại — vui lòng thử lại sau giây lát. Nếu lặp lại, bấm Refresh trên Dataset."
+            ) from exc
         else:
             logger.exception(
                 "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
