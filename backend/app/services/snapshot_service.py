@@ -370,7 +370,7 @@ _RETAIN_COMPLETE_GENERATIONS = 2  # latest + previous (in-flight query fallback)
 
 
 def resolve_generation_refs(
-    db: Session, table_ids: List[int]
+    db: Session, table_ids: List[int], *, before_generation: Optional[int] = None
 ) -> Tuple[Dict[int, str], Dict[int, str], Optional[int], Optional[datetime]]:
     """Resolve physical refs for ALL ``table_ids`` from ONE consistent snapshot
     generation (the newest generation that covers every table — issue #8/#9).
@@ -399,6 +399,14 @@ def resolve_generation_refs(
             continue
         by_gen.setdefault(int(r.generation), {})[r.dataset_table_id] = r
     complete = [g for g, m in by_gen.items() if want <= set(m.keys())]
+    if before_generation is not None:
+        # Phase 7 (#16): fallback resolve — the newest complete generation
+        # STRICTLY OLDER than the one that just failed (its physical tables are
+        # retained by the delayed GC), so a federated dataset can keep serving
+        # instead of erroring while the failed generation rebuilds.
+        complete = [g for g in complete if g < int(before_generation)]
+        if not complete:
+            return {}, {}, None, None  # no older complete generation retained
     if complete:
         g = max(complete)
         m = by_gen[g]
@@ -684,11 +692,19 @@ _async_refresh_lock = threading.Lock()
 _MAX_CONCURRENT_REBUILDS = 1
 
 
+_REBUILD_LEASE_SECONDS = 1800  # cross-worker lease; self-expires if a worker dies
+
+
 def _reserve_rebuild_slot(dataset_id: int) -> bool:
-    """Reserve a global rebuild slot for `dataset_id` under `_async_refresh_lock`.
+    """Reserve a rebuild slot for `dataset_id` under `_async_refresh_lock`.
     Returns False (caller must NOT rebuild) when this dataset is already building
-    OR the global concurrency cap is reached. Caller frees the slot in `finally`
-    via `_async_refresh_inflight.pop`. MUST be called while holding the lock."""
+    OR the concurrency cap is reached. Caller frees the slot in `finally` via
+    `_release_rebuild_slot`. MUST be called while holding the lock.
+
+    Phase 7 (#36): dedup is now also CROSS-WORKER — a shared lease (backed by the
+    shared sqlite in-flight table) is claimed per dataset, so two uvicorn workers
+    can no longer both rebuild the same dataset. The in-process cap stays as the
+    per-worker concurrency bound."""
     if dataset_id in _async_refresh_inflight:
         return False
     if len(_async_refresh_inflight) >= _MAX_CONCURRENT_REBUILDS:
@@ -697,8 +713,18 @@ def _reserve_rebuild_slot(dataset_id: int) -> bool:
             _MAX_CONCURRENT_REBUILDS, dataset_id,
         )
         return False
+    if not _qc.try_claim_global(f"snaprebuild::{dataset_id}", _REBUILD_LEASE_SECONDS):
+        logger.info("[snapshot] dataset=%s already rebuilding in another worker; skipping", dataset_id)
+        return False
     _async_refresh_inflight[dataset_id] = time.time()
     return True
+
+
+def _release_rebuild_slot(dataset_id: int) -> None:
+    """Free both the in-process slot and the cross-worker lease."""
+    with _async_refresh_lock:
+        _async_refresh_inflight.pop(dataset_id, None)
+    _qc.release_global(f"snaprebuild::{dataset_id}")
 
 
 def trigger_async_refresh(dataset_id: int) -> None:
@@ -720,8 +746,7 @@ def trigger_async_refresh(dataset_id: int) -> None:
             logger.warning("[snapshot] async TTL rebuild failed dataset=%s", dataset_id, exc_info=True)
         finally:
             db.close()
-            with _async_refresh_lock:
-                _async_refresh_inflight.pop(dataset_id, None)
+            _release_rebuild_slot(dataset_id)
 
     threading.Thread(target=_run, name=f"snap-refresh-{dataset_id}", daemon=True).start()
 
@@ -812,8 +837,7 @@ def schedule_source_change_check(dataset_id: int) -> None:
                 refresh_all_for_dataset(db, dataset_id, force=True)
                 logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)
             finally:
-                with _async_refresh_lock:
-                    _async_refresh_inflight.pop(dataset_id, None)
+                _release_rebuild_slot(dataset_id)
         except Exception:  # noqa: BLE001 — background best-effort
             logger.warning("[snapshot] source-change check failed dataset=%s", dataset_id, exc_info=True)
         finally:
@@ -848,7 +872,13 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
     if not ids:
         return []
     with _async_refresh_lock:
-        claimed = [d for d in ids if d not in _async_refresh_inflight]
+        # Phase 7 (#36): claim each dataset's CROSS-WORKER lease too, so a manual
+        # refresh and another worker's TTL/watermark rebuild can't double-build.
+        claimed = [
+            d for d in ids
+            if d not in _async_refresh_inflight
+            and _qc.try_claim_global(f"snaprebuild::{d}", _REBUILD_LEASE_SECONDS)
+        ]
         for d in claimed:
             _async_refresh_inflight[d] = time.time()
     if not claimed:
@@ -867,8 +897,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
                 finally:
                     # Release each dataset as it finishes so freshness polling
                     # reflects real progress instead of flipping only at the end.
-                    with _async_refresh_lock:
-                        _async_refresh_inflight.pop(d, None)
+                    _release_rebuild_slot(d)
         finally:
             db.close()
 
@@ -879,12 +908,22 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
 def datasets_rebuilding(dataset_ids: List[int]) -> bool:
     """True if ANY of the given datasets currently has a snapshot rebuild in
     flight (manual or auto). Drives the client's "đang làm mới…" poll after an
-    async refresh so the UI knows when the rebuild has actually finished."""
+    async refresh so the UI knows when the rebuild has actually finished.
+
+    Phase 7 (#38): also consults the CROSS-WORKER lease, so the poll is accurate
+    even when the request lands on a different uvicorn worker than the one
+    running the rebuild (previously it answered from per-process state only)."""
+    ids = []
     with _async_refresh_lock:
         for d in dataset_ids or []:
             try:
-                if int(d) in _async_refresh_inflight:
-                    return True
+                di = int(d)
             except (TypeError, ValueError):
                 continue
+            if di in _async_refresh_inflight:
+                return True
+            ids.append(di)
+    for di in ids:
+        if _qc.is_claimed_global(f"snaprebuild::{di}"):
+            return True
     return False

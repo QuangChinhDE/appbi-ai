@@ -513,6 +513,9 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         "data_source_mode": raw_debug.get("data_source_mode"),
         "snapshot_as_of": raw_debug.get("snapshot_as_of"),
         "snapshot_stale": raw_debug.get("snapshot_stale"),
+        # Phase 8 (#47): planner decision surfaced end-to-end (state + why).
+        "execution_state": raw_debug.get("execution_state"),
+        "execution_reason": raw_debug.get("execution_reason"),
     }
 
 
@@ -1842,14 +1845,38 @@ def _is_missing_relation_error(exc: Exception) -> bool:
     """True when a query failed because a physical table/relation is missing —
     e.g. a snapshot table dropped by BigQuery table-expiration (or GC) while the
     registry still marks it current. Used to fall back to a LIVE query + trigger a
-    rebuild instead of failing the whole chart."""
+    rebuild instead of failing the whole chart.
+
+    Phase 8 (#44): detection is CODE-FIRST — the provider's typed exception
+    (google NotFound / psycopg2 UndefinedTable) is checked on the exception AND
+    its cause chain before any string matching. The string fallback is kept for
+    wrapped/re-raised errors but narrowed: the bare \"404\" token is gone (any
+    error message containing an id like 404… used to trigger a spurious live
+    retry)."""
+    # 1) typed provider exceptions (walk the cause/context chain)
+    seen = set()
+    node: Optional[BaseException] = exc
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        try:
+            from google.api_core.exceptions import NotFound as _GNotFound
+            if isinstance(node, _GNotFound):
+                return True
+        except Exception:  # noqa: BLE001 — google lib absent → skip
+            pass
+        try:
+            from psycopg2 import errors as _pg_errors
+            if isinstance(node, (_pg_errors.UndefinedTable,)):
+                return True
+        except Exception:  # noqa: BLE001 — psycopg2 absent → skip
+            pass
+        node = node.__cause__ or node.__context__
+    # 2) narrowed string fallback (wrapped errors that lost their type)
     msg = str(exc).lower()
     return (
-        "not found" in msg          # BigQuery: "Not found: Table project:ds.snap_t..."
-        or "notfound" in msg
+        "not found: table" in msg   # BigQuery message shape
         or "was not found" in msg
         or "does not exist" in msg  # Postgres-style relation errors
-        or "404" in msg
     )
 
 
@@ -2309,6 +2336,10 @@ def _execute_semantic_chart_runtime(
             f"gen:{plan.generation}" if plan.generation
             else (_snap_as_of.isoformat() if _snap_as_of else None)
         ),
+        # Phase 7 (#31): the EXECUTION host is part of the cache identity — a
+        # snapshot-backed result executed on the host SA must never be served
+        # for (or collide with) a live run on the source credential.
+        "_exec_host": (plan.host_id if plan.exec_config is not None else None),
         # Phase-15.xx — time_grains MUST be part of the cache key. Two
         # requests with identical dimensions/measures but different date
         # grains (raw daily vs month bucketing) otherwise collapse onto the
@@ -2404,206 +2435,143 @@ def _execute_semantic_chart_runtime(
             )
             return cached
 
-    # [perf] cache MISS — this request WILL rebuild the model + generate SQL +
-    # (BigQuery) dry-run + query the source. These are the slow tiles a DA
-    # feels on a cold dashboard; grep ``[perf] semantic chart cache=MISS`` to
-    # see how many tiles actually hit the source per page load.
-    logger.info(
-        "[perf] semantic chart cache=MISS chart_id=%s ds=%s ds_type=%s explore=%s "
-        "dims=%d measures=%d filters=%d (will: rebuild-model, sql-gen%s)",
-        _pbi_current_chart_id(), datasource.id, ds_type, explore_name,
-        len(dimension_refs), len(measure_refs), len(cache_filters),
-        ", bq-dry-run+query" if ds_type == "bigquery" else "",
-    )
-
-    # Phase-12.7: explicit try around generate_sql so the caller and API
-    # endpoint see a ValueError with the engine's Vietnamese message
-    # (Phase-11), not an opaque internal exception. ValueError bubbles up
-    # — the chart API layer maps it to 400.
-    engine = SemanticQueryEngine(db, database_type=dialect)
-    # Unified engine entry — the chart now builds a SemanticQuerySpec (the SAME
-    # contract the preview + direct-API paths use) and runs it; no path bypasses
-    # the spec/compiler any more. dimension_refs / measure_refs / agg_overrides
-    # came from the shared classify_semantic_roles above.
-    from app.services.semantic_query_compiler import SemanticQuerySpec
-    _spec = SemanticQuerySpec(
-        explore_name=explore_name,
-        dimensions=dimension_refs,
-        measures=measure_refs,
-        measure_agg_overrides=agg_overrides or {},
-        filters=engine_filters,
-        time_grains=time_grains or {},
-        sorts=chart_sorts,
-        window_functions=chart_window_functions,
-        limit=effective_limit,
-        model_id=model_id,
-        explore_id=explore_id,
-        response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
-        diagnostics=filter_diagnostics,
-        snapshot_overrides=_snap_overrides,
-    )
+    # Phase 7 (#32) — coalescing-leader safety: everything from here to the
+    # cache write runs under a guard that RELEASES the cross-worker in-flight
+    # marker if this request fails. Without it, a failed leader left waiters
+    # in other workers polling until the lease expired.
     try:
-        sql, _engine_columns, _pivot_metadata = engine.run(_spec)
-        # [pbi-filter] full SQL dump correlated to chart_id. DA can grep
-        # ``[pbi-filter] sql chart_id=<N>`` to see exactly what hit
-        # BigQuery for one specific tile (especially useful for KPI /
-        # Table charts where measure-filter behaviour was reported as
-        # inconsistent).  Truncated at 4000 chars to keep log lines
-        # readable; semantic_emit log still carries the truncated 1500-
-        # char preview as a fallback. Temporary instrumentation.
+        # [perf] cache MISS — this request WILL rebuild the model + generate SQL +
+        # (BigQuery) dry-run + query the source. These are the slow tiles a DA
+        # feels on a cold dashboard; grep ``[perf] semantic chart cache=MISS`` to
+        # see how many tiles actually hit the source per page load.
         logger.info(
-            "[pbi-filter] sql chart_id=%s dialect=%s chart_type=%s n_dims=%d n_measures=%d sql=%s",
-            _pbi_current_chart_id(),
-            dialect,
-            str(getattr(chart_type, "value", chart_type) or "?"),
-            len(dimension_refs),
-            len(measure_refs),
-            sql.replace("\n", " ")[:4000],
-        )
-    except ValueError:
-        # Already carries a friendly VN message; let it propagate so the
-        # API layer can turn it into a 400 with that text intact.
-        raise
-    except Exception as exc:
-        logger.exception(
-            "Semantic chart SQL generation failed: explore=%s dialect=%s",
-            explore_name, dialect,
-        )
-        raise ValueError(
-            f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
-            "Báo dev kiểm tra explore + measure config."
-        ) from exc
-
-    # Cross-engine leak guard (deterministic): a cross-source dataset can inline
-    # one table's NATIVE SQL into another engine's query — e.g. a BigQuery
-    # sql_query table (`project.dataset.table` backtick refs + SELECT * EXCEPT)
-    # joined under a Google Sheets base that runs on DuckDB. DuckDB then rejects
-    # the BigQuery syntax with an opaque "syntax error at or near \`". Detect the
-    # foreign syntax in the GENERATED SQL (independent of how the dataset's
-    # datasources resolve) and fail with a clear, actionable message instead.
-    _leak = _detect_foreign_dialect_leak(sql, dialect)
-    if _leak:
-        raise ValueError(
-            "Biểu đồ này không chạy được vì dataset đang trộn nhiều nguồn khác "
-            f"engine nhau (phát hiện {_leak} trong truy vấn chạy trên '{dialect}'). "
-            "Một biểu đồ chỉ chạy trên MỘT engine — không thể JOIN bảng Google "
-            "Sheets với bảng BigQuery trong cùng một truy vấn. Hãy đưa tất cả bảng "
-            "về CÙNG một nguồn (khuyến nghị: cùng trên BigQuery) hoặc tách thành "
-            "các dataset riêng theo nguồn."
+            "[perf] semantic chart cache=MISS chart_id=%s ds=%s ds_type=%s explore=%s "
+            "dims=%d measures=%d filters=%d (will: rebuild-model, sql-gen%s)",
+            _pbi_current_chart_id(), datasource.id, ds_type, explore_name,
+            len(dimension_refs), len(measure_refs), len(cache_filters),
+            ", bq-dry-run+query" if ds_type == "bigquery" else "",
         )
 
-    # Cache key + lookup already ran BEFORE engine.run() above (perf: a
-    # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
-    # Reaching here means a cache MISS, so we generated SQL and now execute.
-
-    # Execution credential: snapshot-backed queries read the SA-only snapshot
-    # dataset → run on the service-account config; else the datasource's own cred.
-    _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
-
-    # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
-    # The warehouse query below can run up to 60s. The request's ORM Session has
-    # an open (read-only) transaction from loading the chart/model, which pins a
-    # pooled DB connection for that whole 60s. N concurrent tiles (a dashboard
-    # open, or a post-Refresh re-fetch) then pin N connections → QueuePool
-    # (pool_size + max_overflow) is exhausted and EVERY later request — including
-    # /health — blocks on pool_timeout. Everything needed for execution is
-    # already captured in plain locals (`_exec_config`, `sql`, `ds_type`); commit
-    # ends the txn so the connection returns to the pool for the BQ wait.
-    # Post-query code only touches `datasource.id` (PK — no reload) + plain
-    # locals; any other ORM access re-acquires a connection lazily.
-    try:
-        db.commit()
-    except Exception:  # noqa: BLE001 — read path: nothing critical pending
-        db.rollback()
-
-    # BigQuery cost guard (mirrors LiveQueryService behavior).
-    if ds_type == "bigquery":
-        config = decrypt_config(_exec_config)
-        estimated_bytes = _estimate_bigquery_bytes(config, sql)
-        max_bytes = settings.BQ_MAX_BYTES_SCANNED
-        if estimated_bytes > max_bytes:
-            gb_est = estimated_bytes / (1024**3)
-            gb_max = max_bytes / (1024**3)
+        # Phase-12.7: explicit try around generate_sql so the caller and API
+        # endpoint see a ValueError with the engine's Vietnamese message
+        # (Phase-11), not an opaque internal exception. ValueError bubbles up
+        # — the chart API layer maps it to 400.
+        engine = SemanticQueryEngine(db, database_type=dialect)
+        # Unified engine entry — the chart now builds a SemanticQuerySpec (the SAME
+        # contract the preview + direct-API paths use) and runs it; no path bypasses
+        # the spec/compiler any more. dimension_refs / measure_refs / agg_overrides
+        # came from the shared classify_semantic_roles above.
+        from app.services.semantic_query_compiler import SemanticQuerySpec
+        _spec = SemanticQuerySpec(
+            explore_name=explore_name,
+            dimensions=dimension_refs,
+            measures=measure_refs,
+            measure_agg_overrides=agg_overrides or {},
+            filters=engine_filters,
+            time_grains=time_grains or {},
+            sorts=chart_sorts,
+            window_functions=chart_window_functions,
+            limit=effective_limit,
+            model_id=model_id,
+            explore_id=explore_id,
+            response_aliases=_build_semantic_alias_map(dimension_refs + measure_refs),
+            diagnostics=filter_diagnostics,
+            snapshot_overrides=_snap_overrides,
+        )
+        try:
+            sql, _engine_columns, _pivot_metadata = engine.run(_spec)
+            # [pbi-filter] full SQL dump correlated to chart_id. DA can grep
+            # ``[pbi-filter] sql chart_id=<N>`` to see exactly what hit
+            # BigQuery for one specific tile (especially useful for KPI /
+            # Table charts where measure-filter behaviour was reported as
+            # inconsistent).  Truncated at 4000 chars to keep log lines
+            # readable; semantic_emit log still carries the truncated 1500-
+            # char preview as a fallback. Temporary instrumentation.
+            logger.info(
+                "[pbi-filter] sql chart_id=%s dialect=%s chart_type=%s n_dims=%d n_measures=%d sql=%s",
+                _pbi_current_chart_id(),
+                dialect,
+                str(getattr(chart_type, "value", chart_type) or "?"),
+                len(dimension_refs),
+                len(measure_refs),
+                sql.replace("\n", " ")[:4000],
+            )
+        except ValueError:
+            # Already carries a friendly VN message; let it propagate so the
+            # API layer can turn it into a 400 with that text intact.
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Semantic chart SQL generation failed: explore=%s dialect=%s",
+                explore_name, dialect,
+            )
             raise ValueError(
-                f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
-                f"Add filters (e.g. date range) to reduce the data scanned."
+                f"Lỗi sinh SQL semantic ({dialect}): {exc}. "
+                "Báo dev kiểm tra explore + measure config."
+            ) from exc
+
+        # Cross-engine leak guard (deterministic): a cross-source dataset can inline
+        # one table's NATIVE SQL into another engine's query — e.g. a BigQuery
+        # sql_query table (`project.dataset.table` backtick refs + SELECT * EXCEPT)
+        # joined under a Google Sheets base that runs on DuckDB. DuckDB then rejects
+        # the BigQuery syntax with an opaque "syntax error at or near \`". Detect the
+        # foreign syntax in the GENERATED SQL (independent of how the dataset's
+        # datasources resolve) and fail with a clear, actionable message instead.
+        _leak = _detect_foreign_dialect_leak(sql, dialect)
+        if _leak:
+            raise ValueError(
+                "Biểu đồ này không chạy được vì dataset đang trộn nhiều nguồn khác "
+                f"engine nhau (phát hiện {_leak} trong truy vấn chạy trên '{dialect}'). "
+                "Một biểu đồ chỉ chạy trên MỘT engine — không thể JOIN bảng Google "
+                "Sheets với bảng BigQuery trong cùng một truy vấn. Hãy đưa tất cả bảng "
+                "về CÙNG một nguồn (khuyến nghị: cùng trên BigQuery) hoặc tách thành "
+                "các dataset riêng theo nguồn."
             )
 
-    timeout = 60 if ds_type == "bigquery" else 30
-    start = time.time()
-    # Phase-12.7: wrap execute so connection errors / dialect mismatch /
-    # missing physical column at the datasource surface as a ValueError
-    # with debugging context, not a generic 500. ValueError because the
-    # chart API endpoint maps ValueError → 4xx with the message intact.
-    try:
-        _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
-            ds_type,
-            _exec_config,
-            sql,
-            timeout_seconds=timeout,
-            skip_bigquery_cost_check=True,
-        )
-    except Exception as exc:
-        # ── Self-heal: snapshot table missing → fall back to LIVE + rebuild ──
-        # A snapshot-backed query can fail because the physical snapshot table
-        # was dropped (BigQuery table-expiration / GC) while the registry still
-        # marks it current. Rather than error the WHOLE chart (and every other
-        # chart on the dataset), fall back to a LIVE query — FULL data, no cap —
-        # on the datasource's OWN credential, and trigger a background rebuild so
-        # the snapshot repairs itself for the next view. Only snapshot-backed
-        # queries (`_snap_overrides`) take this path, and snapshots are
-        # BigQuery-only, so a genuine live query is never silently retried.
-        if _snap_overrides and _is_missing_relation_error(exc) and not _snap_federated:
-            logger.warning(
-                "[snapshot] snapshot table missing at execute (chart_id=%s ds=%s) — "
-                "falling back to LIVE + triggering rebuild: %s",
-                _pbi_current_chart_id(), datasource.id, str(exc)[:300],
-            )
-            try:
-                # Planner-resolved dataset id (works even when the binding lacks
-                # datasetId, e.g. the preview path — resolved via the base view).
-                _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
-                if _ds_id_for_rebuild:
-                    from app.services import snapshot_service as _ss
-                    _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
-            except Exception:  # noqa: BLE001 — rebuild is best-effort
-                logger.debug("[snapshot] rebuild trigger after missing table failed", exc_info=True)
-            # Regenerate the query WITHOUT snapshot overrides → live SQL on source.
-            import dataclasses as _dc
-            _live_spec = _dc.replace(_spec, snapshot_overrides={})
-            try:
-                sql, _engine_columns, _pivot_metadata = engine.run(_live_spec)
-            except Exception:
-                logger.exception("Semantic chart LIVE regen failed after missing snapshot")
+        # Cache key + lookup already ran BEFORE engine.run() above (perf: a
+        # cache HIT must not pay the semantic model rebuild or a BQ dry-run).
+        # Reaching here means a cache MISS, so we generated SQL and now execute.
+
+        # Execution credential: snapshot-backed queries read the SA-only snapshot
+        # dataset → run on the service-account config; else the datasource's own cred.
+        _exec_config = _snap_exec_config if _snap_exec_config is not None else datasource.config
+
+        # ── DB connection release (QueuePool exhaustion fix) ─────────────────────
+        # The warehouse query below can run up to 60s. The request's ORM Session has
+        # an open (read-only) transaction from loading the chart/model, which pins a
+        # pooled DB connection for that whole 60s. N concurrent tiles (a dashboard
+        # open, or a post-Refresh re-fetch) then pin N connections → QueuePool
+        # (pool_size + max_overflow) is exhausted and EVERY later request — including
+        # /health — blocks on pool_timeout. Everything needed for execution is
+        # already captured in plain locals (`_exec_config`, `sql`, `ds_type`); commit
+        # ends the txn so the connection returns to the pool for the BQ wait.
+        # Post-query code only touches `datasource.id` (PK — no reload) + plain
+        # locals; any other ORM access re-acquires a connection lazily.
+        try:
+            db.commit()
+        except Exception:  # noqa: BLE001 — read path: nothing critical pending
+            db.rollback()
+
+        # BigQuery cost guard (mirrors LiveQueryService behavior).
+        if ds_type == "bigquery":
+            config = decrypt_config(_exec_config)
+            estimated_bytes = _estimate_bigquery_bytes(config, sql)
+            max_bytes = settings.BQ_MAX_BYTES_SCANNED
+            if estimated_bytes > max_bytes:
+                gb_est = estimated_bytes / (1024**3)
+                gb_max = max_bytes / (1024**3)
                 raise ValueError(
-                    f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
-                    "Snapshot đã hết hạn và không dựng lại được SQL trực tiếp — "
-                    "thử bấm Refresh trên Dataset."
-                ) from exc
-            _exec_config = datasource.config
-            _snap_overrides = {}
-            _snap_mode = "live"
-            _snap_stale = False
-            _snap_as_of = None
-            # Regen re-opened a read txn (engine loads the model) → release the
-            # pooled DB connection before the up-to-60s live BQ wait (same
-            # QueuePool-exhaustion guard as the primary path above).
-            try:
-                db.commit()
-            except Exception:  # noqa: BLE001
-                db.rollback()
-            # Live BigQuery can scan far more than a flat snapshot table → re-run
-            # the byte-cost guard on the regenerated SQL.
-            if ds_type == "bigquery":
-                _live_cfg = decrypt_config(_exec_config)
-                _live_bytes = _estimate_bigquery_bytes(_live_cfg, sql)
-                if _live_bytes > settings.BQ_MAX_BYTES_SCANNED:
-                    gb_est = _live_bytes / (1024**3)
-                    gb_max = settings.BQ_MAX_BYTES_SCANNED / (1024**3)
-                    raise ValueError(
-                        f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
-                        f"Add filters (e.g. date range) to reduce the data scanned."
-                    )
+                    f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                    f"Add filters (e.g. date range) to reduce the data scanned."
+                )
+
+        timeout = 60 if ds_type == "bigquery" else 30
+        start = time.time()
+        # Phase-12.7: wrap execute so connection errors / dialect mismatch /
+        # missing physical column at the datasource surface as a ValueError
+        # with debugging context, not a generic 500. ValueError because the
+        # chart API endpoint maps ValueError → 4xx with the message intact.
+        try:
             _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
                 ds_type,
                 _exec_config,
@@ -2611,124 +2579,240 @@ def _execute_semantic_chart_runtime(
                 timeout_seconds=timeout,
                 skip_bigquery_cost_check=True,
             )
-        elif _snap_overrides and _is_missing_relation_error(exc) and _snap_federated:
-            # Federated dataset (mixed sources materialized into the host BQ): a
-            # LIVE query CANNOT run (it would join across engines), so there is no
-            # live fallback. Trigger a rebuild and ask the viewer to retry once the
-            # snapshot is back.
-            logger.warning(
-                "[snapshot] federated snapshot table missing (chart_id=%s ds=%s) — "
-                "triggering rebuild (no live fallback): %s",
-                _pbi_current_chart_id(), datasource.id, str(exc)[:300],
-            )
-            try:
-                # Planner-resolved dataset id (works even when the binding lacks
-                # datasetId, e.g. the preview path — resolved via the base view).
-                _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
-                if _ds_id_for_rebuild:
+        except Exception as exc:
+            # ── Self-heal: snapshot table missing → fall back to LIVE + rebuild ──
+            # A snapshot-backed query can fail because the physical snapshot table
+            # was dropped (BigQuery table-expiration / GC) while the registry still
+            # marks it current. Rather than error the WHOLE chart (and every other
+            # chart on the dataset), fall back to a LIVE query — FULL data, no cap —
+            # on the datasource's OWN credential, and trigger a background rebuild so
+            # the snapshot repairs itself for the next view. Only snapshot-backed
+            # queries (`_snap_overrides`) take this path, and snapshots are
+            # BigQuery-only, so a genuine live query is never silently retried.
+            if _snap_overrides and _is_missing_relation_error(exc) and not _snap_federated:
+                logger.warning(
+                    "[snapshot] snapshot table missing at execute (chart_id=%s ds=%s) — "
+                    "falling back to LIVE + triggering rebuild: %s",
+                    _pbi_current_chart_id(), datasource.id, str(exc)[:300],
+                )
+                try:
+                    # Planner-resolved dataset id (works even when the binding lacks
+                    # datasetId, e.g. the preview path — resolved via the base view).
+                    _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
+                    if _ds_id_for_rebuild:
+                        from app.services import snapshot_service as _ss
+                        _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
+                except Exception:  # noqa: BLE001 — rebuild is best-effort
+                    logger.debug("[snapshot] rebuild trigger after missing table failed", exc_info=True)
+                # Regenerate the query WITHOUT snapshot overrides → live SQL on source.
+                import dataclasses as _dc
+                _live_spec = _dc.replace(_spec, snapshot_overrides={})
+                try:
+                    sql, _engine_columns, _pivot_metadata = engine.run(_live_spec)
+                except Exception:
+                    logger.exception("Semantic chart LIVE regen failed after missing snapshot")
+                    raise ValueError(
+                        f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+                        "Snapshot đã hết hạn và không dựng lại được SQL trực tiếp — "
+                        "thử bấm Refresh trên Dataset."
+                    ) from exc
+                _exec_config = datasource.config
+                _snap_overrides = {}
+                _snap_mode = "live"
+                _snap_stale = False
+                _snap_as_of = None
+                # Regen re-opened a read txn (engine loads the model) → release the
+                # pooled DB connection before the up-to-60s live BQ wait (same
+                # QueuePool-exhaustion guard as the primary path above).
+                try:
+                    db.commit()
+                except Exception:  # noqa: BLE001
+                    db.rollback()
+                # Live BigQuery can scan far more than a flat snapshot table → re-run
+                # the byte-cost guard on the regenerated SQL.
+                if ds_type == "bigquery":
+                    _live_cfg = decrypt_config(_exec_config)
+                    _live_bytes = _estimate_bigquery_bytes(_live_cfg, sql)
+                    if _live_bytes > settings.BQ_MAX_BYTES_SCANNED:
+                        gb_est = _live_bytes / (1024**3)
+                        gb_max = settings.BQ_MAX_BYTES_SCANNED / (1024**3)
+                        raise ValueError(
+                            f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                            f"Add filters (e.g. date range) to reduce the data scanned."
+                        )
+                _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+                    ds_type,
+                    _exec_config,
+                    sql,
+                    timeout_seconds=timeout,
+                    skip_bigquery_cost_check=True,
+                )
+            elif _snap_overrides and _is_missing_relation_error(exc) and _snap_federated:
+                # Federated dataset (mixed sources materialized into the host BQ): a
+                # LIVE query CANNOT run (it would join across engines). Phase 7 (#16):
+                # before giving up, fall back to the PREVIOUS complete snapshot
+                # generation — its physical tables are retained by the delayed GC —
+                # and trigger a rebuild of the broken one in the background.
+                logger.warning(
+                    "[snapshot] federated snapshot table missing (chart_id=%s ds=%s) — "
+                    "trying previous generation + triggering rebuild: %s",
+                    _pbi_current_chart_id(), datasource.id, str(exc)[:300],
+                )
+                try:
+                    # Planner-resolved dataset id (works even when the binding lacks
+                    # datasetId, e.g. the preview path — resolved via the base view).
+                    _ds_id_for_rebuild = _plan_dataset_id or binding.get("datasetId")
+                    if _ds_id_for_rebuild:
+                        from app.services import snapshot_service as _ss
+                        _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
+                except Exception:  # noqa: BLE001 — rebuild is best-effort
+                    logger.debug("[snapshot] federated rebuild trigger failed", exc_info=True)
+                _prev_refs: Dict[int, str] = {}
+                try:
                     from app.services import snapshot_service as _ss
-                    _ss.trigger_async_refresh(int(_ds_id_for_rebuild))
-            except Exception:  # noqa: BLE001 — rebuild is best-effort
-                logger.debug("[snapshot] federated rebuild trigger failed", exc_info=True)
-            raise ValueError(
-                "Snapshot của dataset (nguồn trộn Google Sheets + BigQuery) đang được "
-                "dựng lại — vui lòng thử lại sau giây lát. Nếu lặp lại, bấm Refresh trên Dataset."
-            ) from exc
-        else:
-            logger.exception(
-                "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
-                ds_type, dialect, sql[:500],
-            )
-            # STRICT (PowerBI fail-loud): a generated chart on a modeled dataset
-            # has NO fallback for a genuine SQL/relationship error. If the semantic
-            # SQL errors on the datasource we surface it as a 400 with the engine's
-            # Vietnamese message — we do NOT silently degrade to a base-scoped
-            # legacy result. (The snapshot-missing case above is the ONE exception,
-            # because it's a serving artefact, not a modelling error.)
-            raise ValueError(
-                f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
-                "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
-                "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
-            ) from exc
-    elapsed_ms = (time.time() - start) * 1000
+                    _prev_refs, _pfps, _prev_gen, _prev_asof = _ss.resolve_generation_refs(
+                        db, list(_snap_overrides.keys()),
+                        before_generation=plan.generation,
+                    )
+                except Exception:  # noqa: BLE001 — fallback resolve is best-effort
+                    logger.debug("[snapshot] previous-generation resolve failed", exc_info=True)
+                if _prev_refs:
+                    logger.warning(
+                        "[snapshot] serving PREVIOUS generation %s for chart_id=%s while rebuild runs",
+                        _prev_gen, _pbi_current_chart_id(),
+                    )
+                    import dataclasses as _dc
+                    _prev_spec = _dc.replace(_spec, snapshot_overrides=_prev_refs)
+                    sql, _engine_columns, _pivot_metadata = engine.run(_prev_spec)
+                    _snap_overrides = dict(_prev_refs)
+                    _snap_as_of = _prev_asof
+                    _snap_stale = True  # older than intended — surface as stale
+                    try:
+                        db.commit()  # pool-release before the BQ wait (same guard as above)
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
+                    _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+                        ds_type,
+                        _exec_config,
+                        sql,
+                        timeout_seconds=timeout,
+                        skip_bigquery_cost_check=True,
+                    )
+                else:
+                    raise ValueError(
+                        "Snapshot của dataset (nguồn trộn nhiều engine) đang được dựng lại "
+                        "— vui lòng thử lại sau giây lát. Nếu lặp lại, bấm Refresh trên Dataset."
+                    ) from exc
+            else:
+                logger.exception(
+                    "Semantic chart execute failed: ds_type=%s dialect=%s sql=%s",
+                    ds_type, dialect, sql[:500],
+                )
+                # STRICT (PowerBI fail-loud): a generated chart on a modeled dataset
+                # has NO fallback for a genuine SQL/relationship error. If the semantic
+                # SQL errors on the datasource we surface it as a 400 with the engine's
+                # Vietnamese message — we do NOT silently degrade to a base-scoped
+                # legacy result. (The snapshot-missing case above is the ONE exception,
+                # because it's a serving artefact, not a modelling error.)
+                raise ValueError(
+                    f"Lỗi chạy chart query trên {ds_type} (dialect {dialect}): {exc}. "
+                    "Thường do cardinality relationship sai, cột không tồn tại trên datasource, "
+                    "hoặc cú pháp dialect khác. Kiểm tra Data Model tab."
+                ) from exc
+        elapsed_ms = (time.time() - start) * 1000
 
-    alias_map = _spec.response_aliases  # computed once on the spec above
-    rows = remap_semantic_engine_rows(rows, alias_map)
+        alias_map = _spec.response_aliases  # computed once on the spec above
+        rows = remap_semantic_engine_rows(rows, alias_map)
 
-    # PBI parity (2026-06) — harvest the engine's OWN structured filter drops.
-    # `_build_where_clause` records two kinds of drop on the engine instance via
-    # `self._propagation_drops`: the single-direction reachability gate
-    # (`unreachable_view` — a filter on a dim related to a SIBLING fact, which
-    # PowerBI ignores) and the EXISTS-build bail (`no_join_path` — a malformed /
-    # nested-CTE join). These never went through `_normalize_runtime_filters_for_chart`
-    # so they're absent from `filter_diagnostics`; previously they survived ONLY as
-    # `engine.warnings` strings, which the dashboard tile does not render — so the
-    # ignored filter was invisible to the viewer (the DA's "mông lung" report).
-    # Merge them into `filter_diagnostics` so they reach `_debug.dropped_filters`
-    # and the FE skip-badge, exactly like the pre-engine drops. Dedupe on
-    # (field, reason) so a filter dropped at both layers shows once.
-    _engine_drops = list(getattr(engine, "_propagation_drops", []) or [])
-    if _engine_drops:
-        _seen_drop_keys = {
-            (str(d.get("field") or d.get("semantic_field") or ""), str(d.get("reason") or ""))
-            for d in filter_diagnostics
-            if isinstance(d, dict)
+        # PBI parity (2026-06) — harvest the engine's OWN structured filter drops.
+        # `_build_where_clause` records two kinds of drop on the engine instance via
+        # `self._propagation_drops`: the single-direction reachability gate
+        # (`unreachable_view` — a filter on a dim related to a SIBLING fact, which
+        # PowerBI ignores) and the EXISTS-build bail (`no_join_path` — a malformed /
+        # nested-CTE join). These never went through `_normalize_runtime_filters_for_chart`
+        # so they're absent from `filter_diagnostics`; previously they survived ONLY as
+        # `engine.warnings` strings, which the dashboard tile does not render — so the
+        # ignored filter was invisible to the viewer (the DA's "mông lung" report).
+        # Merge them into `filter_diagnostics` so they reach `_debug.dropped_filters`
+        # and the FE skip-badge, exactly like the pre-engine drops. Dedupe on
+        # (field, reason) so a filter dropped at both layers shows once.
+        _engine_drops = list(getattr(engine, "_propagation_drops", []) or [])
+        if _engine_drops:
+            _seen_drop_keys = {
+                (str(d.get("field") or d.get("semantic_field") or ""), str(d.get("reason") or ""))
+                for d in filter_diagnostics
+                if isinstance(d, dict)
+            }
+            for _d in _engine_drops:
+                if not isinstance(_d, dict):
+                    continue
+                _key = (str(_d.get("field") or _d.get("semantic_field") or ""), str(_d.get("reason") or ""))
+                if _key in _seen_drop_keys:
+                    continue
+                _seen_drop_keys.add(_key)
+                filter_diagnostics.append(_d)
+
+        result: Dict[str, Any] = {
+            "data": rows,
+            # The engine always emits SELECT … GROUP BY for measure'd queries, and
+            # raw distinct rows otherwise; both are already at the granularity the
+            # chart wants. Mark pre-aggregated so frontend skips client-side agg.
+            "pre_aggregated": True,
+            "execution_time_ms": round(elapsed_ms, 1),
+            # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
+            # chart UI can banner them. List is empty in the happy path.
+            "warnings": list(getattr(engine, "warnings", []) or []),
+            # Phase-15.9: debug payload for the Explore "Query" tab. The FE
+            # inspector shows DA exactly what BE ran — picks up renamed
+            # views, ambiguous joins, etc. without needing server logs.
+            # `sql` is the post-templating SemanticQueryEngine output (after
+            # macro resolution + JOIN rendering); pasting it into a DB
+            # console reproduces the chart's data 1:1.
+            "_debug": {
+                "sql_emitted": sql,
+                "dialect": dialect,
+                "routing": "semantic_engine",
+                "row_count": len(rows),
+                # Dashboard perf #5 — snapshot freshness for the builder "as of HH:MM"
+                # label + a live/snapshot badge. Oldest built_at wins (never over-
+                # claims freshness); "live" when no snapshot was used.
+                "data_source_mode": _snap_mode,
+                "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
+                # Public per-link TTL: the served snapshot is older than the TTL and
+                # a background rebuild was kicked off; the FE shows "đang làm mới…".
+                "snapshot_stale": bool(_snap_stale),
+                # Phase 8 (#47): the planner's typed decision, surfaced instead of
+                # silently swallowed — DA can see WHY this ran the way it did
+                # (fresh/stale/not_built/incompatible + human reason) without logs.
+                "execution_state": plan.snapshot_state.value,
+                "execution_reason": plan.reason,
+                # Phase-15.78: structured record of every filter the BE dropped
+                # before generating SQL. Empty list = nothing dropped. FE can
+                # banner this so users discover when a slicer they applied
+                # didn't reach this chart.
+                "dropped_filters": list(filter_diagnostics),
+            },
         }
-        for _d in _engine_drops:
-            if not isinstance(_d, dict):
-                continue
-            _key = (str(_d.get("field") or _d.get("semantic_field") or ""), str(_d.get("reason") or ""))
-            if _key in _seen_drop_keys:
-                continue
-            _seen_drop_keys.add(_key)
-            filter_diagnostics.append(_d)
 
-    result: Dict[str, Any] = {
-        "data": rows,
-        # The engine always emits SELECT … GROUP BY for measure'd queries, and
-        # raw distinct rows otherwise; both are already at the granularity the
-        # chart wants. Mark pre-aggregated so frontend skips client-side agg.
-        "pre_aggregated": True,
-        "execution_time_ms": round(elapsed_ms, 1),
-        # Phase-3b: surface engine warnings (ambiguous join paths, etc.) so the
-        # chart UI can banner them. List is empty in the happy path.
-        "warnings": list(getattr(engine, "warnings", []) or []),
-        # Phase-15.9: debug payload for the Explore "Query" tab. The FE
-        # inspector shows DA exactly what BE ran — picks up renamed
-        # views, ambiguous joins, etc. without needing server logs.
-        # `sql` is the post-templating SemanticQueryEngine output (after
-        # macro resolution + JOIN rendering); pasting it into a DB
-        # console reproduces the chart's data 1:1.
-        "_debug": {
-            "sql_emitted": sql,
-            "dialect": dialect,
-            "routing": "semantic_engine",
-            "row_count": len(rows),
-            # Dashboard perf #5 — snapshot freshness for the builder "as of HH:MM"
-            # label + a live/snapshot badge. Oldest built_at wins (never over-
-            # claims freshness); "live" when no snapshot was used.
-            "data_source_mode": _snap_mode,
-            "snapshot_as_of": (_snap_as_of.isoformat() if _snap_as_of else None),
-            # Public per-link TTL: the served snapshot is older than the TTL and
-            # a background rebuild was kicked off; the FE shows "đang làm mới…".
-            "snapshot_stale": bool(_snap_stale),
-            # Phase-15.78: structured record of every filter the BE dropped
-            # before generating SQL. Empty list = nothing dropped. FE can
-            # banner this so users discover when a slicer they applied
-            # didn't reach this chart.
-            "dropped_filters": list(filter_diagnostics),
-        },
-    }
-
-    if cache_enabled:
-        query_cache.set_cached(
-            datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
-        )
-        if coalesce_leader:
-            # Result is cached now → wake any workers waiting on this query.
-            query_cache.end_coalesced_compute(
-                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+        if cache_enabled:
+            query_cache.set_cached(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
             )
+            if coalesce_leader:
+                # Result is cached now → wake any workers waiting on this query.
+                query_cache.end_coalesced_compute(
+                    datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+                )
+
+    except BaseException:
+        if cache_enabled and coalesce_leader:
+            try:
+                query_cache.end_coalesced_compute(
+                    datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+                )
+            except Exception:  # noqa: BLE001 — release is best-effort
+                pass
+        raise
 
     logger.info(
         "[perf] semantic chart EXECUTED (cache=MISS) chart_id=%s ds=%d ds_type=%s explore=%s "
@@ -3437,7 +3521,11 @@ class ChartService:
                 _sf_key = "gcd::" + _hashlib.sha256(
                     _json.dumps(
                         [int(chart_id), str(filter_context or ""), extra_filters or [],
-                         str(granularity_override or "")],
+                         str(granularity_override or ""),
+                         # Phase 7 (#30): freshness mode is part of the request
+                         # identity — ttl=0 (realtime) vs ttl>0 (snapshot ok) must
+                         # never collapse into one flight.
+                         str(snapshot_ttl_minutes if snapshot_ttl_minutes is not None else "")],
                         sort_keys=True, separators=(",", ":"), default=str,
                     ).encode("utf-8")
                 ).hexdigest()
