@@ -1336,71 +1336,11 @@ def _view_role_for_response(view: SemanticView, table: DatasetTable | None) -> t
     return "table", False, False
 
 
-def _detect_joins(tables: List[DatasetTable]) -> list:
-    """
-    Detect potential joins between tables using FK naming conventions.
-    Returns a list of JoinDefinition dicts.
-    """
-    joins = []
-    table_names = {}  # singular_name -> table
+# (Phase 6 cleanup) The legacy `_detect_joins` name-heuristic duplicate was
+# removed — join detection lives ONLY in `_detect_fk_joins` (+ the Phase-16
+# `_generate_join_suggestions` review flow). It had zero callers and still
+# hard-coded `to_column="id"`, a bug class already fixed in the real detector.
 
-    for table in tables:
-        display = table.display_name or table.source_table_name or ""
-        table_names[display.lower()] = table
-        table_names[_singularize(display).lower()] = table
-
-    for table in tables:
-        if not table.columns_cache:
-            continue
-        # Normalize columns_cache format
-        cc = table.columns_cache
-        if isinstance(cc, dict):
-            columns = cc.get("columns", [])
-        elif isinstance(cc, list):
-            columns = cc
-        else:
-            continue
-        for col in columns:
-            raw_col_name = col.get("name", "")
-            col_name = raw_col_name.lower()
-            if not raw_col_name or not any(col_name.endswith(suffix) for suffix in _FK_SUFFIXES):
-                continue
-
-            # Extract referenced table name from FK column
-            # e.g., "customer_id" → "customer", "product_fk" → "product"
-            ref_name = col_name
-            for suffix in _FK_SUFFIXES:
-                if ref_name.endswith(suffix):
-                    ref_name = ref_name[: -len(suffix)]
-                    break
-
-            # Find matching table
-            ref_table = table_names.get(ref_name)
-            if ref_table and ref_table.id != table.id:
-                ref_display = ref_table.display_name or ref_table.source_table_name or ""
-                current_display = table.display_name or table.source_table_name or ""
-
-                # Check if this join already exists (avoid duplicates)
-                existing = any(
-                    j["view"] == ref_display and j.get("_source_table") == current_display
-                    for j in joins
-                )
-                if not existing:
-                    joins.append({
-                        "name": ref_display,
-                        "view": ref_display,
-                        "type": "left",
-                        "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_display}}}.id",
-                        "relationship": "many_to_one",
-                        "from_view": current_display,
-                        "from_column": raw_col_name,
-                        "to_column": "id",
-                        "from_columns": [raw_col_name],
-                        "to_columns": ["id"],
-                        "_source_table": current_display,  # Internal, stripped before save
-                    })
-
-    return joins
 
 
 def generate_dataset_model(
@@ -2566,57 +2506,58 @@ def _distinct_filter_targets_self(
 
 
 def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | None = None):
-    """Dashboard perf #5 for the SLICER cascade (not just charts).
+    """Snapshot context for the SLICER distinct cascade.
 
-    Slicer dropdowns call the distinct cascade, which re-scans the heavy
-    ``sql_query`` pipeline LIVE on every open (e.g. 15-21s each on report-demo)
-    even though the charts are already sub-second on snapshots. Mirror the chart
-    resolver's ALL-OR-NOTHING rule: only when the dataset is snapshot-eligible
-    (every table is sql_query or generated_calendar) AND every sql_query table
-    has a fresh current snapshot do we return
-    ``({dataset_table_id: physical_ref}, exec_ds_on_SA_cred)`` so the cascade
-    redirects EVERY relation to its snapshot and runs on the service-account
-    credential. Any gap → ``({}, None)`` and the cascade runs live, unchanged.
-    Because eligibility guarantees no physical/derived table remains, the
-    SA-executed SQL references only snapshot tables (+ inline calendar) — never
-    a source table the write SA cannot read. NEVER raises."""
+    Phase 6 (issues #39/#40/#43): this no longer implements its OWN eligibility
+    rules — it delegates to the SAME execution planner charts use
+    (``plan_chart_execution``), so slicers and charts always agree on
+    engine / credential / snapshot GENERATION / fingerprint-compatibility.
+    Before this, the two resolvers had drifted (slicer required a single
+    BigQuery datasource + sql_query-only), so a dashboard could show slicer
+    values from LIVE source data while its charts read a snapshot — the
+    "filter lúc được lúc không" class.
+
+    Returns ``({dataset_table_id: physical_ref}, exec_ds)`` in snapshot mode —
+    exec_ds carries the HOST BigQuery identity (id/type) + the snapshot
+    service-account credential, so the cascade executes exactly where the
+    charts do and its query-cache entries are namespaced under the host.
+    Live / blocked / not-built → ``({}, None)`` and the cascade runs live,
+    unchanged (a blocked mixed dataset keeps serving single-table slicer
+    values rather than hard-failing a dropdown). NEVER raises."""
     try:
         from types import SimpleNamespace
         from app.services import snapshot_service
-        from app.services.datasource_service import DataSourceConnectionService
-        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
-        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
-        if len(ds_ids) != 1:
+        from app.services.execution_plan import plan_chart_execution
+
+        base_t = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id,
+                    DatasetTable.datasource_id.isnot(None))
+            .order_by(DatasetTable.id)
+            .first()
+        )
+        if base_t is None:
             return {}, None
-        datasource = db.query(DataSource).filter(DataSource.id == next(iter(ds_ids))).first()
-        if datasource is None or not snapshot_service.is_enabled(datasource):
+        base_ds = db.query(DataSource).filter(DataSource.id == base_t.datasource_id).first()
+        if base_ds is None:
             return {}, None
-        if ttl_minutes == 0:  # Realtime → live
+        plan = plan_chart_execution(
+            db, base_ds, {"datasetId": dataset_id}, "", ttl_minutes=ttl_minutes,
+        )
+        if plan.trigger_dataset_id:
+            snapshot_service.trigger_async_refresh(plan.trigger_dataset_id)
+        if plan.mode != "snapshot" or not plan.overrides or plan.exec_config is None:
             return {}, None
-        snap_map: Dict[int, str] = {}
-        for t in tables:
-            if is_generated_calendar_table(t):
-                continue
-            if not snapshot_service.should_materialize(t):
-                return {}, None  # physical/derived → SA can't read source → live
-            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)  # any age (serve-stale)
-            if not ref:
-                # Eligible but unbuilt → live now; warm for next time if public TTL.
-                if ttl_minutes:
-                    snapshot_service.trigger_async_refresh(dataset_id)
-                return {}, None
-            snap_map[t.id] = ref
-        if not snap_map:
-            return {}, None
-        # Public per-link TTL: serve the stale snapshot but kick off a background
-        # rebuild so the slicer cascade stays consistent with the charts.
-        if snapshot_service.is_stale(snapshot_service.as_of(db, list(snap_map.keys())), ttl_minutes):
-            snapshot_service.trigger_async_refresh(dataset_id)
-        # Change-driven refresh: rebuild if the source DATA changed since build.
-        snapshot_service.schedule_source_change_check(dataset_id)
-        sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
-        exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
-        return snap_map, exec_ds
+        host = (
+            db.query(DataSource).filter(DataSource.id == plan.host_id).first()
+            if plan.host_id else None
+        )
+        exec_ds = SimpleNamespace(
+            id=(host.id if host is not None else base_ds.id),
+            type=(host.type if host is not None else base_ds.type),
+            config=plan.exec_config,
+        )
+        return dict(plan.overrides), exec_ds
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a slicer
         logger.warning("[snapshot] distinct-cascade context failed; using live", exc_info=True)
         return {}, None
@@ -3501,11 +3442,19 @@ def get_distinct_field_values(
 
         ds_type = cal_datasource.type if isinstance(cal_datasource.type, str) else cal_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         # Perf #5 — calendar base is inline (SA-safe); if the cascade is on
         # snapshots, run on the SA cred so any snapshot relation resolves.
         _cal_snap = _snap_exec_ds is not None
+        if _cal_snap:
+            # Phase 6 (#40/#42): render for the EXECUTION engine (the snapshot
+            # host), not the table's own source dialect — on a mixed dataset
+            # they differ, and e.g. PG-style quoting inside a BigQuery run
+            # turns identifiers into string literals.
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
+        calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
         sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
         table_identifier = f"calendar_view:{dataset_id}:{view_name}" + (":snap" if _cal_snap else "")
@@ -3538,6 +3487,13 @@ def get_distinct_field_values(
         # (also redirected to snapshots) resolves. Any gap → live, unchanged.
         _base_ref = _snap_map.get(getattr(live_table, "id", None))
         if _base_ref and _snap_exec_ds is not None:
+            # Phase 6 (#40): the SQL executes on the snapshot HOST — quote
+            # identifiers for THAT engine, not the field's own source dialect
+            # (a PG dim in a mixed dataset would otherwise emit "col" which
+            # BigQuery parses as a string literal).
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
             base_sql = f"SELECT * FROM `{_base_ref}`"
             sql = _build_distinct_sql(base_sql, datasource, dialect, dropped, use_snapshots=True)
             table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap"
