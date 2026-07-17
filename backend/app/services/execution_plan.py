@@ -100,6 +100,10 @@ class ExecutionPlan:
     host_id: Optional[int] = None
     dataset_id: Optional[int] = None
     trigger_dataset_id: Optional[int] = None
+    # Phase 4 — the snapshot GENERATION this plan reads (one refresh batch =
+    # one id). Cache identity should key on this, not on a timestamp: two
+    # different physical snapshot sets can share the same oldest-built_at.
+    generation: Optional[int] = None
     reason: str = ""
     blocked: Optional[str] = None
 
@@ -192,6 +196,15 @@ def plan_chart_execution(
         if not dataset_id:
             return live("no dataset resolved from binding/base view")
 
+        # Phase 5 — model self-heal: background, rate-limited check that the
+        # semantic views still mirror columns_cache; resyncs when drifted so a
+        # schema change no longer requires a manual Dataset visit (issue #23).
+        try:
+            from app.services.dataset_model_service import schedule_model_drift_check
+            schedule_model_drift_check(dataset_id)
+        except Exception:  # noqa: BLE001 — self-heal must never break planning
+            pass
+
         # Enabled tables only (issue #6 first slice): a disabled table must not
         # block snapshots or flag a phantom engine mix. `enabled` is nullable —
         # NULL means enabled (column default True on old rows).
@@ -264,28 +277,60 @@ def plan_chart_execution(
         if not mat_tables:
             return live("no materializable tables", dataset_id=dataset_id)
 
-        overrides: Dict[int, str] = {}
-        for t in mat_tables:
-            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)
-            if ref is None:
-                # Not built yet → warm in the background. Single-engine dataset
-                # serves live meanwhile; mixed-engine CANNOT run live → blocked
-                # with a "building" message (same trigger keeps warming it).
-                if federated:
-                    return live(
-                        "mixed-engine dataset, snapshot not built yet (warming)",
+        # Phase 4 — resolve ONE consistent generation for ALL tables (never a
+        # torn half-old/half-new mix while a rebuild is mid-flight).
+        overrides, stored_fps, generation, as_of = snapshot_service.resolve_generation_refs(
+            db, [t.id for t in mat_tables]
+        )
+        if not overrides:
+            # Not built yet → warm in the background. Single-engine dataset
+            # serves live meanwhile; mixed-engine CANNOT run live → blocked
+            # with a "building" message (same trigger keeps warming it).
+            if federated:
+                return live(
+                    "mixed-engine dataset, snapshot not built yet (warming)",
+                    state=SnapshotState.NOT_BUILT, trigger=dataset_id,
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Snapshot hợp nhất trên BigQuery đang "
+                    "được dựng ở nền — thử lại sau giây lát, hoặc bấm Refresh "
+                    "trên Dataset.",
+                )
+            return live("snapshot not built yet → live + background warm",
                         state=SnapshotState.NOT_BUILT, trigger=dataset_id,
-                        federated=True, dataset_id=dataset_id,
-                        blocked=mixed_pre + "Snapshot hợp nhất trên BigQuery đang "
-                        "được dựng ở nền — thử lại sau giây lát, hoặc bấm Refresh "
-                        "trên Dataset.",
-                    )
-                return live("snapshot not built yet → live + background warm",
-                            state=SnapshotState.NOT_BUILT, trigger=dataset_id,
-                            dataset_id=dataset_id)
-            overrides[t.id] = ref
+                        dataset_id=dataset_id)
 
-        as_of = snapshot_service.as_of(db, list(overrides.keys()))
+        # Phase 5 — fingerprint reconcile-on-read (issue #12): a snapshot whose
+        # stored fingerprint no longer matches the CURRENT table definition
+        # (source SQL / schema / columns_cache drift) is INCOMPATIBLE — old
+        # logic must not keep serving silently just because it is young.
+        from app.models.dataset import Dataset as _Dataset
+        dataset_obj = db.query(_Dataset).filter(_Dataset.id == dataset_id).first()
+        ds_by_id = {d.id: d for d in ds_rows}
+        incompatible = None
+        for t in mat_tables:
+            src_ds = ds_by_id.get(t.datasource_id)
+            if src_ds is None or dataset_obj is None:
+                continue  # cannot verify → serve as-is (unknown ≠ incompatible)
+            expected = snapshot_service.current_fingerprint_for_table(db, dataset_obj, t, src_ds)
+            if expected is not None and stored_fps.get(t.id) not in (None, expected):
+                incompatible = t.id
+                break
+        if incompatible is not None:
+            if federated:
+                return live(
+                    f"snapshot INCOMPATIBLE (definition changed, table {incompatible}) — rebuilding",
+                    state=SnapshotState.INCOMPATIBLE, trigger=dataset_id,
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Định nghĩa dataset vừa thay đổi nên snapshot "
+                    "hợp nhất đang được dựng lại ở nền — thử lại sau giây lát, hoặc "
+                    "bấm Refresh trên Dataset.",
+                )
+            return live(
+                f"snapshot INCOMPATIBLE (definition changed, table {incompatible}) → live + rebuild",
+                state=SnapshotState.INCOMPATIBLE, trigger=dataset_id,
+                dataset_id=dataset_id,
+            )
+
         stale = snapshot_service.is_stale(as_of, ttl_minutes)
         # Change-driven refresh: rate-limited background check — rebuild if the
         # SOURCE DATA changed since build (works for builder too; no TTL needed).
@@ -305,7 +350,9 @@ def plan_chart_execution(
             overrides=overrides, as_of=as_of, stale=stale,
             federated=federated, host_id=host.id, dataset_id=dataset_id,
             trigger_dataset_id=(dataset_id if stale else None),
+            generation=generation,
             reason=("all tables snapshot-backed in host BigQuery"
+                    + (f" (generation {generation})" if generation else " (legacy per-table refs)")
                     + (" (mixed-engine dataset federated into host)" if federated else "")),
         )
     except Exception:  # noqa: BLE001 — planning must NEVER break a chart

@@ -1437,6 +1437,86 @@ def sync_dataset_model_structure(
     )
 
 
+# ── Refactor Phase 5: model self-heal (reconcile-on-read, issue #23) ──────────
+# The semantic model mirrors columns_cache; when the cache changes (schema
+# re-detect, type edits) but nobody re-opens the Dataset, views keep the OLD
+# dimensions — the classic "phải vào Dataset trước thì chart mới đúng". The
+# planner schedules this rate-limited BACKGROUND check on every chart read:
+# when any enabled table's classified dimension names no longer match its
+# SemanticView, the model resyncs itself (structure-only, non-destructive —
+# measures merged, manual joins untouched, auto joins NOT re-detected).
+import threading as _threading
+import time as _time
+
+_model_drift_check_at: Dict[int, float] = {}
+_MODEL_DRIFT_CHECK_INTERVAL = 300  # seconds between checks per dataset
+_model_drift_lock = _threading.Lock()
+
+
+def schedule_model_drift_check(dataset_id: int) -> None:
+    """Fire-and-forget: verify the semantic views still mirror columns_cache
+    and resync in the background when they drifted. Rate-limited per dataset;
+    NEVER raises; never blocks the calling request."""
+    if not dataset_id:
+        return
+    now = _time.monotonic()
+    with _model_drift_lock:
+        last = _model_drift_check_at.get(dataset_id)
+        if last is not None and (now - last) < _MODEL_DRIFT_CHECK_INTERVAL:
+            return
+        _model_drift_check_at[dataset_id] = now
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        job_db = SessionLocal()
+        try:
+            if _model_views_drifted(job_db, dataset_id):
+                logger.info("[model-drift] dataset %s views drifted from columns_cache — resyncing", dataset_id)
+                sync_dataset_model_structure(job_db, dataset_id, create_model=False)
+                job_db.commit()
+                # A model change can invalidate snapshot logic too.
+                try:
+                    from app.services import snapshot_service
+                    snapshot_service.invalidate_stale_fingerprints(job_db, dataset_id)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001 — background self-heal must never crash
+            job_db.rollback()
+            logger.warning("[model-drift] resync failed dataset=%s", dataset_id, exc_info=True)
+        finally:
+            job_db.close()
+
+    _threading.Thread(target=_run, name=f"model-drift-{dataset_id}", daemon=True).start()
+
+
+def _model_views_drifted(db: Session, dataset_id: int) -> bool:
+    """True when any enabled non-calendar table's classified dimension NAMES no
+    longer match its SemanticView (columns_cache changed since the last sync).
+    Names only — label/type refinements don't count as drift."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        return False
+    auto_measures = _auto_measures_enabled(dataset_obj)
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter(DatasetTable.enabled == True)  # noqa: E712
+        .all()
+    )
+    for t in tables:
+        if is_generated_calendar_table(t) or not t.columns_cache:
+            continue
+        view = db.query(SemanticView).filter(SemanticView.dataset_table_id == t.id).first()
+        if view is None:
+            continue  # no view yet → creation is the sync flow's job, not drift
+        expected_dims, _ = _classify_columns(t.columns_cache, auto_generate_measures=auto_measures)
+        expected = {d.get("name") for d in expected_dims if d.get("name")}
+        actual = {d.get("name") for d in (view.dimensions or []) if isinstance(d, dict) and d.get("name")}
+        if expected != actual:
+            return True
+    return False
+
+
 def _sync_dataset_model_structure(
     db: Session,
     dataset_id: int,

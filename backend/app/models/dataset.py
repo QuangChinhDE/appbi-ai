@@ -242,6 +242,25 @@ class DatasetTableSnapshot(Base):
     # this to detect SOURCE-DATA changes (not just SQL/schema) and rebuild only
     # when the data actually changed — change-driven refresh, no time-based spam.
     source_watermark = Column(DateTime(timezone=True), nullable=True)
+    # ── Refactor Phase 4: dataset-level consistency + host identity ─────────
+    # generation — ONE id (epoch-ms of the refresh batch) stamped on every row
+    # built in the same refresh_all_for_dataset pass. A chart resolves the
+    # newest COMPLETE generation, so its tables always come from the SAME
+    # refresh — never a torn half-old/half-new mix while a rebuild is running.
+    # NULL on legacy rows (pre-Phase-4) → per-table is_current fallback.
+    generation = Column(BigInteger, nullable=True, index=True)
+    # Which BigQuery datasource/project/location HOSTS this physical table —
+    # recorded at build so read-time credential/host selection comes from the
+    # registry (what actually happened) instead of being re-derived from
+    # mutable datasource config (issue #18/#19).
+    host_datasource_id = Column(Integer, nullable=True)
+    host_project = Column(String(255), nullable=True)
+    host_location = Column(String(64), nullable=True)
+    # Delayed GC (issue #10): the physical table of a superseded snapshot is
+    # kept until the dataset has a NEWER complete generation + a grace window,
+    # so in-flight queries that resolved the old refs never read a dropped
+    # table. Set when the physical table is actually dropped.
+    retired_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 

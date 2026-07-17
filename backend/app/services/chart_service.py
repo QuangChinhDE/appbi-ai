@@ -2267,7 +2267,7 @@ def _execute_semantic_chart_runtime(
         logger.info(
             "[exec-decision] chart_id=%s dataset=%s base_ds=%s base_ds_type=%s "
             "mode=%s dialect=%s exec_host_ds=%s cred=%s snapshot_asof=%s stale=%s "
-            "federated=%s n_overrides=%d state=%s blocked=%s reason=%r",
+            "federated=%s n_overrides=%d state=%s blocked=%s generation=%s reason=%r",
             _pbi_current_chart_id(),
             _plan_dataset_id,
             getattr(datasource, "id", None),
@@ -2282,6 +2282,7 @@ def _execute_semantic_chart_runtime(
             len(_snap_overrides or {}),
             plan.snapshot_state.value,
             bool(plan.blocked),
+            plan.generation,
             plan.reason,
         )
     except Exception:  # noqa: BLE001 — logging must never break a chart
@@ -2300,8 +2301,14 @@ def _execute_semantic_chart_runtime(
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,
         "_limit": effective_limit,
-        # #5 — snapshot version in the cache key so a refresh invalidates cleanly.
-        "_snapshot_asof": (_snap_as_of.isoformat() if _snap_as_of else None),
+        # #5 — snapshot identity in the cache key so a refresh invalidates
+        # cleanly. Phase 4: the GENERATION id (one refresh batch = one id) is
+        # the true identity — two different snapshot sets can share the same
+        # oldest-built_at timestamp; legacy (no generation) keeps the as_of.
+        "_snapshot_asof": (
+            f"gen:{plan.generation}" if plan.generation
+            else (_snap_as_of.isoformat() if _snap_as_of else None)
+        ),
         # Phase-15.xx — time_grains MUST be part of the cache key. Two
         # requests with identical dimensions/measures but different date
         # grains (raw daily vs month bucketing) otherwise collapse onto the
