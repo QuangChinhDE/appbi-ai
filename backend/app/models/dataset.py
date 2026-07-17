@@ -28,6 +28,26 @@ class Dataset(Base):
     # from normal listings and deleted if the wizard is cancelled.
     is_draft = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # ── Publish lifecycle (Import-mode: design on source → Sync & Publish →
+    #    Dashboards read ONLY the published snapshot generation). See
+    #    dataset_publish_service. NULL publish_state = LEGACY dataset (pre-Phase-1):
+    #    keeps the old live/opt-in-snapshot behaviour untouched, so existing
+    #    dashboards never break — the published-only gate applies ONLY to a
+    #    dataset explicitly taken through Sync & Publish. ─────────────────────
+    #    draft | ready | syncing | published | changes_pending | sync_failed | disabled
+    publish_state = Column(String(24), nullable=True, index=True)
+    # The snapshot generation Dashboards MUST read (pinned; never "latest").
+    published_generation = Column(BigInteger, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    # sha256 of the LOCKED design (tables+schema+relationships+measures+transforms)
+    # captured at publish; a later design edit ⇒ publish_state=changes_pending
+    # while Dashboards keep serving published_generation.
+    published_design_fingerprint = Column(String(64), nullable=True)
+    last_sync_error = Column(Text, nullable=True)
+    # Security scope token baked into the cache key + snapshot governance:
+    # "shared" (all authorized viewers see the same rows) today; becomes a
+    # tenant/RLS-principal once per-user row security lands. NULL = legacy.
+    security_scope = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
     
@@ -264,3 +284,56 @@ class DatasetTableSnapshot(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
+
+
+class DatasetGrant(Base):
+    """Per-Dataset access grant — Phase 1 of the Power-BI-style "Dataset is a
+    governed data asset" model. DELIBERATELY SEPARATE from the shared
+    ResourceShare table (governance principle #5): Dataset access has finer,
+    dataset-specific verbs and its own lifecycle (composition/Build, Reshare),
+    so it must not be entangled with the generic view/edit share used by
+    dashboards/charts. ResourceShare(DATASET, view/edit) is NOT auto-migrated
+    into build/reshare (principle #4) — legacy shares keep meaning view/edit only.
+
+    Verbs (ascending capability):
+      view     — consume dashboards built on this dataset (read published data)
+      explore  — ad-hoc query / preview against the published dataset
+      build    — create NEW content FROM this dataset (dashboards, or a
+                 downstream Dataset that references this one). REQUIRED on a
+                 parent to compose a child (principle #3).
+      reshare  — grant access to others
+      edit     — modify the dataset design (tables/relationships/measures)
+      manage   — full control incl. grants, publish, delete (owner-equivalent)
+    Exactly one of user_id / team_id is set (like ResourceShare)."""
+    __tablename__ = "dataset_grants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
+    verb = Column(String(16), nullable=False, default="view")  # view|explore|build|reshare|edit|manage
+    granted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+
+
+class DatasetDependency(Base):
+    """Lineage edge for Dataset-on-Dataset composition (Phase-2, model landed
+    now so the migration + cycle/depth guards exist before the feature ships).
+    child references parent; parent_generation PINS the exact published
+    generation of the parent the child was validated against (principle #2 —
+    NEVER auto-read latest). A new parent publish flips the child to
+    changes_pending; the pin only advances when the child re-validates +
+    re-publishes."""
+    __tablename__ = "dataset_dependencies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    child_dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_generation = Column(BigInteger, nullable=True)  # pinned parent generation
+    materialized = Column(Boolean, nullable=False, default=False, server_default=expression.false())
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+
+    __table_args__ = (
+        # a child pins a given parent once
+        # (UniqueConstraint declared in migration to keep model import light)
+    )

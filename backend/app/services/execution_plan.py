@@ -104,6 +104,13 @@ class ExecutionPlan:
     # one id). Cache identity should key on this, not on a timestamp: two
     # different physical snapshot sets can share the same oldest-built_at.
     generation: Optional[int] = None
+    # Phase 1 — published-only: this plan is PINNED to a published generation;
+    # on a missing/broken snapshot it must BLOCK (re-sync), NEVER fall back to
+    # live or a previous generation (the execute path checks this flag).
+    published: bool = False
+    # Phase 1 — security scope baked into the cache key so a future per-tenant/
+    # per-user snapshot can never be served across principals.
+    security_scope: Optional[str] = None
     reason: str = ""
     blocked: Optional[str] = None
 
@@ -149,6 +156,7 @@ def plan_chart_execution(
     base_view_name: str,
     *,
     ttl_minutes: Optional[int] = None,
+    is_preview: bool = False,
 ) -> ExecutionPlan:
     """Decide how this semantic chart request executes physically.
 
@@ -195,6 +203,18 @@ def plan_chart_execution(
         dataset_id = _resolve_dataset_id(db, binding, base_view_name)
         if not dataset_id:
             return live("no dataset resolved from binding/base view")
+
+        # ── Phase 1 — PUBLISHED-ONLY gate ─────────────────────────────────────
+        # A dataset under the publish lifecycle (publish_state != NULL) is served
+        # ONLY from its pinned published generation — never live, never "newest",
+        # never a fallback. A LEGACY dataset (publish_state NULL) falls straight
+        # through to the existing behaviour below (no change → no broken
+        # dashboards). Preview/Explore (is_preview) on an un-published design is
+        # allowed to run live — that's design-time, not a Dashboard.
+        from app.models.dataset import Dataset as _Dataset
+        dataset_obj = db.query(_Dataset).filter(_Dataset.id == dataset_id).first()
+        if dataset_obj is not None and getattr(dataset_obj, "publish_state", None) is not None:
+            return _plan_published(db, dataset_obj, base_view_name, is_preview=is_preview)
 
         # Phase 5 — model self-heal: background, rate-limited check that the
         # semantic views still mirror columns_cache; resyncs when drifted so a
@@ -381,6 +401,80 @@ def plan_chart_execution(
         except Exception:  # noqa: BLE001
             pass
         return live("planner error → live fallback")
+
+
+def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview: bool) -> ExecutionPlan:
+    """Serve a lifecycle-managed dataset ONLY from its pinned published
+    generation. No live, no 'newest', no fallback (Phase 1). Blocks with a clear
+    message when there is nothing safe to serve — the Dashboard shows the reason,
+    never wrong data."""
+    from app.models.dataset import DatasetTable
+    from app.services import snapshot_service
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.datasource_service import DataSourceConnectionService
+
+    dataset_id = dataset_obj.id
+    state = getattr(dataset_obj, "publish_state", None)
+    pg = getattr(dataset_obj, "published_generation", None)
+    scope = getattr(dataset_obj, "security_scope", None) or "shared"
+
+    def blocked_plan(msg: str, *, trigger: Optional[int] = None) -> ExecutionPlan:
+        return ExecutionPlan(
+            mode="live", dialect="", ds_type="", exec_config=None,
+            cred="source_datasource", snapshot_state=SnapshotState.NOT_BUILT,
+            dataset_id=dataset_id, security_scope=scope, published=True,
+            trigger_dataset_id=trigger, reason="published-gate: " + msg, blocked=msg,
+        )
+
+    if state == "disabled":
+        return blocked_plan("Dataset đang bị vô hiệu hoá (Disabled) — bật lại để dùng trên Dashboard.")
+
+    # No published data yet: preview/design-time may run live; a Dashboard blocks.
+    if pg is None:
+        if is_preview:
+            # Design-time preview: run live. dialect/ds_type left empty so the
+            # chart runtime keeps its own base-datasource locals (exec_config
+            # None ⇒ runtime does not override them).
+            return ExecutionPlan(
+                mode="live", dialect="", ds_type="", exec_config=None,
+                cred="source_datasource", snapshot_state=SnapshotState.LIVE,
+                dataset_id=dataset_id, security_scope=scope,
+                reason="preview on un-published dataset (design-time live)",
+            )
+        return blocked_plan(
+            "Dataset chưa được Publish — bấm “Sync & Publish” trên Dataset trước khi dùng trên Dashboard.")
+
+    # Serve the PINNED published generation.
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+        .all()
+    )
+    want = [
+        t.id for t in tables
+        if not is_generated_calendar_table(t) and snapshot_service.is_federated_materializable(t)
+    ]
+    refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+    if not refs:
+        return blocked_plan(
+            "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
+            "để dựng lại. (Dashboard KHÔNG tự chạy live để tránh lệch dữ liệu.)",
+            trigger=None,
+        )
+    host = snapshot_service.host_for_generation(db, dataset_id, pg)
+    if host is None:
+        return blocked_plan("Không xác định được host BigQuery của generation đã publish — cần Sync lại.")
+    return ExecutionPlan(
+        mode="snapshot", dialect="bigquery", ds_type="bigquery",
+        exec_config=DataSourceConnectionService.snapshot_query_config(host.config),
+        cred="host_service_account",
+        snapshot_state=(SnapshotState.STALE if state == "changes_pending" else SnapshotState.FRESH),
+        overrides=refs, as_of=as_of, stale=(state == "changes_pending"),
+        host_id=host.id, dataset_id=dataset_id, generation=pg, published=True,
+        security_scope=scope,
+        reason=("published generation %s%s" % (pg, " (design has unsynced changes)" if state == "changes_pending" else "")),
+    )
 
 
 def _dataset_is_mixed_engine(db: Session, dataset_id: int) -> bool:

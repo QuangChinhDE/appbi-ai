@@ -2264,6 +2264,9 @@ def _execute_semantic_chart_runtime(
     # must be BigQuery, whatever the base datasource is).
     plan = plan_chart_execution(
         db, datasource, binding, base_view_name, ttl_minutes=_snap_ttl,
+        # chart_id == -1 marks the Explore/preview (design-time) path, which may
+        # run live on an un-published dataset; a saved chart (Dashboard) may not.
+        is_preview=(_pbi_current_chart_id() == -1),
     )
     _snap_overrides = dict(plan.overrides)
     _snap_as_of = plan.as_of
@@ -2273,6 +2276,9 @@ def _execute_semantic_chart_runtime(
     # a snapshot-backed query on such a dataset has NO live fallback — live SQL
     # would join across engines (used by the missing-snapshot branch below).
     _snap_federated = plan.mode == "snapshot" and plan.federated
+    # Published (Phase 1): pinned to a published generation — NO live/prev-gen
+    # fallback on a missing snapshot (block + ask to re-Sync instead).
+    _snap_published = bool(plan.published)
     _plan_dataset_id = plan.dataset_id
     # Issues #3/#4 — ACTUAL execution facts, mutated if a fallback happens below,
     # so the cache key, _debug state and generation reflect what REALLY ran (not
@@ -2348,6 +2354,11 @@ def _execute_semantic_chart_runtime(
         # snapshot-backed result executed on the host SA must never be served
         # for (or collide with) a live run on the source credential.
         "_exec_host": (plan.host_id if plan.exec_config is not None else None),
+        # Phase 1: security scope in the cache identity — a result computed for
+        # one security principal (tenant/RLS scope) must never be served to
+        # another. Currently "shared" (all authorized viewers see the same rows);
+        # becomes per-principal once row-level security lands.
+        "_security_scope": plan.security_scope,
         # Phase-15.xx — time_grains MUST be part of the cache key. Two
         # requests with identical dimensions/measures but different date
         # grains (raw daily vs month bucketing) otherwise collapse onto the
@@ -2588,15 +2599,28 @@ def _execute_semantic_chart_runtime(
                 skip_bigquery_cost_check=True,
             )
         except Exception as exc:
-            # ── Self-heal: snapshot table missing → fall back to LIVE + rebuild ──
+            # ── Phase 1: PUBLISHED datasets NEVER fall back ──────────────────
+            # A published Dashboard is pinned to a published generation. If that
+            # snapshot is missing at execute time we must NOT run live or serve a
+            # different generation (that would show data the DA never published /
+            # inconsistent numbers). Fail loud with a re-sync instruction.
+            if _snap_published and _is_missing_relation_error(exc):
+                logger.warning(
+                    "[snapshot] PUBLISHED snapshot missing at execute (chart_id=%s ds=%s gen=%s): %s",
+                    _pbi_current_chart_id(), datasource.id, plan.generation, str(exc)[:300],
+                )
+                raise ValueError(
+                    "Snapshot đã publish của Dataset không còn đầy đủ (có thể đã bị xoá/hết hạn). "
+                    "Vào Dataset bấm “Sync & Publish” để dựng lại — Dashboard không tự chạy live "
+                    "để tránh hiển thị số liệu chưa được phát hành."
+                ) from exc
+            # ── Self-heal (LEGACY datasets only): snapshot missing → LIVE + rebuild ──
             # A snapshot-backed query can fail because the physical snapshot table
             # was dropped (BigQuery table-expiration / GC) while the registry still
-            # marks it current. Rather than error the WHOLE chart (and every other
-            # chart on the dataset), fall back to a LIVE query — FULL data, no cap —
-            # on the datasource's OWN credential, and trigger a background rebuild so
-            # the snapshot repairs itself for the next view. Only snapshot-backed
-            # queries (`_snap_overrides`) take this path, and snapshots are
-            # BigQuery-only, so a genuine live query is never silently retried.
+            # marks it current. For a LEGACY (non-published) dataset, fall back to a
+            # LIVE query — FULL data, no cap — on the datasource's OWN credential,
+            # and trigger a background rebuild. snapshots are BigQuery-only, so a
+            # genuine live query is never silently retried.
             if _snap_overrides and _is_missing_relation_error(exc) and not _snap_federated:
                 logger.warning(
                     "[snapshot] snapshot table missing at execute (chart_id=%s ds=%s) — "

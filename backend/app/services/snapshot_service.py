@@ -81,13 +81,6 @@ def settings_for(datasource: DataSource) -> dict:
     }
 
 
-def is_enabled(datasource: Optional[DataSource]) -> bool:
-    """True only for a BigQuery datasource that has opted in."""
-    if datasource is None or _ds_type(datasource) != "bigquery":
-        return False
-    return settings_for(datasource)["enabled"]
-
-
 def should_materialize(table: DatasetTable) -> bool:
     """MVP scope (all-BQ perf path): only heavy custom-SQL tables. Physical tables
     are already flat; calendar is generated live; derived tables reference other
@@ -437,6 +430,36 @@ def resolve_generation_refs(
     return refs, fps, None, (min(builts) if builts else None)
 
 
+def resolve_specific_generation_refs(
+    db: Session, table_ids: List[int], generation: int
+) -> Tuple[Dict[int, str], Dict[int, str], Optional[datetime]]:
+    """Resolve refs for a PINNED generation (Phase 1 published-only reads). A
+    Dashboard on a published Dataset must read EXACTLY the published generation
+    — never 'newest'. Returns ``(refs, fingerprints, as_of)``; empty refs ⇒ that
+    generation no longer fully covers the tables (→ caller BLOCKS + asks to
+    re-sync; it must NOT fall back to live)."""
+    if not table_ids or generation is None:
+        return {}, {}, None
+    want = set(int(t) for t in table_ids)
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id.in_(list(want)),
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.status.in_(("ready", "superseded")),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .all()
+    )
+    m = {r.dataset_table_id: r for r in rows}
+    if not (want <= set(m.keys())):
+        return {}, {}, None
+    refs = {tid: m[tid].physical_ref for tid in want}
+    fps = {tid: m[tid].fingerprint for tid in want}
+    builts = [m[tid].built_at for tid in want if m[tid].built_at is not None]
+    return refs, fps, (min(builts) if builts else None)
+
+
 def host_for_generation(
     db: Session, dataset_id: int, generation: Optional[int]
 ) -> Optional[DataSource]:
@@ -523,6 +546,20 @@ def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
             (g for g, tids in by_gen.items() if want and want <= tids), reverse=True
         )
         keep_gens = set(complete[:_RETAIN_COMPLETE_GENERATIONS])
+        # Phase 1: NEVER GC the PUBLISHED generation — Dashboards are pinned to
+        # it and scheduled refreshes build newer generations WITHOUT publishing,
+        # so the published one can be older than the retained window. It must
+        # survive until a NEW publish moves the pin.
+        try:
+            pub = (
+                db.query(Dataset.published_generation)
+                .filter(Dataset.id == dataset_id)
+                .scalar()
+            )
+            if pub is not None:
+                keep_gens.add(int(pub))
+        except Exception:  # noqa: BLE001
+            pass
 
         now = datetime.utcnow()
         retired = 0

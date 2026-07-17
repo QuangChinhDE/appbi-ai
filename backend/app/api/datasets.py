@@ -2417,6 +2417,119 @@ def refresh_dataset_snapshots(
     }
 
 
+# ── Phase 1: Dataset publish lifecycle + grants ─────────────────────────────
+@router.post("/{dataset_id}/publish")
+def sync_and_publish_dataset(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sync & Publish: lock the design, ETL one complete snapshot generation,
+    validate, and pin it as the published generation Dashboards read. Async —
+    returns immediately; poll GET /publish-status. Requires MANAGE on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service, dataset_publish_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "manage")
+    # A dataset entering the lifecycle for the first time starts as draft.
+    if ds.publish_state is None:
+        ds.publish_state = "draft"
+        db.commit()
+    res = dataset_publish_service.start_sync_and_publish(dataset_id)
+    return {"ok": True, **res, "publish_state": "syncing" if res.get("started") else ds.publish_state}
+
+
+@router.get("/{dataset_id}/publish-status")
+def dataset_publish_status(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Current lifecycle state (+ live changes-pending recompute), pinned
+    generation, timestamps, and whether a sync is in flight."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_publish_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    return dataset_publish_service.get_publish_info(db, ds)
+
+
+@router.get("/{dataset_id}/grants")
+def list_dataset_grants(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.dataset import Dataset, DatasetGrant
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    rows = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id).all()
+    return {
+        "my_capabilities": sorted(dataset_grants_service.dataset_capabilities(db, current_user, ds)),
+        "grants": [
+            {"id": g.id, "user_id": str(g.user_id) if g.user_id else None,
+             "team_id": str(g.team_id) if g.team_id else None, "verb": g.verb}
+            for g in rows
+        ],
+    }
+
+
+@router.post("/{dataset_id}/grants")
+def set_dataset_grant(
+    dataset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Grant a verb (view/explore/build/reshare/edit/manage) to a user or team.
+    Requires RESHARE on the dataset (or manage/owner)."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
+    try:
+        g = dataset_grants_service.set_grant(
+            db, dataset_id, verb=body.get("verb"),
+            user_id=body.get("user_id"), team_id=body.get("team_id"),
+            granted_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "id": g.id, "verb": g.verb}
+
+
+@router.delete("/{dataset_id}/grants")
+def revoke_dataset_grant(
+    dataset_id: int,
+    user_id: str | None = None,
+    team_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
+    n = dataset_grants_service.revoke_grant(db, dataset_id, user_id=user_id, team_id=team_id)
+    return {"ok": True, "revoked": n}
+
+
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
 def get_dataset(
     dataset_id: int,
