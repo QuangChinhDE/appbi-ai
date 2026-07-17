@@ -1277,19 +1277,27 @@ class DataSourceConnectionService:
 
     @staticmethod
     def extract_generic_for_snapshot(
-        ds_type: str, config: Dict[str, Any], sql: str, timeout_seconds: int = 280
-    ) -> Tuple[None, List[Dict[str, Any]]]:
+        ds_type: str, config: Dict[str, Any], sql: str,
+        columns_meta: Optional[List[Dict[str, Any]]] = None, timeout_seconds: int = 280,
+    ) -> Tuple[Optional[list], List[Dict[str, Any]]]:
         """EXTRACT step for a NON-BigQuery source (Google Sheets / manual / other
-        warehouse) in a federated dataset: run `sql` on the source's OWN engine
-        and return (None, json_safe_rows). Schema is None → the host LOAD uses
-        BigQuery autodetect, which mirrors the source engine's own column typing
-        (e.g. DuckDB's VARCHAR/BIGINT/DOUBLE for a Google Sheet). Rows are coerced
-        to JSON-loadable values (datetime/date/time→ISO, Decimal→str, bytes→b64)."""
+        warehouse) in a federated dataset: run `sql` on the source's OWN engine and
+        return (bq_schema, json_safe_rows) to LOAD into the host BigQuery.
+
+        When ``columns_meta`` (the dataset table's declared columns_cache columns)
+        is given, the BigQuery schema + per-value coercion are derived from the
+        DECLARED types — NOT blind autodetect. This is critical for correctness:
+        autodetect can type a join key differently than the BigQuery fact it joins
+        (e.g. a dim key guessed INT64 while the fact key is STRING) → BQ then
+        rejects the JOIN (`No matching signature for operator =`). Declared types
+        keep join keys consistent. Falls back to autodetect (None) only when no
+        column metadata is available."""
         import base64
         import datetime as _dt
+        import json as _json
         from decimal import Decimal
 
-        def _coerce(v):
+        def _json_safe(v):
             if v is None:
                 return None
             if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
@@ -1299,18 +1307,65 @@ class DataSourceConnectionService:
             if isinstance(v, bytes):
                 return base64.b64encode(v).decode("ascii")
             if isinstance(v, dict):
-                return {k: _coerce(x) for k, x in v.items()}
+                return {k: _json_safe(x) for k, x in v.items()}
             if isinstance(v, (list, tuple)):
-                return [_coerce(x) for x in v]
+                return [_json_safe(x) for x in v]
             return v
+
+        def _bq_type(meta: Dict[str, Any]) -> str:
+            t = str(meta.get("source_type") or meta.get("type") or "").strip().lower()
+            if any(k in t for k in ("timestamp", "datetime")):
+                return "TIMESTAMP"
+            if t == "date":
+                return "DATE"
+            if t == "time":
+                return "TIME"
+            if "bool" in t:
+                return "BOOL"
+            if any(k in t for k in ("float", "double", "real", "numeric", "decimal", "number")):
+                return "FLOAT64"
+            if "int" in t:
+                return "INT64"
+            return "STRING"  # string / json / unknown → STRING (join-safe default)
+
+        def _coerce_to(bq_t: str, v):
+            """Coerce a JSON-safe value to match its declared BigQuery type so the
+            LOAD never fails on a string-shaped number etc. Unparseable → NULL."""
+            if v is None:
+                return None
+            try:
+                if bq_t == "INT64":
+                    return int(float(v)) if not isinstance(v, bool) else int(v)
+                if bq_t == "FLOAT64":
+                    return float(v)
+                if bq_t == "BOOL":
+                    if isinstance(v, str):
+                        return v.strip().lower() in ("true", "1", "yes", "t")
+                    return bool(v)
+                if bq_t in ("STRING",):
+                    return v if isinstance(v, str) else (_json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v))
+                return v  # DATE/TIME/TIMESTAMP already ISO strings
+            except (TypeError, ValueError):
+                return None
 
         # execute_query decrypts internally + validates SELECT-only; pass the
         # source datasource's (encrypted) config exactly like the chart path.
         _cols, rows, _ms = DataSourceConnectionService.execute_query(
             ds_type, config, sql, timeout_seconds=timeout_seconds,
         )
-        safe_rows = [{k: _coerce(val) for k, val in dict(r).items()} for r in rows]
-        return None, safe_rows
+        safe_rows = [{k: _json_safe(val) for k, val in dict(r).items()} for r in rows]
+
+        cols = [c for c in (columns_meta or []) if c.get("name")]
+        if not cols:
+            return None, safe_rows  # no metadata → autodetect fallback
+
+        type_by_name = {c["name"]: _bq_type(c) for c in cols}
+        bq_schema = [bigquery.SchemaField(name, bt) for name, bt in type_by_name.items()]
+        typed_rows = [
+            {name: _coerce_to(bt, row.get(name)) for name, bt in type_by_name.items()}
+            for row in safe_rows
+        ]
+        return bq_schema, typed_rows
 
     @staticmethod
     def load_bigquery_snapshot(

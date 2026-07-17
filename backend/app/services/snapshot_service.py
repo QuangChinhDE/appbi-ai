@@ -254,9 +254,10 @@ def build_table_snapshot(
             else:
                 # Federated: pull rows on the source's own engine (Sheets/PG/…),
                 # load into the host BQ with autodetect (schema=None).
+                _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
                 bq_schema, rows = DataSourceConnectionService.extract_generic_for_snapshot(
                     _ds_type(datasource), datasource.config, source_sig,
-                    timeout_seconds=_DDL_TIMEOUT_SEC,
+                    columns_meta=_cols_meta, timeout_seconds=_DDL_TIMEOUT_SEC,
                 )
             row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
                 host.config, snap_dataset, table_name, bq_schema, rows,
