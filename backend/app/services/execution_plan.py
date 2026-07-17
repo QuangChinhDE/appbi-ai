@@ -338,17 +338,23 @@ def plan_chart_execution(
 
         from app.services.datasource_service import DataSourceConnectionService
 
+        # Issue #1: the execution HOST must be the one that BUILT the generation
+        # we're serving — not an independently resolved host that may point at a
+        # different project/credential. Fall back to `host` only for legacy
+        # (generation NULL) rows.
+        gen_host = snapshot_service.host_for_generation(db, dataset_id, generation) or host
+
         return ExecutionPlan(
             mode="snapshot",
             # Snapshot refs render as BigQuery tables in the host → the WHOLE
             # statement (calendar, time-grain, quoting, functions) must be
             # BigQuery, whatever the base datasource is.
             dialect="bigquery", ds_type="bigquery",
-            exec_config=DataSourceConnectionService.snapshot_query_config(host.config),
+            exec_config=DataSourceConnectionService.snapshot_query_config(gen_host.config),
             cred="host_service_account",
             snapshot_state=SnapshotState.STALE if stale else SnapshotState.FRESH,
             overrides=overrides, as_of=as_of, stale=stale,
-            federated=federated, host_id=host.id, dataset_id=dataset_id,
+            federated=federated, host_id=gen_host.id, dataset_id=dataset_id,
             trigger_dataset_id=(dataset_id if stale else None),
             generation=generation,
             reason=("all tables snapshot-backed in host BigQuery"
@@ -357,4 +363,42 @@ def plan_chart_execution(
         )
     except Exception:  # noqa: BLE001 — planning must NEVER break a chart
         logger.warning("[exec-plan] planning failed; falling back to live", exc_info=True)
+        # Issue #5: fail-CLOSED for mixed-engine datasets. A silent live fallback
+        # on a dataset that spans >1 engine would generate cross-engine SQL and
+        # leak one dialect into another. Cheap re-probe of the engine span; if
+        # mixed → BLOCK with a clear message instead of leaking.
+        try:
+            ds_id = _resolve_dataset_id(db, binding, base_view_name)
+            if ds_id and _dataset_is_mixed_engine(db, ds_id):
+                return live(
+                    "planner error on a mixed-engine dataset → blocked (no cross-engine live)",
+                    federated=True, dataset_id=ds_id,
+                    blocked="Dataset này trộn nhiều nguồn khác engine và hệ thống gặp lỗi "
+                    "khi lập kế hoạch thực thi — không thể chạy trực tiếp (một truy vấn "
+                    "chỉ chạy trên MỘT engine). Thử lại, hoặc bấm Refresh trên Dataset; "
+                    "nếu lặp lại, báo dev kiểm tra cấu hình dataset.",
+                )
+        except Exception:  # noqa: BLE001
+            pass
         return live("planner error → live fallback")
+
+
+def _dataset_is_mixed_engine(db: Session, dataset_id: int) -> bool:
+    """Cheap probe: do this dataset's ENABLED non-calendar tables span >1 SQL
+    dialect? Used by the planner's fail-closed path (issue #5)."""
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.live_query_service import _dialect_for_ds_type
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+        .all()
+    )
+    ds_ids = {t.datasource_id for t in tables if t.datasource_id and not is_generated_calendar_table(t)}
+    if len(ds_ids) <= 1:
+        return False
+    rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
+    dialects = {_dialect_for_ds_type(str(getattr(d.type, "value", d.type)).lower()) for d in rows}
+    return len(dialects) > 1

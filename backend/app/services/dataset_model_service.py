@@ -1429,10 +1429,27 @@ def schedule_model_drift_check(dataset_id: int) -> None:
     _threading.Thread(target=_run, name=f"model-drift-{dataset_id}", daemon=True).start()
 
 
+def _dim_signature(dims) -> set:
+    """(name, type) signature of a dimension list — so a TYPE change on an
+    existing column counts as drift, not just add/remove (issue #11)."""
+    out = set()
+    for d in dims or []:
+        if isinstance(d, dict) and d.get("name"):
+            out.add((d.get("name"), str(d.get("type") or "")))
+    return out
+
+
 def _model_views_drifted(db: Session, dataset_id: int) -> bool:
-    """True when any enabled non-calendar table's classified dimension NAMES no
-    longer match its SemanticView (columns_cache changed since the last sync).
-    Names only — label/type refinements don't count as drift."""
+    """True when any enabled non-calendar table's SemanticView no longer matches
+    what the current columns_cache would classify. Detects (issue #11/#12):
+      • a NEW / REMOVED dimension (name set differs);
+      • a TYPE change on an existing dimension (signature differs);
+      • a MISSING view for a table that should have one (→ needs create);
+      • a MEASURE whose referenced column no longer exists in columns_cache
+        (stale measure). Measure SQL bodies are user-authored + merge-preserved,
+        so we don't diff them beyond the dangling-column check.
+    Transformation-only changes on the same column set are NOT detected here
+    (deeper; handled by explicit Refresh / Generate Model)."""
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset_obj is None:
         return False
@@ -1440,7 +1457,7 @@ def _model_views_drifted(db: Session, dataset_id: int) -> bool:
     tables = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
-        .filter(DatasetTable.enabled == True)  # noqa: E712
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712 (issue #14)
         .all()
     )
     for t in tables:
@@ -1448,12 +1465,25 @@ def _model_views_drifted(db: Session, dataset_id: int) -> bool:
             continue
         view = db.query(SemanticView).filter(SemanticView.dataset_table_id == t.id).first()
         if view is None:
-            continue  # no view yet → creation is the sync flow's job, not drift
+            return True  # issue #12: a table with data but no view IS drift
         expected_dims, _ = _classify_columns(t.columns_cache, auto_generate_measures=auto_measures)
-        expected = {d.get("name") for d in expected_dims if d.get("name")}
-        actual = {d.get("name") for d in (view.dimensions or []) if isinstance(d, dict) and d.get("name")}
-        if expected != actual:
-            return True
+        if _dim_signature(expected_dims) != _dim_signature(view.dimensions):
+            return True  # issue #11: name-or-type change
+        # Stale measure: a user/auto measure referencing a column no longer in
+        # columns_cache. Column-name presence check (cheap, no SQL parse).
+        col_names = {
+            str(c.get("name")) for c in (t.columns_cache.get("columns") or [])
+            if isinstance(c, dict) and c.get("name")
+        }
+        for m in (view.measures or []):
+            if not isinstance(m, dict):
+                continue
+            msql = str(m.get("sql") or "")
+            if msql in ("", "*"):
+                continue  # COUNT(*) etc. — no column dependency
+            # a plain column measure (sql == a bare column name) whose column is gone
+            if msql.isidentifier() and msql not in col_names:
+                return True
     return False
 
 
@@ -1472,7 +1502,10 @@ def _sync_dataset_model_structure(
     tables: List[DatasetTable] = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
-        .filter(DatasetTable.enabled == True)
+        # Issue #14: NULL enabled = enabled (column default True on legacy rows).
+        # The planner treats NULL as enabled, so model sync must match — else a
+        # NULL-enabled table is snapshot/planned but has no SemanticView.
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
         .all()
     )
     if not tables:
@@ -2556,6 +2589,11 @@ def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | 
             id=(host.id if host is not None else base_ds.id),
             type=(host.type if host is not None else base_ds.type),
             config=plan.exec_config,
+            # Issue #7: carry the snapshot GENERATION so the slicer's distinct
+            # cache key rotates with it — otherwise a slicer keeps serving the
+            # previous generation's values (for the cache TTL) after a refresh,
+            # while charts already show the new generation.
+            generation=plan.generation,
         )
         return dict(plan.overrides), exec_ds
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a slicer
@@ -3457,7 +3495,8 @@ def get_distinct_field_values(
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
         sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
-        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + (":snap" if _cal_snap else "")
+        _gen_suffix = (":snap:gen%s" % getattr(_snap_exec_ds, "generation", None)) if _cal_snap else ""
+        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + _gen_suffix
         values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_exec_ds, table_identifier, sql))
         return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
@@ -3496,7 +3535,7 @@ def get_distinct_field_values(
             dialect = _dialect_for_ds_type(_exec_type)
             base_sql = f"SELECT * FROM `{_base_ref}`"
             sql = _build_distinct_sql(base_sql, datasource, dialect, dropped, use_snapshots=True)
-            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap"
+            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap:gen%s" % getattr(_snap_exec_ds, "generation", None)
             return execute_distinct_sql(_snap_exec_ds, table_identifier, sql)
         plan = resolve_dataset_table_relation(datasource, live_table)
         sql = _build_distinct_sql(plan.sql, datasource, dialect, dropped)
@@ -4252,7 +4291,8 @@ def _generate_join_suggestions(
 
     tables: list[DatasetTable] = (
         db.query(DatasetTable)
-        .filter(DatasetTable.dataset_id == dataset_id, DatasetTable.enabled == True)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712 (issue #14)
         .all()
     )
     table_by_id = {t.id: t for t in tables}

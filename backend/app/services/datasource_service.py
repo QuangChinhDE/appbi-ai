@@ -1322,11 +1322,16 @@ class DataSourceConnectionService:
                 return "TIME"
             if "bool" in t:
                 return "BOOL"
-            if any(k in t for k in ("float", "double", "real", "numeric", "decimal", "number")):
+            # Issue #19: exact-decimal types → NUMERIC (not FLOAT64) so a Postgres
+            # NUMERIC/DECIMAL amount keeps its precision when federated into
+            # BigQuery. Only true floating types map to FLOAT64.
+            if any(k in t for k in ("numeric", "decimal")):
+                return "NUMERIC"
+            if any(k in t for k in ("float", "double", "real")):
                 return "FLOAT64"
             if "int" in t:
                 return "INT64"
-            return "STRING"  # string / json / unknown → STRING (join-safe default)
+            return "STRING"  # string / json / number-unknown → STRING (join-safe default)
 
         def _coerce_to(bq_t: str, v):
             """Coerce a JSON-safe value to match its declared BigQuery type so the
@@ -1338,6 +1343,11 @@ class DataSourceConnectionService:
                     return int(float(v)) if not isinstance(v, bool) else int(v)
                 if bq_t == "FLOAT64":
                     return float(v)
+                if bq_t == "NUMERIC":
+                    # Keep as STRING for the JSON load so BigQuery parses it as
+                    # exact NUMERIC (float() would lose precision). Decimal was
+                    # already str()'d by _json_safe; pass numbers through as str.
+                    return v if isinstance(v, str) else str(v)
                 if bq_t == "BOOL":
                     if isinstance(v, str):
                         return v.strip().lower() in ("true", "1", "yes", "t")

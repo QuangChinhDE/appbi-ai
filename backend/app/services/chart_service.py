@@ -516,6 +516,7 @@ def _build_debug_response(runtime_result: dict) -> Optional[dict]:
         # Phase 8 (#47): planner decision surfaced end-to-end (state + why).
         "execution_state": raw_debug.get("execution_state"),
         "execution_reason": raw_debug.get("execution_reason"),
+        "snapshot_generation": raw_debug.get("snapshot_generation"),
     }
 
 
@@ -2273,6 +2274,13 @@ def _execute_semantic_chart_runtime(
     # would join across engines (used by the missing-snapshot branch below).
     _snap_federated = plan.mode == "snapshot" and plan.federated
     _plan_dataset_id = plan.dataset_id
+    # Issues #3/#4 — ACTUAL execution facts, mutated if a fallback happens below,
+    # so the cache key, _debug state and generation reflect what REALLY ran (not
+    # the original plan). `_fell_back` ⇒ do NOT cache under the original key.
+    _exec_state = plan.snapshot_state.value
+    _exec_reason = plan.reason
+    _exec_generation = plan.generation
+    _fell_back = False
     if plan.trigger_dataset_id:
         # Stale (or eligible-but-unbuilt) → warm in the background; this request
         # still serves the stale/live result instantly (or, for a not-yet-built
@@ -2621,6 +2629,12 @@ def _execute_semantic_chart_runtime(
                 _snap_mode = "live"
                 _snap_stale = False
                 _snap_as_of = None
+                # Issues #3/#4 — record the ACTUAL execution so cache + debug tell
+                # the truth (served LIVE, not the planned snapshot generation).
+                _fell_back = True
+                _exec_state = "live_fallback"
+                _exec_reason = "snapshot table missing → served LIVE + rebuild triggered"
+                _exec_generation = None
                 # Regen re-opened a read txn (engine loads the model) → release the
                 # pooled DB connection before the up-to-60s live BQ wait (same
                 # QueuePool-exhaustion guard as the primary path above).
@@ -2681,12 +2695,28 @@ def _execute_semantic_chart_runtime(
                         "[snapshot] serving PREVIOUS generation %s for chart_id=%s while rebuild runs",
                         _prev_gen, _pbi_current_chart_id(),
                     )
+                    # Issue #2 — the previous generation may have been built on a
+                    # DIFFERENT host; execute with THAT generation's host cred, not
+                    # the failed plan's. Falls back to the plan's exec_config only
+                    # if the prev-gen host can't be resolved.
+                    try:
+                        from app.services import snapshot_service as _ss2
+                        _prev_host = _ss2.host_for_generation(db, _plan_dataset_id, _prev_gen)
+                        if _prev_host is not None:
+                            _exec_config = DataSourceConnectionService.snapshot_query_config(_prev_host.config)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[snapshot] prev-gen host resolve failed; using plan cred", exc_info=True)
                     import dataclasses as _dc
                     _prev_spec = _dc.replace(_spec, snapshot_overrides=_prev_refs)
                     sql, _engine_columns, _pivot_metadata = engine.run(_prev_spec)
                     _snap_overrides = dict(_prev_refs)
                     _snap_as_of = _prev_asof
                     _snap_stale = True  # older than intended — surface as stale
+                    # Issues #3/#4 — record actual execution (previous generation).
+                    _fell_back = True
+                    _exec_state = "prev_generation"
+                    _exec_reason = f"current generation broken → served previous generation {_prev_gen}"
+                    _exec_generation = _prev_gen
                     try:
                         db.commit()  # pool-release before the BQ wait (same guard as above)
                     except Exception:  # noqa: BLE001
@@ -2781,11 +2811,13 @@ def _execute_semantic_chart_runtime(
                 # Public per-link TTL: the served snapshot is older than the TTL and
                 # a background rebuild was kicked off; the FE shows "đang làm mới…".
                 "snapshot_stale": bool(_snap_stale),
-                # Phase 8 (#47): the planner's typed decision, surfaced instead of
-                # silently swallowed — DA can see WHY this ran the way it did
-                # (fresh/stale/not_built/incompatible + human reason) without logs.
-                "execution_state": plan.snapshot_state.value,
-                "execution_reason": plan.reason,
+                # Phase 8 (#47) + issue #4: the ACTUAL execution decision, updated
+                # on fallback (live_fallback / prev_generation), not the original
+                # plan — so log/Query tab never claims "fresh" while serving live
+                # or an older generation.
+                "execution_state": _exec_state,
+                "execution_reason": _exec_reason,
+                "snapshot_generation": _exec_generation,
                 # Phase-15.78: structured record of every filter the BE dropped
                 # before generating SQL. Empty list = nothing dropped. FE can
                 # banner this so users discover when a slicer they applied
@@ -2794,15 +2826,22 @@ def _execute_semantic_chart_runtime(
             },
         }
 
-        if cache_enabled:
+        # Issue #3 — do NOT cache a FALLBACK result under the original plan's
+        # cache key: the key encodes the intended snapshot generation, but the
+        # result actually came from LIVE or a PREVIOUS generation. Caching it
+        # would serve stale/mislabeled data for that key until it rotates. Skip
+        # the write on fallback (next request recomputes — and by then the
+        # rebuild has usually produced a fresh generation with its own key).
+        if cache_enabled and not _fell_back:
             query_cache.set_cached(
                 datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
             )
-            if coalesce_leader:
-                # Result is cached now → wake any workers waiting on this query.
-                query_cache.end_coalesced_compute(
-                    datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
-                )
+        # Always release the coalescing marker (even on fallback) so cross-worker
+        # waiters stop polling; they recompute (and hit the same fallback).
+        if cache_enabled and coalesce_leader:
+            query_cache.end_coalesced_compute(
+                datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+            )
 
     except BaseException:
         if cache_enabled and coalesce_leader:

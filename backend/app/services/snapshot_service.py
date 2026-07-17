@@ -437,6 +437,35 @@ def resolve_generation_refs(
     return refs, fps, None, (min(builts) if builts else None)
 
 
+def host_for_generation(
+    db: Session, dataset_id: int, generation: Optional[int]
+) -> Optional[DataSource]:
+    """The HOST DataSource recorded on a specific snapshot generation's rows
+    (issue #1/#2). Read-time credential/project MUST come from the generation
+    actually being served — NOT from an independent resolve_host(), which can
+    return a different (newer/changed) host while an older generation's physical
+    tables live in another project. Returns None for legacy rows (generation
+    NULL) or when the recorded host is gone/disabled → caller falls back to
+    resolve_host()."""
+    if generation is None:
+        return None
+    row = (
+        db.query(DatasetTableSnapshot.host_datasource_id)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.host_datasource_id.isnot(None),
+        )
+        .first()
+    )
+    if not row or not row[0]:
+        return None
+    d = db.query(DataSource).filter(DataSource.id == int(row[0])).first()
+    if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
+        return d
+    return None
+
+
 def current_fingerprint_for_table(
     db: Session, dataset_obj: Dataset, table: DatasetTable, datasource: DataSource
 ) -> Optional[str]:
