@@ -2624,6 +2624,27 @@ def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | 
         return {}, None
 
 
+def _calendar_snapshot_ref_from_map(db: Session, snap_map: dict | None) -> str | None:
+    """The generated-calendar table's snapshot ref among a ``{table_id: ref}`` map,
+    or None. Lets the slicer distinct path point role-played date-dim views (which
+    carry no ``dataset_table_id``) at the SAME materialized calendar the chart
+    engine reads (see ``_snapshot_ref_for_view``) — one source of truth, no
+    chart/slicer dual-path drift. There is at most one generated-calendar per
+    dataset. Never raises."""
+    try:
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+
+        for tid, ref in (snap_map or {}).items():
+            if not ref:
+                continue
+            t = db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            if t is not None and is_generated_calendar_table(t):
+                return ref
+    except Exception:  # noqa: BLE001 — no redirect on any lookup error
+        return None
+    return None
+
+
 def get_distinct_field_values(
     db: Session,
     dataset_id: int,
@@ -3452,6 +3473,33 @@ def get_distinct_field_values(
             return []
 
     if view.dataset_table_id is None:
+        # Role-played date-dim (``…__<col>__date_dim``): if the dataset's calendar
+        # is materialized in the snapshot, read that flat table on the snapshot HOST
+        # — mirrors the chart engine's ``_snapshot_ref_for_view`` role-dim redirect,
+        # so the slicer cascade stays on the SAME snapshot the charts read (no
+        # chart/slicer dual-path drift). Column-identical to the inline calendar, so
+        # the option list is unchanged. Any gap → inline path below, unchanged.
+        _role_cal_ref = (
+            _calendar_snapshot_ref_from_map(db, _snap_map)
+            if (_snap_exec_ds is not None and str(view_name).endswith("_date_dim"))
+            else None
+        )
+        if _role_cal_ref:
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
+            base_sql = f"SELECT * FROM `{_role_cal_ref}`"
+            sql = _build_distinct_sql(base_sql, _snap_exec_ds, dialect, dropped, use_snapshots=True)
+            table_identifier = (
+                f"calendar_role:{view_name}:snap:gen%s" % getattr(_snap_exec_ds, "generation", None)
+            )
+            values = _safe_execute(
+                "calendar_role",
+                lambda: execute_distinct_sql(_snap_exec_ds, table_identifier, sql),
+            )
+            return {"values": values, "dropped_filters": dropped,
+                    **({"debug_sql": captured_sqls} if explain else {})}
+
         sql_source = str(view.sql_table_name or "").strip()
         if not sql_source:
             raise ValueError(f"View '{view_name}' not found")
@@ -3515,9 +3563,17 @@ def get_distinct_field_values(
                           else _snap_exec_ds.type.value)
             dialect = _dialect_for_ds_type(_exec_type)
         calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
-        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
+        # Read the materialized calendar table when present (same physical table the
+        # chart engine reads) instead of regenerating it inline — keeps slicer and
+        # charts on ONE source of truth. Column-identical, so values are unchanged.
+        _cal_snap_ref = _snap_map.get(db_table.id) if _cal_snap else None
+        if _cal_snap_ref:
+            base_sql = f"SELECT * FROM `{_cal_snap_ref}`"
+            sql = _build_distinct_sql(base_sql, cal_datasource, dialect, dropped, use_snapshots=True)
+        else:
+            cal_sql = build_calendar_live_sql(calendar_settings, dialect)
+            sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
         _gen_suffix = (":snap:gen%s" % getattr(_snap_exec_ds, "generation", None)) if _cal_snap else ""
         table_identifier = f"calendar_view:{dataset_id}:{view_name}" + _gen_suffix
         values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_exec_ds, table_identifier, sql))
