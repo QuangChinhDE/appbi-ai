@@ -1400,6 +1400,10 @@ def _build_calendar_role_views(
             ):
                 continue
             role_view_name = build_calendar_role_view_name(source_view.name, column_name)
+            # Audit #5 — two temporal columns slugifying identically must NOT
+            # collapse into one role-dim (stable-hash suffix on collision).
+            from app.services.dataset_calendar_service import disambiguate_role_view_name
+            role_view_name = disambiguate_role_view_name(role_view_name, role_view_names, column_name)
             role_view_names.add(role_view_name)
 
             role_view, was_created, was_updated = _upsert_semantic_view(
@@ -1423,7 +1427,10 @@ def _build_calendar_role_views(
                 "name": role_view.name,
                 "view": role_view.name,
                 "type": "left",
-                "sql_on": build_calendar_join_sql(column_name, column_type, role_view.name),
+                "sql_on": build_calendar_join_sql(
+                    column_name, column_type, role_view.name,
+                    timezone=calendar_settings.get("timezone"),  # audit #4
+                ),
                 "relationship": "many_to_one",
                 "from_view": source_view.name,
                 "from_column": column_name,

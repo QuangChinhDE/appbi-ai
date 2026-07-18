@@ -1314,6 +1314,14 @@ def _render_step_join_condition(
         if edge.to_node and edge.to_node != edge.to_view:
             rendered = rendered.replace(f"${{{edge.to_node}}}", to_alias)
         rendered = rendered.replace(f"${{{edge.to_view}}}", to_alias)
+        # Audit #4 — expand the calendar-timezone local-date macro. This
+        # helper has no dialect context; the generic expansion falls back to
+        # CAST(expr AS DATE) (pre-timezone behaviour) so a macro can never
+        # leak raw into SQL on the live/distinct paths.
+        if "APPBI_LOCAL_DATE" in rendered:
+            from app.services.dataset_calendar_service import expand_local_date_macros
+
+            rendered = expand_local_date_macros(rendered, None)
         return rendered
 
     if edge.from_column and edge.to_column:

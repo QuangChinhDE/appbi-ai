@@ -533,11 +533,95 @@ def build_calendar_role_view_name(base_view_name: str, column_name: str) -> str:
     return f"{_slugify(base_view_name, default='table')}__{_slugify(column_name, default='date')}__date_dim"
 
 
+def disambiguate_role_view_name(candidate: str, taken: set, column_name: str) -> str:
+    """Semantic-audit 2026-07 (#5) — two temporal columns whose names slugify
+    identically ('Order Date' vs 'order_date') used to collapse into ONE
+    role-dim: one date field silently lost its calendar, and rendering both
+    join edges onto the same alias dropped rows where the two dates differ.
+    On collision, append a short stable hash of the RAW column name (so the
+    suffix never changes across regenerations); first-in-column-order keeps
+    the plain name (existing non-colliding datasets are untouched)."""
+    if candidate not in taken:
+        return candidate
+    import hashlib as _h
+
+    suffix = _h.md5(str(column_name).encode("utf-8")).hexdigest()[:4]
+    base = candidate[:-len("__date_dim")] if candidate.endswith("__date_dim") else candidate
+    out = f"{base}_{suffix}__date_dim"
+    n = 2
+    while out in taken:  # paranoid: raw-name hash collision
+        out = f"{base}_{suffix}{n}__date_dim"
+        n += 1
+    return out
+
+
 def build_calendar_role_display_name(base_label: str, column_name: str) -> str:
     return f"Date - {base_label}.{column_name}"
 
 
-def build_calendar_join_sql(from_column: str, column_type: str, role_view_name: str) -> str:
+# IANA timezone names only (Asia/Ho_Chi_Minh, UTC, Etc/GMT+7 …) — the strict
+# charset doubles as SQL-injection protection for the macro payload.
+_TZ_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+\-/]*")
+
+# Render-time macro carried inside a join's sql_on. The stored template must
+# stay DIALECT-PORTABLE (one sql_on executes on the sync dialect live AND on
+# BigQuery in snapshot mode), so the tz-aware date expression cannot be baked
+# in at model-gen time; renderers expand it per execution dialect via
+# `expand_local_date_macros`.
+_LOCAL_DATE_MACRO_RE = re.compile(
+    r"\$\{APPBI_LOCAL_DATE\(([^|)]+)\|([A-Za-z][A-Za-z0-9_+\-/]*)\)\}"
+)
+
+
+def expand_local_date_macros(sql: str, dialect: str | None) -> str:
+    """Expand ${APPBI_LOCAL_DATE(<expr>|<tz>)} into the execution dialect's
+    'local calendar date of this instant' expression. Naive/unknown dialects
+    fall back to plain CAST(expr AS DATE) — exactly the pre-timezone
+    behaviour, so a macro can never leak raw into SQL."""
+    if "APPBI_LOCAL_DATE" not in (sql or ""):
+        return sql
+    d = (dialect or "").strip().lower()
+
+    def _one(m: "re.Match[str]") -> str:
+        expr = m.group(1).strip()
+        tz = m.group(2).strip()
+        if not _TZ_NAME_RE.fullmatch(tz):
+            return f"CAST({expr} AS DATE)"
+        if d == "bigquery":
+            return f"DATE({expr}, '{tz}')"
+        if d in ("postgresql", "duckdb"):
+            # naive timestamps are stored as UTC instants in our pipeline —
+            # interpret as UTC, then shift to the calendar timezone.
+            return f"CAST(({expr} AT TIME ZONE 'UTC' AT TIME ZONE '{tz}') AS DATE)"
+        if d == "mysql":
+            return f"DATE(CONVERT_TZ({expr}, 'UTC', '{tz}'))"
+        return f"CAST({expr} AS DATE)"
+
+    return _LOCAL_DATE_MACRO_RE.sub(_one, sql)
+
+
+def build_calendar_join_sql(
+    from_column: str,
+    column_type: str,
+    role_view_name: str,
+    timezone: str | None = None,
+) -> str:
+    # Semantic-audit 2026-07 (#4) — the calendar settings carry a `timezone`
+    # the join previously IGNORED: a TIMESTAMP row at 2023-06-30T20:00Z with
+    # tz=+7 belongs to July locally but joined the June 30 calendar row, so
+    # near-midnight rows mis-bucketed month/quarter/year. For an EXPLICIT
+    # non-UTC timezone on a true-instant column (timestamp), emit the
+    # dialect-portable local-date macro; UTC (the default) keeps the plain
+    # CAST — byte-identical to the pre-fix template, no silent shift for
+    # existing datasets. Naive DATETIME/DATE columns carry no instant
+    # semantics → plain CAST stays correct for them.
+    tz = str(timezone or "").strip()
+    ctype = str(column_type or "").strip().lower()
+    if (
+        tz and tz.upper() != "UTC" and ctype == "timestamp"
+        and _TZ_NAME_RE.fullmatch(tz)
+    ):
+        return f"${{APPBI_LOCAL_DATE(${{TABLE}}.{from_column}|{tz})}} = ${{{role_view_name}}}.date"
     # Always normalize temporal joins to DATE. This avoids runtime mismatches
     # such as BigQuery TIMESTAMP = DATE when upstream metadata or overrides mark
     # a timestamp-like source column as a plain date.

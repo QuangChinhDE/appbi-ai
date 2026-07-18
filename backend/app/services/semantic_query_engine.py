@@ -3216,6 +3216,13 @@ class SemanticQueryEngine:
         bare_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}'
         rendered = re.sub(bare_pattern, lambda m: m.group(1), rendered)
 
+        # Audit #4 — expand the dialect-portable local-date macro (calendar
+        # timezone joins) for THIS engine's dialect. No-op when absent.
+        if "APPBI_LOCAL_DATE" in rendered:
+            from app.services.dataset_calendar_service import expand_local_date_macros
+
+            rendered = expand_local_date_macros(rendered, self.database_type)
+
         return rendered
     
     def _build_where_clause(
