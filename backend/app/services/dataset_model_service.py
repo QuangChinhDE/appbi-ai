@@ -365,6 +365,36 @@ def _normalize_relationship_type(relationship: str | None) -> str:
     return normalized
 
 
+def _canonicalize_join_orientation(
+    cardinality_canonical: str,
+    join_type: str,
+    *,
+    has_alias: bool,
+    both_real_tables: bool,
+) -> tuple[bool, str, str]:
+    """Semantic-audit 2026-07 (DA feedback) — decide whether a relationship must
+    be RE-ORIENTED so it is stored on the MANY side as ``many_to_one`` (Power-BI
+    parity: measure charts anchor on the fact/many side, so the join must live
+    there to be usable).
+
+    Returns ``(swap, new_join_type, new_cardinality)``:
+      • swap=True → caller swaps from<->to (views, ids, columns). Only a plain
+        ``one_to_many`` real-table<->real-table join without an alias is
+        re-oriented; aliased/role-played joins and generated views keep their
+        authored direction.
+      • Swapping direction swaps LEFT<->RIGHT so WHICH side's rows are kept is
+        preserved (a 1:N LEFT that kept the ONE side becomes an N:1 RIGHT that
+        still keeps that same side); INNER/FULL are symmetric and unchanged.
+
+    Pure + deterministic so it is unit-testable and reusable by the one-time
+    migration that canonicalizes already-stored relationships.
+    """
+    if cardinality_canonical == "one_to_many" and not has_alias and both_real_tables:
+        swapped_type = {"left": "right", "right": "left"}.get(join_type, join_type)
+        return True, swapped_type, "many_to_one"
+    return False, join_type, cardinality_canonical
+
+
 def _infer_relationship_from_uniqueness(
     from_unique: bool,
     to_unique: bool,
@@ -1314,16 +1344,27 @@ def _detect_fk_joins(
             if target_col is None:
                 continue
 
-            # Semantic-audit 2026-07 — only an EXPLICITLY verified-unique
-            # target key may become an auto many_to_one. Unknown/False →
-            # skip (fail-loud): the grain guard treats M:1 as safe, so a
-            # guessed M:1 on a non-unique key = silent double-count.
-            if _verified_unique(ref_table, target_col) is not True:
+            # Semantic-audit 2026-07 — skip an auto many_to_one ONLY when the
+            # target key is PROVEN non-unique (probe==False): the grain guard
+            # treats M:1 as safe, so a guessed M:1 on a genuinely non-unique
+            # key = silent double-count (#10). When uniqueness is UNVERIFIABLE
+            # (probe==None: source transiently unreachable, e.g. Sheets 503),
+            # fall back to the name-heuristic confidence and still emit — else a
+            # transient hiccup during Generate Model would silently DROP a valid
+            # FK join and make regeneration non-idempotent (a regression found
+            # via ds73). True/None → emit; only proven-False is dropped.
+            _uniq = _verified_unique(ref_table, target_col)
+            if _uniq is False:
                 logger.info(
-                    "[fk_heuristic] skip %s.%s -> %s.%s (target key not verified unique)",
+                    "[fk_heuristic] skip %s.%s -> %s.%s (target key PROVEN non-unique — would fan out)",
                     current_view.name, raw_col_name, ref_view.name, target_col,
                 )
                 continue
+            if _uniq is None:
+                logger.info(
+                    "[fk_heuristic] emit %s.%s -> %s.%s on NAME confidence (uniqueness unverifiable)",
+                    current_view.name, raw_col_name, ref_view.name, target_col,
+                )
 
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
@@ -2184,6 +2225,46 @@ def add_join(
     # caller via the response; the UI shows a red banner in RelationshipDialog
     # so the user is reminded to use a bridge table when possible.
 
+    # ── Directionality canonicalization (semantic-audit 2026-07, DA feedback) ──
+    # Power-BI parity: a relationship is direction-agnostic — the modeller
+    # declares two tables + cardinality, and the system ORIENTS the join to the
+    # MANY (fact) side, where measure charts anchor. Previously a relationship
+    # drawn dim(1)->fact(N) was stored on the DIM explore, so a chart on the
+    # FACT could not traverse it (reverse edge only exists for cross_filter=both)
+    # → grain guard blocked, and flipping LEFT/RIGHT did nothing because the join
+    # never rendered. We now canonicalize a `one_to_many` edge to `many_to_one`
+    # stored on the many side: swap from<->to (views, ids, columns), invert the
+    # cardinality, and swap LEFT<->RIGHT so WHICH rows are kept is preserved
+    # (INNER/FULL are symmetric). Only plain real-table<->real-table joins are
+    # canonicalized — aliased/role-played joins and generated views (date-dims)
+    # keep their authored orientation. cross_filter is preserved verbatim
+    # (filter-propagation semantics vs canonical direction is a separate concern;
+    # the Phase-2 propagation engine is default-OFF so this cannot skew numbers).
+    _both_real_tables = (
+        getattr(from_view, "dataset_table_id", None) is not None
+        and getattr(to_view, "dataset_table_id", None) is not None
+    )
+    _swap, normalized_join_type, cardinality_canonical = _canonicalize_join_orientation(
+        cardinality_canonical,
+        normalized_join_type,
+        has_alias=bool((alias or "").strip()),
+        both_real_tables=_both_real_tables,
+    )
+    canonicalized = False
+    if _swap:
+        drawn_dim, drawn_fact = from_view.name, to_view.name
+        from_view, to_view = to_view, from_view
+        from_view_id, to_view_id = to_view_id, from_view_id
+        normalized_from_columns, normalized_to_columns = (
+            normalized_to_columns, normalized_from_columns,
+        )
+        primary_from_column, primary_to_column = primary_to_column, primary_from_column
+        canonicalized = True
+        logger.info(
+            "[join-canon] 1:N drawn %s->%s canonicalized to N:1 on many side %s (join_type=%s)",
+            drawn_dim, drawn_fact, from_view.name, normalized_join_type,
+        )
+
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
         SemanticExplore.base_view_id == from_view_id,
@@ -2286,6 +2367,18 @@ def add_join(
         "base_view_name": explore.base_view_name,
         "joins": explore.joins,
     }
+    if canonicalized:
+        # Tell the dialog the relationship was auto-oriented to the many side
+        # so it can re-render FROM/TO + join type + refresh the correct explore.
+        response["canonicalized"] = True
+        response["canonical_from_view"] = from_view.name
+        response["canonical_to_view"] = to_view.name
+        response["canonical_join_type"] = normalized_join_type
+        response["canonical_cardinality"] = cardinality_canonical
+        warnings.append(
+            "Quan hệ được tự động xoay về hướng N:1 (lưu trên bảng 'many') để "
+            "biểu đồ trên bảng fact dùng được ngay."
+        )
     if warnings:
         response["warnings"] = warnings
     if pk_result is not None:
@@ -2529,6 +2622,28 @@ def suggest_join_relationship(
             "Nên dùng bridge table + 2 quan hệ N:1 khi có thể."
         )
 
+    # Semantic-audit 2026-07 (DA feedback, F4) — the dialog previously suggested
+    # only cardinality and always defaulted the join type to LEFT relative to the
+    # arbitrary FROM the user drew. Now also suggest the JOIN TYPE and the
+    # CANONICAL orientation so the modeller sees the correct fact-anchored shape:
+    #   • many_to_one / one_to_one → keep the many (fact) side → LEFT, from as-is.
+    #   • one_to_many → auto-orient to N:1 on the many side: the suggested FROM is
+    #     the CURRENT `to` view (the many side) and the type stays LEFT (keep the
+    #     many side). This is exactly what add_join will persist, so the dialog
+    #     can render the corrected direction up-front.
+    suggested_join_type = "left"
+    canonical_from_view = from_view.name
+    canonical_to_view = to_view.name
+    canonical_from_columns = list(normalized_from_columns)
+    canonical_to_columns = list(normalized_to_columns)
+    if suggested_relationship == "one_to_many":
+        canonical_from_view, canonical_to_view = to_view.name, from_view.name
+        canonical_from_columns, canonical_to_columns = (
+            list(normalized_to_columns), list(normalized_from_columns),
+        )
+        # after orientation it is N:1 keeping the many side → LEFT
+        suggested_join_type = "left"
+
     return {
         "relationship": suggested_relationship,
         "from_unique": from_unique,
@@ -2543,6 +2658,14 @@ def suggest_join_relationship(
         "message": blocking_message,
         "warning_code": warning_code,
         "warning_message": warning_message,
+        # F4 — suggested join type + canonical (auto-oriented) shape.
+        "suggested_join_type": suggested_join_type,
+        "suggested_cardinality": suggested_relationship,
+        "canonical_from_view": canonical_from_view,
+        "canonical_to_view": canonical_to_view,
+        "canonical_from_columns": canonical_from_columns,
+        "canonical_to_columns": canonical_to_columns,
+        "will_auto_orient": suggested_relationship == "one_to_many",
     }
 
 
