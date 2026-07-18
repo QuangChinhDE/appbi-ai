@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Link2, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronRight, Link2, Plus, Trash2 } from 'lucide-react';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import {
   useDatasetModelJoinSuggestion,
@@ -193,6 +193,9 @@ export function RelationshipDialog({
   // F4 — track whether the user manually picked a join type, so auto-detect can
   // pre-fill the suggested type only while it is still "untouched".
   const [joinTypeTouched, setJoinTypeTouched] = useState(false);
+  // PBI-style UX: keep the default view simple (cardinality + cross-filter);
+  // SQL-level knobs (join type, alias, primary key) live under Advanced.
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
   const [previousSelectionKey, setPreviousSelectionKey] = useState('');
   const suppressSelectionResetRef = useRef(false);
@@ -549,6 +552,9 @@ export function RelationshipDialog({
           ))}
         </div>
 
+        {/* PBI-style: lead with Cardinality + Cross-filter (the two concepts a
+            DA reasons about). SQL join type / alias / primary key move to
+            Advanced so the default dialog stays approachable. */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
@@ -574,76 +580,6 @@ export function RelationshipDialog({
                   : t('datasets.relationshipDialog.suggestedFromData', { label: `${suggestedRelationshipLabel}${suggestedUniquenessLabel}` })}
               </p>
             )}
-            {/* F4 (DA feedback) — when the drawn direction is 1:N it will be
-                auto-oriented to N:1 on the many/fact side at save time so a
-                measure chart on the fact can use it. Tell the user up-front so
-                the flipped FROM/TO in the saved model is not a surprise. */}
-            {joinSuggestion?.will_auto_orient && !relationshipTouched && (
-              <p className="rounded-md border border-brand/30 bg-brand/5 px-2 py-1.5 text-[11px] leading-snug text-brand">
-                {t('datasets.relationshipDialog.autoOrientHint')}
-              </p>
-            )}
-            {/* Phase-3b: many-to-many is allowed but high-risk. Show a red
-                banner whenever the user (or auto-suggestion) selects it so
-                they're nudged toward a bridge-table design. */}
-            {relationship === 'many_to_many' && (
-              <p className="rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-[11px] leading-snug text-danger">
-                {t('datasets.relationshipDialog.manyToManyWarning')}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              {t('datasets.relationshipDialog.joinType')}
-            </label>
-            <Select
-              value={joinType}
-              onChange={(value) => {
-                setJoinType(value as JoinType);
-                setJoinTypeTouched(true);
-              }}
-              options={JOIN_TYPE_OPTIONS}
-            />
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-            {t('datasets.relationshipDialog.alias')} <span className="normal-case text-text-quaternary">{t('datasets.relationshipDialog.aliasHint')}</span>
-          </label>
-          <input
-            type="text"
-            value={alias}
-            onChange={(event) => setAlias(event.target.value)}
-            placeholder={toView ? t('datasets.relationshipDialog.aliasPlaceholderBlank', { name: toView.name }) : t('datasets.relationshipDialog.aliasPlaceholderExample')}
-            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
-              focus:outline-none focus:ring-2 focus:ring-brand"
-          />
-          <p className="text-xs text-text-quaternary">
-            {t('datasets.relationshipDialog.aliasHelpPrefix')} <code>creator.email</code> {t('datasets.relationshipDialog.aliasHelpSuffix')}
-          </p>
-        </div>
-
-        {/* Phase-3b: Active toggle + Cross-filter direction. Defaults match
-            legacy behaviour (active + single) so existing joins behave as
-            before unless the user explicitly opts in. */}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-1.5">
-            <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-text-secondary">
-              <input
-                type="checkbox"
-                checked={isActive}
-                onChange={(e) => setIsActive(e.target.checked)}
-                className="h-3.5 w-3.5"
-              />
-              {t('datasets.relationshipDialog.activeRelationship')}
-            </label>
-            <p className="text-xs text-text-quaternary leading-snug">
-              {isActive
-                ? t('datasets.relationshipDialog.activeHelpOn')
-                : t('datasets.relationshipDialog.activeHelpOff')}
-            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -663,74 +599,176 @@ export function RelationshipDialog({
           </div>
         </div>
 
-        {/* Phase-1 PBI parity — primary key on the "one" side view. Optional.
-            Visible only when the relationship marks one side unique (m:1 or 1:m
-            or 1:1). Engine uses this for symmetric aggregates (Phase 4) to
-            dedupe fan-out before SUM/COUNT. Blank = leave unchanged. */}
-        {toView && (relationship === 'many_to_one' || relationship === 'one_to_one') && (
-          <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2">
-            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-              {t('datasets.relationshipDialog.primaryKeyOn', { name: toView.table_display_name || toView.name })}{' '}
-              <span className="text-text-quaternary normal-case">{t('datasets.relationshipDialog.primaryKeyHint')}</span>
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {toColumns.map((col) => {
-                const checked = primaryKeyOnToView.includes(col.value);
-                return (
-                  <label
-                    key={col.value}
-                    className={`cursor-pointer rounded-md border px-2 py-0.5 text-xs ${
-                      checked
-                        ? 'border-brand bg-brand/10 text-brand'
-                        : 'border-[rgb(var(--border-line))] text-text-secondary'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="sr-only"
-                      checked={checked}
-                      onChange={() =>
-                        setPrimaryKeyOnToView((current) =>
-                          current.includes(col.value)
-                            ? current.filter((c) => c !== col.value)
-                            : [...current, col.value],
-                        )
-                      }
-                    />
-                    {col.label}
-                  </label>
-                );
-              })}
-            </div>
-            <p className="text-xs text-text-quaternary leading-snug">
-              {t('datasets.relationshipDialog.primaryKeyHelp')}
-            </p>
+        {/* F4 (DA feedback) — a drawn 1:N is auto-oriented to N:1 on the many
+            side at save time so a measure chart on the fact can use it. */}
+        {joinSuggestion?.will_auto_orient && !relationshipTouched && (
+          <p className="rounded-md border border-brand/30 bg-brand/5 px-3 py-2 text-[11px] leading-snug text-brand">
+            {t('datasets.relationshipDialog.autoOrientHint')}
+          </p>
+        )}
+        {/* Many-to-many is allowed but high-risk (cartesian fan-out). */}
+        {relationship === 'many_to_many' && (
+          <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-[11px] leading-snug text-danger">
+            {t('datasets.relationshipDialog.manyToManyWarning')}
+          </p>
+        )}
+
+        {/* Plain-language summary (PBI shows a sentence, not SQL). */}
+        {fromView && toView && previewPairs.length > 0 && (
+          <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs leading-relaxed text-text-secondary">
+            <span className="font-medium text-text-tertiary">{t('datasets.relationshipDialog.summaryLabel')}: </span>
+            {t(
+              relationship === 'one_to_many'
+                ? 'datasets.relationshipDialog.summaryOneToMany'
+                : relationship === 'one_to_one'
+                ? 'datasets.relationshipDialog.summaryOneToOne'
+                : relationship === 'many_to_many'
+                ? 'datasets.relationshipDialog.summaryManyToMany'
+                : 'datasets.relationshipDialog.summaryManyToOne',
+              {
+                from: fromView.table_display_name || fromView.name,
+                to: toView.table_display_name || toView.name,
+              },
+            )}{' '}
+            {crossFilter === 'both'
+              ? t('datasets.relationshipDialog.crossFilterHelpBoth')
+              : t('datasets.relationshipDialog.crossFilterHelpSingle')}
           </div>
         )}
 
-        {fromView && toView && previewPairs.length > 0 && (
-          <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary">
-            <div className="mb-1">
-              <span className="font-semibold uppercase text-brand">{joinType} JOIN</span>{' '}
-              <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
-              <span className="text-text-tertiary">ON</span>
-            </div>
-            <div className="space-y-1">
-              {previewPairs.map((pair, index) => (
-                <div key={`${pair.fromColumn}-${pair.toColumn}-${index}`}>
-                  <span className="text-text-secondary">
-                    {fromView.table_display_name || fromView.name}.{pair.fromColumn}
-                  </span>{' '}
-                  ={' '}
-                  <span className="text-text-secondary">
-                    {toView.table_display_name || toView.name}.{pair.toColumn}
-                  </span>
-                  {index < previewPairs.length - 1 ? <span className="text-text-quaternary"> AND</span> : null}
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-text-secondary">
+            <input
+              type="checkbox"
+              checked={isActive}
+              onChange={(e) => setIsActive(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            {t('datasets.relationshipDialog.activeRelationship')}
+          </label>
+          <p className="text-xs text-text-quaternary leading-snug">
+            {isActive
+              ? t('datasets.relationshipDialog.activeHelpOn')
+              : t('datasets.relationshipDialog.activeHelpOff')}
+          </p>
+        </div>
+
+        {/* ── Advanced options (collapsed by default): SQL-level knobs ── */}
+        <div className="rounded-md border border-[rgb(var(--border-line))]">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium uppercase tracking-wide text-text-secondary hover:bg-surface-2"
+          >
+            {showAdvanced ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            {t('datasets.relationshipDialog.advancedOptions')}
+          </button>
+          {showAdvanced && (
+            <div className="space-y-4 border-t border-[rgb(var(--border-line))] px-3 py-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  {t('datasets.relationshipDialog.joinType')}
+                </label>
+                <Select
+                  value={joinType}
+                  onChange={(value) => {
+                    setJoinType(value as JoinType);
+                    setJoinTypeTouched(true);
+                  }}
+                  options={JOIN_TYPE_OPTIONS}
+                />
+                <p className="text-xs text-text-quaternary leading-snug">
+                  {t('datasets.relationshipDialog.joinTypeHelp')}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  {t('datasets.relationshipDialog.alias')}{' '}
+                  <span className="normal-case text-text-quaternary">({t('datasets.relationshipDialog.aliasHint')})</span>
+                </label>
+                <input
+                  type="text"
+                  value={alias}
+                  onChange={(event) => setAlias(event.target.value)}
+                  placeholder={toView ? t('datasets.relationshipDialog.aliasPlaceholderBlank', { name: toView.name }) : t('datasets.relationshipDialog.aliasPlaceholderExample')}
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
+                    focus:outline-none focus:ring-2 focus:ring-brand"
+                />
+                <p className="text-xs text-text-quaternary">
+                  {t('datasets.relationshipDialog.aliasHelpPrefix')} <code>creator.email</code>{t('datasets.relationshipDialog.aliasHelpSuffix')}
+                </p>
+              </div>
+
+              {/* Primary key on the "one" side — for symmetric aggregates. */}
+              {toView && (relationship === 'many_to_one' || relationship === 'one_to_one') && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                    {t('datasets.relationshipDialog.primaryKeyOn', { name: toView.table_display_name || toView.name })}{' '}
+                    <span className="text-text-quaternary normal-case">({t('datasets.relationshipDialog.primaryKeyHint')})</span>
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {toColumns.map((col) => {
+                      const checked = primaryKeyOnToView.includes(col.value);
+                      return (
+                        <label
+                          key={col.value}
+                          className={`cursor-pointer rounded-md border px-2 py-0.5 text-xs ${
+                            checked
+                              ? 'border-brand bg-brand/10 text-brand'
+                              : 'border-[rgb(var(--border-line))] text-text-secondary'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={checked}
+                            onChange={() =>
+                              setPrimaryKeyOnToView((current) =>
+                                current.includes(col.value)
+                                  ? current.filter((c) => c !== col.value)
+                                  : [...current, col.value],
+                              )
+                            }
+                          />
+                          {col.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-text-quaternary leading-snug">
+                    {t('datasets.relationshipDialog.primaryKeyHelp')}
+                  </p>
                 </div>
-              ))}
+              )}
+
+              {/* Technical SQL preview (developers). */}
+              {fromView && toView && previewPairs.length > 0 && (
+                <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary">
+                  <div className="mb-1">
+                    <span className="font-semibold uppercase text-brand">{joinType} JOIN</span>{' '}
+                    <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
+                    <span className="text-text-tertiary">ON</span>
+                  </div>
+                  <div className="space-y-1">
+                    {previewPairs.map((pair, index) => (
+                      <div key={`${pair.fromColumn}-${pair.toColumn}-${index}`}>
+                        <span className="text-text-secondary">
+                          {fromView.table_display_name || fromView.name}.{pair.fromColumn}
+                        </span>{' '}
+                        ={' '}
+                        <span className="text-text-secondary">
+                          {toView.table_display_name || toView.name}.{pair.toColumn}
+                        </span>
+                        {index < previewPairs.length - 1 ? <span className="text-text-quaternary"> AND</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {(blockingMessage || error) && (
           <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
