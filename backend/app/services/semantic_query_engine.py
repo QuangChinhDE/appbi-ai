@@ -4236,8 +4236,14 @@ class SemanticQueryEngine:
             for j in (getattr(exp, "joins", None) or []):
                 if not isinstance(j, dict):
                     continue
+                # Semantic-audit 2026-07 (#9): CARDINALITY first — it is the
+                # canonical Phase-1 field and what SemanticJoinResolver reads;
+                # legacy `relationship` is only a fallback. Reading relationship
+                # first classified a join stored with divergent fields
+                # (cardinality=1:N, relationship left at its m2o default) as
+                # safe M:1 → silent fan-out double-count.
                 card = str(
-                    j.get("relationship") or j.get("cardinality") or j.get("type") or ""
+                    j.get("cardinality") or j.get("relationship") or j.get("type") or ""
                 ).strip().lower().replace("-", "_").replace(" ", "_")
                 # STRICT (PowerBI parity): traverse ONLY an EXPLICITLY
                 # many_to_one / one_to_one hop. An empty / unknown / garbage

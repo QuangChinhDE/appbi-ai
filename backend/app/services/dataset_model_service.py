@@ -1091,7 +1091,11 @@ def _apply_db_fk_constraints(
                 "view": to_view.name,
                 "type": "left",
                 "sql_on": f"${{TABLE}}.{fc} = ${{{to_view.name}}}.{tc}",
+                # DB-enforced FK → target is a real PK/unique key; M:1 is
+                # authoritative. Store BOTH fields (audit 2026-07: divergent
+                # relationship/cardinality pairs misclassify grain safety).
                 "relationship": "many_to_one",
+                "cardinality": "many_to_one",
                 "from_view": from_view.name,
                 "from_column": fc,
                 "to_column": tc,
@@ -1104,18 +1108,24 @@ def _apply_db_fk_constraints(
             })
 
 
-def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) -> str:
+def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) -> Optional[str]:
     """Pick the column on the FK *target* table that a name-heuristic join
-    should reference.
+    should reference — or ``None`` when no trustworthy candidate exists.
 
-    Phase-16.4 — replaces the legacy hard-coded `id` PK assumption that broke
+    Phase-16.4 replaced the legacy hard-coded `id` PK assumption that broke
     on warehouse tables (Airbyte / BigQuery / dbt) whose key is `<entity>_id`
-    with NO `id` column: `JOIN ... ON products.id = sales.product_id` then
-    failed with BigQuery "Name id not found inside <table>". Resolution order:
+    with NO `id` column. Semantic-audit 2026-07 then TIGHTENED it again: the
+    old fallbacks 3 ("the single `*_id` column, whatever it is") and 4
+    ("literal `id` even when we KNOW the columns and `id` isn't among them")
+    produced plausible-looking joins on a WRONG key (e.g. region_id →
+    region.manager_id) that silently corrupted every measure grouped through
+    the dim. Resolution order now:
       1. the target has the SAME column name as the FK (e.g. products.product_id)
       2. the target has a literal `id` column (classic convention)
-      3. the target has exactly one `*_id` column
-      4. `id` (legacy fallback — preserves old behaviour when nothing matches)
+      3. otherwise → None (no auto-join; the user declares the relationship
+         in the Data Model — fail-loud beats a silent wrong key)
+    The returned candidate is a NAME match only; `_detect_fk_joins` still
+    verifies the column is actually unique before emitting a join.
     """
     cc = getattr(ref_table, "columns_cache", None)
     cols = cc.get("columns", []) if isinstance(cc, dict) else (cc if isinstance(cc, list) else [])
@@ -1126,16 +1136,88 @@ def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) 
             if nm:
                 lower_map.setdefault(nm.lower(), nm)
     if not lower_map:
-        return "id"
+        return None
     fk_lower = (fk_col_name or "").lower()
     if fk_lower in lower_map:
         return lower_map[fk_lower]
     if "id" in lower_map:
         return lower_map["id"]
-    id_cols = [orig for low, orig in lower_map.items() if low.endswith("_id")]
-    if len(id_cols) == 1:
-        return id_cols[0]
-    return "id"
+    return None
+
+
+def _profile_table_column_unique(
+    db: Session,
+    table: DatasetTable,
+    column_name: str,
+) -> Optional[bool]:
+    """COUNT-based uniqueness of ONE column on a dataset table (the same
+    probe `suggest_join_relationship` runs for manual joins, minus the view
+    indirection so it also works mid-model-gen before views are committed).
+
+    Returns True/False when profiled; None when profiling is impossible
+    (no datasource, source unreachable, zero non-null rows). Callers treat
+    None as "not verified" — only an explicit True may emit an auto M:1 join.
+    Cost: one aggregate query per (table, column); only invoked from the
+    EXPLICIT Generate-Model / join-suggestion paths, never background syncs.
+    """
+    try:
+        from app.services.dataset_relation_service import resolve_dataset_table_relation
+        from app.services.datasource_service import DataSourceConnectionService
+        from app.services.live_query_service import _dialect_for_ds_type, _quote_identifier
+
+        live_table = table
+        datasource = (
+            db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+            if getattr(table, "datasource_id", None) is not None
+            else None
+        )
+        if datasource is None or is_derived_table(table):
+            from app.services.dataset_table_sql_service import (
+                build_live_proxy_table_for_dataset_table,
+            )
+
+            dataset_obj = db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+            if dataset_obj is None:
+                return None
+            datasource, live_table = build_live_proxy_table_for_dataset_table(
+                db, dataset_obj, table
+            )
+        if datasource is None:
+            return None
+
+        relation = resolve_dataset_table_relation(datasource, live_table)
+        ds_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+        dialect = _dialect_for_ds_type(ds_type)
+        col_sql = _quote_identifier(column_name, dialect)
+        sql = f"""
+WITH source AS (
+    {relation.sql}
+),
+non_null_rows AS (
+    SELECT {col_sql} FROM source WHERE {col_sql} IS NOT NULL
+)
+SELECT
+    (SELECT COUNT(*) FROM non_null_rows) AS non_null_rows,
+    (SELECT COUNT(DISTINCT {col_sql}) FROM non_null_rows) AS distinct_count
+"""
+        _, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=30,
+        )
+        first = rows[0] if rows else {}
+        non_null = int(first.get("non_null_rows") or 0)
+        distinct = int(first.get("distinct_count") or 0)
+        if non_null <= 0:
+            return None  # empty column proves nothing
+        return distinct == non_null
+    except Exception as exc:  # noqa: BLE001 — unverifiable ≠ crash model gen
+        logger.warning(
+            "[fk_heuristic] uniqueness probe failed table=%s col=%s: %s",
+            getattr(table, "id", None), column_name, exc,
+        )
+        return None
 
 
 def _detect_fk_joins(
@@ -1177,6 +1259,21 @@ def _detect_fk_joins(
         except Exception as exc:  # noqa: BLE001 — best effort; never block model gen
             logger.warning(f"[fk_extract] failed, falling back to name heuristic: {exc}")
 
+    # Semantic-audit 2026-07 — name-heuristic joins must VERIFY the target key
+    # is unique before claiming many_to_one. A non-unique target (e.g. a
+    # per-day snapshot dim) silently fans out every measure the grain guard
+    # trusted as safe. Memoised per run so a dim referenced by N facts is
+    # probed once.
+    _uniq_memo: Dict[tuple, Optional[bool]] = {}
+
+    def _verified_unique(ref_table: DatasetTable, col: str) -> Optional[bool]:
+        key = (ref_table.id, col.lower())
+        if key not in _uniq_memo:
+            _uniq_memo[key] = (
+                _profile_table_column_unique(db, ref_table, col) if db is not None else None
+            )
+        return _uniq_memo[key]
+
     for table in tables:
         if is_generated_calendar_table(table) or not table.columns_cache:
             continue
@@ -1211,8 +1308,22 @@ def _detect_fk_joins(
 
             # Phase-16.4 — resolve the REAL target join column (the FK target's
             # key) instead of the legacy hard-coded `id`. See
-            # `_resolve_heuristic_target_column`.
+            # `_resolve_heuristic_target_column`. None → no trustworthy
+            # candidate → no auto-join (user declares it in the Data Model).
             target_col = _resolve_heuristic_target_column(ref_table, raw_col_name)
+            if target_col is None:
+                continue
+
+            # Semantic-audit 2026-07 — only an EXPLICITLY verified-unique
+            # target key may become an auto many_to_one. Unknown/False →
+            # skip (fail-loud): the grain guard treats M:1 as safe, so a
+            # guessed M:1 on a non-unique key = silent double-count.
+            if _verified_unique(ref_table, target_col) is not True:
+                logger.info(
+                    "[fk_heuristic] skip %s.%s -> %s.%s (target key not verified unique)",
+                    current_view.name, raw_col_name, ref_view.name, target_col,
+                )
+                continue
 
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
@@ -1228,7 +1339,10 @@ def _detect_fk_joins(
                 "view": ref_view.name,
                 "type": "left",
                 "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_view.name}}}.{target_col}",
+                # Verified-unique target key (probe above) → M:1 is a FACT here,
+                # not a guess. Store BOTH fields so no consumer sees divergence.
                 "relationship": "many_to_one",
+                "cardinality": "many_to_one",
                 "from_view": current_view.name,
                 "from_column": raw_col_name,
                 "to_column": target_col,
@@ -2032,12 +2146,18 @@ def add_join(
         raise ValueError(str(join_validation.get("message") or "Relationship cannot be created"))
 
     normalized_join_type = _normalize_join_type(join_type)
-    normalized_relationship = _normalize_relationship_type(relationship)
     # Phase-1 (PBI-parity) — explicit cardinality drives the Phase-2 propagation
     # engine and Phase-4 symmetric aggregates. Caller can pass `cardinality=...`
     # directly; otherwise we map the legacy `relationship` string through the
     # canonical alias table (resolver module). Default 'many_to_one' matches
     # the FK→PK star-schema majority.
+    #
+    # Semantic-audit 2026-07 (#9) — `relationship` is DERIVED from the canonical
+    # cardinality below, never stored independently: callers passing only
+    # `cardinality="one_to_many"` used to leave relationship at its
+    # 'many_to_one' default, and the grain guard (which read relationship
+    # first) then classified a fanning join as safe M:1 → silent double-count.
+    # One source of truth: cardinality wins; relationship mirrors it.
     from app.services.semantic_join_resolver import (
         ALLOWED_CARDINALITY, normalize_cardinality,
     )
@@ -2088,7 +2208,8 @@ def add_join(
             from_columns=normalized_from_columns,
             to_columns=normalized_to_columns,
         ),
-        "relationship": normalized_relationship,
+        # Mirrors cardinality_canonical (single source of truth — see above).
+        "relationship": cardinality_canonical,
         "from_view": from_view.name,
         "from_column": primary_from_column,
         "to_column": primary_to_column,
