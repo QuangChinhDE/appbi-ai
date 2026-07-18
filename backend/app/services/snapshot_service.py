@@ -372,15 +372,41 @@ def build_table_snapshot(
             def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
                 _sp.note_rows(_dsid, _tid, n)
 
-            row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
-                source_ds_type=_ds_type(datasource), source_config=datasource.config,
-                resolved_sql=resolved_sql, source_select_sql=source_sig,
-                columns_meta=_cols_meta, host_config=host.config,
-                dataset_name=snap_dataset, table_name=table_name,
-                storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
-            )
-            if _warn:
-                logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+            # Task 1 — for a DIRECT physical BigQuery table with a partition
+            # configured, try PARTITION-SCOPED incremental (clone prev snapshot +
+            # reload only changed source partitions) before falling back to a full
+            # rebuild. Only reloads partitions modified since the last snapshot.
+            inc = None
+            if (getattr(table, "source_kind", None) == "physical_table"
+                    and _ds_type(datasource) == "bigquery"
+                    and _storage.get("partition_field")
+                    and current is not None
+                    and getattr(current, "source_watermark", None) is not None):
+                inc = DataSourceConnectionService.try_partition_incremental_snapshot(
+                    source_config=datasource.config,
+                    source_table_name=table.source_table_name,
+                    partition_field=_storage["partition_field"],
+                    host_config=host.config, dataset_name=snap_dataset,
+                    new_table_name=table_name, clone_from_ref=current.physical_ref,
+                    since=current.source_watermark, timeout_seconds=_DDL_TIMEOUT_SEC,
+                    progress_cb=_row_progress,
+                )
+            if inc is not None:
+                row.row_count = inc["row_count"]
+                logger.info(
+                    "[snapshot] PARTITION-INCREMENTAL table=%s ref=%s reloaded %d partition(s): %s",
+                    table.id, ref, len(inc["changed"]), inc["changed"][:8],
+                )
+            else:
+                row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
+                    source_ds_type=_ds_type(datasource), source_config=datasource.config,
+                    resolved_sql=resolved_sql, source_select_sql=source_sig,
+                    columns_meta=_cols_meta, host_config=host.config,
+                    dataset_name=snap_dataset, table_name=table_name,
+                    storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
+                )
+                if _warn:
+                    logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             row = db.query(DatasetTableSnapshot).get(row.id)

@@ -307,6 +307,25 @@ def _materialization_bq_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return dc
 
 
+def _partition_bounds(partition_id: str, gran: str) -> Tuple[str, str]:
+    """[lo, hi) date/datetime bounds for a BigQuery partition_id at a given
+    granularity, used to prune the source extract to one partition."""
+    import datetime as _dt
+    g = (gran or "DAY").upper()
+    if g == "YEAR":
+        y = int(partition_id[:4])
+        return f"{y:04d}-01-01", f"{y + 1:04d}-01-01"
+    if g == "MONTH":
+        y, m = int(partition_id[:4]), int(partition_id[4:6])
+        nxt = _dt.date(y + (1 if m == 12 else 0), (m % 12) + 1, 1)
+        return f"{y:04d}-{m:02d}-01", nxt.isoformat()
+    if g == "HOUR":
+        d = _dt.datetime.strptime(partition_id, "%Y%m%d%H")
+        return d.strftime("%Y-%m-%d %H:00:00"), (d + _dt.timedelta(hours=1)).strftime("%Y-%m-%d %H:00:00")
+    d = _dt.datetime.strptime(partition_id, "%Y%m%d").date()  # DAY
+    return d.isoformat(), (d + _dt.timedelta(days=1)).isoformat()
+
+
 _BQ_CLIENT_CACHE: Dict[str, Tuple[float, bigquery.Client]] = {}
 _BQ_CLIENT_CACHE_TTL_SEC = 300  # 5 min — keeps client warm across dashboard requests
 
@@ -1547,6 +1566,92 @@ class DataSourceConnectionService:
             if write_client is not None and not _bq_client_is_cached(mat_cfg, write_client):
                 write_client.close()
         return int(total), warn
+
+    @staticmethod
+    def try_partition_incremental_snapshot(
+        *, source_config: Dict[str, Any], source_table_name: str, partition_field: str,
+        host_config: Dict[str, Any], dataset_name: str, new_table_name: str,
+        clone_from_ref: Optional[str], since, timeout_seconds: int = 280,
+        max_changed_partitions: int = 60, progress_cb=None,
+    ) -> Optional[Dict[str, Any]]:
+        """Task-1 partition-scoped incremental refresh for a DIRECT physical table.
+
+        Eligible only when the SOURCE is a real time-partitioned BigQuery table
+        partitioned on `partition_field`, there is a previous snapshot to clone,
+        and a manageable number of partitions changed. Then: zero-copy CLONE the
+        previous snapshot into the new generation table and re-load ONLY the source
+        partitions modified since `since` (source pruning → scans just those). Old
+        partitions ride along in the clone untouched — no full re-scan.
+
+        Returns {row_count, changed} on success, or None when not eligible (caller
+        falls back to the full batched rebuild). NEVER mutates the previous
+        snapshot table (generation immutability preserved)."""
+        from app.core.crypto import decrypt_config
+        if not clone_from_ref or since is None:
+            return None
+        src = decrypt_config(source_config)
+        read_client = _build_bigquery_client(src)
+        mat = _materialization_bq_config(host_config)
+        write_client = None
+        try:
+            src_project = str(src.get("project_id") or "").strip()
+            raw = str(source_table_name or "").strip().strip("`")
+            src_fqn = raw if raw.count(".") >= 2 else f"{src_project}.{raw}"
+            # 1) source must be time-partitioned on exactly `partition_field`
+            st = read_client.get_table(src_fqn)
+            tp = getattr(st, "time_partitioning", None)
+            if tp is None or tp.field != partition_field:
+                return None
+            gran = str(tp.type_ or "DAY").upper()
+            col_type = next((f.field_type.upper() for f in st.schema if f.name == partition_field), "DATE")
+            proj_ds = src_fqn.rsplit(".", 1)[0]
+            tbl_only = src_fqn.rsplit(".", 1)[1]
+            # 2) partitions changed since the last snapshot build
+            q = read_client.query(
+                f"SELECT partition_id FROM `{proj_ds}.INFORMATION_SCHEMA.PARTITIONS` "
+                f"WHERE table_name = @t AND partition_id NOT IN ('__NULL__','__UNPARTITIONED__') "
+                f"AND last_modified_time > @since",
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("t", "STRING", tbl_only),
+                    bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
+                ]),
+            )
+            changed = [r.partition_id for r in q.result(timeout=timeout_seconds)]
+            if not changed or len(changed) > max_changed_partitions:
+                return None  # nothing (Nấc A handles) / too many → full rebuild is simpler
+            # 3) zero-copy CLONE previous snapshot → new generation table
+            write_client = _build_bigquery_client(mat)
+            mat_project = str(mat.get("project_id") or "").strip()
+            new_ref = f"{mat_project}.{dataset_name}.{new_table_name}"
+            write_client.query(f"CREATE OR REPLACE TABLE `{new_ref}` CLONE `{clone_from_ref}`").result(timeout=timeout_seconds)
+            # 4) re-load ONLY the changed partitions (source prunes to each)
+            def _lit(v):
+                return f"{col_type} '{v}'" if col_type in ("DATE", "DATETIME", "TIMESTAMP") else f"'{v}'"
+            for pid in changed:
+                lo, hi = _partition_bounds(pid, gran)
+                sel = (f"SELECT * FROM `{src_fqn}` WHERE `{partition_field}` >= {_lit(lo)} "
+                       f"AND `{partition_field}` < {_lit(hi)}")
+                schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
+                    source_config, sel, timeout_seconds=timeout_seconds
+                )
+                # WRITE_TRUNCATE into the partition decorator → replaces just that
+                # partition; do NOT re-declare partition/cluster (inherited from clone).
+                DataSourceConnectionService.load_bigquery_snapshot(
+                    host_config, dataset_name, f"{new_table_name}${pid}", schema, rows,
+                    timeout_seconds=timeout_seconds,
+                )
+                if progress_cb:
+                    progress_cb(len(changed))
+            n = int(getattr(write_client.get_table(new_ref), "num_rows", 0) or 0)
+            return {"row_count": n, "changed": changed}
+        except Exception as exc:  # noqa: BLE001 — any failure → caller full-rebuilds
+            logger.warning("[snapshot] partition-incremental not applied (%s) — full rebuild", str(exc)[:200])
+            return None
+        finally:
+            if read_client is not None and not _bq_client_is_cached(src, read_client):
+                read_client.close()
+            if write_client is not None and not _bq_client_is_cached(mat, write_client):
+                write_client.close()
 
     @staticmethod
     def snapshot_query_config(config: Dict[str, Any]) -> Dict[str, Any]:
