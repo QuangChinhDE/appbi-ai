@@ -685,6 +685,29 @@ def _sql_table_for_table(
     if table.source_kind == "sql_query" and table.source_query:
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
+    if getattr(table, "source_kind", None) == "dataset" and getattr(table, "parent_dataset_table_id", None):
+        # Dataset-on-Dataset composition. At PUBLISHED read time the planner
+        # overrides this view's FROM with the child's PINNED parent generation
+        # (execution_plan._plan_published), so this fragment is used only at
+        # DESIGN time (preview / model-gen). Point it at the parent's CURRENT
+        # published snapshot so preview shows real parent data; the semantic
+        # layer sees an ordinary `SELECT * FROM <snapshot>` leaf either way.
+        if db is not None:
+            try:
+                from app.services import snapshot_service as _ss
+                parent = db.query(Dataset).filter(Dataset.id == table.parent_dataset_id).first()
+                gen = getattr(parent, "published_generation", None) if parent else None
+                if gen is not None:
+                    refs, _fp, _as_of = _ss.resolve_specific_generation_refs(
+                        db, [table.parent_dataset_table_id], gen
+                    )
+                    ref = refs.get(table.parent_dataset_table_id)
+                    if ref:
+                        return f"(SELECT * FROM `{ref}`)"
+            except Exception as exc:  # noqa: BLE001 — never block model gen
+                logger.warning("[composition] parent-ref resolve failed for table %s: %s",
+                               getattr(table, "id", None), exc)
+        return _view_name_for_table(table)
     return _view_name_for_table(table)
 
 

@@ -187,6 +187,21 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         ds.security_scope = "shared"  # Phase 1: all authorized viewers see same rows
     db.commit()
 
+    # 0) COMPOSITION pre-flight — every referenced parent must be Published, on
+    #    the same BQ host, resolvable at its pinned generation, and the edge must
+    #    not form a cycle / exceed depth. Fail LOUD (sync_failed) rather than
+    #    publish a child pointing at a missing/unpublished parent (principles #2/#6).
+    try:
+        from app.services import dataset_composition_service as _comp
+        _comp.validate_parents_publishable(db, dataset_id)
+    except ValueError as exc:
+        ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        ds.publish_state = "sync_failed"
+        ds.last_sync_error = str(exc)
+        db.commit()
+        logger.warning("[publish] composition pre-flight FAILED dataset=%s: %s", dataset_id, exc)
+        return {"ok": False, "error": str(exc)}
+
     # 1) LOCK the design fingerprint NOW (before ETL) so a mid-sync edit doesn't
     #    silently publish a different design than was validated.
     locked_fp = design_fingerprint(db, dataset_id)
@@ -224,6 +239,22 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
             _qc.invalidate_datasource(dsid)
     except Exception:  # noqa: BLE001
         pass
+    # 5) COMPOSITION — pin each parent's CURRENT published generation into
+    #    dataset_dependencies (principle #2: the child reads this pin forever,
+    #    never "latest"), then flip any downstream children of THIS dataset to
+    #    changes_pending (they keep serving their OLD pin until they re-publish).
+    try:
+        from app.services import dataset_composition_service as _comp
+        _comp.pin_parent_generations(db, dataset_id)
+        affected = _comp.cascade_children_to_pending(db, dataset_id)
+        db.commit()
+        if affected:
+            logger.info("[publish] cascade: children %s -> changes_pending (parent %s re-published)",
+                        affected, dataset_id)
+    except Exception:  # noqa: BLE001 — pin/cascade must never corrupt a good publish
+        logger.warning("[publish] composition pin/cascade failed for %s", dataset_id, exc_info=True)
+        db.rollback()
+
     logger.info("[publish] PUBLISHED dataset=%s generation=%s (%d tables)", dataset_id, generation, len(built))
     return {"ok": True, "generation": generation, "built": built, "skipped": skipped}
 
@@ -244,6 +275,14 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
         and getattr(t, "enabled", True) is not False
     ]
     if not want:
+        # A pure-composition dataset (all data from parent datasets) has no own
+        # materializable tables — valid as long as it references at least one parent.
+        from app.services import dataset_composition_service as _comp
+        if _comp.parent_ref_tables(db, dataset_id):
+            import app.models.semantic as sem
+            if db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first() is None:
+                return False, "Dataset chưa có semantic model — chạy Generate Model trước khi publish."
+            return True, None
         return False, "Dataset không có bảng nào materialize được để publish."
     refs, _fps, _asof = snapshot_service.resolve_specific_generation_refs(db, want, generation)
     if not refs:

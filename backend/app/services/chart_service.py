@@ -3298,7 +3298,16 @@ def _execute_chart_runtime_for_table(
         )
 
     if datasource is None:
-        raise ValueError("Chart requires a datasource-backed table")
+        # Dataset-on-Dataset composition: the base is a parent-ref table with no
+        # datasource of its own. Its data lives in the child's BigQuery snapshot
+        # host (same host as its parents — enforced at publish), and the planner
+        # supplies the published overrides. Resolve the host so the semantic
+        # runtime has a dialect/exec datasource; the calculation is unchanged.
+        if getattr(db_table, "source_kind", None) == "dataset":
+            from app.services import snapshot_service as _ss
+            datasource = _ss.resolve_host(db, db_table.dataset_id)
+        if datasource is None:
+            raise ValueError("Chart requires a datasource-backed table")
 
     # Semantic chart: joined refs or declared semantic fields.
     # The chart anchor table still owns the binding (`baseViewName`); the
@@ -3710,7 +3719,7 @@ class ChartService:
                 raise ValueError("Dataset table not found")
 
             datasource = None
-            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
+            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table) and getattr(db_table, "source_kind", None) != "dataset":
                 datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
                 if not datasource:
                     raise ValueError("Data source not found")
@@ -3754,7 +3763,7 @@ class ChartService:
                 raise ValueError("Table not found in dataset")
 
             datasource = None
-            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
+            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table) and getattr(db_table, "source_kind", None) != "dataset":
                 datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
                 if not datasource:
                     raise ValueError("Data source not found")
@@ -3834,7 +3843,7 @@ class ChartService:
             raise ValueError(f"Dataset table with ID {dataset_table_id} not found")
 
         datasource = None
-        if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
+        if not is_generated_calendar_table(db_table) and not is_derived_table(db_table) and getattr(db_table, "source_kind", None) != "dataset":
             datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
             if not datasource:
                 raise ValueError("Data source not found")

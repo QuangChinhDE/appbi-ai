@@ -455,14 +455,38 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
         t.id for t in tables
         if not is_generated_calendar_table(t) and snapshot_service.is_federated_materializable(t)
     ]
-    refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+    if want:
+        refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+        if not refs:
+            return blocked_plan(
+                "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
+                "để dựng lại. (Dashboard KHÔNG tự chạy live để tránh lệch dữ liệu.)",
+                trigger=None,
+            )
+    else:
+        # A dataset whose data comes entirely from parent datasets has no own
+        # materializable tables — refs start empty and are filled by composition.
+        refs, as_of = {}, None
+
+    # Dataset-on-Dataset composition: point each parent-ref table at the parent's
+    # PINNED published snapshot. This reuses the SAME `overrides` map the engine
+    # already uses for federation (semantic_query_engine._snapshot_ref_for_view),
+    # so the calculation layer treats the parent snapshot as an ordinary leaf view
+    # — no new calculation path is introduced.
+    from app.services import dataset_composition_service as _comp
+    parent_ovr, block_msg = _comp.parent_snapshot_overrides(db, dataset_id)
+    if block_msg:
+        return blocked_plan(block_msg)
+    if parent_ovr:
+        refs = {**refs, **parent_ovr}
+
     if not refs:
         return blocked_plan(
             "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
             "để dựng lại. (Dashboard KHÔNG tự chạy live để tránh lệch dữ liệu.)",
             trigger=None,
         )
-    host = snapshot_service.host_for_generation(db, dataset_id, pg)
+    host = snapshot_service.host_for_generation(db, dataset_id, pg) or snapshot_service.resolve_host(db, dataset_id)
     if host is None:
         return blocked_plan("Không xác định được host BigQuery của generation đã publish — cần Sync lại.")
     return ExecutionPlan(

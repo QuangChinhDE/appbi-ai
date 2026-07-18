@@ -52,7 +52,12 @@ class Dataset(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
     
     # Relationships
-    tables = relationship("DatasetTable", back_populates="dataset", cascade="all, delete-orphan")
+    tables = relationship(
+        "DatasetTable", back_populates="dataset", cascade="all, delete-orphan",
+        # DatasetTable now has TWO FKs to datasets (dataset_id + composition
+        # parent_dataset_id); pin this collection to the owning FK explicitly.
+        foreign_keys="DatasetTable.dataset_id",
+    )
     quality_rules = relationship("DatasetQualityRule", back_populates="dataset", cascade="all, delete-orphan")
     quality_runs = relationship("DatasetQualityRun", back_populates="dataset", cascade="all, delete-orphan")
     quality_schedule = relationship(
@@ -75,10 +80,19 @@ class DatasetTable(Base):
     datasource_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=True, index=True)
     
     # Source specification
-    source_kind = Column(String(50), default="physical_table", nullable=False)  # "physical_table" | "sql_query" | "derived_table" | "generated_calendar"
+    source_kind = Column(String(50), default="physical_table", nullable=False)  # "physical_table" | "sql_query" | "derived_table" | "generated_calendar" | "dataset"
     source_table_name = Column(String(500), nullable=True)  # For physical_table: e.g., "public.orders"
     source_query = Column(Text, nullable=True)  # For sql_query: SELECT statement
     display_name = Column(String(255), nullable=False)  # User-friendly name
+
+    # Dataset-on-Dataset composition (source_kind == "dataset"): this table is a
+    # reference to ONE published table of a PARENT dataset. It carries NO data of
+    # its own — at read time the planner points its view straight at the parent's
+    # PINNED published snapshot (dataset_dependencies.parent_generation), so the
+    # semantic layer treats it as an ordinary snapshot-backed leaf view. columns_cache
+    # mirrors the parent table's published columns.
+    parent_dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="RESTRICT"), nullable=True, index=True)
+    parent_dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="RESTRICT"), nullable=True)
     
     # Query routing — "synced" = DuckDB (default), "live" = direct source query
     query_mode = Column(String(20), default="synced", nullable=False, server_default="synced")
@@ -122,7 +136,9 @@ class DatasetTable(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
     # Relationships
-    dataset = relationship("Dataset", back_populates="tables")
+    dataset = relationship("Dataset", back_populates="tables", foreign_keys=[dataset_id])
+    # Composition: the parent table this row references (self-referential, read-only nav).
+    parent_table = relationship("DatasetTable", remote_side=[id], foreign_keys=[parent_dataset_table_id])
     quality_rules = relationship("DatasetQualityRule", back_populates="table", cascade="all, delete-orphan")
 
 
