@@ -46,6 +46,21 @@ def add_parent_ref_table(
     has the right dimensions/measures), and records the lineage edge (the
     generation pin is filled when the child publishes)."""
     assert_composable(db, child_dataset_id, parent_dataset_id)
+    # Semantic-audit 2026-07 (#6) — composition is a PUBLISH-LIFECYCLE feature:
+    # a LEGACY child (publish_state IS NULL) never routes through
+    # _plan_published, so its parent-ref view would read the parent's CURRENT
+    # published generation UNPINNED (violates principle #2 — a parent
+    # re-publish silently flips the child's numbers). Require the child to be
+    # under the lifecycle before it may reference a parent.
+    child = db.query(Dataset).filter(Dataset.id == child_dataset_id).first()
+    if child is None:
+        raise ValueError(f"Dataset con (id={child_dataset_id}) không tồn tại.")
+    if getattr(child, "publish_state", None) is None:
+        raise ValueError(
+            "Dataset này chưa dùng vòng đời Sync & Publish nên không thể tham chiếu "
+            "Dataset khác (tham chiếu cần ghim generation của cha khi publish). "
+            "Bấm Sync & Publish cho Dataset này trước, rồi thêm tham chiếu."
+        )
     parent = db.query(Dataset).filter(Dataset.id == parent_dataset_id).first()
     if parent is None:
         raise ValueError(f"Dataset cha (id={parent_dataset_id}) không tồn tại.")
@@ -162,6 +177,41 @@ def dependency_depth(db: Session, dataset_id: int, _seen: Optional[set] = None) 
     return 1 + max(dependency_depth(db, p, _seen) for p in parents)
 
 
+def _direct_children(db: Session, dataset_id: int) -> List[int]:
+    """Datasets that reference `dataset_id` as a parent — union of persisted
+    dependency edges and declared parent-ref tables (mirror of _direct_parents)."""
+    ids = set(child_dataset_ids_of(db, dataset_id))
+    for r in (
+        db.query(DatasetTable.dataset_id)
+        .filter(DatasetTable.source_kind == "dataset",
+                DatasetTable.parent_dataset_id == dataset_id)
+        .distinct()
+        .all()
+    ):
+        if r[0]:
+            ids.add(r[0])
+    return sorted(ids)
+
+
+def descendant_depth(db: Session, dataset_id: int, _seen: Optional[set] = None) -> int:
+    """Longest CHILD chain below this dataset. 0 = no children.
+
+    Semantic-audit 2026-07 (#8) — the depth cap used to look UP only
+    (dependency_depth of the new parent), so growing the chain top-down
+    (always adding a fresh topmost parent: A→B, then B→C, then C→D …) saw
+    depth 0 every time and sailed past MAX_COMPOSITION_DEPTH. The realized
+    chain is ancestors-of-parent + the new edge + descendants-of-child —
+    assert_composable now bounds that full length."""
+    _seen = _seen or set()
+    if dataset_id in _seen:
+        return 0  # defensive: cycle already blocked elsewhere
+    _seen = _seen | {dataset_id}
+    children = _direct_children(db, dataset_id)
+    if not children:
+        return 0
+    return 1 + max(descendant_depth(db, c, _seen) for c in children)
+
+
 def _host_key(db: Session, dataset_id: int) -> Optional[Tuple[str, str]]:
     """(project, location) of the dataset's BigQuery snapshot host, or None."""
     from app.services import snapshot_service
@@ -183,8 +233,10 @@ def assert_composable(db: Session, child_id: int, parent_id: int) -> None:
         raise ValueError("Một Dataset không thể tham chiếu chính nó.")
     if would_create_cycle(db, child_id, parent_id):
         raise ValueError("Tham chiếu này tạo vòng lặp phụ thuộc (cycle) giữa các Dataset.")
-    # depth measured as if the edge already exists: parent's depth + 1
-    if dependency_depth(db, parent_id) + 1 > MAX_COMPOSITION_DEPTH:
+    # Depth of the REALIZED chain as if the edge already exists:
+    # ancestors-of-parent + the new edge + descendants-of-child. The old
+    # parent-only check was bypassable by growing the chain top-down (#8).
+    if dependency_depth(db, parent_id) + 1 + descendant_depth(db, child_id) > MAX_COMPOSITION_DEPTH:
         raise ValueError(
             f"Chuỗi phụ thuộc Dataset vượt quá độ sâu tối đa ({MAX_COMPOSITION_DEPTH})."
         )
@@ -226,7 +278,18 @@ def validate_parents_publishable(db: Session, dataset_id: int) -> None:
 def pin_parent_generations(db: Session, dataset_id: int) -> None:
     """After the child publishes successfully, pin each parent's CURRENT
     published generation into dataset_dependencies (principle #2). Upsert one
-    edge per (child, parent)."""
+    edge per (child, parent).
+
+    Semantic-audit 2026-07 (#7) — pinning also RE-MIRRORS each parent-ref
+    table's columns from the parent table it points at. The mirror used to be
+    frozen at add-time: after the parent renamed/dropped a column and the
+    child re-published against the NEW pinned generation, the child's
+    SemanticView still exposed the OLD columns → `SELECT old_col FROM
+    <new_parent_snapshot>` → BigQuery 400 "Unrecognized name"; new parent
+    columns stayed invisible. Re-mirroring at the pin moment keeps the child
+    column-identical to the exact generation it is pinned to; the model
+    structure resync below folds the fresh columns into the child's view."""
+    remirrored = False
     for pid in parent_dataset_ids(db, dataset_id):
         parent = db.query(Dataset).filter(Dataset.id == pid).first()
         if parent is None or parent.published_generation is None:
@@ -244,7 +307,37 @@ def pin_parent_generations(db: Session, dataset_id: int) -> None:
             db.add(edge)
         edge.parent_generation = parent.published_generation
         edge.materialized = False  # we read the parent snapshot in place, no re-extract
+
+    for t in parent_ref_tables(db, dataset_id):
+        ptable = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.id == t.parent_dataset_table_id)
+            .first()
+        )
+        if ptable is None or not ptable.columns_cache:
+            continue
+        fresh_cols = copy.deepcopy(ptable.columns_cache)
+        fresh_ovr = copy.deepcopy(ptable.type_overrides) if ptable.type_overrides else None
+        if t.columns_cache != fresh_cols or t.type_overrides != fresh_ovr:
+            t.columns_cache = fresh_cols
+            t.type_overrides = fresh_ovr
+            remirrored = True
     db.flush()
+
+    if remirrored:
+        # Fold the fresh columns into the child's SemanticViews (structure-only,
+        # non-destructive: measures merged, manual joins untouched). Best-effort —
+        # a resync hiccup must not fail the publish; the drift self-heal
+        # (schedule_model_drift_check) converges it on the next chart read.
+        try:
+            from app.services.dataset_model_service import sync_dataset_model_structure
+
+            sync_dataset_model_structure(db, dataset_id, create_model=False)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[composition] column re-mirror model resync failed dataset=%s",
+                dataset_id, exc_info=True,
+            )
 
 
 def cascade_children_to_pending(db: Session, parent_dataset_id: int) -> List[int]:
