@@ -163,6 +163,9 @@ class SemanticQueryEngine:
         # views (dataset_table_id is None) can read the flat snapshot too. False =
         # not yet computed; None = no materialized calendar; str = the physical ref.
         self._calendar_ref_cache: Any = False
+        # Audit #3 — per-request memo of the inline calendar SQL re-rendered for
+        # THIS engine's dialect (role-dim fallback when no snapshot override).
+        self._cal_live_sql_cache: Any = False
 
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
@@ -2895,6 +2898,32 @@ class SemanticQueryEngine:
         quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
         return f"(SELECT * FROM {quoted})"
 
+    def _calendar_live_sql_for_dialect(self) -> Optional[str]:
+        """Inline calendar SQL for THIS engine's dialect, parenthesized as a
+        FROM operand — the dialect-correct fallback for role-played date-dims
+        when no materialized calendar snapshot exists (audit #3). Memoised per
+        request; None on any failure (→ caller keeps the stored SQL)."""
+        if self._cal_live_sql_cache is not False:
+            return self._cal_live_sql_cache
+        out: Optional[str] = None
+        try:
+            ds_id = getattr(getattr(self, "_model", None), "dataset_id", None)
+            if ds_id:
+                from app.models.dataset import Dataset
+                from app.services.dataset_calendar_service import (
+                    build_calendar_live_sql, get_calendar_settings,
+                )
+
+                d = self.db.query(Dataset).filter(Dataset.id == ds_id).first()
+                if d is not None:
+                    settings = get_calendar_settings(d, enabled_default=False)
+                    dialect = (self.database_type or "postgresql").lower()
+                    out = f"({build_calendar_live_sql(settings, dialect)})"
+        except Exception:  # noqa: BLE001 — fallback must never break rendering
+            out = None
+        self._cal_live_sql_cache = out
+        return out
+
     def _calendar_snapshot_ref(self) -> Optional[str]:
         """The physical snapshot ref of the dataset's generated-calendar table,
         if it is present among ``_snapshot_overrides``. Role-played date-dim views
@@ -2935,6 +2964,20 @@ class SemanticQueryEngine:
         pre-Phase-3 behaviour. Memoised per table id for the request."""
         tid = getattr(view, "dataset_table_id", None)
         if tid is None:
+            # Semantic-audit 2026-07 (#3) — role-played date-dims
+            # (``…__date_dim``) store the inline calendar SQL rendered at SYNC
+            # time in the dataset's sync dialect (duckdb for Sheets, postgres
+            # for PG). Executed on a DIFFERENT engine (snapshot mode forces
+            # BigQuery) that SQL 400s. Re-render the calendar for THIS engine's
+            # dialect — mirroring what `_sql_table_for_table` already does for
+            # the standalone Date view at compile time. Any gap → the stored
+            # SQL, exactly the pre-fix behaviour. (When the calendar IS
+            # materialized, `_snapshot_ref_for_view` wins before this runs.)
+            name = str(getattr(view, "name", "") or "")
+            if name.endswith("_date_dim"):
+                rendered_cal = self._calendar_live_sql_for_dialect()
+                if rendered_cal:
+                    return rendered_cal
             return getattr(view, "sql_table_name", None)
         if tid in self._relation_sql_cache:
             return self._relation_sql_cache[tid]

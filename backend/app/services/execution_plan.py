@@ -351,6 +351,22 @@ def plan_chart_execution(
                 dataset_id=dataset_id,
             )
 
+        # Calendar (best-effort) — semantic-audit 2026-07 (#3): mirror
+        # _plan_published. The legacy path excluded the generated calendar from
+        # `overrides`, so role-played date-dim views fell back to their
+        # SYNC-dialect inline calendar SQL — executed on the BigQuery snapshot
+        # host that SQL 400s for Sheets/PG-sourced datasets. Point the Date view
+        # (and through the engine's role-dim redirect, every date-dim) at the
+        # materialized calendar when THIS generation has one; older generations
+        # without it keep the inline fallback (now dialect-corrected engine-side).
+        cal_ids = [t.id for t in tables if is_generated_calendar_table(t)]
+        if cal_ids and generation is not None:
+            cal_refs, _cf, _ca = snapshot_service.resolve_specific_generation_refs(
+                db, cal_ids, generation
+            )
+            if cal_refs:
+                overrides = {**overrides, **cal_refs}
+
         stale = snapshot_service.is_stale(as_of, ttl_minutes)
         # Change-driven refresh: rate-limited background check — rebuild if the
         # SOURCE DATA changed since build (works for builder too; no TTL needed).
