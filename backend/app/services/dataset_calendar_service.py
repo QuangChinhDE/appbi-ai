@@ -514,9 +514,14 @@ def iter_temporal_columns(table: DatasetTable | Any) -> List[Dict[str, str]]:
     seen: set[str] = set()
     temporal_columns: List[Dict[str, str]] = []
     for column in raw_columns:
+        source_type = None
         if isinstance(column, dict):
             name = str(column.get("name") or "").strip()
             raw_type = _ovr_type(overrides.get(name)) or column.get("type")
+            # PHYSICAL warehouse type — the value-sampled semantic `type` labels a
+            # real BigQuery TIMESTAMP as "datetime", which lost the instant-ness
+            # needed to decide timezone conversion (audit #4 miss found in E2E).
+            source_type = str(column.get("source_type") or "").strip().lower() or None
         else:
             name = str(column or "").strip()
             raw_type = _ovr_type(overrides.get(name))
@@ -525,7 +530,9 @@ def iter_temporal_columns(table: DatasetTable | Any) -> List[Dict[str, str]]:
         normalized_type = normalize_column_type(raw_type)
         if normalized_type in TEMPORAL_COLUMN_TYPES:
             seen.add(name)
-            temporal_columns.append({"name": name, "type": normalized_type})
+            temporal_columns.append(
+                {"name": name, "type": normalized_type, "source_type": source_type}
+            )
     return temporal_columns
 
 
@@ -605,20 +612,28 @@ def build_calendar_join_sql(
     column_type: str,
     role_view_name: str,
     timezone: str | None = None,
+    physical_type: str | None = None,
 ) -> str:
     # Semantic-audit 2026-07 (#4) — the calendar settings carry a `timezone`
     # the join previously IGNORED: a TIMESTAMP row at 2023-06-30T20:00Z with
     # tz=+7 belongs to July locally but joined the June 30 calendar row, so
     # near-midnight rows mis-bucketed month/quarter/year. For an EXPLICIT
-    # non-UTC timezone on a true-instant column (timestamp), emit the
-    # dialect-portable local-date macro; UTC (the default) keeps the plain
-    # CAST — byte-identical to the pre-fix template, no silent shift for
-    # existing datasets. Naive DATETIME/DATE columns carry no instant
-    # semantics → plain CAST stays correct for them.
+    # non-UTC timezone on a true-INSTANT column, emit the dialect-portable
+    # local-date macro; UTC (the default) keeps the plain CAST — byte-identical
+    # to the pre-fix template, no silent shift for existing datasets.
+    #
+    # E2E fix: the instant check keys on the PHYSICAL warehouse type, not the
+    # value-sampled semantic type — BigQuery TIMESTAMP columns are frequently
+    # sampled as semantic "datetime", which made the tz branch silently
+    # no-op. TIMESTAMP/TIMESTAMPTZ are instants (tz-convertible); a genuine
+    # wall-clock DATETIME/DATE carries no tz and keeps the plain CAST.
     tz = str(timezone or "").strip()
+    phys = str(physical_type or "").strip().lower().split("(", 1)[0].strip()
     ctype = str(column_type or "").strip().lower()
+    _INSTANT_PHYS = {"timestamp", "timestamptz", "timestamp_tz", "timestamp with time zone"}
+    is_instant = phys in _INSTANT_PHYS or (not phys and ctype == "timestamp")
     if (
-        tz and tz.upper() != "UTC" and ctype == "timestamp"
+        tz and tz.upper() != "UTC" and is_instant
         and _TZ_NAME_RE.fullmatch(tz)
     ):
         return f"${{APPBI_LOCAL_DATE(${{TABLE}}.{from_column}|{tz})}} = ${{{role_view_name}}}.date"

@@ -1471,6 +1471,7 @@ def _build_calendar_role_views(
                 "sql_on": build_calendar_join_sql(
                     column_name, column_type, role_view.name,
                     timezone=calendar_settings.get("timezone"),  # audit #4
+                    physical_type=temporal_column.get("source_type"),  # instant check on PHYSICAL type
                 ),
                 "relationship": "many_to_one",
                 "from_view": source_view.name,
@@ -2240,6 +2241,33 @@ def add_join(
     # keep their authored orientation. cross_filter is preserved verbatim
     # (filter-propagation semantics vs canonical direction is a separate concern;
     # the Phase-2 propagation engine is default-OFF so this cannot skew numbers).
+    # Semantic-audit 2026-07 (E2E) — enforce that a declared to-one cardinality
+    # actually has a UNIQUE key on the "one" side. Power-BI parity: PBI refuses a
+    # many_to_one whose one-side column is not unique. A manual m2o on a
+    # non-unique key silently FANS OUT every measure the grain guard trusts as
+    # safe (found in E2E: seller_snap non-unique key → SUM ×snapshots). Checked
+    # on the DRAWN direction (matches join_validation's from/to profile). Only
+    # PROVEN non-unique (profiled False) blocks; unverifiable (None) is allowed
+    # (mirrors the auto-FK None-fallback). `force=True` bypasses for advanced
+    # users who accept the fan-out (e.g. genuine bridge scenarios).
+    if not force:
+        _from_u = join_validation.get("from_unique")
+        _to_u = join_validation.get("to_unique")
+        _bad = None
+        if cardinality_canonical == "many_to_one" and _to_u is False:
+            _bad = (to_view.name, primary_to_column)
+        elif cardinality_canonical == "one_to_many" and _from_u is False:
+            _bad = (from_view.name, primary_from_column)
+        elif cardinality_canonical == "one_to_one" and (_from_u is False or _to_u is False):
+            _bad = ((to_view.name, primary_to_column) if _to_u is False
+                    else (from_view.name, primary_from_column))
+        if _bad:
+            raise ValueError(
+                f"Không thể tạo quan hệ {cardinality_canonical}: cột khóa phía 'một' "
+                f"'{_bad[0]}.{_bad[1]}' KHÔNG duy nhất (có giá trị lặp) — JOIN sẽ nhân bản "
+                f"số liệu (fan-out). Dùng Many-to-Many (qua bridge table) hoặc chọn khóa duy nhất."
+            )
+
     _both_real_tables = (
         getattr(from_view, "dataset_table_id", None) is not None
         and getattr(to_view, "dataset_table_id", None) is not None
