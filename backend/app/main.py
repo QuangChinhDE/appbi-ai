@@ -46,6 +46,14 @@ async def lifespan(app: FastAPI):
     from app.services.snapshot_scheduler import startup as snapshot_scheduler_startup
     snapshot_scheduler_startup()
 
+    # Reap datasets left in 'syncing' by a crash/restart mid-publish — otherwise
+    # they show "Syncing…" forever + block new syncs until the 1h lease expires.
+    try:
+        from app.services.dataset_publish_service import reap_stuck_syncs
+        reap_stuck_syncs()
+    except Exception as exc:  # pragma: no cover — best-effort startup hook
+        logging.getLogger(__name__).warning("reap_stuck_syncs failed: %s", exc)
+
     # AI bot institutional-memory daily reflection (curate learned knowledge)
     from app.services.dashboard_ai_bot.learning_scheduler import startup as ai_learning_startup
     ai_learning_startup()

@@ -182,6 +182,37 @@ def start_sync_and_publish(dataset_id: int) -> Dict[str, Any]:
     return {"started": True}
 
 
+def reap_stuck_syncs() -> int:
+    """Startup reaper: a fresh process means NO sync is actually running, so any
+    dataset left in 'syncing' is a crash/restart casualty — it would otherwise
+    show "Syncing…" forever and block new syncs until the 1h lease TTL expires
+    (the lease lives in shared sqlite and survives a restart). Release the stale
+    publish lease + reset the state to its safe prior value. Mirrors the workboard
+    stuck-run reaper. NEVER raises."""
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    n = 0
+    try:
+        stuck = db.query(Dataset).filter(Dataset.publish_state == "syncing").all()
+        for ds in stuck:
+            _qc.release_global(_lease_key(ds.id))
+            if ds.published_generation is not None:
+                ds.publish_state = "published"  # keep serving the pinned gen
+            else:
+                ds.publish_state = "sync_failed"
+                ds.last_sync_error = "Sync bị gián đoạn (server restart) — bấm Sync & Publish để chạy lại."
+            n += 1
+        if n:
+            db.commit()
+            logger.info("[publish] reaped %d stuck 'syncing' dataset(s) on startup", n)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[publish] reap_stuck_syncs failed", exc_info=True)
+    finally:
+        db.close()
+    return n
+
+
 def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
     """The synchronous body (also usable from tests/CLI). Locks design → syncs a
     generation → validates → pins published_generation on success; keeps the
