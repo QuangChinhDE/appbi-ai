@@ -53,6 +53,12 @@ import type { Transformation } from '@/hooks/use-datasets';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 
+// Feature flag — the "Add column" (computed/derived column) action is temporarily
+// paused across ALL datasets while the feature is reworked. Set back to `true` to
+// re-enable the add-column entry points (grid "+ cột" button + measures panel).
+// Editing/deleting EXISTING computed columns is intentionally left enabled.
+const ADD_COLUMN_ENABLED = false;
+
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
 function evalExcelFormulaInPage(
   formula: string,
@@ -1802,14 +1808,14 @@ export default function DatasetDetailPage() {
                 setMeasuresFocusViewId(viewId);
                 setMeasuresFocusMeasureName('__new__');
               }}
-              onRequestAddColumn={(tableId) => {
+              onRequestAddColumn={ADD_COLUMN_ENABLED ? (tableId) => {
                 // Switch the page-level "selected table" to the measure's
                 // underlying table so AddColumnModal opens against the
                 // correct schema, then open the modal.
                 setSelectedTableId(tableId);
                 setEditingColumnStep(null);
                 setIsAddColumnModalOpen(true);
-              }}
+              } : undefined}
             />
           ) : dataset.tables.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
@@ -1862,7 +1868,7 @@ export default function DatasetDetailPage() {
                     isLoading={loadingPreview}
                     error={previewError ? extractDatasetErrorMessage(previewError, 'Cannot load table preview', selectedTable) : null}
                     onRetry={handleRetryPreview}
-                    onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
+                    onAddColumn={ADD_COLUMN_ENABLED && resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
                     onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}
                     onEditColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleEditColumn : undefined}
                     computedColumns={computedColumnNames}
