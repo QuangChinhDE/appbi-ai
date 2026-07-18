@@ -2518,6 +2518,17 @@ const FieldPickerContext = createContext<{
  *   - When user has a query, every matching group auto-expands so search
  *     surfaces hits without manual unfolding
  */
+
+/** Human-readable field ref for tooltips: "<table display name>.<column>" —
+ * never the raw "dataset_table_401.activity_group" key the user didn't choose. */
+function humanFieldRef(c: Col): string {
+  const view = c.viewName || fieldViewName(c.name) || '';
+  const label = (c.viewLabel || c.tableLabel || '').trim()
+    || (view && !/^dataset_table_\d+$/i.test(view) ? humanizeIdentifier(view) : view);
+  const bare = c.name.includes('.') ? c.name.split('.').slice(1).join('.') : c.name;
+  return label ? `${label}.${bare}` : c.name;
+}
+
 function FieldPicker({
   value = '',
   options,
@@ -2679,7 +2690,7 @@ function FieldPicker({
               ? 'border-brand/50 ring-1 ring-brand/30'
               : 'border-[rgb(var(--border-strong))] hover:bg-surface-2'
         }`}
-        title={selected?.name}
+        title={selected ? humanFieldRef(selected) : undefined}
       >
         <span className="min-w-0 flex-1">
           <span className={`block truncate font-medium ${selected ? 'text-text-secondary' : 'text-text-quaternary'}`}>
@@ -2794,7 +2805,7 @@ function FieldPicker({
                           className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${
                             active ? 'bg-brand/10' : 'hover:bg-surface-2'
                           }`}
-                          title={option.name}
+                          title={`${group.viewLabel}.${option.name.includes('.') ? option.name.split('.').slice(1).join('.') : option.name}`}
                         >
                           <span className="min-w-0 flex-1">
                             <span className={`block truncate text-xs font-medium ${active ? 'text-brand' : 'text-text-secondary'}`}>
@@ -3190,7 +3201,7 @@ function MetricSlot({
                     );
                   })}
                 </select>
-                <span className={`flex-1 text-xs truncate ${labelClass}`} title={m.field}>
+                <span className={`flex-1 text-xs truncate ${labelClass}`} title={(() => { const _c = fullOptionsByName.get(m.field); return _c ? humanFieldRef(_c) : m.field; })()}>
                   {col ? colLabel(col) : m.field}
                 </span>
                 {!aggValid && (
