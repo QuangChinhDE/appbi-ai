@@ -304,9 +304,19 @@ def build_table_snapshot(
                     _ds_type(datasource), datasource.config, source_sig,
                     columns_meta=_cols_meta, timeout_seconds=_DDL_TIMEOUT_SEC,
                 )
+            # Pha A — partition + cluster the snapshot per the dataset's storage
+            # config (validated against the ACTUAL schema so a stale/invalid field
+            # never breaks the load — it just degrades to a plain/clustered table).
+            from app.services import dataset_snapshot_config as _snapcfg
+            _pf, _pt, _cf, _warn = _snapcfg.resolved_partition_cluster(
+                _snapcfg.table_storage_config(dataset_obj, table.id), bq_schema
+            )
+            if _warn:
+                logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
             row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
                 host.config, snap_dataset, table_name, bq_schema, rows,
                 timeout_seconds=_DDL_TIMEOUT_SEC,
+                partition_field=_pf, partition_type=_pt, cluster_fields=_cf,
             )
         except Exception as exc:  # noqa: BLE001
             db.rollback()

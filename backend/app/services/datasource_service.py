@@ -1381,11 +1381,19 @@ class DataSourceConnectionService:
     def load_bigquery_snapshot(
         config: Dict[str, Any], dataset_name: str, table_name: str,
         bq_schema: list, rows: List[Dict[str, Any]], timeout_seconds: int = 280,
+        *, partition_field: str | None = None, partition_type: str = "DAY",
+        cluster_fields: Optional[List[str]] = None,
     ) -> int:
         """LOAD step: write `rows` into `<snapshot_dataset>.<table_name>` using the
         WRITE service account (materialization credential) with the EXACT source
         schema. WRITE_TRUNCATE = full replace. The write SA never reads the source.
-        Returns loaded row count."""
+        Returns loaded row count.
+
+        Pha A — when ``partition_field`` / ``cluster_fields`` are given, the target
+        table is created PARTITIONED (time-partitioning on that DATE/TIMESTAMP
+        column) and/or CLUSTERED so chart-time queries prune partitions + cluster
+        blocks instead of full-scanning a plain table. Caller (build_table_snapshot)
+        validates the field types against the schema before passing them here."""
         mat_cfg = _materialization_bq_config(config)
         client = None
         try:
@@ -1407,6 +1415,16 @@ class DataSourceConnectionService:
                     write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
                     source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
                 )
+            if partition_field:
+                _pt = {
+                    "HOUR": bigquery.TimePartitioningType.HOUR,
+                    "DAY": bigquery.TimePartitioningType.DAY,
+                    "MONTH": bigquery.TimePartitioningType.MONTH,
+                    "YEAR": bigquery.TimePartitioningType.YEAR,
+                }.get(str(partition_type).upper(), bigquery.TimePartitioningType.DAY)
+                job_config.time_partitioning = bigquery.TimePartitioning(type_=_pt, field=partition_field)
+            if cluster_fields:
+                job_config.clustering_fields = list(cluster_fields)[:4]
             job = client.load_table_from_json(rows, table_ref, job_config=job_config)
             job.result(timeout=timeout_seconds)
             return int(getattr(client.get_table(table_ref), "num_rows", len(rows)) or len(rows))

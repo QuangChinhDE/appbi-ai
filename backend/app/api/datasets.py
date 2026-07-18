@@ -2559,6 +2559,76 @@ def list_composable_parents(
     return out
 
 
+def _is_date_like_col(c: dict) -> bool:
+    """A column whose snapshot type is DATE/TIMESTAMP/DATETIME (partition-eligible)."""
+    t = str(c.get("source_type") or c.get("type") or "").lower()
+    return any(k in t for k in ("date", "timestamp", "datetime"))
+
+
+@router.get("/{dataset_id}/snapshot-config")
+def get_dataset_snapshot_config(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Snapshot storage (partition/cluster) + refresh schedule config for the
+    Sync & Publish modal, plus each materializable table's candidate columns
+    (date-typed for partitioning; all for clustering)."""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    from app.services import dataset_snapshot_config as sc
+    cfg = sc.get_snapshot_config(ds)
+    per_table = cfg.get("tables") if isinstance(cfg.get("tables"), dict) else {}
+    tables = []
+    for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all():
+        if is_generated_calendar_table(t) or t.source_kind == "dataset":
+            continue
+        cols = (t.columns_cache or {}).get("columns", []) if isinstance(t.columns_cache, dict) else []
+        names = [c.get("name") for c in cols if c.get("name")]
+        date_cols = [c.get("name") for c in cols if c.get("name") and _is_date_like_col(c)]
+        tables.append({
+            "id": t.id, "display_name": t.display_name, "source_kind": t.source_kind,
+            "date_columns": date_cols, "columns": names,
+            "config": per_table.get(str(t.id)) or {},
+        })
+    return {"schedule": cfg.get("schedule") or {"mode": "manual"}, "tables": tables}
+
+
+@router.put("/{dataset_id}/snapshot-config")
+def put_dataset_snapshot_config(
+    dataset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save the snapshot storage + schedule config (design change). Applied on the
+    next Sync & Publish / scheduled refresh. Re-registers the refresh schedule."""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+    from app.services import dataset_snapshot_config as sc
+    try:
+        norm = sc.validate_config(body or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from sqlalchemy.orm.attributes import flag_modified
+    settings = dict(ds.settings or {})
+    merged = {**(settings.get("snapshot_config") or {}), **norm}
+    settings["snapshot_config"] = merged
+    ds.settings = settings
+    flag_modified(ds, "settings")
+    db.commit()
+    try:
+        from app.services import snapshot_scheduler
+        snapshot_scheduler.sync_dataset_job(dataset_id)
+    except Exception:  # noqa: BLE001 — scheduler is best-effort
+        logger.warning("[snapshot-config] scheduler sync failed for %s", dataset_id, exc_info=True)
+    return {"ok": True, "snapshot_config": merged}
+
+
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
 def get_dataset(
     dataset_id: int,
