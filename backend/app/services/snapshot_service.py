@@ -346,32 +346,25 @@ def build_table_snapshot(
             location = _source_location(host)
             row.host_location = location
             DataSourceConnectionService.ensure_bigquery_dataset(host.config, snap_dataset, location=location)
-            if _ds_type(datasource) == "bigquery":
-                bq_schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
-                    datasource.config, resolved_sql, timeout_seconds=_DDL_TIMEOUT_SEC
-                )
-            else:
-                # Federated: pull rows on the source's own engine (Sheets/PG/…),
-                # load into the host BQ with autodetect (schema=None).
-                _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
-                bq_schema, rows = DataSourceConnectionService.extract_generic_for_snapshot(
-                    _ds_type(datasource), datasource.config, source_sig,
-                    columns_meta=_cols_meta, timeout_seconds=_DDL_TIMEOUT_SEC,
-                )
-            # Pha A — partition + cluster the snapshot per the dataset's storage
-            # config (validated against the ACTUAL schema so a stale/invalid field
-            # never breaks the load — it just degrades to a plain/clustered table).
+            # Batched EXTRACT+LOAD (bounds VM memory to one chunk) into a
+            # PARTITIONED/CLUSTERED table per the dataset's storage config.
             from app.services import dataset_snapshot_config as _snapcfg
-            _pf, _pt, _cf, _warn = _snapcfg.resolved_partition_cluster(
-                _snapcfg.table_storage_config(dataset_obj, table.id), bq_schema
+            from app.services import sync_progress as _sp
+            _storage = _snapcfg.table_storage_config(dataset_obj, table.id)
+            _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
+
+            def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
+                _sp.note_rows(_dsid, _tid, n)
+
+            row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
+                source_ds_type=_ds_type(datasource), source_config=datasource.config,
+                resolved_sql=resolved_sql, source_select_sql=source_sig,
+                columns_meta=_cols_meta, host_config=host.config,
+                dataset_name=snap_dataset, table_name=table_name,
+                storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
             )
             if _warn:
                 logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
-            row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
-                host.config, snap_dataset, table_name, bq_schema, rows,
-                timeout_seconds=_DDL_TIMEOUT_SEC,
-                partition_field=_pf, partition_type=_pt, cluster_fields=_cf,
-            )
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             row = db.query(DatasetTableSnapshot).get(row.id)
@@ -726,6 +719,14 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # this loop is mid-flight.
     generation = int(time.time() * 1000)
     built, skipped = [], []
+    from app.services import sync_progress as _sp
+    _to_build = [
+        t for t in tables
+        if not (host is None or datasource_by_id.get(t.datasource_id) is None
+                or is_generated_calendar_table(t) or not is_federated_materializable(t)
+                or getattr(t, "enabled", True) is False)
+    ]
+    _total = len(_to_build)
     for t in tables:
         ds = datasource_by_id.get(t.datasource_id)
         if (host is None or ds is None or is_generated_calendar_table(t)
@@ -733,6 +734,7 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
                 or getattr(t, "enabled", True) is False):
             skipped.append(t.id)
             continue
+        _sp.note_table(dataset_id, getattr(t, "display_name", None) or f"table {t.id}", len(built), _total)
         row = build_table_snapshot(
             db, dataset_obj, t, ds, force=force, host_datasource=host,
             generation=generation,
@@ -741,6 +743,7 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
             built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
         else:
             skipped.append(t.id)
+    _sp.note_table(dataset_id, None, len(built), _total)  # final tick → N/N done
     built_ids = [b["table_id"] for b in built]
     ts = as_of(db, built_ids) if built_ids else None
     # Phase 4 — delayed GC: retire generations older than the retained window

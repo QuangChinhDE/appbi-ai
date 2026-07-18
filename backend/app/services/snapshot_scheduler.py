@@ -75,7 +75,7 @@ def _run_scheduled_refresh(dataset_id: int) -> None:
             )
             return
         from app.services import dataset_publish_service
-        res = dataset_publish_service.start_sync_and_publish(dataset_id)
+        res = dataset_publish_service.start_sync_and_publish(dataset_id, trigger="scheduled")
         logger.info("[snapshot_scheduler] scheduled refresh dataset=%s -> %s", dataset_id, res)
     except Exception as exc:  # noqa: BLE001
         logger.error("[snapshot_scheduler] scheduled refresh failed dataset=%s: %s", dataset_id, exc)

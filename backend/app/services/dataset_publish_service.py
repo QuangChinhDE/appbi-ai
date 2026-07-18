@@ -138,6 +138,7 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
     """UI payload: current state (+ live changes-pending recompute), pinned
     generation, timestamps, and whether a sync is in flight."""
     state = refresh_publish_state(db, dataset)
+    from app.services import sync_progress
     return {
         "publish_state": state,  # None = legacy
         "published_generation": dataset.published_generation,
@@ -145,6 +146,8 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
         "last_sync_error": dataset.last_sync_error,
         "syncing": _qc.is_claimed_global(_lease_key(dataset.id)),
         "has_published_data": dataset.published_generation is not None,
+        # Live progress for the manual Sync & Publish waiting UI (None when idle).
+        "progress": sync_progress.get(dataset.id),
     }
 
 
@@ -152,13 +155,18 @@ def _lease_key(dataset_id: int) -> str:
     return f"datasetpublish::{dataset_id}"
 
 
-def start_sync_and_publish(dataset_id: int) -> Dict[str, Any]:
+def start_sync_and_publish(dataset_id: int, trigger: str = "manual") -> Dict[str, Any]:
     """Kick a background Sync & Publish. Returns immediately (ETL is long).
-    At most ONE publish per dataset at a time (cross-worker lease). NEVER raises."""
+    At most ONE publish per dataset at a time (cross-worker lease). NEVER raises.
+    `trigger` ('manual'|'scheduled') is surfaced in the progress payload so the UI
+    shows the waiting overlay only for the manual sync the user just started."""
     from app.core.database import SessionLocal
+    from app.services import sync_progress
 
     if not _qc.try_claim_global(_lease_key(dataset_id), _PUBLISH_LEASE_SECONDS):
         return {"started": False, "reason": "already_syncing"}
+
+    sync_progress.start(dataset_id, total=0, trigger=trigger)
 
     def _run() -> None:
         db = SessionLocal()
@@ -172,6 +180,7 @@ def start_sync_and_publish(dataset_id: int) -> Dict[str, Any]:
                     ds.publish_state = "sync_failed"
                     ds.last_sync_error = "internal error during sync"
                     db.commit()
+                sync_progress.set_phase(dataset_id, "failed")
             except Exception:  # noqa: BLE001
                 db.rollback()
         finally:
@@ -241,6 +250,8 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         ds.publish_state = "sync_failed"
         ds.last_sync_error = str(exc)
         db.commit()
+        from app.services import sync_progress as _spf
+        _spf.set_phase(dataset_id, "failed")
         logger.warning("[publish] composition pre-flight FAILED dataset=%s: %s", dataset_id, exc)
         return {"ok": False, "error": str(exc)}
 
@@ -256,12 +267,15 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
 
     # 3) VALIDATE gate — the generation must fully cover every materializable
     #    (enabled, non-calendar, non-derived) table.
+    from app.services import sync_progress
+    sync_progress.set_phase(dataset_id, "validating")
     ok, reason = _validate_generation(db, dataset_id, generation)
     if not ok:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         ds.publish_state = "sync_failed"
         ds.last_sync_error = reason
         db.commit()
+        sync_progress.set_phase(dataset_id, "failed")
         logger.warning("[publish] validate FAILED dataset=%s gen=%s: %s", dataset_id, generation, reason)
         return {"ok": False, "error": reason, "generation": generation,
                 "built": built, "skipped": skipped}
@@ -297,6 +311,7 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         logger.warning("[publish] composition pin/cascade failed for %s", dataset_id, exc_info=True)
         db.rollback()
 
+    sync_progress.set_phase(dataset_id, "done")
     logger.info("[publish] PUBLISHED dataset=%s generation=%s (%d tables)", dataset_id, generation, len(built))
     return {"ok": True, "generation": generation, "built": built, "skipped": skipped}
 

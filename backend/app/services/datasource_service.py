@@ -1433,6 +1433,122 @@ class DataSourceConnectionService:
                 client.close()
 
     @staticmethod
+    def stream_extract_load_snapshot(
+        *, source_ds_type: str, source_config: Dict[str, Any],
+        resolved_sql: Optional[str], source_select_sql: Optional[str],
+        columns_meta: Optional[List[Dict[str, Any]]],
+        host_config: Dict[str, Any], dataset_name: str, table_name: str,
+        storage: Dict[str, Any], chunk_size: Optional[int] = None,
+        timeout_seconds: int = 280, progress_cb=None,
+    ) -> Tuple[int, Optional[str]]:
+        """Batched EXTRACT+LOAD (Pha-C-lite): stream the source in bounded chunks
+        and load into a PARTITIONED/CLUSTERED snapshot table — first chunk
+        WRITE_TRUNCATE (creates the table + partition/cluster), the rest
+        WRITE_APPEND. Bounds VM memory to ~chunk_size rows instead of holding the
+        whole result set, and avoids the single-job 280s ceiling on huge tables.
+        The target is built fresh (not the current pointer) so the caller's atomic
+        swap keeps reads consistent; a mid-stream failure just orphans the partial
+        table. Returns (row_count, storage_warning)."""
+        import base64, datetime as _dt
+        from decimal import Decimal
+        from app.services import dataset_snapshot_config as _sc
+
+        chunk_size = int(chunk_size or DataSourceConnectionService.STREAM_BATCH_SIZE)
+        mat_cfg = _materialization_bq_config(host_config)
+        write_client = _build_bigquery_client(mat_cfg)
+        project = str(mat_cfg.get("project_id") or "").strip()
+        table_ref = f"{project}.{dataset_name}.{table_name}"
+
+        def _coerce(v):
+            if v is None:
+                return None
+            if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+                return v.isoformat()
+            if isinstance(v, Decimal):
+                return str(v)
+            if isinstance(v, bytes):
+                return base64.b64encode(v).decode("ascii")
+            if isinstance(v, dict):
+                return {k: _coerce(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_coerce(x) for x in v]
+            return v
+
+        # ── schema + a ROW GENERATOR (bounded memory) ──
+        read_client = None
+        if source_ds_type == "bigquery":
+            read_client = _build_bigquery_client(source_config)
+            job = read_client.query(resolved_sql)
+            it = job.result(timeout=timeout_seconds)
+            bq_schema = list(it.schema)
+            def _rows():
+                for r in it:  # RowIterator pages from BigQuery — bounded memory
+                    yield {k: _coerce(val) for k, val in dict(r).items()}
+        else:
+            # Non-BQ (Sheets/manual/other warehouse): reuse the typed extract, which
+            # applies DECLARED types (join-key correctness). Sheets are small; large
+            # Postgres would stream via execute_query's cursor path upstream.
+            bq_schema, safe_rows = DataSourceConnectionService.extract_generic_for_snapshot(
+                source_ds_type, source_config, source_select_sql,
+                columns_meta=columns_meta, timeout_seconds=timeout_seconds,
+            )
+            def _rows():
+                for r in safe_rows:
+                    yield r
+
+        pf, pt, cf, warn = _sc.resolved_partition_cluster(storage, bq_schema)
+
+        def _flush(buf: list, first: bool) -> None:
+            if first:
+                jc = bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                )
+                if bq_schema:
+                    jc.schema = bq_schema
+                else:
+                    jc.autodetect = True
+                if pf:
+                    _pt = {"HOUR": bigquery.TimePartitioningType.HOUR,
+                           "DAY": bigquery.TimePartitioningType.DAY,
+                           "MONTH": bigquery.TimePartitioningType.MONTH,
+                           "YEAR": bigquery.TimePartitioningType.YEAR}.get(
+                               str(pt).upper(), bigquery.TimePartitioningType.DAY)
+                    jc.time_partitioning = bigquery.TimePartitioning(type_=_pt, field=pf)
+                if cf:
+                    jc.clustering_fields = list(cf)[:4]
+            else:
+                jc = bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                )
+                if bq_schema:
+                    jc.schema = bq_schema
+            job2 = write_client.load_table_from_json(buf, table_ref, job_config=jc)
+            job2.result(timeout=timeout_seconds)
+
+        total, first, buf = 0, True, []
+        try:
+            for row in _rows():
+                buf.append(row)
+                if len(buf) >= chunk_size:
+                    _flush(buf, first); total += len(buf); first = False; buf = []
+                    if progress_cb:
+                        progress_cb(total)
+            # final chunk (also creates an empty table if the source had 0 rows,
+            # so the generation stays complete)
+            if buf or first:
+                _flush(buf, first); total += len(buf)
+                if progress_cb:
+                    progress_cb(total)
+        finally:
+            if read_client is not None and not _bq_client_is_cached(source_config, read_client):
+                read_client.close()
+            if write_client is not None and not _bq_client_is_cached(mat_cfg, write_client):
+                write_client.close()
+        return int(total), warn
+
+    @staticmethod
     def snapshot_query_config(config: Dict[str, Any]) -> Dict[str, Any]:
         """Config for READING snapshot tables at chart time — uses the write
         service account (which is the only identity granted on the SA-only
