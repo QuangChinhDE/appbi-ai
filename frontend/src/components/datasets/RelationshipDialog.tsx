@@ -68,24 +68,25 @@ const JOIN_TYPE_OPTIONS: { value: JoinType; label: string }[] = [
   { value: 'full', label: 'FULL OUTER JOIN' },
 ];
 
-const RELATIONSHIP_OPTIONS: {
+// Structural cardinality metadata (from/to badge). Labels are localized in the
+// component via i18n (labelKey) so the dropdown isn't hardcoded to one language.
+const RELATIONSHIP_META: {
   value: RelationshipType;
-  label: string;
+  labelKey: string;
   from: string;
   to: string;
   disabled?: boolean;
 }[] = [
-  { value: 'one_to_one', label: '1 : 1  -  One to One', from: '1', to: '1' },
-  { value: 'one_to_many', label: '1 : N  -  One to Many', from: '1', to: 'N' },
-  { value: 'many_to_one', label: 'N : 1  -  Many to One', from: 'N', to: '1' },
-  // Phase-3b: N:N allowed but flagged with a red banner in the dialog body
-  // because cartesian fan-out can double aggregates.
-  { value: 'many_to_many', label: 'N : N  -  Many to Many (cảnh báo)', from: 'N', to: 'N' },
+  { value: 'one_to_one', labelKey: 'datasets.relationshipDialog.relOneToOne', from: '1', to: '1' },
+  { value: 'one_to_many', labelKey: 'datasets.relationshipDialog.relOneToMany', from: '1', to: 'N' },
+  { value: 'many_to_one', labelKey: 'datasets.relationshipDialog.relManyToOne', from: 'N', to: '1' },
+  // N:N allowed but flagged (cartesian fan-out can double aggregates).
+  { value: 'many_to_many', labelKey: 'datasets.relationshipDialog.relManyToMany', from: 'N', to: 'N' },
 ];
 
-const CROSS_FILTER_OPTIONS: { value: CrossFilter; label: string }[] = [
-  { value: 'single', label: 'Single — chỉ filter từ source → target' },
-  { value: 'both', label: 'Both — filter cả 2 chiều (giống Power BI bidirectional)' },
+const CROSS_FILTER_META: { value: CrossFilter; labelKey: string }[] = [
+  { value: 'single', labelKey: 'datasets.relationshipDialog.crossFilterSingle' },
+  { value: 'both', labelKey: 'datasets.relationshipDialog.crossFilterBoth' },
 ];
 
 function Select({
@@ -372,9 +373,18 @@ export function RelationshipDialog({
     }
   };
 
-  const relOpt = RELATIONSHIP_OPTIONS.find((option) => option.value === relationship)!;
+  const relationshipOptions = RELATIONSHIP_META.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey),
+    disabled: option.disabled,
+  }));
+  const crossFilterOptions = CROSS_FILTER_META.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey),
+  }));
+  const relOpt = RELATIONSHIP_META.find((option) => option.value === relationship)!;
   const suggestedRelationshipLabel = joinSuggestion
-    ? RELATIONSHIP_OPTIONS.find((option) => option.value === joinSuggestion.relationship)?.label
+    ? t(RELATIONSHIP_META.find((option) => option.value === joinSuggestion.relationship)?.labelKey || '')
     : null;
   const suggestedUniquenessLabel = joinSuggestion
     && joinSuggestion.from_unique != null
@@ -567,11 +577,7 @@ export function RelationshipDialog({
                 setRelationshipTouched(true);
                 setAutoSuggestRelationship(false);
               }}
-              options={RELATIONSHIP_OPTIONS.map((option) => ({
-                value: option.value,
-                label: option.label,
-                disabled: option.disabled,
-              }))}
+              options={relationshipOptions}
             />
             {(isSuggestingRelationship || suggestedRelationshipLabel) && (
               <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
@@ -589,7 +595,7 @@ export function RelationshipDialog({
             <Select
               value={crossFilter}
               onChange={(value) => setCrossFilter(value as CrossFilter)}
-              options={CROSS_FILTER_OPTIONS}
+              options={crossFilterOptions}
             />
             <p className="text-xs text-text-quaternary leading-snug">
               {crossFilter === 'both'
