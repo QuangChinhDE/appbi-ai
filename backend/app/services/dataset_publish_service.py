@@ -73,6 +73,17 @@ def design_fingerprint(db: Session, dataset_id: int) -> str:
             _stable(t.transformations), _stable(t.type_overrides),
             ",".join(sorted(cols)),
         ]))
+    # Composition: fold each parent's CURRENT published generation into the
+    # fingerprint. A parent re-publish changes only the parent's generation (not
+    # the child's own design), so without this refresh_publish_state would flip
+    # the cascade's changes_pending back to published on the next read. With it,
+    # the drift is detected lazily and the child stays changes_pending until it
+    # re-validates + re-publishes against the new parent generation (principle #2).
+    for t in tables:
+        if getattr(t, "source_kind", None) == "dataset":
+            parent = db.query(Dataset).filter(Dataset.id == t.parent_dataset_id).first()
+            gen = getattr(parent, "published_generation", None) if parent else None
+            parts.append("P|%s|%s|%s" % (t.id, t.parent_dataset_id, gen))
     model = db.query(sem.SemanticModel).filter(sem.SemanticModel.dataset_id == dataset_id).first()
     if model is not None:
         views = (

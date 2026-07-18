@@ -3903,6 +3903,32 @@ def preview_dataset_table(
             if getattr(exc, "code", "") == "NOT_SYNCED":
                 raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
             raise HTTPException(status_code=400, detail=str(exc))
+    elif db_table.source_kind == "dataset":
+        # Composition parent-ref: preview the parent's CURRENT published snapshot
+        # (the design-time source). Reuse the standard preview path via a proxy
+        # sql_query table pointed at the parent snapshot ref on the host BQ.
+        from app.services import snapshot_service as _ss
+        parent = db.query(Dataset).filter(Dataset.id == db_table.parent_dataset_id).first()
+        gen = getattr(parent, "published_generation", None) if parent else None
+        refs, _f, _a = (
+            _ss.resolve_specific_generation_refs(db, [db_table.parent_dataset_table_id], gen)
+            if gen else ({}, {}, None)
+        )
+        ref = refs.get(db_table.parent_dataset_table_id)
+        host = _ss.host_for_generation(db, parent.id, gen) if (parent and gen) else None
+        if not ref or host is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Dataset cha chưa được publish hoặc snapshot không còn khả dụng — publish lại Dataset cha để xem trước.",
+            )
+        datasource = host
+        target_table = SimpleNamespace(
+            id=db_table.id, dataset_id=dataset_id, datasource_id=host.id,
+            source_kind="sql_query", source_table_name=None,
+            source_query=f"SELECT * FROM `{ref}`", display_name=db_table.display_name,
+            enabled=True, transformations=db_table.transformations or [],
+            type_overrides=db_table.type_overrides, columns_cache=db_table.columns_cache,
+        )
     else:
         datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
         if not datasource:
