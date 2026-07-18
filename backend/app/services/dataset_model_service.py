@@ -2669,6 +2669,116 @@ def suggest_join_relationship(
     }
 
 
+def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
+    """One-time, IDEMPOTENT migration — re-orient stored ``one_to_many`` joins to
+    ``many_to_one`` on the many side, exactly matching ``add_join``'s save-time
+    canonicalization (semantic-audit 2026-07, DA feedback). A relationship drawn
+    dim(1)->fact(N) was stored on the DIM explore, so a measure chart on the FACT
+    could not traverse it; this moves the join to the FACT (many) explore as N:1
+    with LEFT<->RIGHT swapped (keeps the same side's rows).
+
+    Only plain real-table<->real-table joins without an alias are moved; aliased
+    / role-played / generated-view joins keep their authored orientation. Safe to
+    re-run: an equivalent canonical join already present is not duplicated.
+    Returns ``{"moved": [...], "skipped": [...]}``. Caller commits.
+    """
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        return {"moved": [], "skipped": []}
+    explores = {
+        e.base_view_name: e
+        for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+    }
+    # Scope views to THIS dataset's own tables. View names (dataset_table_<id>)
+    # are NOT globally unique — IMPORT datasets reuse them — so a global
+    # ``{name: view}`` map collapses colliding names to some other dataset's
+    # view (often a role view with dataset_table_id=None), which made the
+    # both-real-tables gate wrongly fail and silently skip the join (ds95/104).
+    _tbl_ids = [
+        row.id for row in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+    ]
+    views_by_name = {
+        v.name: v
+        for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(_tbl_ids)).all()
+        if str(v.name or "").strip()
+    }
+    moved: list[dict] = []
+    skipped: list[dict] = []
+    for base_name, explore in list(explores.items()):
+        remaining: list[dict] = []
+        for j in (explore.joins or []):
+            card = str(j.get("cardinality") or j.get("relationship") or "").strip().lower()
+            alias = str(j.get("alias") or "").strip()
+            tview_name = str(j.get("view") or "").strip()
+            fv = views_by_name.get(base_name)
+            tv = views_by_name.get(tview_name)
+            both_real = (
+                fv is not None and tv is not None
+                and getattr(fv, "dataset_table_id", None) is not None
+                and getattr(tv, "dataset_table_id", None) is not None
+            )
+            if card != "one_to_many" or alias or not both_real:
+                remaining.append(j)
+                continue
+            # Build the canonical N:1 join to place on the MANY (target) explore.
+            fcols = j.get("from_columns") or ([j.get("from_column")] if j.get("from_column") else [])
+            tcols = j.get("to_columns") or ([j.get("to_column")] if j.get("to_column") else [])
+            fcols = [c for c in fcols if c]
+            tcols = [c for c in tcols if c]
+            if not fcols or not tcols:
+                remaining.append(j)  # malformed — leave untouched
+                continue
+            new_type = {"left": "right", "right": "left"}.get(
+                str(j.get("type") or "left").lower(), str(j.get("type") or "left").lower()
+            )
+            canon = {
+                "name": base_name,
+                "view": base_name,
+                "alias": None,
+                "type": new_type,
+                "sql_on": _build_join_sql_on(
+                    target_placeholder=base_name, from_columns=tcols, to_columns=fcols,
+                ),
+                "relationship": "many_to_one",
+                "cardinality": "many_to_one",
+                "from_view": tview_name,
+                "from_column": tcols[0],
+                "to_column": fcols[0],
+                "from_columns": tcols,
+                "to_columns": fcols,
+                "is_active": bool(j.get("is_active", True)),
+                "cross_filter": str(j.get("cross_filter") or "single").lower(),
+                "origin": j.get("origin") or "manual",
+                "managed": bool(j.get("managed", False)),
+            }
+            target_explore = explores.get(tview_name)
+            if target_explore is None:
+                target_explore = SemanticExplore(
+                    name=tview_name, model_id=model.id,
+                    base_view_id=tv.id, base_view_name=tview_name, joins=[],
+                )
+                db.add(target_explore)
+                db.flush()
+                explores[tview_name] = target_explore
+            tjoins = list(target_explore.joins or [])
+            already = any(
+                str(x.get("view")) == base_name
+                and (x.get("from_columns") or [x.get("from_column")]) == tcols
+                for x in tjoins
+            )
+            if not already:
+                tjoins.append(canon)
+                target_explore.joins = tjoins
+            moved.append({
+                "from_explore": base_name, "to_explore": tview_name,
+                "type": new_type, "dup_skipped": already,
+            })
+        if len(remaining) != len(explore.joins or []):
+            explore.joins = remaining
+    db.flush()
+    return {"moved": moved, "skipped": skipped}
+
+
 def remove_join(
     db: Session,
     dataset_id: int,
